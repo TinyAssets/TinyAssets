@@ -94,6 +94,8 @@ class GvisorFileBackend:
             # cannot wake a box after destroy has fenced and stopped it.
             with running.start_lock, self._lock(uid):
                 running.authorize()
+                if running.cancel.is_set():
+                    return {"exit_code": None, "killed": "cancelled"}
                 self._wake(uid)
                 self._busy.add(uid)
                 proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,

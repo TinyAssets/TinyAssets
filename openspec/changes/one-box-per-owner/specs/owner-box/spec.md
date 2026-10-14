@@ -103,3 +103,17 @@ then the owner's egress policy, then connection grants.
 #### Scenario: A non-owner asks for the view
 - **WHEN** a model-door, MCP or other-account caller requests a box view
 - **THEN** no view operation exists for it and nothing is streamed
+
+
+#### Scenario: A disconnected channel reconnects to its session
+- **WHEN** a daemon channel closes while an admitted session has running or queued work
+- **THEN** only that channel's handle is detached and the work continues
+- **AND** a new channel bound to the same admitted session can recover its operation status
+- **AND** detaching the old channel cannot revoke the new channel's handle
+
+#### Scenario: Restoring files cannot turn an operation into a replay
+- **WHEN** a quiesced paired owner-box snapshot is restored
+- **THEN** its root-private receipt journal is restored with the data member
+- **AND** epochs and generations advance beyond both the live and archived copies
+- **AND** every operation ID seen in either copy is retained as unknown, never replayed
+- **AND** differing identity, admission or deletion frontiers refuse the swap until reviewed forward recovery is available

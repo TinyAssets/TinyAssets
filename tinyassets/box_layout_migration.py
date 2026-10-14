@@ -244,7 +244,6 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
         _atomic_json(storage_layout.marker_path(data), {
             **marker, "state": "migrating", "migration": "owner-box",
         })
-        rows = []
         for owner in plan:
             tree = store / str(owner.uid)
             tree.mkdir(mode=0o700)
@@ -271,8 +270,6 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
                 destination.mkdir(mode=0o700)
                 os.chown(destination, owner.uid, owner.uid)
                 _copy(agent_home, destination, owner.uid)
-            rows.append({"uid": owner.uid, "gid": owner.uid,
-                         "project_id": owner.uid, "bhard_bytes": owner.quota})
         broker_state = data / ".broker" / "state"
         with sqlite3.connect(broker_state / "owner-identities.db") as db:
             db.execute("PRAGMA synchronous=FULL")
@@ -284,10 +281,13 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
                 "INSERT INTO box_records VALUES (?, ?, ?, ?)",
                 ((owner.principal, owner.uid, owner.uid, owner.quota) for owner in plan),
             )
-        registry = data / ".broker" / "box-registry.json"
-        _atomic_json(registry, {"boxes": rows})
-        os.chown(registry, 1002, 1002)
-        os.chmod(registry, 0o600)
+        from tinyassets.boxes.state import BoxHostState
+
+        journal = data / ".boxhost"
+        journal.mkdir(mode=0o700)  # one-shot migration; never adopt an existing receipt root
+        host_state = BoxHostState(journal / "boxhost.db", max_bytes=16 * 1024 * 1024)
+        host_state.close()
+        os.chmod(journal / "boxhost.db", 0o600)
         _atomic_json(storage_layout.marker_path(data), {
             **marker, "box_layout": "owner-box", "state": "stable",
         })

@@ -154,7 +154,8 @@ class BrokerServer:
                  dispatch_for: Callable[..., Callable[..., Any]],
                  ops: OpStore, fence: Fence, roles: Mapping[int, str],
                  uid_of: Callable[[socket.socket], int] = peer_uid,
-                 owner_identities: Any = None, policy_store: Any = None) -> None:
+                 owner_identities: Any = None, policy_store: Any = None,
+                 provision_box: Callable[[str, str], None] | None = None) -> None:
         self._ledger_for = ledger_for
         self._dispatch_for = dispatch_for
         self._ops = ops
@@ -163,12 +164,16 @@ class BrokerServer:
         self._uid_of = uid_of
         self._owner_identities = owner_identities
         self._policy_store = policy_store
+        self._provision_box = provision_box
+        from tinyassets.broker.public_egress import PublicEgress
+
+        self._public_egress = PublicEgress(owner_identities)
         self._streams: dict[tuple[int, int], _Stream] = {}
         self._streams_lock = threading.Lock()
         self._ops.recover()
 
     async def serve(self, path: Path) -> asyncio.AbstractServer:
-        return await asyncio.start_unix_server(self._connection, path=str(path))
+        return await asyncio.start_unix_server(self._connection, path=str(path), limit=16384)
 
     async def _connection(self, reader: asyncio.StreamReader,
                           writer: asyncio.StreamWriter) -> None:
@@ -193,6 +198,11 @@ class BrokerServer:
         pump.add_done_callback(pump_ended)
         try:
             while (frame := await rf.read_frame(reader)) is not None:
+                if (connection._role == BOX_HOST and frame.kind == rf.CONTROL
+                        and frame.stream == rf.CONNECTION
+                        and frame.control()["op"] == "BOX_PUBLIC"):
+                    await self._public_egress.serve(reader, writer, frame.control())
+                    break
                 await connection.handle(frame)
         except rf.FrameError:
             _LOG.warning("broker peer broke the framing; dropping it")
@@ -440,12 +450,14 @@ class _Connection:
                     doc["event"], doc["principal"], doc["center"])
                 if doc["event"] == "admit" and self._server._policy_store is not None:
                     self._server._policy_store.bootstrap_owner(doc["principal"])
+                if doc["event"] == "admit" and self._server._provision_box is not None:
+                    self._server._provision_box(doc["principal"], doc["center"])
                 return {"op": "CENTER_ADMISSION_IS", "generation": row.generation,
                         "machine": row.machine}
         except CenterUnadmitted:
             # D218 retires a tree-less center only if the log admitted it.
             return {"op": "CENTER_ADMISSION_UNADMITTED"}
-        except Exception:  # noqa: BLE001 - nothing appended or persisted on refusal
+        except Exception:  # noqa: BLE001 - retry completes durable partial admission
             return {"op": "CENTER_ADMISSION_REFUSED"}
 
     def _erase_account(self, doc: dict[str, Any]) -> dict[str, Any]:

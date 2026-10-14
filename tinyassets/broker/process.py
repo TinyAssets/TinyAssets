@@ -139,6 +139,8 @@ async def serve(args: argparse.Namespace) -> None:
         if args.mapper_pid is None:
             raise RuntimeError("mapper channel requires the bootstrap's mapper pid")
         mapper_channel.start(args.mapper_channel, args.mapper_pid, identities)
+    from tinyassets.broker.box_admission import provision
+
     server = BrokerServer(
         ledger_for=dispatchers.ledger_for, dispatch_for=dispatchers.dispatch_for,
         ops=OpStore(state / "ops.db"),
@@ -148,6 +150,8 @@ async def serve(args: argparse.Namespace) -> None:
         roles={int(args.owner_uid): OWNER, **({0: BOX_HOST} if registration else {})},
         owner_identities=identities,
         policy_store=policy_store,
+        provision_box=(lambda owner, center: provision(
+            identities, Path(args.data_root), owner, center)) if registration else None,
     )
     socket_path = Path(args.socket)
     socket_path.unlink(missing_ok=True)

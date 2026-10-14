@@ -6,6 +6,8 @@ import os
 import select
 import signal
 import socket
+import sqlite3
+import stat
 import threading
 from pathlib import Path
 
@@ -100,7 +102,7 @@ class HostService:
                 with self.host.lock(grant.owner_id):
                     self.host._authorized(grant, request["center"])
                     row = self.admission.record(grant.owner_id, request["center"])
-                    self.quota.admit(grant.uid, row["quota"])
+                    self.quota.provision(grant.uid, row["quota"], request["center"])
                     self.relays.bind(grant.owner_id, grant.uid)
             send(sock, {"admitted": True})
             serve_channel(sock, peer=identity, grant=grant, host=self.host)
@@ -156,6 +158,8 @@ def _serve(*, rootfs: Path, data_root: Path) -> None:
     os.chmod(broker_dir, 0o2750)
     state = Path("/var/lib/boxhostd/state")
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if (state / "boxhost.db").exists():
+        raise RuntimeError("unpaired host-path receipts require reviewed restore")
     admission = OwnerRegistry(data_root, broker_dir / "broker.sock")
     relays = OwnerRelays(RUNTIME / "relays", admission)
     runtime = GvisorRuntime(
@@ -165,7 +169,21 @@ def _serve(*, rootfs: Path, data_root: Path) -> None:
         cgroup_parent=Path("/sys/fs/cgroup/system.slice/boxhostd.service"))
     backend = GvisorFileBackend(runtime, relay_for=lambda uid: relays.directory / f"{uid}.sock",
                                 memory_for=lambda uid: 1024**3)
-    host = OwnerFileHost(state_dir=state, backend=backend, authorize=admission.authorize,
+    # The reviewed migration seeds authority. A missing/lost journal must not
+    # silently become a new operation namespace on service restart.
+    journal = data_root / ".boxhost/boxhost.db"
+    info = journal.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1
+            or info.st_mode & 0o077):
+        raise RuntimeError("owner-box host requires its migrated private receipt journal")
+    with sqlite3.connect(journal.as_uri() + "?mode=ro", uri=True) as db:
+        if (db.execute("PRAGMA quick_check").fetchone() != ("ok",)
+                or db.execute("SELECT v FROM host WHERE k='incarnation'").fetchone() is None):
+            raise RuntimeError("owner-box receipt journal is incomplete")
+        for table in ("boxes", "ops", "execs", "owner_destroys"):
+            db.execute(f"SELECT * FROM {table} LIMIT 0")
+    host = OwnerFileHost(state_dir=data_root / ".boxhost", backend=backend,
+                         authorize=admission.authorize,
                          authorize_destroy=lambda grant, center:
                          admission.authorize(grant, center, destroying=True),
                          bound_for=lambda grant, center:

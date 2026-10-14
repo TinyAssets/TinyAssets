@@ -8,6 +8,7 @@ import sqlite3
 import threading
 import uuid
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, wait
 
 from tinyassets.boxes.file_wire import MAX_DATA, decode, encode
 from tinyassets.boxes.provider import BoxAuthError, BoxBusy, BoxError, BoxOperationRefused
@@ -78,36 +79,80 @@ class Executions:
     def __init__(self, host):
         self.host = host
         self.running = {}
-        self.threads = []
+        self.queues = {}
+        self.guard = threading.RLock()
+        self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="owner-exec")
+        self.futures = set()
+        self.scheduled = set()
+        self.closing = False
+
+    def _submit(self, owner):
+        self.scheduled.add(owner)
+        future = self.pool.submit(self._run_one, owner)
+        self.futures.add(future)
+        future.add_done_callback(self._completed)
+
+    def _completed(self, future):
+        with self.guard:
+            self.futures.discard(future)
+
+    def _remove(self, owner, job):
+        with self.guard:
+            self.queues[owner].remove(job)
+            if not self.queues[owner]:
+                del self.queues[owner]
+            self.running.pop(job[3], None)
+
+    def _cancel_queued(self, job):
+        grant, center, op_id, exec_id, _, running = job
+        if running.active:
+            running.cancel.set()
+            return
+        self.host.state.finish(grant.owner_id, op_id, {
+            "exec_id": exec_id, "center": center, "session": grant.session_id,
+            "exit_code": None, "killed": "cancelled", "output": encode({"data": b""}).decode()})
+        self.host.state.release(grant.owner_id)
+        self._remove(grant.owner_id, job)
+
+    def cancel_session(self, grant):
+        # Caller owns the owner lock; unrelated sessions keep their place.
+        with self.guard:
+            jobs = list(self.queues.get(grant.owner_id, ()))
+        for job in jobs:
+            if job[0].session_id == grant.session_id:
+                self._cancel_queued(job)
 
     def request(self, grant, center, operation, args, op_id):
         host, owner = self.host, grant.owner_id
         if operation == "start_exec":
-            previous = host.state.lookup(owner, op_id)
-            digest = op_digest("exec", [center, args])
-            if previous is None and host.state.pending(owner):
-                raise BoxBusy("owner already has running or unquiesced writers")
-            previous = host.state.begin(owner, op_id, "exec", digest)
-            if previous is not None:
-                outcome = previous["outcome"] or {}
-                if previous["state"] == "unknown_after_restore" or not outcome.get("exec_id"):
-                    raise BoxError("execution outcome is unknown; hold, never replay")
-                return outcome["exec_id"]
-            exec_id = uuid.uuid4().hex
-            running = Running(args)
-            running.start_lock = host.lock(owner)
-            running.authorize = lambda: host._authorized(grant, center)
-            host.state.register_exec(owner, op_id, exec_id)
-            host.state.update(owner, op_id, {"exec_id": exec_id, "center": center,
-                                           "session": grant.session_id})
-            host.begin_work(grant, center)
-            self.running[exec_id] = running
-            thread = threading.Thread(target=self._run,
-                                      args=(grant, center, op_id, exec_id, args, running),
-                                      daemon=True)
-            self.threads = [old for old in self.threads if old.is_alive()]
-            self.threads.append(thread)
-            thread.start()
+            digest = op_digest("exec", [center, grant.session_id, args])
+            with self.guard:
+                previous = host.state.lookup(owner, op_id)
+                queue = self.queues.get(owner, ())
+                if previous is None and (self.closing or len(self.running) >= 16
+                                         or host.state.pending(owner) > len(queue)):
+                    raise BoxBusy("execution capacity or unquiesced owner writers")
+                previous = host.state.begin(owner, op_id, "exec", digest)
+                if previous is not None:
+                    outcome = previous["outcome"] or {}
+                    if previous["state"] == "unknown_after_restore" or not outcome.get("exec_id"):
+                        raise BoxError("execution outcome is unknown; hold, never replay")
+                    return outcome["exec_id"]
+                exec_id = uuid.uuid4().hex
+                running = Running(args)
+                running.active = False
+                running.start_lock = host.lock(owner)
+                running.authorize = lambda: host._authorized(grant, center)
+                host.state.register_exec(owner, op_id, exec_id)
+                host.state.update(owner, op_id, {"exec_id": exec_id, "center": center,
+                                               "session": grant.session_id})
+                host.begin_work(grant, center)
+                self.running[exec_id] = running
+                first = owner not in self.scheduled
+                self.queues.setdefault(owner, deque()).append(
+                    (grant, center, op_id, exec_id, args, running))
+                if first:
+                    self._submit(owner)
             return exec_id
         record = (host.state.lookup(owner, args["op_id"]) if operation == "exec_status"
                   else host.state.find_exec(owner, args["exec_id"]))
@@ -143,7 +188,9 @@ class Executions:
             raise BoxError("execution outcome is unknown after host restart")
         if operation == "cancel":
             if running is not None:
-                running.cancel.set()
+                with self.guard:
+                    job = next(job for job in self.queues[owner] if job[3] == exec_id)
+                self._cancel_queued(job)
             return None
         if running is None or not running.interactive:
             raise BoxError("interactive execution is no longer running")
@@ -162,41 +209,67 @@ class Executions:
             running.inputs.append(data)
         return None
 
-    def _run(self, grant, center, op_id, exec_id, args, running):
+    def _run_one(self, owner):
         host = self.host
-        result = None
+        with host.lock(owner):
+            with self.guard:
+                queue = self.queues.get(owner)
+                if not queue:
+                    self.scheduled.discard(owner)
+                    return
+                job = queue[0]
+                grant, center, op_id, exec_id, args, running = job
+                running.active = True
+        result, dispatched, quiescent = None, False, True
         try:
-            request = {**args, "cwd": "/cc/" + center + args["cwd"][3:]}
-            result = host.backend.execute(grant.uid, request, running)
+            if running.cancel.is_set():
+                result = {"exit_code": None, "killed": "cancelled"}
+            else:
+                dispatched = True
+                request = {**args, "cwd": "/cc/" + center + args["cwd"][3:]}
+                result = host.backend.execute(grant.uid, request, running)
         except Exception:
             pass  # transport failure has an unknown outcome, never a false exit
         finally:
-            with host.lock(grant.owner_id):
+            with host.lock(owner):
                 try:
-                    host.end_work(grant)
+                    if dispatched:
+                        host.end_work(grant)
+                    else:
+                        host.state.release(owner)
                 except Exception:
-                    result = None  # keep pending when quiescence cannot be proved
+                    result, quiescent = None, False
                 try:
                     if result is not None:
-                        host.state.finish(grant.owner_id, op_id, {
+                        host.state.finish(owner, op_id, {
                             "exec_id": exec_id, "center": center, "session": grant.session_id,
                             **result, "output": encode({"data": bytes(running.output)}).decode()})
                     else:
-                        host.state.unknown(grant.owner_id, op_id)
+                        host.state.unknown(owner, op_id)
                 except (BoxError, sqlite3.Error):
-                    # A full receipt journal cannot turn a possible effect into
-                    # a retry. Preserve its running record for restart recovery.
                     try:
-                        host.state.unknown(grant.owner_id, op_id)
+                        host.state.unknown(owner, op_id)
                     except (BoxError, sqlite3.Error):
-                        pass
+                        pass  # full journals hold the operation, never permit replay
                 finally:
-                    self.running.pop(exec_id, None)
+                    self._remove(owner, job)
+                    with self.guard:
+                        self.scheduled.discard(owner)
+                        queued = list(self.queues.get(owner, ()))
+                    if not quiescent or self.closing:
+                        for waiting in queued:
+                            self._cancel_queued(waiting)
+                    elif queued:
+                        with self.guard:
+                            self._submit(owner)
 
     def close(self):
-        for running in list(self.running.values()):
-            running.cancel.set()
-        for thread in self.threads:
-            thread.join(45)
-        if any(thread.is_alive() for thread in self.threads):
+        with self.guard:
+            self.closing = True
+            for running in self.running.values():
+                running.cancel.set()
+            futures = list(self.futures)
+        _, pending = wait(futures, timeout=45)
+        self.pool.shutdown(wait=False)
+        if pending or self.running:
             raise BoxError("execution supervisor did not quiesce")

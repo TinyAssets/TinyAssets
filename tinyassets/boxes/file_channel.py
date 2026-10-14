@@ -81,27 +81,34 @@ def serve_channel(sock: socket.socket, *, peer: tuple[int, int, int],
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
     sock.settimeout(60)
     peer_fd = -1
+    bound_token = None
     try:
         peer_fd = os.pidfd_open(peer[0])
         while True:
             request = receive(sock, peer, peer_fd)
             try:
+                if set(request) in ({"bind"}, {"bind_for_destroy"}) and bound_token is not None:
+                    raise contract.BoxOperationRefused("channel is already bound")
                 if set(request) == {"bind"}:
                     answer = {"result": host.bind(grant, request["bind"])}
                 elif set(request) == {"bind_for_destroy"}:
                     answer = {"result": host.bind(grant, request["bind_for_destroy"],
                                                    destroying=True)}
                 elif set(request) == {"token", "operation", "args", "op_id"}:
+                    if bound_token is None or request["token"] != bound_token:
+                        raise contract.BoxAuthError("token is not bound on this channel")
                     answer = host.request(grant, **request)
                 else:
                     raise contract.BoxOperationRefused("invalid owner channel request")
+                if set(request) in ({"bind"}, {"bind_for_destroy"}):
+                    bound_token = answer["result"]["token"]
             except contract.BoxError as error:
                 answer = {"error": type(error).__name__}
             send(sock, answer)
     except (EOFError, OSError, ValueError):
         pass  # channel is closed, never rebound or automatically replayed
     finally:
-        host.close_session(grant)
+        host.detach(grant, bound_token)
         sock.close()
         if peer_fd >= 0:
             os.close(peer_fd)
