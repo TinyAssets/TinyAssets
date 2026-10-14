@@ -83,3 +83,23 @@ def test_render_failure_cannot_discard_the_saved_final_reply(tmp_path):
     console.log(JSON.stringify(final));
     ''')
     assert result["result"]["reply"] == "saved"
+
+
+def test_converse_requests_progress_on_the_existing_mcp_call(tmp_path):
+    result = _run(tmp_path, r'''
+    globalThis.token=()=>"test-token";
+    globalThis.ensureFreshToken=async()=>{};
+    const requests=[];
+    globalThis.fetch=async(_url,init)=>{
+      const frame=JSON.parse(init.body);requests.push(frame);
+      return Response.json({jsonrpc:"2.0",id:frame.id,result:{structuredContent:{reply:"done"}}});
+    };
+    MCP.sessionId="test-session";
+    await MCP.callTool("converse",{message:"hello"},{onModelEvent:()=>{}});
+    await MCP.callTool("read_graph",{target:"status"});
+    console.log(JSON.stringify(requests));
+    ''')
+    assert result[0]["method"] == "tools/call"
+    assert result[0]["params"]["_meta"]["progressToken"] == result[0]["id"]
+    assert result[0]["params"]["arguments"] == {"message": "hello"}
+    assert "_meta" not in result[1]["params"]
