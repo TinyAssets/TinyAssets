@@ -543,11 +543,11 @@ def test_post_commit_marker_failure_still_reports_committed(tmp_path, monkeypatc
         monkeypatch.setattr(m.os, "replace", replace)
     elif failure == "directory_open":
         if not hasattr(os, "O_DIRECTORY"):
-            pytest.skip("directory sync is unavailable")
+            pytest.skip("directory sync is unavailable; runs-in=Linux CI")
         monkeypatch.setattr(m.os, "open", open_directory)
     else:
         if not hasattr(os, "O_DIRECTORY"):
-            pytest.skip("directory sync is unavailable")
+            pytest.skip("directory sync is unavailable; runs-in=Linux CI")
         monkeypatch.setattr(m.os, "fsync", fsync)
 
     assert m.apply(tmp_path, backup=backup)
