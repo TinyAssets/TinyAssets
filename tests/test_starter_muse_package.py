@@ -140,6 +140,74 @@ def test_stale_match_and_naive_reminder_are_errors(package, runner):
         runner(package, "reminders", now=NOW)
 
 
+@pytest.mark.parametrize("observation", [
+    {"matched": False, "observed_at": (NOW - timedelta(hours=2)).isoformat()},
+    {"matched": False, "observed_at": (NOW + timedelta(seconds=1)).isoformat()},
+    {"matched": False, "observed_at": NOW.replace(tzinfo=None).isoformat()},
+    {"matched": False, "observed_at": ""},
+    {"matched": False},
+    {"observed_at": NOW.isoformat()},
+    *({"matched": value, "observed_at": NOW.isoformat()}
+      for value in (None, "false", "true", 0, 1)),
+    # Even an acknowledged match must be refreshed, not silently skipped.
+    {"matched": True, "observed_at": (NOW - timedelta(hours=2)).isoformat()},
+])
+def test_invalid_watch_aborts_batch_without_consuming_changes(package, runner, observation):
+    write(package, "monitors-state.json", {"invalid": "v1"})
+    state_path = package / "starter/monitors-state.json"
+    before = state_path.read_bytes()
+    valid = {"id": "valid", "active": True, "requested": True, "matched": True,
+             "change_id": "v2", "summary": "New release", "observed_at": NOW.isoformat()}
+    invalid = {"id": "invalid", "active": True, "requested": True,
+               "change_id": "v1", "summary": "Previous release", **observation}
+    write(package, "monitors.json", {"monitors": [valid, invalid]})
+    sent = []
+
+    def send(title, body):
+        sent.append(body)
+        return {"request_id": "note"}
+
+    with pytest.raises((KeyError, ValueError)):
+        runner(package, "monitors", now=NOW, send=send)
+    assert not sent
+    assert state_path.read_bytes() == before
+
+    invalid.update(matched=False, observed_at=NOW.isoformat())
+    write(package, "monitors.json", {"monitors": [valid, invalid]})
+    assert runner(package, "monitors", now=NOW, send=send)["notified"]
+    assert sent == ["New release"]
+    assert json.loads(state_path.read_text()) == {"invalid": "v1", "valid": "v2"}
+    assert not runner(package, "monitors", now=NOW, send=send)["notified"]
+
+
+@pytest.mark.parametrize("age_seconds", [0, 3600])
+def test_fresh_nonmatch_preserves_last_notified_change(package, runner, age_seconds):
+    write(package, "monitors-state.json", {"release": "v1"})
+    watch = {"id": "release", "active": True, "requested": True, "matched": False,
+             "observed_at": (NOW - timedelta(seconds=age_seconds)).isoformat()}
+    write(package, "monitors.json", {"monitors": [watch]})
+    sent = []
+
+    def send(title, body):
+        sent.append(body)
+        return {"request_id": "note"}
+
+    assert not runner(package, "monitors", now=NOW, send=send)["notified"]
+    assert json.loads((package / "starter/monitors-state.json").read_text()) == {"release": "v1"}
+    watch.update(matched=True, change_id="v1", summary="Same release")
+    write(package, "monitors.json", {"monitors": [watch]})
+    assert not runner(package, "monitors", now=NOW, send=send)["notified"]
+    assert not sent
+
+
+def test_inactive_or_unrequested_watches_need_no_observation(package, runner):
+    write(package, "monitors.json", {"monitors": [
+        {"id": "inactive", "active": False, "requested": True},
+        {"id": "unrequested", "active": True, "requested": False},
+    ]})
+    assert not runner(package, "monitors", now=NOW)["notified"]
+
+
 @pytest.mark.parametrize("mode", ["goals", "monitors", "reminders"])
 def test_ta_notification_uses_real_owner_notify(package, monkeypatch, mode):
     """Run the script's ta invocation through the CLI to the real notify primitive."""
