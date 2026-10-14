@@ -84,6 +84,42 @@ def test_unknown_destroy_outcome_preserves_binding_but_erases_broker_and_retries
     assert get_founder_home(root, B) == HOME_B and (root / HOME_B / 'soul.md').exists()
 
 
+def test_receipt_for_a_different_root_cannot_orphan_legacy_home_bytes(bound, monkeypatch):
+    root, provider = bound
+    original = provider.destroy
+
+    def other_root(handle, op_id):
+        center, _ = provider.handles[handle]
+        return DestroyReceipt(center, op_id, 0, 2)
+
+    monkeypatch.setattr(provider, "destroy", other_root)
+    identities = []
+    result = deletion.delete_account(
+        root, founder_sub=A, cancel_billing=lambda _: "none",
+        delete_identity=lambda owner: identities.append(owner) or "deleted",
+    )
+    assert {"owner_tree", "root_rows", "identity"} <= set(result["unfinished_phases"])
+    assert result["home_removed"] is False
+    assert get_founder_home(root, A) == HOME_A and not identities
+    assert (root / HOME_A).is_dir()
+    monkeypatch.setattr(provider, "destroy", original)
+    retried = deletion.delete_account(root, founder_sub=A, cancel_billing=lambda _: "none",
+                                      delete_identity=lambda _: "deleted")
+    assert retried["unfinished_phases"] == []
+
+
+def test_absent_home_requires_and_accepts_idempotent_provider_receipt(bound):
+    from tests.support.admission_double import _remove
+
+    root, provider = bound
+    _remove(root / HOME_A)
+    result = deletion.delete_account(root, founder_sub=A, cancel_billing=lambda _: "none",
+                                     delete_identity=lambda _: "deleted")
+    assert result["unfinished_phases"] == []
+    assert result["box_destroy"]["files_removed"] == 0
+    assert provider.operations and result["home_removed"]
+
+
 def test_concurrent_destroy_requests_share_stable_id_and_durable_outcome(bound):
     root, provider = bound
     deletion.write_tombstone(root, A)

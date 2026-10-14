@@ -51,8 +51,13 @@ def _bundle(base, handle, import_id):
     if row is None:
         raise InvalidBundle("Private import is unavailable for this owner and placement")
     sha = row["blob_sha256"]
+    return sha, validate_custody_blob(packages.read_blob(base, sha))
+
+
+def validate_custody_blob(raw):
+    """The exact storage-to-review round trip, also checked before custody starts."""
     try:
-        doc = json.loads(packages.read_blob(base, sha), object_pairs_hook=_unique_object)
+        doc = json.loads(raw, object_pairs_hook=_unique_object)
         if set(doc) != {"format_version", "manifest", "files"} or doc["format_version"] != 1:
             raise ValueError
         files = {
@@ -66,9 +71,11 @@ def _bundle(base, handle, import_id):
             for path, data in files.items():
                 out.writestr(path, data)
         bundle = ingest_zip(archive.getvalue())
+    except InvalidBundle:
+        raise
     except (ValueError, TypeError, KeyError, AttributeError) as exc:
         raise InvalidBundle("Invalid private import custody") from exc
-    return sha, bundle.files
+    return bundle.files
 
 
 def _adoption(files, handle, import_id, agent):

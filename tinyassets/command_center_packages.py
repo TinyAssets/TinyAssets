@@ -1278,6 +1278,13 @@ def quarantine_import(base_path, *, owner, command_center, epoch, bundle):
 
     manifest = json.loads(bundle.files[MANIFEST])
     blob = build_blob(manifest, {p: b for p, b in bundle.files.items() if p != MANIFEST})
+    if len(blob) > MAX_PACKAGE_BYTES:
+        raise PackageError("Private import exceeds the package custody byte bound")
+    from tinyassets.okf.import_activation import validate_custody_blob
+
+    # Validate the exact stored representation before reserving quota or adding
+    # custody. Alternate ZIP codecs must not produce an unreviewable receipt.
+    validate_custody_blob(blob)
     sha = hashlib.sha256(blob).hexdigest()
     # Schema work finishes before acquiring deletion's canonical writer fence.
     with _db(base_path) as conn:
@@ -1361,6 +1368,11 @@ def erase_private_imports(base_path, *, owner):
                     "SELECT 1 FROM blobs WHERE blob_sha256=? AND author_id<>? LIMIT 1",
                     (sha, owner),
                 ).fetchone()
+                if peer is None:
+                    peer = conn.execute(
+                        "SELECT 1 FROM bundle_imports WHERE blob_sha256=? AND owner_id<>? LIMIT 1",
+                        (sha, owner),
+                    ).fetchone()
                 if peer is None:
                     try:
                         unlink_data_path(_blob_path(base_path, sha))

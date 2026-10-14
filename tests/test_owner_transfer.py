@@ -74,6 +74,20 @@ def test_real_owner_session_preview_and_private_download(transfer_door):
     assert "attachment" in result.headers["content-disposition"]
 
 
+def test_deleted_owner_previews_are_purged_and_cannot_be_repopulated(transfer_door, monkeypatch):
+    from tinyassets.account_deletion import write_tombstone
+    from tinyassets.api.helpers import _base_path
+
+    client, _, _ = transfer_door
+    token = preview(client).json()["preview"]
+    assert token in transfer._PENDING
+    write_tombstone(_base_path(), A)
+    transfer.clear_owner_previews(A)
+    assert token not in transfer._PENDING
+    assert download(client, token).status_code == 403
+    assert preview(client).status_code == 403
+
+
 def test_agent_rules_are_previewed_bound_and_included_with_selected_agent(
         transfer_door, monkeypatch):
     from tests.test_okf_policy_export import projection, rule

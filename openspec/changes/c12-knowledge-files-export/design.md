@@ -446,3 +446,17 @@ identities preserve the broker's explicit main default. Every generated roster
 names a local policy, and a manifest-bearing runner refuses a missing file even
 when the declaration was omitted. A selected inherited nonempty process model
 key requires its endpoint in that same process environment.
+
+Private import custody validates the exact stored JSON/base64-to-review round
+trip and package byte bound before quota reservation or inventory insertion.
+An alternate ZIP codec cannot produce an acknowledged but unreviewable import.
+Erasure retains bytes referenced by a peer's interrupted quarantine inventory,
+even before that peer's ownership row exists. Account tombstones purge private
+preview memory, and preview insertion checks deletion under the same cache lock.
+
+A box destruction receipt is insufficient when pre-cutover host-home bytes
+remain: a descriptor-relative no-follow emptiness check keeps owner-tree erasure,
+binding retirement and identity deletion pending. No host deletion fallback is
+introduced. C6 must provide idempotent destruction receipts for absent or failed
+provisioning cases and preserve newer epochs; the protocol-double test proves
+the consumer contract, not production C6 completion.

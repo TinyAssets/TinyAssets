@@ -42,6 +42,23 @@ class Pending:
 _PENDING: dict[str, Pending] = {}
 
 
+def clear_owner_previews(owner):
+    with _LOCK:
+        for token, pending in list(_PENDING.items()):
+            if pending.view.scope[1] == owner:
+                del _PENDING[token]
+
+
+def _check_owner(owner):
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.storage import _connect
+    from tinyassets.storage.current_home import check_principal_not_deleted
+
+    with _connect(_base_path()) as conn:
+        conn.execute("BEGIN")
+        check_principal_not_deleted(conn, owner)
+
+
 def _prune():
     for token, pending in list(_PENDING.items()):
         if pending.expires <= time.monotonic():
@@ -172,6 +189,9 @@ def _transfer(provider, handle, args):
                           captured.digest if captured else None)
         token = secrets.token_urlsafe(32)
         with _LOCK:
+            # Deletion commits its tombstone before acquiring this same lock to
+            # purge previews. An in-flight capture cannot repopulate deleted data.
+            _check_owner(handle.account_id)
             _prune()
             previous = [t for t, p in _PENDING.items() if p.view.scope[1] == handle.account_id]
             used = sum(
@@ -275,6 +295,7 @@ async def handle_transfer(request):
 
     def run():
         with identity_context(identity):
+            _check_owner(identity.user_id)
             handle = provider.bind(args["command_center"], account_id=identity.user_id)
             return _transfer(provider, handle, args)
 

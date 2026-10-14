@@ -118,3 +118,19 @@ def test_explicit_center_cannot_skip_principal_deletion(bundle, tmp_path, monkey
         runtime_ops._canonical_source({"universe_id": "a"}, "project")
     with pytest.raises(ValueError, match="string"):
         runtime_ops._canonical_source({"universe_id": None}, "project")
+
+
+def test_project_write_reuses_the_authenticated_request_boundary(
+    bundle, tmp_path, monkeypatch, signed_in  # noqa: F811
+):
+    records(bundle, tmp_path)
+    signed_in("owner-a")
+    monkeypatch.setattr(runtime_ops, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr("tinyassets.agent_loop.served_chat.configured_box_provider",
+                        lambda: (bundle.provider, "test"))
+    monkeypatch.setattr("tinyassets.auth.middleware.current_request_boundary_id",
+                        lambda: "authenticated-boundary")
+    args = {"universe_id": "a", "project_id": "proj1", "key": "boundary", "value": '"Once"'}
+    assert json.loads(runtime_ops._action_project_memory_set(args))["version"] == 1
+    assert json.loads(runtime_ops._action_project_memory_set(args))["version"] == 1
+    assert json.loads(runtime_ops._action_project_memory_get(args))["value"] == "Once"

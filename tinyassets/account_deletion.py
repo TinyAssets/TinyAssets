@@ -1022,6 +1022,25 @@ def _destroy_owner_box(root: Path, home: str, *, principal: str):
             or result.files_removed < 0 or type(result.new_epoch) is not int
             or result.new_epoch < 1):
         raise AccountDeletionError("invalid durable owner destruction receipt")
+    # A receipt for a different box root cannot erase a pre-cutover host home.
+    # Refuse residual bytes; never introduce a second host deletion path.
+    parent = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            legacy = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        except FileNotFoundError:
+            legacy = None
+        if legacy is not None:
+            try:
+                with os.scandir(legacy) as children:
+                    if next(children, None) is not None:
+                        raise AccountDeletionError(
+                            "legacy owner bytes remain after box destruction"
+                        )
+            finally:
+                os.close(legacy)
+    finally:
+        os.close(parent)
     return result
 
 
@@ -1072,6 +1091,9 @@ def delete_account(
             write_tombstone(root, principal)
     else:
         write_tombstone(root, principal)
+    from tinyassets.owner_door.transfer import clear_owner_previews
+
+    clear_owner_previews(principal)
     blob_sessions = _authoring_session_ids(root, principal)
 
     failures: list[str] = []

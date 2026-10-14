@@ -71,6 +71,48 @@ def test_inventory_insert_failure_cannot_leave_private_bytes(custody):
     assert not packages._blob_path(base, sha).exists()
 
 
+def test_unreviewable_recompression_refuses_before_custody(custody, monkeypatch):
+    import io
+    import zipfile
+
+    from tinyassets.okf import import_activation
+    from tinyassets.okf.bundle import InvalidBundle
+    from tinyassets.okf.transfer import Limits
+
+    base, _, _, _ = custody
+    block = b"".join(hashlib.sha256(str(i).encode()).digest() for i in range(1280))
+    raw = archive({"workspace/long-range": block * 3})
+    alternate = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(raw)) as source, zipfile.ZipFile(
+        alternate, "w", compression=zipfile.ZIP_LZMA,
+    ) as target:
+        for name in source.namelist():
+            target.writestr(name, source.read(name))
+    limits = Limits(compressed=60000, expanded=150000)
+    bundle = ingest_zip(alternate.getvalue(), limits=limits)
+    assert len(alternate.getvalue()) < limits.compressed < len(raw)
+    monkeypatch.setattr(
+        import_activation, "ingest_zip", lambda data: ingest_zip(data, limits=limits),
+    )
+    with pytest.raises(InvalidBundle, match="Compressed"):
+        packages.quarantine_import(base, owner=OWNER, command_center=HOME, epoch=1, bundle=bundle)
+    assert counts(base) == (0, 0)
+
+
+def test_peer_quarantine_reference_retains_interrupted_bytes(custody):
+    base, _, blob, sha = custody
+    import_bundle(custody)
+    with packages._db(base) as conn:
+        conn.execute("INSERT INTO bundle_imports VALUES (?,?,?,?,?,'quarantined',?)",
+                     ("peer-interrupted", PEER, HOME, 1, sha, time.time()))
+    erase(base)
+    assert counts(base) == (1, 0)
+    assert packages.read_blob(base, sha) == blob
+    assert packages.measure_packages(base, [PEER]) == len(blob)
+    packages.erase_private_imports(base, owner=PEER)
+    assert not packages._blob_path(base, sha).exists()
+
+
 class InterruptedImport(BaseException):
     """No application Exception handler can turn this into a successful import."""
 
