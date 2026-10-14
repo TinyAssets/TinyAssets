@@ -266,6 +266,9 @@ def test_the_converge_is_timed_so_the_bound_can_be_measured():
     assert "converge took" in function
     assert "MAX_DAEMON_STOP_GRACE_S" in function, (
         "reaching the bound is the signal that a turn was cut off; say so in the log")
+    assert "refusing this deploy rather than accepting a cut turn" in function
+    after = function.split("refusing this deploy rather than accepting a cut turn", 1)[1]
+    assert "return 1" in after[:80]
 
 
 def test_the_measurement_behind_the_narrowed_claim_is_retained():

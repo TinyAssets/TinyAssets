@@ -27,6 +27,8 @@ from tinyassets.universe_owner import account_type_of
 from tinyassets.usage_policy import limits_for
 
 PENDING = 10
+ABSENT = 4
+UNREADABLE = 3
 MAX_BACKUP_AGE_S = 3600
 _CENTER = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
@@ -47,14 +49,132 @@ def _marker(data: Path) -> dict:
     return marker
 
 
-def check(data: Path) -> int:
-    marker = _marker(data)
+def _count_or_none(path: Path) -> bool | None:
+    try:
+        return path.is_file()
+    except OSError:
+        return None
+
+
+def layout_census(data: Path) -> dict:
+    """Counts on disk for each layout. ``None`` means that count was not readable.
+
+    A missing marker is ``box_layout=absent`` and ``pending=None``. That is not
+    evidence the volume is already one box per owner, and it is not evidence
+    there is nothing to move.
+    """
+    data = Path(data)
+    counts: dict[str, dict[str, object]] = {
+        "owner-split": {"centers": None, "admitted_owners": None},
+        "owner-box": {"registered_boxes": None, "registry_present": False},
+    }
+    unreadable: list[str] = []
+    identity_error = None
+    try:
+        centers = 0
+        for entry in data.iterdir():
+            try:
+                is_center = entry.is_dir() and not entry.is_symlink()
+            except OSError:
+                unreadable.append(entry.name)
+                continue
+            if entry.name.startswith(".") or not is_center:
+                continue
+            centers += 1
+        counts["owner-split"]["centers"] = centers
+    except OSError as exc:
+        unreadable.append(type(exc).__name__)
+
+    identity_db = data / ".broker" / "state" / "owner-identities.db"
+    present = _count_or_none(identity_db)
+    if present is None:
+        identity_error = "identity database unreadable"
+    elif present:
+        try:
+            uri = identity_db.resolve().as_uri() + "?mode=ro"
+            with sqlite3.connect(uri, uri=True) as db:
+                row = db.execute("SELECT COUNT(*) FROM owner_identities").fetchone()
+            counts["owner-split"]["admitted_owners"] = int(row[0]) if row else 0
+        except sqlite3.Error as exc:
+            identity_error = type(exc).__name__
+    else:
+        identity_error = "identity database absent"
+
+    registry = data / ".broker" / "box-registry.json"
+    registry_present = _count_or_none(registry)
+    if registry_present is None:
+        unreadable.append("box-registry")
+    else:
+        counts["owner-box"]["registry_present"] = registry_present
+        if registry_present:
+            try:
+                document = json.loads(registry.read_text(encoding="utf-8"))
+                boxes = document.get("boxes") if isinstance(document, dict) else None
+                if isinstance(boxes, list):
+                    counts["owner-box"]["registered_boxes"] = len(boxes)
+                else:
+                    unreadable.append("box-registry")
+            except (OSError, ValueError):
+                unreadable.append("box-registry")
+
+    base = {
+        "counts": counts,
+        "unreadable_entries": unreadable,
+        "identity_error": identity_error,
+    }
+    marker_path = storage_layout.marker_path(data)
+    try:
+        raw = marker_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {
+            **base, "marker_layout": None, "marker_state": None,
+            "box_layout": "absent", "pending": None,
+        }
+    except OSError as exc:
+        return {
+            **base, "marker_layout": None, "marker_state": None,
+            "box_layout": "unreadable", "pending": None,
+            "identity_error": identity_error or type(exc).__name__,
+        }
+    try:
+        marker = json.loads(raw)
+    except ValueError:
+        return {
+            **base, "marker_layout": None, "marker_state": None,
+            "box_layout": "unreadable", "pending": None,
+        }
+    if not isinstance(marker, dict):
+        return {
+            **base, "marker_layout": None, "marker_state": None,
+            "box_layout": "unreadable", "pending": None,
+        }
     layout = marker.get("box_layout", "owner-split")
+    state = marker.get("state")
+    pending = True if layout == "owner-split" and state == "stable" else (
+        False if layout == "owner-box" and state == "stable" else None
+    )
+    return {
+        **base,
+        "marker_layout": marker.get("layout"),
+        "marker_state": state,
+        "box_layout": layout,
+        "pending": pending,
+    }
+
+
+def check(data: Path) -> int:
+    """Print a census, then 0 (owner-box), 10 (stable owner-split), 4 (no marker) or 3."""
+    census = layout_census(data)
+    print(json.dumps(census, sort_keys=True))
+    layout = census["box_layout"]
+    state = census["marker_state"]
+    if layout == "absent":
+        return ABSENT
+    if state != "stable" or layout not in ("owner-split", "owner-box"):
+        return UNREADABLE
     if layout == "owner-box":
         return 0
-    if layout == "owner-split":
-        return PENDING
-    raise RuntimeError(f"unrecognized box layout {layout!r}")
+    return PENDING
 
 
 def _verified_archive(path: Path) -> None:

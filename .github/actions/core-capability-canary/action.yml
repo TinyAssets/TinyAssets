@@ -1,5 +1,5 @@
 name: Core capability canary
-description: Observe production capabilities; alert without authorizing rollback.
+description: Observe production capabilities. Not-provisioned fails the deploy and rolls back; other rows stay advisory.
 inputs:
   config:
     description: Dedicated owner configuration

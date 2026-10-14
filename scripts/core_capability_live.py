@@ -487,17 +487,24 @@ async def run(report):
             raise DaemonRestart()
 
 
-def main():
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", default="core-capabilities-live.json")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     report = asyncio.run(collect())
     Path(args.report).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    # A missing dedicated owner means the probe never ran. That is a failed
+    # deploy, and the workflow rolls the new image back. Every other row stays
+    # advisory: model, provider and rate errors do not say the previous image
+    # would fare better.
+    code = 0
     for row in report.get("warnings", []) + report.get("failures", []):
-        print("::warning::core canary " + row["capability"] + ": " + row["code"])
-    # Observations, model/provider/configuration errors and rate alarms cannot
-    # establish that the previous image would fare better.
-    return 0
+        if row.get("code") == "canary_not_provisioned":
+            print("::error::core canary " + row["capability"] + ": " + row["code"])
+            code = 1
+        else:
+            print("::warning::core canary " + row["capability"] + ": " + row["code"])
+    return code
 
 
 async def collect():
@@ -521,7 +528,8 @@ async def collect():
         except Exception as exc:
             report["probe_error"] = type(exc).__name__
         if report.get("configuration_missing"):
-            report["warnings"].append(dict(capability="canary", code="canary_not_provisioned"))
+            # Not an observation. The probe never ran, so this cannot pass.
+            report["failures"].append(dict(capability="canary", code="canary_not_provisioned"))
             return report
         for failure in validate_report(report):
             destination = (

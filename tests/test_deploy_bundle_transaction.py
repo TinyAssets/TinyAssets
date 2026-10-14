@@ -339,17 +339,47 @@ def main(argv):
         return 0
 
     if argv[:1] == ["run"]:
+        if any("TURNS_PROBE_KIND" in arg for arg in argv):
+            rc = int(state.get("turns_rc", 0))
+            if rc:
+                sys.stderr.write("fake turns probe rc=%s\n" % rc)
+            else:
+                print('{"in_flight": 0}')
+            return rc
         if "ACTIVE_BOX_LAYOUT" in argv[-1]:
             target = argv[argv.index("--entrypoint") + 2]
             print(state.get("active_box_layout", {}).get(target, "owner-split"))
             return 0
         if "tinyassets.box_layout_migration" in argv:
-            marker = os.path.join(os.environ["FAKE_DOCKER_VOLUME_DIR"], ".layout.json")
+            marker = os.path.join(os.environ.get("FAKE_DOCKER_VOLUME_DIR") or "", ".layout.json")
             command = argv[argv.index("tinyassets.box_layout_migration") + 1]
+            if command == "check" and not os.path.isfile(marker):
+                print(json.dumps({
+                    "box_layout": "absent",
+                    "pending": None,
+                    "counts": {
+                        "owner-split": {"centers": None, "admitted_owners": None},
+                        "owner-box": {"registered_boxes": None, "registry_present": False},
+                    },
+                }))
+                return 4
             with open(marker, encoding="utf-8") as handle:
                 document = json.load(handle)
             if command == "check":
-                return 0 if document.get("box_layout") == "owner-box" else 10
+                layout = document.get("box_layout", "owner-split")
+                print(json.dumps({
+                    "box_layout": layout,
+                    "marker_state": document.get("state"),
+                    "pending": layout == "owner-split",
+                    "counts": {
+                        "owner-split": {"centers": 1, "admitted_owners": None},
+                        "owner-box": {
+                            "registered_boxes": 1 if layout == "owner-box" else None,
+                            "registry_present": layout == "owner-box",
+                        },
+                    },
+                }))
+                return 0 if layout == "owner-box" else 10
             state["box_migration_apply_attempted"] = True
             outcome = state.get("box_migration_apply", "commit")
             if outcome == "commit":
@@ -632,14 +662,26 @@ exec /bin/rm "$@"
 FAKE_BACKUP = r'''#!/usr/bin/env bash
 set -euo pipefail
 [ "${BACKUP_MODE:-}" = "snapshot" ] || { echo "fake backup: not a snapshot" >&2; exit 1; }
-name="tinyassets-snapshot-2026-10-13T00-00-00Z.tar.gz"
-printf 'tar' > "${BACKUP_SNAPSHOT_DIR}/${name}"
-printf '%064d  %s\n' 0 "$name" > "${BACKUP_SNAPSHOT_DIR}/${name}.sha256"
-if [ "${BACKUP_REQUIRE_BOX_STORE:-0}" = 1 ]; then
-  box="tinyassets-box-store-2026-10-13T00-00-00Z.tar.gz"
-  printf 'box' > "${BACKUP_SNAPSHOT_DIR}/${box}"
-  printf '%064d  %s\n' 0 "$box" > "${BACKUP_SNAPSHOT_DIR}/${box}.sha256"
-fi
+stamp="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+name="tinyassets-snapshot-${stamp}.tar.gz"
+mkdir -p "${BACKUP_SNAPSHOT_DIR}"
+python3 - "${BACKUP_SNAPSHOT_DIR}" "${stamp}" "${BACKUP_REQUIRE_BOX_STORE:-0}" <<'PY'
+import hashlib, io, os, sys, tarfile
+directory, stamp, require_box = sys.argv[1:]
+names = ["tinyassets-snapshot-%s.tar.gz" % stamp]
+if require_box == "1":
+    names.append("tinyassets-box-store-%s.tar.gz" % stamp)
+for name in names:
+    path = os.path.join(directory, name)
+    payload = b"snapshot-member\n"
+    with tarfile.open(path, "w:gz") as archive:
+        info = tarfile.TarInfo("inventory.txt")
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+    digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+    with open(path + ".sha256", "w", encoding="ascii") as handle:
+        handle.write("%s  %s\n" % (digest, name))
+PY
 echo "SNAPSHOT id=${name} sha256=0 bytes=3 names=1"
 '''
 
@@ -893,6 +935,10 @@ class Box:
             "FAKE_INSTALL_FAIL_MATCH": "",
             "FAKE_INSTALL_FAIL_STATE": str(self.root / "install-refused.flag"),
             "FAKE_RM_FAIL_MATCH": "",
+            "BACKUP_SCRIPT": str(self.root / "backup.sh"),
+            "MIGRATION_BACKUP_DIR": str(self.root / "backups"),
+            "TURNS_PROBE": str(self.root / "turns_probe.py"),
+            "VERIFY_BACKUP_PY": str(REPO / "scripts" / "verify_deploy_backup.py"),
         }
         env.update(overrides)
         return env
@@ -953,6 +999,11 @@ def box(tmp_path: Path) -> Box:
     fake.helper_install_path.parent.mkdir(parents=True)
     fake.env_helper.write_text(FAKE_ENV_HELPER, encoding="utf-8", newline="\n")
     fake.env_helper.chmod(0o755)
+    backup = fake.root / "backup.sh"
+    backup.write_text(FAKE_BACKUP, encoding="utf-8", newline="\n")
+    backup.chmod(0o755)
+    (fake.root / "backups").mkdir()
+    (fake.root / "turns_probe.py").write_text("# in-flight probe stand-in\n", encoding="utf-8")
 
     import hashlib
 
@@ -2506,8 +2557,9 @@ def test_a_committed_migration_never_restarts_the_previous_image(box: Box, candi
     assert "--user 0 --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE" in calls
     assert "stop --time" in calls, "the daemon stops before the snapshot and the move"
     assert json.loads((volume / ".layout.json").read_text(encoding="utf-8"))["state"] == "stable"
-    snapshot = box.root / "backups" / "tinyassets-snapshot-2026-10-13T00-00-00Z.tar.gz"
-    assert snapshot.is_file()
+    snapshots = list((box.root / "backups").glob("tinyassets-snapshot-*.tar.gz"))
+    assert len(snapshots) == 1
+    snapshot = snapshots[0]
     if candidate == "healthy":
         assert completed.returncode == 0, completed.stderr
         assert _result(completed) == "deployed"
@@ -2706,4 +2758,65 @@ def test_a_probe_refusal_names_the_rc_and_the_probe_output(box: Box):
         "output=fake migration: probe failed: "
         "PermissionError errno=13 path=/data/.broker/.runs.db"
     ) in reason
+    assert "stop --time" in box.docker_calls_text()
+    assert "agent_file_migration apply" not in box.docker_calls_text()
+    assert "start tinyassets-daemon" in box.docker_calls_text()
+
+
+def test_every_forward_deploy_verifies_a_fresh_backup_before_the_probe(box: Box):
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    stdout = completed.stdout
+    assert "in-flight proof: idle" in stdout
+    assert stdout.index("stopping tinyassets-daemon") < stdout.index("verified backup:")
+    assert stdout.index("verified backup:") < stdout.index(
+        "migration: asking"
+    )
+    assert "migration: nothing to move; inspected" in stdout
+    assert "box layout inspected: candidate=owner-split rc=4" in stdout
+    archives = list((box.root / "backups").glob("tinyassets-snapshot-*.tar.gz"))
+    assert len(archives) == 1
+    assert archives[0].with_name(archives[0].name + ".sha256").is_file()
+
+
+def test_an_in_flight_turn_refuses_before_any_stop(box: Box):
+    box.stage_bundle()
+    box.set_docker_state(turns_rc=10)
+    completed = box.run(NEW_IMAGE)
+    assert completed.returncode == 1, completed.stderr
+    assert _result(completed) == "migration_refused"
+    assert "check=turns_idle rc=10" in _migration_refusal(completed)
     assert "stop --time" not in box.docker_calls_text()
+    assert not list((box.root / "backups").glob("*.tar.gz"))
+
+
+def test_a_backup_older_than_this_run_is_refused(box: Box):
+    _refusing_backup(
+        box,
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "name='tinyassets-snapshot-2020-01-01T00-00-00Z.tar.gz'\n"
+        "mkdir -p \"${BACKUP_SNAPSHOT_DIR}\"\n"
+        "python3 - \"${BACKUP_SNAPSHOT_DIR}\" \"$name\" <<'PY'\n"
+        "import hashlib, io, os, sys, tarfile\n"
+        "directory, name = sys.argv[1:]\n"
+        "path = os.path.join(directory, name)\n"
+        "payload = b'stale\\n'\n"
+        "with tarfile.open(path, 'w:gz') as archive:\n"
+        "    info = tarfile.TarInfo('inventory.txt')\n"
+        "    info.size = len(payload)\n"
+        "    archive.addfile(info, io.BytesIO(payload))\n"
+        "digest = hashlib.sha256(open(path, 'rb').read()).hexdigest()\n"
+        "open(path + '.sha256', 'w').write('%s  %s\\n' % (digest, name))\n"
+        "PY\n"
+        "echo \"SNAPSHOT id=${name} sha256=0 bytes=1 names=1\"\n",
+    )
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE)
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    reason = _migration_refusal(completed)
+    assert "check=backup_verify" in reason
+    assert "older than this run" in reason
+    assert "agent_file_migration" not in box.docker_calls_text()
+    assert "start tinyassets-daemon" in box.docker_calls_text()

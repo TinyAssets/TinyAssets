@@ -162,12 +162,14 @@ def test_one_broken_owner_and_low_volume_never_alarm():
     assert "broken-key" not in json.dumps(rates.snapshot())
 
 
-def test_live_missing_config_and_restarts_are_unknown_not_failed(monkeypatch):
+def test_live_missing_config_fails_and_restarts_stay_unknown(monkeypatch, tmp_path):
     from scripts import core_capability_live as live
 
     monkeypatch.delenv("TINYASSETS_CORE_CANARY_CONFIG", raising=False)
     report = asyncio.run(live.collect())
-    assert not report["failures"] and report["warnings"][0]["code"] == "canary_not_provisioned"
+    assert report["failures"][0]["code"] == "canary_not_provisioned"
+    assert not report["warnings"]
+    assert live.main(["--report", str(tmp_path / "report.json")]) == 1
     attempts = []
 
     async def restarted(report):

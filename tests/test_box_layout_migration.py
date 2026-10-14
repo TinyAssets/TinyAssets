@@ -87,6 +87,29 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
     assert (data / "c1" / "note.txt").read_text() == "owner content"
 
 
+def test_census_reports_each_layout_and_does_not_invent_a_zero(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "center-a").mkdir()
+    code = migration.check(data)
+    census = migration.layout_census(data)
+    assert code == migration.ABSENT
+    assert census["box_layout"] == "absent"
+    assert census["pending"] is None
+    assert census["counts"]["owner-split"]["centers"] == 1
+    assert census["counts"]["owner-split"]["admitted_owners"] is None
+    assert census["identity_error"] == "identity database absent"
+    assert census["counts"]["owner-box"]["registry_present"] is False
+
+    (data / ".layout.json").write_text('{"layout": 2, "state": "stable"}')
+    assert migration.check(data) == migration.PENDING
+    (data / ".layout.json").write_text(
+        '{"layout": 2, "state": "stable", "box_layout": "owner-box"}')
+    assert migration.check(data) == 0
+    (data / ".layout.json").write_text("{")
+    assert migration.check(data) == migration.UNREADABLE
+
+
 def test_xfs_mount_accepts_real_prjquota_output(monkeypatch, tmp_path):
     def mount(*args, **kwargs):
         return subprocess.CompletedProcess(args[0], 0, "xfs rw,relatime,prjquota\n", "")
