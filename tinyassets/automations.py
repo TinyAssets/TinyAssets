@@ -1395,9 +1395,16 @@ def register_automation(
     ``paused_reason`` stores the row PAUSED in the same insert, so it is never
     runnable before its owner resumes it (an installed package's automations).
     """
+    from tinyassets.control_plane.tick import assigned_queue_consumer_enabled
+
+    consumer_enabled = assigned_queue_consumer_enabled()
     existing = AutomationStore(base_path).get_by_event_key(event_key)
     if existing is not None:
+        if existing.desired_state == STATE_ACTIVE and not consumer_enabled:
+            raise AutomationUnavailable("consumer_disabled")
         return existing
+    if not paused_reason and not consumer_enabled:
+        raise AutomationUnavailable("consumer_disabled")
     from tinyassets.api.branches import _resolve_readable_branch
     from tinyassets.daemon_server import get_founder_home, universe_access_permission
     from tinyassets.provider_assignment import load_provider_assignment

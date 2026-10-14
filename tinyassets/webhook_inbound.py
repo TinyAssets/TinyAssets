@@ -170,6 +170,12 @@ def _handle_hook_inner(
         logger.info("webhook: refused — inbound disabled (dark)")
         return _NOT_DELIVERABLE
 
+    from tinyassets.control_plane.tick import assigned_queue_consumer_enabled
+
+    if not assigned_queue_consumer_enabled():
+        logger.info("webhook: refused — execution owner disabled")
+        return _NOT_DELIVERABLE
+
     from tinyassets.api.runs import terminal_run_ids_for_universe
     from tinyassets.storage import webhook_hooks
 

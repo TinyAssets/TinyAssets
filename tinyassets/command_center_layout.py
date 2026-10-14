@@ -18,6 +18,13 @@ from __future__ import annotations
 
 import re
 
+from tinyassets.retired_home_entries import (
+    PLATFORM_LOCK_NAMES as RETIRED_PLATFORM_LOCK_NAMES,
+)
+from tinyassets.retired_home_entries import (
+    PLATFORM_NAMES as RETIRED_PLATFORM_NAMES,
+)
+
 USER = "user"
 PLATFORM = "platform"
 
@@ -49,7 +56,7 @@ PLATFORM_NAMES = frozenset({
     # records, ledgers, status, assignment and routing
     "activity.log", "status.json", "universe.json", "work_targets.json",
     "ledger.json", "provider_definitions.json", "hard_priorities.json",
-    "requests.json", "subscriptions.json", "branch_tasks.json",
+    "requests.json", "branch_tasks.json",
     "branch_tasks_archive.json", "auto_ship_attempts.jsonl", "bid_ledger.json",
     "bid_execution_log.json", "enrichment_signals.json", "worldbuild_signals.json",
     "platform-expected-instance.json", "uptime-probe", "executions", "runs",
@@ -65,11 +72,10 @@ PLATFORM_NAMES = frozenset({
     ".runtime_status.json", ".engine_mcp_config.json", ".engine_mcp_http_routes.json",
     ".pause", ".agent-sessions", ".consumer_liveness", ".quarantine",
     ".workspace-staging", ".authoring_blobs",
-    ".idle_cycle_stamp.json",
     # the queue consumer's heartbeat (api/universe.py _WORKER_SUPERVISOR_FILENAME,
     # control_plane/tick.py SUPERVISOR_HEARTBEAT_FILENAME)
     ".worker_supervisor.json",
-})
+}) | RETIRED_PLATFORM_NAMES
 
 #: storage_accounting.UNIVERSE_ENTRIES; rules/steering in ROOT_ENTRIES.
 PLATFORM_DB_NAMES: frozenset[str] = frozenset({
@@ -90,9 +96,8 @@ PLATFORM_DB_NAMES: frozenset[str] = frozenset({
 #: would read the example as a real on-disk name nobody accounts for.)
 PLATFORM_LOCK_NAMES: frozenset[str] = frozenset({
     ".provider-assignment-admission.lock", ".soul.lock",
-    ".branch_tasks.json.lock", ".auto_ship_attempts.jsonl.lock",
-    ".subscriptions.json.lock", ".bid_execution_log.json.lock",
-})
+    ".auto_ship_attempts.jsonl.lock", ".bid_execution_log.json.lock",
+}) | RETIRED_PLATFORM_LOCK_NAMES
 
 VERBATIM_EXEMPT_NAMES: frozenset[str] = frozenset({
     "workspace", "workspaces", ".agent-workspace", "output", "artifacts", "canon",
