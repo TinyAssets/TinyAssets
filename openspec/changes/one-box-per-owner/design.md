@@ -492,6 +492,27 @@ The new image serves only from boxes. There is no flag back to cells.
 
 ## 12. Acceptance
 
+### Host-owned file generations (P2b runtime continuation)
+
+The production file adapter must not treat the in-box `BoxdCore` journal as
+authority: the owner can edit every writable byte in that sandbox. `boxhostd`
+owns epochs, operation digests, outcomes and generations in its private state.
+All centers of an owner share that state and one lock. A center is a path
+projection within the owner's box, never a second sandbox. The host receives
+an `OwnerGrant` from authenticated admission; neither an account string nor a
+serialized handle is a grant. Admission is rechecked before every operation.
+
+File operations are bounded messages to immutable harness code in gVisor.
+That code reuses `OwnerBoxd` descriptor traversal; it is never instantiated on
+the host. Host CAS is checked before dispatch, and every dispatched mutation
+advances the host generation even if its response is lost. A retry returns
+the host receipt or holds an unknown outcome, never dispatches twice.
+Recovered/uncertain or externally running work keeps file snapshots and CAS
+closed until the sandbox is proven stopped. A host restart must stop surviving
+sandboxes before exposing recovered state. These are preparation for the final
+cutover, not authorization to select `owner-box` or to retain legacy execution
+beside the new adapter.
+
 **G1 done check** (baseline #4624):
 
 - With every app closed and the test phone off, the agent finishes a 2-hour
