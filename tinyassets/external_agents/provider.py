@@ -26,16 +26,23 @@ class ExternalAgentProvider(BaseProvider):
         owner = config.invocation_owner_user_id
         if universe_dir is None or not owner:
             raise ExternalAgentUnavailable(self.name, model, "job_failed:custody")
-        universe = Path(universe_dir).resolve(strict=True)
+        universe = Path(universe_dir).absolute()
         reference = _custody(universe.parent, universe, owner,
                              self.native_credential_service)
         if reference is None:
             raise ExternalAgentUnavailable(self.name, model, "signed_out")
+        from tinyassets.control_plane.native_launch import launcher
         from tinyassets.external_agents.runner import run_job
-        from tinyassets.role_external_agent import CellLauncher
+
+        custody = Custody(universe, owner, reference)
+        budget = config.request_budget
+        if budget is None or not budget.usage_id or type(config.request_attempt) is not int:
+            raise ExternalAgentUnavailable(self.name, model, "job_failed:custody")
+        budget.check_scope(owner, universe.name)
+        operation_id = f"native:{budget.usage_id}:{config.request_attempt}"
 
         return await run_job(
-            self.name, CellLauncher(universe_dir=universe, owner_user_id=owner),
-            Custody(universe, owner, reference), prompt=prompt, system=system,
+            self.name, launcher(custody, operation_id=operation_id),
+            custody, prompt=prompt, system=system,
             config=config,
         )

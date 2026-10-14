@@ -96,6 +96,7 @@ async def open_loop_tools(
     session_key: str = "",
     turn: str = "",
     ta_turn: str = "",
+    box_session_id: str | None = None,
     model_budget=None,
     model_parent=None,
     capability_grant: Sequence[str] | None = None,
@@ -137,6 +138,7 @@ async def open_loop_tools(
             if (actor_id, graph_id) != (owner, universe_dir.name):
                 raise EngineToolError("remote_ta_binding_refused")
             bridge = TurnBridge(owner=owner, center=universe_dir.name, turn=ta_turn,
+                                session_id=box_session_id,
                                 handle=box._exec.handle,
                                 database=data_dir() / ".remote-ta-receipts.sqlite3",
                                 dispatch=lambda message, **kw: engine_ta(engine, message, **kw),

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,6 +14,7 @@ from tests import test_interactive_http_agent as base
 from tests.agent_loop_fakes import FakeBox
 from tinyassets.agent_loop import served_chat
 from tinyassets.boxes import ExecLimits
+from tinyassets.control_plane.binding import bind_session, use_binding
 from tinyassets.engine_tool_client import EngineToolError
 
 rig = base.rig
@@ -23,15 +25,36 @@ run = base.run
 
 @pytest.fixture
 def agent(base_agent, monkeypatch):
-    monkeypatch.setenv(served_chat.ENV_SWITCH, served_chat.THIN)
     box = FakeBox(lambda argv, stdin: (
         b'\x1eTA1 {"ready":true}\n\x1eTA1 '
         + json.dumps({"output": base64.b64encode(b"box says hi").decode()})
         .encode() + b'\n', 0))
+    # This integration fixture scripts execution and owner-file transport;
+    # starter admission now reads through that same bound provider.
+    root = base_agent.served.context.universe_dir
+    files = {p.relative_to(root).as_posix(): p.read_bytes()
+             for p in root.rglob("*") if p.is_file()}
+
+    def read(handle, path, *, max_bytes):
+        if path not in files:
+            raise FileNotFoundError(path)
+        return SimpleNamespace(data=files[path][:max_bytes], size=len(files[path]), generation=1)
+
+    def write(handle, op_id, path, data, **kwargs):
+        files[path] = data
+        return SimpleNamespace(generation=1)
+
+    box.read, box.write = read, write
     monkeypatch.setattr(served_chat, "_box_provider", box)
     monkeypatch.setattr(served_chat, "_box_limits", ExecLimits())
     base_agent.box = box
-    return base_agent
+    base_agent.adapter = served_chat.ThinLoopChatAdapter()
+    base_agent.binding = bind_session(
+        provider=box, limits=ExecLimits(),
+        universe_dir=base_agent.served.context.universe_dir, owner="owner",
+        execution_id="durable-send:test")
+    with use_binding(base_agent.binding):
+        yield base_agent
 
 
 base_agent = base.agent
@@ -55,7 +78,8 @@ def test_box_tool_runs_in_the_bound_box_by_journal_op_id(agent):
     turn = agent.latest()
     assert turn.state == "completed"
     # Bound ONCE at turn start, to this owner and command center and turn.
-    assert agent.box.binds == [(agent.served.context.universe_dir.name, "owner", turn.turn_id)]
+    assert agent.box.binds == [(agent.served.context.universe_dir.name, "owner",
+                                agent.binding.session_id)]
     assert agent.box.starts == [f"{turn.turn_id}:1:1"]
     argv = agent.box.execs[f"{turn.turn_id}:1:1"].argv
     assert argv[:2] == ["python3", "-c"]
@@ -142,13 +166,16 @@ def test_engine_tools_keep_their_engine_route(agent, monkeypatch, target):
 def test_no_box_provider_refuses_before_any_tool_runs(agent, monkeypatch):
     monkeypatch.setattr(served_chat, "_box_provider", None)
     agent.tool_call = ("bash", '{"command": "true"}')
-    with pytest.raises(EngineToolError, match="box_unavailable"):
+    with use_binding(None), pytest.raises(EngineToolError, match="box_unavailable"):
         run(agent)
     assert agent.wires == [] and agent.tools == []
 
 
-def test_switch_off_keeps_todays_path(agent, monkeypatch):
-    monkeypatch.delenv(served_chat.ENV_SWITCH)
+def test_session_handle_is_not_rebound_for_tools(agent, monkeypatch):
+    def rebind(*args, **kwargs):
+        raise AssertionError("tools may not mint a new session")
+
+    monkeypatch.setattr(agent.box, "bind", rebind)
     agent.tool_call = ("bash", '{"command": "true"}')
     assert run(agent) == "finished exact answer"
-    assert agent.box.starts == [] and agent.tools == [("bash", {"command": "true"})]
+    assert agent.box.starts and agent.tools == []

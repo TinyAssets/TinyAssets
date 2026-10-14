@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Thin-loop turns call the model only through the broker
-When the thin loop is selected, a served turn on an HTTP model protocol SHALL
+A served turn on an HTTP model protocol SHALL
 call the model only through the credential broker
 (`resolve_exact_scoped_proxy`). No model credential SHALL be held by the loop
 or passed to the box, and the loop SHALL NOT execute model output: it SHALL
@@ -36,7 +36,7 @@ write through the box tools changed the file after the edit read it.
   `held_tool_unknown`, and no further inference or tool call is made
 
 #### Scenario: a granted box tool with no box is refused
-- **WHEN** the thin loop is selected, a turn is granted a box tool and no box
+- **WHEN** a turn is granted a box tool and no admitted session box
   provider is configured
 - **THEN** the turn is refused before its first inference and no tool runs
   anywhere else
@@ -61,12 +61,18 @@ and SHALL take no parameter naming an owner or command center.
 ### Requirement: Other served tools keep their engine route and gates
 Every served tool other than the box tools and the owner reads SHALL keep its
 existing engine route, so the owner's rules and the auto-review continue to
-gate consequential actions where they are enforced today. With the thin loop
-not selected, every turn SHALL behave exactly as before this change.
+    gate consequential actions where they are enforced today.
 
-#### Scenario: switch off is today's path
-- **WHEN** `TINYASSETS_AGENT_LOOP` is unset
-- **THEN** the four tools are served by the engine route and no box is bound
+#### Scenario: a session is admitted before owner files are loaded
+- **WHEN** an authenticated owner turn or run starts an agent
+- **THEN** the session binds its owner, center and stable send/run identity before
+  reading agent files through that provider, refuses mixed file generations, and
+  carries the same binding into tools and child executor contexts
+
+#### Scenario: disconnect is not terminal cancellation
+- **WHEN** a client disconnects while its admitted session is running
+- **THEN** its work remains owned by the control plane and reconnect uses the same
+  admitted identity; only explicit terminal cancellation ends the box session
 
 #### Scenario: two edits never silently lose one
 - **WHEN** several edits of one file run concurrently, each having read the
