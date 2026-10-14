@@ -89,7 +89,7 @@ jobs:
           [ -n "${SSH_KEY}" ] || { echo "::error::DO_SSH_KEY secret missing"; exit 1; }
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          printf '%s' "${SSH_KEY}" > ~/.ssh/do_deploy
+          printf '%s\n' "${SSH_KEY}" > ~/.ssh/do_deploy
           chmod 600 ~/.ssh/do_deploy
           if [ -n "${PINNED_KNOWN_HOST}" ]; then
             # A pinned host key was configured out of band: real host trust.
