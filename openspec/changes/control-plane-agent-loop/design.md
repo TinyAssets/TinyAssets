@@ -14,24 +14,19 @@ turn lives and where its tools run.
 
 ## Decisions
 
-### 1. Not yet one shared loop: each turn keeps its own event loop
+### 1. Chat and workflow turns share the execution owner's loop
 
-D6 wants every waiting turn as a task on ONE loop in the execution owner. The
-first head built that (`ExecutionOwner`: one loop thread, turns submitted in
-the caller's context) and the cross-family refute broke it with a reproduced
-failure: `ProviderAssignmentAdmission.shared()` is a reader/writer lock keyed
-by THREAD id and held across the whole provider call
-(`provider_assignment.py` `shared`, held from `served_provider_authority`).
-Two turns for one command center on one loop thread fail with "admission is
-not reentrant"; and once a writer (a credential deposit) is waiting, the next
-reader's `condition.wait()` blocks the loop thread itself, so the reader that
-holds the lock can never finish. The turn path also does synchronous SQLite
-work (journal, reservations) that would stall every turn on a shared loop.
+`ExecutionOwner` submits turns in the caller's context to one loop thread.
+Provider-assignment admission identifies asynchronous holders by task, preserves
+writer priority with synchronous callers, and waits without blocking the loop.
+Journal writes and usage reservation/finalization run off-loop; cancellation
+drains an in-flight commit before releasing its authority. Journal mutations
+retain the existing owner lease and reject stale generations.
 
-So the thin loop runs where turns run today (`asyncio.run` on the claiming
-worker), and the shared loop is task 2.1: a task-aware, non-blocking admission
-plus journal writes off the loop, then turns as tasks on one loop. Nothing in
-the box or tool design depends on which loop a turn is on.
+This checkpoint does not complete the cutover: the provider-admission lock's
+move to platform state requires a protected migration with no mixed old/new
+workers. Broker streaming, the native package launch path, and the remaining
+owner-journal storage migration still require coordinated integration and proof.
 
 ### 2. Tools are routed by name, once, never by the model
 
