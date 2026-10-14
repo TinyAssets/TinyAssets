@@ -112,6 +112,9 @@ on:
       - '.github/workflows/p0-outage-triage.yml'
       - '.github/workflows/restart-daemon.yml'
       - '.github/workflows/box-preflight.yml'
+      - '.github/workflows/box-store-volume.yml'
+      - 'scripts/do_api_request.py'
+      - 'scripts/ensure_box_store_volume.py'
   workflow_dispatch:
 
 permissions:
