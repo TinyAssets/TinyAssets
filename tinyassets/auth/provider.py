@@ -952,8 +952,8 @@ class OAuthProvider(AuthProvider):
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT user_id, scope, expires_at, revoked "
-                "FROM access_tokens WHERE token_hash = ?",
+                "SELECT user_id, scope, expires_at, revoked, access_tokens.client_id, client_name "
+                "FROM access_tokens LEFT JOIN oauth_clients USING(client_id) WHERE token_hash = ?",
                 (token_hash,),
             ).fetchone()
 
@@ -969,11 +969,16 @@ class OAuthProvider(AuthProvider):
             scope = row["scope"]
             capabilities = scope.split() if scope else ["read"]
 
+            from tinyassets.connected_agents import connection_ref
+
             return Identity(
                 user_id=user_id,
                 username=user_id,
                 display_name=user_id,
                 capabilities=capabilities,
+                metadata={"auth_provider": "oauth", "oauth_connection": {
+                    "id": connection_ref("local-oauth", row["client_id"]),
+                    "name": row["client_name"], "identity_source": "registered_client"}},
             )
         finally:
             conn.close()

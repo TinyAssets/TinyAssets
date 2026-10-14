@@ -138,6 +138,16 @@ def test_valid_token_resolves_to_founder_identity(keypair) -> None:
     assert "admin" not in ident.capabilities
 
 
+def test_only_verified_tokens_supply_opaque_connection_metadata(keypair):
+    token = _sign(keypair, sid="fixture-session")
+    ident = _provider(keypair).resolve_token(token)
+    connection = ident.metadata["oauth_connection"]
+    assert connection["identity_source"] == "verified_session"
+    assert len(connection["id"]) == 64
+    assert "fixture-session" not in str(connection) and token not in str(ident.metadata)
+    assert _provider(keypair).resolve_token(token + "invalid") is None
+
+
 def test_token_permissions_become_capabilities(keypair) -> None:
     # RBAC permissions in the token add capabilities beyond the base — e.g.
     # platform `admin`, which is never implicit.

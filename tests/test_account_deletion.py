@@ -676,6 +676,21 @@ def test_account_deletion_erases_only_its_api_keys(two_users: Path):
     assert receipt["rows_deleted"]["api-keys:api_keys"] == 1
 
 
+def test_account_deletion_erases_only_its_authenticated_connections(two_users: Path, monkeypatch):
+    from tinyassets.auth.provider import Identity
+    from tinyassets.connected_agents import observe_mcp
+    from tinyassets.outside_authority import OutsideClientAuthority
+
+    authority = OutsideClientAuthority(two_users)
+    monkeypatch.setattr("tinyassets.outside_authority.current_store", lambda: authority)
+    for owner in (A, B):
+        observe_mcp(Identity(owner, owner, metadata={"oauth_connection": {
+            "id": "fixture-connection", "identity_source": "verified_session"}}))
+    receipt = delete_account(two_users, founder_sub=A, delete_identity=lambda _: "deleted")
+    assert receipt["unfinished_phases"] == []
+    assert _rows(authority.path, "SELECT owner FROM authenticated_connections") == [(B,)]
+
+
 def test_a_foreign_terminal_row_in_my_universe_blocks_the_deletion(two_users: Path):
     """A stopped daemon B started inside A's universe is nobody's active work,
     so no liveness check catches it — but it is still B's row."""

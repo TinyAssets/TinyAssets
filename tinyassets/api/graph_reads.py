@@ -269,7 +269,7 @@ def read_graph(
     if normalized == "agents":
         # The command center's agents (``agents/<name>/`` directories), main
         # first: what the app's switcher and a connector show. Owner-only.
-        from tinyassets import addressed_agents
+        from tinyassets import addressed_agents, connected_agents
         from tinyassets.api.helpers import _base_path, _request_universe
         from tinyassets.api.permissions import current_actor_id, is_authenticated_request
         from tinyassets.shared_self import require_founder_home
@@ -280,9 +280,11 @@ def read_graph(
             base, uid = _base_path(), _request_universe(graph_id)
             require_founder_home(base, uid, current_actor_id())
             agents = addressed_agents.roster(base, universe_id=uid, owner=current_actor_id())
+            external = connected_agents.roster(base, universe_id=uid, owner=current_actor_id())
         except (PermissionError, ValueError, LookupError):
             return json.dumps({"error": "not_found"})
-        return json.dumps({"universe_id": uid, "agents": agents, "count": len(agents)})
+        return json.dumps({"universe_id": uid, "agents": agents, "count": len(agents),
+                           "external_agents": external})
     if normalized == "agent":
         return json.dumps(
             _commons_catalog_impl(

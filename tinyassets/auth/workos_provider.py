@@ -362,6 +362,8 @@ class WorkOSAuthProvider(AuthProvider):
             _log_token_rejection("outside_store")
             return None
 
+        from tinyassets.connected_agents import workos_connection
+
         return Identity(
             user_id=sub,
             username=username,
@@ -374,6 +376,9 @@ class WorkOSAuthProvider(AuthProvider):
                 "role": claims.get("role"),
                 "permissions": granted,
                 "iss": claims.get("iss"),
+                "oauth_connection": workos_connection(claims, token, outside),
+                "first_party_client": bool(os.environ.get("TINYASSETS_OUTSIDE_CLIENT_CLAIM"))
+                and outside is None,
                 **({"outside_origin": outside} if outside is not None else {}),
             },
         )
