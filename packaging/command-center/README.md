@@ -15,7 +15,12 @@ python run/agent.py 'Read the project and summarize it'
 ```
 
 For a remote model use HTTPS and set `MODEL_API_KEY` in your shell environment.
-No key is required for a local endpoint. The runner does not load `.env` files.
+No key is required for a local endpoint. You can instead copy `.env.example` to
+`.env` and fill its variables. The runner reads it as bounded literal data,
+never shell code; process environment values override file values. Linked,
+malformed or duplicate-key files fail visibly. The manifest roster names each
+agent's optional `AGENT_n` model group. Set its URL and model together; that
+endpoint never inherits the global API key.
 It never contacts TinyAssets. Model traffic goes to the endpoint you configure.
 
 Bash runs with your host privileges. By default every command requires typing

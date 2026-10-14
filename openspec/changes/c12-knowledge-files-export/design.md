@@ -225,3 +225,8 @@ empty placeholders. The standalone runner can use that complete local group or
 the global model group; it never inherits the global credential into a partially
 overridden endpoint. This captures file-based roster/model behavior, not broker
 rules, workflow definitions or schedule records; those remain next integration.
+
+Local .env loading uses a 64-KiB, no-follow, single-link regular-file read and a
+closed model-variable grammar. Values are literal; no shell is sourced, no
+process environment is mutated, and existing process values take precedence.
+Malformed local files fail before fallback. The file tools still refuse .env.

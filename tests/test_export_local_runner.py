@@ -129,8 +129,8 @@ def test_endpoint_validation_precedes_network(url):
         RUNNER["complete"](url, "fixture", [], api_key="test-only")
 
 
-@pytest.mark.parametrize("per_agent", [False, True])
-def test_copied_runner_uses_four_tools_over_http_without_platform(folder, per_agent):
+@pytest.mark.parametrize("configuration", ["global", "agent", "dotenv"])
+def test_copied_runner_uses_four_tools_over_http_without_platform(folder, configuration):
     """Real subprocess and HTTP transport; fixture responses, not a paid model."""
     (folder / "run/agent.py").write_bytes(SOURCE.read_bytes())
     received = []
@@ -160,7 +160,11 @@ def test_copied_runner_uses_four_tools_over_http_without_platform(folder, per_ag
     try:
         env = {"PATH": os.environ["PATH"], "MODEL_NAME": "fixture",
                "MODEL_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1"}
-        if per_agent:
+        if configuration == "dotenv":
+            (folder / ".env").write_text(
+                f"MODEL_BASE_URL={env.pop('MODEL_BASE_URL')}\nMODEL_NAME={env.pop('MODEL_NAME')}\n"
+            )
+        if configuration == "agent":
             (folder / "command-center.json").write_text(json.dumps({"roster": [
                 {"agent": "main", "model_env": "AGENT_1"},
             ]}))
@@ -205,6 +209,55 @@ def test_agent_model_does_not_inherit_global_credentials(folder, monkeypatch):
     assert RUNNER["model_environment"](folder, "main") == (
         "http://localhost:11434/v1", "local-model", "",
     )
+
+
+def test_local_environment_is_literal_private_data_with_process_precedence(folder, monkeypatch):
+    for key in list(os.environ):
+        if RUNNER["_model_key"](key):
+            monkeypatch.delenv(key)
+    marker = folder / "shell-must-not-run"
+    (folder / ".env").write_text(
+        "# owner local configuration\nMODEL_BASE_URL=http://localhost:11434/v1\n"
+        "MODEL_NAME='local-model'\n"
+        f'MODEL_API_KEY="$(touch {marker})"\n'
+    )
+    assert RUNNER["model_environment"](folder, "main") == (
+        "http://localhost:11434/v1", "local-model", f"$(touch {marker})",
+    )
+    assert not marker.exists()
+    assert "MODEL_API_KEY" not in os.environ
+    monkeypatch.setenv("MODEL_NAME", "process-model")
+    assert RUNNER["model_environment"](folder, "main")[1] == "process-model"
+    with pytest.raises(PermissionError):
+        RUNNER["LocalTools"](folder).read(".env")
+
+
+@pytest.mark.parametrize("raw", [
+    b"MODEL_NAME=one\nMODEL_NAME=two\n", b"UNKNOWN_SECRET=never-expose\n",
+    b"export MODEL_NAME=one\n", b'MODEL_NAME="unterminated\n',
+    b'MODEL_NAME="escaped\\nline"\n', b"MODEL_NAME='unterminated\n",
+    b"MODEL_NAME=" + b"x" * (64 * 1024),
+])
+def test_malformed_environment_refuses_without_global_fallback(folder, monkeypatch, raw):
+    (folder / ".env").write_bytes(raw)
+    monkeypatch.setenv("MODEL_NAME", "valid-global-model")
+    with pytest.raises(ValueError):
+        RUNNER["model_environment"](folder, "main")
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "fifo"])
+def test_environment_does_not_follow_links_or_read_special_files(folder, kind):
+    source = folder / "owner-config"
+    source.write_text("MODEL_NAME=fixture\n")
+    target = folder / ".env"
+    if kind == "symlink":
+        target.symlink_to(source)
+    elif kind == "hardlink":
+        os.link(source, target)
+    else:
+        os.mkfifo(target)
+    with pytest.raises((OSError, ValueError)):
+        RUNNER["model_environment"](folder, "main")
 
 
 def test_bash_output_is_bounded_and_process_group_is_stopped(folder):
