@@ -389,3 +389,25 @@ def test_a_failed_write_that_created_directories_is_recorded(tmp_path, monkeypat
     with pytest.raises(BoxError):  # recorded as a partial failure: never re-run
         host.write(handle, "w1", "/cc/new/dir/a.txt", b"x", max_bytes=10)
     host.close()
+
+
+def test_owner_boxd_opens_only_its_mounted_owner_tree(tmp_path):
+    from tinyassets.boxes import BoxAuthError, BoxOperationRefused
+    from tinyassets.boxes.boxd import OwnerBoxd
+
+    owner_root = tmp_path / "owner"
+    owner_root.mkdir()
+    worker = OwnerBoxd(owner_id="owner-a", owner_root=owner_root,
+                       state_dir=tmp_path / "state")
+    try:
+        handle = worker.bind("owner-a", session_id="session-a")
+        assert handle.account_id == "owner-a" and handle.turn_id == "session-a"
+        worker.write(handle, "write-a", "/cc/file.txt", b"owner bytes", max_bytes=32)
+        assert (owner_root / "file.txt").read_bytes() == b"owner bytes"
+        assert not (owner_root / "owner-a").exists()
+        with pytest.raises(BoxAuthError):
+            worker.bind("owner-b", session_id="session-b")
+        with pytest.raises(BoxOperationRefused):
+            worker.destroy(handle, "destroy-a")
+    finally:
+        worker.close()
