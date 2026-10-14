@@ -807,6 +807,12 @@
         <p>Your account is your sign-in plus the one command center bound to it. There is nothing
         else to sign into here — no separate website account, no profile.</p>
         <h3>Your command center's connections</h3>
+        <details><summary>External agents with API keys</summary>
+          <p>Ask your agent to create a key. Review and copy it in Needs You.
+          You can review or revoke existing keys here.</p>
+          <button id="api-keys-refresh" class="btn" type="button">Review API keys</button>
+          <div id="api-keys-list"></div><p id="api-keys-status" role="status"></p>
+        </details>
         <p>Disconnect removes this command center's access and its saved key in TinyAssets.
         Your history and designs stay. Your provider account is not deleted.
         Requests already sent may still finish.</p>
@@ -2017,6 +2023,7 @@
   const views={signin:$("view-signin"),chat:$("view-chat"),account:$("view-account"),apps:$("view-apps")};
   let viewGeneration=0;
   function showView(n){
+    if(typeof CredentialRequests!=="undefined")CredentialRequests.clear();
     viewGeneration++; for(const k in views) views[k].hidden=(k!==n);
     if(n==="chat" && typeof followChatLatest==="function") followChatLatest(true);
   }
@@ -4353,6 +4360,7 @@
   // home) rather than silently reattaching them here.
   function setQueueScope(next){
     const value=String(next||queueScope||"");
+    if(value!==queueScope&&typeof CredentialRequests!=="undefined")CredentialRequests.clear();
     if(value!==queueScope && typeof followChatLatest==="function") followChatLatest(true);
     if(value!==queueScope && typeof invalidateChatCloudPrefs==="function") invalidateChatCloudPrefs();
     if(queueScope && value && value!==queueScope && Uploads) Uploads.abort();
@@ -4460,6 +4468,7 @@
   let uploadsRestored=false;
   function setQueueOwner(next){
     const value=String(next||"");
+    if(value!==queueOwner&&typeof CredentialRequests!=="undefined")CredentialRequests.clear();
     if(value!==queueOwner && typeof invalidateChatCloudPrefs==="function") invalidateChatCloudPrefs();
     if(queueOwner && value && value!==queueOwner && Uploads) Uploads.abort();
     if(queueOwner && value && value!==queueOwner) uploadsRestored=false;
@@ -6439,6 +6448,7 @@
     setStatusLine(""); renderWorking();
   }
   function clearAccountScopedState(){
+    if(typeof CredentialRequests!=="undefined")CredentialRequests.clear();
     if(typeof invalidateChatCloudPrefs==="function") invalidateChatCloudPrefs();
     queueScope=""; queueOwner="";
     $("profile-name").textContent=""; $("profile-responsibility").textContent="";
@@ -9816,6 +9826,7 @@
     },
     open(id,interactive=true){
       try{
+      if(this.selected!==id)CredentialRequests.clear();
       const folded=foldedModelAccess(railCache);
       if(folded?.request_id===id)id=railCache.find(isSetupRequest).request_id;
       const req=railCache.find(row=>row.request_id===id);
@@ -9832,7 +9843,8 @@
       if(!entry.body){
         if(handoff)this.handoff(req,entry);
         else{
-        entry.node.appendChild(req.action&&req.action.type==='connect_browser'?BrowserLogin.build(req):
+        entry.node.appendChild(req.action?.type==='credential_request'?CredentialRequests.build(req):
+          req.action&&req.action.type==='connect_browser'?BrowserLogin.build(req):
           req.action&&req.action.type==='approve_action'
           ?InlineApprovals.build(req):isSetupRequest(req)?connectBody(req):railBody(req));
         entry.body=true;
@@ -9866,6 +9878,7 @@
       OwnerUnread.viewed(railCache.filter(row=>row!==folded&&!isOptionalRequest(row)).map(row=>row.request_id));
     },
     history(){
+      CredentialRequests.clear();
       railOpen=null;this.selected=null;
       if($('request-open-error'))$('request-open-error').hidden=true;
       $('needs-you').close();const sheet=$('request-rail');
@@ -11070,6 +11083,7 @@
 
   __TA_CHAT_RENDER__
   __TA_APP_UI__
+  __TA_CREDENTIAL_REQUESTS__
 
   async function boot(){
     const modelCallback=HostedModelConnect.takeCallback();

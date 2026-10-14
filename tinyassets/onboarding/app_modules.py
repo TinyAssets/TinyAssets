@@ -68,7 +68,8 @@ def module_url(name: str) -> str:
 def shell_version(html_path: Path) -> str:
     """Hash the packaged shell sources, independently of release-receipt timing."""
     digest = hashlib.sha256(build_segment().encode())
-    names = ("app.html", "app_ui.js", "app_recovery.js", "chat_render.js", "request_theme.json")
+    names = ("app.html", "app_ui.js", "app_recovery.js", "chat_render.js", "request_theme.json",
+             "credential_requests.js")
     for name in names:
         digest.update(name.encode() + b"\0" + html_path.with_name(name).read_bytes() + b"\0")
     return digest.hexdigest()[:24]
