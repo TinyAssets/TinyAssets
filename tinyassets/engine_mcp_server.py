@@ -590,10 +590,13 @@ def read_graph(
             the exact output field to retrieve. Omit to
             discover names/types/sizes (no value previews). Strings are verbatim;
             other values are Unicode JSON. A complete first read also has value.
+            For branch, @definition returns lossless JSON chunks of the complete
+            definition. Concatenate, verify stable sha256/lengths, then JSON-decode.
         output_offset: For conversation catalogs, the returned before-message-id
             cursor (0 starts at newest); for a message, a Unicode character offset.
             For run_output, Unicode code-point offset in a field, or field index in
             the catalog. Continue by passing the returned next_offset.
+            For branch @definition, a JSON character offset; otherwise a node index.
         output_max_chars: Maximum field chunk length, 1..32768 (default 8192).
         branch_id: For ``target="branch"`` only - the ``branch_def_id`` of the
             workflow to read (get it from ``target="branches"``). Ignored for every
@@ -712,7 +715,10 @@ def read_graph(
     from tinyassets.auth.middleware import _current_identity
     from tinyassets.universe_server import read_graph as _impl
 
-    token = _bind_founder_identity()
+    token = _bind_founder_identity(
+        (*_READ_CAPABILITIES, "tinyassets.extensions.read")
+        if normalized == "branch" else _READ_CAPABILITIES
+    )
     try:
         if normalized == "model_options":
             from tinyassets.api.graph_reads import read_graph as _domain_read
@@ -842,6 +848,8 @@ def read_graph(
             }
             if output_offset:
                 selectors["output_offset"] = output_offset
+            if field_name:
+                selectors.update(field_name=field_name, output_max_chars=output_max_chars)
             payload = _impl(**selectors)
             # A PUBLIC branch authored by somebody else reads fine here (the
             # target is deliberately not author-gated), so it is another user's
