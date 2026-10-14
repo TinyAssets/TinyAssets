@@ -289,7 +289,7 @@ def test_every_universe_action_dispatches(action: str, monkeypatch) -> None:
     )
 
 
-def test_daemon_actions_create_summon_and_banish(tmp_path, monkeypatch) -> None:
+def test_daemon_actions_create_summon_and_banish(tmp_path, monkeypatch, canonical_daemon) -> None:
     """Daemon roster actions round-trip through the public universe API body."""
     universe_dir = tmp_path / "u1"
     universe_dir.mkdir()
@@ -388,6 +388,8 @@ def test_daemon_actions_create_summon_and_banish(tmp_path, monkeypatch) -> None:
     assert status_out["daemon_count"] == 1
     assert status_out["runtime_count"] == 1
 
+    source = canonical_daemon(tmp_path)
+    monkeypatch.setattr(univ_mod, "_daemon_memory_source", lambda _: source)
     memory_status_out = json.loads(univ_mod._universe_impl(
         action="daemon_memory_status",
         universe_id="u1",
