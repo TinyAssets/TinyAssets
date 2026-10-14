@@ -908,13 +908,16 @@ jobs:
       # healthy. No daemon path calls it, and this step runs no gate workload.
       - name: Install pinned gVisor and idle boxhostd
         if: ${{ success() }}
-        continue-on-error: true
         timeout-minutes: 8
         run: |
           set -euo pipefail
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/install-boxhostd-preflight.sh deploy/boxhostd_idle.py \
-              deploy/boxhostd.service scripts/box_preflight.py \
+              deploy/boxhostd.service deploy/box-store-device.sh \
+              deploy/box-store-device-stop.sh deploy/box-store-check.sh \
+              deploy/box-store-device.service \
+              deploy/var-lib-boxhostd-owners.mount scripts/box_preflight.py \
+              scripts/box_store_durability.py \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "sudo flock -w 120 /var/lock/tinyassets-host-mutation.lock bash /tmp/install-boxhostd-preflight.sh"

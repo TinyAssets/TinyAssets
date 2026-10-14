@@ -16,6 +16,7 @@ from pathlib import Path
 
 RUN_DIR = Path("/run/tinyassets-boxhostd")
 HARNESS = Path("/opt/tinyassets/boxhostd/box_preflight.py")
+DURABILITY = Path("/opt/tinyassets/boxhostd/box_store_durability.py")
 STEPS = frozenset(
     {
         "cleanup_guard",
@@ -95,6 +96,50 @@ def run_preflight(result: Path) -> None:
         result.write_text(json.dumps({"pass": False, "fatal": failure}) + "\n")
 
 
+def publish_preflight(result: Path) -> None:
+    """Publish only after both the sandbox gates and host remount are complete."""
+    harness_result = result.with_suffix(".harness.json")
+    harness_result.unlink(missing_ok=True)
+    try:
+        try:
+            run_preflight(harness_result)
+        except Exception:
+            harness_result.write_text(
+                json.dumps({"pass": False, "fatal": "harness:process_failed"}) + "\n"
+            )
+        try:
+            report = json.loads(harness_result.read_text())
+        except (OSError, ValueError):
+            report = {"pass": False, "fatal": "harness:missing_or_invalid_result"}
+        try:
+            durability = subprocess.run(
+                ["/usr/bin/python3", str(DURABILITY)],
+                env={"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
+                timeout=300,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            check = json.loads(durability.stdout)
+            if durability.returncode or not isinstance(check, dict):
+                raise ValueError("durability command failed")
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            check = {"pass": False, "reason": "durability_check_failed"}
+        g4 = report.setdefault("gates", {}).setdefault("G4", {"pass": False})
+        g4["fsync_remount"] = check.get("fsync_remount") is True
+        g4["pass"] = (
+            g4.get("pass") is True and check.get("pass") is True and g4["fsync_remount"]
+        )
+        if not check.get("pass"):
+            g4["durability_reason"] = check.get("reason", "failed")
+        report["pass"] = report.get("pass") is True and g4["pass"]
+        pending = result.with_suffix(".new")
+        pending.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+        os.replace(pending, result)
+    finally:
+        harness_result.unlink(missing_ok=True)
+
+
 def prepare_delegation() -> None:
     """Leave the service cgroup empty so v2 controllers can be delegated."""
     relative = Path("/proc/self/cgroup").read_text().splitlines()[0].split(":", 2)[2]
@@ -120,9 +165,8 @@ def main() -> None:
         pending.clear()
         result = RUN_DIR / "preflight.json"
         result.unlink(missing_ok=True)
-        # The harness records failed gates itself. A crash gets a fail-closed
-        # result from the workflow's missing-file check.
-        run_preflight(result)
+        # Publish only the combined host result; a harness crash fails closed.
+        publish_preflight(result)
 
 
 if __name__ == "__main__":
