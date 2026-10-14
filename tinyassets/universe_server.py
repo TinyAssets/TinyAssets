@@ -1982,7 +1982,8 @@ def run_graph(
 
     operation=emit_event takes inputs_json {"name", "data"} under your own home
     graph_id and wakes only YOUR automations subscribed to that name
-    (event_type app_event). Returns how many wakes it stored.
+    (event_type app_event). Returns how many wakes it stored. The wake's
+    event.viewer.account_id is the authenticated account; data cannot set it.
 
     File inputs: a file the user attached in the app is ALREADY a run-file
     reference, arriving inside their message as a delimited JSON attachment

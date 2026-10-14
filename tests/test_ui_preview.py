@@ -649,7 +649,7 @@ def test_the_preview_bridge_answers_every_startup_read_with_the_apps_keys():
             "conversation_design", "packages.list_tryable"} <= startup, sorted(startup)
     assert _handler_return_keys(masked, "readLive") == {"as_of", "agents", "external_agents"}
     assert _handler_return_keys(masked, "whoami") == {
-        "protocol", "command_center_id", "command_center_name",
+        "protocol", "command_center_id", "command_center_name", "account_id",
         "workflow_refs", "agent_refs"}
     # ...and nothing if it counted a callback's row shape as the answer.
     assert _handler_return_keys(masked, "listTryablePackages") == {

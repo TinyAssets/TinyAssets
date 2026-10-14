@@ -9,6 +9,9 @@ principal, their own subscriptions, their own current home.
 
 What the caller learns is how many wakes were stored, never which: a UI cannot
 map an owner's subscriptions beyond "something listens to this name".
+
+The wake's ``event.viewer.account_id`` is the authenticated account. It is not
+taken from ``data``, so a screen cannot claim to be another account.
 """
 
 from __future__ import annotations

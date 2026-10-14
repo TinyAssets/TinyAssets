@@ -424,7 +424,10 @@ def emit_app_event(
         event_type=EVENT_APP,
         universe_id=universe_id,
         principal_id=principal_id,
-        payload={"name": name, "data": data},
+        # ``viewer`` is the authenticated account, not a field of ``data``. A
+        # screen can put any account_id in data; a node that enforces one
+        # rating per account reads this instead.
+        payload={"name": name, "data": data, "viewer": {"account_id": principal_id}},
     )
 
 
