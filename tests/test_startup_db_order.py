@@ -57,6 +57,7 @@ class SchedulerLikeWriter:
 def fresh_data_dir(tmp_path, monkeypatch):
     """A data dir with no `.runs.db` yet -- the only state the race needs."""
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
     from tinyassets.runs import runs_db_path
 
     db = runs_db_path(tmp_path)

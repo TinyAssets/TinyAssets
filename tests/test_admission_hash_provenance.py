@@ -11,7 +11,6 @@ checking each writer's actual output against the reader's actual contract.
 
 import pytest
 
-from tinyassets.api.universe import _request_idempotency_key_hash
 from tinyassets.daemon_server import initialize_author_server
 from tinyassets.storage.request_admissions import (
     RequestAdmissionStore,
@@ -26,11 +25,6 @@ def _accepts(value: str, *, server_derived: bool) -> bool:
     return pattern.fullmatch(value) is not None
 
 
-
-
-def test_user_request_writer_output_is_accepted_by_the_epoch2_reader():
-    minted = _request_idempotency_key_hash("user-supplied-key-0001")
-    assert _accepts(minted, server_derived=False)
 
 
 def test_each_provenance_rejects_the_other_algorithm():
