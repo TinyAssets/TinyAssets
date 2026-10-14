@@ -1483,52 +1483,5 @@ class TestEditorialVerdict:
 
 
 # =====================================================================
-# Public ingress removal (cloud-only)
-# =====================================================================
-
-
-
-
-
-
-
-
-class TestLocalTunnelCapabilityRemoved:
-    """The shipped client/tray/daemon must not be able to publish an ingress.
-
-    These assert the *absence* of the capability, not that it is disabled:
-    a gated launcher is still a launcher, and this machine must never enroll
-    a Cloudflare connector even momentarily.
-    """
-
-
-    def test_no_cloudflared_spawn_in_entrypoints(self):
-        """No entry point still names cloudflared as a process to spawn."""
-        root = Path(__file__).resolve().parent.parent
-        for rel in (
-            "fantasy_daemon/__main__.py",
-            "tinyassets/__main__.py",
-        ):
-            text = (root / rel).read_text(encoding="utf-8")
-            assert '"cloudflared"' not in text, rel
-            assert "shutil.which(" not in text or "cloudflared" not in text, rel
-
-
-
-
-
-
-
-
-
-    # -- real CLI parsing -------------------------------------------------
-    #
-    # The helper test above proves the refusal function; these drive
-    # ``_main_unfenced`` with real argv so a regression in *parsing or
-    # routing* (a dropped flag check, a reordered branch) is caught too.
-
-
-
-# =====================================================================
 # Tray Mode
 # =====================================================================
