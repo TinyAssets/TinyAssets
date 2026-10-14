@@ -232,6 +232,39 @@ def test_local_environment_is_literal_private_data_with_process_precedence(folde
         RUNNER["LocalTools"](folder).read(".env")
 
 
+@pytest.mark.parametrize("prefix", ["", "AGENT_1_"])
+@pytest.mark.parametrize("endpoint", [None, "https://first.example/v1", "https://second.example/v1"])
+@pytest.mark.parametrize("process_key", [None, "", "process-key"])
+def test_process_model_overrides_keep_credentials_with_their_endpoint(
+    folder, monkeypatch, prefix, endpoint, process_key,
+):
+    for key in list(os.environ):
+        if RUNNER["_model_key"](key):
+            monkeypatch.delenv(key)
+    (folder / ".env").write_text(
+        f"{prefix}MODEL_BASE_URL=https://first.example/v1\n"
+        f"{prefix}MODEL_NAME=first\n{prefix}MODEL_API_KEY=first-endpoint-key\n"
+    )
+    if prefix:
+        (folder / "command-center.json").write_text(json.dumps({"roster": [
+            {"agent": "main", "model_env": "AGENT_1"},
+        ]}))
+        monkeypatch.setenv("MODEL_BASE_URL", "https://global.example/v1")
+        monkeypatch.setenv("MODEL_NAME", "global-model")
+        monkeypatch.setenv("MODEL_API_KEY", "global-key-must-not-leak")
+    monkeypatch.setenv(prefix + "MODEL_NAME", "process-model")
+    if endpoint is not None:
+        monkeypatch.setenv(prefix + "MODEL_BASE_URL", endpoint)
+    if process_key is not None:
+        monkeypatch.setenv(prefix + "MODEL_API_KEY", process_key)
+    expected_key = process_key if process_key is not None else (
+        "" if endpoint == "https://second.example/v1" else "first-endpoint-key"
+    )
+    assert RUNNER["model_environment"](folder, "main") == (
+        endpoint or "https://first.example/v1", "process-model", expected_key,
+    )
+
+
 @pytest.mark.parametrize("raw", [
     b"MODEL_NAME=one\nMODEL_NAME=two\n", b"UNKNOWN_SECRET=never-expose\n",
     b"export MODEL_NAME=one\n", b'MODEL_NAME="unterminated\n',

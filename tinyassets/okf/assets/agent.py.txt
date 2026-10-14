@@ -309,7 +309,13 @@ def model_environment(root, agent):
     """Resolve only declared local model variables; never mix endpoint secrets."""
     tools = LocalTools(Path(root))
     environment = local_environment(tools.root)
-    environment.update({key: value for key, value in os.environ.items() if _model_key(key)})
+    process = {key: value for key, value in os.environ.items() if _model_key(key)}
+    for key, value in process.items():
+        if key.endswith("MODEL_BASE_URL") and value != environment.get(key):
+            # Credentials belong to the endpoint configured with them. A process
+            # override may supply its own key (including an explicit empty key).
+            environment.pop(key.removesuffix("MODEL_BASE_URL") + "MODEL_API_KEY", None)
+    environment.update(process)
     try:
         manifest = json.loads(tools.read("command-center.json"))
     except FileNotFoundError:
