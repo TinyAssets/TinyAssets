@@ -24,13 +24,16 @@ script or integration with no MCP client cannot connect at all.
 - Each key is an outside client (`tinyassets/outside_authority.py`) with exact
   `{universe, agent, capability}` grants, so every existing outside confinement
   applies; there is no second authority path.
+- The local follow-up implements agent-requested creation in Needs You,
+  with protected owner review, one-time copy, recovery and revocation. Account
+  lists existing keys.
 
 ## Out of scope (first release)
 
 - Webhooks: the agent side has no inbound endpoint yet; polling
   `GET .../runs/{run_id}` covers it.
 - OAuth client-credentials for third-party developers.
-- An app UI for keys (the owner route exists; the screen is a follow-up).
+- Third-party key issuance remains outside the TinyAssets adapter.
 - Advertising `/api` on the website `/developers` page: after it is verified
   live.
 

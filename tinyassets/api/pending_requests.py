@@ -78,7 +78,7 @@ CONSENT_ACTIONS = frozenset({
     "publish", "install", "connect", "connect_http", "extend_http", "rotate_http",
     "remove_http", "grant_workspace_consent", "bind_model_access", PATCH_INTAKE_ACTION,
     "start_activity", "approve_action", "connect_browser",
-    "policy_proposal",
+    "policy_proposal", "credential_request",
 })
 # System-created approve_action and notify use dedicated branches before the
 # general gate; classify them too so creation paths cannot escape the inventory.
@@ -261,6 +261,10 @@ def _validated_action(raw: Any) -> dict[str, Any]:
     kind = str(action.get("type") or "answer").strip().lower()
     if kind == "answer":
         return {"type": "answer"}
+    if kind == "credential_request":
+        from tinyassets.api.credential_requests import validate_action
+
+        return validate_action(action)
     if kind == "policy_proposal":
         generation = action.get("expected_generation")
         policy = action.get("policy")
@@ -885,9 +889,9 @@ def _validated_fields(
     from tinyassets.storage.pending_requests import FIELD_TYPES
 
     fields = raw if isinstance(raw, list) else []
-    if action["type"] == "bind_model_access":
+    if action["type"] in {"bind_model_access", "credential_request"}:
         if raw not in (None, []):
-            raise ValueError("model access is a fieldless owner confirmation")
+            raise ValueError("this action is a fieldless owner confirmation")
         return []
     if not fields and has_items:
         # The answerable parts ARE the items, each with its own fields, so an
@@ -1234,7 +1238,7 @@ def request_from_user(
             return capture(udir, document["action"].get("pending_action"))
         except (RequestRefused, ValueError) as exc:
             return _bad(str(exc))
-    if raw_type in _PINNED_ACTIONS:
+    if raw_type in _PINNED_ACTIONS or raw_type == "credential_request":
         # The platform writes these tabs itself; whatever the agent sent is replaced.
         kind, title = kind or raw_type, title or raw_type
     if not kind:
@@ -1291,6 +1295,14 @@ def request_from_user(
             action = capture_action(_uid, action)
         except (ValueError, LookupError, PermissionError, CurrentHomeChanged) as exc:
             return _bad(str(exc))
+    if action.get("type") == "credential_request":
+        from tinyassets.api.credential_requests import capture, tab_text
+
+        try:
+            action = capture(_uid, action)
+        except ValueError as exc:
+            return _bad(str(exc))
+        kind, title, body = tab_text(action)
     if action.get("type") == "publish":
         # The consent is the PLATFORM's words about what it pinned: the agent's
         # own kind/title/body are replaced, and the ask carries no fields.
@@ -2878,6 +2890,11 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
     # question must not let a bearer reach its pinned executable action.
     pinned = _consent_pin(_uid, request_id)
     action_type = (pinned["record"]["action"] if pinned else row["action"]).get("type")
+    if (action_type == "credential_request" and document.get("dismiss") is not True
+            and str(document.get("decision") or "").lower() != "declined"):
+        return {"error": "interactive_approval_required",
+                "detail": "Create this key in its protected Needs You card.",
+                "request_pending": row["status"] == "pending"}
     if (action_type == "policy_proposal" and document.get("dismiss") is not True
             and str(document.get("decision") or "").lower() != "declined"):
         return {"error": "policy_route_required", "detail":

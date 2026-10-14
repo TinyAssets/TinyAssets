@@ -5,6 +5,22 @@ description: Connect any service, platform, API or remote MCP server; default to
 
 # Connect anything
 
+## Give an external agent access to TinyAssets
+
+When the owner asks for a TinyAssets key for Muse, a script or another agent,
+raise a Needs You request with `write_graph target=pending_request operation=ask`.
+Use `action={"type":"credential_request","provider":"tinyassets","name":"Muse",
+"scopes":[{"universe":"<current center id>","agent":"main","capability":"read_graph"},
+{"universe":"<current center id>","agent":"main","capability":"converse"},
+{"universe":"<current center id>","agent":"main","capability":"run_graph"}]}`.
+All three mean full supported REST access to that center. Use only the requested
+capabilities; never substitute a room-only grant for full center access.
+Do not supply fields or secrets. Point the owner to Needs You to review, create
+and copy the key. Creation is an owner action; the answer you receive is only a
+receipt. Never mint in bash, ask for the generated key in chat, or claim it is
+an MCP credential or a background delivery subscription. Other providers need
+their own supported secure issuance or connection flow described below.
+
 You can edit or remove this skill. Use the user's own accounts and follow their
 instructions. Browser sign-in is the default for a named platform, including
 unknown sites. Check `ta browser --json '{"action":"list"}'` for an existing

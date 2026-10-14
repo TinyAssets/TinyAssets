@@ -202,6 +202,28 @@ async def read_run(request):
                            fn=_read("run", run_id=request.path_params["run_id"]))
 
 
+async def read_run_output(request):
+    """The existing bounded MCP output reader, under the same per-center grant."""
+    from tinyassets.api.run_outputs import DEFAULT_OUTPUT_CHARS, MAX_OUTPUT_CHARS
+
+    query = request.query_params
+    allowed = {"field_name", "output_offset", "output_max_chars"}
+    if set(query) - allowed or any(len(query.getlist(key)) != 1 for key in query):
+        return _error(400, "invalid_request", "unknown or duplicate output query parameter")
+    numbers = {}
+    for key, default in (("output_offset", 0), ("output_max_chars", DEFAULT_OUTPUT_CHARS)):
+        raw = query.get(key, str(default))
+        if not raw or not raw.isascii() or not raw.isdecimal() or len(raw) > 10:
+            return _error(400, "invalid_request", key + " must be an ASCII decimal integer")
+        numbers[key] = int(raw)
+    if not 1 <= numbers["output_max_chars"] <= MAX_OUTPUT_CHARS:
+        return _error(400, "invalid_request", f"output_max_chars must be 1-{MAX_OUTPUT_CHARS}")
+    return await _dispatch(
+        request, capability="read_graph", universe=request.path_params["cc"],
+        fn=_read("run_output", run_id=request.path_params["run_id"],
+                 field_name=query.get("field_name", ""), **numbers))
+
+
 async def cancel_run(request):
     def cancel(universe):
         from tinyassets.universe_server import run_graph
@@ -259,6 +281,7 @@ def rest_api_routes() -> list[Any]:
         Route(base + "/{cc}/connections", list_connections, methods=["GET"]),
         Route(base + "/{cc}/runs", runs, methods=["GET", "POST"]),
         Route(base + "/{cc}/runs/{run_id}", read_run, methods=["GET"]),
+        Route(base + "/{cc}/runs/{run_id}/output", read_run_output, methods=["GET"]),
         Route(base + "/{cc}/runs/{run_id}/cancel", cancel_run, methods=["POST"]),
         Route(base + "/{cc}/messages", send_message, methods=["POST"]),
     ]
