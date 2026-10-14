@@ -397,6 +397,12 @@ class OwnerLauncherClient:
                                 'waited for a running cell to finish and none did'
                             ) from exc
                         refused = exc
+                    except BaseException:
+                        # A slot refusal leaves the channel usable for the next
+                        # ask. Any other failure leaves it unread; close it so
+                        # the next caller does not sit on a half-open socket.
+                        self._close()
+                        raise
                     else:
                         refused = None
                     if refused is None:
