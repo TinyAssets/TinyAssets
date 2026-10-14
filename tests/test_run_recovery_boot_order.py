@@ -45,6 +45,7 @@ def test_main_sweeps_before_spawning_engines_or_the_consumer(
             pass
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
     monkeypatch.setattr(session_store, "arm", lambda: None)
     in_process_broker.supervisor_for(tmp_path)
     monkeypatch.setattr(threading, "Thread", _Thread)
