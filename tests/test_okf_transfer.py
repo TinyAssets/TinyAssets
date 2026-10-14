@@ -66,6 +66,89 @@ def test_private_preview_export_and_inert_ingestion_round_trip(box):
     assert imported.files["agents/main/AGENTS.md"] == content
 
 
+def test_actual_root_harness_settings_and_roster_round_trip(box):
+    from tinyassets.okf.transfer import discover
+
+    sources = {
+        "AGENTS.md": b"Use the owner's selected files.",
+        "skills/notes/SKILL.md": b"Read notes before writing.",
+        "settings.yaml": json.dumps({
+            "schema_version": 1,
+            "model": {"id": "source-model-identifier", "connection": "source-private-connection",
+                      "effort": "high"},
+            "loop": {"compaction": {"trigger_tokens": 12345678901}},
+            "agent": {"owner": "source-private-owner", "name": "Notes",
+                      "configuration": {"contact": "person@example.com"}},
+        }).encode(),
+        "agents/editor/AGENTS.md": b"Edit selected prose.",
+        "agents/editor/settings.yaml": b"model: another-source-model\n",
+    }
+    for i, (path, raw) in enumerate(sources.items()):
+        write(box, path, raw, f"source-{i}")
+    write(box, "requests.json", b"private platform state", "private")
+    write(box, "MEMORY.md", b"unselected private memory", "memory")
+    listed = {row["path"] for row in discover(*box)["files"]}
+    assert set(sources) <= listed
+    assert not {"requests.json", "MEMORY.md"} & listed
+    view = preview(*box, list(sources))
+    assert not view.blocked
+    assert view.contacts == {"settings.yaml": ("person@example.com",)}
+    assert b"source-private" not in b"".join(view.files.values())
+    assert b"source-model" not in b"".join(view.files.values())
+    imported = ingest_zip(export_zip(*box, view, selected=list(sources)))
+    assert imported.files["agents/main/AGENTS.md"] == sources["AGENTS.md"]
+    assert imported.files["agents/main/skills/notes/SKILL.md"] == sources["skills/notes/SKILL.md"]
+    assert "AGENTS.md" not in imported.files
+    settings = json.loads(imported.files["agents/main/settings.yaml"])
+    assert settings["loop"]["compaction"]["trigger_tokens"] == 12345678901
+    assert settings["agent"]["configuration"]["contact"] == "[contact removed]"
+    assert "owner" not in settings["agent"]
+    manifest = json.loads(imported.files[MANIFEST])
+    assert manifest["agents"] == ["editor", "main"]
+    assert [row["model_env"] for row in manifest["roster"]] == ["AGENT_1", "AGENT_2"]
+    assert b"AGENT_1_MODEL_NAME=\n" in imported.files[".env.example"]
+    assert b"AGENT_2_MODEL_API_KEY=\n" in imported.files[".env.example"]
+    included = ingest_zip(export_zip(*box, view, selected=list(sources),
+                                    included_contacts={"settings.yaml": [0]}))
+    assert json.loads(included.files["agents/main/settings.yaml"])["agent"][
+        "configuration"]["contact"] == "person@example.com"
+
+
+def test_agent_settings_references_do_not_exempt_arbitrary_credentials(box):
+    write(box, "AGENTS.md", b"Use files.")
+    raw = {"schema_version": 1, "model": {"id": "a" * 32, "connection": "b" * 32},
+           "agent": {"owner": "c" * 32}}
+    write(box, "settings.yaml", json.dumps(raw).encode(), "settings")
+    view = preview(*box, ["AGENTS.md", "settings.yaml"])
+    assert not view.blocked
+    raw["agent"]["configuration"] = {"note": "Bearer abcdef1234567890qwerty0987654321"}
+    write(box, "settings.yaml", json.dumps(raw).encode(), "secret-note")
+    view = preview(*box, ["settings.yaml"])
+    assert view.blocked == {"settings.yaml": "detected credential"}
+    with pytest.raises(InvalidBundle, match="cannot override"):
+        export_zip(*box, view, selected=["settings.yaml"])
+
+
+def test_selected_root_and_nested_main_harness_cannot_overwrite_each_other(box):
+    write(box, "AGENTS.md", b"root")
+    write(box, "agents/main/AGENTS.md", b"nested", "nested")
+    view = preview(*box, ["AGENTS.md", "agents/main/AGENTS.md"])
+    with pytest.raises(InvalidBundle, match="conflicts"):
+        export_zip(*box, view, selected=list(view.files))
+
+
+def test_roster_cannot_claim_a_different_settings_reference_on_import(box):
+    write(box, "AGENTS.md", b"Use files.")
+    write(box, "settings.yaml", b"model: local-model", "settings")
+    view = preview(*box, ["AGENTS.md", "settings.yaml"])
+    bundle = ingest_zip(export_zip(*box, view, selected=list(view.files)))
+    files = dict(bundle.files)
+    manifest = json.loads(files.pop(MANIFEST))
+    manifest["roster"][0]["model_env"] = "AGENT_999"
+    with pytest.raises(InvalidBundle, match="roster"):
+        ingest_zip(archive(files, manifest=json.dumps(manifest).encode()))
+
+
 def test_preview_is_owner_bound_and_stale_preview_requires_review_again(box):
     provider, handle = box
     write(box, "workspace/note.md", b"My note")

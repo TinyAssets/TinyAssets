@@ -20,13 +20,19 @@ from types import MappingProxyType
 from typing import Mapping
 
 from tinyassets.boxes.provider import BoxHandle, BoxProvider, WriteConflict
+from tinyassets.command_center_packages import HARNESS_ROOT_DIRS, HARNESS_ROOT_FILES
 from tinyassets.credential_shape import looks_like_credential
+from tinyassets.okf.agent_export import model_variables, portable_settings, roster, settings_path
 from tinyassets.okf.bundle import InvalidBundle
 from tinyassets.okf.manifest import build_manifest
 
 MANIFEST = "command-center.json"
 LIMITATIONS = "Credential detection cannot prove a file is free of personal data."
 CONTENT_ROOTS = frozenset({"agents", "workspace", "wiki", "brain", "workflows", "memory", "ui"})
+# Reuse the shared-package root harness allowlist. Root memory requires an
+# item-selection workflow; it is not silently included with the harness.
+ROOT_HARNESS = HARNESS_ROOT_FILES - {"MEMORY.md"}
+CONTENT_ROOTS = CONTENT_ROOTS | HARNESS_ROOT_DIRS
 NEVER = frozenset(
     {
         ".git",
@@ -110,7 +116,7 @@ def _agents(paths):
 def discover(provider: BoxProvider, handle: BoxHandle, *, limits=Limits()):
     """List eligible regular files, refusing a partial or stale discovery."""
     generation = provider.read_many(handle, [], max_total=0).generation
-    pending, found, visited = list(sorted(CONTENT_ROOTS)), [], 0
+    pending, found, visited = list(sorted(CONTENT_ROOTS | ROOT_HARNESS)), [], 0
     deadline = time.monotonic() + limits.seconds
     while pending:
         path = pending.pop()
@@ -168,14 +174,19 @@ def preview(provider: BoxProvider, handle: BoxHandle, paths: list[str], *, limit
         if key in normalized:
             raise InvalidBundle("Case or Unicode path collision")
         normalized.add(key)
-        if path.split("/")[0] not in CONTENT_ROOTS or _never(path):
+        if (path not in ROOT_HARNESS and path.split("/")[0] not in CONTENT_ROOTS) or _never(path):
             raise InvalidBundle("This path cannot be exported")
     view = provider.read_many(handle, ["/cc/" + path for path in paths], max_total=limits.expanded)
     if view.missing:
         raise InvalidBundle("Preview source file is missing")
     files, blocked, binary, contacts = {}, {}, set(), {}
+    settings_numbers = {path: n for n, path in enumerate(
+        sorted(p for p in paths if settings_path(p)), 1
+    )}
     for path in paths:
         data = view.files["/cc/" + path]
+        if path in settings_numbers:
+            data = portable_settings(data, number=settings_numbers[path])
         files[path] = data
         try:
             content = data.decode("utf-8")
@@ -188,7 +199,7 @@ def preview(provider: BoxProvider, handle: BoxHandle, paths: list[str], *, limit
             blocked[path] = "detected credential"
         elif CONTACT.search(path):
             blocked[path] = "contact details in a file path"
-        elif matches := tuple(match.group() for match in CONTACT.finditer(content)):
+        elif matches := _contacts(path, content)[0]:
             if path in binary:
                 blocked[path] = "contact details in an uninspectable binary"
             else:
@@ -201,6 +212,34 @@ def preview(provider: BoxProvider, handle: BoxHandle, paths: list[str], *, limit
         frozenset(binary),
         contacts=MappingProxyType(contacts),
     )
+
+
+def _contacts(path, content, approved=None):
+    """Settings contacts are string values, never JSON numbers or field names."""
+    matches = []
+
+    def replace(match):
+        index = len(matches)
+        matches.append(match.group())
+        return match.group() if approved is None or index in approved else "[contact removed]"
+
+    def visit(value):
+        if isinstance(value, str):
+            return CONTACT.sub(replace, value)
+        if isinstance(value, list):
+            return [visit(item) for item in value]
+        if isinstance(value, dict):
+            if any(CONTACT.search(key) for key in value):
+                raise InvalidBundle("Contact details cannot be settings field names")
+            return {key: visit(child) for key, child in value.items()}
+        return value
+
+    if settings_path(path):
+        content = json.dumps(visit(json.loads(content)), ensure_ascii=False,
+                             sort_keys=True, indent=2)
+    else:
+        content = CONTACT.sub(replace, content)
+    return tuple(matches), content
 
 
 def export_zip(
@@ -229,7 +268,10 @@ def export_zip(
         raise InvalidBundle("Approval cannot override a blocked file")
     if not (set(selected) & reviewed.binary) <= set(named_binaries):
         raise InvalidBundle("An uninspectable binary requires named approval")
-    if profile == "share" and any(p.split("/")[0] not in {"agents", "ui"} for p in selected):
+    if profile == "share" and any(
+        p not in ROOT_HARNESS and p.split("/")[0] not in {"agents", "ui"} | HARNESS_ROOT_DIRS
+        for p in selected
+    ):
         raise InvalidBundle("Share includes only the harness and layouts")
     included_contacts = {} if included_contacts is None else included_contacts
     if not isinstance(included_contacts, dict) or not set(included_contacts) <= set(selected):
@@ -247,11 +289,20 @@ def export_zip(
     files = {path: reviewed.files[path] for path in sorted(selected)}
     for path in set(files) & reviewed.contacts.keys():
         approved = set(included_contacts.get(path, ()))
-        occurrence = iter(range(len(reviewed.contacts[path])))
-        files[path] = CONTACT.sub(
-            lambda match: match.group() if next(occurrence) in approved else "[contact removed]",
-            files[path].decode("utf-8"),
-        ).encode("utf-8")
+        files[path] = _contacts(path, files[path].decode("utf-8"), approved)[1].encode("utf-8")
+    relocated, occupied = {}, set()
+    for path, data in files.items():
+        target = "agents/main/" + path if (
+            path in ROOT_HARNESS or path.split("/")[0] in HARNESS_ROOT_DIRS
+        ) else path
+        key = safe_path(target)
+        if key in occupied:
+            raise InvalidBundle("Root harness conflicts with a selected agent file")
+        relocated[target] = data
+        occupied.add(key)
+    files = relocated
+    agents = _agents(files)
+    agent_roster = roster(files, agents)
     if profile == "export":
         from tinyassets.okf.export_assets import generated_files
         from tinyassets.wiki.okf_export import render_okf_files
@@ -275,12 +326,17 @@ def export_zip(
                 files[target] = data
 
         generated = generated_files()
+        generated[".env.example"] += "".join(
+            f"{name}=\n" for name in model_variables(agent_roster)
+        ).encode("ascii")
         if set(files) & set(generated):
             raise InvalidBundle("Selected content conflicts with generated export files")
         files.update(generated)
     manifest = build_manifest(
         profile=profile, name="Command center", description="", files=files,
-        agents=_agents(files), workflows=[], ui="", automations=[], model="", connections=[],
+        agents=agents, workflows=[], ui="", automations=[], model="", connections=[
+            f"connection-{entry['model_env'][6:]}" for entry in agent_roster if entry["model_env"]
+        ], roster=agent_roster,
     )
     # Hashes and sizes are schema-generated integrity fields, not user content.
     files[MANIFEST] = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8")
@@ -358,7 +414,7 @@ def ingest_zip(raw: bytes, *, limits=Limits()) -> ValidatedBundle:
         if (
             manifest.get("format_version") != 1
             or manifest.get("profile") not in {"share", "export"}
-            or set(manifest) != {
+            or set(manifest) - {"roster"} != {
                 "format_version", "profile", "name", "description", "agents", "files",
                 "workflows", "ui", "automations", "needs",
             }
@@ -376,6 +432,8 @@ def ingest_zip(raw: bytes, *, limits=Limits()) -> ValidatedBundle:
             raise InvalidBundle("Manifest must describe exactly the imported files")
         if "agents" in manifest and manifest["agents"] != _agents(expected):
             raise InvalidBundle("Manifest roster differs from included agent instructions")
+        if "roster" in manifest and manifest["roster"] != roster(files, manifest["agents"]):
+            raise InvalidBundle("Manifest roster differs from included settings")
         for path, descriptor in expected.items():
             if descriptor != {
                 "path": path,

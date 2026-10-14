@@ -6,8 +6,8 @@ import hashlib
 
 
 def build_manifest(*, profile, name, description, files, agents, workflows, ui,
-                   automations, model, connections):
-    return {
+                   automations, model, connections, roster=None):
+    result = {
         "format_version": 1,
         "profile": profile,
         "name": name,
@@ -22,3 +22,6 @@ def build_manifest(*, profile, name, description, files, agents, workflows, ui,
         "automations": automations,
         "needs": {"model": model, "connections": connections},
     }
+    if roster is not None:
+        result["roster"] = roster
+    return result

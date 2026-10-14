@@ -1,5 +1,40 @@
 ## ADDED Requirements
 
+### Requirement: Portable agent roster
+Export SHALL include selected root harness files without collisions and derive
+its roster from included instructions and settings. Settings SHALL use the
+canonical bounded parser, replace source model/connection identifiers with local
+references and omit source owner bindings. Other credentials SHALL stay blocked.
+Import SHALL verify the roster against files; a per-agent endpoint override
+SHALL never inherit the global endpoint's credential.
+
+#### Scenario: Main agent exports from its actual root
+- **WHEN** the owner selects root AGENTS.md, settings.yaml and a skill
+- **THEN** the same preview bytes appear beneath agents/main in the export
+- **AND** unrelated root state and unselected files remain absent.
+
+#### Scenario: Source handles do not travel
+- **WHEN** selected settings contain a model connection and source owner
+- **THEN** the preview and archive contain local model references and no source handles
+- **AND** unknown or credential-bearing behavior fields cannot bypass screening.
+
+#### Scenario: Roster and files disagree
+- **WHEN** an imported roster names missing settings or another agent's model group
+- **THEN** import refuses the archive before custody or activation.
+
+### Requirement: Local model environment file
+The standalone runner SHALL read a bounded regular .env file as literal model
+configuration, without sourcing shell code, following links or exposing that
+file to model file tools. Process environment values SHALL override file values.
+
+#### Scenario: Environment file contains shell-looking text
+- **WHEN** a local configuration value contains a shell substitution
+- **THEN** the value remains literal and no shell process executes.
+
+#### Scenario: Environment file is malformed or linked
+- **WHEN** .env has duplicate or unsupported keys, invalid quoted values, excessive size or a link
+- **THEN** startup fails visibly without falling back to another model configuration.
+
 ### Requirement: Standalone chat runner
 The export SHALL contain a Python-standard-library runner with no TinyAssets
 account dependency. It SHALL read the selected agent's instructions and offer

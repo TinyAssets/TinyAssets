@@ -129,7 +129,8 @@ def test_endpoint_validation_precedes_network(url):
         RUNNER["complete"](url, "fixture", [], api_key="test-only")
 
 
-def test_copied_runner_uses_four_tools_over_http_without_platform(folder):
+@pytest.mark.parametrize("per_agent", [False, True])
+def test_copied_runner_uses_four_tools_over_http_without_platform(folder, per_agent):
     """Real subprocess and HTTP transport; fixture responses, not a paid model."""
     (folder / "run/agent.py").write_bytes(SOURCE.read_bytes())
     received = []
@@ -137,6 +138,7 @@ def test_copied_runner_uses_four_tools_over_http_without_platform(folder):
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             assert self.path == "/v1/chat/completions"
+            assert self.headers.get("Authorization") is None
             packet = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             received.append(packet)
             if len(received) == 1:
@@ -158,6 +160,14 @@ def test_copied_runner_uses_four_tools_over_http_without_platform(folder):
     try:
         env = {"PATH": os.environ["PATH"], "MODEL_NAME": "fixture",
                "MODEL_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1"}
+        if per_agent:
+            (folder / "command-center.json").write_text(json.dumps({"roster": [
+                {"agent": "main", "model_env": "AGENT_1"},
+            ]}))
+            env.update({"AGENT_1_MODEL_BASE_URL": env["MODEL_BASE_URL"],
+                        "AGENT_1_MODEL_NAME": "fixture",
+                        "MODEL_BASE_URL": "https://unused.invalid/v1",
+                        "MODEL_API_KEY": "global-key-must-not-reach-agent-endpoint"})
         result = subprocess.run([sys.executable, "-I", str(folder / "run/agent.py"), "write note"],
                                 env=env, capture_output=True, text=True, timeout=20, check=True)
     finally:
@@ -170,6 +180,31 @@ def test_copied_runner_uses_four_tools_over_http_without_platform(folder):
     assert {tool["function"]["name"] for tool in received[0]["tools"]} == {
         "read", "write", "edit", "bash"}
     assert received[1]["messages"][-1]["content"] == "Written"
+
+
+@pytest.mark.parametrize("prefix", ["AWS", "AGENT_0", "AGENT_1_MODEL", "AGENT_１２", 1, 0, None])
+def test_roster_cannot_select_arbitrary_environment_names(folder, prefix):
+    (folder / "command-center.json").write_text(json.dumps({"roster": [
+        {"agent": "main", "model_env": prefix},
+    ]}))
+    with pytest.raises(ValueError, match="environment reference"):
+        RUNNER["model_environment"](folder, "main")
+
+
+def test_agent_model_does_not_inherit_global_credentials(folder, monkeypatch):
+    (folder / "command-center.json").write_text(json.dumps({"roster": [
+        {"agent": "main", "model_env": "AGENT_1"},
+    ]}))
+    monkeypatch.setenv("MODEL_API_KEY", "global-secret")
+    monkeypatch.setenv("MODEL_NAME", "global-model")
+    monkeypatch.setenv("MODEL_BASE_URL", "https://global.example/v1")
+    monkeypatch.setenv("AGENT_1_MODEL_NAME", "local-model")
+    with pytest.raises(ValueError, match="together"):
+        RUNNER["model_environment"](folder, "main")
+    monkeypatch.setenv("AGENT_1_MODEL_BASE_URL", "http://localhost:11434/v1")
+    assert RUNNER["model_environment"](folder, "main") == (
+        "http://localhost:11434/v1", "local-model", "",
+    )
 
 
 def test_bash_output_is_bounded_and_process_group_is_stopped(folder):

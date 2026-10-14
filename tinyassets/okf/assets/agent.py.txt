@@ -226,7 +226,9 @@ def run(root, message, *, agent="main", model_call, max_calls=20, approve=None):
         raise ValueError("max_calls must be between 1 and 100")
     tools = LocalTools(Path(root), approve=approve)
     instructions = tools.read(f"agents/{agent}/AGENTS.md")
-    messages = [{"role": "system", "content": instructions}, {"role": "user", "content": message}]
+    context = f"Your harness is in agents/{agent}/. File paths are relative to the export root.\n"
+    messages = [{"role": "system", "content": context + instructions},
+                {"role": "user", "content": message}]
     for _ in range(max_calls):
         answer = model_call(messages)
         if not isinstance(answer, dict) or answer.get("role") != "assistant":
@@ -252,6 +254,89 @@ def run(root, message, *, agent="main", model_call, max_calls=20, approve=None):
     raise RuntimeError("Model-call limit reached; the task is unfinished")
 
 
+def _model_key(name):
+    fields = ("MODEL_BASE_URL", "MODEL_NAME", "MODEL_API_KEY")
+    if name in fields:
+        return True
+    if not name.startswith("AGENT_"):
+        return False
+    number, separator, field = name[6:].partition("_")
+    return bool(separator and number.isascii() and number.isdigit()
+                and 1 <= len(number) <= 4 and number[0] != "0" and field in fields)
+
+
+def local_environment(root):
+    """Read owner configuration as data; never source it or mutate process env."""
+    import stat
+
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            fd = os.open(".env", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        except FileNotFoundError:
+            return {}
+        with os.fdopen(fd, "rb") as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError(".env must be an unlinked regular file")
+            raw = source.read(64 * 1024 + 1)
+    finally:
+        os.close(directory)
+    if len(raw) > 64 * 1024:
+        raise ValueError(".env exceeds 64 KiB")
+    result = {}
+    for line in raw.decode("utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, separator, value = line.partition("=")
+        name, value = name.strip(), value.strip()
+        if not separator or not _model_key(name) or name in result:
+            raise ValueError(".env needs unique declared model variables")
+        if value.startswith('"'):
+            value = json.loads(value)
+        elif value.startswith("'"):
+            if len(value) < 2 or not value.endswith("'"):
+                raise ValueError("Invalid quoted .env value")
+            value = value[1:-1]
+        if not isinstance(value, str) or any(ord(char) < 32 for char in value):
+            raise ValueError(".env values must be single-line strings")
+        result[name] = value
+    return result
+
+
+def model_environment(root, agent):
+    """Resolve only declared local model variables; never mix endpoint secrets."""
+    tools = LocalTools(Path(root))
+    environment = local_environment(tools.root)
+    environment.update({key: value for key, value in os.environ.items() if _model_key(key)})
+    try:
+        manifest = json.loads(tools.read("command-center.json"))
+    except FileNotFoundError:
+        manifest = {}
+    if not isinstance(manifest, dict):
+        raise ValueError("Invalid command-center manifest")
+    roster = manifest.get("roster", [])
+    if not isinstance(roster, list) or any(not isinstance(row, dict) for row in roster):
+        raise ValueError("Invalid command-center roster")
+    rows = [row for row in roster if row.get("agent") == agent]
+    if len(rows) > 1 or (roster and not rows):
+        raise ValueError("Agent must name one exported roster entry")
+    prefix = rows[0].get("model_env", "") if rows else ""
+    if not isinstance(prefix, str) or (prefix and (not prefix.startswith("AGENT_")
+                   or not prefix[6:].isascii() or not prefix[6:].isdigit()
+                   or not 1 <= len(prefix[6:]) <= 4 or prefix[6] == "0")):
+        raise ValueError("Invalid local model environment reference")
+    fields = ("MODEL_BASE_URL", "MODEL_NAME", "MODEL_API_KEY")
+    values = [environment.get(f"{prefix}_{field}", "") for field in fields] if prefix else []
+    if any(values):
+        if not values[0] or not values[1]:
+            raise ValueError("Set the agent's MODEL_BASE_URL and MODEL_NAME together")
+        return tuple(values)
+    return (environment.get("MODEL_BASE_URL") or "http://localhost:11434/v1",
+            environment.get("MODEL_NAME", ""), environment.get("MODEL_API_KEY", ""))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("message")
@@ -259,12 +344,11 @@ def main():
     parser.add_argument("--agent", default="main")
     parser.add_argument("--max-calls", type=int, default=20)
     args = parser.parse_args()
-    model = os.environ.get("MODEL_NAME", "")
+    endpoint, model, api_key = model_environment(args.root, args.agent)
     if not model:
         parser.error("Set MODEL_NAME and MODEL_BASE_URL for your own endpoint")
     def model_call(messages):
-        return complete(os.environ.get("MODEL_BASE_URL", "http://localhost:11434/v1"), model,
-                        messages, api_key=os.environ.get("MODEL_API_KEY", ""))
+        return complete(endpoint, model, messages, api_key=api_key)
     print(run(args.root, args.message, agent=args.agent, model_call=model_call,
               max_calls=args.max_calls))
 

@@ -205,3 +205,23 @@ workspace wiki trees. Generated path collisions or selected reserved names fail
 rather than overwrite or silently drop approved content. Named binary files with
 Markdown suffixes retain their exact bytes without parsing. Existing behavioral
 wiki tests now exercise this same writer, and transfer tests cover its integration.
+
+## Portable roster and settings
+
+The preview now reuses the shared-package root harness allowlist (root memory
+still needs item selection) and maps selected root files into agents/main.
+Root and nested agent paths may not collide. Root platform state stays absent.
+The canonical settings parser validates bounds, duplicates and typed fields;
+only model identifiers/connections and source owner bindings are replaced or
+omitted before the preview. Other behavior/configuration fields retain ordinary
+credential screening. Contact selection traverses JSON string values, so a
+phone-shaped numeric configuration value cannot become invalid JSON.
+
+The shared manifest accepts an optional roster for private/share exports while
+existing public-package bytes remain unchanged. The roster is derived only from
+included instructions and settings, and import recomputes it before custody.
+Each model-bearing agent gets a distinct AGENT_n environment group, written as
+empty placeholders. The standalone runner can use that complete local group or
+the global model group; it never inherits the global credential into a partially
+overridden endpoint. This captures file-based roster/model behavior, not broker
+rules, workflow definitions or schedule records; those remain next integration.

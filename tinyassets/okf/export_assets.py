@@ -22,6 +22,9 @@ Include agents/<agent>/AGENTS.md in the preview to run that agent locally.
 Selected wiki/pages Markdown is converted into the OKF bundle rooted at wiki/.
 Its absolute links resolve within that wiki bundle; open it as the OKF root.
 Other selected files retain their original paths.
+The main agent's selected root harness is placed in agents/main/. Settings
+replace source model/connection identifiers with local references and omit
+source owner identifiers. Source access permissions are not portable grants.
 
 With Python 3.11+ on POSIX and a local chat-completions model endpoint running:
 
@@ -34,7 +37,14 @@ python run/agent.py --agent main 'Read the files and summarize this project'
 Replace main with an included agent's folder name. For a remote model set an
 HTTPS MODEL_BASE_URL and MODEL_API_KEY in your shell environment. No TinyAssets
 account or network connection is needed. .env.example lists empty placeholders;
-the runner reads the environment, and does not execute or source .env files.
+copy it to .env and fill the model variables, or set them in your shell.
+The runner reads .env as literal data, never as shell code. Shell environment
+values override .env; duplicate/unknown keys and malformed values fail startup.
+The manifest roster names each agent's optional AGENT_n model environment group.
+Set that group's MODEL_BASE_URL and MODEL_NAME together to override the global
+endpoint for that agent; its MODEL_API_KEY is separate and never inherited from
+the global endpoint. Empty groups use the global model. .env.example lists the
+empty variables; model and connection references require your own local binding.
 
 Chat, read/write/edit/bash tools, instructions, skills and selected files work
 locally. Bash has your host privileges and asks before every command by default.
