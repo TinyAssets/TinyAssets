@@ -259,7 +259,8 @@ class BoxHostState:
 
     # -- operation outcomes ----------------------------------------------------
 
-    def begin(self, cc: str, op_id: str, kind: str, digest: str) -> dict[str, Any] | None:
+    def begin(self, cc: str, op_id: str, kind: str, digest: str, *,
+              cli_lease: str | None = None) -> dict[str, Any] | None:
         """Record ``op_id`` as running under this incarnation, or return the earlier record.
 
         The caller runs the operation only when this returns None. A returned record
@@ -283,12 +284,27 @@ class BoxHostState:
                     "state": row[2],
                     "outcome": json.loads(row[3]) if row[3] else None,
                 }
+            if cli_lease is not None and conn.execute(
+                "SELECT 1 FROM ops WHERE command_center_id=? "
+                "AND json_extract(outcome, '$.cli_lease')=? "
+                "AND coalesce(json_extract(outcome, '$.cli_ack'), 0)=0 LIMIT 1",
+                (cc, cli_lease),
+            ).fetchone():
+                raise BoxError("CLI custody has unsettled writeback; reconnect or recover it")
             conn.execute(
-                "INSERT INTO ops (command_center_id, op_id, kind, digest, state, incarnation)"
-                " VALUES (?, ?, ?, ?, 'running', ?)",
-                (cc, op_id, kind, digest, self.incarnation),
+                "INSERT INTO ops (command_center_id, op_id, kind, digest, state, incarnation,"
+                " outcome)"
+                " VALUES (?, ?, ?, ?, 'running', ?, ?)",
+                (cc, op_id, kind, digest, self.incarnation,
+                 json.dumps({"cli_lease": cli_lease, "cli_ack": False}) if cli_lease else None),
             )
             return None
+
+    def acknowledge_cli(self, owner: str, op_id: str) -> None:
+        with self._lock, self._conn() as conn:
+            conn.execute("UPDATE ops SET outcome=json_set(outcome, '$.cli_ack', json('true')) "
+                         "WHERE command_center_id=? AND op_id=? AND state='done'",
+                         (owner, op_id))
 
     def update(self, cc: str, op_id: str, outcome: dict[str, Any]) -> None:
         """Attach progress to an operation still running under this incarnation."""

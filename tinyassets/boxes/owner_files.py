@@ -125,6 +125,7 @@ class OwnerFileHost:
                 if checked.uid != grant.uid:
                     raise BoxAuthError("permanent owner identity changed")
             record = self.state.begin_owner_destroy(grant.owner_id, op_id, grant.uid, center)
+            self.executions.cancel_owner(grant)
             if record["state"] != "done":
                 self.backend.stop(grant.uid)
                 if record["entries"] is None:
@@ -174,7 +175,8 @@ class OwnerFileHost:
         # The channel grant is not decoded from args. Require an exact operation
         # schema before touching the journal, sandbox or owner tree.
         exec_operation = operation in {
-            "start_exec", "stream", "exec_status", "send_stdin", "cancel"}
+            "start_exec", "start_cli", "stream", "exec_status", "send_stdin", "cancel",
+            "close_stdin", "cli_result", "ack_cli"}
         if exec_operation:
             from tinyassets.boxes.executions import validate as validate_exec
 

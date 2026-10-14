@@ -325,3 +325,199 @@ def test_channel_detach_keeps_work_and_reconnected_handle_alive(runtime):
         threading.Event().wait(.01)
     assert host.state.find_exec("alice", exec_id)["state"] == "done"
     assert host.state.pending("alice") == 0
+
+
+def cli_config():
+    return {"home_dir": "test-cli", "workdir": "/agent-home/jobs/" + "a" * 32,
+            "auth_files": {"auth.json": b"old-private-material"}, "nonce": "b" * 32,
+            "catalogue_rewrite": None, "requested_model": None, "custody": "d" * 64}
+
+
+def cli_frames(*, nonce="b" * 32, code=0):
+    import base64
+    import struct
+
+    from tinyassets.boxes.file_wire import encode
+
+    output = b"public CLI response\n"
+    private = encode({"external_agent_writeback": {
+        "auth.json": base64.b64encode(b"new-private-material").decode()},
+        "nonce": nonce, "exit": code})
+    return (struct.pack("!BI", 1, len(output)) + output
+            + struct.pack("!BI", 2, len(private)) + private)
+
+
+def test_private_cli_writeback_stays_out_of_output_and_journal(runtime):
+    host, provider, handle, state = runtime
+    state["code"] = "sys.stdout.buffer.write(" + repr(cli_frames()) + ")"
+    ident = provider.start_cli(handle, "refresh", ["unused"], env={}, cli=cli_config())
+    output, end = collect(provider, handle, ident)
+    assert output == b"public CLI response\n" and end.exit_code == 0
+    assert provider.cli_result(handle, ident) == {
+        "files": {"auth.json": b"new-private-material"}, "exit_code": 0}
+    assert provider.start_cli(handle, "refresh", ["unused"], env={}, cli=cli_config()) == ident
+    assert len(state["launches"]) == 1
+    record = repr(host.state.lookup("alice", "refresh"))
+    assert "private-material" not in record
+    assert "cHJpdmF0ZS1tYXRlcmlhbA" not in record
+    assert "auth.json" not in record
+    provider.ack_cli(handle, ident)
+    with pytest.raises(BoxError, match="unavailable"):
+        provider.cli_result(handle, ident)
+    assert provider.start_cli(handle, "refresh", ["unused"], env={}, cli=cli_config()) == ident
+    assert len(state["launches"]) == 1
+
+
+@pytest.mark.parametrize("failure", ["truncated", "foreign_nonce", "stop_failed"])
+def test_private_cli_unknown_writeback_never_recovers_or_replays(runtime, failure):
+    host, provider, handle, state = runtime
+    wire = cli_frames(nonce="c" * 32) if failure == "foreign_nonce" else cli_frames()
+    if failure == "truncated":
+        wire = wire[:-1]
+    state["code"] = "sys.stdout.buffer.write(" + repr(wire) + ")"
+    state["stop_fail"] = failure == "stop_failed"
+    ident = provider.start_cli(handle, "refresh", ["unused"], env={}, cli=cli_config())
+    with pytest.raises(BoxError, match="unknown"):
+        collect(provider, handle, ident)
+    with pytest.raises(BoxError, match="unavailable"):
+        provider.cli_result(handle, ident)
+    with pytest.raises(BoxError, match="unknown"):
+        provider.start_cli(handle, "refresh", ["unused"], env={}, cli=cli_config())
+    with pytest.raises(BoxError, match="unquiesced" if failure == "stop_failed" else "unsettled"):
+        provider.start_cli(handle, "new-id-same-custody", ["unused"], env={}, cli=cli_config())
+    assert ident not in host.executions.private
+    assert len(state["launches"]) == 1
+
+
+def test_private_cli_requires_same_session_and_acknowledges_before_capacity_reuse(runtime):
+    host, provider, handle, state = runtime
+    state["code"] = "sys.stdout.buffer.write(" + repr(cli_frames()) + ")"
+    ident = provider.start_cli(handle, "refresh", ["unused"], env={}, cli=cli_config())
+    collect(provider, handle, ident)
+    foreign = OwnerGrant("alice", 300001, "other-session")
+    host.authorize = lambda g, c: c == "a"
+    token = host.bind(foreign, "a")["token"]
+    with pytest.raises(BoxAuthError, match="session"):
+        host.request(foreign, token, "cli_result", {"exec_id": ident})
+    # A restarted host has durable execution identity but no private material.
+    host.executions.private.clear()
+    with pytest.raises(BoxError, match="unavailable"):
+        provider.cli_result(handle, ident)
+    assert provider.start_cli(handle, "refresh", ["unused"], env={}, cli=cli_config()) == ident
+    assert len(state["launches"]) == 1
+
+
+def test_close_stdin_delivers_eof_after_pending_input(runtime):
+    _, provider, handle, state = runtime
+    state["code"] = "sys.stdout.write(sys.stdin.read())"
+    ident = provider.start_exec(handle, "eof", ["unused"], interactive_stdin=True)
+    provider.send_stdin(handle, ident, "input", b"until EOF")
+    provider.close_stdin(handle, ident)
+    output, end = collect(provider, handle, ident)
+    assert output == b"until EOF" and end.exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_box_launcher_process_and_private_ack_share_existing_custody(runtime, monkeypatch):
+    import hashlib
+
+    from tinyassets.boxes import cli_launcher
+
+    host, provider, handle, state = runtime
+    nonce = hashlib.sha256(b"test-invocation").hexdigest()[:32]
+    state["code"] = "sys.stdout.buffer.write(" + repr(cli_frames(nonce=nonce)) + ")"
+    custody = SimpleNamespace(owner_user_id="alice", current=lambda: True,
+                              reference=SimpleNamespace(universe_id="a", service="test",
+                                                        reference_digest="custody-digest"))
+    launcher = cli_launcher.BoxLauncher(provider, handle, custody, operation_id="test-invocation")
+    proc = await launcher.spawn(["unused"], {}, home="/agent-home",
+                                workdir=cli_config()["workdir"], egress="a",
+                                auth_files=cli_config()["auth_files"],
+                                auth={"service": "test", "home_dir": "test-cli",
+                                      "files": ["auth.json"]})
+    assert await proc.stdout.readline() == b"public CLI response\n"
+    assert proc.workdir == "/tmp/ta-agent-" + nonce
+    result = await launcher.close(proc)
+    assert result == {"auth.json": b"new-private-material"} and result.exit_code == 0
+    assert proc.ident in host.executions.private
+    await launcher.acknowledge(proc)
+    assert proc.ident not in host.executions.private
+    assert proc not in launcher.processes
+
+
+def test_private_decoder_fragments_and_rejects_credential_output_confusion():
+    from tinyassets.boxes.cli_wire import PrivateDecoder
+
+    parser = PrivateDecoder(cli_config())
+    output = b"".join(parser.feed(bytes([byte])) for byte in cli_frames())
+    assert output == b"public CLI response\n"
+    assert parser.finish(0)["files"] == {"auth.json": b"new-private-material"}
+    with pytest.raises(BoxError, match="frame"):
+        parser.feed(cli_frames())
+    with pytest.raises(BoxError, match="incomplete"):
+        parser.finish(1)
+
+
+def test_private_cli_worker_materializes_refreshes_and_erases_only_tmpfs_home(tmp_path):
+    import os
+    import uuid
+
+    from tinyassets.boxes.cli_wire import PrivateDecoder
+    from tinyassets.boxes.file_wire import encode
+
+    config = cli_config()
+    config["nonce"] = uuid.uuid4().hex
+    setup = '''import os, sys
+from tinyassets.boxes.file_wire import decode
+from tinyassets.boxes.cli_wire import run
+from tinyassets.external_agents import cell
+# Only namespace/device and installed-image/network seams are substituted.
+# Credential materialization, subprocess, framing, file checks and cleanup run.
+original_stat = os.stat
+def stat(path, *args, **kwargs):
+    if path == '/home/owner':
+        fields = list(original_stat(os.environ['TEST_OWNER_ROOT']))
+        fields[2] += 1
+        return os.stat_result(fields)
+    return original_stat(path, *args, **kwargs)
+os.stat = stat
+cell.resolve_executable = lambda path: path
+original_main = cell.cell_main
+def local_main(root, **kwargs):
+    kwargs['egress'] = False
+    return original_main(root, **kwargs)
+cell.cell_main = local_main
+run(decode(sys.stdin.buffer.read()))
+'''
+    command = '''import os
+from pathlib import Path
+home = Path(os.environ['HOME'])
+auth = home / 'test-cli/auth.json'
+assert auth.read_bytes() == b'old-private-material'
+auth.write_bytes(b'new-private-material')
+print('public CLI response')
+'''
+    request = {"argv": [sys.executable, "-c", command], "env": {}, "cwd": "/cc/a",
+               "cli": config}
+    result = subprocess.run([sys.executable, "-c", setup], input=encode(request),
+                            capture_output=True, timeout=10,
+                            env={**os.environ, "TEST_OWNER_ROOT": str(tmp_path)})
+    assert result.returncode == 0, result.stderr.decode()
+    parser = PrivateDecoder(config)
+    assert parser.feed(result.stdout) == b"public CLI response\n"
+    assert parser.finish(0)["files"] == {"auth.json": b"new-private-material"}
+    assert not Path("/tmp", "ta-agent-" + config["nonce"]).exists()
+    assert not list(tmp_path.iterdir())
+
+
+def test_terminal_session_discards_private_bytes_without_forgiving_custody(runtime):
+    host, provider, handle, state = runtime
+    state["code"] = "sys.stdout.buffer.write(" + repr(cli_frames()) + ")"
+    ident = provider.start_cli(handle, "refresh", ["unused"], env={}, cli=cli_config())
+    collect(provider, handle, ident)
+    provider.end_session(handle)
+    assert ident not in host.executions.private
+    assert not host.state.lookup("alice", "refresh")["outcome"]["cli_ack"]
+    next_handle = provider.bind("a", account_id="alice", turn_id="session")
+    with pytest.raises(BoxError, match="unsettled"):
+        provider.start_cli(next_handle, "next", ["unused"], env={}, cli=cli_config())

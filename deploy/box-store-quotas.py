@@ -118,6 +118,10 @@ def fence_restore(current: Path, staged: Path) -> None:
             # A pre-restore 'done' receipt no longer describes restored bytes.
             # Preserve every seen operation ID, but never report or replay it.
             target.execute("UPDATE ops SET state='unknown_after_restore'")
+            # A newer CLI CAS may not exist in the restored credential store.
+            # Never spend that custody pin again based on its old acknowledgement.
+            target.execute("UPDATE ops SET outcome=json_set(outcome, '$.cli_ack', json('false')) "
+                           "WHERE json_extract(outcome, '$.cli_lease') IS NOT NULL")
             incarnation = live.execute("SELECT v FROM host WHERE k='incarnation'").fetchone()[0]
             target.execute("UPDATE host SET v=MAX(v,?)+1 WHERE k='incarnation'", (incarnation,))
 

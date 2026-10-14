@@ -103,3 +103,27 @@ def test_quota_restore_allows_unmaterialized_reservations(tmp_path, monkeypatch)
     with pytest.raises(ValueError, match="absent"):
         restore.reapply(owners, owners, database)
     assert not calls
+
+
+def test_restore_holds_acknowledged_cli_custody_until_new_owner_deposit(tmp_path):
+    from tinyassets.boxes.provider import BoxError
+
+    current, staged = tmp_path / "current", tmp_path / "staged"
+    seed(current)
+    shutil.copytree(current, staged)
+    state = BoxHostState(current / ".boxhost/boxhost.db")
+    state.begin("alice", "cli", "exec", "digest", cli_lease="custody-pin")
+    state.finish("alice", "cli", {"cli_lease": "custody-pin", "cli_ack": False})
+    state.acknowledge_cli("alice", "cli")
+    assert state.lookup("alice", "cli")["outcome"]["cli_ack"] is True
+    state.close()
+    restore.fence_restore(current, staged)
+    restored = BoxHostState(staged / ".boxhost/boxhost.db")
+    try:
+        assert restored.lookup("alice", "cli")["outcome"]["cli_ack"] is False
+        with pytest.raises(BoxError, match="unsettled"):
+            restored.begin("alice", "fresh-op", "exec", "new-digest", cli_lease="custody-pin")
+        assert restored.begin("alice", "fresh-deposit", "exec", "new-digest",
+                              cli_lease="new-custody-pin") is None
+    finally:
+        restored.close()
