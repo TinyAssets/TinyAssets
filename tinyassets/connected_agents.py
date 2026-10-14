@@ -52,7 +52,9 @@ def _schema(conn):
 
 def observe_mcp(identity, reported_name="") -> None:
     """Observe only an authenticated external MCP door; no HTTP body is kept."""
+    from tinyassets.daemon_server import _connect, initialize_author_server
     from tinyassets.outside_authority import current_store
+    from tinyassets.storage.current_home import CurrentHomeChanged, check_principal_not_deleted
 
     metadata = identity.metadata
     connection = metadata.get("oauth_connection")
@@ -64,8 +66,17 @@ def observe_mcp(identity, reported_name="") -> None:
         name, source = "Unknown MCP client", "unknown"
     now = time.time()
     try:
-        with current_store().db() as conn:
+        store = current_store()
+        initialize_author_server(store.path.parent)
+        with store.db() as conn:
             _schema(conn)
+            # Serialize with this store's erasure before checking the permanent
+            # tombstone. A deletion starting after this check must wait for our
+            # receipt commit and then erase it; a completed deletion forbids it.
+            conn.execute("BEGIN IMMEDIATE")
+            with _connect(store.path.parent) as root:
+                root.execute("BEGIN")
+                check_principal_not_deleted(root, identity.user_id)
             conn.execute("""INSERT INTO authenticated_connections VALUES (?,?,?,?,?,?,?,?)
                 ON CONFLICT(owner,connection_id) DO UPDATE SET
                 name=CASE WHEN excluded.name_source='unknown' THEN name ELSE excluded.name END,
@@ -77,6 +88,8 @@ def observe_mcp(identity, reported_name="") -> None:
                           connection["identity_source"],
                           json.dumps(metadata["outside_origin"])
                           if metadata.get("outside_origin") else None, now, now))
+    except CurrentHomeChanged:
+        return
     except (sqlite3.Error, OSError):
         # Receipt failure must never change authentication or leak metadata.
         logger.warning("authenticated connection receipt unavailable")
@@ -164,7 +177,8 @@ async def serve_mcp(app, scope, receive, send, identity):
     # The first-party app also speaks MCP for actions. Its same-origin browser
     # traffic is not another external agent. This affects display only; it
     # neither authenticates the browser nor changes any grant decision.
-    if _same_origin_json(Request(scope), _server_url()):
+    if (not identity.metadata.get("outside_origin")
+            and _same_origin_json(Request(scope), _server_url())):
         await app(scope, receive, send)
         return
 

@@ -140,6 +140,35 @@ def test_first_party_browser_mcp_is_not_an_external_agent(stores, tmp_path, monk
     assert roster(tmp_path) == []
 
 
+def test_deleted_owner_valid_mcp_token_cannot_recreate_receipt(stores, tmp_path, monkeypatch):
+    from tinyassets.account_deletion import write_tombstone
+
+    http = _mcp(monkeypatch, _identity())
+    assert _initialize(http).status_code == 200
+    write_tombstone(tmp_path, "alice")
+    with stores[1].db() as conn:
+        conn.execute("DELETE FROM authenticated_connections WHERE owner='alice'")
+    # The issuer's token may remain valid until expiry; even a successful MCP
+    # initialize must not recreate erased account metadata.
+    assert _initialize(http).status_code == 200
+    assert roster(tmp_path) == []
+
+
+def test_classified_external_client_cannot_hide_with_browser_origin(stores, tmp_path, monkeypatch):
+    _, authority = stores
+    bound = {"client": "mcp-fixture", "family": "family", "authenticated_at": 1}
+    authority.observe("alice", bound)
+    authority.change("alice", bound["client"], family="family", expected_generation=0,
+                     scopes=[scope("read_graph")])
+    http = _mcp(monkeypatch, _identity(outside_origin=bound))
+    response = http.post("/mcp", headers={"authorization": "Bearer fixture-bearer",
+                                         "origin": "http://testserver"}, json={
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"clientInfo": {"name": "Fixture external client"}}})
+    assert response.status_code == 200
+    assert len(roster(tmp_path)) == 1
+
+
 def test_owner_agents_read_refuses_foreign_center_and_owner(stores, tmp_path, monkeypatch):
     from tinyassets.api.graph_reads import read_graph
     from tinyassets.auth.middleware import identity_context

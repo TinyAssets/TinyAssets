@@ -689,6 +689,9 @@ def test_account_deletion_erases_only_its_authenticated_connections(two_users: P
     receipt = delete_account(two_users, founder_sub=A, delete_identity=lambda _: "deleted")
     assert receipt["unfinished_phases"] == []
     assert _rows(authority.path, "SELECT owner FROM authenticated_connections") == [(B,)]
+    observe_mcp(Identity(A, A, metadata={"oauth_connection": {
+        "id": "fixture-reentry", "identity_source": "verified_session"}}))
+    assert _rows(authority.path, "SELECT owner FROM authenticated_connections") == [(B,)]
 
 
 def test_a_foreign_terminal_row_in_my_universe_blocks_the_deletion(two_users: Path):
