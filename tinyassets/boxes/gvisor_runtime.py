@@ -131,6 +131,34 @@ class GvisorRuntime:
         )
         config_path.write_text(json.dumps(config), encoding="utf-8")
         self._command("run", "--detach", "--bundle", str(bundle), box)
+        try:
+            self._assert_limited(uid, memory_bytes)
+        except BaseException as error:
+            try:
+                self.stop(uid)
+            except BaseException as cleanup_error:
+                raise BoxError("unlimited sandbox started and cleanup failed") from cleanup_error
+            raise BoxError("sandbox started outside its verified resource floor") from error
+
+    def _assert_limited(self, uid: int, memory_bytes: int) -> None:
+        box = self.box_id(uid)
+        cgroup = self.cgroup_parent / box
+        state = json.loads(self._command("state", box).stdout)
+        pid = state["pid"]
+        if type(pid) is not int or pid <= 0:
+            raise BoxError("runsc returned no sandbox PID")
+        members = {
+            int(member)
+            for procs in cgroup.rglob("cgroup.procs")
+            for member in procs.read_text().split()
+        }
+        if pid not in members:
+            raise BoxError("runsc sandbox is outside its limited cgroup")
+        for name, expected in (("memory.max", memory_bytes), ("pids.max", PIDS)):
+            if int((cgroup / name).read_text().strip()) != expected:
+                raise BoxError(f"box cgroup {name} differs from the floor")
+        if int((cgroup / "cpu.weight").read_text().strip()) <= 0:
+            raise BoxError("box cgroup has no CPU weight")
 
     def exec(
         self, uid: int, argv: list[str], *, timeout: float,
@@ -141,5 +169,11 @@ class GvisorRuntime:
 
     def stop(self, uid: int) -> None:
         box = self.box_id(uid)
-        self._command("kill", box, "KILL", timeout=10)
+        try:
+            self._command("kill", box, "KILL", timeout=10)
+        except subprocess.CalledProcessError:
+            pass  # delete --force must still run for an already exited box.
         self._command("delete", "--force", box, timeout=10)
+        bundle = self.bundle_root / box
+        (bundle / "config.json").unlink()
+        bundle.rmdir()
