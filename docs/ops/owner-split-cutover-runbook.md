@@ -77,7 +77,8 @@ set -a; . /etc/tinyassets/env; set +a
 BACKUP_MODE=snapshot deploy/backup.sh
 ```
 
-This takes a full-volume tar with every writer stopped
+This runs as host root (the same privilege as the nightly backup unit) and
+takes a full-volume tar with every container mounting the volume stopped
 (`--numeric-owner --acls --xattrs`). It keeps a local copy under
 `/var/backups/tinyassets/`, uploads it to the Storage Box and prints:
 
@@ -85,11 +86,17 @@ This takes a full-volume tar with every writer stopped
 SNAPSHOT id=tinyassets-snapshot-<ts>.tar.gz sha256=<...> bytes=<n> names=<n>
 ```
 
-It refuses unless every container is stopped and the archive's exact member
-inventory equals the restorable volume inventory. Only stopped relay sockets
-`.universe-sidecars/<center>/egress-<pid>.sock` and
-`engine-<pid>-<12 lowercase hex>.sock` are disposable, matching the migration.
-Any other socket or omitted member fails. Record the id, sha256 and size.
+It refuses unless every container using the volume is stopped and the archive's
+exact member inventory equals the restorable volume inventory. Legacy
+`.broker/browser-vault` is excluded from both tar and inventory: its keys live
+on the separate broker-only volume and require sign-in after restore. Stopped
+relay sockets under `.universe-sidecars/<center>/` are also excluded from the
+inventory because tar cannot store a socket and a restored endpoint would not
+have a listening process. The accepted names are `egress-<pid>.sock`,
+`engine-<pid>-<12 lowercase hex>.sock`, `ta-<32 lowercase hex>.sock`, and
+`registry-<32 lowercase hex>.sock`, matching `tinyassets/role_relays.py`.
+Their parent directories are archived. Any other socket or omitted member
+fails with capped lists of differing names. Record the id, sha256 and size.
 
 ## 4. Migrate
 
