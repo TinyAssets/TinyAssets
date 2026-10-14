@@ -96,6 +96,19 @@ esac
     assert log.read_text().splitlines()[:2] == ["-f", "-u"]
     data_archive, = remote.glob("tinyassets-data-*.tar.gz")
     box_archive, = remote.glob("tinyassets-box-store-*.tar.gz")
+    (volume / "owner-link.txt").symlink_to("record.txt")
+    snapshot_dir = tmp_path / "snapshots"
+    env.update(BACKUP_MODE="snapshot", BACKUP_REQUIRE_BOX_STORE="1",
+               BACKUP_SNAPSHOT_DIR=str(snapshot_dir))
+    snapshot = subprocess.run(["bash", str(ROOT / "deploy/backup.sh")], env=env,
+                              capture_output=True, text=True)
+    assert snapshot.returncode == 0, snapshot.stdout + snapshot.stderr
+    snapshot_data, = snapshot_dir.glob("tinyassets-snapshot-*.tar.gz")
+    snapshot_box, = snapshot_dir.glob("tinyassets-box-store-*.tar.gz")
+    assert snapshot_box.with_name(snapshot_box.name + ".sha256").is_file()
+    (volume / "owner-link.txt").unlink()
+    env.pop("BACKUP_MODE")
+    env.pop("BACKUP_REQUIRE_BOX_STORE")
     os.mkfifo(owner / "unsupported.pipe")
     invalid = subprocess.run(["bash", str(ROOT / "deploy/backup.sh")], env=env,
                              capture_output=True, text=True)
@@ -168,6 +181,16 @@ esac
     assert "pre-store data archive" in legacy.stdout
     assert (volume / "record.txt").read_text() == "data"
     assert (owner / "box.txt").read_text() == "current-box"
+    env.update(BACKUP_FILE=str(snapshot_data), BOX_BACKUP_FILE=str(snapshot_box))
+    env.pop("ALLOW_PRE_STORE_BACKUP")
+    restored_snapshot = subprocess.run(
+        ["bash", str(ROOT / "deploy/backup-restore.sh")], env=env,
+        capture_output=True, text=True,
+    )
+    assert restored_snapshot.returncode == 0, restored_snapshot.stdout + restored_snapshot.stderr
+    assert (owner / "box.txt").read_text() == "box"
+    assert (volume / "owner-link.txt").is_symlink()
+    assert (volume / "owner-link.txt").read_text() == "data"
 
 
 def test_store_unit_contract_and_installer_guards() -> None:
