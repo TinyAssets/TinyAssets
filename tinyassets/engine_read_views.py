@@ -498,7 +498,7 @@ def project_automations(
 
 def project_branch(
     payload: str, *, offset: int, budget: int, render_text, branch_id: str = "",
-    scope: str = "",
+    scope: str = "", field_name: str = "", max_chars: int = 8192,
 ) -> str:
     """A branch read as a model door returns it: the nodes, paged to fit.
 
@@ -520,6 +520,13 @@ def project_branch(
         return render_text(payload)
     if not isinstance(document, dict) or document.get("error"):
         return render_text(payload)
+    if field_name:
+        if field_name != "@definition":
+            return json.dumps({"error": "unknown_branch_field; use @definition"})
+        return _branch_definition_chunk(
+            document, offset=offset, max_chars=max_chars, budget=budget,
+            render_text=render_text, branch_id=branch_id,
+        )
     if offset == 0 and len(render_text(payload).encode("utf-8")) <= budget:
         return render_text(payload)
     nodes = document.get("node_defs")
@@ -542,6 +549,10 @@ def project_branch(
             "offset": start,
             "complete": next_offset is None,
             "next_offset": next_offset,
+            "definition_read_with": {
+                "target": "branch", "branch_id": bid, "field_name": "@definition",
+                "output_offset": 0,
+            },
             "next": (None if next_offset is None else
                      f'read_graph target="branch" branch_id="{bid}"{scope} '
                      f"output_offset={next_offset}"),
@@ -555,6 +566,38 @@ def project_branch(
     if len(text.encode("utf-8")) > budget:
         text = render(clip_to_fit(paged, budget=budget, render=render))
     return text
+
+
+def _branch_definition_chunk(document, *, offset, max_chars, budget, render_text, branch_id):
+    """Lossless JSON after authorization; digest fences concurrent definition edits."""
+    import hashlib
+
+    if type(max_chars) is not int or not 1 <= max_chars <= 32768:
+        return json.dumps({"error": "output_max_chars must be between 1 and 32768"})
+    # ASCII JSON preserves even lone surrogates; concatenate before JSON decoding.
+    text = json.dumps(document, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    if offset > len(text):
+        return json.dumps({"error": "output_offset is past the branch definition"})
+    encoded = text.encode("utf-8")
+    metadata = {
+        "branch_def_id": document.get("branch_def_id") or branch_id,
+        "field_name": "@definition", "encoding": "json",
+        "offset": offset, "offset_unit": "unicode_code_points",
+        "total_chars": len(text), "total_utf8_bytes": len(encoded),
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+    size = min(max_chars, len(text) - offset)
+    while True:
+        end = offset + size
+        result = render_text(json.dumps({
+            **metadata, "chunk": text[offset:end], "complete": end == len(text),
+            "next_offset": end if end < len(text) else None,
+        }))
+        if len(result.encode("utf-8")) <= budget:
+            return result
+        if size <= 1:
+            return json.dumps({"error": "branch_read_budget_too_small"})
+        size //= 2
 
 
 def project_automation(
