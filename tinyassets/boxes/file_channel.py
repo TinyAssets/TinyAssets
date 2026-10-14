@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import array
 import os
+import select
 import socket
 import struct
 import threading
@@ -19,9 +20,12 @@ from tinyassets.boxes.handles import OwnerGrant
 from tinyassets.boxes.owner_files import OwnerFileHost
 
 
-def _receive(sock: socket.socket, size: int, peer: tuple[int, int, int]) -> bytes:
+def _receive(sock: socket.socket, size: int, peer: tuple[int, int, int],
+             peer_fd: int | None = None) -> bytes:
     parts = []
     while size:
+        if peer_fd is not None and select.select([peer_fd], [], [], 0)[0]:
+            raise contract.BoxAuthError("owner channel peer has exited")
         data, ancillary, flags, _ = sock.recvmsg(
             min(size, 65536), socket.CMSG_SPACE(12) + socket.CMSG_SPACE(256),
             socket.MSG_CMSG_CLOEXEC,
@@ -40,6 +44,8 @@ def _receive(sock: socket.socket, size: int, peer: tuple[int, int, int]) -> byte
                 invalid = True
         if invalid or flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) or credentials != [peer]:
             raise contract.BoxAuthError("owner channel credentials changed")
+        if peer_fd is not None and select.select([peer_fd], [], [], 0)[0]:
+            raise contract.BoxAuthError("owner channel peer has exited")
         if not data:
             raise EOFError("owner channel closed")
         parts.append(data)
@@ -47,11 +53,11 @@ def _receive(sock: socket.socket, size: int, peer: tuple[int, int, int]) -> byte
     return b"".join(parts)
 
 
-def receive(sock: socket.socket, peer: tuple[int, int, int]) -> dict:
-    size = struct.unpack("!I", _receive(sock, 4, peer))[0]
+def receive(sock: socket.socket, peer: tuple[int, int, int], peer_fd: int | None = None) -> dict:
+    size = struct.unpack("!I", _receive(sock, 4, peer, peer_fd))[0]
     if size > MAX_MESSAGE:
         raise contract.BoxOperationRefused("owner channel message exceeds its bound")
-    return decode(_receive(sock, size, peer))
+    return decode(_receive(sock, size, peer, peer_fd))
 
 
 def send(sock: socket.socket, document: dict) -> None:
@@ -70,9 +76,11 @@ def serve_channel(sock: socket.socket, *, peer: tuple[int, int, int],
     """An authenticated bootstrap invokes this on an unnamed inherited socket."""
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
     sock.settimeout(60)
+    peer_fd = -1
     try:
+        peer_fd = os.pidfd_open(peer[0])
         while True:
-            request = receive(sock, peer)
+            request = receive(sock, peer, peer_fd)
             try:
                 if set(request) == {"bind"}:
                     answer = {"result": host.bind(grant, request["bind"])}
@@ -86,8 +94,10 @@ def serve_channel(sock: socket.socket, *, peer: tuple[int, int, int],
     except (EOFError, OSError, ValueError):
         pass  # channel is closed, never rebound or automatically replayed
     finally:
-        host.handles.close_session(grant.owner_id, grant.session_id)
+        host.close_session(grant)
         sock.close()
+        if peer_fd >= 0:
+            os.close(peer_fd)
 
 
 class FileChannel:
@@ -98,15 +108,20 @@ class FileChannel:
         self.host_peer = host_peer
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
         sock.settimeout(60)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        try:
+            self._peer_fd = os.pidfd_open(host_peer[0])
+        except BaseException:
+            sock.close()
+            raise
 
     def request(self, document: dict) -> object:
         with self._lock:
             try:
                 send(self.sock, document)
-                response = receive(self.sock, self.host_peer)
+                response = receive(self.sock, self.host_peer, self._peer_fd)
             except (EOFError, OSError, ValueError) as error:
-                self.sock.close()
+                self.close()
                 raise contract.BoxError(
                     "owner channel lost; operation outcome is unknown") from error
         if set(response) == {"error"}:
@@ -116,4 +131,8 @@ class FileChannel:
         return response["result"]
 
     def close(self) -> None:
-        self.sock.close()
+        with self._lock:
+            self.sock.close()
+            if self._peer_fd >= 0:
+                os.close(self._peer_fd)
+                self._peer_fd = -1

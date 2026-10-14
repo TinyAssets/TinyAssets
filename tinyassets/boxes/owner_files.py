@@ -52,7 +52,7 @@ class OwnerFileHost:
             raise BoxError("host journal requires a private host-owned directory")
         # Acquire the host lock BEFORE recovery, so a second service cannot kill
         # a live host's sandboxes. Recovery failure never exposes any handle.
-        self.state = BoxHostState(state_dir / "owner-files.db")
+        self.state = BoxHostState(state_dir / "boxhost.db")
         try:
             backend.recover()
         except BaseException:
@@ -60,6 +60,7 @@ class OwnerFileHost:
             raise
         self.handles = HostHandles(self.state)
         self._centers: dict[str, str] = {}
+        self._sessions: dict[tuple[str, str], set[str]] = {}
         self._locks: dict[str, threading.RLock] = {}
         self._guard = threading.Lock()
         self._closed = False
@@ -71,7 +72,7 @@ class OwnerFileHost:
     def _authorized(self, grant: OwnerGrant, center: str) -> None:
         if self._closed:
             raise BoxError("owner file host is closed")
-        if not isinstance(grant, OwnerGrant) or not self.authorize(grant, center):
+        if not isinstance(grant, OwnerGrant) or self.authorize(grant, center) is not True:
             raise BoxAuthError("owner session or command center admission is no longer valid")
 
     def bind(self, grant: OwnerGrant, center: str) -> dict:
@@ -81,7 +82,14 @@ class OwnerFileHost:
             self._authorized(grant, center)
             handle = self.handles.bind(grant)
             self._centers[handle.token] = center
+            self._sessions.setdefault((grant.owner_id, grant.session_id), set()).add(handle.token)
             return {"token": handle.token, "epoch": handle.epoch, "center": center}
+
+    def close_session(self, grant: OwnerGrant) -> None:
+        with self.lock(grant.owner_id):
+            self.handles.close_session(grant.owner_id, grant.session_id)
+            for token in self._sessions.pop((grant.owner_id, grant.session_id), ()):
+                self._centers.pop(token, None)
 
     def begin_work(self, grant: OwnerGrant, center: str) -> None:
         """Called under lock before arbitrary in-box processes are dispatched."""
@@ -148,6 +156,14 @@ class OwnerFileHost:
                 result = self.backend.call(grant.uid, operation, forwarded)
                 if set(result) not in ({"result"}, {"error"}):
                     raise BoxError("malformed sandbox file response")
+                if "error" in result:
+                    if not isinstance(result["error"], str):
+                        raise BoxError("malformed sandbox file error")
+                    if mutation:
+                        # A guest error is not proof that dispatch had no effect.
+                        # Never export a guest-supplied BoxOperationRefused as
+                        # permission for the caller to issue a fresh mutation.
+                        result = {"error": "BoxError"}
                 # Do not trust any generation or path supplied from inside the box.
                 if "result" in result:
                     result = unproject(center, operation, result, args)
