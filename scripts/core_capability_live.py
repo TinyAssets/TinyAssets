@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts.core_canary_provision import ProvisionError, credentials, provision  # noqa: E402
 from tinyassets.core_capabilities import CAPABILITIES, failure_code, validate_report  # noqa: E402
 
 ORIGIN = "https://tinyassets.io"
@@ -93,8 +94,10 @@ async def login(config, http):
     http.headers["Authorization"] = "Bearer " + token
     me = await http.get(ORIGIN + "/app/me")
     me.raise_for_status()
-    if me.json().get("universe_id") != config["universe_id"]:
-        raise ProbeFailure("signed-in home differs from dedicated canary home")
+    home = me.json().get("universe_id", "")
+    if not home:
+        raise ProbeFailure("signed-in canary owner has no home")
+    config["universe_id"] = home
     return token
 
 
@@ -189,6 +192,12 @@ async def exercise(config, http, token, report):
                 raise ProbeFailure(name + " refused: " + failure_code(code))
             return value
 
+        report["active_capability"] = "canary_setup"
+        try:
+            await provision(config, http, ORIGIN, call)
+        except (ProvisionError, ProbeFailure) as exc:
+            report["provision_error"] = str(exc)
+            raise
         report["active_capability"] = "public_mcp"
         await call("read_graph", target="status", graph_id=universe)
         passed(report, "public_mcp", {"url": ORIGIN + "/mcp", "authenticated_tool": "read_graph"})
@@ -426,25 +435,8 @@ async def exercise(config, http, token, report):
 async def run(report):
     import httpx
 
-    raw = os.environ.get("TINYASSETS_CORE_CANARY_CONFIG", "")
-    if not raw:
-        report["configuration_missing"] = True
-        return
-    try:
-        config = json.loads(raw)
-        required = (
-            "email",
-            "password",
-            "universe_id",
-            "connection_id",
-            "service_path",
-            "service_hmac_key",
-            "intake_receiver_id",
-            "branch_id",
-        )
-        if any(not isinstance(config.get(key), str) or not config[key] for key in required):
-            raise ValueError("incomplete")
-    except (ValueError, AttributeError):
+    config = credentials()
+    if config is None:
         report["configuration_missing"] = True
         return
     async with httpx.AsyncClient(

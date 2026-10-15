@@ -53,10 +53,12 @@ NON_PRODUCTION_SECRETS: dict[str, str] = {
         "bearer for the read-only `canary` service principal; the daemon 403s anything "
         "beyond get_status / read_graph status (docs/reference/environment-variables.md)"
     ),
-    "TINYASSETS_CORE_CANARY_CONFIG": (
+    "TINYASSETS_CANARY_EMAIL": (
         "sign-in of the dedicated synthetic canary owner with no founder data behind it "
-        "(docs/host-actions.md, one-time core-canary setup)"
+        "(docs/host-actions.md, core-canary row)"
     ),
+    "TINYASSETS_CANARY_PASSWORD": "password of that synthetic canary owner",
+    "TINYASSETS_CANARY_HMAC_KEY": "key of the canary's own signing service; signs nonces only",
     "PUSHOVER_APP_TOKEN": "send-only notification credential",
     "PUSHOVER_USER_KEY": "send-only notification recipient",
     "CLOUDFLARE_API_TOKEN": (

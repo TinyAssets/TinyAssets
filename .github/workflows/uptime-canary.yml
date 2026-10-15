@@ -63,7 +63,10 @@ jobs:
       - uses: ./.github/actions/core-capability-canary
         continue-on-error: true
         with:
-          config: ${{ secrets.TINYASSETS_CORE_CANARY_CONFIG }}
+          email: ${{ secrets.TINYASSETS_CANARY_EMAIL }}
+          password: ${{ secrets.TINYASSETS_CANARY_PASSWORD }}
+          hmac-key: ${{ secrets.TINYASSETS_CANARY_HMAC_KEY }}
+          service-url: ${{ vars.TINYASSETS_CANARY_SERVICE_URL }}
           health-token: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           pushover-user: ${{ secrets.PUSHOVER_USER_KEY }}

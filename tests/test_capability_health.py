@@ -165,7 +165,7 @@ def test_one_broken_owner_and_low_volume_never_alarm():
 def test_live_missing_config_and_restarts_are_unknown_not_failed(monkeypatch, tmp_path, capsys):
     from scripts import core_capability_live as live
 
-    monkeypatch.delenv("TINYASSETS_CORE_CANARY_CONFIG", raising=False)
+    monkeypatch.delenv("TINYASSETS_CANARY_EMAIL", raising=False)
     report = asyncio.run(live.collect())
     assert report["warnings"][0]["code"] == "canary_not_provisioned"
     assert not report["failures"]
