@@ -7,7 +7,6 @@ import math
 from pathlib import Path
 
 from tinyassets.box_process import run_bound
-from tinyassets.control_plane.binding import file_binding
 
 MAX_SOURCE_BYTES = 64 * 1024 * 1024
 MAX_FRAME_BYTES = 3 * 1024 * 1024
@@ -18,6 +17,8 @@ MAX_RESULT_BYTES = MAX_FRAME_BYTES * MAX_FRAMES + 16384
 def _binding(universe_dir):
     if universe_dir is None:
         raise PermissionError("media decoding requires an admitted command center")
+    from tinyassets.control_plane.binding import file_binding
+
     binding = file_binding(Path(universe_dir))
     if binding is None:
         raise PermissionError("media decoding requires an admitted owner box")
