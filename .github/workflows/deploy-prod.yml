@@ -185,9 +185,20 @@ jobs:
 
       - name: Verify core canary is provisioned
         id: core_canary_provision
+        # Signs in as the canary owner and creates or repairs its model,
+        # connection and branch (scripts/core_canary_provision.py).
         env:
-          TINYASSETS_CORE_CANARY_CONFIG: ${{ secrets.TINYASSETS_CORE_CANARY_CONFIG }}
-        run: python scripts/verify_core_canary_provision.py
+          TINYASSETS_CANARY_EMAIL: ${{ secrets.TINYASSETS_CANARY_EMAIL }}
+          TINYASSETS_CANARY_PASSWORD: ${{ secrets.TINYASSETS_CANARY_PASSWORD }}
+          TINYASSETS_CANARY_HMAC_KEY: ${{ secrets.TINYASSETS_CANARY_HMAC_KEY }}
+          TINYASSETS_CANARY_SERVICE_URL: ${{ vars.TINYASSETS_CANARY_SERVICE_URL }}
+          TINYASSETS_CANARY_UNIVERSE_ID: ${{ vars.TINYASSETS_CANARY_UNIVERSE_ID }}
+        run: |
+          if [ -n "${TINYASSETS_CANARY_EMAIL}" ]; then
+            pip install fastmcp==3.2.0 httpx==0.28.1 pillow==12.1.1 playwright==1.58.0
+            python -m playwright install --with-deps chromium
+          fi
+          python scripts/verify_core_canary_provision.py
 
       - name: Validate OAuth provider credentials
         id: oauth
@@ -616,9 +627,16 @@ jobs:
       - name: Core user capabilities and systemic failure rates
         id: core_canary
         uses: ./.github/actions/core-capability-canary
+        # Rollback acceptance only when the canary was ready before the deploy;
+        # otherwise a setup failure here is a loud warning, never a rollback.
+        continue-on-error: ${{ steps.core_canary_provision.outputs.provisioned != '1' }}
         timeout-minutes: 10
         with:
-          config: ${{ secrets.TINYASSETS_CORE_CANARY_CONFIG }}
+          email: ${{ secrets.TINYASSETS_CANARY_EMAIL }}
+          password: ${{ secrets.TINYASSETS_CANARY_PASSWORD }}
+          hmac-key: ${{ secrets.TINYASSETS_CANARY_HMAC_KEY }}
+          service-url: ${{ vars.TINYASSETS_CANARY_SERVICE_URL }}
+          home: ${{ vars.TINYASSETS_CANARY_UNIVERSE_ID }}
           health-token: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           pushover-user: ${{ secrets.PUSHOVER_USER_KEY }}
@@ -753,7 +771,7 @@ jobs:
       # test_prune_units). The CONDITION is what had to change — the app probe
       # is a second public surface that must trigger the same rollback.
       - name: Roll back if the public canary is red
-        if: ${{ failure() && steps.deploy.outputs.rc == '0' && (steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure' || steps.core_canary.outcome == 'failure') }}
+        if: ${{ failure() && steps.deploy.outputs.rc == '0' && (steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure' || (steps.core_canary.outcome == 'failure' && steps.core_canary_provision.outputs.provisioned == '1')) }}
         env:
           PREV_IMAGE: ${{ steps.capture.outputs.prev_image }}
         run: |

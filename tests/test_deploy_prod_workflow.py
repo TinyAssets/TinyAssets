@@ -259,7 +259,11 @@ def test_canary_step_only_probes_canonical():
     steps = _steps(_load())
     core = next(s for s in steps if s.get("id") == "core_canary")
     assert core["uses"] == "./.github/actions/core-capability-canary"
-    assert "if" not in core and not core.get("continue-on-error")
+    # Only a canary that was ready before the deploy can fail it (and roll back).
+    assert "if" not in core
+    assert core["continue-on-error"] == (
+        "${{ steps.core_canary_provision.outputs.provisioned != '1' }}"
+    )
     provision = next(s for s in steps if s.get("name") == "Verify core canary is provisioned")
     assert provision.get("id") == "core_canary_provision"
     assert "verify_core_canary_provision.py" in provision["run"]
@@ -432,7 +436,8 @@ def test_rollback_step_present():
     assert (
         rollback["if"] == "${{ failure() && steps.deploy.outputs.rc == '0' && "
         "(steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure' "
-        "|| steps.core_canary.outcome == 'failure') }}"
+        "|| (steps.core_canary.outcome == 'failure' "
+        "&& steps.core_canary_provision.outputs.provisioned == '1')) }}"
     )
     assert "--restore-bundle" in rollback["run"]
     assert rollback["env"]["PREV_IMAGE"] == "${{ steps.capture.outputs.prev_image }}"
