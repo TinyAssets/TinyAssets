@@ -364,8 +364,7 @@ COPY scripts/workspace_bwrap_oracle.py /app/scripts/workspace_bwrap_oracle.py
 # Owner split (openspec/changes/per-role-uid-split). Every file on PID1's
 # privileged execution and import chain is root-owned 0555 outside /data, and
 # ta-chain.py verifies the whole chain (ancestors and link targets included)
-# before the bootstrap trusts it. ta-migrate.py is the one-time volume migration
-# (docs/ops/owner-split-cutover-runbook.md); the service never runs it.
+# before the bootstrap trusts it.
 COPY deploy/docker-entrypoint.sh /usr/local/libexec/ta-entry.sh
 COPY deploy/box_daemon_entry.py /usr/local/libexec/ta-box-entry.py
 COPY scripts/check_privileged_chain.py /usr/local/libexec/ta-chain.py
@@ -375,7 +374,6 @@ COPY deploy/role_decoder.py /usr/local/libexec/ta-decoder.py
 COPY deploy/role_git.py /usr/local/libexec/ta-git.py
 COPY deploy/role_provision.py /usr/local/libexec/ta-provision.py
 COPY deploy/role_admission_contract.py /usr/local/libexec/ta-admission-contract.py
-COPY deploy/role_migrate.py /usr/local/libexec/ta-migrate.py
 COPY deploy/broker_main.py /app/broker_main.py
 
 ARG TINYASSETS_BUILD_SHA=unknown
@@ -404,8 +402,8 @@ RUN mkdir -p /data /home/tinyassets /var/lib/ta-broker /run/tinyassets-roles/bro
         /usr/local/libexec/ta-box-entry.py \
         /usr/local/libexec/ta-chain.py /usr/local/libexec/ta-launch.py \
         /usr/local/libexec/ta-owner-launch.py /usr/local/libexec/ta-decoder.py \
-        /usr/local/libexec/ta-git.py /usr/local/libexec/ta-provision.py /usr/local/libexec/ta-admission-contract.py \
-        /usr/local/libexec/ta-migrate.py && \
+        /usr/local/libexec/ta-git.py /usr/local/libexec/ta-provision.py \
+        /usr/local/libexec/ta-admission-contract.py && \
     /opt/venv/bin/python -I -S -B /usr/local/libexec/ta-chain.py
 
 USER tinyassets

@@ -817,15 +817,7 @@ def test_pr_tiers_use_fast_units_and_require_the_real_production_image():
     assert "--ci-select pr --base HEAD^1" in unit
     assert "linux_oracle.py --required-runner" in unit
     assert "--apparmor ta-jail-userns" in unit
-    image = jobs["core-capabilities"]
-    assert "if" not in image and not image.get("continue-on-error")
-    assert "core-capabilities" in jobs["required-tests"]["needs"]
-    steps = image["steps"]
-    build = next(s for s in steps if "docker/build-push-action" in s.get("uses", ""))
-    assert build["with"]["context"] == "." and build["with"]["load"] is True
-    probe = next(s for s in steps if "core_capability_image.py" in s.get("run", ""))
-    assert build["if"] == probe["if"] == "steps.tier.outputs.required == 'true'"
-    assert not probe.get("continue-on-error") and "|| true" not in probe["run"]
+    assert "core-capabilities" not in jobs
 
 
 
@@ -951,16 +943,13 @@ def test_every_event_requires_structural_success(tmp_path):
                 and "AFFECTED_RESULT" not in s["env"])
     assert "if" not in step and not step.get("continue-on-error")
     assert step["env"]["STRUCTURAL_RESULT"] == "${{ needs.structural-guards.result }}"
+    assert set(step["env"]) == {"STRUCTURAL_RESULT"}
     # Binary stdin avoids Windows launcher quoting and CRLF translation.
-    assert step['env']['CAPABILITY_RESULT'] == '${{ needs.core-capabilities.result }}'
-    for gate in ('STRUCTURAL_RESULT', 'CAPABILITY_RESULT'):
-        for result in ("success", "failure", "skipped", "cancelled", ""):
-            env = dict(STRUCTURAL_RESULT='success', CAPABILITY_RESULT='success')
-            env[gate] = result
-            script = ''.join(f'{key}={value}\n' for key, value in env.items()) + step['run']
-            run = subprocess.run(["bash", "-s"], input=script.encode(),
-                                 cwd=tmp_path, capture_output=True)
-            assert run.returncode == (0 if result == "success" else 1)
+    for result in ("success", "failure", "skipped", "cancelled", ""):
+        script = f'STRUCTURAL_RESULT={result}\n' + step['run']
+        run = subprocess.run(["bash", "-s"], input=script.encode(),
+                             cwd=tmp_path, capture_output=True)
+        assert run.returncode == (0 if result == "success" else 1)
 
 
 # Events that do not change the head. A workflow that listens to them must be

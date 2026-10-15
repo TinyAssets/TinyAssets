@@ -1021,6 +1021,10 @@ elif "${TINYASSETS_IMAGE" not in image_lines[0]:
     )
 
 expected_services = {"daemon", "cloudflared", "logs"}
+if "broker" in services:
+    # The owner-box bundle runs the credential broker as its own unprivileged
+    # service. It is admitted only in this exact shape.
+    expected_services.add("broker")
 if set(services) != expected_services:
     problems.append(
         "default service set is %s, expected %s"
@@ -1037,6 +1041,7 @@ for service, container in (
     ("daemon", "tinyassets-daemon"),
     ("cloudflared", "tinyassets-tunnel"),
     ("logs", "tinyassets-logs"),
+    *((("broker", "tinyassets-broker"),) if "broker" in services else ()),
 ):
     got = svc(service).get("container_name")
     if got != container:
@@ -1051,6 +1056,14 @@ if image != expect_image:
         "daemon.image resolved to %r; it must interpolate ${TINYASSETS_IMAGE} "
         "(candidate %r)" % (image, expect_image)
     )
+if "broker" in services:
+    broker = svc("broker")
+    if broker.get("image") != expect_image:
+        problems.append("broker.image must be the candidate daemon image")
+    if broker.get("user") != "1002:1002" or broker.get("cap_drop") != ["ALL"]:
+        problems.append("broker must run as 1002:1002 with every capability dropped")
+    if "no-new-privileges=true" not in (broker.get("security_opt") or []):
+        problems.append("broker must set no-new-privileges=true")
 
 # The sidecars carry no ${TINYASSETS_IMAGE}, so nothing above constrains them at
 # all: an arbitrary or unpinned cloudflared/vector image passed every check

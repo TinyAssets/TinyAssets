@@ -95,7 +95,6 @@ def main() -> int:
         "/usr/local/libexec/ta-git.py",
         "/usr/local/libexec/ta-provision.py",
         "/usr/local/libexec/ta-admission-contract.py",
-        "/usr/local/libexec/ta-migrate.py",
         "/usr/local/libexec/ta-op",
         "/app/broker_main.py",
         "/app",
