@@ -15,7 +15,7 @@ MANIFEST_NAME="tinyassets-pair-${TS}.json"
 STAGE=""
 DATA_COPY=""
 BOX_COPY=""
-FROZEN=0
+BOX_STAGE=""
 STOPPED=0
 LOCKED=0
 
@@ -23,10 +23,6 @@ log() { echo "[backup $(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 running() { [[ "$(docker inspect --format '{{.State.Running}}' "$1")" == true ]]; }
 
 resume() {
-    if [[ "$FROZEN" == 1 ]]; then
-        xfs_freeze -u "$BOX_DIR" || return 1
-        FROZEN=0
-    fi
     if [[ "$LOCKED" == 1 ]]; then
         flock -u 9 || return 1
         LOCKED=0
@@ -50,6 +46,9 @@ finish() {
     if ! resume; then
         log "CRITICAL: writer barrier release failed; inspect host and containers"
         rc=2
+    fi
+    if [[ -n "$BOX_STAGE" ]]; then
+        rm -rf -- "$BOX_STAGE" || rc=2
     fi
     if [[ "$rc" != 0 && -n "$STAGE" ]]; then
         log "incomplete paired backup retained at $STAGE"
@@ -133,11 +132,18 @@ BOX_COPY="$STAGE/$box_root"
 # The writer pause covers only a coherent file copy. Compression, manifest
 # hashing and remote upload all consume these immutable staged trees later.
 cp -a --reflink=auto -- "$DATA_DIR" "$DATA_COPY"
-xfs_freeze -f "$BOX_DIR"
-FROZEN=1
-cp -a --reflink=auto -- "$BOX_DIR" "$BOX_COPY"
-xfs_freeze -u "$BOX_DIR"
-FROZEN=0
+# The owner store is a separate XFS mount. A destination under that mount is
+# necessary for a real reflink; copying to /var/backups silently falls back to
+# a full copy. Writers are already stopped, so freezing XFS here would prevent
+# the reflink metadata writes themselves. Keep only numeric owner trees.
+BOX_STAGE="$(mktemp -d "$BOX_DIR/.backup-stage-${TS}.XXXXXX")"
+chmod 0700 "$BOX_STAGE"
+BOX_COPY="$BOX_STAGE/$box_root"
+mkdir -m 0700 "$BOX_COPY"
+for tree in "$BOX_DIR"/[0-9]*; do
+    [[ -d "$tree" && ! -L "$tree" ]] || continue
+    cp -a --reflink=always -- "$tree" "$BOX_COPY/$(basename "$tree")"
+done
 resume || { log "ERROR: writer barrier could not be released"; exit 2; }
 flock -u 8
 exec 8>&-
@@ -153,7 +159,7 @@ for tree in "$BOX_COPY"/[0-9]*; do
     box_members+=("$box_root/$(basename "$tree")")
 done
 tar -czf "$STAGE/$BOX_NAME" --numeric-owner --acls --xattrs \
-    -C "$STAGE" --no-recursion "$box_root" \
+    -C "$BOX_STAGE" --no-recursion "$box_root" \
     --recursion "${box_members[@]}"
 python3 "$HERE/box-store-archive.py" "$STAGE/$BOX_NAME"
 
@@ -215,7 +221,8 @@ else
     log "WARN: owner-box pair retention listing failed"
 fi
 
-rm -rf -- "$DATA_COPY" "$BOX_COPY"
+rm -rf -- "$DATA_COPY" "$BOX_STAGE"
+BOX_STAGE=""
 rm -f -- "$STAGE/$DATA_NAME" "$STAGE/$BOX_NAME" "$STAGE/$MANIFEST_NAME" \
     "$STAGE/remote-names" "$STAGE/victims"
 rmdir -- "$STAGE"

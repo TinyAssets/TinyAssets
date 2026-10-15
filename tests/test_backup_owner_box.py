@@ -76,6 +76,19 @@ case "$1" in
 esac
 """)
                 shim(binary, "xfs_freeze", 'echo "freeze $1" >> "$TEST_LOG"\n')
+                shim(binary, "cp", """
+args=()
+for arg in "$@"; do
+  if [[ "$arg" == --reflink=always ]]; then
+    echo 'reflink required' >> "$TEST_LOG"
+  else
+    args+=("$arg")
+  fi
+done
+# The fixture is on ext4, while the host store is XFS. Exercise the barrier
+# ordering here; the production command must require a same-filesystem clone.
+exec /bin/cp "${args[@]}"
+""")
                 shim(binary, "tar", """
 echo "archive $(cat "$TEST_STATE/tinyassets-daemon")" >> "$TEST_LOG"
 exec /usr/bin/tar "$@"
@@ -121,6 +134,8 @@ esac
                 if not survivor:
                     actions = log.read_text().splitlines()
                     self.assertIn("archive true", actions)
+                    self.assertIn("reflink required", actions)
+                    self.assertFalse(any(action.startswith("freeze ") for action in actions))
                     self.assertLess(actions.index("start tinyassets-daemon"),
                                     actions.index("archive true"))
                     self.assertEqual(len(list(remote.glob("tinyassets-data-*.tar.gz"))), 1)
