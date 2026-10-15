@@ -152,11 +152,7 @@ def _option(provider, model, reasons=()):
     return row
 
 
-def _run(owner, monkeypatch, url="https://sign.example.invalid", receiver="r-record-only"):
-    if receiver is None:
-        monkeypatch.delenv("TINYASSETS_CANARY_PATCH_RECEIVER_ID", raising=False)
-    else:
-        monkeypatch.setenv("TINYASSETS_CANARY_PATCH_RECEIVER_ID", receiver)
+def _run(owner, monkeypatch, url="https://sign.example.invalid"):
     if url is None:
         monkeypatch.delenv("TINYASSETS_CANARY_SERVICE_URL", raising=False)
     else:
@@ -171,7 +167,7 @@ def test_a_new_canary_gets_a_free_default_connection_branch_and_intake(monkeypat
     assert config["default_model"] == {"provider_ref": "api_key_http:or", "model_id": "good:free"}
     assert config["connection_id"] == "http_new"
     assert config["branch_id"] == "b-new"
-    assert config["intake_receiver_id"] == "r-record-only"
+    assert "intake_receiver_id" not in config
     assert "provision_warnings" not in config
     assert config["service_path"] == "/sign"
     assert [kind for kind, _ in owner.writes] == ["preferences", "connection", "branch"]
@@ -203,12 +199,6 @@ def test_a_failing_default_is_replaced_with_a_free_one(monkeypatch):
     assert owner.writes[0][1]["saved_default"]["model_id"] == "good:free"
 
 
-def test_the_real_intake_is_never_used_without_a_record_only_receiver(monkeypatch):
-    config = _run(_Owner(), monkeypatch, receiver=None)
-    assert config["intake_receiver_id"] == ""
-    assert config["provision_warnings"] == ["canary_receiver_not_configured"]
-
-
 def test_no_free_model_or_a_refused_save_is_a_warning_not_unready(monkeypatch):
     owner = _Owner()
 
@@ -218,7 +208,6 @@ def test_no_free_model_or_a_refused_save_is_a_warning_not_unready(monkeypatch):
         return await owner.call(name, **arguments)
 
     monkeypatch.setenv("TINYASSETS_CANARY_SERVICE_URL", "https://sign.example.invalid")
-    monkeypatch.setenv("TINYASSETS_CANARY_PATCH_RECEIVER_ID", "r-record-only")
     config = asyncio.run(setup.provision({"universe_id": "u-canary"}, owner, "https://o", no_free))
     assert config["default_model"] is None
     assert config["provision_warnings"] == ["no_free_model_offered"]

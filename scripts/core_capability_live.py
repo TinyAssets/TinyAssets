@@ -207,13 +207,10 @@ async def exercise(config, http, token, report):
         await call("read_graph", target="status", graph_id=universe)
         passed(report, "public_mcp", {"url": ORIGIN + "/mcp", "authenticated_tool": "read_graph"})
 
-        # Repeatable protected approval on the record-only canary receiver.
-        # Without one, the approval and patch rows are advisory: the probe never
-        # grants consent to, or files into, the deployment's real intake.
-        if not config.get("intake_receiver_id"):
-            report["advisory"] = ["approval", "patch_request"]
-        else:
-            await approval(call, http, config, report, universe, nonce)
+        # A plain protected approval (no action): it grants nothing, so the
+        # canary never consents to the deployment's real patch intake.
+        report["active_capability"] = "approval"
+        await approval(call, http, report, universe, nonce)
 
         async def model_probe():
             if report.get("direct_observations"):
@@ -290,46 +287,12 @@ async def exercise(config, http, token, report):
                 raise ProbeFailure("streamed chat evidence is missing")
             passed(report, "chat_stream", {"sse_reply_received": True, "nonce": nonce})
 
-        # Public /mcp has no patch_request door: patch requests reach the intake
-        # through the owner's agent (the served engine). So this row is advisory
-        # (see model_dependent below) and a refusal here never stops the probe
-        # before background_run and scheduled_wake.
-        report["active_capability"] = "patch_request"
-        try:
-            if not config.get("intake_receiver_id"):
-                # Never file into the deployment's real intake.
-                raise ProbeFailure("no record-only canary receiver is configured")
-            delivery_result = await call(
-                "write_graph",
-                target="patch_request",
-                operation="send",
-                graph_id=universe,
-                payload_json=json.dumps(
-                    {
-                        "title": "Synthetic canary " + nonce,
-                        "details": "Synthetic verification " + nonce,
-                    }
-                ),
-            )
-            delivery_id = delivery_result.get("delivery_id", "")
-            if not delivery_id:
-                raise ProbeFailure("patch request returned no delivery id")
-            delivery = await call(
-                "read_graph", target="delivery", graph_id=universe, query=delivery_id
-            )
-            if (
-                delivery.get("delivery_id") != delivery_id
-                or delivery.get("receiver_id") != config["intake_receiver_id"]
-                or float(delivery.get("accepted_at", 0)) < time.time() - 180
-            ):
-                raise ProbeFailure(
-                    "patch request has no fresh durable delivery to the canary intake"
-                )
-            passed(report, "patch_request", {"delivery_id": delivery_id})
-        except Exception as exc:
-            report["capabilities"].append(
-                dict(capability="patch_request", status="failed", code=failure_code(exc))
-            )
+        # Public /mcp has no patch_request door, and the only receiver is the
+        # deployment's real intake, so the canary never files one. The row
+        # stays advisory (model_dependent below) until a record-only door exists.
+        report["capabilities"].append(
+            dict(capability="patch_request", status="failed", code="not_exercised")
+        )
 
         # The founder installs this ordinary, private echo branch once. It is
         # read back before execution; the canary never trusts an arbitrary preset result.
@@ -415,7 +378,7 @@ async def exercise(config, http, token, report):
             await direct_tools(client, config, report, nonce, scratch)
         # Model output is an advisory observation even when it claims a tool
         # failed. Keep its missing/invalid evidence out of rollback selection.
-        report["model_dependent"] = ["chat_stream", "patch_request", *report.get("advisory", ())]
+        report["model_dependent"] = ["chat_stream", "patch_request"]
         if not report.get("direct_observations"):
             report["model_dependent"] += [
                 "read", "write", "edit", "bash", "read_image", "ta", "connected_service"
@@ -432,7 +395,7 @@ async def exercise(config, http, token, report):
             )
 
 
-async def approval(call, http, config, report, universe, nonce):
+async def approval(call, http, report, universe, nonce):
     ask = await call(
         "write_graph",
         target="connection",
@@ -442,9 +405,8 @@ async def approval(call, http, config, report, universe, nonce):
             dict(
                 kind="Approval",
                 title="Synthetic canary " + nonce,
-                body="Approve the synthetic canary intake only.",
+                body="Synthetic canary check; approving grants nothing.",
                 fields=[],
-                action=dict(type="grant_patch_intake", receiver_id=config["intake_receiver_id"]),
             )
         ),
     )

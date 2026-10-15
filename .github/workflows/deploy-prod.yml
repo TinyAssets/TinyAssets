@@ -193,7 +193,6 @@ jobs:
           TINYASSETS_CANARY_HMAC_KEY: ${{ secrets.TINYASSETS_CANARY_HMAC_KEY }}
           TINYASSETS_CANARY_SERVICE_URL: ${{ vars.TINYASSETS_CANARY_SERVICE_URL }}
           TINYASSETS_CANARY_UNIVERSE_ID: ${{ vars.TINYASSETS_CANARY_UNIVERSE_ID }}
-          TINYASSETS_CANARY_PATCH_RECEIVER_ID: ${{ vars.TINYASSETS_CANARY_PATCH_RECEIVER_ID }}
         run: |
           if [ -n "${TINYASSETS_CANARY_EMAIL}" ]; then
             pip install fastmcp==3.2.0 httpx==0.28.1 pillow==12.1.1 playwright==1.58.0
@@ -668,7 +667,6 @@ jobs:
           hmac-key: ${{ secrets.TINYASSETS_CANARY_HMAC_KEY }}
           service-url: ${{ vars.TINYASSETS_CANARY_SERVICE_URL }}
           home: ${{ vars.TINYASSETS_CANARY_UNIVERSE_ID }}
-          receiver: ${{ vars.TINYASSETS_CANARY_PATCH_RECEIVER_ID }}
           health-token: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           pushover-user: ${{ secrets.PUSHOVER_USER_KEY }}

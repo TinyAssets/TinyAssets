@@ -12,9 +12,7 @@ creates or repairs, through the same public doors any owner uses:
   ``canary-hmac`` connection is reused without it);
 - the private branch ``canary-echo`` (``nonce`` -> ``echo``).
 
-The patch receiver is the record-only one named by repo variable
-``TINYASSETS_CANARY_PATCH_RECEIVER_ID``, never the deployment's real intake;
-without it the approval and patch rows are skipped as warnings. A missing free
+The canary never touches the deployment's patch intake. A missing free
 model or a refused model save is a warning too: provider availability says
 nothing about the platform. Every step is idempotent. Returns the
 complete probe config for ``scripts/core_capability_live.py``. Secret values are
@@ -49,7 +47,6 @@ SECRETS = ("TINYASSETS_CANARY_EMAIL", "TINYASSETS_CANARY_PASSWORD", "TINYASSETS_
 # The dedicated canary's home id (repo variable, not a secret). Sign-in refuses
 # any other account, so wrong credentials can never repair a real owner.
 HOME = "TINYASSETS_CANARY_UNIVERSE_ID"
-RECEIVER = "TINYASSETS_CANARY_PATCH_RECEIVER_ID"
 REQUIRED = (*SECRETS, HOME)
 
 
@@ -172,15 +169,10 @@ async def ensure_branch(call) -> str:
     return branch_id
 
 
-def record_only_receiver(config: dict) -> str:
-    receiver = os.environ.get(RECEIVER, "")
-    if not receiver:
-        _warn(config, "canary_receiver_not_configured")
-    return receiver
 
 
 async def provision(config: dict, http, origin: str, call) -> dict:
-    """Fill the probe config in place: model, connection, branch and intake ids.
+    """Fill the probe config in place: model, connection and branch ids.
 
     ``call(tool, **arguments)`` is the signed-in owner's MCP tool call; every
     call is scoped to the canary's own home, ``config["universe_id"]``.
@@ -193,5 +185,4 @@ async def provision(config: dict, http, origin: str, call) -> dict:
     config["connection_id"] = await ensure_connection(http, origin, home)
     config["service_path"] = SERVICE_PATH
     config["branch_id"] = await ensure_branch(home)
-    config["intake_receiver_id"] = record_only_receiver(config)
     return config
