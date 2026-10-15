@@ -16,6 +16,9 @@ inputs:
   home:
     description: Dedicated canary home id (repo variable; sign-in refuses any other account)
     required: false
+  receiver:
+    description: Record-only canary patch receiver id (repo variable; without it the approval and patch rows are advisory)
+    required: false
   health-token:
     description: Protected pulse token
     required: false
@@ -49,6 +52,7 @@ runs:
         TINYASSETS_CANARY_HMAC_KEY: ${{ inputs.hmac-key }}
         TINYASSETS_CANARY_SERVICE_URL: ${{ inputs.service-url }}
         TINYASSETS_CANARY_UNIVERSE_ID: ${{ inputs.home }}
+        TINYASSETS_CANARY_PATCH_RECEIVER_ID: ${{ inputs.receiver }}
         TINYASSETS_WIKI_CANARY_TOKEN: ${{ inputs.health-token }}
       run: python scripts/core_capability_live.py --report core-capabilities-live.json
     - name: Reconcile incident and notification

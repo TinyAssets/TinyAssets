@@ -12,8 +12,11 @@ creates or repairs, through the same public doors any owner uses:
   ``canary-hmac`` connection is reused without it);
 - the private branch ``canary-echo`` (``nonce`` -> ``echo``).
 
-The patch intake is the deployment's own (``read_graph pending_requests``);
-receivers are not chosen per owner. Every step is idempotent. Returns the
+The patch receiver is the record-only one named by repo variable
+``TINYASSETS_CANARY_PATCH_RECEIVER_ID``, never the deployment's real intake;
+without it the approval and patch rows are skipped as warnings. A missing free
+model or a refused model save is a warning too: provider availability says
+nothing about the platform. Every step is idempotent. Returns the
 complete probe config for ``scripts/core_capability_live.py``. Secret values are
 never printed; errors carry codes only.
 """
@@ -46,6 +49,7 @@ SECRETS = ("TINYASSETS_CANARY_EMAIL", "TINYASSETS_CANARY_PASSWORD", "TINYASSETS_
 # The dedicated canary's home id (repo variable, not a secret). Sign-in refuses
 # any other account, so wrong credentials can never repair a real owner.
 HOME = "TINYASSETS_CANARY_UNIVERSE_ID"
+RECEIVER = "TINYASSETS_CANARY_PATCH_RECEIVER_ID"
 REQUIRED = (*SECRETS, HOME)
 
 
@@ -85,7 +89,11 @@ def pick_free_model(options: dict, current: dict | None) -> dict | None:
     return usable[0] if usable else None
 
 
-async def ensure_model(http, origin: str, call) -> dict:
+def _warn(config: dict, code: str) -> None:
+    config.setdefault("provision_warnings", []).append(code)
+
+
+async def ensure_model(http, origin: str, call, config: dict) -> dict | None:
     response = await http.get(origin + "/app/models/preferences")
     response.raise_for_status()
     saved = response.json()
@@ -93,7 +101,8 @@ async def ensure_model(http, origin: str, call) -> dict:
     options = await call("read_graph", target="model_options", query=":free")
     choice = pick_free_model(options, policy.get("saved_default"))
     if choice is None:
-        raise ProvisionError("no free model is offered by the canary's connected source")
+        _warn(config, "no_free_model_offered")
+        return None
     if policy.get("mode") == "explicit" and policy.get("saved_default") == choice:
         return choice
     document = {
@@ -108,7 +117,8 @@ async def ensure_model(http, origin: str, call) -> dict:
     }
     response = await http.post(origin + "/app/models/preferences", json=document)
     if response.status_code >= 400:
-        raise ProvisionError(f"saving the default model failed with HTTP {response.status_code}")
+        # 409: a concurrent canary run saved first. Either way, advisory.
+        _warn(config, f"default_model_save_http_{response.status_code}")
     return choice
 
 
@@ -162,11 +172,10 @@ async def ensure_branch(call) -> str:
     return branch_id
 
 
-async def intake_receiver(call) -> str:
-    rail = await call("read_graph", target="pending_requests")
-    receiver = (rail.get("patch_intake") or {}).get("receiver_id", "")
+def record_only_receiver(config: dict) -> str:
+    receiver = os.environ.get(RECEIVER, "")
     if not receiver:
-        raise ProvisionError("this deployment has no patch intake configured")
+        _warn(config, "canary_receiver_not_configured")
     return receiver
 
 
@@ -180,9 +189,9 @@ async def provision(config: dict, http, origin: str, call) -> dict:
     async def home(name, **arguments):
         return await call(name, graph_id=config["universe_id"], **arguments)
 
-    config["default_model"] = await ensure_model(http, origin, home)
+    config["default_model"] = await ensure_model(http, origin, home, config)
     config["connection_id"] = await ensure_connection(http, origin, home)
     config["service_path"] = SERVICE_PATH
     config["branch_id"] = await ensure_branch(home)
-    config["intake_receiver_id"] = await intake_receiver(home)
+    config["intake_receiver_id"] = record_only_receiver(config)
     return config

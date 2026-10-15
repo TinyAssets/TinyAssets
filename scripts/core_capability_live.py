@@ -201,41 +201,19 @@ async def exercise(config, http, token, report):
         except (ProvisionError, ProbeFailure) as exc:
             report["provision_error"] = str(exc)
             raise
+        for code in config.get("provision_warnings", ()):
+            report["warnings"].append(dict(capability="canary_setup", code=code))
         report["active_capability"] = "public_mcp"
         await call("read_graph", target="status", graph_id=universe)
         passed(report, "public_mcp", {"url": ORIGIN + "/mcp", "authenticated_tool": "read_graph"})
 
-        # Repeatable protected approval on the already configured synthetic intake.
-        report["active_capability"] = "approval"
-        ask = await call(
-            "write_graph",
-            target="connection",
-            operation="request_from_user",
-            graph_id=universe,
-            payload_json=json.dumps(
-                dict(
-                    kind="Approval",
-                    title="Synthetic canary " + nonce,
-                    body="Approve the synthetic canary intake only.",
-                    fields=[],
-                    action=dict(
-                        type="grant_patch_intake", receiver_id=config["intake_receiver_id"]
-                    ),
-                )
-            ),
-        )
-        request_id = ask.get("request_id") or ask.get("request", {}).get("request_id")
-        if not request_id:
-            raise ProbeFailure("approval request was not created")
-        answer = await http.post(
-            ORIGIN + "/app/approvals/answer",
-            json=dict(universe_id=universe, request_id=request_id, values={}),
-        )
-        answer.raise_for_status()
-        decision = answer.json()
-        if decision.get("status") != "answered" or decision.get("decision") != "allowed":
-            raise ProbeFailure("protected approval was not answered")
-        passed(report, "approval", {"request_id": request_id, "decision": "allowed"})
+        # Repeatable protected approval on the record-only canary receiver.
+        # Without one, the approval and patch rows are advisory: the probe never
+        # grants consent to, or files into, the deployment's real intake.
+        if not config.get("intake_receiver_id"):
+            report["advisory"] = ["approval", "patch_request"]
+        else:
+            await approval(call, http, config, report, universe, nonce)
 
         async def model_probe():
             if report.get("direct_observations"):
@@ -318,6 +296,9 @@ async def exercise(config, http, token, report):
         # before background_run and scheduled_wake.
         report["active_capability"] = "patch_request"
         try:
+            if not config.get("intake_receiver_id"):
+                # Never file into the deployment's real intake.
+                raise ProbeFailure("no record-only canary receiver is configured")
             delivery_result = await call(
                 "write_graph",
                 target="patch_request",
@@ -434,7 +415,7 @@ async def exercise(config, http, token, report):
             await direct_tools(client, config, report, nonce, scratch)
         # Model output is an advisory observation even when it claims a tool
         # failed. Keep its missing/invalid evidence out of rollback selection.
-        report["model_dependent"] = ["chat_stream", "patch_request"]
+        report["model_dependent"] = ["chat_stream", "patch_request", *report.get("advisory", ())]
         if not report.get("direct_observations"):
             report["model_dependent"] += [
                 "read", "write", "edit", "bash", "read_image", "ta", "connected_service"
@@ -449,6 +430,36 @@ async def exercise(config, http, token, report):
                     detail=type(exc).__name__,
                 )
             )
+
+
+async def approval(call, http, config, report, universe, nonce):
+    ask = await call(
+        "write_graph",
+        target="connection",
+        operation="request_from_user",
+        graph_id=universe,
+        payload_json=json.dumps(
+            dict(
+                kind="Approval",
+                title="Synthetic canary " + nonce,
+                body="Approve the synthetic canary intake only.",
+                fields=[],
+                action=dict(type="grant_patch_intake", receiver_id=config["intake_receiver_id"]),
+            )
+        ),
+    )
+    request_id = ask.get("request_id") or ask.get("request", {}).get("request_id")
+    if not request_id:
+        raise ProbeFailure("approval request was not created")
+    answer = await http.post(
+        ORIGIN + "/app/approvals/answer",
+        json=dict(universe_id=universe, request_id=request_id, values={}),
+    )
+    answer.raise_for_status()
+    decision = answer.json()
+    if decision.get("status") != "answered" or decision.get("decision") != "allowed":
+        raise ProbeFailure("protected approval was not answered")
+    passed(report, "approval", {"request_id": request_id, "decision": "allowed"})
 
 
 async def run(report):
