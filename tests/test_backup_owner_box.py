@@ -10,6 +10,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -49,6 +50,16 @@ class OwnerBoxLiveBackupTest(unittest.TestCase):
             with sqlite3.connect(registry / "owner-identities.db") as db:
                 db.execute("CREATE TABLE box_records (machine, project_id, bhard_bytes)")
                 db.execute("INSERT INTO box_records VALUES (300001, 300001, 1048576)")
+                db.execute("INSERT INTO box_records VALUES (300002, 300002, 1048576)")
+            # Owner 300002's destruction began: its tree must not come back.
+            (data / ".boxhost").mkdir()
+            with sqlite3.connect(data / ".boxhost" / "boxhost.db") as db:
+                db.execute("CREATE TABLE owner_destroys (owner_id, op_id, uid, center,"
+                           " epoch, entries, state)")
+                db.execute("INSERT INTO owner_destroys VALUES"
+                           " ('o2', 'op', 300002, 'c', 1, NULL, 'deleting')")
+            (box / "300002").mkdir()
+            (box / "300002" / "file").write_text("erased owner bytes")
             owner = box / "300001"
             owner.mkdir()
             (owner / "file").write_text("owner bytes")
@@ -123,6 +134,7 @@ esac
             restored = root / "restored"
             with tarfile.open(next(remote.glob("tinyassets-box-store-*.tar.gz"))) as archive:
                 names = archive.getnames()
+                self.assertFalse(any("300002" in name for name in names), names)
                 self.assertFalse(any("credential-vault" in name for name in names))
                 self.assertFalse(any(name.endswith(("-wal", "-shm")) for name in names))
                 archive.extractall(restored, filter="tar")
@@ -161,14 +173,77 @@ esac
             self.assertFalse(log.exists(), "nothing may be uploaded")
 
 
-class LiveSqliteRetakeTest(unittest.TestCase):
-    def test_a_database_created_after_the_tree_copy_is_backed_up(self) -> None:
-        import importlib.util
+def _module():
+    import importlib.util
 
-        spec = importlib.util.spec_from_file_location(
-            "backup_live_sqlite", REPO / "deploy" / "backup-live-sqlite.py")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+    spec = importlib.util.spec_from_file_location(
+        "backup_live_sqlite", REPO / "deploy" / "backup-live-sqlite.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class LiveSqliteRetakeTest(unittest.TestCase):
+    def test_a_database_that_vanishes_mid_backup_is_skipped_not_fatal(self) -> None:
+        module = _module()
+        with tempfile.TemporaryDirectory() as temporary:
+            live, copy = Path(temporary) / "live", Path(temporary) / "copy"
+            live.mkdir()
+            copy.mkdir()
+            with sqlite3.connect(live / "eph.db") as db:
+                db.execute("CREATE TABLE t (v)")
+            db.close()
+            real = module.sqlite3.connect
+
+            def vanish(*args, **kwargs):
+                (live / "eph.db").unlink(missing_ok=True)
+                raise module.sqlite3.OperationalError("unable to open database file")
+
+            module.sqlite3.connect = vanish
+            try:
+                self.assertEqual(module.main(live, copy), 0)
+            finally:
+                module.sqlite3.connect = real
+            self.assertFalse((copy / "eph.db").exists())
+
+    @unittest.skipUnless(os.name == "posix" and os.geteuid() == 0, "needs Linux root host")
+    def test_an_owner_symlink_never_reaches_another_owners_database(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ta-backup-leak-", dir="/tmp") as temporary:
+            root = Path(temporary)
+            root.chmod(0o755)
+            other = root / "box" / "300002"
+            other.mkdir(parents=True)
+            with sqlite3.connect(other / "secret.db") as db:
+                db.execute("CREATE TABLE s (v)")
+                db.execute("INSERT INTO s VALUES ('OTHER OWNER SECRET')")
+            db.close()
+            live = root / "box" / "300001"
+            (live / "d").mkdir(parents=True)
+            with sqlite3.connect(live / "d" / "secret.db") as db:
+                db.execute("CREATE TABLE s (v)")
+            db.close()
+            for uid, tree in ((300001, live), (300002, other)):
+                for path in (tree, *tree.rglob("*")):
+                    os.chown(path, uid, uid)
+                tree.chmod(0o700)
+            (root / "box").chmod(0o755)
+            stage = root / "stage"
+            stage.mkdir(mode=0o711)
+            copy = stage / "300001"
+            subprocess.run(["cp", "-a", str(live), str(copy)], check=True)
+            shutil.rmtree(live / "d")
+            os.symlink("../300002", live / "d")
+            os.lchown(live / "d", 300001, 300001)
+            result = subprocess.run(
+                [sys.executable, str(REPO / "deploy" / "backup-live-sqlite.py"),
+                 "--as-owner", str(live), str(copy)],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((copy / "d" / "secret.db").exists(), result.stderr)
+
+    def test_a_database_created_after_the_tree_copy_is_backed_up(self) -> None:
+        module = _module()
         with tempfile.TemporaryDirectory() as temporary:
             live, copy = Path(temporary) / "live", Path(temporary) / "copy"
             (live / "late" / "nested").mkdir(parents=True)

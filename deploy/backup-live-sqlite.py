@@ -7,9 +7,16 @@ or reflink copy of a database that is being written can be torn, so each
 SQLite file in COPY is re-taken from its LIVE source through sqlite3's backup
 API, which reads one transactionally consistent snapshot without blocking WAL
 writers. The copy's stale -wal/-shm/-journal siblings are dropped: the backup
-already contains every committed page.
+already contains every committed page. A database created after the tree copy
+passed its directory is taken from the live tree too.
 
-Usage: backup-live-sqlite.py LIVE_ROOT COPY_ROOT
+``--as-owner`` (owner trees) drops to the live root's uid/gid first, so a
+symlink the owner plants can never make root read another owner's data, and an
+owner file that cannot be read cleanly is left out with a warning instead of
+failing everyone's backup. The data volume is not owner-writable and runs as
+root; there only a file that vanished mid-backup is skipped.
+
+Usage: backup-live-sqlite.py [--as-owner] LIVE_ROOT COPY_ROOT
 """
 
 from __future__ import annotations
@@ -23,6 +30,10 @@ MAGIC = b"SQLite format 3\x00"
 SIDECARS = ("-wal", "-shm", "-journal")
 
 
+class Skip(Exception):
+    """This file is left out of the backup; the message says why."""
+
+
 def _is_sqlite(path: Path) -> bool:
     try:
         with path.open("rb") as handle:
@@ -31,34 +42,48 @@ def _is_sqlite(path: Path) -> bool:
         return False
 
 
-def _drop_sidecars(path: Path) -> None:
-    for suffix in SIDECARS:
-        Path(str(path) + suffix).unlink(missing_ok=True)
+def _drop(copy: Path) -> None:
+    for name in ("", *SIDECARS, ".backup-tmp"):
+        Path(str(copy) + name).unlink(missing_ok=True)
 
 
-def retake(live: Path, copy: Path) -> None:
-    if live.is_symlink() or not live.is_file():
+def _plain(live_root: Path, live: Path) -> bool:
+    """No component of ``live`` below the root is a symlink."""
+    return os.path.realpath(live) == str(live) and live.is_relative_to(live_root)
+
+
+def retake(live_root: Path, live: Path, copy: Path) -> None:
+    if not live.exists() or live.is_symlink() or not live.is_file():
         # Deleted (or replaced by a non-file) since the copy: the live tree
         # no longer holds this database, so neither does the backup.
-        copy.unlink()
-        _drop_sidecars(copy)
+        _drop(copy)
         return
-    stat = live.stat()
-    temporary = copy.with_name(copy.name + ".backup-tmp")
-    temporary.unlink(missing_ok=True)
-    source = sqlite3.connect(live.as_uri() + "?mode=ro", uri=True)
+    if not _plain(live_root, live):
+        raise Skip("a parent directory is a symlink")
     try:
-        target = sqlite3.connect(temporary)
+        stat = live.stat()
+        temporary = copy.with_name(copy.name + ".backup-tmp")
+        temporary.unlink(missing_ok=True)
+        source = sqlite3.connect(live.as_uri() + "?mode=ro", uri=True)
         try:
-            source.backup(target)
+            target = sqlite3.connect(temporary)
+            try:
+                source.backup(target)
+            finally:
+                target.close()
         finally:
-            target.close()
-    finally:
-        source.close()
+            source.close()
+    except FileNotFoundError as exc:
+        raise Skip("vanished during the backup") from exc
+    except sqlite3.OperationalError as exc:
+        if not live.exists():
+            raise Skip("vanished during the backup") from exc
+        raise
     os.chown(temporary, stat.st_uid, stat.st_gid)
     os.chmod(temporary, stat.st_mode & 0o7777)
     os.replace(temporary, copy)
-    _drop_sidecars(copy)
+    for suffix in SIDECARS:
+        Path(str(copy) + suffix).unlink(missing_ok=True)
 
 
 def _make_parents(live_root: Path, copy_root: Path, relative: Path) -> None:
@@ -67,23 +92,50 @@ def _make_parents(live_root: Path, copy_root: Path, relative: Path) -> None:
         target = copy_root / part
         if target.is_dir():
             continue
-        stat = (live_root / part).stat()
+        try:
+            stat = (live_root / part).lstat()
+        except FileNotFoundError as exc:
+            raise Skip("vanished during the backup") from exc
         target.mkdir()
         os.chown(target, stat.st_uid, stat.st_gid)
         os.chmod(target, stat.st_mode & 0o7777)
 
 
-def main(live_root: Path, copy_root: Path) -> int:
+def _take(live_root: Path, live: Path, copy: Path, *, owner: bool) -> bool:
+    try:
+        retake(live_root, live, copy)
+        return True
+    except Skip as exc:
+        reason = str(exc)
+    except (OSError, sqlite3.Error) as exc:
+        if not owner:
+            raise
+        reason = type(exc).__name__
+    _drop(copy)
+    print(f"WARN: left out of the backup ({reason}): {live}", file=sys.stderr)
+    return False
+
+
+def _drop_privileges(live_root: Path) -> None:
+    stat = live_root.lstat()
+    if os.geteuid() == 0 and stat.st_uid != 0:
+        os.setgroups([])
+        os.setgid(stat.st_gid)
+        os.setuid(stat.st_uid)
+
+
+def main(live_root: Path, copy_root: Path, *, owner: bool = False) -> int:
+    live_root = Path(os.path.realpath(live_root))
+    if owner:
+        _drop_privileges(live_root)
     taken = 0
     for directory, _dirs, files in os.walk(copy_root):
         for name in files:
             copy = Path(directory) / name
             if copy.is_symlink() or not _is_sqlite(copy):
                 continue
-            retake(live_root / copy.relative_to(copy_root), copy)
-            taken += 1
-    # A database created after the tree copy passed its directory is absent
-    # from the copy; take it from the live tree so no committed data is lost.
+            live = live_root / copy.relative_to(copy_root)
+            taken += _take(live_root, live, copy, owner=owner)
     for directory, _dirs, files in os.walk(live_root):
         for name in files:
             live = Path(directory) / name
@@ -91,14 +143,19 @@ def main(live_root: Path, copy_root: Path) -> int:
             copy = copy_root / relative
             if live.is_symlink() or copy.exists() or copy.is_symlink() or not _is_sqlite(live):
                 continue
-            _make_parents(live_root, copy_root, relative)
-            retake(live, copy)
-            taken += 1
+            try:
+                _make_parents(live_root, copy_root, relative)
+            except Skip:
+                continue
+            taken += _take(live_root, live, copy, owner=owner)
     print(f"online-backup copies: {taken} SQLite file(s) under {copy_root}")
     return 0
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
+    args = sys.argv[1:]
+    as_owner = args[:1] == ["--as-owner"]
+    args = args[1:] if as_owner else args
+    if len(args) != 2:
         raise SystemExit(__doc__)
-    sys.exit(main(Path(sys.argv[1]), Path(sys.argv[2])))
+    sys.exit(main(Path(args[0]), Path(args[1]), owner=as_owner))

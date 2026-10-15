@@ -76,26 +76,40 @@ DATA_COPY="$STAGE/$data_root"
 # The owner store is a separate XFS mount. A destination under that mount is
 # necessary for a real reflink; copying to /var/backups silently falls back to
 # a full copy. Keep only numeric owner trees.
+# Owner trees are re-taken as their owner (--as-owner), so the stage is
+# traversable (0711, not listable) down to each owner's own copy.
 BOX_STAGE="$(mktemp -d "$BOX_DIR/.backup-stage-${TS}.XXXXXX")"
-chmod 0700 "$BOX_STAGE"
+chmod 0711 "$BOX_STAGE"
 BOX_COPY="$BOX_STAGE/$box_root"
-mkdir -m 0700 "$BOX_COPY"
+mkdir -m 0711 "$BOX_COPY"
 for tree in "$BOX_DIR"/[0-9]*; do
     [[ -d "$tree" && ! -L "$tree" ]] || continue
     cp -a --reflink=always -- "$tree" "$BOX_COPY/$(basename "$tree")"
-    python3 "$HERE/backup-live-sqlite.py" "$tree" "$BOX_COPY/$(basename "$tree")"
+    python3 "$HERE/backup-live-sqlite.py" --as-owner "$tree" "$BOX_COPY/$(basename "$tree")"
 done
 cp -a --reflink=auto -- "$DATA_DIR" "$DATA_COPY"
 python3 "$HERE/backup-live-sqlite.py" "$DATA_DIR" "$DATA_COPY"
-# Fail loudly on a pair restore would refuse (box-store-quotas.py reapply).
-python3 - "$BOX_COPY" "$DATA_COPY/.broker/state/owner-identities.db" <<'PY' || exit 2
+# An owner whose destruction began (a durable fence written before any
+# deletion IO) is left out: the later data copy records it as destroyed, so
+# restoring its copied tree would bring erased files back. Then fail loudly on
+# a pair restore would refuse (box-store-quotas.py reapply).
+python3 - "$BOX_COPY" "$DATA_COPY/.broker/state/owner-identities.db" \
+    "$DATA_COPY/.boxhost/boxhost.db" <<'PY' || exit 2
+import shutil
 import sqlite3
 import sys
 from pathlib import Path
 
-trees, registry = Path(sys.argv[1]), Path(sys.argv[2])
+trees, registry, boxhost = (Path(value) for value in sys.argv[1:])
 owners = {entry.name for entry in trees.iterdir()
           if entry.name.isdecimal() and entry.is_dir() and not entry.is_symlink()}
+if owners and boxhost.is_file() and not boxhost.is_symlink():
+    with sqlite3.connect(boxhost.as_uri() + "?mode=ro", uri=True) as db:
+        destroyed = {str(row[0]) for row in db.execute("SELECT uid FROM owner_destroys")}
+    for uid in sorted(owners & destroyed):
+        shutil.rmtree(trees / uid)
+        print(f"owner {uid} is being destroyed; its tree is left out", file=sys.stderr)
+    owners -= destroyed
 if owners:
     if registry.is_symlink() or not registry.is_file():
         raise SystemExit("owner trees copied without the broker identity database")
