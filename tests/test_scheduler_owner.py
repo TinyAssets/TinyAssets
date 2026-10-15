@@ -413,16 +413,11 @@ def test_four_concurrent_initialize_runs_db_calls_migrate_correctly(tmp_path, mo
     What a restarting fleet actually does is call `initialize_runs_db` from
     several processes at once, which runs the migration AND the schema script.
 
-    SCOPE. ``initialize_runs_db`` is not concurrency-safe today and that is
-    PRE-EXISTING, not something this change introduced: four concurrent callers
-    raise ``database is locked`` on a FRESH database too, where the scheduler
-    migration is a no-op (measured 2026-08-29 — 3 of 4 threads fresh, 2 of 4 with
-    the migration, so the added `BEGIN IMMEDIATE` if anything helps). Fixing the
-    schema script's lock behaviour touches every daemon boot and every test and
-    belongs in its own lane. So a lock collision is retried here, exactly as a
-    real caller would, and the assertions are about the MIGRATION: no thread may
-    see `no such column` or `duplicate column`, and the final schema must be
-    right — neither of which a retry could paper over.
+    The initializer serializes its own callers. A lock held by some other
+    writer of this database is still retried here, and the assertions are
+    about the migration: no thread may see ``no such column``,
+    ``duplicate column``, or ``database schema has changed``, and the final
+    schema must be right.
     """
     import threading
 
@@ -493,6 +488,72 @@ def test_four_concurrent_initialize_runs_db_calls_migrate_correctly(tmp_path, mo
         "idx_runs_branch_task",
         "idx_runs_scope_status_finished",
     } <= runs_indexes
+
+
+def test_concurrent_initialize_runs_db_does_not_overlap_schema_writers(tmp_path, monkeypatch):
+    """Four boots share one schema writer.
+
+    Overlapping ``PRAGMA`` and ``CREATE``/``ALTER`` is what raises
+    ``database schema has changed``. The connections inside
+    ``initialize_runs_db`` must not overlap, on a fresh database or on the
+    old schedules table, and none of them may raise.
+    """
+    import contextlib
+    import threading
+
+    from tinyassets import runs
+
+    def race(root: Path, *, old: bool) -> None:
+        root.mkdir(parents=True, exist_ok=True)
+        if old:
+            _old_schema_db(root)
+        depth = 0
+        max_depth = 0
+        guard = threading.Lock()
+        real = runs._connect
+
+        @contextlib.contextmanager
+        def counting(base):
+            nonlocal depth, max_depth
+            with guard:
+                depth += 1
+                max_depth = max(max_depth, depth)
+            try:
+                with real(base) as conn:
+                    yield conn
+            finally:
+                with guard:
+                    depth -= 1
+
+        monkeypatch.setattr(runs, "_connect", counting)
+        errors: list[str] = []
+        barrier = threading.Barrier(4)
+
+        def initialize() -> None:
+            barrier.wait(timeout=10)
+            try:
+                runs.initialize_runs_db(root)
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(repr(exc))
+
+        threads = [threading.Thread(target=initialize) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
+        assert not any(thread.is_alive() for thread in threads)
+        assert errors == [], errors
+        assert max_depth == 1
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    race(tmp_path / "old", old=True)
+    race(tmp_path / "fresh", old=False)
+    conn = sqlite3.connect(tmp_path / "old" / ".runs.db")
+    try:
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(branch_schedules)")]
+    finally:
+        conn.close()
+    assert cols.count("universe_id") == 1
 
 
 def test_the_migration_is_safe_when_two_connections_race(tmp_path):

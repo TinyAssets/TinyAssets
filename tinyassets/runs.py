@@ -112,6 +112,50 @@ def runs_db_path(base_path: str | Path) -> Path:
     return Path(base_path) / ".runs.db"
 
 
+# Threads in this process queue on the re-entrant lock. Other processes queue
+# on the reserved lock in the side database below.
+_RUNS_DB_INIT_THREADS = threading.RLock()
+_runs_db_init_held = threading.local()
+
+
+@contextlib.contextmanager
+def _runs_db_init_lock(base_path: str | Path):
+    """Hold the runs-schema writer lock across journal mode and migration.
+
+    Two boots that interleave ``PRAGMA journal_mode`` or ``CREATE``/``ALTER``
+    make the peer's prepared statement fail with ``database schema has changed``
+    (SQLite gives up re-preparing while the schema cookie keeps moving) or
+    ``database is locked`` on the first journal-mode switch. ``BEGIN IMMEDIATE``
+    inside the migration does not cover those steps: ``executescript`` commits,
+    and the journal-mode pragma runs before any transaction.
+
+    The lock is a reserved lock on a side database, not a new file API, and it
+    is not the runs database: holding a write lock on ``.runs.db`` would block
+    the connection that has to migrate it. Re-entry on the same thread yields;
+    the outer frame still holds both locks.
+    """
+    if getattr(_runs_db_init_held, "on", False):
+        yield
+        return
+    root = Path(base_path)
+    root.mkdir(parents=True, exist_ok=True)
+    with _RUNS_DB_INIT_THREADS:
+        _runs_db_init_held.on = True
+        try:
+            lock = sqlite3.connect(root / ".runs.db.init.lock", timeout=60.0)
+            try:
+                lock.execute("PRAGMA busy_timeout = 60000")
+                lock.execute("BEGIN IMMEDIATE")
+                try:
+                    yield
+                finally:
+                    lock.rollback()
+            finally:
+                lock.close()
+        finally:
+            _runs_db_init_held.on = False
+
+
 @contextlib.contextmanager
 def _connect(base_path: str | Path) -> sqlite3.Connection:
     db = runs_db_path(base_path)
@@ -1324,7 +1368,17 @@ def _migrate_runs_table_columns(conn: sqlite3.Connection) -> None:
 
 
 def initialize_runs_db(base_path: str | Path) -> Path:
-    """Ensure runs, events, and Phase 4 judgment tables exist. Idempotent."""
+    """Ensure runs, events, and Phase 4 judgment tables exist. Idempotent.
+
+    Callers are serialized for the whole open-and-migrate, across threads and
+    processes. See :func:`_runs_db_init_lock`.
+    """
+    with _runs_db_init_lock(base_path):
+        return _initialize_runs_db(base_path)
+
+
+def _initialize_runs_db(base_path: str | Path) -> Path:
+    """The schema body. The caller holds :func:`_runs_db_init_lock`."""
     schema = """
     CREATE TABLE IF NOT EXISTS runs (
         run_id         TEXT PRIMARY KEY,
