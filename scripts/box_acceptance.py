@@ -167,6 +167,9 @@ def verify(args) -> None:
     print("G2 cross-owner and handle checks passed; G5 restart journal, usage and quota passed")
 
 
+DISPOSABLE_MARKER = Path("/data/.disposable-copy")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("seed", "verify"))
@@ -175,6 +178,13 @@ def main() -> None:
     args = parser.parse_args()
     if os.geteuid() != 1001:
         parser.error("run as the unprivileged daemon UID 1001 on a production copy")
+    # UID 1001 and a /data state path are equally true of the live daemon, and
+    # these probes write into and execute in real owners' boxes. Only a
+    # disposable copy carries this marker; production never does.
+    if not DISPOSABLE_MARKER.is_file():
+        parser.error(
+            f"refusing: {DISPOSABLE_MARKER} is absent; run only on a disposable production copy"
+        )
     if args.owner_a == args.owner_b or args.center_a == args.center_b:
         parser.error("G2 requires distinct owners and centers")
     args.state = _state_path(args.state)

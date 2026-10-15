@@ -15,6 +15,7 @@ import pytest
 
 from tinyassets import role_decoder, role_external_agent, role_provider_cell
 from tinyassets.exceptions import ProviderError
+from tinyassets.external_agents import launch_security
 from tinyassets.providers import native_jsonrpc_discovery as discovery
 from tinyassets.providers import owned_process
 from tinyassets.providers.native_jsonrpc_discovery import NativeJsonRpcProtocol
@@ -59,7 +60,7 @@ def test_cell_reads_exactly_one_config_line_and_leaves_cli_bytes(monkeypatch):
         assert role_provider_cell.read_config(read) == b'{"argv":["a"],"env":{}}'
         assert os.read(read, 100) == b'{"method":"initialize"}\n'
         # A pipe buffer cannot hold the real 64 KiB bound without a writer thread.
-        monkeypatch.setattr(role_provider_cell, 'MAX_CONFIG_BYTES', 16)
+        monkeypatch.setattr(launch_security, 'MAX_CONFIG_BYTES', 16)
         os.write(write, b'x' * 18)
         with pytest.raises(ValueError, match='bound'):
             role_provider_cell.read_config(read)
@@ -77,6 +78,7 @@ def test_cell_reads_exactly_one_config_line_and_leaves_cli_bytes(monkeypatch):
 ])
 def test_execution_still_refuses_invalid_or_unbounded_arguments(monkeypatch, argv):
     monkeypatch.setattr(role_provider_cell, 'shipped_executable', lambda path: True)
+    monkeypatch.setattr(launch_security, 'shipped_executable', lambda path: True)
     with pytest.raises(ValueError):
         role_provider_cell.validate(json.dumps(dict(argv=argv, env={})), '/data', execution=True)
 
