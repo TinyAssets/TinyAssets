@@ -31,8 +31,6 @@ Fail loud — never fabricate an empty completion (Hard Rule #8).
 from __future__ import annotations
 
 import asyncio
-import contextvars
-import functools
 import json
 import logging
 import time
@@ -155,6 +153,13 @@ def _pre_generation(error):
     return error
 
 
+def _advance_completion(exchange, *, value=None, error=None):
+    try:
+        return False, exchange.throw(error) if error is not None else exchange.send(value)
+    except StopIteration as done:
+        return True, done.value
+
+
 class ApiKeyHttpProvider(BaseProvider):
     """Compute over a user-registered http provider, via the credential-blind proxy."""
 
@@ -274,54 +279,57 @@ class ApiKeyHttpProvider(BaseProvider):
         return resource.connection_id, principal, resource.to_view()
 
     async def complete(
-        self,
-        prompt: str,
-        system: str,
-        config: ModelConfig,
-        *,
-        universe_dir: Path | None = None,
+        self, prompt: str, system: str, config: ModelConfig,
+        *, universe_dir: Path | None = None,
     ) -> ProviderResponse:
-        self.require_text_only_support(config)
-        # An executor Future (not a Task wrapping to_thread) survives the
-        # cancel-all-Tasks phase of asyncio.run teardown. Shield alone would
-        # not protect a to_thread Task from being cancelled directly there.
-        context = contextvars.copy_context()
-        operation = functools.partial(
-            self._complete_sync,
-            prompt,
-            system,
-            config,
-            universe_dir=universe_dir,
-        )
-        worker = asyncio.get_running_loop().run_in_executor(None, context.run, operation)
-        cancellation = None
-        while True:
+        from tinyassets.agent_loop.execution import off_loop
+        from tinyassets.agent_loop.model_stream import collect_stream
+
+        exchange = self._completion(prompt, system, config, universe_dir=universe_dir)
+        try:
+            _, (proxy, request, usage) = await off_loop(_advance_completion, exchange)
+            started = time.monotonic()
             try:
-                response = await asyncio.shield(worker)
-            except asyncio.CancelledError as exc:
-                # Only this scope owns the Future; cancelling the calling task
-                # never cancels the underlying synchronous request. Preserve the
-                # caller's cancellation across success, failure and repeated cancels.
-                cancellation = cancellation or exc
-                if worker.cancelled():
-                    raise cancellation
-            except BaseException:
-                if cancellation is not None:
-                    raise cancellation from None
-                raise
+                # Broker enforces its own upstream deadlines; this also bounds
+                # loss of the broker connection before it sends a terminal END.
+                async with asyncio.timeout(_reply_budget_s(config) or 660.0):
+                    result = await collect_stream(proxy, request, usage=usage)
+            except BaseException as exc:
+                _, response = await off_loop(_advance_completion, exchange, error=exc)
             else:
-                if cancellation is not None:
-                    raise cancellation
-                return response
+                _, response = await off_loop(
+                    _advance_completion, exchange,
+                    value=(result, (time.monotonic() - started) * 1000.0),
+                )
+            return response
+        finally:
+            await off_loop(exchange.close)
 
     def _complete_sync(
-        self,
-        prompt: str,
-        system: str,
-        config: ModelConfig,
-        *,
-        universe_dir: Path | None = None,
+        self, prompt: str, system: str, config: ModelConfig,
+        *, universe_dir: Path | None = None,
     ) -> ProviderResponse:
+        """Synchronous adapter for explicit synchronous callers; same codec and gates."""
+        exchange = self._completion(prompt, system, config, universe_dir=universe_dir)
+        try:
+            _, (proxy, request, usage) = _advance_completion(exchange)
+            started = time.monotonic()
+            try:
+                result = proxy.request(
+                    "POST", request, **({"inference_usage": usage} if usage is not None else {}),
+                )
+            except BaseException as exc:
+                _, response = _advance_completion(exchange, error=exc)
+            else:
+                _, response = _advance_completion(
+                    exchange, value=(result, (time.monotonic() - started) * 1000.0),
+                )
+            return response
+        finally:
+            exchange.close()
+
+    def _completion(self, prompt, system, config, *, universe_dir=None):
+        """One preparation/decoding path, yielding only credential-blind IO facts."""
         self.require_text_only_support(config)
         if universe_dir is None:
             raise ProviderUnavailableError(
@@ -439,7 +447,6 @@ class ApiKeyHttpProvider(BaseProvider):
             )
         from tinyassets.storage.agent_request_usage import InferenceUsageStopped
 
-        started = time.monotonic()
         try:
             proxy = self._resolve_proxy(
                 db_path=db_path,
@@ -449,12 +456,7 @@ class ApiKeyHttpProvider(BaseProvider):
                 owner_user_id=owner_user_id,
             )
             try:
-                result = proxy.request(
-                    "POST", wire_request,
-                    **({"inference_usage": usage} if usage is not None else {}),
-                )
-                # Inference latency excludes the owned worker's cleanup/join.
-                latency_ms = (time.monotonic() - started) * 1000.0
+                result, latency_ms = yield proxy, wire_request, usage
             finally:
                 if self._proxy_override is None:
                     try:

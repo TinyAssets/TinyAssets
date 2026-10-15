@@ -24,6 +24,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from tinyassets.agent_loop.execution import off_loop
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
     ExternalAgentUnavailable,
@@ -833,7 +834,7 @@ class ProviderRouter:
                 from tinyassets.providers.model_policy import ModelRef
 
                 if type(requested) is not ModelRef:
-                    settle_carrier(
+                    await off_loop(settle_carrier,
                         ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
                         input_tokens=0, output_tokens=0, cost_microunits=0,
                     )
@@ -844,7 +845,7 @@ class ProviderRouter:
                                   native.requested_model_id if native is not None else "")
                 if (requested.connection_id != invocation_carrier.provider
                         or requested.model_id != admitted_model):
-                    settle_carrier(
+                    await off_loop(settle_carrier,
                         ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
                         input_tokens=0, output_tokens=0, cost_microunits=0,
                     )
@@ -1002,7 +1003,7 @@ class ProviderRouter:
                         # Our own measurement, before any launch: this call's
                         # reservation charged nothing, so it must not hold the
                         # run's aggregate budget the next model needs.
-                        settle_carrier(
+                        await off_loop(settle_carrier,
                             ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
                             input_tokens=0, output_tokens=0, cost_microunits=0,
                         )
@@ -1041,7 +1042,7 @@ class ProviderRouter:
                 or required_context + cfg.max_tokens > cfg.selected_model.context_tokens
             ):
                 if invocation_carrier is not None:
-                    settle_carrier(
+                    await off_loop(settle_carrier,
                         ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
                         input_tokens=0, output_tokens=0, cost_microunits=0,
                     )
@@ -1109,7 +1110,7 @@ class ProviderRouter:
                 )
             except ProviderAuthorityHeldError:
                 if invocation_carrier is not None:
-                    settle_carrier(
+                    await off_loop(settle_carrier,
                         ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
                         input_tokens=0, output_tokens=0, cost_microunits=0,
                     )
@@ -1152,7 +1153,7 @@ class ProviderRouter:
                     provider = provider_for_definition(_definition)
                 except Exception as exc:
                     if invocation_carrier is not None:
-                        settle_carrier(
+                        await off_loop(settle_carrier,
                             ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
                             input_tokens=0,
                             output_tokens=0,
@@ -1180,7 +1181,7 @@ class ProviderRouter:
                 BaseProvider.require_text_only_support(provider, cfg)
             except ProviderAuthorityHeldError:
                 if invocation_carrier is not None:
-                    settle_carrier(
+                    await off_loop(settle_carrier,
                         ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
                         input_tokens=0, output_tokens=0, cost_microunits=0,
                     )
@@ -1242,15 +1243,26 @@ class ProviderRouter:
                     )
 
                     estimated_input_tokens = max(1, input_size(prompt, system, cfg))
-                    budget_reservation = reserve_served_provider_budget(
-                        universe_dir.parent,
-                        universe_dir=universe_dir,
-                        authority=served_authority,
-                        role=role,
-                        requested_output_tokens=cfg.max_tokens,
-                        estimated_input_tokens=estimated_input_tokens,
-                        call_timeout_s=getattr(cfg, "timeout", None),
-                    )
+                    def reserve_budget():
+                        nonlocal budget_reservation
+                        budget_reservation = reserve_served_provider_budget(
+                            universe_dir.parent,
+                            universe_dir=universe_dir,
+                            authority=served_authority,
+                            role=role,
+                            requested_output_tokens=cfg.max_tokens,
+                            estimated_input_tokens=estimated_input_tokens,
+                            call_timeout_s=getattr(cfg, "timeout", None),
+                        )
+                    try:
+                        await off_loop(reserve_budget)
+                    except BaseException:
+                        if budget_reservation is not None:
+                            await off_loop(
+                                release_served_provider_budget, universe_dir.parent,
+                                budget_reservation,
+                            )
+                        raise
                     cfg = replace(cfg, max_tokens=budget_reservation.output_tokens)
                 provider_started = False
                 request_attempt = None
@@ -1276,7 +1288,7 @@ class ProviderRouter:
                             served_authority, "before_provider_launch", None
                         ) if served_authority is not None else None
                         if callable(before_launch):
-                            before_launch()
+                            await off_loop(before_launch)
                         if (
                             served_authority is not None
                             and served_authority.request_capability is not None
@@ -1307,21 +1319,26 @@ class ProviderRouter:
                                 provider_name, selected_id,
                             ))
                             request_budget.check_scope(owner, universe_dir.name)
-                            request_budget.persist(universe_dir.parent)
-                            request_attempt = request_budget.reserve(
-                                owner=owner, universe=universe_dir.name,
-                                source_ref=provider_name, model=selected_id,
-                                free=metered_free_source(accounting_context, selected, owner=owner),
-                                purpose="learning" if cfg.secondary_call else cfg.request_purpose,
-                            )
+                            await off_loop(request_budget.persist, universe_dir.parent)
+                            def reserve_attempt():
+                                nonlocal request_attempt
+                                request_attempt = request_budget.reserve(
+                                    owner=owner, universe=universe_dir.name,
+                                    source_ref=provider_name, model=selected_id,
+                                    free=metered_free_source(
+                                        accounting_context, selected, owner=owner),
+                                    purpose=("learning" if cfg.secondary_call
+                                             else cfg.request_purpose),
+                                )
+                            await off_loop(reserve_attempt)
                             cfg = replace(cfg, request_attempt=request_attempt)
                         after_claim = getattr(served_authority, "after_provider_claim", None)
                         if after_claim is not None:
                             if not callable(after_claim) or budget_reservation is None:
                                 raise PermissionError("invalid agent pre-dispatch observer")
-                            after_claim(served_authority, budget_reservation, cfg)
+                            await off_loop(after_claim, served_authority, budget_reservation, cfg)
                         if _work_agent_observer is not None:
-                            _work_agent_observer(invocation_carrier, None, cfg)
+                            await off_loop(_work_agent_observer, invocation_carrier, None, cfg)
                         # The owning universe for every process this call
                         # launches; the shared spawn point cells its owner
                         # there, or refuses a launch with none. The broker
@@ -1341,7 +1358,7 @@ class ProviderRouter:
                                 )
 
                                 if not isinstance(provider, ApiKeyHttpProvider):
-                                    request_budget.dispatched(request_attempt)
+                                    await off_loop(request_budget.dispatched, request_attempt)
                                 request_dispatched = True
                             provider_started = True
                             dispatch = provider.complete(
@@ -1357,7 +1374,7 @@ class ProviderRouter:
                     # message reaches the caller instead of being flattened into
                     # "all providers exhausted".
                     if invocation_carrier is not None:
-                        settle_carrier(
+                        await off_loop(settle_carrier,
                             ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
                             input_tokens=0, output_tokens=0, cost_microunits=0,
                         )
@@ -1367,7 +1384,7 @@ class ProviderRouter:
                         # still has capacity — the same reasoning the
                         # ProviderUnavailableError branch below applies.
                         try:
-                            release_served_provider_budget(
+                            await off_loop(release_served_provider_budget,
                                 universe_dir.parent, budget_reservation,
                             )
                         except Exception:
@@ -1380,7 +1397,7 @@ class ProviderRouter:
                     raise
                 except BaseException as exc:
                     if request_attempt is not None:
-                        dispatched_count = request_budget.settle_invocation(
+                        dispatched_count = await off_loop(request_budget.settle_invocation,
                             request_attempt,
                             "unknown" if isinstance(exc, (asyncio.CancelledError,
                                                            ProviderTimeoutError, TimeoutError))
@@ -1401,12 +1418,12 @@ class ProviderRouter:
                         if not provider_started or isinstance(
                             exc, (ProviderUnavailableError, ProviderConfinementError),
                         ):
-                            release_served_provider_budget(
+                            await off_loop(release_served_provider_budget,
                                 universe_dir.parent,
                                 budget_reservation,
                             )
                         else:
-                            abandon_served_provider_budget(
+                            await off_loop(abandon_served_provider_budget,
                                 universe_dir.parent,
                                 budget_reservation,
                             )
@@ -1414,7 +1431,7 @@ class ProviderRouter:
                         # A confinement refusal is raised before any process
                         # exists, so it launched nothing either.
                         if not provider_started or isinstance(exc, ProviderConfinementError):
-                            settle_carrier(
+                            await off_loop(settle_carrier,
                                 ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
                                 input_tokens=0, output_tokens=0, cost_microunits=0,
                             )
@@ -1437,22 +1454,24 @@ class ProviderRouter:
                                 )
                             )
                             if native_unmetered:
-                                settle_carrier(ProviderInvocationReservationState.INDETERMINATE)
+                                await off_loop(
+                        settle_carrier, ProviderInvocationReservationState.INDETERMINATE,
+                    )
                             else:
-                                settle_carrier(
+                                await off_loop(settle_carrier,
                                     ProviderInvocationReservationState.FAILED,
                                     input_tokens=0, output_tokens=0, cost_microunits=0,
                                 )
                         else:
-                            settle_carrier(
+                            await off_loop(settle_carrier,
                                 ProviderInvocationReservationState.INDETERMINATE
                             )
                     raise
                 if request_dispatched:
-                    request_budget.settle_invocation(request_attempt, "succeeded")
-                    resp = replace(resp, request_receipt=request_budget.receipt())
+                    await off_loop(request_budget.settle_invocation, request_attempt, "succeeded")
+                    resp = replace(resp, request_receipt=await off_loop(request_budget.receipt))
                 if budget_reservation is not None:
-                    finalize_served_provider_budget(
+                    await off_loop(finalize_served_provider_budget,
                         universe_dir.parent,
                         authority=served_authority,
                         reservation=budget_reservation,
@@ -1476,9 +1495,11 @@ class ProviderRouter:
                     or resp.output_tokens is None
                     or resp.cost_microunits is None
                 ):
-                    settle_carrier(ProviderInvocationReservationState.INDETERMINATE)
+                    await off_loop(
+                        settle_carrier, ProviderInvocationReservationState.INDETERMINATE,
+                    )
                 else:
-                    settle_carrier(
+                    await off_loop(settle_carrier,
                         ProviderInvocationReservationState.SUCCEEDED,
                         input_tokens=resp.input_tokens,
                         output_tokens=resp.output_tokens,
@@ -1776,7 +1797,7 @@ class ProviderRouter:
                 native_evidence=tuple(native_proofs.get(i) for i in range(len(attempts))),
             )
         if invocation_carrier is not None:
-            settle_carrier(
+            await off_loop(settle_carrier,
                 ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
                 input_tokens=0,
                 output_tokens=0,
