@@ -2572,7 +2572,7 @@ def _grant_patch_intake(
     from tinyassets.storage import receiver_links as receiver_store
     from tinyassets.storage.pending_requests import resolve_request
 
-    intake = _intake_or_none("answering the seeded request")
+    intake = _intake_or_none("answering the seeded request", uid)
     receiver_id = str(action.get("receiver_id") or "")
     if intake is None or intake["receiver_id"] != receiver_id:
         return {

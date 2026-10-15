@@ -4359,11 +4359,15 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
             logger.exception("platform runtime provenance: pulse readback failed")
         return _PulseJSON(payload)
 
+    from tinyassets.core_canary import SERVICE_PATH, hmac_endpoint
     from tinyassets.observability import client_error
 
     app = Starlette(
         routes=[
             *starlette_discovery_routes(),
+            # Canary HMAC door. Its connection bearer is checked by the
+            # handler; auth middleware does not treat that bearer as an API key.
+            _PulseRoute(SERVICE_PATH, hmac_endpoint, methods=["POST"]),
             # Public beacon. Mounted here, not inside onboarding_routes, so it
             # still accepts browser reports when the onboarding app is dark.
             _PulseRoute("/app/client-error", client_error, methods=["POST"]),

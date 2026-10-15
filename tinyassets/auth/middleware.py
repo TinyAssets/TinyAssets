@@ -1172,6 +1172,15 @@ class AuthContextMiddleware:
             path = scope.get("path", "")
             method = scope.get("method", "").upper()
 
+            # The core-canary HMAC door authenticates its own connection
+            # bearer. That secret is not an API key and not a user token;
+            # resolving either here rejects the probe before the handler runs.
+            from tinyassets.core_canary import SERVICE_PATH
+
+            if method == "POST" and path == SERVICE_PATH:
+                await self.app(scope, receive, send)
+                return
+
             if _is_rest_api_path(path):
                 await _serve_rest_api(self.app, scope, receive, send, token)
                 return

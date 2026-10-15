@@ -1,10 +1,12 @@
 """Record whether the dedicated core-canary owner is configured.
 
-The synthetic owner is a one-time founder step (``docs/host-actions.md``,
-"One-time core-canary setup"). This script does not create that owner. It
-checks that ``TINYASSETS_CORE_CANARY_CONFIG`` is JSON with the eight non-empty
-string fields ``scripts/core_capability_live.py`` probes. Secret values are
-never printed.
+The owner is a one-time founder step (``docs/host-actions.md``,
+"One-time core-canary setup"): sign up at https://tinyassets.io, then
+``python3 -m tinyassets.core_canary`` (``scripts/provision_core_canary.py``
+from a checkout). This script does not create that owner. It checks that
+``TINYASSETS_CORE_CANARY_CONFIG`` is JSON with the eight non-empty string
+fields ``scripts/core_capability_live.py`` probes. Secret values are never
+printed.
 
 A missing or incomplete config is not provisioned: this prints a loud warning,
 writes ``provisioned=0``, and exits 0. ``deploy_fail_safe.sh`` refuses only a

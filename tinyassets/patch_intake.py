@@ -97,14 +97,27 @@ class PatchIntakeConsentMissing(ValueError):
     """A delivery to the configured intake with no grant behind it."""
 
 
-def configured_intake() -> dict[str, str] | None:
+def configured_intake(universe_id: str | None = None) -> dict[str, str] | None:
     """``{"receiver_id", "label"}`` for the offered intake, or ``None`` if unset.
 
+    The core-canary home carries its own recording intake. That override is
+    returned for that universe even when the platform env intake is unset, and
+    it wins over the env intake so a canary report is stored instead of filed
+    as a production issue. Every other universe keeps the env intake.
+
     Raises :class:`PatchIntakeMisconfigured` when a value is present but cannot
-    be an address or a label. Callers on a user-facing read path catch that and
-    log it rather than breaking the rail; callers deciding authority let it
-    propagate.
+    be an address or a label. Raises ``CoreCanaryRecordError`` when the canary
+    record is present but unreadable: a send must fail closed rather than fall
+    through to the production intake. Callers on a user-facing read path catch
+    both and log them rather than breaking the rail; callers deciding authority
+    let them propagate.
     """
+    if universe_id:
+        from tinyassets.core_canary import offered_intake
+
+        override = offered_intake(str(universe_id))
+        if override is not None:
+            return override
     raw = os.environ.get(RECEIVER_ID_VAR)
     if raw is None or not raw.strip():
         return None
@@ -123,15 +136,21 @@ def configured_intake() -> dict[str, str] | None:
     return {"receiver_id": receiver_id, "label": label}
 
 
-def _intake_or_none(where: str) -> dict[str, str] | None:
+def _intake_or_none(
+    where: str, universe_id: str | None = None,
+) -> dict[str, str] | None:
     """Read the configuration on a path that must never raise into a user's face."""
+    from tinyassets.core_canary import CoreCanaryRecordError
+
     try:
-        return configured_intake()
-    except PatchIntakeMisconfigured as exc:
+        return configured_intake(universe_id)
+    except (PatchIntakeMisconfigured, CoreCanaryRecordError) as exc:
         # LOUD, and not once-per-process quiet: an operator reading logs is the
         # only person who can fix this, and nothing else in the product will
         # complain. Nothing is seeded and nothing is granted, so no surface
-        # pretends the connection exists.
+        # pretends the connection exists. The exception text is secret-free;
+        # it is not chained, and this log does not attach a traceback that
+        # could carry a file body.
         logger.error("patch intake is misconfigured (%s): %s", where, exc)
         return None
 
@@ -193,7 +212,7 @@ def require_send_consent(*, universe_dir: str | Path, receiver_id: str) -> None:
     # Cheapest first: an active grant ends the question for any receiver.
     if consent_is_active(universe_dir, address):
         return
-    intake = _intake_or_none("fencing a delivery")
+    intake = _intake_or_none("fencing a delivery", Path(universe_dir).name)
     offered = intake is not None and intake["receiver_id"] == address
     label = intake["label"] if offered else DEFAULT_LABEL
     if not offered:
@@ -324,7 +343,7 @@ def rail_entry(universe_id: str, universe_dir: Path) -> dict[str, Any] | None:
     more of its own -- an identical pending dedupe key is returned rather than
     duplicated, and a standing "don't ask me this again" is honoured.
     """
-    intake = _intake_or_none("the rail entry")
+    intake = _intake_or_none("the rail entry", universe_id)
     if intake is None:
         return None
     address, label = intake["receiver_id"], intake["label"]
@@ -436,7 +455,7 @@ def send_patch_request(universe_id: str, principal_id: str, title: Any, details:
         if (not isinstance(value, str) or not value.strip() or len(value) > limit
                 or (field == "title" and value.splitlines() != [value])):
             return {"error": "patch_request_field_invalid", "field": field, "example": example}
-    intake = configured_intake()
+    intake = configured_intake(universe_id)
     if intake is None:
         return {"error": "patch_intake_unavailable"}
     universe_dir = _universe_dir(universe_id)
