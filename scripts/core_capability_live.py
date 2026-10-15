@@ -16,6 +16,7 @@ import shlex
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tinyassets.core_capabilities import CAPABILITIES, failure_code, validate_report  # noqa: E402
@@ -64,6 +65,25 @@ def passed(report, capability, observation):
     )
 
 
+async def _sign_in_stall(page, step, exc):
+    """Where sign-in stopped: the step, the page host and title, and any visible
+    alert. Never a field value, so no secret can reach a log."""
+    alert = ""
+    try:
+        texts = await page.get_by_role("alert").all_inner_texts()
+        alert = " ".join(" ".join(texts).split())[:160]
+    except Exception:  # noqa: BLE001 - diagnostics only
+        pass
+    try:
+        title = (await page.title())[:80]
+    except Exception:  # noqa: BLE001 - diagnostics only
+        title = ""
+    return (
+        f"sign-in step {step} failed ({type(exc).__name__}) on "
+        f"{urlsplit(page.url).hostname or '?'} title={title!r} alert={alert!r}"
+    )
+
+
 async def login(config, http):
     """Normal interactive owner login, including the protected approval cookie."""
     from playwright.async_api import async_playwright
@@ -73,12 +93,21 @@ async def login(config, http):
         try:
             context = await browser.new_context()
             page = await context.new_page()
-            await page.goto(ORIGIN + "/app/owner-sign-in?app=1")
-            await page.locator("input[type=email]").fill(config["email"])
-            await page.get_by_role("button", name=re.compile("^continue( with email)?$", re.I)).click()
-            await page.locator("input[type=password]").fill(config["password"])
-            await page.get_by_role("button", name=re.compile("^(sign in|continue)$", re.I)).click()
-            await page.wait_for_url(ORIGIN + "/app**", timeout=60000)
+            continue_button = re.compile("^continue( with email)?$", re.I)
+            sign_in_button = re.compile("^(sign in|continue)$", re.I)
+            steps = (
+                ("open", lambda: page.goto(ORIGIN + "/app/owner-sign-in?app=1")),
+                ("email", lambda: page.locator("input[type=email]").fill(config["email"])),
+                ("continue", lambda: page.get_by_role("button", name=continue_button).click()),
+                ("password", lambda: page.locator("input[type=password]").fill(config["password"])),
+                ("sign_in", lambda: page.get_by_role("button", name=sign_in_button).click()),
+                ("return", lambda: page.wait_for_url(ORIGIN + "/app**", timeout=60000)),
+            )
+            for step, action in steps:
+                try:
+                    await action()
+                except Exception as exc:  # noqa: BLE001 - named, never a secret value
+                    raise ProbeFailure(await _sign_in_stall(page, step, exc)) from exc
             for cookie in await context.cookies(ORIGIN):
                 http.cookies.set(
                     cookie["name"], cookie["value"], domain=cookie["domain"], path=cookie["path"]
@@ -514,6 +543,8 @@ async def collect():
             return report
         except Exception as exc:
             report["probe_error"] = type(exc).__name__
+            if isinstance(exc, ProbeFailure):
+                report["probe_error"] += ": " + str(exc)
         if report.get("configuration_missing"):
             # Not an observation and not a fabricated capability failure.
             # deploy_fail_safe refuses the data-moving cases before the swap.
