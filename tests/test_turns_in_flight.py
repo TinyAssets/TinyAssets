@@ -484,12 +484,21 @@ def test_the_image_is_prefetched_before_the_first_poll(tmp_path):
 
 
 @pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
-def test_the_cap_fails_the_deploy_instead_of_cutting_the_turn(tmp_path):
+def test_wait_proceeds_at_the_cap(tmp_path):
+    """At the cap the wait fails, so the deploy does not proceed into the swap."""
     out = _run_wait(tmp_path, [10], cap_s=0)
     assert out["_rc"] == "1", out["_stdout"]
     assert out["outcome"] == "cap_reached"
     assert "refusing to cut the turn off" in out["_stdout"]
     assert out["polls"] == "1"
+    names = [step.get("name") for step in _steps()]
+    wait = _step("Wait for in-flight turns")
+    deploy = _step("Run fail-safe deploy on the droplet")
+    assert names.index(wait["name"]) < names.index(deploy["name"])
+    assert wait.get("continue-on-error") is not True
+    # No `if:` means the swap runs only after this step succeeds.
+    assert deploy.get("if") is None
+    assert deploy.get("continue-on-error") is not True
 
 
 @pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
@@ -501,12 +510,14 @@ def test_a_daemon_that_is_not_serving_is_deployed_at_once(tmp_path):
 
 
 @pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
-def test_unknown_is_retried_then_fails_the_deploy(tmp_path):
+def test_unknown_is_retried_then_proceeds_loudly(tmp_path):
+    """Unknown is retried, then the wait refuses loudly and the deploy stops."""
     out = _run_wait(tmp_path, [2, 2, 2])
     assert out["_rc"] == "1", out["_stdout"]
     assert out["outcome"] == "check_unavailable"
     assert out["polls"] == "3"
     assert "could not answer" in out["_stdout"]
+    assert "::error::" in out["_stdout"]
     assert "refusing to deploy without proof" in out["_stdout"]
 
 
@@ -527,12 +538,14 @@ def test_a_hung_check_is_bounded_and_counts_as_unknown(tmp_path):
 
 
 @pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
-def test_a_queued_recovery_workflow_fails_the_deploy(tmp_path):
+def test_a_queued_recovery_workflow_ends_the_wait(tmp_path):
+    """A queued recovery workflow still ends the wait, by failing the deploy."""
     out = _run_wait(tmp_path, [10, 10, 10], extra_env={
         "FAKE_GH_WORKFLOW": "p0-outage-triage.yml", "FAKE_GH_QUEUED": "1",
     })
     assert out["_rc"] == "1", out["_stdout"]
     assert out["outcome"] == "yield_to_host_mutation"
+    assert "::error::" in out["_stdout"]
     assert "refusing to cut off in-flight work" in out["_stdout"]
     assert out["polls"] == "1"
 
