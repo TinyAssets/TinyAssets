@@ -119,19 +119,15 @@ def test_the_retired_fleet_tables_do_not_block_a_scoped_reset(seeded: Path) -> N
     from tinyassets.storage.background_branch_authority import (
         SQLiteBackgroundBranchAuthorityStore,
     )
-    from tinyassets.storage.cloud_automation_continuation import (
-        SQLiteCloudAutomationContinuationStore,
-    )
     from tinyassets.storage.cloud_automation_control import (
         CloudAutomationControlStore,
     )
 
-    for store in (
-        CloudAutomationControlStore(seeded),
-        SQLiteCloudAutomationContinuationStore(seeded),
-    ):
-        with store.connection():
-            pass
+    with CloudAutomationControlStore(seeded).connection():
+        pass
+    # Historical installations retain this inert table after its writer is gone.
+    with _connect(seeded) as conn:
+        conn.execute("CREATE TABLE cloud_automation_continuations (id TEXT PRIMARY KEY)")
     with SQLiteBackgroundBranchAuthorityStore(seeded)._connection():
         pass
     with _connect(seeded) as conn:
@@ -654,18 +650,8 @@ def test_two_writer_processes_join_one_clean_shared_barrier(
 
 def test_every_writer_process_entrypoint_installs_maintenance_barrier() -> None:
     root = Path(__file__).resolve().parents[1]
-    for relative in (
-        "tinyassets/__main__.py",
-        # `tinyassets/cloud_worker.py` was a writer entrypoint until 2026-08-29,
-        # when the host-run fleet was deleted: nothing runs outside a user's
-        # universe (ADR-009). No module replaces it -- the served consumer runs
-        # inside the daemon, which is covered by tinyassets/__main__.py.
-        "tinyassets/universe_server.py",
-        "fantasy_daemon/__main__.py",
-        "fantasy_daemon/api.py",
-    ):
-        source = (root / relative).read_text(encoding="utf-8")
-        assert "prepare_service_writer_barrier" in source, relative
+    source = (root / "tinyassets/universe_server.py").read_text(encoding="utf-8")
+    assert "prepare_service_writer_barrier" in source
     assert not (root / "tinyassets_tray.py").exists()
 
 
@@ -1606,94 +1592,5 @@ def test_plan_does_not_create_sqlite_sidecars(seeded: Path) -> None:
     assert _recursive_file_snapshot(seeded) == before
 
 
-def test_legacy_api_reconfigure_keeps_previous_writer_fence_on_failure(
-    tmp_path: Path,
-) -> None:
-    import fantasy_daemon.api as legacy_api
-    from tinyassets.scoped_reset import (
-        ScopedResetLeaseBusy,
-        acquire_maintenance_barrier,
-    )
-
-    root_a = tmp_path / "a"
-    root_b = tmp_path / "b"
-    root_a.mkdir()
-    root_b.mkdir()
-    blocker = None
-    probe = None
-    try:
-        legacy_api.configure(str(root_a))
-        blocker = acquire_maintenance_barrier(
-            root_b,
-            exclusive=True,
-            timeout=0.2,
-        )
-
-        with pytest.raises(ScopedResetLeaseBusy):
-            legacy_api.configure(str(root_b))
-
-        assert legacy_api._base_path == str(root_a)
-        try:
-            probe = acquire_maintenance_barrier(
-                root_a,
-                exclusive=True,
-                timeout=0.05,
-            )
-        except ScopedResetLeaseBusy:
-            pass
-        else:
-            pytest.fail("legacy API still serves root A without its writer fence")
-    finally:
-        if probe is not None:
-            probe.release()
-        if blocker is not None:
-            blocker.release()
-        if legacy_api._writer_barrier is not None:
-            legacy_api._writer_barrier.release()
-            legacy_api._writer_barrier = None
-        legacy_api._base_path = ""
 
 
-def test_legacy_api_swaps_root_and_fence_before_releasing_previous(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import fantasy_daemon.api as legacy_api
-    import tinyassets.scoped_reset as scoped_reset
-
-    root_b = tmp_path / "b"
-    root_b.mkdir()
-    replacement_released = False
-
-    class ReplacementBarrier:
-        def release(self) -> None:
-            nonlocal replacement_released
-            replacement_released = True
-
-    replacement = ReplacementBarrier()
-
-    class PreviousBarrier:
-        released = False
-
-        def release(self) -> None:
-            assert legacy_api._base_path == str(root_b)
-            assert legacy_api._writer_barrier is replacement
-            self.released = True
-
-    previous = PreviousBarrier()
-    monkeypatch.setattr(
-        scoped_reset,
-        "prepare_service_writer_barrier",
-        lambda _path: replacement,
-    )
-    legacy_api._base_path = str(tmp_path / "a")
-    legacy_api._writer_barrier = previous
-    try:
-        legacy_api.configure(str(root_b))
-        assert previous.released
-    finally:
-        if legacy_api._writer_barrier is replacement:
-            replacement.release()
-        legacy_api._writer_barrier = None
-        legacy_api._base_path = ""
-    assert replacement_released

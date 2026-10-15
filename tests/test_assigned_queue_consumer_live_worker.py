@@ -14,7 +14,7 @@ from tests.test_background_budget_finalization_e2e import (
 from tinyassets.api.universe import (
     _classify_epoch2_workers,
 )
-from tinyassets.runtime.assigned_queue_consumer import (
+from tinyassets.control_plane.tick import (
     AssignedQueueConsumer,
     supervisor_heartbeat_filename,
 )
@@ -51,26 +51,6 @@ class _DeferredExecutor:
         pass
 
 
-def test_flag_off_poll_leaves_no_beat_or_refusal_side_effect(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    _seed_serving_assignment(tmp_path)
-    monkeypatch.delenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", raising=False)
-    consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
-
-    try:
-        assert consumer.poll_once() == 0
-    finally:
-        consumer.stop()
-
-    assert list((tmp_path / SERVING_UNIVERSE).glob(".worker_supervisor*.json")) == []
-    with sqlite3.connect(db_path(tmp_path)) as conn:
-        refusal_table = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
-            "AND name = 'assigned_queue_refusals'"
-        ).fetchone()
-    assert refusal_table is None
 
 
 def test_flag_on_poll_publishes_the_beat_but_registers_no_fleet_worker(
@@ -114,7 +94,7 @@ def _refusal_reason(base: Path, branch_task_id: str) -> str | None:
 def test_error_reason_sanitises_paths_and_long_tokens():
     """The ledger row is the only place prod can show a cause, so it carries the
     message - with filesystem paths and secret-shaped tokens stripped."""
-    from tinyassets.runtime.assigned_queue_consumer import _error_reason
+    from tinyassets.control_plane.tick import _error_reason
 
     reason = _error_reason(
         "prepare_error",
@@ -142,7 +122,7 @@ def test_start_stops_every_fleet_control_with_a_recorded_reason(
 
     from tests.test_cloud_automation_control import _active
     from tinyassets.cloud_automation_control import CloudAutomationDesiredState
-    from tinyassets.runtime.assigned_queue_consumer import (
+    from tinyassets.control_plane.tick import (
         RETIRED_FLEET_CONTROL_REASON,
     )
     from tinyassets.storage.cloud_automation_control import (

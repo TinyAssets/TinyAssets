@@ -179,8 +179,6 @@ RUN python -m venv --copies /opt/venv && \
 
 COPY tinyassets/ ./tinyassets/
 COPY domains/ ./domains/
-# The node-execution runtime invoked by tinyassets.cloud_worker.
-COPY fantasy_daemon/ ./fantasy_daemon/
 
 # ---------- Stage 2: final ----------
 
@@ -328,7 +326,6 @@ RUN /opt/venv/bin/playwright install --with-deps --only-shell chromium &&\
 
 COPY --from=builder /build/tinyassets /app/tinyassets
 COPY --from=builder /build/domains /app/domains
-COPY --from=builder /build/fantasy_daemon /app/fantasy_daemon
 COPY --from=builder /build/pyproject.toml /app/pyproject.toml
 # Install the actual package metadata and entry points against /app. Dependencies
 # above use the same pyproject extras and are not resolved a second time.

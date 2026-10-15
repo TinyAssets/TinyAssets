@@ -119,35 +119,15 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     # L7 durable ingress: bounded Starlette HTTP-body reads, not graph streams.
     # Acceptance grants no execution authority; register both shipped copies.
     CallSite("tinyassets/ingress.py", "AppIngressMiddleware.__call__", "request.stream"),
-    CallSite(
-        "fantasy_daemon/__main__.py",
-        "DaemonController._try_execute_soul_loop",
-        "execute_branch",
-    ),
-    CallSite("fantasy_daemon/__main__.py", "_try_dispatcher_pick", "claim_task"),
     # Reviewed 2026-08-05 (added by 64f27fe7, "Wire cloud drain epoch-2 Branch
     # consumer" #2182, without registration here). `recover_expired()` is
     # queue-owner maintenance over the canonical store: it grants no execution
     # authority. Every recovered task is filtered to this universe and to
     # `status == "pending"`, and must still pass the exact worker + activation
     # claim transaction below before anything executes.
-    CallSite("fantasy_daemon/__main__.py", "_try_dispatcher_pick", "recover_expired"),
     # The assigned-queue consumer's `recover_expired()` call retired with its
     # epoch-2 claim pass (plan C2, 2026-09-28): it now runs only user-owned
     # automations and claims nothing from the queue.
-    CallSite(
-        "fantasy_daemon/__main__.py",
-        "_try_execute_claimed_branch_task",
-        "execute_branch",
-    ),
-    # The REAL compiled-graph stream boundary. Distinguishable from the two
-    # `request.stream()` HTTP body reads only since receiver-sensitive matching
-    # landed; before that all three were the bare name "stream".
-    CallSite(
-        "fantasy_daemon/__main__.py",
-        "DaemonController._run_graph",
-        "compiled.stream",
-    ),
     # Reviewed 2026-10-02 (S7, change `control-plane-agent-loop`): the thin
     # loop's box tools READ the output of a box execution through
     # `BoxProvider.stream`, the box contract's output read (target architecture
@@ -200,12 +180,6 @@ CLASSIFICATION: tuple[CallSite, ...] = (
         "_ensure_runs_recovery",
         "recover_in_flight_runs",
     ),
-    CallSite("tinyassets/api/universe.py", "_action_submit_request", "append_task"),
-    CallSite(
-        "tinyassets/dispatcher.py",
-        "run_branch_task_producers_into_queue",
-        "append_task",
-    ),
     CallSite(
         "tinyassets/graph_compiler.py",
         "_build_invoke_branch_node._node_fn",
@@ -236,7 +210,7 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     # non-universe actor or an empty principal, so the no-principal call is
     # reachable only with a test double (Codex 2026-10-01).
     CallSite(
-        "tinyassets/scheduler.py",
+        "tinyassets/control_plane/events.py",
         "Scheduler._dispatch_event",
         "_run_fn",
         count=2,
@@ -290,35 +264,14 @@ REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
     ),
     "schedule_and_event": (
         SourceReference(
-            "tinyassets/scheduler.py",
+            "tinyassets/control_plane/events.py",
             'self._run_fn(sub["branch_def_id"], actor, inputs, run_name)',
         ),
     ),
-    "goal_subscription": (
-        SourceReference("tinyassets/subscriptions.py", "def subscribe("),
-        SourceReference("tinyassets/scheduler.py", "def register_subscription("),
+    "event_subscription": (
+        SourceReference("tinyassets/control_plane/events.py", "def register_subscription("),
     ),
-    "soul_and_compiled_cycle": (
-        SourceReference(
-            "fantasy_daemon/__main__.py",
-            "read_legacy_premise(output_dir).strip()",
-        ),
-        SourceReference(
-            "fantasy_daemon/__main__.py",
-            "compiled.stream(initial_state, config=config)",
-        ),
-        SourceReference("fantasy_daemon/branches/universe_cycle.yaml", "graph_nodes:"),
-    ),
-    "request_admission": (
-        SourceReference("tinyassets/storage/request_admissions.py", "class RequestAdmissionStore:"),
-        SourceReference("tinyassets/api/universe.py", "def _action_submit_request("),
-    ),
-    "goal_pool_and_paid_market": (
-        SourceReference("tinyassets/producers/goal_pool.py", "class GoalPoolProducer:"),
-        SourceReference("tinyassets/producers/node_bid.py", "class NodeBidProducer:"),
-    ),
-    "branch_task_and_graph_enqueue": (
-        SourceReference("tinyassets/branch_tasks.py", "def append_task("),
+    "graph_enqueue": (
         SourceReference("tinyassets/graph_compiler.py", "def _node_enqueue_branch_run("),
     ),
     "direct_live_and_versioned_run": (
@@ -329,20 +282,18 @@ REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
     "resume_and_recovery": (
         SourceReference("tinyassets/runs.py", "def resume_run("),
         SourceReference("tinyassets/runs.py", "def recover_in_flight_runs("),
-        SourceReference("tinyassets/branch_tasks.py", "def recover_claimed_tasks("),
         SourceReference("tinyassets/branch_tasks_v2.py", "    def recover_expired("),
     ),
     "request_actor_boundary": (
         SourceReference("tinyassets/api/permissions.py", "def current_request_actor_id("),
         SourceReference("tinyassets/api/engine_helpers.py", "def _current_actor("),
     ),
-    "daemon_cloud_and_distributed_worker": (
-        SourceReference("fantasy_daemon/__main__.py", "def _try_execute_claimed_branch_task("),
+    "owner_tick_and_distributed_worker": (
         # Retargeted 2026-08-29: the host-run `tinyassets/cloud_worker.py`
         # supervisor was deleted (nothing runs outside a user's universe --
         # ADR-009). The served consumer is now the only background claim root.
         SourceReference(
-            "tinyassets/runtime/assigned_queue_consumer.py",
+            "tinyassets/control_plane/tick.py",
             "class AssignedQueueConsumer:",
         ),
         SourceReference("tinyassets/execution_authority/records.py", "class ExecutionGrantV1:"),
@@ -398,12 +349,10 @@ CANONICAL_READ_INTERFACES: Mapping[str, tuple[SourceReference, ...]] = {
     "filing_only_wiki_negative": (
         SourceReference("tinyassets/api/wiki.py", "def _wiki_file_bug("),
     ),
-    "goal_subscription": (
-        SourceReference("tinyassets/subscriptions.py", "def list_subscriptions("),
-        SourceReference("tinyassets/scheduler.py", "def list_scheduler_subscriptions("),
+    "event_subscription": (
+        SourceReference("tinyassets/control_plane/events.py", "def list_scheduler_subscriptions("),
     ),
     "queue": (
-        SourceReference("tinyassets/branch_tasks.py", "def read_queue("),
         SourceReference("tinyassets/branch_tasks_v2.py", "class Epoch2OperationalRead:"),
     ),
     "b2": (
@@ -419,7 +368,6 @@ CANONICAL_READ_INTERFACES: Mapping[str, tuple[SourceReference, ...]] = {
 
 _SCAN_ROOTS = (
     "tinyassets",
-    "fantasy_daemon",
 )
 _WIKI_NEGATIVE_PATHS = (
     "tinyassets/api/wiki.py",

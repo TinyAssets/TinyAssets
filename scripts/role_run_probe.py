@@ -69,7 +69,6 @@ async def prove_runs(client, center, owner):
 
     # Register through HTTP, then drive the real due-consumer entry point.
     # Startup left the pump off so restored production schedules cannot run.
-    os.environ['TINYASSETS_ASSIGNED_QUEUE_CONSUMER'] = '1'
     created = await call('write_graph', target='automation', operation='create',
         graph_id=center,
         payload_json=json.dumps(dict(name='Owner-cell oracle', branch_def_id=bid,

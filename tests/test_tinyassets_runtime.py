@@ -7,11 +7,6 @@ assemble them into a runnable system.
 
 from __future__ import annotations
 
-import ast
-from pathlib import Path
-
-import pytest
-
 # ============================================================================
 # Discovery Tests
 # ============================================================================
@@ -163,20 +158,8 @@ def test_create_app_with_registry() -> None:
     assert hasattr(app, "add_route")
 
 
-def test_fantasy_daemon_app_export() -> None:
-    """Test that fantasy_daemon.api exports the FastAPI app."""
-    from fantasy_daemon.api import app
-
-    assert app is not None
-    assert hasattr(app, "add_route")
 
 
-def test_fantasy_daemon_configure_export() -> None:
-    """Test that fantasy_daemon.api exports configure."""
-    from fantasy_daemon.api import configure
-
-    assert configure is not None
-    assert callable(configure)
 
 
 # ============================================================================
@@ -184,48 +167,10 @@ def test_fantasy_daemon_configure_export() -> None:
 # ============================================================================
 
 
-def test_tinyassets_main_parses() -> None:
-    """Test that tinyassets/__main__.py parses as valid Python."""
-    main_file = Path(__file__).parent.parent / "tinyassets" / "__main__.py"
-    assert main_file.exists(), f"tinyassets/__main__.py not found at {main_file}"
-
-    source = main_file.read_text()
-    try:
-        ast.parse(source)
-    except SyntaxError as e:
-        pytest.fail(f"tinyassets/__main__.py has syntax error: {e}")
 
 
-def test_tinyassets_main_has_main_function() -> None:
-    """Test that tinyassets/__main__.py defines a main() function."""
-    main_file = Path(__file__).parent.parent / "tinyassets" / "__main__.py"
-    source = main_file.read_text()
-    tree = ast.parse(source)
-
-    func_names = [
-        node.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef)
-    ]
-
-    assert "main" in func_names, "main() function not defined in tinyassets/__main__.py"
 
 
-def test_tinyassets_main_has_argparser() -> None:
-    """Test that tinyassets/__main__.py defines argument parsing."""
-    main_file = Path(__file__).parent.parent / "tinyassets" / "__main__.py"
-    source = main_file.read_text()
-    tree = ast.parse(source)
-
-    func_names = [
-        node.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef)
-    ]
-
-    assert "_build_argparser" in func_names, (
-        "argument parser builder not found in tinyassets/__main__.py"
-    )
 
 
 # ============================================================================

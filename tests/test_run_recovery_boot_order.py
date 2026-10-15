@@ -22,8 +22,8 @@ def test_main_sweeps_before_spawning_engines_or_the_consumer(
     from tinyassets import delivery_runtime, engine_mcp_http, provider_assignment
     from tinyassets import universe_server as us
     from tinyassets.api import runs as api_runs
+    from tinyassets.control_plane import tick as aqc
     from tinyassets.onboarding import session_store
-    from tinyassets.runtime import assigned_queue_consumer as aqc
 
     order: list[str] = []
 
@@ -45,6 +45,7 @@ def test_main_sweeps_before_spawning_engines_or_the_consumer(
             pass
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
     monkeypatch.setattr(session_store, "arm", lambda: None)
     in_process_broker.supervisor_for(tmp_path)
     monkeypatch.setattr(threading, "Thread", _Thread)
@@ -61,7 +62,6 @@ def test_main_sweeps_before_spawning_engines_or_the_consumer(
                         lambda: order.append("recovery"))
     monkeypatch.setattr(engine_mcp_http, "start_engine_mcp_http_servers",
                         lambda: order.append("engines") or [])
-    monkeypatch.setattr(aqc, "assigned_queue_consumer_enabled", lambda: True)
     monkeypatch.setattr(aqc, "AssignedQueueConsumer", _Consumer)
     monkeypatch.setattr(us, "create_streamable_http_app", object)
     monkeypatch.setattr(us.uvicorn, "run", lambda *a, **k: order.append("serve"))

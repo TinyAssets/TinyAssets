@@ -610,7 +610,6 @@ def image_check(args):
                 TINYASSETS_SESSION_SEAL_KEY=secrets.token_hex(32),
                 TINYASSETS_ENGINE_MCP_TOOLS="1",
                 TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED="1",
-                TINYASSETS_ASSIGNED_QUEUE_CONSUMER="1",
                 TINYASSETS_WIKI_CANARY_TOKEN=secrets.token_hex(32),
                 SSL_CERT_FILE="/fixture/ca.pem",
                 REQUESTS_CA_BUNDLE="/fixture/ca.pem",

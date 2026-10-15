@@ -6,7 +6,6 @@ import json
 from unittest.mock import patch
 
 import pytest
-from fastapi.testclient import TestClient
 
 from domains.fantasy_daemon.graphs.universe import run_book
 from domains.fantasy_daemon.phases.authorial_priority_review import authorial_priority_review
@@ -16,7 +15,6 @@ from domains.fantasy_daemon.phases.target_actions import (
     create_provisional_target_from_execution,
     mark_target_for_discard_from_execution,
 )
-from fantasy_daemon.api import app, configure
 from tinyassets.work_targets import (
     LIFECYCLE_DISCARDED,
     LIFECYCLE_MARKED_FOR_DISCARD,
@@ -38,14 +36,7 @@ from tinyassets.work_targets import (
 def universe_dir(tmp_path):
     universe_dir = tmp_path / "test-universe"
     universe_dir.mkdir()
-    configure(base_path=str(tmp_path), api_key="", daemon=None)
     yield universe_dir
-    configure(base_path="", api_key="", daemon=None)
-
-
-@pytest.fixture
-def client(universe_dir):
-    return TestClient(app)
 
 
 def test_notes_to_publishable_requires_provisional_before_committed(universe_dir):
@@ -218,22 +209,6 @@ def test_execution_can_only_mark_for_discard(universe_dir):
     )
     assert result["marked_for_discard"] == [target.target_id]
     assert get_target(universe_dir, target.target_id).lifecycle == LIFECYCLE_MARKED_FOR_DISCARD
-
-
-def test_api_note_tags_and_metadata_round_trip(client, universe_dir):
-    response = client.post(
-        "/v1/universes/test-universe/notes",
-        json={
-            "text": "Track this for reconciliation.",
-            "category": "concern",
-            "tags": ["reconciliation", "target"],
-            "metadata": {"target_id": "book-1"},
-        },
-    )
-    assert response.status_code == 201
-    note = response.json()["note"]
-    assert "reconciliation" in note["tags"]
-    assert note["metadata"]["target_id"] == "book-1"
 
 
 # ---------------------------------------------------------------------------

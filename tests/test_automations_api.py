@@ -251,15 +251,38 @@ def test_write_grant_without_admin_is_refused_by_registration(
     assert AutomationStore(tmp_path).list(universe_id=UNIVERSE) == []
 
 
-def test_consumer_disabled_refuses_loudly(tmp_path: Path, env, monkeypatch) -> None:
-    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "")
+def test_consumer_off_stores_the_automation(tmp_path: Path, env, monkeypatch) -> None:
+    monkeypatch.delenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", raising=False)
 
     result = _create()
 
-    assert result["error"] == "automation_unavailable"
-    assert result["reason"] == "consumer_disabled"
-    assert result["detail"]
-    assert AutomationStore(tmp_path).list(universe_id=UNIVERSE) == []
+    assert result["status"] == "automation_created"
+    stored = AutomationStore(tmp_path).get(result["automation"]["automation_id"])
+    assert stored is not None
+    assert stored.desired_state == "active"
+
+
+def test_consumer_off_resume_marks_the_row_active(
+    tmp_path: Path, env, monkeypatch,
+) -> None:
+    created = _create()["automation"]
+    paused = api.automations(
+        action="pause", universe_id=UNIVERSE,
+        automation_id=created["automation_id"], expected_revision=1,
+    )
+    assert paused["status"] == "automation_paused"
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "0")
+
+    resumed = api.automations(
+        action="resume", universe_id=UNIVERSE,
+        automation_id=created["automation_id"], expected_revision=2,
+    )
+
+    assert resumed["status"] == "automation_resumed"
+    stored = AutomationStore(tmp_path).get(created["automation_id"])
+    assert stored is not None
+    assert stored.desired_state == "active"
+    assert stored.revision == 3
 
 
 # -- 3. Payload and action validation -----------------------------------------

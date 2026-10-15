@@ -66,7 +66,7 @@ def validate(home, owner, agent, condition):
     elif kind == "probe":
         if not isinstance(condition.get("command"), str) or not condition["command"].strip():
             raise ValueError("probe requires a command")
-        from tinyassets.agent_wakes import _positive
+        from tinyassets.control_plane.agent_wakes import _positive
 
         _positive(condition.get("timeout_seconds", 60), "timeout_seconds")
         if condition.get("timeout_seconds", 60) > 600:

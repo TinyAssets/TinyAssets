@@ -348,12 +348,6 @@ def reconcile_served_budget_leases(base_path: str | Path) -> int:
 
 
 
-# The daemon-owned background operation (mirrors
-# background_served_provider.BACKGROUND_BRANCH_RUN_OPERATION; kept as a literal here
-# because that module imports this one — importing back would be circular).
-_BACKGROUND_BRANCH_RUN_OPERATION = "background_branch_run"
-
-
 def reserve_served_provider_budget(
     base_path: str | Path,
     *,
