@@ -17,6 +17,7 @@ import stat
 from pathlib import Path
 from types import SimpleNamespace
 
+from tinyassets.external_agents.writeback import AuthWriteback
 from tinyassets.owner_launcher_client import OwnerLaunchRefused
 from tinyassets.providers.owned_process import OwnerCellProcess
 from tinyassets.providers.provider_jail import ProviderConfinementError
@@ -264,14 +265,6 @@ async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir=None, limit
         raise ProviderError('provider cell startup failed: ' + cell.failure(exc)
                             + disk_stop_note(proc)) from exc
     return proc
-
-
-class AuthWriteback(dict):
-    """Validated cell trailer; the CLI exit is checked after custody writeback."""
-
-    def __init__(self, files, exit_code):
-        super().__init__(files)
-        self.exit_code = exit_code
 
 
 class CellLauncher:
