@@ -1736,9 +1736,16 @@ def process_entry(
             )
         else:
             src, quarantine = targets
+            from tinyassets.boxes.provider import BoxAuthError, BoxBusy
+
             try:
                 _reconcile_filesystem(fs, src, quarantine)
                 outcome = OUTCOME_WIPED
+            except (BoxAuthError, BoxBusy):
+                # The owner box refused or stayed busy: nothing was deleted, so
+                # the entry stays pending for periodic_sweep's retry rather than
+                # a LOST lease. Box errors are OSErrors.
+                raise
             except OSError as exc:
                 outcome = OUTCOME_LOST
                 failure = f"{type(exc).__name__}: {exc}"

@@ -190,18 +190,26 @@ def _fs():
     return workspace_fs
 
 
-def _walk(root_fd: int, parts: tuple[str, ...]) -> int:
-    """Open ``parts`` beneath ``root_fd``, following no link and creating nothing.
+def _walk(root_fd: int, parts: tuple[str, ...], *, create: bool = False) -> int:
+    """Open ``parts`` beneath ``root_fd``, following no link.
 
-    The daemon prepared these directories and labelled them for this owner
-    (``workspace_owner_pool``); a missing one is a refusal, never a mkdir, so
-    the cell can never create a pool directory the daemon has not labelled.
+    With ``create`` a missing pool parent is made here, inside the owner box:
+    the box is the owner's alone, so there is no daemon-labelled parent to
+    wait for (``workspace_owner_pool.pool_parts`` names them).
     """
     fs = _fs()
     current = os.dup(root_fd)
     try:
         for part in parts:
-            child = fs.open_subdir_nofollow(current, part)
+            try:
+                child = fs.open_subdir_nofollow(current, part)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                try:
+                    child = fs.create_cell_subdir(current, part)
+                except FileExistsError:
+                    child = fs.open_subdir_nofollow(current, part)
             os.close(current)
             current = child
     except BaseException:
@@ -219,7 +227,7 @@ def _make_lease(root_fd: int, request: dict[str, Any]) -> tuple[int, int, str]:
     fixed-name helper instead -- the same split the daemon side used to make.
     """
     fs = _fs()
-    parent_fd = _walk(root_fd, request["lease_parent"])
+    parent_fd = _walk(root_fd, request["lease_parent"], create=True)
     lease_fd = content_fd = None
     try:
         name = request["lease_name"]
