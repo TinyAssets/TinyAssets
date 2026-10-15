@@ -939,12 +939,6 @@ Round-3 credential-snapshot filesystem fixes verified; **no merge, no deploy** w
 *Owner artifacts:* `openspec/changes/archive/2026-10-06-byo-llm-connect-flow/`,
 `openspec/changes/archive/2026-08-26-constrain-set-engine-provider-authority/`.
 
-### Activate hosted-preview publication
-
-`activate-hosted-preview-publication` — a no-prod account plus a fixed Worker; inert host
-alias/version; Access anon-deny and reviewer-load proof; then a restricted GitHub environment.
-*Where:* Cloudflare + GitHub environment.
-
 ---
 
 ## Host-recorded evidence

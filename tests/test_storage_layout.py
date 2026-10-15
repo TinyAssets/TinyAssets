@@ -45,6 +45,7 @@ def test_a_fresh_data_dir_gets_the_layout_this_code_writes(tmp_path):
     ({"layout": 1, "state": "migrating"}, "did not finish"),
     ({"layout": 3, "state": "stable"}, "understands"),
     ({"state": "stable"}, "understands"),
+    ({"layout": 2, "state": "stable", "box_layout": "owner-box"}, "box_layout"),
     ("{not json", "not valid JSON"),
     ("[1]", "not a JSON object"),
 ])
@@ -103,6 +104,29 @@ def _guard_function() -> str:
     match = re.search(r"^layout_allows_any_image\(\) \{.*?^\}\n", script, re.S | re.M)
     assert match, "deploy_fail_safe.sh lost layout_allows_any_image"
     return match.group(0)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="fail-safe guard uses bash and flock; owner=c6-owner-box runs-in=linux-ci",
+)
+def test_candidate_guard_rejects_old_image_after_owner_box_commit(tmp_path):
+    script = (REPO / "deploy" / "deploy_fail_safe.sh").read_text(encoding="utf-8")
+    match = re.search(r"^layout_allows_candidate\(\) \{.*?^\}\n", script, re.S | re.M)
+    assert match
+    docker = tmp_path / "docker"
+    docker.write_text(
+        '#!/bin/sh\nprintf \'%s\\n\' \'{"layouts":[1,2],"boxes":["owner-split"]}\'\n',
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    marker = tmp_path / layout.MARKER
+    _write(tmp_path, {"layout": 2, "state": "stable", "box_layout": "owner-box"})
+    program = match.group(0) + f'layout_allows_candidate "{marker}" candidate\n'
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+    assert subprocess.run(["bash", "-c", program], env=env, check=False).returncode != 0
+    _write(tmp_path, {"layout": 2, "state": "stable"})
+    assert subprocess.run(["bash", "-c", program], env=env, check=False).returncode == 0
 
 
 def _bash_has_python3() -> bool:

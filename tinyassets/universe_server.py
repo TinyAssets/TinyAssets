@@ -860,6 +860,8 @@ def read_graph(
             that fits comes back whole. One that does not pages node_defs:
             pass output_offset=<the next_offset the page returned> until
             next_offset is null. Each page repeats the rest of the branch.
+            For complete source, field_name=@definition returns lossless JSON
+            chunks: concatenate, verify the stable sha256 and lengths, then decode.
         automation_id: Identifier of one of this command center's automations, for
             target=automation. The server assigns it on create and returns it
             in the response; use that value for later reads and controls.
@@ -878,12 +880,14 @@ def read_graph(
         field_name: Output field for target=run_output, or a retained turn id for
             target=conversation. For agent, an exact component key or @definition.
             Omit for a metadata/component catalog (no UI bodies).
+            For branch, @definition selects the complete definition as JSON chunks.
         output_offset: Unicode code-point offset within a selected output field or
             conversation message, or field index when reading the catalog (for a
             conversation catalogue, the returned before-message-id key). Continue
             using next_offset. For catalog, a filtered definition index; for an agent
             catalog, a component index; for a selected component, Unicode JSON
-            character offset. For target=branch, the node_defs index a previous
+            character offset. For branch @definition, a JSON character offset;
+            otherwise for target=branch, the node_defs index a previous
             page returned as next_offset (0 is the first page). Concatenate
             chunks until next_offset is null.
         output_max_chars: Selected-field chunk length (1..32768, default 8192).
@@ -987,6 +991,7 @@ def read_graph(
             render_text=lambda text: text,
             branch_id=branch_id or graph_id,
             scope=_continuation_scope(graph_id),
+            field_name=field_name, max_chars=output_max_chars,
         )
     if normalized == "app_ui":
         # The same index the engine serves. An empty query used to be the whole
