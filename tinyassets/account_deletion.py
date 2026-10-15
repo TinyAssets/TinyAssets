@@ -996,6 +996,46 @@ def pending_deletions(base_path: str | Path) -> list[dict[str, Any]]:
     return out
 
 
+def _destroy_owner_box(root: Path, home: str, *, principal: str):
+    """C12's destruction-only admission and stable receipt contract."""
+    from tinyassets.agent_loop.served_chat import configured_box_provider
+    from tinyassets.boxes.provider import DestroyReceipt
+
+    provider, _ = configured_box_provider()
+    if provider is None or not callable(getattr(provider, "bind_for_destroy", None)):
+        raise AccountDeletionError("authenticated owner destruction is unavailable")
+    op_id = "account-delete-" + hashlib.sha256(
+        (principal + "\x00" + home).encode("utf-8")
+    ).hexdigest()
+    handle = provider.bind_for_destroy(home, account_id=principal)
+    result = provider.destroy(handle, op_id)
+    if (not isinstance(result, DestroyReceipt) or result.command_center_id != home
+            or result.op_id != op_id or type(result.files_removed) is not int
+            or result.files_removed < 0 or type(result.new_epoch) is not int
+            or result.new_epoch < 1):
+        raise AccountDeletionError("invalid durable owner destruction receipt")
+    from tinyassets.workspace_fs import open_dir_nofollow, open_subdir_nofollow
+
+    parent = open_dir_nofollow(root)
+    try:
+        try:
+            legacy = open_subdir_nofollow(parent, home)
+        except FileNotFoundError:
+            legacy = None
+        if legacy is not None:
+            try:
+                with os.scandir(legacy) as children:
+                    if next(children, None) is not None:
+                        raise AccountDeletionError(
+                            "legacy owner bytes remain after box destruction"
+                        )
+            finally:
+                os.close(legacy)
+    finally:
+        os.close(parent)
+    return result
+
+
 def delete_account(
     base_path: str | Path,
     *,
@@ -1013,14 +1053,15 @@ def delete_account(
     and anything unfinished lands in a durable receipt. Failed staging keeps
     the home binding solely so a retry can finish moving the remaining source.
     """
+    from tinyassets.boxes.lifecycle import owner_layout
     from tinyassets.daemon_server import _connect, get_founder_home, initialize_author_server
     from tinyassets.principals import named_principal
-    from tinyassets.role_owner_tree_deletion import delete_center
 
     principal = named_principal(founder_sub)
     if not principal:
         raise AccountDeletionError("no authenticated principal to delete")
     root = Path(base_path).resolve(strict=False)
+    box_layout = owner_layout(root)
     fingerprint = _fingerprint(principal)
     counts: dict[str, int] = {}
 
@@ -1063,12 +1104,14 @@ def delete_account(
         with _connect(root) as conn:
             _delete_root_rows(conn, principal=principal, home=home, counts=counts)
 
-    # The home holds owner-identity entries the daemon cannot remove: delete it
-    # in place with D10's two passes while its owner binding and identity still
-    # admit pass one.
-    two_pass = _phase(
-        "owner_tree", lambda: delete_center(root, home, principal=principal)
-    ) if home else None
+    def _owner_tree():
+        if box_layout == "owner-box":
+            return _destroy_owner_box(root, home, principal=principal)
+        from tinyassets.role_owner_tree_deletion import delete_center
+
+        return delete_center(root, home, principal=principal)
+
+    destroyed = _phase("owner_tree", _owner_tree) if home else None
     owner_tree_failed = "owner_tree" in failures
 
     def _broker_rows() -> None:
@@ -1114,7 +1157,7 @@ def delete_account(
         _phase("authoring_blobs", _blobs)
 
     home_removed = (staged is None and not staging_failed and not owner_tree_failed
-                    or two_pass is not None)
+                    or destroyed is not None)
     staged_path = str(root / _STAGING_DIR / home) if staging_failed else ""
     if staged is not None:
         def _remove() -> None:
@@ -1187,15 +1230,23 @@ def delete_account(
         "unfinished_phases": sorted(failures),
         "retained": list(RETAINED),
     }
+    if box_layout == "owner-box" and destroyed is not None:
+        receipt["box_destroy"] = {
+            "command_center_id": destroyed.command_center_id, "op_id": destroyed.op_id,
+            "files_removed": destroyed.files_removed, "new_epoch": destroyed.new_epoch,
+        }
     if owner_tree_failed:
-        from tinyassets.role_owner_tree_deletion import pending
+        if box_layout == "owner-box":
+            receipt["home_deletion_pending"] = True
+        else:
+            from tinyassets.role_owner_tree_deletion import pending
 
-        # Pass one may already have removed part of the home; say so. None
-        # means the intent store itself could not be read (also unfinished).
-        try:
-            receipt["home_deletion_pending"] = home in pending(root)
-        except (OSError, RuntimeError):
-            receipt["home_deletion_pending"] = None
+            # Pass one may already have removed part of the home; say so. None
+            # means the intent store itself could not be read (also unfinished).
+            try:
+                receipt["home_deletion_pending"] = home in pending(root)
+            except (OSError, RuntimeError):
+                receipt["home_deletion_pending"] = None
     if failures:
         receipt["host_receipt_path"] = _write_unfinished_receipt(root, receipt)
     logger.info(
