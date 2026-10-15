@@ -80,7 +80,6 @@ def exercise(base, center, principal):
             source='oracle', context='owner writer regression'))
 
         from tinyassets.auto_ship_ledger import _file_lock
-        from tinyassets.bid.execution_log import append_execution_log_entry
         from tinyassets.config import write_universe_config_fields
 
         check('config', lambda: write_universe_config_fields(root, oracle=True))
@@ -112,16 +111,6 @@ def exercise(base, center, principal):
         check('worldbuild-canon', lambda: _write_canon_file(
             root / 'canon', 'oracle-world.md', 'ORACLE canon'),
             produces=('canon/oracle_world.md', 'canon/.oracle_world.md.reviewed'))
-
-        from tinyassets.bid.node_bid import NodeBid
-        from tinyassets.branches import NodeDefinition
-        from tinyassets.executors.node_bid import execute_node_bid
-        node = NodeDefinition(node_id='oracle', display_name='Oracle',
-            source_code="def run(state):\n    return {'oracle': True}\n").mark_approved()
-        check('node-bid-artifact', lambda: execute_node_bid(
-            NodeBid(node_bid_id='oracle', node_def_id='oracle', status='open'),
-            node_lookup_fn=lambda _: node, output_dir=root / 'output'),
-            produces=('output/bid_outputs/oracle/output.json',))
 
     # The actual periodic maintenance bodies, synchronously, with empty queues
     # and the request/queue records above. A swallowed blocked result is a fail.

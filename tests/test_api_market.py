@@ -12,6 +12,7 @@ import json
 import pytest
 
 from tinyassets.api import market as mkt_mod
+from tinyassets.api.extensions import _extensions_impl
 from tinyassets.api.market import (
     _ATTRIBUTION_ACTIONS,
     _GATE_EVENT_ACTIONS,
@@ -181,6 +182,19 @@ def test_paid_market_flag_cannot_restore_retired_money_routes(monkeypatch, actio
     result = json.loads(gates(action=action))
     assert "error" in result
     assert action not in result["available_actions"]
+
+
+@pytest.mark.parametrize("action", [
+    "escrow_lock", "escrow_release", "escrow_refund", "escrow_inspect",
+    "escrow_fund", "escrow_balance", "escrow_set_wallet", "escrow_withdraw",
+])
+def test_extensions_refuses_retired_escrow_actions(monkeypatch, action):
+    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on")
+    result = json.loads(_extensions_impl(action=action))
+    assert result == {
+        "status": "rejected",
+        "error": f"Action '{action}' was retired with the paid market.",
+    }
 
 
 def test_gate_event_actions_keys():
