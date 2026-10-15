@@ -1712,15 +1712,16 @@
       updateLine.hidden=!pending;
     }
     if(seatWait){
-      // The waiting line, with the Upgrade link INSIDE it -- never a banner, card
-      // or modal (founder, 2026-09-30). No link on the top tier: the server sends
-      // upgrade_url null there.
+      // The waiting line, with Upgrade INSIDE it -- never a banner, card or
+      // modal (founder, 2026-09-30). The control exists only when the shared
+      // plan action says this surface may purchase. No native check here.
       const line=$("status-line");
       line.textContent="Waiting for a free seat ("+Number(seatWait.running||0)+" running)";
-      if(seatWait.upgrade_url){
+      if(canPurchase()){
         line.appendChild(document.createTextNode(" \u2014 "));
-        const link=document.createElement("a");
-        link.textContent="Upgrade";link.href=seatWait.upgrade_url;
+        const link=document.createElement("button");
+        link.type="button"; link.className="btn btn--link"; link.textContent="Upgrade";
+        link.addEventListener("click", ()=>{ startSubscribe(); });
         line.appendChild(link);
         line.appendChild(document.createTextNode(" for more seats."));
       }
@@ -2642,6 +2643,10 @@
     }
     if(failureCode==="provider_daily_quota"&&failure&&typeof DailyCapCard!=="undefined"){
       note.appendChild(DailyCapCard.build(failure));
+    }
+    if(failureCode==="storage_quota_exceeded" ||
+       (failure && failure.failure_class==="storage_quota_exceeded")){
+      showLimitPrompt("storage");
     }
     return note;
   }
@@ -5076,13 +5081,37 @@
   // with Stripe.
   let PLAN = null;
 
+  function billingSurface(){
+    // The shell's only job is to name the surface. Every buy control reads
+    // can_purchase_on_surface from the plan action, not this flag.
+    return (typeof NATIVE!=="undefined" && NATIVE) ? "android" : "web";
+  }
+
+  function canPurchase(){
+    return !!(PLAN && PLAN.can_purchase_on_surface===true && PLAN.upgrade_available===true);
+  }
+
+  function showLimitPrompt(kind){
+    const noun=kind==="storage"?"storage":"simultaneous runs";
+    const extra=document.createElement("span");
+    if(canPurchase()){
+      const button=document.createElement("button");
+      button.type="button"; button.className="btn btn--link"; button.textContent="Upgrade";
+      button.addEventListener("click", ()=>{ startSubscribe(); });
+      extra.appendChild(button);
+    }
+    appendMessage("system", "You've reached your "+noun+" limit.", canPurchase()?extra:null);
+  }
+
   async function billingFetch(path, method){
     // Same bearer discipline as every other authenticated call here: refresh
     // first, because the token rotates about every five minutes.
     await ensureFreshToken();
     const headers = {};
     const tk = token(); if(tk) headers["Authorization"] = "Bearer " + tk;
-    return fetch(path, {method, headers, credentials:"same-origin"});
+    const join=path.indexOf("?")>=0?"&":"?";
+    return fetch(path+join+"surface="+encodeURIComponent(billingSurface()),
+      {method, headers, credentials:"same-origin"});
   }
 
   async function loadPlan(){
@@ -5092,10 +5121,10 @@
       PLAN = await r.json();
       renderPlan();
       const entry=new URL(location.href);
-      if(!NATIVE && entry.searchParams.get("upgrade")==="1"){
+      if(entry.searchParams.get("upgrade")==="1"){
         entry.searchParams.delete("upgrade");
         history.replaceState(null,"",entry.href);
-        if(PLAN.upgrade_url && PLAN.billing_enabled !== false) await startSubscribe();
+        if(canPurchase()) await startSubscribe();
       }
     }catch(_e){ /* the plan chip is never load-bearing for chat */ }
   }
@@ -5113,28 +5142,35 @@
   const BILLING_OFF_NOTE = "Billing isn't set up on this server, so your plan can't be changed here.";
   function renderPlan(){
     const b = $("btn-plan");
-    // Inside the Android shell the plan/checkout UI stays hidden: a digital
-    // subscription bought inside a Play-installed app must use Play Billing,
-    // so the app is a consumption-only client of a plan bought on the web
-    // (docs/ops/google-play-launch.md §8).
-    if(!b || !PLAN || NATIVE) return;
-    // A server without billing (a contributor's clone, a self-hosted box) has
-    // nothing to sell, so a free user gets no chip rather than one that leads
-    // nowhere. A paid user keeps theirs: it is where they see their plan.
-    if(PLAN.billing_enabled === false && PLAN.tier !== "paid"){ b.hidden = true; return; }
-    b.hidden = false;
+    const view = $("plan-view");
+    if(!b || !PLAN) return;
     const ending = planEndsOn();
-    if(PLAN.tier === "paid"){
-      b.textContent = ending ? ("Paid · ends " + ending) : "Paid plan";
+    const paid = PLAN.tier === "paid";
+    const paidLabel = ending ? ("Paid · ends " + ending) : "Paid plan";
+    // A surface whose purchase policy is off shows the plan and nothing else.
+    // No link, no Upgrade word, no pointer at another store.
+    if(PLAN.can_purchase_on_surface === false){
+      b.hidden = true;
+      if(view){ view.hidden = false; view.textContent = paid ? paidLabel : (PLAN.label || "Free"); }
+      return;
+    }
+    if(view) view.hidden = true;
+    // Nothing to sell: billing is off, or this tier has no upgrade.
+    if(!paid && !canPurchase()){ b.hidden = true; return; }
+    b.hidden = false;
+    if(paid){
+      b.textContent = paidLabel;
       b.title = ending
         ? ("Your subscription is cancelled and ends " + ending
            + ". You keep the paid tier until then.")
         : "Manage your plan";
     }else{
-      b.textContent = "Upgrade";
+      b.textContent = PLAN.label || "Upgrade";
       b.title = "Subscribe for $20/month";
     }
-    if(PLAN.billing_enabled === false) b.title = BILLING_OFF_NOTE;
+    if(PLAN.billing_enabled === false || PLAN.upgrade_unavailable_reason === "billing_disabled")
+      b.title = BILLING_OFF_NOTE;
+    if(typeof seatWait!=="undefined" && seatWait && typeof renderWorking==="function") renderWorking();
   }
 
   // What the user is told for each refusal the checkout route can return. Keyed by
@@ -5149,17 +5185,14 @@
       "A checkout for this command center is already open. Finish it in the other tab, "
       + "or wait a few minutes for it to expire and try again.",
     no_home_universe: "You don't have a command center to subscribe yet.",
+    unavailable_in_app: "Your current plan is unchanged.",
   };
 
   async function startSubscribe(){
-    // Play's payments policy: a digital subscription bought inside an app
-    // installed from Play must use Play Billing. The Android shell is therefore
-    // a consumption-only client of a plan bought on the web — and that has to
-    // be enforced here, not just by hiding the button, because "not purchasable
-    // from within the app" is a property of the code, not of the layout.
-    if(NATIVE){
-      appendMessage("system", "Plans are managed on the web at tinyassets.io — "
-        + "this app doesn't sell subscriptions.");
+    // Purchase is allowed only when the plan action says so. A surface that
+    // cannot purchase (Android today) states the current plan and stops.
+    if(!canPurchase()){
+      appendMessage("system", (PLAN && (PLAN.label || (PLAN.tier==="paid" ? "Paid plan" : "Free"))) || "Free");
       return;
     }
     let out = null;
@@ -5194,6 +5227,10 @@
 
   function onPlanClick(){
     if(!PLAN) return;
+    if(PLAN.can_purchase_on_surface === false){
+      appendMessage("system", PLAN.label || (PLAN.tier==="paid" ? "Paid plan" : "Free"));
+      return;
+    }
     // Cancelling goes through Stripe too: say so instead of offering it.
     if(PLAN.billing_enabled === false){ appendMessage("system", BILLING_OFF_NOTE); return; }
     if(PLAN.tier !== "paid"){ startSubscribe(); return; }
@@ -5251,8 +5288,6 @@
     setStatusLine(""); renderWorking();
   }
   function clearAccountScopedState(){
-    const transferDialog=$("command-center-transfer");
-    if(transferDialog && typeof transferDialog.close==="function") transferDialog.close();
     if(typeof CredentialRequests!=="undefined")CredentialRequests.clear();
     if(typeof invalidateChatCloudPrefs==="function") invalidateChatCloudPrefs();
     queueScope=""; queueOwner="";
@@ -6243,6 +6278,9 @@
         // founder's own explicit new upload.
         item.error="this upload did not finish and its upload name is held — "+
           "remove it and attach the file again to start a new upload";
+      }else if(status===507 || (err&&err.failureClass==="storage_quota_exceeded")){
+        item.error="this account is out of cloud storage";
+        showLimitPrompt("storage");
       }else if(status===413){ item.error="too large for this app to upload"; }
       else if(status===401||status===403){
         item.error="sign in again to attach files"; item.retryable=true;
@@ -6418,7 +6456,9 @@
     try{ payload=await response.json(); }catch(_e){ payload=null; }
     if(!response.ok){
       const err=new Error((payload&&(payload.detail||payload.error))||("upload_refused_"+response.status));
-      err.status=response.status; throw err;
+      err.status=response.status;
+      if(payload && typeof payload.failure_class==="string") err.failureClass=payload.failure_class;
+      throw err;
     }
     return payload;
   }
@@ -7084,18 +7124,6 @@
     $("btn-apps").addEventListener("click", ()=>showApps());
     $("btn-apps-back").addEventListener("click", ()=>showView("chat"));
     $("btn-account").addEventListener("click", showAccount);
-    $("btn-transfer").addEventListener("click", async()=>{
-      const epoch=MCP._loginEpoch, owner=queueOwner, home=queueScope;
-      const current=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&home===queueScope;
-      try{
-        const transfer=await import("__TA_TRANSFER_URL__");
-        if(!current()) return;
-        transfer.openTransfer({commandCenter:home,isCurrent:current,
-          request:body=>fetch("/app/api/transfer",{method:"POST",credentials:"same-origin",
-            headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-            body:JSON.stringify(body)})});
-      }catch(e){ if(current()) $("profile-status").textContent="Transfer could not open. Refresh and try again."; }
-    });
     $("btn-account-back").addEventListener("click", leaveAccount);
     $("delete-confirm").addEventListener("input",(e)=>{ $("btn-delete-account").disabled = e.target.value.trim()!=="DELETE"; });
     $("btn-delete-account").addEventListener("click", deleteAccount);

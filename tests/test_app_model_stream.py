@@ -12,14 +12,16 @@ def _run(tmp_path, body):
     node = shutil.which("node")
     if node is None:
         pytest.fail("Node is required to verify the shipped model stream renderer")
-    source = (MODULE_DIR / "model_stream.js").read_text()
-    main = (MODULE_DIR / "main.js").read_text()
+    source = (MODULE_DIR / "model_stream.js").read_text(encoding="utf-8")
+    main = (MODULE_DIR / "main.js").read_text(encoding="utf-8")
     transport = "// ---- MCP client" + main.split("// ---- MCP client", 1)[1].split(
         "// ---- UI ----", 1)[0]
     script = tmp_path / "stream.js"
     script.write_text(source + "\n" + transport + "\n(async()=>{\n" + body +
-                      "\n})().catch(e=>{console.error(e);process.exit(1)});")
-    result = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=10)
+                      "\n})().catch(e=>{console.error(e);process.exit(1)});",
+                      encoding="utf-8")
+    result = subprocess.run([node, str(script)], capture_output=True, text=True,
+                            encoding="utf-8", timeout=10)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 

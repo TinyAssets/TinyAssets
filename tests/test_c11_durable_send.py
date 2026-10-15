@@ -12,7 +12,7 @@ def html(tmp_path):
     template = tmp_path / "shell.html"
     template.write_text("__TA_APP_MAIN__", encoding="utf-8")
     source = app_modules.shell_source(template)
-    ui = (app_modules.MODULE_DIR.parent / "app_ui.js").read_text()
+    ui = (app_modules.MODULE_DIR.parent / "app_ui.js").read_text(encoding="utf-8")
     return source.replace("__TA_APP_UI__", ui)
 
 
@@ -106,6 +106,17 @@ def test_shell_sources_are_split_without_exposing_request_values(tmp_path):
     assert source.count("async function sendTurn(") == 1
     assert source.count("async function sendVoiceTurn(") == 1
     assert "__TA_ONBOARDING_CONFIG__" in source
-    assert "__TA_TRANSFER_URL__" in source
-    assert "btn-transfer" in source  # C12's independently owned entry remains.
+    assert "AppRecovery.attach" in source
     assert Path(app_modules.MODULE_DIR / "durable_send.js").is_file()
+
+
+def test_served_app_activates_one_packaged_shell():
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    assert "__TA_APP_MAIN__" not in html
+    assert "__TA_DURABLE_SEND__" not in html
+    assert html.count("async function sendTurn(") == 1
+    assert html.count("async function sendVoiceTurn(") == 1
+    assert "_meta:{progressToken:frame.id}" in html
+    assert "function billingSurface()" in html

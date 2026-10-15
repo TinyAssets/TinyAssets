@@ -231,7 +231,6 @@ PINNED: dict[str, list[str]] = {
     ],
     "tinyassets/onboarding/__init__.py": [
         "render_app_html: .read_text()",
-        "render_app_html: .read_text()",
         "request_theme: .read_text()",
     ],
     "tinyassets/onboarding/hosted_model_auth.py": [

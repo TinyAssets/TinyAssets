@@ -73,7 +73,9 @@ def test_served_deposit_guidance_matches_the_shipped_form():
     source = Path(__file__).resolve().parents[1] / "tinyassets" / "engine_mcp_server.py"
     text = source.read_text(encoding="utf-8")
     app_path = source.parent / "onboarding" / "app.html"
-    app = app_path.read_text(encoding="utf-8")
+    from tinyassets.onboarding.app_modules import shell_source
+
+    app = shell_source(app_path)
 
     # The original defect: four labelled boxes described as one field.
     assert "one per line" not in text

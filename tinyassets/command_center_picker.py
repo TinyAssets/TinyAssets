@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
+import pkgutil
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ BUILD_PROMPT = (
 # ordinary extension. Package metadata grants no trusted-shell capabilities;
 # extension projection replaces this reserved fallback id with its revision id.
 PLATFORM_DEFAULT_UI = json.loads(
-    (Path(__file__).parent / "starter" / "default-layout" / "layout.json").read_text("utf-8")
+    pkgutil.get_data("tinyassets", "starter/default-layout/layout.json").decode("utf-8")
 )
 
 
