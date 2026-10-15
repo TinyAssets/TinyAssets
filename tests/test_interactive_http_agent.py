@@ -15,6 +15,7 @@ from tinyassets import engine_mcp_http, engine_tool_client, universe_intelligenc
 from tinyassets.providers import call as provider_calls
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 from tinyassets.providers.base import ModelConfig
+from tinyassets.providers.call import make_interactive_agent_turn as actual_make_turn
 from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 from tinyassets.storage.agent_turn_journal import AgentTurnJournal
 
@@ -207,6 +208,19 @@ def run(agent, observer=None, *, greeting=False):
         config=agent.config,
         response_observer=observer,
     )
+
+
+def test_owner_split_served_turn_selects_engine_tools_before_inference(agent, monkeypatch):
+    from tinyassets.control_plane.binding import use_binding
+    from tinyassets.storage_layout import ACTIVE_BOX_LAYOUT
+
+    assert ACTIVE_BOX_LAYOUT == "owner-split"
+    monkeypatch.setattr(provider_calls, "make_interactive_agent_turn", actual_make_turn)
+    with use_binding(None):
+        assert run(agent) == "finished exact answer"
+    assert len(agent.wires) == 2
+    assert agent.tools and agent.tools[0][0] == "bash"
+    assert agent.latest().state == "completed"
 
 
 def test_actual_writer_runs_tool_then_continues_and_reports_only_final_response(agent):

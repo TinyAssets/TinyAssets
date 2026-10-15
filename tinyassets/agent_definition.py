@@ -44,6 +44,7 @@ import hashlib
 import json
 import math
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -53,6 +54,7 @@ import yaml
 from tinyassets.boxes.provider import BoxError
 from tinyassets.universe_files import (
     list_universe_dir,
+    list_universe_entries,
     load_untrusted_yaml,
     read_universe_file,
     read_universe_text,
@@ -439,12 +441,13 @@ def list_agent_files(universe_dir: Path, *, owner: str,
     """
     universe_dir = Path(universe_dir)
     try:
-        names = list_universe_dir(universe_dir, AGENTS_DIR)
+        entries = list_universe_entries(universe_dir, AGENTS_DIR)
     except FileNotFoundError:
         return []
     found = []
-    for slug in sorted(names):
-        if not AGENT_NAME.fullmatch(slug) or slug == MAIN_AGENT:
+    for slug, info in entries:
+        if (not stat.S_ISDIR(info.st_mode) or not AGENT_NAME.fullmatch(slug)
+                or slug == MAIN_AGENT):
             continue
         directory = agent_directory(slug)
         try:

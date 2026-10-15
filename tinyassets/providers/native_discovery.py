@@ -124,17 +124,16 @@ async def refresh_native_catalogue(
 
             custody = Custody(universe, owner_user_id, expected_custody)
 
-            def launch_catalogue(receipt_id):
+            def launch_catalogue(operation_id):
+                box_provider, limits = configured_box_provider()
                 binding = current_binding()
-                if binding is None:
-                    box_provider, limits = configured_box_provider()
-                    if box_provider is not None:
-                        binding = bind_session(
-                            provider=box_provider, limits=limits, universe_dir=universe,
-                            owner=owner_user_id, execution_id=f"catalogue:{receipt_id}",
-                        )
+                if box_provider is not None:
+                    binding = bind_session(
+                        provider=box_provider, limits=limits, universe_dir=universe,
+                        owner=owner_user_id, execution_id=operation_id,
+                    )
                 return launcher(custody, binding=binding,
-                                operation_id=f"catalogue:{receipt_id}")
+                                operation_id=operation_id)
 
             return await run_catalogue(
                 provider.name,

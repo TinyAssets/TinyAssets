@@ -196,6 +196,7 @@ def test_agent_directories_are_the_roster_and_main_is_the_root(tmp_path):
     _agent_dir(base, "theirs", settings="schema_version: 1\nagent: {id: agent_binding_01P, "
                                         "name: Private, owner: p}\n")
     (base / "agents" / "notes.md").write_text("not an agent", encoding="utf-8")
+    (base / "agents" / "stray").write_text("not an agent", encoding="utf-8")
     (base / "agents" / "empty").mkdir()
 
     assert [(a.slug, a.agent_id, a.name) for a in list_agent_files(base, owner="o")] == [

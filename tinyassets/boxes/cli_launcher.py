@@ -7,7 +7,7 @@ import hashlib
 import uuid
 
 from tinyassets.boxes.file_wire import MAX_DATA
-from tinyassets.boxes.provider import BoxAuthError, BoxError
+from tinyassets.boxes.provider import BoxAuthError, BoxError, BoxNotFound, ExecState
 
 
 class Input:
@@ -43,9 +43,10 @@ class Input:
 
 
 class Process:
-    def __init__(self, provider, handle, ident, workdir):
+    def __init__(self, provider, handle, ident, workdir, *, resumed=False):
         self.provider, self.handle, self.ident = provider, handle, ident
         self.workdir = workdir
+        self.resumed = resumed
         self.returncode = None
         self.stdin = Input(self)
         self.stdout = asyncio.StreamReader(limit=MAX_DATA)
@@ -102,6 +103,27 @@ class BoxLauncher:
         self.operation_id = operation_id
         self.processes = set()
 
+    async def resume(self):
+        """Recover an exited operation without sending another CLI request."""
+        try:
+            status = await asyncio.to_thread(
+                self.provider.exec_status, self.handle, self.operation_id)
+        except BoxNotFound:
+            return None
+        except BoxAuthError as exc:
+            # The host uses this exact refusal for an as-yet unstarted op.
+            # A different session refusal must stay fatal.
+            if str(exc) != "execution does not belong to this owner":
+                raise
+            return None
+        if status.state != ExecState.EXITED:
+            raise BoxError("native CLI outcome is pending or unknown; never replay")
+        nonce = hashlib.sha256(self.operation_id.encode()).hexdigest()[:32]
+        proc = Process(self.provider, self.handle, status.exec_id,
+                       "/tmp/ta-agent-" + nonce, resumed=True)
+        self.processes.add(proc)
+        return proc
+
     async def spawn(self, argv, env, *, home, workdir, egress, auth_files, auth,
                     catalogue_rewrite=None, requested_model=None):
         if (home != "/agent-home" or egress != self.handle.command_center_id
@@ -126,14 +148,13 @@ class BoxLauncher:
 
         if proc not in self.processes:
             raise BoxAuthError("foreign CLI process")
-        proc.stdin.close()
+        if not proc.resumed:
+            proc.stdin.close()
         try:
             await asyncio.wait_for(proc.wait(), timeout=15)
         except BaseException:
             await proc.cancel()
             raise
-        if not self.custody.current():
-            raise BoxAuthError("CLI custody changed before private writeback")
         result = await asyncio.to_thread(self.provider.cli_result, self.handle, proc.ident)
         return AuthWriteback(result["files"], result["exit_code"])
 

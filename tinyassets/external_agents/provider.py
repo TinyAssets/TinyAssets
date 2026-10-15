@@ -1,9 +1,11 @@
 """Bridge existing owner bindings to the package runner."""
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from tinyassets.exceptions import ExternalAgentUnavailable
+from tinyassets.external_agents import receipts
 from tinyassets.external_agents.home import Custody
 from tinyassets.external_agents.registry import resolve
 from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
@@ -39,10 +41,26 @@ class ExternalAgentProvider(BaseProvider):
         if budget is None or not budget.usage_id or type(config.request_attempt) is not int:
             raise ExternalAgentUnavailable(self.name, model, "job_failed:custody")
         budget.check_scope(owner, universe.name)
-        operation_id = f"native:{budget.usage_id}:{config.request_attempt}"
+        logical_key = "job:" + hashlib.sha256("\0".join((
+            self.name, budget.usage_id, model, prompt, system,
+            config.request_purpose,
+        )).encode()).hexdigest()
+        operation_id = receipts.claim_cli(
+            universe.parent, owner=owner, universe_id=universe.name,
+            logical_key=logical_key, custody_digest=reference.reference_digest,
+        )
+
+        from tinyassets.agent_loop.served_chat import configured_box_provider
+        from tinyassets.control_plane.binding import bind_session
+
+        box_provider, limits = configured_box_provider()
+        binding = (bind_session(provider=box_provider, limits=limits,
+                                universe_dir=universe, owner=owner,
+                                execution_id=operation_id)
+                   if box_provider is not None else None)
 
         return await run_job(
-            self.name, launcher(custody, operation_id=operation_id),
+            self.name, launcher(custody, operation_id=operation_id, binding=binding),
             custody, prompt=prompt, system=system,
             config=config,
         )

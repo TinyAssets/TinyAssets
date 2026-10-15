@@ -710,7 +710,10 @@ host before dispatch. C6 does not overwrite those files. Integration needs:
   stdout is durable and must never carry credential writeback. The integration
   constructs `BoxLauncher(provider, handle, custody, operation_id=stable_id)`
   and passes it to the existing `run_job`/`run_catalogue` runner. The runner now
-  acknowledges its private result only after successful CAS. Existing provider
+  acknowledges its private result after successful CAS, or after refusing a
+  stale result whose admitted custody was superseded. The broker persists the
+  invocation ID and admitted custody digest before dispatch, reuses the ID on
+  retry, and derives the same box session from it. Existing provider
   factory callsites remain unchanged until C7 supplies this binding.
 
 One additional inventory row is required in C7-owned

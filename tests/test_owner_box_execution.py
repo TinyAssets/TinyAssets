@@ -460,6 +460,141 @@ async def test_box_launcher_process_and_private_ack_share_existing_custody(runti
     assert proc not in launcher.processes
 
 
+@pytest.mark.asyncio
+async def test_lost_private_result_retries_same_durable_cli_operation(runtime, tmp_path,
+                                                                       monkeypatch):
+    import hashlib
+
+    from tinyassets.boxes.cli_launcher import BoxLauncher
+    from tinyassets.external_agents import receipts
+
+    host, provider, handle, state = runtime
+    fields = dict(owner="alice", universe_id="a", logical_key="catalogue:codex:one",
+                  custody_digest="custody-digest", repeatable=True)
+    operation_id = receipts.claim_cli(tmp_path, **fields)
+    nonce = hashlib.sha256(operation_id.encode()).hexdigest()[:32]
+    state["code"] = "sys.stdout.buffer.write(" + repr(cli_frames(nonce=nonce)) + ")"
+    custody = SimpleNamespace(owner_user_id="alice", current=lambda: True,
+                              reference=SimpleNamespace(universe_id="a", service="test",
+                                                        reference_digest="custody-digest"))
+    auth = {"service": "test", "home_dir": "test-cli", "files": ["auth.json"]}
+    first = BoxLauncher(provider, handle, custody, operation_id=operation_id)
+    proc = await first.spawn(["unused"], {}, home="/agent-home",
+                             workdir=cli_config()["workdir"], egress="a",
+                             auth_files=cli_config()["auth_files"], auth=auth)
+    await proc.wait()
+    actual_result = provider.cli_result
+    lost = True
+
+    def lose_reply(bound, ident):
+        nonlocal lost
+        result = actual_result(bound, ident)
+        if lost:
+            lost = False
+            raise TimeoutError("lost cli_result reply")
+        return result
+
+    monkeypatch.setattr(provider, "cli_result", lose_reply)
+    with pytest.raises(TimeoutError, match="lost cli_result"):
+        await first.close(proc)
+    assert proc.ident in host.executions.private
+
+    retry_id = receipts.claim_cli(tmp_path, **fields)
+    assert retry_id == operation_id
+    retry = BoxLauncher(provider, handle, custody, operation_id=retry_id)
+    recovered = await retry.resume()
+    assert recovered is not None and recovered.ident == proc.ident
+    returned = await retry.close(recovered)
+    assert returned["auth.json"] == b"new-private-material"
+    await retry.acknowledge(recovered)
+    receipts.acknowledge_cli(tmp_path, retry_id)
+    assert proc.ident not in host.executions.private
+    assert len(state["launches"]) == 1
+    assert receipts.claim_cli(tmp_path, **fields) != operation_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("external_deposit", [False, True])
+async def test_catalogue_retry_collects_writeback_before_ack(runtime, tmp_path, monkeypatch,
+                                                               external_deposit):
+    import hashlib
+
+    from tinyassets.boxes.cli_launcher import BoxLauncher
+    from tinyassets.exceptions import ProviderError
+    from tinyassets.external_agents import runner
+
+    host, provider, handle, state = runtime
+    center = tmp_path / "a"
+    center.mkdir()
+    executable = tmp_path / "cli"
+    executable.write_text("fixture", encoding="utf-8")
+    auth = {"service": "test", "home_dir": "test-cli", "home_env": "TEST_HOME",
+            "files": ["auth.json"]}
+    package = SimpleNamespace(executable=executable, digest="package", row={
+        "auth": auth, "catalogue": {"argv": []},
+    })
+    monkeypatch.setattr(runner.registry, "resolve", lambda _: package)
+    monkeypatch.setattr(runner, "_protocol", lambda _: None)
+    current = {"auth.json": b"old-private-material"}
+    monkeypatch.setattr(runner, "materialize", lambda *_: dict(current))
+    swaps = []
+
+    def compare_and_swap(_custody, _auth, changed):
+        swaps.append(changed)
+        current.update(changed)
+        return True
+
+    monkeypatch.setattr(runner, "compare_and_swap", compare_and_swap)
+
+    async def catalogue(*_args, process, **_kwargs):
+        assert await process.stdout.readline() == b"public CLI response\n"
+        return SimpleNamespace(models=["one"])
+
+    monkeypatch.setattr(runner, "read_native_catalogue", catalogue)
+    custody = SimpleNamespace(
+        universe_dir=center, owner_user_id="alice", current=lambda: True,
+        reference=SimpleNamespace(service="test", universe_id="a",
+                                  reference_digest="old-custody"),
+        reload=lambda: SimpleNamespace(reference_digest="old-custody"),
+    )
+    operation_ids = []
+
+    def launch(operation_id):
+        operation_ids.append(operation_id)
+        nonce = hashlib.sha256(operation_id.encode()).hexdigest()[:32]
+        state["code"] = "sys.stdout.buffer.write(" + repr(cli_frames(nonce=nonce)) + ")"
+        return BoxLauncher(provider, handle, custody, operation_id=operation_id)
+
+    actual_result = provider.cli_result
+    lost = True
+
+    def lose_reply(bound, ident):
+        nonlocal lost
+        result = actual_result(bound, ident)
+        if lost:
+            lost = False
+            raise TimeoutError("lost cli_result reply")
+        return result
+
+    monkeypatch.setattr(provider, "cli_result", lose_reply)
+    with pytest.raises(ProviderError):
+        await runner._run_catalogue_locked("codex", launch, custody)
+    assert len(host.executions.private) == 1 and not swaps
+    if external_deposit:
+        current["auth.json"] = b"new-owner-material"
+        custody.reference.reference_digest = "new-custody"
+
+    with pytest.raises(ProviderError, match="catalogue failed"):
+        await runner._run_catalogue_locked("codex", launch, custody)
+    assert operation_ids[0] == operation_ids[1]
+    assert len(state["launches"]) == 1
+    assert swaps == ([] if external_deposit else
+                     [{"auth.json": b"new-private-material"}])
+    assert current["auth.json"] == (b"new-owner-material" if external_deposit else
+                                    b"new-private-material")
+    assert not host.executions.private
+
+
 def test_private_decoder_fragments_and_rejects_credential_output_confusion():
     from tinyassets.boxes.cli_wire import PrivateDecoder
 
