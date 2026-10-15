@@ -91,9 +91,9 @@
 #   - A candidate that runs an irreversible /data migration before failing can
 #     make an image-only rollback insufficient (review #11). Startup migrations
 #     stay additive/backward-compatible, EXCEPT a layout migration, which the
-#     data layout marker (tinyassets/storage_layout.py) records: when it says
-#     anything but layout 1 / stable, the image rollback is refused
-#     (`rollback_needs_restore`) and the fix is restore-from-backup.
+#     data layout marker (tinyassets/storage_layout.py) records: rollback is
+#     refused when the previous image does not support its stable layout, or
+#     the marker is unstable/locked (`rollback_needs_restore`).
 #     A one-shot storage migration the candidate carries runs as step 3c, with
 #     the daemon stopped, after a full-volume snapshot, under the same marker.
 #
@@ -192,10 +192,8 @@ LOGS_CONTAINER=tinyassets-logs
 # 180 (#4039) one long turn held production down for 3m16s on 2026-10-01
 # (docs/audits/2026-10-01-deploy-drain-repro/INCIDENT.md).
 #
-# Used twice: `restart_stack` passes it as `up --timeout`, which binds the
-# container being REPLACED regardless of the StopTimeout it was created with;
-# and the staged bundle's `daemon.stop_grace_period` must not exceed it, so a
-# unit- or watchdog-driven recreate is bounded the same way.
+# Used for the explicit old-daemon stop, for Compose's own replacement bound,
+# and for the staged bundle's daemon.stop_grace_period.
 #
 # Kept in step with `deploy/compose.yml` and with
 # `universe_server.GRACEFUL_SHUTDOWN_S` by tests/test_deploy_drains_in_flight_turns.py.
@@ -357,42 +355,14 @@ set_image() {
 }
 
 # --- data layout guard (tinyassets/storage_layout.py, design D7.2) --------
-# An image-only rollback is safe only while the data is still in the layout
-# EVERY image understands: layout 1, state "stable" (or no marker yet). A
-# storage migration writes "migrating" before its first change and a newer
-# layout when it finishes; an older image started on that data would find
-# renamed tables and could create blank homes. Then the safe action is to
-# stop and restore from backup, never to start the old image.
+# An image may start only on a stable layout it declares it understands.
+# A storage migration writes "migrating" before its first change; an image
+# that does not understand its final layout must not start on that data.
 layout_marker_path() {
   local dir
   dir="$(docker volume inspect --format '{{ .Mountpoint }}' tinyassets-data 2>/dev/null)" || return 1
   [ -n "$dir" ] || return 1
   printf '%s/.layout.json' "$dir"
-}
-layout_allows_any_image() {  # $1 = marker path; 0 = any image may start
-  local marker="$1" dir
-  dir="$(dirname "$marker")"
-  # Fail closed: an unreadable volume is not an absent marker.
-  [ -d "$dir" ] || return 1
-  (
-    # Under the shared layout lock, never mid-migration (a migration holds it
-    # exclusively). Non-blocking: a held lock is a refusal, not a wait.
-    exec 8>>"$dir/.layout.lock" || exit 1
-    flock -s -n 8 || exit 1
-    [ -e "$marker" ] || exit 0
-    python3 - "$marker" <<'LAYOUT_PY'
-import json
-import sys
-
-try:
-    with open(sys.argv[1], encoding="utf-8") as handle:
-        doc = json.load(handle)
-except (OSError, ValueError):
-    sys.exit(1)
-ok = isinstance(doc, dict) and doc.get("layout") == 1 and doc.get("state") == "stable"
-sys.exit(0 if ok else 1)
-LAYOUT_PY
-  )
 }
 layout_allows_candidate() {  # $1 = marker path; $2 = immutable candidate image
   local marker="$1" candidate="$2" dir supported
@@ -437,7 +407,7 @@ CANDIDATE_LAYOUT_PY
 refuse_on_layout() {  # $1 = what was about to start; $2 = why (default: the marker)
   local why
   if [ $# -ge 2 ]; then why="$2"; else
-    why="the data layout marker is not layout 1 / stable, cannot be read, or a migration holds the layout lock: NOT starting $1. Restore the pre-migration backup with deploy/backup-restore.sh, then deploy the image built for the restored layout"
+    why="the data layout marker is incompatible with $1, unstable, unreadable, or locked by a migration: NOT starting $1. Restore the pre-migration backup with deploy/backup-restore.sh, then deploy the image built for the restored layout"
   fi
   err "$why"
   docker stop "$DAEMON_CONTAINER" >/dev/null 2>&1 || true
@@ -566,11 +536,24 @@ accept() {  # daemon healthy AND running the requested image AND tunnel up AND l
 restart_stack() {
   systemctl reset-failed "$UNIT" 2>/dev/null || true
   remove_compose_temp_daemons
-  # Time the converge. `up -d` recreates the daemon, which STOPS the old
-  # container first. `--timeout` bounds that stop to MAX_DAEMON_STOP_GRACE_S
-  # and then SIGKILLs. Without it compose uses the StopTimeout the old
-  # container was CREATED with: 180s on 2026-10-01, all of it public 502.
+  # Stop the old daemon separately so the measured drain excludes the new
+  # image's startup. Docker SIGKILLs after --time; reaching that bound means
+  # a live turn may have been cut, even when docker stop returns success.
+  # Compose keeps its own bound in case another writer recreated the daemon.
   local started elapsed
+  if [ -n "$(docker ps -q --filter "name=^${DAEMON_CONTAINER}\$")" ]; then
+    started="$SECONDS"
+    if ! docker stop --time "$MAX_DAEMON_STOP_GRACE_S" "$DAEMON_CONTAINER"; then
+      err "the old daemon did not stop cleanly"
+      return 1
+    fi
+    elapsed=$((SECONDS - started))
+    log "old daemon drain took ${elapsed}s (bound ${MAX_DAEMON_STOP_GRACE_S}s)"
+    if [ "$elapsed" -ge "$MAX_DAEMON_STOP_GRACE_S" ]; then
+      err "the old daemon reached the ${MAX_DAEMON_STOP_GRACE_S}s drain bound; refusing this deploy rather than accepting a cut turn"
+      return 1
+    fi
+  fi
   started="$SECONDS"
   if ! docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d \
         --timeout "$MAX_DAEMON_STOP_GRACE_S" daemon cloudflared logs; then
@@ -579,14 +562,7 @@ restart_stack() {
     return 1
   fi
   elapsed=$((SECONDS - started))
-  log "converge took ${elapsed}s (includes the old daemon's drain, bounded at ${MAX_DAEMON_STOP_GRACE_S}s)"
-  if [ "$elapsed" -ge "$MAX_DAEMON_STOP_GRACE_S" ]; then
-    # Compose has already SIGKILLed. Do not report this converge as success:
-    # the pre-stop idle proof is what avoids the kill, and hitting the bound
-    # means that proof was not enough.
-    err "the converge reached the ${MAX_DAEMON_STOP_GRACE_S}s drain bound; refusing this deploy rather than accepting a cut turn"
-    return 1
-  fi
+  log "converge took ${elapsed}s after the old daemon stopped"
   systemctl start "$UNIT" 2>/dev/null || err "note: ${UNIT} did not start (stack converged directly; see journalctl -u ${UNIT})"
   return 0
 }
@@ -1521,17 +1497,11 @@ fi
 log "candidate image loads cleanly"
 
 # --- 3a. the candidate must understand the stable data layout -------------
-# A normal deploy reads the candidate's declaration. Explicit bundle rollback
-# keeps the unrestricted rollback guard, as does automatic rollback below.
+# Normal and explicit bundle deploys check the image they will start. An
+# automatic rollback checks the previous image again after the failed boot.
 LAYOUT_MARKER="$(layout_marker_path)" || LAYOUT_MARKER=""
-if [ -z "$LAYOUT_MARKER" ] || ! {
-  if [ "$RESTORE_BUNDLE" = "1" ]; then
-    layout_allows_any_image "$LAYOUT_MARKER"
-  else
-    layout_allows_candidate "$LAYOUT_MARKER" "$NEW_IMAGE"
-  fi
-}; then
-  err "data layout check failed before converging ${NEW_IMAGE}: incompatible or unreadable candidate/layout, unfinished or locked migration, or rollback requires layout 1 / stable; prod untouched"
+if [ -z "$LAYOUT_MARKER" ] || ! layout_allows_candidate "$LAYOUT_MARKER" "$NEW_IMAGE"; then
+  err "data layout check failed before converging ${NEW_IMAGE}: incompatible or unreadable candidate/layout, unfinished or locked migration; prod untouched"
   echo "deploy_result=layout_refused"
   exit 1
 fi
@@ -2146,7 +2116,7 @@ fi
 # The failed candidate may have migrated (or begun migrating) the data while it
 # booted: re-check before the previous image starts on it.
 LAYOUT_MARKER="$(layout_marker_path)" || LAYOUT_MARKER=""
-if [ -z "$LAYOUT_MARKER" ] || ! layout_allows_any_image "$LAYOUT_MARKER"; then
+if [ -z "$LAYOUT_MARKER" ] || ! layout_allows_candidate "$LAYOUT_MARKER" "$PREV_IMAGE"; then
   refuse_on_layout "${PREV_IMAGE}"
 fi
 if ! set_image "$PREV_IMAGE"; then

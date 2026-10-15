@@ -101,9 +101,31 @@ _BASH = shutil.which("bash")
 
 def _guard_function() -> str:
     script = (REPO / "deploy" / "deploy_fail_safe.sh").read_text(encoding="utf-8")
-    match = re.search(r"^layout_allows_any_image\(\) \{.*?^\}\n", script, re.S | re.M)
-    assert match, "deploy_fail_safe.sh lost layout_allows_any_image"
+    match = re.search(r"^layout_allows_candidate\(\) \{.*?^\}\n", script, re.S | re.M)
+    assert match, "deploy_fail_safe.sh lost layout_allows_candidate"
     return match.group(0)
+
+
+_PREVIOUS_IMAGE = "previous-image"
+_PREVIOUS_LAYOUTS = json.dumps({"layouts": [1], "boxes": ["owner-split"]})
+
+
+def _previous_image_env(tmp_path: Path) -> dict[str, str]:
+    docker = tmp_path / "docker"
+    docker.write_text(
+        "#!/bin/sh\n"
+        f'case " $* " in *" {_PREVIOUS_IMAGE} -c "*) '
+        f"printf '%s\\n' '{_PREVIOUS_LAYOUTS}' ;; *) exit 1 ;; esac\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    return {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+
+
+def _previous_image_guard(marker: Path) -> str:
+    return _guard_function() + (
+        f'layout_allows_candidate "{marker.as_posix()}" "{_PREVIOUS_IMAGE}"\n'
+    )
 
 
 @pytest.mark.skipif(
@@ -150,9 +172,9 @@ def test_the_fail_safe_refuses_an_image_rollback_onto_migrated_data(tmp_path, do
     if document is not None:
         marker.write_text(document if isinstance(document, str) else json.dumps(document),
                           encoding="utf-8")
-    program = _guard_function() + f'layout_allows_any_image "{marker.as_posix()}"\n'
+    program = _previous_image_guard(marker)
     result = subprocess.run([_BASH, "-c", program], capture_output=True, text=True,
-                            env={**os.environ})
+                            env=_previous_image_env(tmp_path))
     assert (result.returncode == 0) is allowed, result.stderr
 
 
@@ -164,10 +186,17 @@ def test_the_fail_safe_checks_the_layout_before_every_image_start():
     install = script.index("# --- 3b. the runtime bundle")
     restore = script.index('if [ "$RESTORE_BUNDLE" = "1" ]; then\n  # Undoing an install')
     assert first < install < restore
-    explicit_rollback = script.index('layout_allows_any_image "$LAYOUT_MARKER"')
-    assert explicit_rollback < first
-    assert 'if [ "$RESTORE_BUNDLE" = "1" ]; then' in script[explicit_rollback - 60:first]
-    second = script.index('layout_allows_any_image "$LAYOUT_MARKER"', first + 1)
+    # --restore-bundle converges NEW_IMAGE, which is the supplied previous image.
+    mode = script.index(
+        'log "mode: --restore-bundle (reinstall the previous bundle, '
+        'then converge ${NEW_IMAGE})"'
+    )
+    start = script.index('if ! set_image "$NEW_IMAGE"; then')
+    converge = script.index('restart_stack || CONVERGED=0')
+    assert mode < first < start < converge
+    # A failed guard on the target image refuses before that image is started.
+    assert "deploy_result=layout_refused" in script[first:install]
+    second =script.index('layout_allows_candidate "$LAYOUT_MARKER" "$PREV_IMAGE"', first + 1)
     rollback = script.index('if ! set_image "$PREV_IMAGE"; then')
     assert install < second < rollback
     assert "refuse_on_layout" in script[second:rollback]
@@ -182,19 +211,22 @@ def test_the_fail_safe_refuses_while_a_migration_holds_the_lock(tmp_path):
 
     marker = tmp_path / layout.MARKER
     marker.write_text('{"layout": 1, "state": "stable"}', encoding="utf-8")
-    program = _guard_function() + f'layout_allows_any_image "{marker.as_posix()}"\n'
+    program = _previous_image_guard(marker)
     with open(tmp_path / layout.LOCK, "a+") as migration:
         fcntl.flock(migration.fileno(), fcntl.LOCK_EX)
-        held = subprocess.run([_BASH, "-c", program], capture_output=True, text=True)
-    free = subprocess.run([_BASH, "-c", program], capture_output=True, text=True)
+        held = subprocess.run([_BASH, "-c", program], capture_output=True, text=True,
+                              env=_previous_image_env(tmp_path))
+    free = subprocess.run([_BASH, "-c", program], capture_output=True, text=True,
+                          env=_previous_image_env(tmp_path))
     assert held.returncode != 0 and free.returncode == 0
 
 
 @pytest.mark.skipif(not _bash_has_python3(), reason="needs bash with python3")
 def test_the_fail_safe_treats_an_unreadable_volume_as_a_refusal(tmp_path):
     marker = tmp_path / "no-such-volume" / layout.MARKER
-    program = _guard_function() + f'layout_allows_any_image "{marker.as_posix()}"\n'
-    assert subprocess.run([_BASH, "-c", program]).returncode != 0
+    program = _previous_image_guard(marker)
+    assert subprocess.run([_BASH, "-c", program],
+                          env=_previous_image_env(tmp_path)).returncode != 0
 
 
 def test_the_backup_takes_the_shared_layout_lock_before_reading_the_volume():
@@ -324,9 +356,11 @@ def test_fail_safe_python_refuses_actual_consent_migration_marker(tmp_path):
     layout.check(tmp_path)
     # Execute the actual deployed predicate even on hosts without bash. The
     # companion shell test also covers flock and the shell's exit propagation.
-    program = _guard_function().split("<<'LAYOUT_PY'\n", 1)[1].split("\nLAYOUT_PY", 1)[0]
+    program = _guard_function().split("<<'CANDIDATE_LAYOUT_PY'\n", 1)[1].split(
+        "\nCANDIDATE_LAYOUT_PY", 1,
+    )[0]
     result = subprocess.run(
-        [sys.executable, "-c", program, str(tmp_path / layout.MARKER)],
+        [sys.executable, "-c", program, str(tmp_path / layout.MARKER), _PREVIOUS_LAYOUTS],
         capture_output=True, text=True,
     )
     assert result.returncode != 0, "rollback allowed an older consent reader"
@@ -336,8 +370,9 @@ def test_fail_safe_python_refuses_actual_consent_migration_marker(tmp_path):
 def test_fail_safe_refuses_actual_consent_migration_marker(tmp_path):
     layout.check(tmp_path)
     marker = tmp_path / layout.MARKER
-    program = _guard_function() + f'layout_allows_any_image "{marker.as_posix()}"\n'
-    result = subprocess.run([_BASH, "-c", program], capture_output=True, text=True)
+    program = _previous_image_guard(marker)
+    result = subprocess.run([_BASH, "-c", program], capture_output=True, text=True,
+                            env=_previous_image_env(tmp_path))
     assert result.returncode != 0, "rollback allowed an older consent reader"
 
 
