@@ -3481,6 +3481,7 @@ def converse(
                 base_path=memory_universe_dir.parent, universe_id=uid,
                 owner=current_actor_id(), tier=turn.interlocutor.tier,
                 session_key=f"thread:{memory_session}",
+                execution_id=f"send:{memory_session}:{client_send_id or live_id}",
                 conversation_history=conversation_history, input_method=input_method,
                 model_choice=model_choice, response_observer=_observe_execution,
                 learning_observer=lesson_settled.append,

@@ -290,6 +290,7 @@ class Capabilities:
                 base_path=self.root.parent, universe_id=self.context.universe,
                 owner=self.context.owner, agent_id=self.context.initiating_agent,
                 inside_activity=_session_key().startswith("activity:"),
+                box_binding=session.current_binding(),
             )
             try:
                 return {"result": await asyncio.to_thread(

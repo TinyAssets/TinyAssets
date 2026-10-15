@@ -125,6 +125,15 @@ def read_universe_file(
     ``max_bytes``.
     """
     root = Path(universe_dir)
+    from tinyassets.control_plane.binding import file_binding
+
+    binding = file_binding(root)
+    if binding is not None:
+        read = binding.provider.read(binding.handle, relpath, max_bytes=max_bytes)
+        binding.check_read(read.generation)
+        if read.size > max_bytes or len(read.data) != read.size:
+            raise UniverseFileError(f"over the {max_bytes}-byte bound or incomplete owner file")
+        return read.data
     if getattr(fs, "_POSIX", False):
         # A symlinked root is refused rather than resolved (D60).
         root_fd = fs.open_dir_nofollow(root.absolute())
@@ -167,6 +176,27 @@ def list_universe_entries(
 ) -> list[tuple[str, os.stat_result]]:
     """Sorted no-follow metadata, optionally scanning only the first limit entries."""
     root = Path(universe_dir)
+    from tinyassets.control_plane.binding import file_binding
+
+    binding = file_binding(root)
+    if binding is not None:
+        result, cursor = [], None
+        while limit is None or len(result) < limit:
+            page_limit = 200 if limit is None else min(200, limit - len(result))
+            page = binding.provider.list(binding.handle, relpath, cursor=cursor,
+                                         limit=page_limit)
+            binding.check_roster()
+            for entry in page.entries:
+                kind = {"file": stat.S_IFREG, "dir": stat.S_IFDIR,
+                        "link": stat.S_IFLNK}.get(entry.kind, 0)
+                result.append((entry.name, os.stat_result(
+                    (kind, 0, 0, 0, 0, 0, entry.size, 0, 0, 0))))
+            if page.next_cursor is None:
+                break
+            if page.next_cursor == cursor:
+                raise UniverseFileError("owner directory cursor did not advance")
+            cursor = page.next_cursor
+        return sorted(result)
     if getattr(fs, "_POSIX", False):
         root_fd = fs.open_dir_nofollow(root.resolve(strict=False))
         try:
@@ -319,6 +349,30 @@ def write_universe_file(
     root = Path(universe_dir)
     parts = _split(relpath)
     name = parts[-1]
+    from tinyassets.boxes.provider import WriteMode
+    from tinyassets.control_plane.binding import file_binding
+
+    binding = file_binding(root)
+    if binding is not None:
+        if not make_parents and len(parts) > 1:
+            parent = binding.provider.stat(binding.handle, "/".join(parts[:-1]))
+            if parent is None or parent.kind != "dir":
+                raise FileNotFoundError("owner parent directory does not exist")
+        generation = None
+        write_mode = WriteMode.CREATE if mode == "exclusive" else WriteMode.REPLACE
+        if mode == "append":
+            try:
+                previous = binding.provider.read(binding.handle, relpath,
+                                                 max_bytes=MAX_UNIVERSE_FILE_BYTES)
+            except FileNotFoundError:
+                write_mode = WriteMode.CREATE
+            else:
+                data = previous.data + data
+                generation, write_mode = previous.generation, WriteMode.CAS
+        binding.provider.write(binding.handle, binding.operation_id("write"), relpath,
+                               data, max_bytes=len(data), mode=write_mode,
+                               expect_generation=generation)
+        return
     if getattr(fs, "_POSIX", False):
         from tinyassets import role_content
 
@@ -548,6 +602,12 @@ def unlink_universe_file(universe_dir: Path | str, relpath: str) -> None:
     through a linked directory. ``FileNotFoundError`` when absent."""
     root = Path(universe_dir)
     parts = _split(relpath)
+    from tinyassets.control_plane.binding import file_binding
+
+    binding = file_binding(root)
+    if binding is not None:
+        binding.provider.remove(binding.handle, binding.operation_id("remove"), relpath)
+        return
     if not getattr(fs, "_POSIX", False):
         (_windows_parent(root, parts, create=False) / parts[-1]).unlink()
         return

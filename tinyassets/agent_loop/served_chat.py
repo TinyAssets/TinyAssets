@@ -7,7 +7,6 @@ tool refuses before launch if no box provider is configured.
 
 from __future__ import annotations
 
-import os
 import threading
 from typing import Any
 
@@ -15,16 +14,6 @@ from tinyassets.agent_loop.box_tools import BOX_ROOT, BoxExecutor, BoxTools
 from tinyassets.agent_loop.tool_session import open_loop_tools
 from tinyassets.interactive_http_agent import ServedChatAgentAdapter
 from tinyassets.served_tools import granted_tools, model_tools
-
-# The thin loop needs a box; until the C6 cutover binds one per session, a
-# served chat keeps today's engine-tool path unless this switch selects it.
-ENV_SWITCH = "TINYASSETS_AGENT_LOOP"
-THIN = "thin"
-
-
-def thin_loop_selected() -> bool:
-    return (os.environ.get(ENV_SWITCH) or "").strip().lower() == THIN
-
 
 _box_lock = threading.Lock()
 _box_provider: Any = None
@@ -44,11 +33,14 @@ def configured_box_provider() -> tuple[Any, Any]:
 
 
 def bind_turn_box(*, owner: str, command_center: str, turn_id: str) -> tuple[BoxTools, str]:
-    """Bind the turn's box ONCE; every tool call of the turn uses this handle."""
-    provider, limits = configured_box_provider()
-    if provider is None:
-        raise LookupError("no box provider is configured")
-    handle = provider.bind(command_center, account_id=owner, turn_id=turn_id)
+    """Use the session's handle; a journal turn ID never mints another session."""
+    from tinyassets.control_plane.binding import current_binding
+
+    binding = current_binding()
+    if binding is None:
+        raise LookupError("no admitted session box binding")
+    binding.validate(owner, binding.universe_dir.parent / command_center)
+    provider, limits, handle = binding.provider, binding.limits, binding.handle
     root = getattr(handle, "root", None) or BOX_ROOT
     return BoxTools(BoxExecutor(provider, handle, limits=limits, cwd=root), root=root), root
 
@@ -60,11 +52,13 @@ class ThinLoopChatAdapter(ServedChatAgentAdapter):
         owner = coordinator.owner
         universe_dir = coordinator.context.universe_dir
         turn_id = coordinator.turn.turn_id
-        provider, _ = configured_box_provider()
+        from tinyassets.control_plane.binding import current_binding
+
+        binding = current_binding()
         return open_loop_tools(
             granted=model_tools(coordinator.config),
             capability_grant=granted_tools(coordinator.config),
-            bind_box=None if provider is None else (
+            bind_box=None if binding is None else (
                 lambda: bind_turn_box(owner=owner, command_center=universe_dir.name,
                                       turn_id=turn_id)
             ),
@@ -74,6 +68,7 @@ class ThinLoopChatAdapter(ServedChatAgentAdapter):
                                                          coordinator.config),
             timeout=timeout,
             ta_turn=turn_id,
+            box_session_id=None if binding is None else binding.session_id,
             model_budget=coordinator.request_budget,
             model_parent=("turn", turn_id,
                           getattr(coordinator.context.provider_request,

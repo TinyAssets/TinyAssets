@@ -34,22 +34,22 @@ handle bound at turn start; no model credential ever enters the box.
   today.
 - `AgentTurnCoordinator` opens its tools through the adapter when the adapter
   provides them and passes the `op_id`; the journal is unchanged.
-- Opt-in switch `TINYASSETS_AGENT_LOOP=thin`. Unset, every path is today's.
+- An admitted box binding selects the thin loop; owner-split admission keeps
+  the engine-tool adapter.
 - `scripts/measure_agent_loop_memory.py`: resident memory per waiting turn,
   500 concurrent turns against a mock SSE server.
 
-Not in this change (owed by later PRs of this change, see `tasks.md`): model
-token streaming to the app (needs S6's streaming broker contract), the shared
-loop (needs a task-aware admission lock), the production box driver (S4), the S8a lease generation, CLI-in-box, retiring the
-engine route for the four tools in production, the live proof and spec sync.
+Still owed by later PRs of this change (see `tasks.md`): the production box
+driver (S4), CLI-in-box, retiring the engine route for the four tools in
+production, the live proof and spec sync.
 
 ## Impact
 
-- Authority: no new authority. The box handle is bound once per turn from the
+- Authority: no new authority. The box handle is bound once per session from the
   owner the coordinator already checked; owner reads re-check founder home and
   run under a read-only identity. A granted box tool with no box provider is
-  refused before the first inference, never served by the tool jail instead.
+  refused before the first inference on the thin route.
 - Storage: none. The journal schema is untouched.
 - Public MCP surface: unchanged. `history`/`activity` exist only inside the
   thin loop's turn, not on the connector or the engine route.
-- Rollback: unset the switch.
+- Rollback: return admission to owner-split before the box cutover.

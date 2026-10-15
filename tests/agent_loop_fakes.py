@@ -75,7 +75,7 @@ class FakeBox:
                 raise ConnectionError("synthetic lost reply")
         return op_id
 
-    def stream(self, h, exec_id, *, from_offset=0):
+    def stream(self, h, exec_id, *, from_offset=0, timeout=None):
         record = self.execs[exec_id]
         if self.fail_stream:
             self.fail_stream -= 1
