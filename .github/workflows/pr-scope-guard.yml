@@ -9,9 +9,10 @@ name: PR scope guard
 # DIFF SCOPE caught it. With auto-merge enabled, that PR would have shipped
 # changes to the production deploy workflow under the banner of an auth fix.
 #
-# So: a PR that touches release-critical infrastructure must say so explicitly,
-# via the `infra-change` label. This is a scope-declaration gate, not a security
-# control — see the honesty note at the bottom of this file.
+# So: a PR that touches release-critical infrastructure carries the
+# `infra-change` label, which this guard adds itself once the head's receipt
+# passes. The receipt, not the label, is the control — see the honesty note
+# at the bottom of this file.
 #
 # Since 2026-09-26 the exact-head receipt this guard already demanded on
 # gate-defining and authority paths has to be a PUBLISHED APPROVAL, not a
@@ -196,9 +197,7 @@ jobs:
           TOTAL="$(printf '%s\n' "$CHANGED" | sed '/^$/d' | wc -l | tr -d ' ')"
 
           # Paths no PR may touch at all (scripts/check_forbidden_pr_paths.py).
-          # Checked FIRST, and on purpose, even though the receipt check below
-          # deliberately reports its own complaint together with the label one:
-          # fixing this is mechanical and takes seconds, and the fix is a PUSH,
+          # Checked FIRST, and on purpose: fixing this is mechanical and takes seconds, and the fix is a PUSH,
           # which voids a head-pinned receipt anyway. Telling the author now
           # means they fix it and get stamped once; bundling it with the receipt
           # failure would have them get stamped and then void it.
