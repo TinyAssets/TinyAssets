@@ -63,16 +63,23 @@ class UniverseToolError(RuntimeError):
     failure_class = "universe_tool_refused"
 
 
-def _tool_path(path: str) -> str:
-    """The path as the agent sees it: relative paths are under ``/u``."""
+def _tool_path(path: str, root: str) -> str:
+    """The path in the box: relative and ``/u/...`` paths are under the box root.
+
+    ``/u`` was the old jail's mount of the command center; the box root is
+    where the center lives now, so both spellings reach the owner's files.
+    """
     raw = (path or "").strip()
     if not raw:
         raise UniverseToolError("a path is required")
     if "\x00" in raw:
         raise UniverseToolError("a path may not contain a NUL byte")
     candidate = PurePosixPath(raw)
-    if not candidate.is_absolute():
-        candidate = PurePosixPath(MOUNT_POINT) / candidate
+    mount = PurePosixPath(MOUNT_POINT)
+    if candidate == mount or mount in candidate.parents:
+        candidate = PurePosixPath(root) / candidate.relative_to(mount)
+    elif not candidate.is_absolute():
+        candidate = PurePosixPath(root) / candidate
     return str(candidate)
 
 
@@ -104,7 +111,7 @@ def read_file(universe_dir: Path, path: str, offset: int = 0, limit: int = 0,
     from tinyassets.control_plane.binding import current_binding
 
     tools, root = _box(universe_dir, agent_id)
-    target = _tool_path(path)
+    target = _tool_path(path, root)
     op = current_binding().operation_id("tool:read")
     if is_image_path(target):
         return _run(_read_image(tools, op, target, root, universe_dir))
@@ -133,8 +140,8 @@ def write_file(universe_dir: Path, path: str, content: str, *, agent_id: str) ->
     refusal = research_refusal("write")
     if refusal is not None:
         return refusal
-    tools, _ = _box(universe_dir, agent_id)
-    target = _tool_path(path)
+    tools, root = _box(universe_dir, agent_id)
+    target = _tool_path(path, root)
     if len((content or "").encode("utf-8")) > MAX_WRITE_BYTES:
         raise UniverseToolError(f"content is over the {MAX_WRITE_BYTES}-byte write limit")
     return _run(tools.write(current_binding().operation_id("tool:write"), target, content))
@@ -149,8 +156,8 @@ def edit_file(universe_dir: Path, path: str, old_text: str, new_text: str,
     refusal = research_refusal("edit")
     if refusal is not None:
         return refusal
-    tools, _ = _box(universe_dir, agent_id)
-    target = _tool_path(path)
+    tools, root = _box(universe_dir, agent_id)
+    target = _tool_path(path, root)
     if not old_text:
         raise UniverseToolError("old_text is required: the exact passage to replace")
     return _run(tools.edit(current_binding().operation_id("tool:edit"), target,

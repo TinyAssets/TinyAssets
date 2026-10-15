@@ -125,6 +125,11 @@ class _PermissiveBoxd:
         def call(handle, *args, **kwargs):
             original = args[0] if name == "read_many" and args else kwargs.get("paths")
             args, kwargs = _project(name, list(args), dict(kwargs))
+            if name == "start_exec":
+                # Commands run unisolated in the test's uid, so a box path in
+                # argv must name the center's host directory, as the box's own
+                # mount would.
+                args, kwargs = _host_argv(self._for(handle), handle, args, kwargs)
             result = getattr(self._for(handle), name)(handle, *args, **kwargs)
             if name == "read_many" and original is not None:
                 # The production channel hands back the caller's own keys.
@@ -179,6 +184,23 @@ def _project(name, args, kwargs):
         args[index] = _box_path(args[index])
     elif "path" in kwargs:
         kwargs["path"] = _box_path(kwargs["path"])
+    return args, kwargs
+
+
+def _host_argv(core, handle, args, kwargs):
+    from tinyassets.boxes.provider import BOX_ROOT
+
+    host = str(core._root / handle.command_center_id)
+
+    def mapped(value):
+        if isinstance(value, str) and (value == BOX_ROOT or value.startswith(BOX_ROOT + "/")):
+            return host + value[len(BOX_ROOT):]
+        return value
+
+    if len(args) > 1:
+        args[1] = [mapped(value) for value in args[1]]
+    elif "argv" in kwargs:
+        kwargs["argv"] = [mapped(value) for value in kwargs["argv"]]
     return args, kwargs
 
 
