@@ -194,7 +194,9 @@ def test_the_fail_safe_checks_the_layout_before_every_image_start():
     start = script.index('if ! set_image "$NEW_IMAGE"; then')
     converge = script.index('restart_stack || CONVERGED=0')
     assert mode < first < start < converge
-    second = script.index('layout_allows_candidate "$LAYOUT_MARKER" "$PREV_IMAGE"', first + 1)
+    # A failed guard on the target image refuses before that image is started.
+    assert "deploy_result=layout_refused" in script[first:install]
+    second =script.index('layout_allows_candidate "$LAYOUT_MARKER" "$PREV_IMAGE"', first + 1)
     rollback = script.index('if ! set_image "$PREV_IMAGE"; then')
     assert install < second < rollback
     assert "refuse_on_layout" in script[second:rollback]
