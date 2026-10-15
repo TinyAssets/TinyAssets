@@ -14,24 +14,22 @@ turn lives and where its tools run.
 
 ## Decisions
 
-### 1. Not yet one shared loop: each turn keeps its own event loop
+### 1. Chat and workflow turns share the execution owner's loop
 
-D6 wants every waiting turn as a task on ONE loop in the execution owner. The
-first head built that (`ExecutionOwner`: one loop thread, turns submitted in
-the caller's context) and the cross-family refute broke it with a reproduced
-failure: `ProviderAssignmentAdmission.shared()` is a reader/writer lock keyed
-by THREAD id and held across the whole provider call
-(`provider_assignment.py` `shared`, held from `served_provider_authority`).
-Two turns for one command center on one loop thread fail with "admission is
-not reentrant"; and once a writer (a credential deposit) is waiting, the next
-reader's `condition.wait()` blocks the loop thread itself, so the reader that
-holds the lock can never finish. The turn path also does synchronous SQLite
-work (journal, reservations) that would stall every turn on a shared loop.
+`ExecutionOwner` submits turns in the caller's context to one loop thread.
+Provider-assignment admission identifies asynchronous holders by task, preserves
+writer priority with synchronous callers, and waits without blocking the loop.
+Journal writes and usage reservation/finalization run off-loop; cancellation
+drains an in-flight commit before releasing its authority. Journal mutations
+retain the existing owner lease and reject stale generations. Startup orphan
+adoption records the prior generation beside the successor fence; that marker
+keeps the row recovery-only after adoption, including across another crash.
 
-So the thin loop runs where turns run today (`asyncio.run` on the claiming
-worker), and the shared loop is task 2.1: a task-aware, non-blocking admission
-plus journal writes off the loop, then turns as tasks on one loop. Nothing in
-the box or tool design depends on which loop a turn is on.
+This checkpoint does not complete the cutover: the provider-admission lock's
+move to platform state requires a protected migration with no mixed old/new
+workers. The shared broker stream is present. The native package launch path
+and the remaining owner-journal storage migration still require coordinated
+integration and proof.
 
 ### 2. Tools are routed by name, once, never by the model
 
@@ -95,13 +93,28 @@ box's root (`/cc`, or the handle's `root`). `tests/test_agent_loop_box_tools.py`
 pins argument parity with the engine's tools and runs the scripts on a real
 POSIX shell.
 
-### 5. Switch, and the failure when it is on without a box
+### 5. Session binding and the mandatory thin route
 
-`TINYASSETS_AGENT_LOOP=thin` selects `ThinLoopChatAdapter` in
-`make_interactive_agent_turn`. With the switch on and no box provider
-configured, a turn granted a box tool is refused before its first inference
-(`box_unavailable`). It is never served by the tool jail instead: a fallback
-that looks like the new path would make the switch unfalsifiable.
+`make_interactive_agent_turn` selects `ThinLoopChatAdapter` exactly when an
+admitted box binding is present. Owner-split keeps the engine-tool adapter.
+`control_plane/session.start` binds the authenticated owner/center and stable
+durable send or run identity before `load_agent`. File reads use the bound
+provider and refuse a changed generation across definition loading. Explicit
+parent objects carry the binding across executor boundaries; tools reuse it
+instead of rebinding under the later journal turn ID. The ta bridge separately
+checks the admitted session identity and retains journal-position operation IDs.
+
+An invalid binding means `box_unavailable` before inference. A client disconnect
+does not cancel the box. Only an explicit owner stop or durable run cancellation
+calls `end_session`; ordinary completion releases references after dependent
+work drains. Same-session reconnect retains operation identity.
+
+The configured production provider has no host-file fallback. The current
+owner-split image and cells remain staged until C6's protected migration and
+coordinated deletion. Native discovery selects BoxLauncher from its receipted
+operation, while the CLI runner's strict host paths and selected git-grant
+handoff still need cutover integration. Factory selection alone is not proof
+of production parity.
 
 ## Measurement: memory per waiting turn
 
@@ -142,9 +155,9 @@ share is two to three orders of magnitude smaller, inside the ~1 MB D6 estimated
   its thread and its slot. The S4 driver must give `stream` an I/O deadline
   (or end it on `cancel`), so a dead box host surfaces as an unknown outcome
   instead of a slot leak.
-- **Two tool routes during the cutover.** While the switch is off the engine
-  route serves the four tools; while it is on, the box does. No turn ever has
-  both.
+- **Two tool routes during the cutover.** Owner-split admission uses the engine
+  adapter; an admitted box binding selects the thin loop and its box tools. No
+  turn ever has both.
 
 ## Appendix R. Cross-family refute (gpt-6-astra), three rounds, cap reached
 

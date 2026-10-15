@@ -134,6 +134,22 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
                 conn.rollback()
                 raise
 
+    if "recovered_owner_generation" not in {
+        row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")
+    }:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if "recovered_owner_generation" not in {
+                row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")
+            }:
+                conn.execute(
+                    "ALTER TABLE agent_turns ADD COLUMN recovered_owner_generation INTEGER"
+                )
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+
 
 def _scope(owner: str, universe: str, turn: str) -> tuple[str, str, str]:
     return tuple(records.identity(value) for value in (owner, universe, turn))
@@ -428,12 +444,12 @@ class AgentTurnJournal:
             self._recovering_turn.reset(token)
 
     @contextmanager
-    def _transaction(self, universe: str):
+    def _transaction(self, universe: str, *, new_turn: bool = False):
         """One owner mutation: the command center's lease, then ONE fenced write
         transaction (change execution-owner-lease D3). Yields (conn, lease)."""
         with self._ledger.connection() as conn:
             ensure_schema(conn)
-            lease = self._lease(universe)
+            lease = self._lease(universe, new_turn=new_turn)
             conn.execute("BEGIN IMMEDIATE")
             try:
                 check_fence(conn, lease)
@@ -443,20 +459,58 @@ class AgentTurnJournal:
                 conn.rollback()
                 raise
 
-    def _lease(self, universe: str):
+    def _lease(self, universe: str, *, new_turn: bool = False):
         base = self._ledger.base_path
         key = owner_lease.key_for(records.identity(universe))
         with self._lease_lock:
             lease = self._leases.get(key)
-            if lease is None:
+            if lease is None or (new_turn and not lease.held()):
                 owner_lease.register_store(base, db_path(base), "agent_turn_journal")
                 lease = owner_lease.acquire(base, key)
                 self._leases[key] = lease
-            # A journal cannot silently adopt a successor's generation. The
-            # transaction fence below also serializes this against takeover.
+            # Existing turns cannot silently adopt a successor's generation.
+            # A new turn can use the current owner's lease after an owner-tree
+            # restart; its INSERT receives that generation below.
             if not lease.held():
                 raise owner_lease.LeaseLost("agent journal owner generation changed")
             return lease
+
+    def adopt_orphan(self, owner: str, universe: str, turn_id: str, *,
+                     owner_generation: int, runner_token: str) -> None:
+        """Fence a progressing orphan into this owner's generation.
+
+        This does not run the turn. It only lets the ordinary terminal journal
+        transitions settle its recorded frontier. A prior generation is proof
+        that the old owner tree ended; a row from this generation also needs
+        its unique runner token's death proof. Both checks happen under the
+        fenced write transaction.
+        """
+        scope = _scope(owner, universe, turn_id)
+        with self._transaction(universe) as (conn, lease):
+            check_current_home(conn, owner, universe)
+            row = conn.execute(
+                "SELECT owner_generation, runner_token, recovered_owner_generation, state "
+                f"FROM agent_turns WHERE {_SCOPE}",
+                scope,
+            ).fetchone()
+            if row is None or row["state"] not in WORKING_STATES:
+                return
+            if (row["owner_generation"] != owner_generation
+                    or row["runner_token"] != runner_token
+                    or owner_generation > lease.generation
+                    or (owner_generation == lease.generation
+                        and not runner.orphan(self._ledger.base_path, runner_token))):
+                raise owner_lease.LeaseLost("agent turn is not an orphaned row")
+            if (owner_generation < lease.generation
+                    or row["recovered_owner_generation"] is None):
+                conn.execute(
+                    "UPDATE agent_turns SET owner_generation = ?, "
+                    f"recovered_owner_generation = ? WHERE {_SCOPE}",
+                    (lease.generation,
+                     row["recovered_owner_generation"]
+                     if row["recovered_owner_generation"] is not None
+                     else owner_generation, *scope),
+                )
 
     def create(
         self,
@@ -491,7 +545,7 @@ class AgentTurnJournal:
             }
         )
         with (runner.claim(self._ledger.base_path, scope[2]) as token,
-              self._transaction(universe) as (conn, lease)):
+              self._transaction(universe, new_turn=True) as (conn, lease)):
             check_current_home(conn, owner, universe)
             conn.execute(
                 "INSERT INTO agent_turns (owner_user_id, universe_id, turn_id, version, "
@@ -634,15 +688,15 @@ class AgentTurnJournal:
         with self._transaction(universe) as (conn, lease):
             check_current_home(conn, owner, universe)
             row = conn.execute(
-                f"SELECT owner_generation FROM agent_turns WHERE {_SCOPE}", scope,
+                "SELECT owner_generation, recovered_owner_generation "
+                f"FROM agent_turns WHERE {_SCOPE}",
+                scope,
             ).fetchone()
-            if row is not None and row[0] != lease.generation:
-                # Taking a higher generation proves every member of the old
-                # owner tree is gone; only the startup sweep may settle its row.
-                if not (self._recovering_turn.get() == turn_id
-                        and row[0] < lease.generation):
-                    raise owner_lease.LeaseLost(
-                        "agent turn belongs to an earlier owner generation")
+            if row is not None and row["owner_generation"] != lease.generation:
+                raise owner_lease.LeaseLost("agent turn belongs to an earlier owner generation")
+            if (row is not None and row["recovered_owner_generation"] is not None
+                    and self._recovering_turn.get() != turn_id):
+                raise owner_lease.LeaseLost("adopted agent turn is recovery-only")
             current = _read(conn, scope)
             if current is None:
                 raise JournalUnavailable("agent turn unavailable")

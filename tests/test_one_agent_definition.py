@@ -354,9 +354,17 @@ def _codex(definition, tmp_path, monkeypatch):
         service="codex", reference_digest="guard"))
 
     def hanging_call():
+        # The package caller now requires the router's admitted usage/attempt.
+        # This renderer guard scripts run_job; retain its cancellation proof
+        # with the same scoped admission fields production supplies.
+        def check_scope(owner, center):
+            assert (owner, center) == (_OWNER, tmp_path.name)
+
+        budget = SimpleNamespace(usage_id="guard-usage", check_scope=check_scope)
         call = agent_provider.ExternalAgentProvider("codex").complete(
             "Reply OK.", system,
-            _served_config(invocation_owner_user_id=_OWNER), universe_dir=tmp_path)
+            _served_config(invocation_owner_user_id=_OWNER, request_budget=budget,
+                           request_attempt=1), universe_dir=tmp_path)
         return call, lambda: bool(killed)
 
     return visible if route else (), instructions, _capabilities(

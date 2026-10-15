@@ -54,6 +54,26 @@ authenticate every operation by owner, epoch, session and operation id.
 - **WHEN** an operation presents a handle minted for another owner or a stale epoch
 - **THEN** the box host refuses it before any effect
 
+### Requirement: Native CLI invocation identity survives transport retries
+Before native CLI dispatch, the control plane SHALL persist one invocation
+identity with its owner, command center, logical request and admitted custody
+digest. The box session and operation ID SHALL derive from that identity, not
+an attempt receipt. Until its private result is acknowledged, a retry SHALL
+inspect and stream the same operation, collect its private result, and settle
+custody before acknowledgement. It SHALL NOT launch a second CLI under a new
+operation ID. An unknown execution outcome SHALL remain held. A newer owner
+credential deposit SHALL not be overwritten by an old private result.
+
+#### Scenario: CLI result reply is lost
+- **WHEN** the host retains a private CLI result but its result RPC reply is lost
+- **THEN** retry uses the original session and operation ID to collect that result
+- **AND** the control plane acknowledges it after custody settlement, freeing its host pin
+- **AND** no second CLI process starts
+
+#### Scenario: Owner deposits new credentials before retry
+- **WHEN** a new owner deposit supersedes the custody used by a pinned CLI result
+- **THEN** retry discards and acknowledges the old result without changing the new deposit
+
 ### Requirement: The box keeps working with no device and no host online
 A box SHALL stay awake while any session, resident process or owner view is
 live, and SHALL suspend only after it has been idle. Closing every client

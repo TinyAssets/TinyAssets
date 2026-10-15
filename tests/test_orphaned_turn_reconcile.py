@@ -186,6 +186,44 @@ def test_the_successor_takes_a_higher_generation_and_settles_only_older_rows(jou
     assert _working(journal)["turn_id"] == mine.turn_id
 
 
+def test_recovery_rejects_changed_evidence_and_resumes_after_adoption(journal):
+    """A crash between fencing and settlement still leaves a settleable row."""
+    from tinyassets.storage import agent_turn_runner
+    from tinyassets.storage.agent_turn_journal import AgentTurnJournal
+
+    turn = _killed_native_turn(journal)
+    with journal._ledger.connection() as conn:
+        generation, token = conn.execute(
+            "SELECT owner_generation, runner_token FROM agent_turns WHERE turn_id = ?",
+            (turn.turn_id,),
+        ).fetchone()
+    _restart(journal)
+    successor = AgentTurnJournal(journal._ledger.base_path)
+
+    for wrong_generation, wrong_token in ((generation + 1, token), (generation, "wrong")):
+        with pytest.raises(owner_lease.LeaseLost):
+            successor.adopt_orphan(
+                "owner", "home", turn.turn_id,
+                owner_generation=wrong_generation, runner_token=wrong_token,
+            )
+        assert journal.get("owner", "home", turn.turn_id).state == "native_started"
+
+    successor.adopt_orphan(
+        "owner", "home", turn.turn_id,
+        owner_generation=generation, runner_token=token,
+    )
+    # This is the interruption point: adoption committed, terminal transition did not.
+    assert journal.get("owner", "home", turn.turn_id).state == "native_started"
+    with pytest.raises(owner_lease.LeaseLost, match="recovery-only"):
+        successor.finish_native(
+            "owner", "home", turn.turn_id, expected_generation=turn.generation,
+            ordinal=len(turn.rounds), terminal=NativeTerminal("indeterminate"),
+        )
+    agent_turn_runner.release(journal._ledger.base_path, turn.turn_id)
+    assert _reconcile(journal)[0]["settled"] == "held_native_unknown"
+    assert len(_thread(journal)) == 1
+
+
 def test_the_projection_refuses_an_unowned_row_reconciliation_never_settled(journal):
     """Belt and braces: the guard stands on its own, with no sweep at all.
 

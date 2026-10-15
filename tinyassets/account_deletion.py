@@ -1038,10 +1038,24 @@ def delete_account(
     # check the tombstone inside their transaction under this same admission.
     # Release BEFORE staging: Windows cannot rename an open admission-lock file.
     if home and _home_dir(root, home).exists():
+        from tinyassets.agent_sessions import RECORDS_DIR
         from tinyassets.provider_assignment import provider_assignment_admission
 
-        with provider_assignment_admission().exclusive(_home_dir(root, home)):
+        # An unsafe records path also makes the platform admission lock
+        # inaccessible. No new provider can pass that lock, so tombstone the
+        # account and let the records phase report the bad path in the receipt.
+        records_parent = root / RECORDS_DIR
+        records_home = records_parent / home
+        unsafe_records = any(
+            path.is_symlink() or (path.exists() and not path.is_dir())
+            for path in (records_parent, records_home)
+        )
+
+        if unsafe_records:
             write_tombstone(root, principal)
+        else:
+            with provider_assignment_admission().exclusive(_home_dir(root, home)):
+                write_tombstone(root, principal)
     else:
         write_tombstone(root, principal)
     blob_sessions = _authoring_session_ids(root, principal)

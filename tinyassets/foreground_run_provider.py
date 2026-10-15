@@ -798,6 +798,7 @@ class _ForegroundRunProviderSession:
                 activity["agent_id"] if activity is not None else "main", prompt,
                 session.RunStep(
                     session=self, prompt_config=config, policy=policy, node=node,
+                    box_binding=session.current_binding(),
                     activity=activity, response_observer=response_observer,
                     metadata_observer=metadata_observer,
                 ),
