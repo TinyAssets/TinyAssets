@@ -288,7 +288,10 @@ def test_xfs_mount_accepts_real_prjquota_output(monkeypatch, tmp_path):
         migration._mounted(tmp_path)
 
 
-@pytest.mark.skipif(shutil.which("rsync") is None, reason="real migration copy needs rsync")
+@pytest.mark.skipif(
+    shutil.which("rsync") is None,
+    reason="real migration copy needs rsync; owner=c6-owner-box runs-in=linux-ci",
+)
 def test_guest_copy_omits_persistent_credential_sources(tmp_path):
     source, guest = tmp_path / "center", tmp_path / "guest"
     source.mkdir()
@@ -310,7 +313,10 @@ def test_guest_copy_omits_persistent_credential_sources(tmp_path):
     assert not (guest / ".runtime").exists()
 
 
-@pytest.mark.skipif(shutil.which("rsync") is None, reason="real migration copy needs rsync")
+@pytest.mark.skipif(
+    shutil.which("rsync") is None,
+    reason="real migration copy needs rsync; owner=c6-owner-box runs-in=linux-ci",
+)
 def test_guest_agent_home_omits_package_auth_files(tmp_path):
     from tinyassets.external_agents.registry import PACKAGES
 
