@@ -92,6 +92,19 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/universe_seats.py::_refresh_loop": (
         CONTROL_PLANE, "account seat stamp refresh while a seat is held",
     ),
+    "tinyassets/shared_live.py::ensure_flusher.loop": (
+        CONTROL_PLANE,
+        "checkpoints transient shared-app rows and flushes owed bytes; no model and no seat",
+    ),
+    "tinyassets/shared_live.py::_ensure_tick.tick": (
+        CONTROL_PLANE,
+        "one event-loop tick copies one public page per interest and hands "
+        "those bytes to matching streams",
+    ),
+    "tinyassets/shared_state.py::_notify_loop": (
+        CONTROL_PLANE,
+        "publishes the shared-app snapshot and wakes waiters; writers do not wait on it",
+    ),
     # -- bounded waits inside one call -----------------------------------------
     "tinyassets/mcp_protocol.py::continue_call": (
         CALL_SCOPED,
@@ -246,6 +259,10 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         "one startup/check admission retries lock acquisition and rereads the "
         "migration marker; returns on stable layout or raises on refusal, "
         "without scheduling background work",
+    ),
+    "tinyassets/shared_state.py::wait_live": (
+        CALL_SCOPED,
+        "one caller waits until the next matching public delta or its timeout",
     ),
     "tinyassets/ttl_memo.py::TTLMemo.get": (CALL_SCOPED, "single-flight wait"),
     "tinyassets/universe_seats.py::_wait_for_seat": (CALL_SCOPED, "seat wait"),
