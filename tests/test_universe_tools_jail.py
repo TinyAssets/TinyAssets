@@ -56,7 +56,6 @@ pytestmark = [
         reason="a real bubblewrap jail needs Linux + bwrap",
     ),
     # Runs in .github/workflows/linux-jail-proof.yml, where a skip fails.
-    pytest.mark.real_jail,
 ]
 
 OWN_MARKER = "POSITIVE-CONTROL-OWN-UNIVERSE"

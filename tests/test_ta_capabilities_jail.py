@@ -21,7 +21,7 @@ from tests.test_universe_tools_jail import world as world
 from tinyassets import policy_rules as agent_rules
 from tinyassets import universe_tools
 
-pytestmark = [pytest.mark.real_jail, pytest.mark.skipif(
+pytestmark = [pytest.mark.skipif(
     sys.platform != "linux" or not shutil.which("bwrap"), reason="requires Linux + bubblewrap")]
 
 

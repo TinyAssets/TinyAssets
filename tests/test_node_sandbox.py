@@ -1764,7 +1764,6 @@ def jail_sandbox(monkeypatch):
     return NodeSandbox(timeout=30.0, launcher=BwrapLauncher())
 
 
-@pytest.mark.real_jail
 @requires_bwrap
 def test_jail_runs_a_node_at_all(jail_sandbox):
     """Positive control: without this, every refusal below could be a broken jail."""
@@ -1780,7 +1779,6 @@ def test_jail_runs_a_node_at_all(jail_sandbox):
     assert result.output_state == {"r": 4}
 
 
-@pytest.mark.real_jail
 @requires_bwrap
 def test_jail_has_no_network(jail_sandbox):
     """--unshare-all with no --share-net: an outbound connection cannot open."""
@@ -1807,7 +1805,6 @@ def test_jail_has_no_network(jail_sandbox):
     assert result.output_state["r"].startswith("refused:"), result.output_state
 
 
-@pytest.mark.real_jail
 @requires_bwrap
 def test_jail_cannot_read_the_hosts_process_environment(jail_sandbox, monkeypatch):
     """/proc is the jail's own; the parent's secrets are not reachable."""
@@ -1836,7 +1833,6 @@ def test_jail_cannot_read_the_hosts_process_environment(jail_sandbox, monkeypatc
     assert body.startswith("refused:") or "TINYASSETS" not in body
 
 
-@pytest.mark.real_jail
 @requires_bwrap
 def test_jail_cannot_see_the_data_dir(jail_sandbox):
     """No /data mount: the universe data dir does not exist in the child."""
@@ -1861,7 +1857,6 @@ def test_jail_cannot_see_the_data_dir(jail_sandbox):
     assert result.output_state["r"] == "refused: FileNotFoundError"
 
 
-@pytest.mark.real_jail
 @requires_bwrap
 def test_jail_cannot_read_unbound_host_files(jail_sandbox):
     """/etc is not bound: host identity files are not readable."""
@@ -1885,7 +1880,6 @@ def test_jail_cannot_read_unbound_host_files(jail_sandbox):
     assert result.output_state["r"].startswith("refused:"), result.output_state
 
 
-@pytest.mark.real_jail
 @requires_bwrap
 def test_jail_working_directory_is_the_private_tmpfs(jail_sandbox):
     """--chdir /tmp: the node starts on scratch space, not in a bound tree."""

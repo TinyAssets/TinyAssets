@@ -14,7 +14,6 @@ import pytest
 pytestmark = [
     pytest.mark.skipif(sys.platform != "linux" or shutil.which("bwrap") is None,
                        reason="real bubblewrap is Linux-only"),
-    pytest.mark.real_jail,
 ]
 
 ROLE_PROFILE_PROBE = r'''
