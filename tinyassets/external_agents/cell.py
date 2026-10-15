@@ -14,7 +14,11 @@ import stat
 import subprocess
 from pathlib import Path
 
-from tinyassets.role_provider_cell import read_config, resolve_executable, safe_environment
+from tinyassets.external_agents.launch_security import (
+    read_config,
+    resolve_executable,
+    safe_environment,
+)
 
 _FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _HOME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
@@ -232,7 +236,7 @@ def cell_main(data_root: str, *, egress: bool, engine: bool, config=None,
             command = [*argv, '-c', rewrite['setting'] + '=' +
                        json.dumps(job + '/model-catalog.json')]
         if egress:
-            from tinyassets.universe_egress import FORWARDER, PROXY_ENV
+            from tinyassets.boxes.network import FORWARDER, PROXY_ENV
 
             clean_env.update(PROXY_ENV)
             specs = ['3128=/provider-egress.sock']
