@@ -368,7 +368,7 @@ class TestTheBoundActuallyBindsInTheRouter:
 
         src = pathlib.Path(router.__file__).read_text(encoding="utf-8")
         body = src.split("async with _provider_slot(", 1)[1][:900]
-        assert "before_launch()" in body, (
+        assert "await off_loop(before_launch)" in body, (
             "before_provider_launch must happen INSIDE the slot, or a refusal charges "
             "a launch that never occurred"
         )
