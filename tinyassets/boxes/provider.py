@@ -59,6 +59,7 @@ __all__ = [
     "FileWrite",
     "ImportReport",
     "OpIdReuse",
+    "RecordConflict",
     "Snapshot",
     "StaleHandle",
     "StreamIn",
@@ -112,6 +113,16 @@ class OpIdReuse(BoxOperationRefused):
 
 class WriteConflict(BoxError):
     """A ``create`` found an existing file, or a ``cas`` saw a newer generation."""
+
+
+class RecordConflict(WriteConflict):
+    """The path etag moved. Read the record again and retry with its etag.
+
+    Raised before any effect, so the same operation id may be reused. Retryable:
+    nothing was published for this attempt.
+    """
+
+    retryable = True
 
 
 class WriteMode(str, enum.Enum):
@@ -174,6 +185,8 @@ class FileRead:
     generation: int
     #: Total file size; ``data`` may be a slice of it.
     size: int
+    #: Host-journal etag of this path. Zero-default only for the guest, which is not authority.
+    etag: int = 0
 
 
 @dataclass(frozen=True)
@@ -190,6 +203,8 @@ class FileWrite:
     path: str
     size: int
     generation: int
+    #: Host-journal etag after this write. The guest's value is ignored.
+    etag: int = 0
 
 
 @dataclass(frozen=True)
@@ -198,6 +213,8 @@ class FileStat:
     kind: str  #: ``"file"``, ``"dir"``, ``"link"`` or ``"other"``
     size: int
     mtime: float
+    #: Host-journal etag of this path. The guest's value is ignored.
+    etag: int = 0
 
 
 @dataclass(frozen=True)
@@ -292,7 +309,8 @@ class BoxProvider(Protocol):
                   max_total: int) -> Snapshot: ...
     def write(self, handle: BoxHandle, op_id: str, path: str, data: StreamIn, *,
               max_bytes: int, mode: WriteMode = WriteMode.REPLACE,
-              expect_generation: int | None = None) -> FileWrite: ...
+              expect_generation: int | None = None,
+              expect_etag: int | None = None) -> FileWrite: ...
     def download(self, handle: BoxHandle, path: str, *,
                  chunk_bytes: int = 64 * 1024) -> Iterator[bytes]: ...
     def list(self, handle: BoxHandle, path: str, *, cursor: str | None = None,

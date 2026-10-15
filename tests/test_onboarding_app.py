@@ -246,6 +246,8 @@ def test_route_is_apex_app_get(monkeypatch):
         # The bytes a custom UI loads, fetched by the app for its sealed frame.
         "/app/api/ui-asset",
         "/app/api/file",
+        # Shared live state. The session is the actor. The shell holds the stream.
+        "/app/api/live", "/app/api/live/stream",
     }
     assert by_path["/app/outside-clients"].methods == {"POST"}
     assert by_path["/app/wakes"].methods == {"GET", "HEAD", "POST"}
@@ -253,6 +255,8 @@ def test_route_is_apex_app_get(monkeypatch):
     assert by_path["/app/files"].methods == {"POST"}
     assert by_path["/app/api/read"].methods == {"POST"}
     assert by_path["/app/api/ui-asset"].methods == {"POST"}
+    assert by_path["/app/api/live"].methods == {"POST"}
+    assert by_path["/app/api/live/stream"].methods == {"GET", "HEAD"}
     # The owner's clock is a WRITE from their client, never a readable setting.
     assert by_path["/app/account/timezone"].methods == {"POST"}
     assert "GET" in by_path["/app"].methods
@@ -275,7 +279,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/billing/checkout", "/app/billing/cancel",
         "/app/billing/webhook", "/app/account/delete",
         "/app/turn/interrupt", "/app/turn/steer", "/app/turn/pending",
-        "/app/live",
+        "/app/live", "/app/api/live",
     ):
         assert "POST" in by_path[post_only].methods
         assert "GET" not in by_path[post_only].methods

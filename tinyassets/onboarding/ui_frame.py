@@ -294,11 +294,34 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
       start(bundle);
       return;
     }
+    if (message.type === "live" && Array.isArray(message.events)) {
+      deliverLive(message.events);
+      return;
+    }
     if (message.type === "result" && typeof message.id === "string") {
       var settle = pending[message.id];
       if (settle) { delete pending[message.id]; settle(message); }
     }
   });
+
+  // The shell pushes public deltas. This frame has no socket; it only filters.
+  var liveListeners = [];
+  function liveMatch(sub, one) {
+    if (sub.kinds && sub.kinds.indexOf(one.kind) < 0) { return false; }
+    if (sub.keys && sub.keys.indexOf(one.key) < 0) { return false; }
+    return true;
+  }
+  function deliverLive(events) {
+    for (var i = 0; i < events.length; i++) {
+      var one = events[i];
+      for (var j = 0; j < liveListeners.length; j++) {
+        var sub = liveListeners[j];
+        if (liveMatch(sub, one) && typeof sub.onEvent === "function") {
+          sub.onEvent(one);
+        }
+      }
+    }
+  }
 
   // The narrow client the bundle programs against. Sugar only: every method is
   // the same `call`, so the parent's allowlist is the single source of truth
@@ -315,6 +338,25 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
     listAutomations: function () { return call("list_automations", {}); },
     listRuns: function (options) { return call("list_runs", options || {}); },
     readLive: function () { return call("read_live", {}); },
+    subscribe: function (interest, onEvent) {
+      var spec = (interest && typeof interest === "object") ? interest : {};
+      var body = {};
+      if (Array.isArray(spec.kinds)) { body.kinds = spec.kinds.map(String); }
+      if (Array.isArray(spec.keys)) { body.keys = spec.keys.map(String); }
+      liveListeners.push({
+        kinds: body.kinds || null,
+        keys: body.keys || null,
+        onEvent: onEvent
+      });
+      return call("subscribe", body);
+    },
+    unsubscribe: function (interest) {
+      var spec = (interest && typeof interest === "object") ? interest : {};
+      var body = {};
+      if (Array.isArray(spec.kinds)) { body.kinds = spec.kinds.map(String); }
+      if (Array.isArray(spec.keys)) { body.keys = spec.keys.map(String); }
+      return call("unsubscribe", body);
+    },
     readRun: function (runId) { return call("read_run", {run_id: runId}); },
     readRunOutput: function (runId, field, offset) { return call("read_run_output", {run_id: runId, field: field, offset: offset || 0}); },
     listFiles: function (path) { return call("list_files", {path: path || ""}); },

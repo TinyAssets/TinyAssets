@@ -23,6 +23,7 @@ from tinyassets.boxes.provider import (
     BoxBusy,
     BoxError,
     BoxOperationRefused,
+    RecordConflict,
     StaleHandle,
     WriteConflict,
     box_relpath,
@@ -161,13 +162,14 @@ class OwnerFileHost:
             self._authorized(grant, center)
             self.state.hold(grant.owner_id)
             # Invalidate caches before any possible effect (including process death).
-            self.state.bump_generation(grant.owner_id)
+            # Arbitrary code can touch any path, so every record etag moves too.
+            self.state.fence_records(grant.owner_id)
 
     def end_work(self, grant: OwnerGrant) -> None:
         """Call under lock ONLY after all guest writers are proven stopped."""
         with self.lock(grant.owner_id):
             self.backend.stop(grant.uid)
-            self.state.bump_generation(grant.owner_id)
+            self.state.fence_records(grant.owner_id)
             self.state.release(grant.owner_id)
 
     def request(self, grant: OwnerGrant, token: str, operation: str,
@@ -209,6 +211,11 @@ class OwnerFileHost:
                 raise BoxBusy("owner files have running or unquiesced writers")
             if operation == "committed_generation":
                 return {"result": {"generation": self.state.generation(owner)}}
+            if operation == "record_etag":
+                return {"result": {
+                    "path": args["path"],
+                    "etag": self.state.record_etag(owner, center, box_relpath(args["path"])),
+                }}
             if operation == "suspend":
                 self.backend.stop(grant.uid)
                 return {"result": None}
@@ -216,6 +223,9 @@ class OwnerFileHost:
                 self.backend.wake(grant.uid)
                 return {"result": None}
             mutation = operation in {"write", "remove"}
+            if operation == "write" and type(args["expect_etag"]) is not int:
+                raise BoxOperationRefused("record write requires expect_etag")
+            published_etag = None
             if mutation:
                 if op_id is None:
                     raise BoxOperationRefused("mutation requires an operation id")
@@ -226,13 +236,19 @@ class OwnerFileHost:
                     if previous["state"] != "done":
                         raise BoxError("operation outcome is unknown; hold, never replay")
                     return decode(previous["outcome"]["response"].encode())
+                rel = box_relpath(args["path"])
                 if operation == "write" and args["mode"] == "cas" and (
                     args["expect_generation"] != self.state.generation(owner)
                 ):
                     self.state.abandon(owner, op_id)
                     raise WriteConflict("owner generation changed")
+                if operation == "write" and (
+                    args["expect_etag"] != self.state.record_etag(owner, center, rel)
+                ):
+                    self.state.abandon(owner, op_id)
+                    raise RecordConflict("record changed")
                 self.state.hold(owner)
-                self.state.bump_generation(owner)
+                _generation, published_etag = self.state.note_path_effect(owner, center, rel)
             try:
                 forwarded = project(center, operation, args)
                 result = self.backend.call(grant.uid, operation, forwarded)
@@ -249,11 +265,18 @@ class OwnerFileHost:
                 # Do not trust any generation or path supplied from inside the box.
                 if "result" in result:
                     result = unproject(center, operation, result, args)
-                    if operation in {"read", "read_many", "write", "usage"}:
-                        result["result"]["generation"] = self.state.generation(owner)
-                    if operation == "usage":
-                        result["result"]["bound_bytes"] = (
-                            self.bound_for(grant, center) if self.bound_for else None)
+                    body = result["result"]
+                    if isinstance(body, dict):
+                        if operation in {"read", "read_many", "write", "usage"}:
+                            body["generation"] = self.state.generation(owner)
+                        if operation == "write" and published_etag is not None:
+                            body["etag"] = published_etag
+                        elif operation in {"read", "stat"}:
+                            body["etag"] = self.state.record_etag(
+                                owner, center, box_relpath(args["path"]))
+                        if operation == "usage":
+                            body["bound_bytes"] = (
+                                self.bound_for(grant, center) if self.bound_for else None)
                 if mutation:
                     response = encode(result).decode()
                     self.backend.stop(grant.uid)
@@ -287,8 +310,9 @@ _FIELDS = {
     "read": {"path", "offset", "max_bytes"},
     "read_many": {"paths", "max_total"},
     "stat": {"path"}, "list": {"path", "cursor", "limit"},
-    "write": {"path", "data", "max_bytes", "mode", "expect_generation"},
-    "remove": {"path"}, "usage": set(), "committed_generation": set(), "suspend": set(),
+    "write": {"path", "data", "max_bytes", "mode", "expect_generation", "expect_etag"},
+    "remove": {"path"}, "usage": set(), "committed_generation": set(), "record_etag": {"path"},
+    "suspend": set(),
     "destroy": set(), "ensure_awake": set(), "end_session": set(),
 }
 
@@ -325,6 +349,9 @@ def validate(operation: str, args: dict) -> None:
                 type(args["expect_generation"]) is not int or args["expect_generation"] < 0)
         ):
             raise BoxOperationRefused("invalid write mode or generation")
+        etag = args["expect_etag"]
+        if etag is not None and (type(etag) is not int or etag < 0):
+            raise BoxOperationRefused("invalid record etag")
     encode(args)  # bound total path/argument bytes before dispatch
 
 
@@ -340,6 +367,7 @@ def project(center: str, operation: str, args: dict) -> dict:
         result["paths"] = [path(value) for value in result["paths"]]
     if operation == "write":
         result.pop("expect_generation")
+        result.pop("expect_etag")
         if result["mode"] == "cas":
             result["mode"] = "replace"
     return result

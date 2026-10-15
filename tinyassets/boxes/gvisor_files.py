@@ -216,6 +216,7 @@ class GvisorFileBackend:
         check_args = dict(args)
         if operation == "write":
             check_args["expect_generation"] = None
+            check_args["expect_etag"] = None
         validate(operation, check_args)
         body = encode({"operation": operation, "args": args})
         with self._lock(uid):

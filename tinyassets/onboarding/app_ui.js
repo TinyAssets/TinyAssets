@@ -519,6 +519,9 @@
       if(typeof focusCommandCenter === "function" &&
          !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
          !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
+      if(this.liveAbort){ try{ this.liveAbort.abort(); }catch(_e){ /* the stream is gone */ } }
+      this.liveAbort=null; this.liveSubs=null; this.liveCursor=0;
+      this.liveGen=(this.liveGen||0)+1;
       this.frame=null; this.active=null; this.ready=false; this.sending=false; this.emitting=false; this.pending=0;
       this.trying=false; this.defaultMounted=false;
       this.frameGen++;
@@ -532,6 +535,7 @@
       whoami:"whoami",list_agents:"listAgents",
       send_message:"sendMessage",open_chat:"openChat",read_conversation:"readConversation",
       list_automations:"listAutomations",list_runs:"listRuns",read_live:"readLive",
+      subscribe:"subscribe",unsubscribe:"unsubscribe",
       read_run:"readRun",read_run_output:"readRunOutput",
       list_files:"listFiles",read_file:"readFile",emit:"emit",
       "packages.list_tryable":"listTryablePackages","packages.try":"tryPackage",
@@ -741,6 +745,110 @@
         account_id:String(this.principal||""),
         workflow_refs:Object.assign({},this.active&&this.active.workflow_refs||{}),
         agent_refs:Object.assign({},this.active&&this.active.agent_refs||{})};
+    },
+    // One stream for this signed-in shell. The frame names kinds and keys.
+    // The app id is this.home and the account is the session. The frame
+    // cannot supply either, and it still has no socket of its own.
+    async subscribe(args){
+      const spec=(args&&typeof args==="object")?args:{};
+      const kinds=Array.isArray(spec.kinds)?spec.kinds.map(String):null;
+      const keys=Array.isArray(spec.keys)?spec.keys.map(String):null;
+      if(!this.liveSubs) this.liveSubs=[];
+      this.liveSubs.push({kinds,keys});
+      this.startLive();
+      return {ok:true};
+    },
+    async unsubscribe(args){
+      const spec=(args&&typeof args==="object")?args:{};
+      const kinds=Array.isArray(spec.kinds)?spec.kinds.map(String):null;
+      const keys=Array.isArray(spec.keys)?spec.keys.map(String):null;
+      const stamp=JSON.stringify([kinds,keys]);
+      const subs=this.liveSubs||[];
+      const idx=subs.findIndex(s=>JSON.stringify([s.kinds,s.keys])===stamp);
+      if(idx>=0) subs.splice(idx,1);
+      this.liveSubs=subs;
+      if(!subs.length) this.stopLive();
+      else this.startLive();
+      return {ok:true};
+    },
+    stopLive(){
+      this.liveGen=(this.liveGen||0)+1;
+      if(this.liveAbort){ try{ this.liveAbort.abort(); }catch(_e){ /* already closed */ } }
+      this.liveAbort=null;
+    },
+    startLive(){
+      if(!this.home||!(this.liveSubs&&this.liveSubs.length)) return;
+      const gen=(this.liveGen||0)+1;
+      this.liveGen=gen;
+      if(this.liveAbort){ try{ this.liveAbort.abort(); }catch(_e){ /* restarting */ } }
+      this.readLiveStream(gen);
+    },
+    liveQuery(){
+      const subs=this.liveSubs||[];
+      const q=new URLSearchParams();
+      q.set("universe_id",this.home);
+      q.set("since",String(this.liveCursor||0));
+      const allKinds=subs.some(s=>s.kinds==null);
+      const allKeys=subs.some(s=>s.keys==null);
+      if(!allKinds){
+        const kinds=[...new Set(subs.flatMap(s=>s.kinds||[]))];
+        if(kinds.length) q.set("kinds",kinds.join(","));
+      }
+      if(!allKeys){
+        const keys=[...new Set(subs.flatMap(s=>s.keys||[]))];
+        if(keys.length) q.set("keys",keys.join(","));
+      }
+      return q;
+    },
+    async readLiveStream(gen){
+      let since=this.liveCursor||0;
+      while(this.liveGen===gen&&this.home){
+        let resp;
+        try{
+          try{ await ensureFreshToken(); }catch(_err){ /* the request reports it */ }
+          const headers={};
+          const tk=token(); if(tk) headers.Authorization="Bearer "+tk;
+          this.liveCursor=since;
+          const ctrl=new AbortController();
+          this.liveAbort=ctrl;
+          resp=await fetch("/app/api/live/stream?"+this.liveQuery().toString(),{
+            headers,credentials:"same-origin",cache:"no-store",signal:ctrl.signal});
+        }catch(err){
+          if(this.liveGen!==gen) return;
+          if(err&&err.name==="AbortError") return;
+          await new Promise(resolve=>setTimeout(resolve,500));
+          continue;
+        }
+        if(this.liveGen!==gen) return;
+        if(resp.status===401){ sessionExpired(); return; }
+        if(!resp.ok||!resp.body) return;
+        const reader=resp.body.getReader();
+        const dec=new TextDecoder();
+        let buf="";
+        try{
+          while(this.liveGen===gen){
+            const chunk=await reader.read();
+            if(chunk.done) break;
+            buf+=dec.decode(chunk.value,{stream:true});
+            let cut;
+            while((cut=buf.indexOf("\n\n"))>=0){
+              const block=buf.slice(0,cut);
+              buf=buf.slice(cut+2);
+              const line=block.split("\n").filter(part=>part.startsWith("data:")).pop();
+              if(!line) continue;
+              let page=null;
+              try{ page=JSON.parse(line.slice(5).trim()); }catch(_e){ page=null; }
+              if(!page||!Array.isArray(page.events)) continue;
+              if(typeof page.cursor==="number"){ since=page.cursor; this.liveCursor=since; }
+              if(page.events.length&&this.frame&&this.liveGen===gen){
+                this.post({ta_ui:this.PROTOCOL,type:"live",events:page.events});
+              }
+            }
+          }
+        }catch(err){
+          if(this.liveGen!==gen||(err&&err.name==="AbortError")) return;
+        }
+      }
     },
     // The viewer's OWN agents. `graph_id` is this.home, never an argument, so a
     // bundle cannot enumerate anybody else's command center.

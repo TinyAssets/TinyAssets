@@ -118,6 +118,20 @@ class Waiting:
 # --------------------------------------------------------------------------- #
 
 
+def account_pool(account_id: str) -> str:
+    """The seat pool of one authenticated account.
+
+    A run that account started draws from this pool. The command center the
+    run touches does not choose the pool, and neither does an ACL row.
+    """
+    from tinyassets.principals import named_principal
+
+    account = named_principal(account_id)
+    if not account:
+        raise ValueError("a seat needs an account")
+    return f"{_ACCOUNT_PREFIX}{account}"
+
+
 def account_key(universe_id: str, *, root: str | Path) -> str:
     """The seat pool a universe's agent calls draw from.
 
@@ -1040,6 +1054,7 @@ __all__ = [
     "Waiting",
     "abandon",
     "account_key",
+    "account_pool",
     "acquire",
     "acquire_blocking",
     "bound",

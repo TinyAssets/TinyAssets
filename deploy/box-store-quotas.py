@@ -109,12 +109,27 @@ def fence_restore(current: Path, staged: Path) -> None:
                 if previous is not None and previous != row:
                     raise ValueError("restored execution id has conflicting ownership")
                 target.execute("INSERT OR IGNORE INTO execs VALUES (?,?,?)", row)
-            for owner, epoch, generation in live.execute("SELECT * FROM boxes"):
-                target.execute("INSERT INTO boxes VALUES (?,?,?) ON CONFLICT(command_center_id) "
-                               "DO UPDATE SET epoch=MAX(epoch,excluded.epoch), "
-                               "generation=MAX(generation,excluded.generation)",
-                               (owner, epoch, generation))
-            target.execute("UPDATE boxes SET epoch=epoch+1, generation=generation+1")
+            for owner, epoch, generation, fence in live.execute(
+                    "SELECT command_center_id, epoch, generation, record_fence FROM boxes"):
+                target.execute(
+                    "INSERT INTO boxes (command_center_id, epoch, generation, record_fence)"
+                    " VALUES (?,?,?,?) ON CONFLICT(command_center_id) DO UPDATE SET"
+                    " epoch=MAX(epoch,excluded.epoch),"
+                    " generation=MAX(generation,excluded.generation),"
+                    " record_fence=MAX(record_fence,excluded.record_fence)",
+                    (owner, epoch, generation, fence))
+            for owner, center, path, etag in live.execute(
+                    "SELECT owner_id, center, path, etag FROM records"):
+                target.execute(
+                    "INSERT INTO records (owner_id, center, path, etag) VALUES (?,?,?,?)"
+                    " ON CONFLICT(owner_id, center, path) DO UPDATE SET"
+                    " etag=MAX(etag, excluded.etag)",
+                    (owner, center, path, etag))
+            # Restored bytes may not be the copies those etags named. Move every
+            # path, including ones with no row, past both journals.
+            target.execute("UPDATE boxes SET epoch=epoch+1, generation=generation+1, "
+                           "record_fence=record_fence+1")
+            target.execute("UPDATE records SET etag=etag+1")
             # A pre-restore 'done' receipt no longer describes restored bytes.
             # Preserve every seen operation ID, but never report or replay it.
             target.execute("UPDATE ops SET state='unknown_after_restore'")
@@ -154,7 +169,7 @@ def check_snapshot(data: Path, *, quiescent: bool = False) -> None:
     with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as db:
         if db.execute("PRAGMA quick_check").fetchone() != ("ok",):
             raise ValueError("snapshot receipt journal failed integrity check")
-        for table in ("host", "boxes", "ops", "execs", "owner_destroys"):
+        for table in ("host", "boxes", "ops", "execs", "owner_destroys", "records"):
             db.execute(f"SELECT * FROM {table} LIMIT 0")
     if quiescent:
         result = subprocess.run([

@@ -97,14 +97,16 @@ def initialize_author_server(base_path: str | Path) -> Path:
     (Auto-birth on first connect made this reachable — get_status now hits the DB
     concurrently on a brand-new install.)
     """
-    key = str(db_path(base_path))
+    # The canonical file name is stable. Resolving it through db_path would
+    # re-stat every legacy generation on each call, including this fast path.
+    key = str(Path(base_path) / DB_FILENAME)
     if key in _AUTHOR_SERVER_INITIALIZED:
-        return db_path(base_path)
+        return Path(key)
     with _AUTHOR_SERVER_INIT_LOCK:
         if key not in _AUTHOR_SERVER_INITIALIZED:
             _initialize_author_server_locked(base_path)
             _AUTHOR_SERVER_INITIALIZED.add(key)
-    return db_path(base_path)
+    return Path(key)
 
 
 def _initialize_author_server_locked(base_path: str | Path) -> Path:

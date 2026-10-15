@@ -115,6 +115,9 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/runs.py",
     "tinyassets/control_plane/events.py",
     "tinyassets/scoped_reset.py",
+    # Shared-app author store: definitions, records, log, schedules. One
+    # serving process writes it. Not under check_fence until the handover.
+    "tinyassets/shared_state.py",
     "tinyassets/starter_seeds.py",
     "tinyassets/storage/account_timezone.py",
     "tinyassets/storage/accounts.py",
@@ -164,6 +167,9 @@ MIGRATES_ON_OPEN_BEFORE_C2: dict[str, str] = {
     "tinyassets/storage/agent_turn_journal.py":
         "ensure_schema adds owner_generation: additive, re-checked under BEGIN "
         "IMMEDIATE, so race-free; listed until the startup boundary exists",
+    "tinyassets/shared_state.py":
+        "_ensure_sql runs CREATE TABLE IF NOT EXISTS via executescript on the "
+        "first open of each author database; additive, once per file",
 }
 
 #: Set by slice C2 when a second owner process can exist. Never before

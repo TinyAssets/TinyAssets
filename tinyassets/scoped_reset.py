@@ -27,7 +27,7 @@ from typing import AbstractSet, Callable, Mapping
 
 from tinyassets.storage import DB_FILENAME
 
-INVENTORY_REVISION = "scoped-reset-inventory-v4-2026-07-25"
+INVENTORY_REVISION = "scoped-reset-inventory-v5-2026-10-15"
 
 # Classification is location-specific: these are the only reviewed tables
 # allowed in the root .tinyassets.db.  A migration adding any other table must
@@ -121,6 +121,20 @@ MAIN_DB_TABLE_CLASSIFICATIONS = MappingProxyType({
     # home's row names a universe id whose directory is gone, which measures as
     # zero bytes; it is never re-used, because universe ids are never re-issued.
     "universe_owner": "preserve",
+    # Shared-app rows for the home being reset. Created on first use, so a
+    # database that has never opened an app does not have them. Another
+    # person's row in the home blocks, the same way a foreign grant does.
+    "app_definitions": "reset_home",
+    "app_records": "reset_home",
+    "app_log": "reset_home",
+    "app_seq": "reset_home",
+    "app_schedules": "reset_home",
+    "app_runs": "reset_home",
+    "universe_invites": "reset_home",
+    # Replay tokens and the owed-byte queue are the account, not the home.
+    # A reset keeps the login, and these rows can name other universes.
+    "app_idempotency": "preserve",
+    "app_byte_due": "preserve",
 })
 
 FAULT_POINTS = (
@@ -419,6 +433,73 @@ _RESETTABLE_TABLE_COLUMNS = MappingProxyType({
         ("granted_at", "REAL", 1, None, 0),
         ("granted_by", "TEXT", 1, "''", 0),
     ),
+    "app_definitions": (
+        ("universe_id", "TEXT", 0, None, 1),
+        ("owner_user_id", "TEXT", 1, None, 0),
+        ("document", "TEXT", 1, None, 0),
+        ("etag", "INTEGER", 1, None, 0),
+    ),
+    "app_records": (
+        ("universe_id", "TEXT", 1, None, 1),
+        ("record_key", "TEXT", 1, None, 2),
+        ("kind", "TEXT", 1, None, 0),
+        ("owner_user_id", "TEXT", 1, None, 0),
+        ("private_json", "TEXT", 1, None, 0),
+        ("public_json", "TEXT", 1, None, 0),
+        ("etag", "INTEGER", 1, None, 0),
+        ("seq", "INTEGER", 1, None, 0),
+    ),
+    "app_log": (
+        ("universe_id", "TEXT", 1, None, 1),
+        ("seq", "INTEGER", 1, None, 2),
+        ("record_key", "TEXT", 1, None, 0),
+        ("owner_user_id", "TEXT", 1, None, 0),
+        ("kind", "TEXT", 1, None, 0),
+        ("op", "TEXT", 1, None, 0),
+        ("public_json", "TEXT", 1, None, 0),
+        ("actor_id", "TEXT", 1, None, 0),
+    ),
+    "app_seq": (
+        ("universe_id", "TEXT", 0, None, 1),
+        ("seq", "INTEGER", 1, None, 0),
+    ),
+    "app_schedules": (
+        ("universe_id", "TEXT", 1, None, 1),
+        ("name", "TEXT", 1, None, 2),
+        ("every_s", "REAL", 1, None, 0),
+        ("next_at", "REAL", 1, None, 0),
+    ),
+    "app_runs": (
+        ("run_id", "TEXT", 0, None, 1),
+        ("universe_id", "TEXT", 1, None, 0),
+        ("owner_user_id", "TEXT", 1, None, 0),
+        ("provider", "TEXT", 1, "''", 0),
+        ("seat_id", "TEXT", 1, "''", 0),
+        ("state", "TEXT", 1, None, 0),
+        ("reason", "TEXT", 1, "''", 0),
+        ("name", "TEXT", 1, "''", 0),
+        ("created_at", "REAL", 1, None, 0),
+    ),
+    "universe_invites": (
+        ("token_hash", "TEXT", 0, None, 1),
+        ("universe_id", "TEXT", 1, None, 0),
+        ("actor_id", "TEXT", 1, "''", 0),
+        ("granted_by", "TEXT", 1, "''", 0),
+        ("created_at", "REAL", 1, None, 0),
+        ("redeemed_at", "REAL", 0, None, 0),
+        ("revoked_at", "REAL", 0, None, 0),
+    ),
+})
+#: Shared-app tables are created on first use. A database that has never
+#: opened an app does not have them, and their absence is not a schema change.
+_LAZY_RESETTABLE_TABLES = frozenset({
+    "app_definitions",
+    "app_log",
+    "app_records",
+    "app_runs",
+    "app_schedules",
+    "app_seq",
+    "universe_invites",
 })
 _RESETTABLE_FOREIGN_KEYS = MappingProxyType({
     "universe_rules": (
@@ -687,7 +768,14 @@ def _table_names(conn: sqlite3.Connection) -> frozenset[str]:
 
 
 def _validate_resettable_schema(conn: sqlite3.Connection) -> None:
+    present = _table_names(conn)
     for table, expected in _RESETTABLE_TABLE_COLUMNS.items():
+        if table not in present:
+            if table in _LAZY_RESETTABLE_TABLES:
+                continue
+            raise ScopedResetSchemaError(
+                f"column manifest changed for resettable table: {table}"
+            )
         xinfo = tuple(conn.execute(f'PRAGMA table_xinfo("{table}")'))
         actual = tuple(
             (str(row[1]), str(row[2]), int(row[3]), row[4], int(row[5]))
@@ -1282,6 +1370,29 @@ def _inspect_database(
     for table, sql, params in market_checks:
         if table in tables and _matching_count(conn, sql, params):
             blockers.append(f"active market obligation references test principal: {table}")
+    # Shared-app rows for this home. An invitee's record, run, or redeemed
+    # invite is theirs; resetting the home must not delete it quietly.
+    foreign_app = (
+        ("app_definitions", "owner_user_id"),
+        ("app_records", "owner_user_id"),
+        ("app_log", "owner_user_id"),
+        ("app_log", "actor_id"),
+        ("app_runs", "owner_user_id"),
+        ("universe_invites", "actor_id"),
+        ("universe_invites", "granted_by"),
+    )
+    reported: set[str] = set()
+    for table, key in foreign_app:
+        if table not in tables or table in reported:
+            continue
+        if _matching_count(
+            conn,
+            f'SELECT COUNT(*) FROM "{table}" '
+            f'WHERE universe_id = ? AND "{key}" NOT IN (?, \'\')',
+            (home_id, principal),
+        ):
+            blockers.append(f"foreign actor owns shared-app state in {table}")
+            reported.add(table)
     return blockers
 
 
@@ -1657,6 +1768,17 @@ def _database_actions(
         actions.append(
             _row_action(conn, table="vote_windows", row=row, alias=alias)
         )
+    present = _table_names(conn)
+    for table in _LAZY_RESETTABLE_TABLES:
+        if table not in present:
+            continue
+        for row in _select_rows(
+            conn,
+            table=table,
+            where="universe_id = ?",
+            params=(home_id,),
+        ):
+            actions.append(_row_action(conn, table=table, row=row, alias=alias))
     return sorted(
         actions,
         key=lambda action: (

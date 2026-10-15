@@ -25,6 +25,7 @@ from tinyassets.boxes.provider import (
     BoxBusy,
     BoxError,
     OpIdReuse,
+    RecordConflict,
     StaleHandle,
     WriteConflict,
     WriteMode,
@@ -84,9 +85,9 @@ def setup(tmp_path):
     host.close()
 
 
-def write_args(body=b"hello", *, mode="replace", generation=None):
-    return {"path": "/cc/wiki/file.md", "data": body, "max_bytes": 100,
-            "mode": mode, "expect_generation": generation}
+def write_args(body=b"hello", *, mode="replace", generation=None, etag=0, path="/cc/wiki/file.md"):
+    return {"path": path, "data": body, "max_bytes": 100,
+            "mode": mode, "expect_generation": generation, "expect_etag": etag}
 
 
 def test_owner_session_center_and_epoch_are_checked_before_io(setup):
@@ -127,6 +128,97 @@ def test_owner_wide_generations_cas_and_idempotency(setup):
     host.request(A, two, "write", write_args(mode="cas", generation=generation), op_id="cas")
     assert sandbox.calls[-1][2]["mode"] == "replace"
     assert sandbox.calls[-1][2]["path"] == "/cc/a2/wiki/file.md"
+    assert "expect_etag" not in sandbox.calls[-1][2]
+    assert "expect_generation" not in sandbox.calls[-1][2]
+
+
+def test_record_etag_conflicts_only_that_path_and_is_retryable(setup):
+    host, sandbox, _, _ = setup
+    token = host.bind(A, "a")["token"]
+    sibling = host.bind(A, "a2")["token"]
+    assert host.request(A, token, "record_etag", {"path": "/cc/wiki/a.md"})["result"] == {
+        "path": "/cc/wiki/a.md", "etag": 0}
+    first = host.request(A, token, "write", write_args(path="/cc/wiki/a.md", etag=0), op_id="a")
+    assert first["result"]["etag"] == 1
+    assert len(sandbox.calls) == 1
+    with pytest.raises(RecordConflict, match="record changed") as conflict:
+        host.request(A, token, "write", write_args(path="/cc/wiki/a.md", body=b"stale", etag=0),
+                     op_id="stale")
+    assert conflict.value.retryable is True
+    assert len(sandbox.calls) == 1
+    other = host.request(
+        A, token, "write", write_args(path="/cc/wiki/b.md", body=b"other", etag=0), op_id="b")
+    assert other["result"]["etag"] == 1
+    assert len(sandbox.calls) == 2
+    # A sibling center is a different record even at the same relative path.
+    host.request(A, sibling, "write", write_args(path="/cc/wiki/a.md", etag=0), op_id="a2")
+    assert sandbox.calls[-1][2]["path"] == "/cc/a2/wiki/a.md"
+    fresh = host.request(A, token, "record_etag", {"path": "/cc/wiki/a.md"})["result"]["etag"]
+    again = host.request(
+        A, token, "write", write_args(path="/cc/wiki/a.md", body=b"new", etag=fresh), op_id="a3")
+    assert again["result"]["etag"] == fresh + 1
+    assert sandbox.calls[-1][2]["mode"] == "replace"
+
+
+def test_concurrent_writers_of_one_record_publish_once(setup):
+    host, sandbox, _, _ = setup
+    token = host.bind(A, "a")["token"]
+    barrier = threading.Barrier(2)
+    published, conflicts = [], []
+
+    def write(name):
+        barrier.wait(2)
+        try:
+            published.append(host.request(
+                A, token, "write", write_args(body=name.encode(), etag=0), op_id=name))
+        except RecordConflict as exc:
+            conflicts.append(exc)
+
+    threads = [threading.Thread(target=write, args=(name,)) for name in ("one", "two")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(3)
+        assert not thread.is_alive()
+    assert len(published) == 1 and len(conflicts) == 1
+    assert conflicts[0].retryable is True
+    assert len(sandbox.calls) == 1
+    written = (sandbox.root / "300001/a/wiki/file.md").read_bytes()
+    assert written == sandbox.calls[0][2]["data"]
+    assert written in {b"one", b"two"}
+
+
+def test_lost_write_invalidates_the_record_etag(setup):
+    host, sandbox, _, _ = setup
+    token = host.bind(A, "a")["token"]
+    sandbox.fail_after_write = True
+    with pytest.raises(OSError):
+        host.request(A, token, "write", write_args(etag=0), op_id="lost")
+    sandbox.fail_after_write = False
+    with pytest.raises(RecordConflict, match="record changed"):
+        host.request(A, token, "write", write_args(etag=0), op_id="retry")
+    assert len(sandbox.calls) == 1
+    fresh = host.request(A, token, "record_etag", {"path": "/cc/wiki/file.md"})["result"]["etag"]
+    host.request(A, token, "write", write_args(body=b"after", etag=fresh), op_id="after")
+    assert len(sandbox.calls) == 2
+
+
+def test_arbitrary_execution_fences_every_record_etag(setup):
+    host, sandbox, _, _ = setup
+    token = host.bind(A, "a")["token"]
+    written = host.request(A, token, "write", write_args(etag=0), op_id="w")
+    with host.lock(A.owner_id):
+        host.begin_work(A, "a")
+    host.end_work(A)
+    with pytest.raises(RecordConflict, match="record changed"):
+        host.request(A, token, "write", write_args(etag=written["result"]["etag"]), op_id="stale")
+    fresh = host.request(A, token, "record_etag", {"path": "/cc/wiki/file.md"})["result"]["etag"]
+    unseen = host.request(A, token, "record_etag", {"path": "/cc/wiki/new.md"})["result"]["etag"]
+    assert unseen > 0
+    host.request(A, token, "write", write_args(etag=fresh), op_id="fresh")
+    host.request(A, token, "remove", {"path": "/cc/wiki/file.md"}, op_id="rm")
+    with pytest.raises(RecordConflict, match="record changed"):
+        host.request(A, token, "write", write_args(etag=fresh), op_id="after-remove")
 
 
 def test_lost_write_response_is_not_replayed_even_after_host_restart(setup, tmp_path):
@@ -349,7 +441,9 @@ def test_end_to_end_authenticated_socket_provider_and_snapshot(setup):
         with pytest.raises(BoxAuthError):
             provider.stat(replace(handle), "/cc/wiki")
         first = provider.write(handle, "w", "/cc/wiki/f", b"test", max_bytes=10,
-                               mode=WriteMode.CREATE)
+                               mode=WriteMode.CREATE, expect_etag=0)
+        assert first.etag == 1
+        assert provider.record_etag(handle, "/cc/wiki/f") == 1
         snapshot = provider.read_many(handle, ["/cc/wiki/f", "/cc/no"], max_total=10)
         assert snapshot.files == {"/cc/wiki/f": b"test"}
         assert snapshot.missing == ("/cc/no",)

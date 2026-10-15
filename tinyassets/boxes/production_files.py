@@ -145,8 +145,11 @@ class ProductionFileProvider:
         result = self._call(handle, "read_many", {"paths": list(paths), "max_total": max_total})
         return Snapshot(result["files"], tuple(result["missing"]), result["generation"])
 
+    def record_etag(self, handle, path):
+        return self._call(handle, "record_etag", {"path": path})["etag"]
+
     def write(self, handle, op_id, path, data, *, max_bytes,
-              mode=WriteMode.REPLACE, expect_generation=None):
+              mode=WriteMode.REPLACE, expect_generation=None, expect_etag: int):
         if type(max_bytes) is not int or not 0 <= max_bytes <= MAX_DATA:
             raise BoxOperationRefused("write exceeds the file transport bound")
         if not isinstance(data, bytes):
@@ -158,7 +161,8 @@ class ProductionFileProvider:
             data = bytes(body)
         return FileWrite(**self._call(handle, "write", {
             "path": path, "data": data, "max_bytes": max_bytes,
-            "mode": WriteMode(mode).value, "expect_generation": expect_generation}, op_id=op_id))
+            "mode": WriteMode(mode).value, "expect_generation": expect_generation,
+            "expect_etag": expect_etag}, op_id=op_id))
 
     def list(self, handle, path, *, cursor=None, limit=200):
         result = self._call(handle, "list", {"path": path, "cursor": cursor, "limit": limit})

@@ -569,6 +569,20 @@ def _packages(base: Path, account_id: str) -> int:
     return measure_packages(base, _account_actors(base, account_id))
 
 
+def _app_definition(base: Path, account_id: str) -> int:
+    """The one app definition, charged only to the account that owns it."""
+    from tinyassets.shared_state import definition_bytes
+
+    return definition_bytes(base, account_id)
+
+
+def _app_records(base: Path, account_id: str) -> int:
+    """Shared-record bytes charged to the account that owns each record."""
+    from tinyassets.shared_state import record_bytes
+
+    return record_bytes(base, account_id)
+
+
 #: THE registry. Every place user bytes live is either here, or named in
 #: `PLATFORM_ENTRIES` with why it is not the user's;
 #: `tests/test_storage_registry_complete.py` fails on any store that is neither.
@@ -588,6 +602,8 @@ STORES: dict[str, Store] = {
         Store("workspaces", SCOPE_UNIVERSE, _workspaces),
         Store("agent_activities", SCOPE_UNIVERSE, _agent_activities),
         Store("packages", SCOPE_ACCOUNT, _packages),
+        Store("app_definition", SCOPE_ACCOUNT, _app_definition),
+        Store("app_records", SCOPE_ACCOUNT, _app_records),
     )
 }
 
@@ -605,7 +621,11 @@ ROOT_ENTRIES: dict[str, str] = {
     ".langgraph_runs.db": "checkpoints",
     ".run-file-custody": "uploads (blobs; sized from run_file_objects)",
     ".project_memory.db": "project_memory",
-    ".tinyassets.db": "branches (branch_definitions); the rest is platform: accounts, grants, ACLs",
+    ".tinyassets.db": (
+        "branches (branch_definitions), app_definition (one app document, "
+        "by its owner), app_records (shared record bytes, by each record's "
+        "owner); the rest is platform: accounts, grants, ACLs"
+    ),
     "daemon_brain.db": "daemon_memory",
     "daemon_wikis": "daemon_memory",
     "wiki": "commons_pages",
