@@ -232,7 +232,7 @@ def cell_main(data_root: str, *, egress: bool, engine: bool, config=None,
             command = [*argv, '-c', rewrite['setting'] + '=' +
                        json.dumps(job + '/model-catalog.json')]
         if egress:
-            from tinyassets.universe_egress import FORWARDER, PROXY_ENV
+            from tinyassets.boxes.network import FORWARDER, PROXY_ENV
 
             clean_env.update(PROXY_ENV)
             specs = ['3128=/provider-egress.sock']
