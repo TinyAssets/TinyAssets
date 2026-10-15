@@ -11,9 +11,10 @@ import time
 from pathlib import Path
 
 SNAPSHOT_DIR = Path("/var/backups/tinyassets")
-# A set without its checksum may still be being written by a running cutover
-# (tar of the whole volume takes minutes); only an old one is a failed leftover.
-INCOMPLETE_MIN_AGE_S = 6 * 3600
+# A running cutover writes the data archive, its checksum, then the box-store
+# archive and its checksum, over minutes. Any file this young may belong to
+# that set, so it is never deleted; only old files are leftovers.
+MIN_AGE_S = 6 * 3600
 NAME = re.compile(
     r"tinyassets-(snapshot|box-store)-"
     r"(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z)\.tar\.gz(\.sha256)?\Z"
@@ -53,16 +54,15 @@ def plan(
     now = time.time() if now is None else now
     remove = []
     for stamp, files in sets.items():
-        if stamp not in complete and any(
-            now - info.st_mtime < INCOMPLETE_MIN_AGE_S for _, info in files.values()
-        ):
-            continue  # possibly a snapshot still being written
         keep = set()
         if stamp == newest:
             keep.update(("snapshot", "snapshot.sha256"))
             if "box-store" in files and "box-store.sha256" in files:
                 keep.update(("box-store", "box-store.sha256"))
-        remove.extend(item for kind, item in files.items() if kind not in keep)
+        remove.extend(
+            item for kind, item in files.items()
+            if kind not in keep and now - item[1].st_mtime >= MIN_AGE_S
+        )
     return sorted(remove, key=lambda item: item[0].name), newest
 
 

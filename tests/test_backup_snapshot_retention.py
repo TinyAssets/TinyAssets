@@ -76,12 +76,18 @@ def test_orphan_box_next_to_latest_data_is_removed(tmp_path: Path) -> None:
     }
 
 
-def test_fresh_incomplete_set_may_still_be_written_and_is_kept(tmp_path: Path) -> None:
+def test_fresh_files_of_a_running_cutover_are_kept(tmp_path: Path) -> None:
     put(tmp_path, name("snapshot", NEW))
     put(tmp_path, name("snapshot", NEW, True))
-    put(tmp_path, name("snapshot", PARTIAL), age_s=60)  # a cutover tar in progress
+    put(tmp_path, name("snapshot", PARTIAL), age_s=60)  # data tar in progress
+    # Newest set has its data checksum; its box-store archive is still being written.
+    put(tmp_path, name("snapshot", "2026-10-15T00-00-00Z"), age_s=120)
+    put(tmp_path, name("snapshot", "2026-10-15T00-00-00Z", True), age_s=100)
+    put(tmp_path, name("box-store", "2026-10-15T00-00-00Z"), age_s=30)
     assert run(tmp_path, "--apply").returncode == 0
-    assert name("snapshot", PARTIAL) in {p.name for p in tmp_path.iterdir()}
+    left = {p.name for p in tmp_path.iterdir()}
+    assert name("snapshot", PARTIAL) in left
+    assert name("box-store", "2026-10-15T00-00-00Z") in left
 
 
 @pytest.mark.parametrize("unsafe", ["symlink", "directory"])
