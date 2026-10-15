@@ -883,7 +883,7 @@ class TestTheOwnerIsClaimedFirst:
     def test_failed_create_retains_only_a_published_root(self, base, signed_in, monkeypatch,
                                                         published):
         """Admission owns the root once published; retry must reuse that inode."""
-        from tinyassets import role_center_admission
+        from tinyassets.boxes import lifecycle
 
         signed_in("workos|founder")
 
@@ -894,7 +894,7 @@ class TestTheOwnerIsClaimedFirst:
             if published:
                 fault.setattr(us, "_normalize_escaped_text", fail)
             else:
-                fault.setattr(role_center_admission, "admit_center", fail)
+                fault.setattr(lifecycle, "admit_center", fail)
             out = json.loads(us._action_create_universe(universe_id="u-doomed", text="x"))
         assert "error" in out, out
         home = base / "u-doomed"

@@ -96,16 +96,22 @@ def test_failed_native_turn_receipts_a_bounded_vendor_class():
     assert "secret-value" not in reason
 
 
-def test_unavailable_codex_binding_is_loud(tmp_path):
+def test_unavailable_codex_binding_is_loud(tmp_path, _owner_box_double):
     import asyncio
 
+    from tinyassets.boxes.provider import ExecLimits
+    from tinyassets.control_plane.binding import bind_session, use_binding
     from tinyassets.exceptions import ExternalAgentUnavailable
     from tinyassets.external_agents.provider import ExternalAgentProvider
     from tinyassets.providers.base import ModelConfig
 
+    assert _owner_box_double is not None, "the owner box double needs Linux"
     center = tmp_path / "u-owner"
     center.mkdir()
-    with pytest.raises(ExternalAgentUnavailable) as failure:
+    # An admitted owner session with no codex credential in custody.
+    binding = bind_session(provider=_owner_box_double, limits=ExecLimits(), universe_dir=center,
+                           owner="owner", execution_id="codex-signed-out")
+    with use_binding(binding), pytest.raises(ExternalAgentUnavailable) as failure:
         asyncio.run(ExternalAgentProvider("codex").complete(
             "hello", "system", ModelConfig(invocation_owner_user_id="owner"),
             universe_dir=center))

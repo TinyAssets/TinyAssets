@@ -449,7 +449,7 @@ def needs_image(changed: list[str], root: Path = REPO_ROOT) -> bool:
     from scripts.runtime_paths import runtime_inputs
 
     inputs = runtime_inputs(root, 'HEAD')
-    return any(inputs.covers(name) or name.startswith('scripts/core_capability')
+    return any(inputs.covers(name)
                or name in ('scripts/affected_tests.py', '.github/workflows/tests.yml')
                for name in changed)
 

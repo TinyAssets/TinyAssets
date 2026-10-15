@@ -1,6 +1,5 @@
 """Resident orientation and greeting continuation after prod turn bdec018e."""
 
-from contextlib import contextmanager
 from dataclasses import replace
 from time import monotonic
 
@@ -67,27 +66,25 @@ def test_folder_listing_is_bounded(tmp_path):
     assert "60 more entries; `bash ls` shows them" in text
 
 
-def test_depth_two_inventory_bounds_scan_work_and_output(tmp_path, monkeypatch):
+def test_depth_two_inventory_bounds_scan_work_and_output(tmp_path, monkeypatch,
+                                                        _owner_box_double):
+    assert _owner_box_double is not None, "the owner box double needs Linux"
     directory = tmp_path / "workflows/office"
     directory.mkdir(parents=True)
     for n in range(1000):
         (directory / f"{n:04}.txt").touch()
-    scandir = universe_files.os.scandir
+    # The command center is listed through its owner box, a page at a time.
+    real_list = _owner_box_double.list
     seen = 0
 
-    @contextmanager
-    def counted_scandir(path):
+    def counted_list(handle, relpath, *args, **kwargs):
         nonlocal seen
-        with scandir(path) as entries:
-            def counted():
-                nonlocal seen
-                for entry in entries:
-                    seen += 1
-                    assert seen <= 200, "inventory must bound enumeration, not just output"
-                    yield entry
-            yield counted()
+        page = real_list(handle, relpath, *args, **kwargs)
+        seen += len(page.entries)
+        assert seen <= 200, "inventory must bound enumeration, not just output"
+        return page
 
-    monkeypatch.setattr(universe_files.os, "scandir", counted_scandir)
+    monkeypatch.setattr(_owner_box_double, "list", counted_list, raising=False)
     started = monotonic()
     text = universe_tools._folder_section(tmp_path)
     assert monotonic() - started < 2

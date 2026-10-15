@@ -113,7 +113,7 @@ SHAPES: dict[str, Shape] = {
          ("tinyassets/engine_mcp_server.py", r"\bFastMCP\(")),
         ceiling=1,
     ),
-    "S8": Shape(("tinyassets/boxes/**",), (("tinyassets/**/role_*.py", ""),), ceiling=26),
+    "S8": Shape(("tinyassets/boxes/**",), (("tinyassets/**/role_*.py", ""),), ceiling=0),
     "S9": Shape(
         ("tinyassets/control_plane/**",),
         (

@@ -228,7 +228,7 @@ def test_agent_bindings_is_the_shape_main_has(tmp_path) -> None:
 
 
 def test_account_deletion_removes_the_persons_rows_everywhere_and_only_theirs(
-    tmp_path,
+    tmp_path, monkeypatch,
 ) -> None:
     from tests.test_account_deletion import (
         HOME_A,
@@ -243,6 +243,8 @@ def test_account_deletion_removes_the_persons_rows_everywhere_and_only_theirs(
 
     base = tmp_path / "data"
     base.mkdir()
+    # The owner box is destroyed on the one data root the daemon serves.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     _seed_user(base, A, HOME_A)
     _seed_user(base, B, HOME_B)
     _seed_outbound(base)

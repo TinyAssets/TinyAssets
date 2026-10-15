@@ -71,7 +71,6 @@ from tinyassets.api.helpers import (
 from tinyassets.catalog import list_unreconciled_writes
 from tinyassets.ids import new_universe_id
 from tinyassets.ingestion.canon_io import iter_canon_files, read_canon_bytes, safe_canon_path
-from tinyassets.role_center_admission import ensure_center_dir as _ensure_center_dir
 from tinyassets.storage_accounting import StorageRefused
 from tinyassets.universe_bundle import seed_okf_bundle
 from tinyassets.universe_files import (
@@ -3201,7 +3200,6 @@ def _action_set_tier_config(
     existing[field_name] = bool(enabled)
 
     try:
-        _ensure_center_dir(udir)
         write_data_path(
             cfg_path,
             _yaml.safe_dump(existing, sort_keys=True, default_flow_style=False),
@@ -3302,7 +3300,6 @@ def _action_give_direction(
                 return json.dumps({"error": "anchor_json must be a JSON object."})
             anchor = parsed_anchor
 
-        _ensure_center_dir(udir)
         note = _add_note(
             udir,
             source="user",
@@ -3580,7 +3577,6 @@ def _action_set_premise(universe_id: str = "", text: str = "", **_kwargs: Any) -
         return json.dumps({"error": "Premise text cannot be empty."})
     text = _normalize_escaped_text(text)
     try:
-        _ensure_center_dir(udir)
         soul = write_universe_soul(
             udir, purpose=text, lineage="created-from-premise",
         )
@@ -4111,7 +4107,6 @@ def _action_control_daemon(
 
     if action == "pause":
         try:
-            _ensure_center_dir(udir)
             write_data_path(pause_path, datetime.now(timezone.utc).isoformat())
             return json.dumps({
                 "universe_id": uid,
@@ -4488,7 +4483,7 @@ def _action_create_universe(
     if udir.exists() and (udir / "soul.md").is_file():
         return json.dumps({"error": f"Command center '{uid}' already exists."})
 
-    from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
+    from tinyassets.boxes.layout import UNIVERSE_SIDECARS_DIR
 
     seed_sidecar_preexisted = (udir.parent / UNIVERSE_SIDECARS_DIR / udir.name).exists()
     founder = ""
@@ -4527,7 +4522,7 @@ def _action_create_universe(
         grant_universe_ownership(base, universe_id=uid, owner_id=founder)
 
         # Reserve, label, publish, log, bind; usable only once bound.
-        from tinyassets.role_center_admission import admit_center
+        from tinyassets.boxes.lifecycle import admit_center
 
         admit_center(base, principal=founder, center=uid)
         normalized_text = _normalize_escaped_text(text) if text.strip() else ""

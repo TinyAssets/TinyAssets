@@ -55,10 +55,10 @@ def wired(tmp_path):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             exec(compile(code, "<fixture-owner-shell>", "exec"), {})
-        from tinyassets.universe_tools import DEFAULT_LIMITS
+        from tinyassets.agent_loop.box_tools import OUTPUT_BYTES
 
-        if len(stdout.getvalue().encode()) > DEFAULT_LIMITS.output_bytes:
-            return {"text": f"[killed: output passed {DEFAULT_LIMITS.output_bytes} bytes]"}
+        if len(stdout.getvalue().encode()) > OUTPUT_BYTES:
+            return {"text": f"[killed: output passed {OUTPUT_BYTES} bytes]"}
         return {"text": stdout.getvalue() + "\n[exit code 0]"}
 
     branch = builder.build(**CONFIG)

@@ -301,6 +301,12 @@ class ProviderSeamTests(unittest.TestCase):
                 return "done", "codex"
             # This test checks persona-to-agent dispatch only. Real receipt,
             # reservation and provider execution live in test_workflow_http_agent.
+            # An agent step runs in the owner box its durable run admitted.
+            from tinyassets.runs import initialize_runs_db
+
+            (self.root / "u-own").mkdir(exist_ok=True)
+            initialize_runs_db(self.root)
+            session._run_id = "run-shared-self"
             with patch("tinyassets.workflow_agent.call_foreground_work_agent", agent_turn):
                 # A call that names no agent node stays ordinary in a marked branch.
                 session._call("writer", "plain", "", plain, None, {})

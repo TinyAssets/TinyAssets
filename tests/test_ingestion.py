@@ -1078,7 +1078,7 @@ class TestVideoExtractor:
     def test_the_cells_frames_reach_the_owner_scoped_vision_callback(self, tmp_path):
         """Full pipeline: the owner's video cell returns frames, the caller
         describes each one under the owner's own vision authority."""
-        from tinyassets import role_video
+        from tinyassets.boxes import media as role_video
         from tinyassets.ingestion.video_extractor import extract_video_description
 
         video_data = b"\x00\x00\x00\x1cftyp" + b"\x00" * 1000
@@ -1107,7 +1107,7 @@ class TestVideoExtractor:
 
     def test_extract_text_routes_video(self, tmp_path):
         """extract_text routes video files to the video extractor."""
-        from tinyassets import role_video
+        from tinyassets.boxes import media as role_video
         from tinyassets.ingestion.video_extractor import extract_video_description
 
         video_data = b"\x00\x00\x00\x1cftyp" + b"\x00" * 1000

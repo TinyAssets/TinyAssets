@@ -460,8 +460,13 @@ def test_exactly_one_process_may_write_the_turn_journal(journal):
         for volume in (service.get("volumes") or [])
         if "tinyassets-data" in str(volume) and not str(volume).endswith(":ro")
     }
-    assert writable == {"daemon"}, (
-        f"{sorted(writable)} can write the data volume; only the daemon may")
+    # The credential broker shares the volume for its own state under its own
+    # uid; it never runs the server, so the daemon stays the journal's one writer.
+    assert writable == {"daemon", "broker"}, (
+        f"{sorted(writable)} can write the data volume; only the daemon and broker may")
+    services = compose["services"]
+    assert services["broker"]["user"] != services["daemon"]["user"]
+    assert services["broker"]["entrypoint"][-1] == "/app/broker_main.py"
 
 
 def test_a_missing_database_is_no_work_and_creates_nothing(tmp_path):

@@ -54,6 +54,9 @@ def wiki_env(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     _ensure_wiki_scaffold(wiki_root)
+    # Directories live in the owner's box: a write through it makes a page's
+    # parents. Tests that seed a page by its host path make that parent here.
+    (wiki_root / "pages" / "notes").mkdir(parents=True, exist_ok=True)
     return wiki_root
 
 

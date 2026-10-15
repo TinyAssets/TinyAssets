@@ -20,11 +20,11 @@ from tinyassets.exceptions import (
     AllProvidersExhaustedError,
     PlatformLLMCallRefusedError,
     ProviderAuthorityHeldError,
+    ProviderConfinementError,
     SelectedModelUnavailableError,
     WorkModelExhaustedError,
 )
 from tinyassets.providers.model_pins import ModelPinError
-from tinyassets.providers.provider_jail import ProviderConfinementError
 from tinyassets.providers.served_model_plan import NO_ELIGIBLE_MODEL
 from tinyassets.universe_server import _served_failure_notice, _served_failure_record
 

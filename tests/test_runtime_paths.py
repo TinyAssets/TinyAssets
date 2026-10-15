@@ -65,7 +65,6 @@ def test_real_dockerfile_context_copies_are_all_runtime():
         "scripts/codex_cli_smoke.py",
         "scripts/mcp_public_canary.py",
         "scripts/_canary_common.py",
-        "scripts/workspace_bwrap_oracle.py",
     } <= set(sources)
     assert "fantasy_daemon" not in sources
     # Stage-to-stage copies read no build context.

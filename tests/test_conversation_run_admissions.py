@@ -186,13 +186,15 @@ def _projection_process(base, admission_id, entered, release, result):
 def _deletion_process(base, result):
     # Spawn does not inherit pytest's runtime doubles. Install the same venue
     # in this child; the real account-deletion/projection barrier remains intact.
-    from tests.support.admission_double import install
+    from tests.support.box_double import install
     from tests.support.broker_double import _Registry
     from tinyassets.broker import supervisor
 
     registry = _Registry()
     patch = pytest.MonkeyPatch()
-    install(patch)
+    # The owner box deletion destroys is admitted on this data root.
+    patch.setenv("TINYASSETS_DATA_DIR", str(base))
+    double = install(patch)
     patch.setattr(supervisor, "get_supervisor", registry.supervisor_for)
     try:
         receipt = account_deletion.delete_account(
@@ -206,6 +208,7 @@ def _deletion_process(base, result):
 
     finally:
         registry.close()
+        double.close()
         patch.undo()
 
 

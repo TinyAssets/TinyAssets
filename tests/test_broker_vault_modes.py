@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from tinyassets import credential_vault as vault
-from tinyassets import role_modes
+from tinyassets.boxes import layout as role_modes
 
 # These pin the real role_modes numbers and owner labels; no double is installed.
 pytestmark = [
@@ -58,7 +58,7 @@ def test_prepublication_failure_preserves_vault_and_cleans_temp(universe, monkey
         persist(universe, "unpublished")
     assert path.read_bytes() == before[0]
     assert os.path.samestat(path.stat(), before[1])
-    assert list(universe.iterdir()) == [path]
+    assert list(path.parent.iterdir()) == [path]
 
 
 def test_postpublication_flush_failure_does_not_undo_commit(universe, monkeypatch):

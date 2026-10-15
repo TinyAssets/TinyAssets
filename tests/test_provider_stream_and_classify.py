@@ -35,7 +35,6 @@ from tinyassets.providers.base import (
     BaseProvider,
     ModelConfig,
     ProviderResponse,
-    SandboxUnavailableError,
 )
 from tinyassets.providers.claude_provider import ClaudeProvider
 from tinyassets.providers.quota import QuotaTracker
@@ -1048,19 +1047,6 @@ class TestFailureTaxonomy:
             _run_stream(proc, _FAST)
         assert ei.value.failure_class == "provider_protocol_error"
         assert proc.killed is True
-
-    def test_bwrap_failure_on_stderr_raises_sandbox_unavailable(self):
-        # A bwrap failure remains a terminal outcome even on the streaming path.
-        import sys
-        if sys.platform == "win32":
-            pytest.skip("bwrap is Linux-only")
-        proc = FakeStreamProcess(
-            [],
-            stderr=b"bwrap: No permissions to create a new namespace",
-            returncode=1,
-        )
-        with pytest.raises(SandboxUnavailableError):
-            _run_stream(proc, _FAST)
 
     def test_whitespace_lines_do_not_reset_the_idle_watchdog(self):
         # Blocker C reconciliation: recognized framing (message_start) is now a

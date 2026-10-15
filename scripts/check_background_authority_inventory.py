@@ -108,6 +108,9 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     # The public browser error beacon streams its body with a 4 KiB running
     # cap (#4662); it only writes a log line and grants no execution authority.
     CallSite("tinyassets/observability.py", "client_error", "request.stream"),
+    # One admitted owner-box execution reads its output events from the box
+    # provider's stream; it is the session's own handle, never a graph executor.
+    CallSite("tinyassets/box_process.py", "run_bound", "binding.stream"),
     CallSite(
         "tinyassets/universe_server.py",
         "create_streamable_http_app._hooks_endpoint",

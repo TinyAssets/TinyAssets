@@ -45,13 +45,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 QUARANTINE = REPO_ROOT / ".github" / "known-failing-tests.txt"
 
-# Inode labels and dropping to distinct real UIDs require a root coordinator.
+# Root-only proofs (the live owner-box backup runs as root on the host).
 # These files still belong to their ordinary shard and selection receipt.
 ROOT_TEST_FILES = frozenset({
-    "tests/test_role_owner_tree_deletion.py",
-    "tests/test_role_reader_identity.py",
-    "tests/test_role_center_admission.py",
-    "tests/test_role_content_repair.py",
+    "tests/test_backup_owner_box.py",
 })
 
 # The gate must never pass vacuously. Without a floor, a PR that mass-skips,

@@ -12,8 +12,6 @@ Configuration is the command line, never the environment a caller could set:
   ``<data-root>/.broker/outbound.db``; nothing else may open it;
 * ``--owner-uid``: the uid served as the owner channel (the daemon's);
 * ``--proof-sha256``: the hash of the owner lease proof for the acquired generation;
-* ``--mapper-channel``/``--mapper-pid``: DA2's inherited read-only mapper pair
-  and its one authenticated peer (bounded bootstrap only).
 
 The lease: until the owner lease (S8a) holds a hashed proof per acquisition,
 the daemon mints a proof at start and hands its hash to the launcher.
@@ -126,19 +124,12 @@ async def serve(args: argparse.Namespace) -> None:
         marker = json.loads((Path(args.data_root) / ".layout.json").read_text())
         if marker.get("state") != "stable" or marker.get("box_layout") != "owner-box":
             raise RuntimeError("owner-box broker requires committed migration")
-        if args.proof_sha256 or getattr(args, "mapper_channel", None) is not None:
+        if args.proof_sha256:
             raise RuntimeError("owner-box broker cannot adopt legacy bootstrap")
         proof = secrets.token_urlsafe(48)
         registration = register_broker(proof)
         args.proof_sha256 = hashlib.sha256(proof.encode()).hexdigest()
         del proof
-    if getattr(args, "mapper_channel", None) is not None:
-        # DA2: only the bounded bootstrap passes this inherited descriptor.
-        from tinyassets.broker import mapper_channel
-
-        if args.mapper_pid is None:
-            raise RuntimeError("mapper channel requires the bootstrap's mapper pid")
-        mapper_channel.start(args.mapper_channel, args.mapper_pid, identities)
     from tinyassets.broker.box_admission import provision
 
     server = BrokerServer(
@@ -152,6 +143,7 @@ async def serve(args: argparse.Namespace) -> None:
         policy_store=policy_store,
         provision_box=(lambda owner, center: provision(
             identities, Path(args.data_root), owner, center)) if registration else None,
+        data_root=Path(args.data_root),
     )
     socket_path = Path(args.socket)
     socket_path.unlink(missing_ok=True)
@@ -188,8 +180,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--proof-sha256")
     parser.add_argument("--box-host", action="store_true")
     parser.add_argument("--allow-test-fixtures", action="store_true")
-    parser.add_argument("--mapper-channel", type=int)
-    parser.add_argument("--mapper-pid", type=int)
     args = parser.parse_args(argv)
     if not args.box_host and not args.proof_sha256:
         parser.error("legacy bootstrap requires --proof-sha256")

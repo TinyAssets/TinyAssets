@@ -220,8 +220,11 @@ def test_rotation_keeps_ledger_policy_and_writes_only_owner_vault(removal, monke
     from tinyassets.auth.middleware import identity_context
     from tinyassets.auth.provider import Identity
     from tinyassets.broker import supervisor
+    from tinyassets.credential_vault import credential_vault_path
     from tinyassets.storage.outbound_connections import ProxyRequestError
 
+    # The owner's vault is in platform custody beside the center, not its box.
+    owner_vault = credential_vault_path(removal.root / "cc-alice")
     before = removal.ledger._get_connection_resource(removal.connection)
     with identity_context(Identity(user_id="alice", username="alice", capabilities=["write"])):
         preview = preview_rotate_http(universe_id="cc-alice", payload={"destination": "fixture"})
@@ -230,14 +233,14 @@ def test_rotation_keeps_ledger_policy_and_writes_only_owner_vault(removal, monke
             "destination": "fixture", "incarnation": removal.incarnation,
             "secret": "synthetic-new"})
         assert result["status"] == "rotated", result
-        vault = (removal.root / "cc-alice/.credential-vault.json").read_bytes()
+        vault = owner_vault.read_bytes()
         assert vault
         assert removal.ledger._get_connection_resource(removal.connection) == before
         monkeypatch.setattr(supervisor, "get_supervisor", lambda root: None)
         with pytest.raises(ProxyRequestError):
             rotate_http(universe_id="cc-alice", payload={
                 "destination": "fixture", "secret": "must-not-replace"})
-        assert (removal.root / "cc-alice/.credential-vault.json").read_bytes() == vault
+        assert owner_vault.read_bytes() == vault
     assert not (removal.root / "outbound.db").exists()
 
 

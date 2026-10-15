@@ -25,12 +25,15 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from tinyassets.agent_loop.execution import off_loop
+
+# Admission deadline refusals must release reservations for launches that never ran.
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
     ExternalAgentUnavailable,
     InteractiveDeadlineError,
     ProviderAuthenticationError,
     ProviderAuthorityHeldError,
+    ProviderConfinementError,
     ProviderError,
     ProviderIdleTimeoutError,
     ProviderModelRefusedError,
@@ -44,8 +47,6 @@ from tinyassets.exceptions import (
     SelectedModelContextError,
 )
 from tinyassets.provider_admission import ProviderBusy as _ProviderBusy
-
-# Admission deadline refusals must release reservations for launches that never ran.
 from tinyassets.provider_admission import (
     blocking_parent_slot,
     blocking_provider_child,
@@ -74,14 +75,11 @@ from tinyassets.providers.diagnostics import (
     finite_progress_age_ms,
     redacted_failure_detail,
 )
+from tinyassets.providers.owned_process import launch_scope as provider_launch_scope
 from tinyassets.providers.owner_binding import (
     CONNECT_PROVIDER_MESSAGE,
     require_owner_bound_context,
     require_owner_bound_dispatch,
-)
-from tinyassets.providers.provider_jail import (
-    ProviderConfinementError,
-    provider_launch_scope,
 )
 from tinyassets.providers.quota import (
     COOLDOWN_OTHER,
@@ -95,6 +93,17 @@ if TYPE_CHECKING:
     from tinyassets.config import UniverseConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _launch_operation_id(cfg, request_attempt) -> str:
+    """One stable id per launch attempt: the box refuses a replayed one."""
+    import secrets
+
+    budget = getattr(cfg, "request_budget", None)
+    usage = getattr(budget, "usage_id", "") if budget is not None else ""
+    if usage and type(request_attempt) is int:
+        return f"native:{usage}:{request_attempt}"
+    return "native:" + secrets.token_hex(16)
 
 _CONNECT_PROVIDER_MESSAGE = CONNECT_PROVIDER_MESSAGE
 
@@ -1349,8 +1358,11 @@ class ProviderRouter:
                             if invocation_carrier is not None else ""
                         ))
                         with provider_launch_scope(
-                            universe_dir, credential_dir=cfg.credential_snapshot_dir,
-                            engine_route=_engine_route(cfg),
+                            universe_dir, owner=cfg.invocation_owner_user_id,
+                            service=getattr(provider, "native_credential_service", None),
+                            credential_dir=cfg.credential_snapshot_dir,
+                            operation_id=_launch_operation_id(cfg, request_attempt),
+                            auth=getattr(provider, "native_launch_auth", None),
                         ):
                             if request_attempt is not None:
                                 from tinyassets.providers.api_key_http_provider import (

@@ -31,21 +31,22 @@ def _write(base: Path, document) -> None:
 def test_a_fresh_data_dir_gets_the_layout_this_code_writes(tmp_path):
     # The marker also records the one-way moves this data has had, so a fresh
     # root is "already moved" -- it never had platform state in the wrong place.
+    # A root this image initialises is an owner-box root: it serves no other.
     moved = {"consents_outside_command_centers": "done"}
-    assert layout.check(tmp_path) == {"layout": 2, "state": "stable", "moves": moved}
-    assert json.loads((tmp_path / layout.MARKER).read_text(encoding="utf-8")) == {
-        "layout": 2, "state": "stable", "moves": moved,
-    }
+    fresh = {"layout": 2, "state": "stable", "box_layout": "owner-box", "moves": moved}
+    assert layout.check(tmp_path) == fresh
+    assert json.loads((tmp_path / layout.MARKER).read_text(encoding="utf-8")) == fresh
     # Idempotent, including the move: a second admission re-reads "done" and
     # does not run it again.
-    assert layout.check(tmp_path) == {"layout": 2, "state": "stable", "moves": moved}
+    assert layout.check(tmp_path) == fresh
 
 
 @pytest.mark.parametrize("document,reason", [
     ({"layout": 1, "state": "migrating"}, "did not finish"),
     ({"layout": 3, "state": "stable"}, "understands"),
     ({"state": "stable"}, "understands"),
-    ({"layout": 2, "state": "stable", "box_layout": "owner-box"}, "box_layout"),
+    ({"layout": 2, "state": "stable", "box_layout": "owner-split"}, "box_layout"),
+    ({"layout": 2, "state": "stable"}, "box_layout"),
     ("{not json", "not valid JSON"),
     ("[1]", "not a JSON object"),
 ])
@@ -292,7 +293,7 @@ def test_delayed_start_does_not_wait_for_admitted_process_lifetime(
     import threading
 
     if existing_marker:
-        _write(tmp_path, {"layout": 1, "state": "stable"})
+        _write(tmp_path, {"layout": 1, "state": "stable", "box_layout": "owner-box"})
     released, resume, finished = (threading.Event() for _ in range(3))
     real_unlock = layout._unlock
     errors = []

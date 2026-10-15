@@ -1004,6 +1004,10 @@ elif "${TINYASSETS_IMAGE" not in image_lines[0]:
     )
 
 expected_services = {"daemon", "cloudflared", "logs"}
+if "broker" in services:
+    # The owner-box bundle runs the credential broker as its own unprivileged
+    # service. It is admitted only in this exact shape.
+    expected_services.add("broker")
 if set(services) != expected_services:
     problems.append(
         "default service set is %s, expected %s"
@@ -1020,6 +1024,7 @@ for service, container in (
     ("daemon", "tinyassets-daemon"),
     ("cloudflared", "tinyassets-tunnel"),
     ("logs", "tinyassets-logs"),
+    *((("broker", "tinyassets-broker"),) if "broker" in services else ()),
 ):
     got = svc(service).get("container_name")
     if got != container:
@@ -1034,6 +1039,14 @@ if image != expect_image:
         "daemon.image resolved to %r; it must interpolate ${TINYASSETS_IMAGE} "
         "(candidate %r)" % (image, expect_image)
     )
+if "broker" in services:
+    broker = svc("broker")
+    if broker.get("image") != expect_image:
+        problems.append("broker.image must be the candidate daemon image")
+    if broker.get("user") != "1002:1002" or broker.get("cap_drop") != ["ALL"]:
+        problems.append("broker must run as 1002:1002 with every capability dropped")
+    if "no-new-privileges=true" not in (broker.get("security_opt") or []):
+        problems.append("broker must set no-new-privileges=true")
 
 # The sidecars carry no ${TINYASSETS_IMAGE}, so nothing above constrains them at
 # all: an arbitrary or unpinned cloudflared/vector image passed every check
@@ -1929,64 +1942,15 @@ case "$MIGRATION_RC" in
 esac
 rm -f "$MIGRATION_DETAIL_FILE"
 
-# Activities use the same stopped-writer, full-snapshot and restore gate as C8.
-# The candidate converts each owner's queued legacy work before it can serve;
-# any apply failure leaves the old image down until the named snapshot restores.
-activity_migration_container() {
-  local posture=() data_mount="tinyassets-data:/data"
-  if [ "$1" = "apply" ]; then
-    posture=(--user 0 --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE)
-    data_mount="tinyassets-data:/data"
-  fi
-  timeout "$MIGRATION_TIMEOUT" docker run --rm --cap-drop ALL ${posture[@]+"${posture[@]}"} \
-    --security-opt no-new-privileges=true --network none --memory=1g --memory-swap=1g \
-    -v "$data_mount" -v "${MIGRATION_BACKUP_DIR}:/backup:ro" \
-    --entrypoint python "$NEW_IMAGE" -B -m tinyassets.activity_shape_migration "$@"
-}
-if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
-  activity_probe="$(activity_migration_container check /data 2>&1)"
-  activity_probe_rc=$?
-  [ -z "$activity_probe" ] || printf '%s\n' "$activity_probe"
-  case "$activity_probe_rc" in
-    0) log "activity shape: already converted or no legacy work" ;;
-    10)
-      if [ "$CORE_CANARY_PROVISIONED" != "1" ]; then
-        migration_refused "check=core_canary_not_provisioned move=activity_shape_pending"
-      fi
-      if [ -z "$MIGRATION_SNAPSHOT" ]; then
-        if [ "$BOX_CANDIDATE_LAYOUT" = "owner-box" ]; then
-          stop_for_verified_snapshot 1
-        else
-          stop_for_verified_snapshot 0
-        fi
-      fi
-      log "activity shape: converting under snapshot ${MIGRATION_SNAPSHOT}"
-      activity_apply="$(activity_migration_container apply /data \
-        --backup "/backup/${MIGRATION_SNAPSHOT}" 2>&1)"
-      activity_apply_rc=$?
-      [ -z "$activity_apply" ] || printf '%s\n' "$activity_apply"
-      if [ "$activity_apply_rc" -eq 0 ]; then
-        MIGRATION_COMMITTED=1
-      else
-        MIGRATION_OK=0
-        MIGRATION_COMMIT_UNVERIFIED=1
-        err "activity conversion failed after entering the snapshot window (rc=${activity_apply_rc}); $(migration_restore_command)"
-      fi
-      ;;
-    *) migration_refused "check=activity_shape_probe rc=${activity_probe_rc} output=$(printf '%s\n' "$activity_probe" | one_line)" ;;
-  esac
-fi
-
-# --- 3d. layout census, and the one-shot move only for an owner-box candidate
+# --- 3d. layout census and owner-box cutover
 # The census always runs on a forward deploy, as root against a read-only
 # mount, and the log carries counts per layout. The move decision is this
 # census, never the agent-files binding count printed above. An owner-split
 # candidate does not apply the cutover: only rc 10 (stable owner-split) continues.
 # rc 4 (no marker) and rc 3 (unreadable, unstable, or unrecognized) refuse.
-# rc 0 on that candidate is a conflict. An owner-box candidate applies only on
-# rc 10, after a fresh verified snapshot taken for that move, then restarts
-# boxhostd on the committed layout. After apply begins, a failure needs that
-# paired restore.
+# rc 0 on that candidate is a conflict. An owner-box candidate applies on
+# rc 10 after a fresh verified paired snapshot: either the one-shot box move
+# or the legacy Activities conversion within an already committed box layout.
 box_migration_container() {  # $1 = check|apply, then module arguments
   local posture=(--user 0)
   local data_mount="tinyassets-data:/data:ro"
@@ -2034,7 +1998,7 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
           # Apply runs only after every gate has passed in this run: a
           # provisioned canary, an in-flight probe that proved idle (and is
           # proved again inside the snapshot, so the drain cannot cut a turn),
-          # a stable owner-split census, and a fresh verified backup.
+          # a stable layout census, and a fresh verified paired backup.
           if [ "$CORE_CANARY_PROVISIONED" != "1" ]; then
             migration_refused "check=core_canary_not_provisioned move=box_layout_pending"
           fi
@@ -2050,7 +2014,7 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
           if [ "$TURNS_IDLE_PROVED" != "1" ] || [ -z "$MIGRATION_SNAPSHOT" ]; then
             migration_refused "check=backup_verify move=box_layout_pending snapshot=${MIGRATION_SNAPSHOT:-unset}"
           fi
-          log "box layout: one-shot move using fresh snapshot ${MIGRATION_SNAPSHOT} (census, not the agent-files binding count)"
+          log "box layout: applying pending box or activity conversion using fresh snapshot ${MIGRATION_SNAPSHOT} (census, not the agent-files binding count)"
           box_backup="tinyassets-box-store-${MIGRATION_SNAPSHOT#tinyassets-snapshot-}"
           box_apply="$(box_migration_container apply /data --store /box-store \
             --backup "/backup/${MIGRATION_SNAPSHOT}" \

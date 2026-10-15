@@ -17,10 +17,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.support.box_world import dynamic_data_root as dynamic_data_root
+from tests.support.box_world import world as world
 from tests.test_remote_box_ta import IsolatedBox, attach
 from tests.test_remote_box_ta import box as box  # noqa: F401 -- fixture
-from tests.test_ta_capabilities_jail import dynamic_data_root as dynamic_data_root
-from tests.test_universe_tools_jail import world as world
 from tinyassets.agent_loop.box_ta import TurnBridge, engine_deliver, engine_ta
 from tinyassets.agent_loop.box_tools import BoxExecutor, BoxTools
 from tinyassets.boxes import ExecLimits
@@ -88,7 +88,7 @@ async def remote(server, world, tmp_path, *, turn="live"):
 
 
 def _activate(server, store, content):
-    from tests.test_ta_capabilities_jail import bash
+    from tests.support.box_world import bash
 
     installed = store.install(content)
     pin = {"name": "sample", "revision": installed["revision"], "expected_generation": 0}
@@ -107,7 +107,8 @@ def _owner_store(server):
 
 
 def test_installed_tool_command_and_hook_run_in_remote_box(world, tmp_path, monkeypatch):
-    from tests.test_ta_capabilities_jail import _engine, bash
+    from tests.support.box_world import bash
+    from tests.support.box_world import engine as _engine
 
     secret = "synthetic-host-secret-" + os.urandom(16).hex()
     monkeypatch.setenv("HOST_CREDENTIAL", secret)
@@ -167,7 +168,7 @@ def test_installed_tool_command_and_hook_run_in_remote_box(world, tmp_path, monk
 
 
 def test_revoked_extension_disappears_from_remote_box(world, tmp_path, monkeypatch):
-    from tests.test_ta_capabilities_jail import _engine
+    from tests.support.box_world import engine as _engine
 
     server = _engine(monkeypatch, world)
     _root, store = _owner_store(server)
@@ -195,7 +196,7 @@ def test_revoked_extension_disappears_from_remote_box(world, tmp_path, monkeypat
 
 
 def test_cross_owner_extension_never_reaches_remote_box(world, tmp_path, monkeypatch):
-    from tests.test_ta_capabilities_jail import _engine
+    from tests.support.box_world import engine as _engine
     from tinyassets.agent_loop.box_ta import engine_resource
 
     server = _engine(monkeypatch, world)
@@ -269,7 +270,7 @@ def test_failed_delivery_fails_closed_before_command_runs(box, tmp_path, fault):
 
 def test_turn_hooks_run_in_the_turns_remote_box(world, tmp_path, monkeypatch):
     """Turn lifecycle hooks use the turn's own route: on the thin loop, its box."""
-    from tests.test_ta_capabilities_jail import _engine
+    from tests.support.box_world import engine as _engine
     from tinyassets.agent_loop import tool_session
     from tinyassets.extension_hooks import turn_event
 

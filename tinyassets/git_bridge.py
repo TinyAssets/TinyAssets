@@ -22,6 +22,7 @@ the ``save_and_commit`` composite helpers (G3), repo-level config files
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import threading
@@ -94,10 +95,25 @@ def _run(command, *, capture_output, text, check, timeout, cwd):
 
 
 def _run_bounded(command, *, timeout, cwd):
-    from tinyassets.role_git import run
+    from tinyassets.box_process import run_bound
+    from tinyassets.control_plane.binding import current_binding
+    from tinyassets.storage import data_dir
 
     if command[0] != 'git' or cwd is None:
         raise RuntimeError('owner git bridge requires an admitted git repository')
+    binding = current_binding()
+    repo = Path(cwd)
+    try:
+        relative = Path(os.path.abspath(repo)).relative_to(Path(os.path.abspath(data_dir())))
+    except ValueError:
+        raise RuntimeError('owner git bridge requires a command center repository') from None
+    if binding is None or len(relative.parts) < 1:
+        raise RuntimeError('owner git bridge requires an admitted owner box')
+    # The center is always the first component, including a repo at its root.
+    binding.validate(binding.handle.account_id,
+                     Path(os.path.abspath(data_dir())) / relative.parts[0])
+    root = getattr(binding.handle, 'root', None) or '/cc'
+    guest_cwd = root + ('/' + '/'.join(relative.parts[1:]) if len(relative.parts) > 1 else '')
     # Only pathspecs after -- are paths. Commit messages, ref names and options
     # remain opaque, including strings which happen to contain host paths.
     args = list(command[1:])
@@ -106,11 +122,14 @@ def _run_bounded(command, *, timeout, cwd):
         for index in range(boundary, len(args)):
             path = Path(args[index])
             if path.is_absolute():
-                relative = path.relative_to(Path(cwd))
-                if '..' in relative.parts:
+                inner = path.relative_to(repo)
+                if '..' in inner.parts:
                     raise PermissionError('git pathspec leaves its owner repository')
-                args[index] = '/workspace/' + relative.as_posix()
-    return run(args, cwd=cwd, options=(), timeout_s=timeout)
+                args[index] = inner.as_posix()
+    done = run_bound(binding, 'catalog-git', ['git', *args], cwd=guest_cwd,
+                     wall_seconds=float(timeout), output_bytes=1024 * 1024)
+    return subprocess.CompletedProcess(command, done.returncode,
+                                       done.stdout.decode('utf-8', 'replace'), '')
 
 
 def is_enabled(repo_path: Path | None = None) -> bool:

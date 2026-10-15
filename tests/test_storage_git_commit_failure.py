@@ -79,6 +79,23 @@ def base_path(tmp_path, monkeypatch):
     yield base
 
 
+@pytest.fixture
+def center(base_path):
+    """A command center under the data root, its owner's box session bound.
+
+    Owner git runs only inside an admitted owner box, so the catalog
+    repository sits in a command center and every call carries its binding.
+    """
+    from tinyassets.control_plane import binding as binding_module
+
+    cc = base_path / "cc-catalog"
+    cc.mkdir()
+    binding = binding_module.file_binding(cc)
+    assert binding is not None, "the owner box double binds a test center"
+    with binding_module.use_binding(binding):
+        yield cc
+
+
 def _make_branch(name: str = "Commit-fail branch") -> BranchDefinition:
     b = BranchDefinition(
         name=name,
@@ -110,8 +127,8 @@ def _patch_commit_to_fail(monkeypatch, error: str = "disk full"):
 # ─── unstage helper ──────────────────────────────────────────────────
 
 
-def test_unstage_removes_paths_from_index(tmp_path):
-    repo = tmp_path / "repo"
+def test_unstage_removes_paths_from_index(center):
+    repo = center / "repo"
     _init_repo(repo)
     target = repo / "a.txt"
     target.write_text("hello\n", encoding="utf-8")
@@ -142,9 +159,9 @@ def test_unstage_no_op_when_git_disabled(tmp_path, monkeypatch):
 
 
 def test_save_branch_commit_failure_rolls_back_yaml(
-    base_path, tmp_path, monkeypatch,
+    base_path, center, monkeypatch,
 ):
-    repo = tmp_path / "repo"
+    repo = center / "repo"
     _init_repo(repo)
     backend = SqliteCachedBackend(base_path, repo_root=repo)
     layout = YamlRepoLayout(repo)
@@ -194,12 +211,12 @@ def test_save_branch_commit_failure_rolls_back_yaml(
 
 
 def test_save_branch_commit_failure_restores_prior_file(
-    base_path, tmp_path, monkeypatch,
+    base_path, center, monkeypatch,
 ):
     """When the YAML existed before the call, rollback restores its
     prior bytes rather than deleting.
     """
-    repo = tmp_path / "repo"
+    repo = center / "repo"
     _init_repo(repo)
     backend = SqliteCachedBackend(base_path, repo_root=repo)
     layout = YamlRepoLayout(repo)
@@ -233,9 +250,9 @@ def test_save_branch_commit_failure_restores_prior_file(
 
 
 def test_save_goal_commit_failure_rolls_back_yaml(
-    base_path, tmp_path, monkeypatch,
+    base_path, center, monkeypatch,
 ):
-    repo = tmp_path / "repo"
+    repo = center / "repo"
     _init_repo(repo)
     backend = SqliteCachedBackend(base_path, repo_root=repo)
     layout = YamlRepoLayout(repo)
@@ -270,7 +287,7 @@ def test_save_goal_commit_failure_rolls_back_yaml(
 
 
 def test_save_gate_claim_commit_failure_rolls_back(
-    base_path, tmp_path, monkeypatch,
+    base_path, center, monkeypatch,
 ):
     from tinyassets.daemon_server import save_branch_definition, save_goal
 
@@ -289,7 +306,7 @@ def test_save_gate_claim_commit_failure_rolls_back(
         "gate_ladder": [{"key": "peer_reviewed", "label": "Peer reviewed"}],
     })
 
-    repo = tmp_path / "repo"
+    repo = center / "repo"
     _init_repo(repo)
     backend = SqliteCachedBackend(base_path, repo_root=repo)
     layout = YamlRepoLayout(repo)
@@ -331,7 +348,7 @@ def test_save_gate_claim_commit_failure_rolls_back(
 
 
 def test_retract_gate_claim_commit_failure_rolls_back(
-    base_path, tmp_path, monkeypatch,
+    base_path, center, monkeypatch,
 ):
     from tinyassets.daemon_server import save_branch_definition, save_goal
 
@@ -349,7 +366,7 @@ def test_retract_gate_claim_commit_failure_rolls_back(
         "gate_ladder": [{"key": "peer_reviewed", "label": "Peer reviewed"}],
     })
 
-    repo = tmp_path / "repo"
+    repo = center / "repo"
     _init_repo(repo)
     backend = SqliteCachedBackend(base_path, repo_root=repo)
     layout = YamlRepoLayout(repo)
@@ -398,9 +415,9 @@ def test_retract_gate_claim_commit_failure_rolls_back(
 
 
 def test_list_unreconciled_writes_returns_most_recent_first(
-    base_path, tmp_path, monkeypatch,
+    base_path, center, monkeypatch,
 ):
-    repo = tmp_path / "repo"
+    repo = center / "repo"
     _init_repo(repo)
     backend = SqliteCachedBackend(base_path, repo_root=repo)
 

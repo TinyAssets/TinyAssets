@@ -30,6 +30,9 @@ ABSENT = 4
 UNREADABLE = 3
 MAX_BACKUP_AGE_S = 3600
 _CENTER = re.compile(r"[A-Za-z0-9_-]{1,128}")
+_CREDENTIAL_ENTRIES = (".credential-vault.json", ".credentials", ".credentials.json",
+                       ".oauth-refresh")
+_EPHEMERAL_ENTRIES = (".runtime",)
 
 
 @dataclass(frozen=True)
@@ -162,17 +165,25 @@ def layout_census(data: Path) -> dict:
 
 
 def check(data: Path) -> int:
-    """Print a census, then 0 (owner-box), 10 (stable owner-split), 4 (no marker) or 3."""
+    """Print a census; 10 also covers legacy Activities in an owner box."""
     census = layout_census(data)
-    print(json.dumps(census, sort_keys=True))
     layout = census["box_layout"]
     state = census["marker_state"]
+    activity_pending = []
+    if layout == "owner-box" and state == "stable":
+        from tinyassets.activity_shape_migration import _pending
+
+        if _marker(data).get("activity_shape") != "v1":
+            activity_pending = _pending(data)
+            census["pending"] = bool(activity_pending)
+    census["activity_shape_pending"] = activity_pending
+    print(json.dumps(census, sort_keys=True))
     if layout == "absent":
         return ABSENT
     if state != "stable" or layout not in ("owner-split", "owner-box"):
         return UNREADABLE
     if layout == "owner-box":
-        return 0
+        return PENDING if activity_pending else 0
     return PENDING
 
 
@@ -264,6 +275,28 @@ def _owner_plan(data: Path) -> list[OwnerMove]:
     return plan
 
 
+def _boxed_activity_roots(data: Path, store: Path) -> dict[str, Path]:
+    """Resolve legacy activity centers through C6's committed box records."""
+    from tinyassets.activity_shape_migration import _centers, _pending
+
+    identity_db = data / ".broker" / "state" / "owner-identities.db"
+    with sqlite3.connect(f"{identity_db.resolve().as_uri()}?mode=ro", uri=True) as db:
+        records = dict(db.execute("SELECT principal, machine FROM box_records"))
+    centers = _centers(data)
+    roots = {}
+    for center in _pending(data):
+        if not _CENTER.fullmatch(center) or center not in centers:
+            raise RuntimeError(f"activity center has no admitted owner: {center}")
+        uid = records.get(centers[center])
+        if type(uid) is not int or not OWNER_ID_FIRST <= uid <= OWNER_ID_LAST:
+            raise RuntimeError(f"activity owner has no box: {center}")
+        root = store / str(uid) / center
+        if root.is_symlink() or not root.is_dir():
+            raise RuntimeError(f"activity owner box is absent: {center}")
+        roots[center] = root
+    return roots
+
+
 def _mounted(store: Path) -> None:
     result = subprocess.run(
         ["findmnt", "--mountpoint", str(store), "-no", "FSTYPE,OPTIONS"],
@@ -331,11 +364,13 @@ def _atomic_json(path: Path, value: dict) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _copy(source: Path, target: Path, uid: int) -> None:
+def _copy(source: Path, target: Path, uid: int, *, extra_excludes=()) -> None:
     command = [
         "rsync", "-aH", "--xattrs", "--one-file-system", "--numeric-ids",
         "--chown", f"{uid}:{uid}", f"{source}/", f"{target}/",
     ]
+    command[-2:-2] = [f"--exclude=/{name}" for name in
+                      (*_CREDENTIAL_ENTRIES, *_EPHEMERAL_ENTRIES, *extra_excludes)]
     subprocess.run(command, check=True)
     result = subprocess.run(
         [*command[:-2], "--checksum", "--dry-run", "--itemize-changes", *command[-2:]],
@@ -343,6 +378,38 @@ def _copy(source: Path, target: Path, uid: int) -> None:
     )
     if result.stdout.strip():
         raise RuntimeError(f"rsync checksum differs for {source}")
+
+
+def _copy_credentials(source: Path, target: Path) -> None:
+    """Copy only recognized credential artifacts into platform custody."""
+    from tinyassets.boxes.layout import BROKER_READ_GID
+
+    for name in _CREDENTIAL_ENTRIES:
+        entry = source / name
+        if not entry.exists() and not entry.is_symlink():
+            continue
+        for directory, dirs, files in os.walk(entry, followlinks=False):
+            for child in (Path(directory), *(Path(directory) / item for item in dirs + files)):
+                info = child.lstat()
+                if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+                    raise RuntimeError(f"non-regular credential source: {child}")
+        info = entry.lstat()
+        if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+            raise RuntimeError(f"non-regular credential source: {entry}")
+    target.mkdir(mode=0o710)
+    os.chown(target, 1001, BROKER_READ_GID)
+    filters = [f"--include=/{name}" for name in _CREDENTIAL_ENTRIES]
+    filters += [f"--include=/{name}/***" for name in _CREDENTIAL_ENTRIES]
+    command = ["rsync", "-aH", "--xattrs", "--one-file-system", "--numeric-ids",
+               "--chown", f"1001:{BROKER_READ_GID}", "--chmod=D710,F640",
+               *filters, "--exclude=*", f"{source}/", f"{target}/"]
+    subprocess.run(command, check=True)
+    result = subprocess.run(
+        [*command[:-2], "--checksum", "--dry-run", "--itemize-changes", *command[-2:]],
+        check=True, capture_output=True, text=True,
+    )
+    if result.stdout.strip():
+        raise RuntimeError(f"credential checksum differs for {source}")
 
 
 def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
@@ -356,17 +423,48 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
     try:
         fcntl.flock(lock, fcntl.LOCK_EX)
         marker = _marker(data)
+        from tinyassets.activity_shape_migration import _pending, convert
+
+        if marker.get("box_layout") == "owner-box":
+            if marker.get("activity_shape") == "v1" or not _pending(data):
+                raise RuntimeError("owner-box has no pending activity conversion")
+            roots = _boxed_activity_roots(data, store)
+            _atomic_json(storage_layout.marker_path(data), {
+                **marker, "state": "migrating", "migration": "owner-box",
+            })
+            convert(data, roots)
+            _atomic_json(storage_layout.marker_path(data), {
+                **marker, "state": "stable", "activity_shape": "v1",
+            })
+            return
         if marker.get("box_layout", "owner-split") != "owner-split":
             raise RuntimeError("one-shot box migration requires owner-split")
         plan = _owner_plan(data)
+        pending_activities = _pending(data)
+        admitted_centers = {center for owner in plan for center in owner.centers}
+        if set(pending_activities) - admitted_centers:
+            raise RuntimeError("activity center has no admitted owner")
         _owner_inode_preflight(data, plan)
         if any(entry.name != "lost+found" for entry in store.iterdir()):
             raise RuntimeError("box store must be empty before the one-shot move")
+        custody_root = data / ".platform" / "credential-vaults"
+        if custody_root.exists() or custody_root.is_symlink():
+            raise RuntimeError("private credential custody already exists")
         # This is the point of no automatic restart. A failed copy remains
         # visibly migrating until the paired snapshot is restored by an operator.
         _atomic_json(storage_layout.marker_path(data), {
             **marker, "state": "migrating", "migration": "owner-box",
         })
+        if pending_activities:
+            convert(data, {center: data / center for center in pending_activities})
+        from tinyassets.boxes.layout import BROKER_READ_GID
+
+        custody_root.parent.mkdir(mode=0o711, exist_ok=True)
+        if custody_root.parent.is_symlink() or not custody_root.parent.is_dir():
+            raise RuntimeError("platform credential parent is invalid")
+        os.chown(custody_root.parent, 1001, 1001)
+        custody_root.mkdir(mode=0o710)
+        os.chown(custody_root, 1001, BROKER_READ_GID)
         for owner in plan:
             tree = store / str(owner.uid)
             tree.mkdir(mode=0o700)
@@ -381,6 +479,7 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
                 check=True,
             )
             for center in owner.centers:
+                _copy_credentials(data / center, custody_root / center)
                 destination = tree / center
                 destination.mkdir(mode=0o700)
                 os.chown(destination, owner.uid, owner.uid)
@@ -392,7 +491,19 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
                 destination = tree / ".agent-home"
                 destination.mkdir(mode=0o700)
                 os.chown(destination, owner.uid, owner.uid)
-                _copy(agent_home, destination, owner.uid)
+                # Packages write authentication into a one-run tmpfs now, but
+                # an interrupted old cell may have left its named auth file
+                # in the persistent home. Derive exclusions from every shipped
+                # package manifest rather than trusting a fixed filename list.
+                from tinyassets.external_agents.registry import PACKAGES
+
+                auth_paths = tuple(
+                    f"{package.row['auth']['home_dir']}/{name}"
+                    for package in PACKAGES.values()
+                    for name in package.row["auth"]["files"]
+                )
+                _copy(agent_home, destination, owner.uid,
+                      extra_excludes=auth_paths)
         broker_state = data / ".broker" / "state"
         with sqlite3.connect(broker_state / "owner-identities.db") as db:
             db.execute("PRAGMA synchronous=FULL")
@@ -413,6 +524,7 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
         os.chmod(journal / "boxhost.db", 0o600)
         _atomic_json(storage_layout.marker_path(data), {
             **marker, "box_layout": "owner-box", "state": "stable",
+            "activity_shape": "v1",
         })
     finally:
         os.close(lock)

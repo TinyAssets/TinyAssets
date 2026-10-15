@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,6 +10,46 @@ from tinyassets import agent_activities as activities
 
 LIVE = "live"
 ENDED = "ended"
+
+
+def activity_instructions(universe_dir: Path, activity: dict) -> tuple[str, dict | None]:
+    """Read the migrated owner-authored prompt through the admitted box."""
+    from tinyassets.control_plane.binding import file_binding
+    from tinyassets.graph_compiler import _render_template
+    from tinyassets.universe_files import MAX_UNIVERSE_FILE_BYTES, read_universe_text
+
+    names = ("Activities.md", "Activities.tools.json", "Activities.error.txt")
+    binding = file_binding(universe_dir)
+    if binding is None:
+        def read(name):
+            try:
+                return read_universe_text(universe_dir, name)
+            except FileNotFoundError:
+                return None
+    else:
+        snapshot = binding.provider.read_many(
+            binding.handle, names, max_total=MAX_UNIVERSE_FILE_BYTES + 4096)
+        binding.check_read(snapshot.generation)
+        if (set(snapshot.files) | set(snapshot.missing) != set(names)
+                or set(snapshot.files) & set(snapshot.missing)):
+            raise PermissionError("incomplete activity instruction snapshot")
+
+        def read(name):
+            raw = snapshot.files.get(name)
+            return raw.decode("utf-8") if raw is not None else None
+
+    error = read(names[2])
+    if error:
+        raise PermissionError(error)
+    template = read(names[0])
+    if template is None:
+        return (f"Work on this activity until it is done.\n\n{activity['title']}\n\n"
+                f"{activity['brief']}\n\n"
+                "Finish with a short result summary and file locations.", None)
+    tools = read(names[1])
+    node = {"tools_allowed": json.loads(tools)} if tools is not None else None
+    return _render_template(template, {"title": activity["title"],
+                                       "brief": activity["brief"]}), node
 
 class ActivityYielded(Exception):
     """This exact run yielded to its owner's request; no provider retry is due."""
@@ -69,16 +110,23 @@ def owner_unavailable(base_path: Path, universe_id: str, owner_principal: str) -
 def _check_agent(universe_dir: Path, record: dict) -> None:
     if record.get("agent_id", "main") == "main":
         return
-    from tinyassets.addressed_agents import AgentNotAddressable, resolve
+    from tinyassets.control_plane.binding import current_binding
     from tinyassets.runs import RunCancelledError
 
+    if record.get("outcome") == "agent retired":
+        raise RunCancelledError("agent retired")
+
+    # The first run fence precedes session.start's box admission. That call
+    # resolves the named agent through the admitted box; do not read an owner
+    # path on the host merely to precheck retirement.
+    if current_binding() is None:
+        return
+    from tinyassets.addressed_agents import AgentNotAddressable, resolve
     try:
         resolve(universe_dir.parent, universe_id=universe_dir.name,
                 owner=record["owner_principal"], agent_id=record["agent_id"])
     except AgentNotAddressable:
         raise RunCancelledError("agent retired") from None
-    if record.get("outcome") == "agent retired":
-        raise RunCancelledError("agent retired")
 
 
 def start(base_path: Path, universe_id: str, record: dict, generation: int) -> str:

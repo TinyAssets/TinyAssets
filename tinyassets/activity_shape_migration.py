@@ -1,4 +1,4 @@
-"""One-shot Activities cutover under deploy_fail_safe's stopped/snapshot gate.
+"""Activities conversion inside the owner-box layout migration.
 
 The original definitions and immutable versions stay in their SQL stores. A
 per-center failure is recorded on its activities and cannot hide another
@@ -6,22 +6,17 @@ owner's work. The marker is written only after every center was visited.
 """
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import sqlite3
-import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
 
 from tinyassets import agent_activities as activities
-from tinyassets import runs, storage_layout
-from tinyassets.box_layout_migration import _atomic_json, _marker, _verified_archive
+from tinyassets import runs
 from tinyassets.storage import DB_FILENAME
 
-PENDING = 10
-MARKER = ".activity-shape-v1.json"
 REASON = "Legacy Activities work could not be carried into the new agent session"
 DEFAULT_PROMPT = (
     "You are working on one of your activities in the background; your owner "
@@ -51,34 +46,25 @@ def _centers(data: Path) -> dict[str, str]:
 
 
 def _pending(data: Path) -> list[str]:
-    if (data / MARKER).is_file():
-        marker = json.loads((data / MARKER).read_text(encoding="utf-8"))
-        if not isinstance(marker, dict):
-            raise RuntimeError("invalid activity conversion marker")
-        return []
     branch_centers = set()
     if (data / DB_FILENAME).is_file():
         with _db(data / DB_FILENAME) as db:
-            branch_centers = {row[0].removeprefix("activities::") for row in db.execute(
-                "SELECT branch_def_id FROM branch_definitions "
-                "WHERE branch_def_id LIKE 'activities::%'")}
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='branch_definitions'").fetchone():
+                branch_centers = {row[0].removeprefix("activities::") for row in db.execute(
+                    "SELECT branch_def_id FROM branch_definitions "
+                    "WHERE branch_def_id LIKE 'activities::%'")}
     activity_centers = {p.parent.name for p in (data / ".agent-sessions").glob(
         "*/agent-activities.db")}
     run_centers = set()
     if (data / ".runs.db").is_file():
         with _db(data / ".runs.db") as db:
-            run_centers = {row[0].removeprefix("activities::") for row in db.execute(
-                "SELECT DISTINCT branch_def_id FROM runs "
-                "WHERE branch_def_id LIKE 'activities::%' "
-                "AND status IN ('queued','running','resumed')")}
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='runs'").fetchone():
+                run_centers = {row[0].removeprefix("activities::") for row in db.execute(
+                    "SELECT DISTINCT branch_def_id FROM runs "
+                    "WHERE branch_def_id LIKE 'activities::%' "
+                    "AND status IN ('queued','running','resumed')")}
     pending = sorted(branch_centers | activity_centers | run_centers)
     return pending
-
-
-def check(data: Path) -> int:
-    pending = _pending(data)
-    print(json.dumps({"activity_shape_pending": pending}))
-    return PENDING if pending else 0
 
 
 def _write_owner_file(center: Path, name: str, text: str) -> None:
@@ -211,18 +197,17 @@ def _settle_center(data: Path, center: str, owner: str, reason: str) -> dict:
     return {"converted": converted, "failed": failed, "legacy_runs_ended": len(old_runs)}
 
 
-def _apply(data: Path) -> dict:
-    if (data / MARKER).exists():
-        return json.loads((data / MARKER).read_text(encoding="utf-8"))
+def convert(data: Path, owner_roots: dict[str, Path]) -> dict:
+    """Convert under the box migration's stopped-writer and paired-backup gate."""
     report = {}
     unsafe = []
     centers = _centers(data)
     for center in _pending(data):
         owner = centers.get(center, "")
-        root = data / center
+        root = owner_roots.get(center)
         try:
-            if not root.is_dir() or root.is_symlink():
-                raise RuntimeError("owner center is not a real directory")
+            if root is None or not root.is_dir() or root.is_symlink():
+                raise RuntimeError("admitted owner box is absent")
             prompt, tools, reason = _definition(data, center, owner)
             if prompt is not None:
                 _write_owner_file(root, "Activities.md", prompt)
@@ -234,69 +219,13 @@ def _apply(data: Path) -> dict:
         except Exception as exc:
             reason = f"Activities conversion refused: {exc}"
             try:
-                if not (root / "Activities.error.txt").is_file():
+                if root is not None and not (root / "Activities.error.txt").is_file():
                     _write_owner_file(root, "Activities.error.txt", reason)
-                with _db(data / ".runs.db") as db:
-                    outstanding = [row[0] for row in db.execute(
-                        "SELECT run_id FROM runs WHERE branch_def_id=? "
-                        "AND status IN ('queued','running','resumed')",
-                        (f"activities::{center}",))]
-                for run_id in outstanding:
-                    runs.update_run_status(data, run_id, status="failed", error=reason,
-                                           finished_at=time.time())
+                report[center] = _settle_center(data, center, owner, reason)
             except Exception as fence_error:
                 unsafe.append(f"{center}: {fence_error}")
-            report[center] = {"error": reason}
+            report.setdefault(center, {"error": reason})
     if unsafe:
         raise RuntimeError("activity conversion could not fence: " + "; ".join(unsafe))
-    temporary = data / f"{MARKER}.{os.getpid()}.tmp"
-    temporary.write_text(json.dumps(report, sort_keys=True), encoding="utf-8")
-    os.replace(temporary, data / MARKER)
     print(json.dumps(report, sort_keys=True))
     return report
-
-
-def apply(data: Path, backup: Path) -> dict:
-    """Run only behind the deploy's stopped-writer and verified backup gate."""
-    _verified_archive(backup)
-    lock = storage_layout._open_lock(data)
-    try:
-        storage_layout._lock(lock, exclusive=True, blocking=False)
-        marker = (_marker(data) if storage_layout.marker_path(data).is_file() else {
-            "layout": storage_layout.LAYOUT, "state": storage_layout.STABLE,
-        })
-        if (data / MARKER).is_file():
-            return json.loads((data / MARKER).read_text(encoding="utf-8"))
-        _atomic_json(storage_layout.marker_path(data), {
-            **marker, "state": "migrating", "migration": "activity-shape",
-        })
-        result = _apply(data)
-        stable = {**marker, "state": "stable"}
-        stable.pop("migration", None)
-        _atomic_json(storage_layout.marker_path(data), stable)
-        return result
-    finally:
-        storage_layout._unlock(lock)
-        os.close(lock)
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("check", "apply"))
-    parser.add_argument("data", type=Path)
-    parser.add_argument("--backup", type=Path)
-    args = parser.parse_args()
-    try:
-        if args.mode == "check":
-            return check(args.data)
-        if args.backup is None:
-            parser.error("apply requires the verified deploy snapshot")
-        apply(args.data, args.backup)
-        return 0
-    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
-        print(f"Activities conversion refused: {exc}", file=sys.stderr)
-        return 3
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

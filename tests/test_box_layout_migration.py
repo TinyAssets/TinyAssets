@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
 import subprocess
 from pathlib import Path
 
@@ -78,7 +79,7 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
     )
     monkeypatch.setattr(
         migration.subprocess, "run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0),
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
     )
 
     def copy(source, target, uid):
@@ -248,6 +249,15 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
     monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
     monkeypatch.setattr(migration, "_mounted", lambda *args: None)
     monkeypatch.setattr(migration.subprocess, "run", run)
+    from tinyassets import activity_shape_migration as activity_shape
+
+    monkeypatch.setattr(activity_shape, "_pending", lambda _: ["home"])
+
+    def convert_before_copy(_data, roots):
+        assert roots == {"home": data / "home"}
+        (roots["home"] / "Activities.md").write_text("Owner activity instructions")
+
+    monkeypatch.setattr(activity_shape, "convert", convert_before_copy)
     data_backup = tmp_path / "tinyassets-snapshot-2026-10-15T00-00-00Z.tar.gz"
     box_backup = tmp_path / "tinyassets-box-store-2026-10-15T00-00-00Z.tar.gz"
     _archive(data_backup, b"data snapshot")
@@ -256,10 +266,13 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
     migration.apply(data, store, data_backup, box_backup)
 
     assert (store / "300001" / "home" / "note.txt").read_text() == "owner sentence"
+    assert (store / "300001" / "home" / "Activities.md").read_text() == (
+        "Owner activity instructions")
     assert (data / "home" / "note.txt").read_text() == "owner sentence"
     marker = json.loads((data / ".layout.json").read_text())
     assert marker["box_layout"] == "owner-box"
     assert marker["state"] == "stable"
+    assert marker["activity_shape"] == "v1"
     moved = migration.layout_census(data)
     assert moved["box_layout"] == "owner-box"
     assert moved["pending"] is False
@@ -285,3 +298,96 @@ def test_xfs_mount_accepts_real_prjquota_output(monkeypatch, tmp_path):
     monkeypatch.setattr(migration.subprocess, "run", discard)
     with pytest.raises(RuntimeError, match="no discard"):
         migration._mounted(tmp_path)
+
+
+@pytest.mark.skipif(
+    shutil.which("rsync") is None,
+    reason="real migration copy needs rsync; owner=c6-owner-box runs-in=linux-ci",
+)
+def test_guest_copy_omits_persistent_credential_sources(tmp_path):
+    source, guest = tmp_path / "center", tmp_path / "guest"
+    source.mkdir()
+    guest.mkdir()
+    (source / "note.txt").write_text("owner content")
+    (source / ".credential-vault.json").write_text("long-lived-token")
+    (source / ".credentials" / "codex").mkdir(parents=True)
+    (source / ".credentials" / "codex" / "auth.json").write_text("refresh-token")
+    (source / ".credentials.json").write_text("other-token")
+    (source / ".oauth-refresh").write_text("refresh-token")
+    (source / ".runtime" / "provider-launch-credentials").mkdir(parents=True)
+    (source / ".runtime" / "provider-launch-credentials" / "auth.json").write_text(
+        "ephemeral-token")
+
+    migration._copy(source, guest, os.getuid())
+
+    assert (guest / "note.txt").read_text() == "owner content"
+    assert all(not (guest / name).exists() for name in migration._CREDENTIAL_ENTRIES)
+    assert not (guest / ".runtime").exists()
+
+
+@pytest.mark.skipif(
+    shutil.which("rsync") is None,
+    reason="real migration copy needs rsync; owner=c6-owner-box runs-in=linux-ci",
+)
+def test_guest_agent_home_omits_package_auth_files(tmp_path):
+    from tinyassets.external_agents.registry import PACKAGES
+
+    source, guest = tmp_path / "agent-home", tmp_path / "guest"
+    (source / "codex").mkdir(parents=True)
+    guest.mkdir()
+    (source / "codex" / "auth.json").write_text("old refresh token")
+    (source / "codex" / "sessions.json").write_text("session state")
+    paths = tuple(f"{package.row['auth']['home_dir']}/{name}"
+                  for package in PACKAGES.values()
+                  for name in package.row["auth"]["files"])
+
+    migration._copy(source, guest, os.getuid(), extra_excludes=paths)
+
+    assert not (guest / "codex" / "auth.json").exists()
+    assert (guest / "codex" / "sessions.json").read_text() == "session state"
+
+
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() != 0
+                    or shutil.which("rsync") is None,
+                    reason="private ownership proof requires Linux root and rsync")
+def test_real_copy_places_vault_only_in_platform_custody(tmp_path):
+    source, guest, private = (tmp_path / name for name in ("center", "guest", "private"))
+    source.mkdir()
+    guest.mkdir()
+    (source / ".credential-vault.json").write_text("long-lived-refresh-token")
+    (source / ".credentials" / "codex").mkdir(parents=True)
+    (source / ".credentials" / "codex" / "auth.json").write_text("old-token")
+    (source / "note.txt").write_text("owner content")
+
+    migration._copy_credentials(source, private)
+    migration._copy(source, guest, 300001)
+
+    assert (private / ".credential-vault.json").read_text() == "long-lived-refresh-token"
+    assert (private / ".credentials" / "codex" / "auth.json").read_text() == "old-token"
+    assert stat.S_IMODE(private.stat().st_mode) == 0o710
+    assert stat.S_IMODE((private / ".credential-vault.json").stat().st_mode) == 0o640
+    assert not (guest / ".credential-vault.json").exists()
+    assert not (guest / ".credentials").exists()
+    assert (guest / "note.txt").read_text() == "owner content"
+
+
+def test_private_copy_selects_only_credential_sources(tmp_path, monkeypatch):
+    source, private = tmp_path / "center", tmp_path / "private"
+    source.mkdir()
+    (source / "note.txt").write_text("owner content")
+    (source / ".credential-vault.json").write_text("token")
+    commands = []
+
+    def run(argv, **kwargs):
+        commands.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(migration.subprocess, "run", run)
+    monkeypatch.setattr(migration.os, "chown", lambda *args: None)
+    migration._copy_credentials(source, private)
+
+    assert len(commands) == 2
+    assert "--exclude=*" in commands[0]
+    assert "--include=/.credential-vault.json" in commands[0]
+    assert "--include=/.credentials/***" in commands[0]
+    assert all("note.txt" not in word for word in commands[0])

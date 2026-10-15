@@ -131,9 +131,11 @@ def _exec(db: Path, sql: str, params: tuple = ()) -> None:
 
 
 @pytest.fixture
-def two_users(tmp_path: Path) -> Path:
+def two_users(tmp_path: Path, monkeypatch) -> Path:
     base = tmp_path / "data"
     base.mkdir()
+    # Production deletes on the one data root; the owner box binds there.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     _seed_user(base, A, HOME_A)
     _seed_user(base, B, HOME_B)
     _seed_outbound(base)
@@ -1308,35 +1310,33 @@ def test_failed_two_pass_owner_tree_keeps_the_binding_and_retry_resumes(
     A failed pass must keep the home binding (pass one's admission needs it)
     and never fall through to the daemon's single-UID staging of that home.
     """
-    from tinyassets import role_owner_tree_deletion
-
     calls = []
+    real_destroy = account_deletion._destroy_owner_box
 
     def failing(root, center, *, principal):
         calls.append((center, principal))
-        raise role_owner_tree_deletion.OwnerTreeDeletionRefused("injected pass failure")
+        raise account_deletion.AccountDeletionError("injected box destruction failure")
 
     identities = []
     with monkeypatch.context() as patch:
-        patch.setattr(role_owner_tree_deletion, "delete_center", failing)
+        patch.setattr(account_deletion, "_destroy_owner_box", failing)
         receipt = delete_account(two_users, founder_sub=A, cancel_billing=lambda _: "none",
                                  delete_identity=lambda p: identities.append(p) or "deleted")
     assert calls == [(HOME_A, A)]
     assert {"owner_tree", "root_rows", "identity"} <= set(receipt["unfinished_phases"])
     # Only this principal's own sign-in can resume pass one, so it survives.
     assert identities == [] and receipt["identity"] == "deferred:owner_tree"
-    assert receipt["home_deletion_pending"] is False  # the stub wrote no intent
+    assert receipt["home_deletion_pending"] is True  # the box still holds the tree
     assert not receipt["home_removed"] and receipt["home_staged_path"] == ""
     assert (two_users / HOME_A).is_dir() and not (two_users / ".deleting").exists()
     assert get_founder_home(two_users, A) == HOME_A
 
-    def two_pass(root, center, *, principal):
+    def destroyed(root, center, *, principal):
         calls.append((center, principal))
-        account_deletion._rmtree(Path(root) / center)  # stands in for both passes
-        return {"center": center, "fence": "released"}
+        return real_destroy(root, center, principal=principal)
 
     with monkeypatch.context() as patch:
-        patch.setattr(role_owner_tree_deletion, "delete_center", two_pass)
+        patch.setattr(account_deletion, "_destroy_owner_box", destroyed)
         retry = delete_account(two_users, founder_sub=A, cancel_billing=lambda _: "none",
                                delete_identity=lambda _: "deleted")
     assert calls[-1] == (HOME_A, A)

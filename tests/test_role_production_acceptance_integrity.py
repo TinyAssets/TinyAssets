@@ -31,17 +31,18 @@ def substitutions(source):
     return failures
 
 
-def test_production_copy_never_substitutes_broker_cell_launcher_or_relay():
+def test_production_copy_never_substitutes_broker_box_host_or_relay():
+    """The owner-box acceptance probe (G2/G5) drives the real provider, host
+    service and relay on a production copy; it replaces nothing."""
     root = Path(__file__).resolve().parents[1] / 'scripts'
-    for name in ('role_image_oracle.py', 'role_chat_probe.py', 'role_run_probe.py',
-                 'role_http_fixture.py'):
-        assert not substitutions((root / name).read_text(encoding='utf-8')), name
+    assert not substitutions((root / 'box_acceptance.py').read_text(encoding='utf-8'))
 
 
 @pytest.mark.parametrize('module,seam', [
-    ('storage.outbound_connections', '_broker_channel'), ('role_tools', 'run'),
-    ('role_node', 'run'), ('role_provider_discovery', 'cell_config'),
-    ('universe_egress', '_checked_addresses'), ('role_decoder', '_bounded_client'),
+    ('storage.outbound_connections', '_broker_channel'),
+    ('boxes.production_files', 'ProductionFileProvider'),
+    ('boxes.bootstrap', 'channel_factory'),
+    ('broker.public_egress', 'PublicEgress'),
 ])
 def test_guard_catches_execution_substitutions(module, seam):
     source = f'import tinyassets.{module} as boundary\nboundary.{seam} = replacement\n'

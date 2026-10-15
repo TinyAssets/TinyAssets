@@ -201,22 +201,28 @@ def test_claude_launches_of_different_sessions_never_share_a_config(tmp_path, mo
                                                       secret="s"))
     monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path / "data")
 
-    snapshot = tmp_path / "snapshot"
-    snapshot.mkdir()
+    from tinyassets.providers.owned_process import launch_scope
+
     monkeypatch.setattr("tinyassets.credential_vault._write_exclusive_snapshot_file",
                         lambda path, data: path.write_bytes(data))
 
-    def launch(key):
+    def launch(key, name):
+        # Each launch has its own one-run lease: its snapshot on the host and
+        # the job directory it lands under in the owner's box.
+        snapshot = tmp_path / f"snapshot-{name}"
+        snapshot.mkdir()
         config = SimpleNamespace(engine_mcp_actor_id="owner-1", engine_mcp_graph_id="u-alpha",
                                  agent_session=SimpleNamespace(key=key), selected_model=None,
                                  credential_snapshot_dir=snapshot)
-        flags = claude_provider._engine_mcp_flags(config, universe)
-        return flags[flags.index("--mcp-config") + 1]
+        with launch_scope(universe, owner="owner-1", service="claude",
+                          credential_dir=snapshot, operation_id=f"launch:{name}"):
+            flags = claude_provider._engine_mcp_flags(config, universe)
+        return flags[flags.index("--mcp-config") + 1], snapshot / "engine-mcp.json"
 
-    owner, node = launch(THREAD), launch(NODE)
+    (owner, owner_file), (node, node_file) = launch(THREAD, "owner"), launch(NODE, "node")
     assert owner != node
-    assert "session=node" in Path(node).read_text(encoding="utf-8")
-    assert "session=thread" in Path(owner).read_text(encoding="utf-8")
+    assert "session=node" in node_file.read_text(encoding="utf-8")
+    assert "session=thread" in owner_file.read_text(encoding="utf-8")
 
 
 # -- the engine delivers on the next tool result of that session and turn ------

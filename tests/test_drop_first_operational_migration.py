@@ -118,8 +118,10 @@ def test_restore_bundle_path_restores_before_converging():
 
 
 def test_healthcheck_uses_the_wrapper_and_no_shell_fallback():
+    """The unprivileged daemon probes itself with the canary, no wrapper, no shell."""
     text = COMPOSE.read_text(encoding="utf-8")
-    assert 'test: ["CMD", "/usr/local/libexec/ta-op", "pulse"]' in text
+    assert "/app/scripts/mcp_public_canary.py" in text
+    assert "ta-op" not in text
     assert "CMD-SHELL" not in text.split("healthcheck:", 1)[1].split("labels:", 1)[0], (
         "a shell fallback in the probe would silently undo the migration"
     )

@@ -15,12 +15,13 @@ HAS_PRICED_SOURCE = "HAS_PRICED_SOURCE"
 GRANTED_RESOURCE = "GRANTED_RESOURCE"
 AUTHORIZED_CONNECTION = "AUTHORIZED_CONNECTION"
 CONNECTION_GRANTS = "CONNECTION_GRANTS"
+GIT_GRANTS = "GIT_GRANTS"
 BOOTSTRAP_RECOVERY = "BOOTSTRAP_RECOVERY"
 OWNER_CONNECTION_VIEW = "OWNER_CONNECTION_VIEW"
 OWNER_CONNECTION_NAMES = "OWNER_CONNECTION_NAMES"
 HAS_MODEL_SOURCE = "HAS_MODEL_SOURCE"
 QUERIES = frozenset({DISCOVERY_FACTS, HAS_PRICED_SOURCE, GRANTED_RESOURCE,
-                     AUTHORIZED_CONNECTION, CONNECTION_GRANTS, BOOTSTRAP_RECOVERY,
+                     AUTHORIZED_CONNECTION, CONNECTION_GRANTS, GIT_GRANTS, BOOTSTRAP_RECOVERY,
                      OWNER_CONNECTION_VIEW, OWNER_CONNECTION_NAMES, HAS_MODEL_SOURCE})
 
 
@@ -84,6 +85,26 @@ def local_query(ledger, *, query: str, principal: str, command_center: str,
                 (principal, principal, command_center, connection_id),
             ).fetchall()
             return {"grant_ids": [row[0] for row in rows]}
+        if query == GIT_GRANTS:
+            from tinyassets.storage.workspace_authority import parse_git_scope
+
+            rows = conn.execute(
+                "SELECT g.grant_id, c.connection_id, c.scopes_json "
+                "FROM outbound_connection_grants g JOIN outbound_connections c "
+                "ON c.connection_id=g.connection_id "
+                "WHERE g.owner_user_id=? AND c.owner_user_id=? AND g.universe_id=? "
+                "AND g.revoked_at IS NULL AND c.revoked_at IS NULL "
+                "ORDER BY g.grant_id LIMIT 1001",
+                (principal, principal, command_center),
+            ).fetchall()
+            if len(rows) > 1000:
+                raise ValueError("too many command center grants")
+            selected = [(row["grant_id"], row["connection_id"])
+                        for row in rows if any(parse_git_scope(scope) is not None
+                                               for scope in json.loads(row["scopes_json"]))]
+            if len(selected) > 32:
+                raise ValueError("too many selected git grants")
+            return {"selected": selected}
         if query == HAS_PRICED_SOURCE:
             # Connect asks run before a first deposit/grant. An actually absent
             # pair has no priced source; an existing, revoked or foreign row
@@ -229,3 +250,29 @@ def authorized_connection(data_root: Path, *, principal: str, command_center: st
         return grant, resource, row["incarnation"]
     except (LookupError, TypeError, ValueError):
         raise ProxyRequestError("invalid credential broker authority projection") from None
+
+
+def selected_git_connections(data_root: Path, *, principal: str, command_center: str):
+    """Owner-granted git scopes for one center, rechecked at each CLI launch."""
+    from tinyassets.storage.outbound_connections import ProxyRequestError
+    from tinyassets.storage.workspace_authority import connection_git_host, parse_git_scope
+
+    facts = query_ledger(data_root, query=GIT_GRANTS, principal=principal,
+                         command_center=command_center, grant_id="git-grants")
+    selected = facts.get("selected")
+    if not isinstance(selected, list) or len(selected) > 32:
+        raise ProxyRequestError("invalid selected git grants")
+    result = []
+    for pair in selected:
+        if (not isinstance(pair, (list, tuple)) or len(pair) != 2
+                or any(not isinstance(value, str) or not value for value in pair)):
+            raise ProxyRequestError("invalid selected git grants")
+        grant, resource, incarnation = authorized_connection(
+            data_root, principal=principal, command_center=command_center,
+            grant_id=pair[0], connection_id=pair[1],
+        )
+        if not connection_git_host(resource) or not any(
+                parse_git_scope(scope) is not None for scope in resource.scopes):
+            raise ProxyRequestError("selected git grant lost its route")
+        result.append((grant, resource.to_view(), incarnation))
+    return tuple(result)

@@ -18,8 +18,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_ta_capabilities_jail import dynamic_data_root as dynamic_data_root
-from tests.test_universe_tools_jail import world as world
+from tests.support.box_world import dynamic_data_root as dynamic_data_root
+from tests.support.box_world import world as world
 from tinyassets.agent_loop.box_ta import TurnBridge
 from tinyassets.agent_loop.box_tools import BoxExecutor, BoxTools
 from tinyassets.boxes import BoxAuthError, ExecLimits
@@ -228,7 +228,8 @@ def test_remote_box_uses_real_engine_ta_capabilities(world, tmp_path, monkeypatc
 
     from fastmcp import Client
 
-    from tests.test_ta_capabilities_jail import _engine, bash
+    from tests.support.box_world import bash
+    from tests.support.box_world import engine as _engine
     from tinyassets import engine_mcp_http as routes
     from tinyassets.agent_loop.box_ta import engine_ta
     from tinyassets.engine_tool_client import EngineToolSession
@@ -343,7 +344,7 @@ def test_real_box_lost_replies_never_repeat_effect(box, tmp_path, monkeypatch, l
 
 
 def test_remote_payload_cannot_select_foreign_authority(world, tmp_path, monkeypatch):
-    from tests.test_ta_capabilities_jail import _engine
+    from tests.support.box_world import engine as _engine
     from tinyassets.ta_capabilities import engine_dispatch
 
     server = _engine(monkeypatch, world)

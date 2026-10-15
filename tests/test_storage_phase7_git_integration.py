@@ -74,6 +74,23 @@ def base_path(tmp_path, monkeypatch):
     yield base
 
 
+@pytest.fixture
+def center(base_path):
+    """A command center under the data root, its owner's box session bound.
+
+    Owner git runs only inside an admitted owner box, so the catalog
+    repository sits in a command center and every call carries its binding.
+    """
+    from tinyassets.control_plane import binding as binding_module
+
+    cc = base_path / "cc-catalog"
+    cc.mkdir()
+    binding = binding_module.file_binding(cc)
+    assert binding is not None, "the owner box double binds a test center"
+    with binding_module.use_binding(binding):
+        yield cc
+
+
 def _make_branch() -> BranchDefinition:
     b = BranchDefinition(
         name="Git-probe branch",
@@ -96,8 +113,8 @@ def _make_branch() -> BranchDefinition:
 # ─── git-enabled: auto-wire + stage ──────────────────────────────────────
 
 
-def test_git_enabled_auto_wires_stage_hook(base_path, tmp_path):
-    repo = tmp_path / "repo"
+def test_git_enabled_auto_wires_stage_hook(base_path, center):
+    repo = center / "repo"
     _init_repo(repo)
 
     backend = SqliteCachedBackend(base_path, repo_root=repo)
@@ -120,8 +137,8 @@ def test_git_enabled_auto_wires_stage_hook(base_path, tmp_path):
     assert saved["branch_def_id"]
 
 
-def test_git_enabled_refuses_dirty_overwrite(base_path, tmp_path):
-    repo = tmp_path / "repo"
+def test_git_enabled_refuses_dirty_overwrite(base_path, center):
+    repo = center / "repo"
     _init_repo(repo)
     backend = SqliteCachedBackend(base_path, repo_root=repo)
 
@@ -144,8 +161,8 @@ def test_git_enabled_refuses_dirty_overwrite(base_path, tmp_path):
     assert branch_path in exc.value.paths
 
 
-def test_git_enabled_force_overrides_dirty_check(base_path, tmp_path):
-    repo = tmp_path / "repo"
+def test_git_enabled_force_overrides_dirty_check(base_path, center):
+    repo = center / "repo"
     _init_repo(repo)
     backend = SqliteCachedBackend(base_path, repo_root=repo)
 
@@ -168,11 +185,11 @@ def test_git_enabled_force_overrides_dirty_check(base_path, tmp_path):
 
 
 def test_dirty_check_happens_before_sqlite_write(
-    base_path, tmp_path, monkeypatch,
+    base_path, center, monkeypatch,
 ):
     """A dirty refusal must not touch SQLite — otherwise backend state
     drifts from YAML state even though the user asked to bail."""
-    repo = tmp_path / "repo"
+    repo = center / "repo"
     _init_repo(repo)
     backend = SqliteCachedBackend(base_path, repo_root=repo)
 
@@ -223,10 +240,10 @@ def test_git_disabled_skips_stage_and_dirty_check(base_path, tmp_path):
 
 
 def test_explicit_git_enabled_false_overrides_autodetect(
-    base_path, tmp_path,
+    base_path, center,
 ):
     """Caller can force git-disabled mode even inside a real repo."""
-    repo = tmp_path / "repo"
+    repo = center / "repo"
     _init_repo(repo)
     backend = SqliteCachedBackend(
         base_path, repo_root=repo, git_enabled=False,
@@ -241,10 +258,10 @@ def test_explicit_git_enabled_false_overrides_autodetect(
     assert staged == ""
 
 
-def test_explicit_stage_hook_wins_over_git(base_path, tmp_path):
+def test_explicit_stage_hook_wins_over_git(base_path, center):
     """If caller passes a stage_hook, backend uses that — git_bridge
     doesn't even get probed for the stage side."""
-    repo = tmp_path / "repo"
+    repo = center / "repo"
     _init_repo(repo)
     calls: list[Path] = []
     backend = SqliteCachedBackend(
@@ -258,8 +275,8 @@ def test_explicit_stage_hook_wins_over_git(base_path, tmp_path):
 # ─── Goal save exercises the same contract ───────────────────────────────
 
 
-def test_git_enabled_auto_wires_goal_stage(base_path, tmp_path):
-    repo = tmp_path / "repo"
+def test_git_enabled_auto_wires_goal_stage(base_path, center):
+    repo = center / "repo"
     _init_repo(repo)
     backend = SqliteCachedBackend(base_path, repo_root=repo)
     saved = backend.save_goal({
@@ -277,10 +294,10 @@ def test_git_enabled_auto_wires_goal_stage(base_path, tmp_path):
     assert saved["goal_id"]
 
 
-def test_goal_new_with_no_prior_slug_skips_dirty_check(base_path, tmp_path):
+def test_goal_new_with_no_prior_slug_skips_dirty_check(base_path, center):
     """A goal with no id and no prior YAML file can never be 'dirty' —
     don't let an empty-slug probe panic."""
-    repo = tmp_path / "repo"
+    repo = center / "repo"
     _init_repo(repo)
     backend = SqliteCachedBackend(base_path, repo_root=repo)
     saved = backend.save_goal({
@@ -310,14 +327,14 @@ def _commit_count(repo: Path) -> int:
 
 
 def test_save_branch_and_commit_single_commit_covers_branch_and_nodes(
-    base_path, tmp_path,
+    base_path, center,
 ):
     """Core G3 invariant: one MCP action = one commit, even with N nodes.
 
     Failure mode we're preventing: branch.yaml + node1.yaml + node2.yaml
     landing in separate commits, breaking ledger-equivalence.
     """
-    repo = tmp_path / "repo"
+    repo = center / "repo"
     _init_repo(repo)
     backend = SqliteCachedBackend(base_path, repo_root=repo)
 
@@ -360,9 +377,9 @@ def test_save_branch_and_commit_single_commit_covers_branch_and_nodes(
     assert author_line == AUTHOR_LINE
 
 
-def test_save_branch_and_commit_with_extra_paths(base_path, tmp_path):
+def test_save_branch_and_commit_with_extra_paths(base_path, center):
     """extra_paths must land in the same commit as the branch/nodes."""
-    repo = tmp_path / "repo"
+    repo = center / "repo"
     _init_repo(repo)
     backend = SqliteCachedBackend(base_path, repo_root=repo)
 
@@ -385,9 +402,9 @@ def test_save_branch_and_commit_with_extra_paths(base_path, tmp_path):
 
 
 def test_save_branch_and_commit_dirty_lists_all_and_skips_write(
-    base_path, tmp_path, monkeypatch,
+    base_path, center, monkeypatch,
 ):
-    repo = tmp_path / "repo"
+    repo = center / "repo"
     _init_repo(repo)
     backend = SqliteCachedBackend(base_path, repo_root=repo)
 
@@ -429,8 +446,8 @@ def test_save_branch_and_commit_dirty_lists_all_and_skips_write(
     assert sqlite_calls == []
 
 
-def test_save_branch_and_commit_force_overrides_dirty(base_path, tmp_path):
-    repo = tmp_path / "repo"
+def test_save_branch_and_commit_force_overrides_dirty(base_path, center):
+    repo = center / "repo"
     _init_repo(repo)
     backend = SqliteCachedBackend(base_path, repo_root=repo)
 
@@ -469,8 +486,8 @@ def test_save_branch_and_commit_git_disabled_returns_none(
     assert YamlRepoLayout(repo).branch_path("git-probe-branch").exists()
 
 
-def test_save_goal_and_commit_single_commit(base_path, tmp_path):
-    repo = tmp_path / "repo"
+def test_save_goal_and_commit_single_commit(base_path, center):
+    repo = center / "repo"
     _init_repo(repo)
     backend = SqliteCachedBackend(base_path, repo_root=repo)
 
