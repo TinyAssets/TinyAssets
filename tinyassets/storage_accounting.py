@@ -189,6 +189,7 @@ def _box_center_bytes(root: Path, *, scope: str, exclude_top=frozenset()) -> int
     pending = [top]
     total = 0
     entries = 0
+    linked = set()
     while pending:
         directory = pending.pop()
         cursor = None
@@ -206,6 +207,10 @@ def _box_center_bytes(root: Path, *, scope: str, exclude_top=frozenset()) -> int
                 if item.kind == 'dir':
                     pending.append(directory + '/' + item.name)
                 elif item.kind == 'file':
+                    if item.links > 1:
+                        if item.inode in linked:
+                            continue
+                        linked.add(item.inode)
                     total += max(0, item.size)
             if page.next_cursor is None:
                 break

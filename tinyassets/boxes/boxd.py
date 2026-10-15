@@ -437,7 +437,8 @@ class BoxdCore:
                 entries = []
                 for name in page:
                     info = os.stat(name, dir_fd=dfd, follow_symlinks=False)
-                    entries.append(DirEntry(name, _kind(info.st_mode), int(info.st_size)))
+                    entries.append(DirEntry(name, _kind(info.st_mode), int(info.st_size),
+                                            int(info.st_ino), int(info.st_nlink)))
             finally:
                 os.close(dfd)
         return DirPage(tuple(entries), page[-1] if rest else None)
