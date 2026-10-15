@@ -2305,7 +2305,10 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     capability is these calls on a ``tinyassets`` object, acting as whoever is
     LOOKING at it, inside their own command center:
 
-        await tinyassets.whoami()                  -> {command_center_id, command_center_name}
+        await tinyassets.whoami()                  -> {command_center_id, command_center_name,
+                  account_id}
+                  # account_id is the signed-in session. Arguments are ignored;
+                  # a screen cannot name a different account.
         await tinyassets.listAgents()              -> {agents:[{agent_id,name,selected}]}
                   # "main" first; selected = the agent the chat talks to now
         await tinyassets.openChat(agent)           -> opens the chat with that agent
