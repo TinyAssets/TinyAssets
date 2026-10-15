@@ -121,6 +121,8 @@ def _center_relative(root: Path, relpath: str) -> tuple[Path, str]:
     """
     from tinyassets.storage import data_dir
 
+    if str(relpath) in ("", "."):
+        return root, relpath  # the root itself: no component selects a center
     parts = _split(relpath)
     if (len(parts) > 1 and not parts[0].startswith(".")
             and os.path.abspath(root) == os.path.abspath(data_dir())):

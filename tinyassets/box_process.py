@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import subprocess
+import threading
 from collections.abc import Callable, Mapping, Sequence
 
 from tinyassets.boxes.provider import BoxError, BoxOperationRefused, ExecLimits
 from tinyassets.control_plane.binding import SessionBinding
+
+
+class BoxExecCancelled(BoxError):
+    """The caller's cancel predicate stopped the execution while it ran."""
 
 
 def run_bound(
@@ -16,6 +22,7 @@ def run_bound(
     cwd: str = "/cc", wall_seconds: float, output_bytes: int,
     operation_id: str | None = None,
     line_handler: Callable[[bytes], bytes | None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     """Run once; a lost response never causes a fresh operation to be issued."""
     binding.validate(binding.handle.account_id, binding.universe_dir)
@@ -34,6 +41,26 @@ def run_bound(
         except Exception as exc:
             raise BoxError("owner box execution outcome is unknown") from exc
 
+    finished = threading.Event()
+    cancelled = threading.Event()
+    if should_cancel is not None:
+        def watch():
+            while not finished.wait(0.25):
+                if should_cancel():
+                    cancelled.set()
+                    with contextlib.suppress(Exception):
+                        binding.provider.cancel(binding.handle, exec_id)
+                    return
+        threading.Thread(target=watch, daemon=True, name="box-exec-cancel").start()
+    try:
+        return _collect(binding, op_id, exec_id, argv, wall_seconds, output_bytes,
+                        line_handler, cancelled)
+    finally:
+        finished.set()
+
+
+def _collect(binding, op_id, exec_id, argv, wall_seconds, output_bytes, line_handler,
+             cancelled):
     output = bytearray()
     pending = bytearray()
     offset = 0
@@ -64,6 +91,8 @@ def run_bound(
                                     binding.handle, exec_id, request_id, reply + b"\n",
                                 )
                 elif event.kind == "exit":
+                    if cancelled.is_set() and event.killed:
+                        raise BoxExecCancelled("owner cancelled the execution")
                     if pending:
                         raise BoxError("owner box execution ended with an incomplete frame")
                     if event.killed or type(event.exit_code) is not int:

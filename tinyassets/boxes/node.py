@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from tinyassets.box_process import run_bound
+from tinyassets.box_process import BoxExecCancelled, run_bound
 from tinyassets.boxes.node_runner import _RUNNER_SCRIPT
 from tinyassets.providers.base import SandboxUnavailableError
 
@@ -440,12 +440,20 @@ def run_in_box(instance, binding, *, invoke, workspace, **request):
     from tinyassets.boxes.provider import BoxError
 
     started = time.monotonic()
+    #: Polled while the node runs; the owner's cancel stops it in its box.
+    predicate = getattr(instance, "should_cancel", None)
     try:
         done = run_bound(binding, "code-node", ["python", "-I", "-c", RUNNER_SCRIPT,
                                                  str(timeout), "1", profile],
                          stdin=message + b"\n", wall_seconds=timeout,
                          output_bytes=instance.max_output_bytes,
-                         line_handler=answer)
+                         line_handler=answer,
+                         should_cancel=(None if predicate is None
+                                        else lambda: _cancel_requested(predicate)))
+    except BoxExecCancelled:
+        return SandboxResult(node_id=request["node_id"], success=False, cancelled=True,
+                             error="cancelled by the owner while running",
+                             duration_seconds=time.monotonic() - started)
     except BoxError as exc:
         # The node's declared timeout is its wall clock, as on the old path;
         # a kill at that bound is a timed-out node, recorded as failed.
