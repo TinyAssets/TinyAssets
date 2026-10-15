@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -140,6 +141,15 @@ esac
                                     actions.index("archive true"))
                     self.assertEqual(len(list(remote.glob("tinyassets-data-*.tar.gz"))), 1)
                     self.assertEqual(len(list(remote.glob("tinyassets-box-store-*.tar.gz"))), 1)
+                    with tarfile.open(next(remote.glob("tinyassets-data-*.tar.gz"))) as archive:
+                        member = archive.extractfile(
+                            "_data/.platform/credential-vaults/center/.credential-vault.json")
+                        self.assertIsNotNone(member)
+                        self.assertEqual(member.read(), b"platform credential")
+                    box_archive = next(remote.glob("tinyassets-box-store-*.tar.gz"))
+                    with tarfile.open(box_archive) as archive:
+                        self.assertFalse(any("credential-vault" in name
+                                             for name in archive.getnames()))
                     self.assertTrue((remote / "unrelated.txt").exists())
 
 
