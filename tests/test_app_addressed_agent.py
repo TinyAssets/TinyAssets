@@ -224,9 +224,9 @@ console.log(JSON.stringify({count:els.thread.children.length}));
 def test_recovery_resends_always_pin_the_saved_agent():
     page, _ = onboarding.render_app_html()
     source = _js_function(page, "restoreInflight")
-    assert source.count('agentId:pending.agent||"main"') == 3
-    assert '(pending.agent||"main")!==(typeof addressedAgentId===' in source.split(
-        'again.addEventListener("click"', 1)[1]
+    assert source.count('agentId:pending.agent||"main"') == 2
+    assert 'attachSavedConversationCheck(note, pending.message, pending' in source
+    assert '(pending.agent||"main")!==(typeof addressedAgentId===' in source
 
 
 def test_switch_retires_buffered_browser_voice_before_changing_agent():

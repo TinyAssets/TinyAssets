@@ -201,7 +201,9 @@ def test_the_home_transition_funnel_revokes_the_bridge() -> None:
     status poll observes it -- so the one funnel every transition goes through has
     to be the caller.
     """
-    html = Path("tinyassets/onboarding/app.html").read_text(encoding="utf-8")
+    from tinyassets.onboarding.app_modules import shell_source
+
+    html = shell_source(Path("tinyassets/onboarding/app.html"))
 
     body = re.search(r"function setQueueScope\(next\)\{(.*?)\n  \}", html, re.S)
     assert body, "setQueueScope must still be the single home-transition funnel"

@@ -1264,8 +1264,9 @@ def test_route_reports_a_refusal_without_pretending(app_route, monkeypatch):
 
 def _app_html() -> str:
     from tinyassets import onboarding
+    from tinyassets.onboarding.app_modules import shell_source
 
-    return (Path(onboarding.__file__).parent / "app.html").read_text(encoding="utf-8")
+    return shell_source(Path(onboarding.__file__).parent / "app.html")
 
 
 def test_the_app_page_carries_the_deletion_path():

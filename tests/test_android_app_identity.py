@@ -272,7 +272,9 @@ def test_native_source_gate_rejects_a_hard_coded_callback_package(tmp_path: Path
 
 
 def _app_html() -> str:
-    return (ROOT / "tinyassets/onboarding/app.html").read_text(encoding="utf-8")
+    from tinyassets.onboarding.app_modules import shell_source
+
+    return shell_source(ROOT / "tinyassets/onboarding/app.html")
 
 
 def _js_function(html: str, name: str) -> str:
