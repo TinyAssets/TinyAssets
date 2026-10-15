@@ -117,7 +117,7 @@ def test_platform_lock_rejects_mutable_aliases_without_touching_owner_files(tmp_
     outside.mkdir()
     target = outside / "target"
     target.write_bytes(b"keep exact bytes")
-    namespace = tmp_path / ".agent-sessions"
+    namespace = tmp_path / ".provider-assignment-locks"
     center = namespace / "cc"
     if component == "namespace":
         namespace.symlink_to(outside, target_is_directory=True)

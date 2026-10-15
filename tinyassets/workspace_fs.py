@@ -337,9 +337,9 @@ def open_dir_nofollow(path: str | Path) -> int:
 def open_assignment_lock(base_path: str | Path, command_center: str):
     """Open one platform admission lock; never enter an owner's file tree.
 
-    The fixed .agent-sessions namespace is outside all owner mounts. Pin every
-    directory and refuse links, foreign ownership, writable aliases and special
-    files before returning a descriptor suitable for flock. Like the other
+    The fixed .provider-assignment-locks namespace is outside all owner mounts.
+    Pin every directory and refuse links, foreign ownership, writable aliases and
+    special files before returning a descriptor suitable for flock. Like the other
     descriptor helpers, unsupported hosts refuse instead of weakening custody.
     """
     _require_posix("open_assignment_lock")
@@ -350,7 +350,7 @@ def open_assignment_lock(base_path: str | Path, command_center: str):
         info = os.fstat(current)
         if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o022:
             raise UnsafePoolPath("platform admission base is mutable by another uid")
-        for component in (".agent-sessions", command_center):
+        for component in (".provider-assignment-locks", command_center):
             try:
                 os.mkdir(component, 0o700, dir_fd=current)
             except FileExistsError:
