@@ -11,6 +11,7 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 
@@ -416,6 +417,15 @@ class AgentTurnJournal:
         self._ledger = SQLiteProviderWorkAuthorityStore(base_path)
         self._leases = {}
         self._lease_lock = threading.Lock()
+        self._recovering_turn = ContextVar("recovering_agent_turn", default=None)
+
+    @contextmanager
+    def _recovering_orphan(self, turn_id: str):
+        token = self._recovering_turn.set(turn_id)
+        try:
+            yield
+        finally:
+            self._recovering_turn.reset(token)
 
     @contextmanager
     def _transaction(self, universe: str):
@@ -624,10 +634,15 @@ class AgentTurnJournal:
         with self._transaction(universe) as (conn, lease):
             check_current_home(conn, owner, universe)
             row = conn.execute(
-                f"SELECT owner_generation FROM agent_turns WHERE {_SCOPE}", scope,
+                f"SELECT owner_generation, runner_token FROM agent_turns WHERE {_SCOPE}",
+                scope,
             ).fetchone()
             if row is not None and row[0] != lease.generation:
-                raise owner_lease.LeaseLost("agent turn belongs to an earlier owner generation")
+                if not (self._recovering_turn.get() == turn_id
+                        and row[0] < lease.generation
+                        and runner.orphan(self._ledger.base_path, row[1])):
+                    raise owner_lease.LeaseLost(
+                        "agent turn belongs to an earlier owner generation")
             current = _read(conn, scope)
             if current is None:
                 raise JournalUnavailable("agent turn unavailable")
