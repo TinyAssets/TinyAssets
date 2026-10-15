@@ -78,6 +78,11 @@ class SessionBinding:
         if pinned is not None and pinned[0] is self and generation != pinned[1]:
             raise WriteConflict("agent files changed during session admission")
 
+    def check_roster(self) -> None:
+        pinned = _READ_GENERATION.get()
+        if pinned is not None and pinned[0] is self:
+            self.check_read(self.provider.committed_generation(self.handle))
+
 
 _CURRENT: ContextVar[SessionBinding | None] = ContextVar("owner_box_session", default=None)
 _READ_GENERATION: ContextVar[tuple | None] = ContextVar("owner_box_read_generation", default=None)

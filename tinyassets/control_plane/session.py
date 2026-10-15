@@ -139,7 +139,11 @@ def _binding(parent: Parent) -> SessionBinding | None:
     from tinyassets.agent_loop.served_chat import configured_box_provider
     from tinyassets.boxes.provider import BoxAuthError
 
-    binding = parent.box_binding or current_binding()
+    inherited = current_binding()
+    if (parent.box_binding is not None and inherited is not None
+            and parent.box_binding is not inherited):
+        raise BoxAuthError("child binding differs from its active parent session")
+    binding = parent.box_binding or inherited
     if binding is not None:
         binding.validate(_owner(parent), _universe_dir(parent))
         return binding

@@ -107,9 +107,10 @@ work drains. Same-session reconnect retains operation identity.
 
 The configured production provider has no host-file fallback. The current
 owner-split image and cells remain staged until C6's protected migration and
-coordinated deletion. Native discovery, the CLI runner's strict host paths and
-selected git-grant handoff still need integration; a callable BoxLauncher
-factory alone is not proof of production parity.
+coordinated deletion. Native discovery selects BoxLauncher from its receipted
+operation, while the CLI runner's strict host paths and selected git-grant
+handoff still need cutover integration. Factory selection alone is not proof
+of production parity.
 
 ## Measurement: memory per waiting turn
 

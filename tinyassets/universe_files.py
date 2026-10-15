@@ -185,6 +185,7 @@ def list_universe_entries(
             page_limit = 200 if limit is None else min(200, limit - len(result))
             page = binding.provider.list(binding.handle, relpath, cursor=cursor,
                                          limit=page_limit)
+            binding.check_roster()
             for entry in page.entries:
                 kind = {"file": stat.S_IFREG, "dir": stat.S_IFDIR,
                         "link": stat.S_IFLNK}.get(entry.kind, 0)

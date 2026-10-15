@@ -99,6 +99,8 @@ async def _run_catalogue_locked(agent, launch, custody):
     receipts.start(universe.parent, receipt_id)
     observed = datetime.now(timezone.utc)
     try:
+        if callable(launch):
+            launch = launch(receipt_id)
         original = materialize(custody, package.row["auth"])
         operation = package.row["catalogue"]
         argv = [str(package.executable), *operation["argv"]]
