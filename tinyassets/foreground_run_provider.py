@@ -202,6 +202,7 @@ class _ForegroundRunProviderSession:
         self._branch_digest = ""
         self._branch_snapshot: dict[str, Any] | None = None
         self._activity_binding = None
+        self._activity_record: dict[str, Any] | None = None
         self._activity_subject: ExecutionSubject | None = None
         self._provider = ""
         self._receipt: ProviderUniverseWorkReceipt | None = None
@@ -371,6 +372,7 @@ class _ForegroundRunProviderSession:
         }
         self._branch_digest = _content_digest(self._branch_snapshot)
         self._activity_binding = binding
+        self._activity_record = record
         self._activity_subject = ExecutionSubject(
             kind=ExecutionSubjectKind.AGENT_ACTIVITY,
             ref=f"{activity_id}:{generation}:{run_id}", digest=self._branch_digest,
@@ -819,6 +821,7 @@ class _ForegroundRunProviderSession:
         if node is not None:
             from tinyassets.control_plane import session
 
+            activity = self._activity_record
             response_observer = kwargs.pop("response_observer", None)
             metadata_observer = kwargs.pop("_metadata_observer", None)
             if role != "writer" or kwargs:

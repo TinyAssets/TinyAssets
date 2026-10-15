@@ -1,10 +1,10 @@
 """Read historical escrow records without creating or mutating tables."""
+
 from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
 from typing import Literal
-
 
 EscrowStatus = Literal["locked", "released", "refunded"]
 

@@ -81,7 +81,7 @@ from tinyassets.phase_vocab import VALID_PHASES, normalize_phase
 
 logger = logging.getLogger(__name__)
 
-_RETIRED_ESCROW_ACTIONS = frozenset({
+_RETIRED_PAID_ACTIONS = frozenset({
     "escrow_lock", "escrow_release", "escrow_refund", "escrow_inspect",
     "escrow_fund", "escrow_balance", "escrow_set_wallet", "escrow_withdraw",
 })
@@ -448,7 +448,7 @@ def _extensions_impl(
     output_offset: int = 0,
     output_max_chars: int = 8192,
 ) -> str:
-    if action in _RETIRED_ESCROW_ACTIONS:
+    if action in _RETIRED_PAID_ACTIONS:
         return json.dumps({
             "status": "rejected",
             "error": f"Action '{action}' was retired with the paid market.",
