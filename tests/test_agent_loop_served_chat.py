@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import base64
 import json
-from pathlib import Path
 
 import pytest
 
@@ -159,8 +158,20 @@ def test_switch_off_keeps_todays_path(agent, monkeypatch):
 def test_the_served_chat_factory_keeps_todays_adapter_unless_selected(monkeypatch):
     from tinyassets.providers import call
 
+    built = []
+    monkeypatch.setattr(call, "_router", object())
+    monkeypatch.setattr(call, "register_open_providers_for", lambda _context: None)
+    monkeypatch.setattr(
+        "tinyassets.interactive_http_agent.InteractiveHttpAgentTurn",
+        lambda **kwargs: built.append(kwargs),
+    )
+
+    def factory_adapter():
+        call.make_interactive_agent_turn(
+            prompt="hi", system="", universe_context=object(), config={})
+        return built.pop().get("adapter")
+
     monkeypatch.delenv(served_chat.ENV_SWITCH, raising=False)
-    assert not served_chat.thin_loop_selected()
+    assert factory_adapter() is None  # the turn's default engine-tool adapter
     monkeypatch.setenv(served_chat.ENV_SWITCH, served_chat.THIN)
-    assert served_chat.thin_loop_selected()
-    assert "thin_loop_selected()" in Path(call.__file__).read_text(encoding="utf-8")
+    assert isinstance(factory_adapter(), served_chat.ThinLoopChatAdapter)
