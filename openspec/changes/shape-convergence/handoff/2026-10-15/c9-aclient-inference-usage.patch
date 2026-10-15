@@ -1,0 +1,23 @@
+diff --git a/tinyassets/broker/aclient.py b/tinyassets/broker/aclient.py
+index d94f28f6..791b7563 100644
+--- a/tinyassets/broker/aclient.py
++++ b/tinyassets/broker/aclient.py
+@@ -177,7 +177,8 @@ class AsyncBrokerClient:
+     @contextlib.asynccontextmanager
+     async def stream(self, *, grant_id: str, connection_id: str, verb: str,
+                      request: dict[str, Any], op_id: str,
+-                     idle_s: float | None = None) -> AsyncIterator[_Stream]:
++                     idle_s: float | None = None,
++                     inference_usage: dict[str, Any] | None = None) -> AsyncIterator[_Stream]:
+         from tinyassets.storage.outbound_connections import AmbiguousProxyOutcome
+ 
+         refresh = (await asyncio.to_thread(self._refresh_factory, grant_id, connection_id)
+@@ -192,6 +193,8 @@ class AsyncBrokerClient:
+             "grant_id": grant_id, "connection_id": connection_id, "verb": verb,
+             "request": request, "credit": MAX_WINDOW,
+         }
++        if inference_usage is not None:
++            document["inference_usage"] = inference_usage
+         if idle_s is not None:
+             document["idle_s"] = idle_s
+         if refresh is not None:

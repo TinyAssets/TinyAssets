@@ -1,0 +1,37 @@
+--- a/scripts/role_writer_probe.py
++++ b/scripts/role_writer_probe.py
+@@ -80,7 +80,6 @@
+             source='oracle', context='owner writer regression'))
+ 
+         from tinyassets.auto_ship_ledger import _file_lock
+-        from tinyassets.bid.execution_log import append_execution_log_entry
+         from tinyassets.config import write_universe_config_fields
+ 
+         check('config', lambda: write_universe_config_fields(root, oracle=True))
+@@ -113,16 +112,6 @@
+             root / 'canon', 'oracle-world.md', 'ORACLE canon'),
+             produces=('canon/oracle_world.md', 'canon/.oracle_world.md.reviewed'))
+ 
+-        from tinyassets.bid.node_bid import NodeBid
+-        from tinyassets.branches import NodeDefinition
+-        from tinyassets.executors.node_bid import execute_node_bid
+-        node = NodeDefinition(node_id='oracle', display_name='Oracle',
+-            source_code="def run(state):\n    return {'oracle': True}\n").mark_approved()
+-        check('node-bid-artifact', lambda: execute_node_bid(
+-            NodeBid(node_bid_id='oracle', node_def_id='oracle', status='open'),
+-            node_lookup_fn=lambda _: node, output_dir=root / 'output'),
+-            produces=('output/bid_outputs/oracle/output.json',))
+-
+     # The actual periodic maintenance bodies, synchronously, with empty queues
+     # and the request/queue records above. A swallowed blocked result is a fail.
+     from tinyassets.command_center_update_maintenance import tick as update_centers
+@@ -143,9 +132,6 @@
+         ('workspace-sweep', sweep_data_root),
+     ):
+         check(name, lambda operation=operation: operation(base))
+-    check('execution-log', lambda: append_execution_log_entry(root, {'oracle': True}),
+-          produces=('bid_execution_log.json',))
+-    check('execution-log-append', lambda: append_execution_log_entry(root, {'second': True}))
+     from tinyassets.auto_ship_ledger import ShipAttempt, record_attempt, update_attempt
+     check('auto-ship-content', lambda: record_attempt(root, ShipAttempt(
+         ship_attempt_id='oracle', created_at='', updated_at='', ship_status='skipped')),

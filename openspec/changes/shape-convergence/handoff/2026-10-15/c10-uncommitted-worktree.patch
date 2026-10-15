@@ -1,0 +1,101 @@
+diff --git a/scripts/role_writer_probe.py b/scripts/role_writer_probe.py
+index b45a4dce..23bbf601 100644
+--- a/scripts/role_writer_probe.py
++++ b/scripts/role_writer_probe.py
+@@ -80,7 +80,6 @@ def exercise(base, center, principal):
+             source='oracle', context='owner writer regression'))
+ 
+         from tinyassets.auto_ship_ledger import _file_lock
+-        from tinyassets.bid.execution_log import append_execution_log_entry
+         from tinyassets.config import write_universe_config_fields
+ 
+         check('config', lambda: write_universe_config_fields(root, oracle=True))
+@@ -113,16 +112,6 @@ def exercise(base, center, principal):
+             root / 'canon', 'oracle-world.md', 'ORACLE canon'),
+             produces=('canon/oracle_world.md', 'canon/.oracle_world.md.reviewed'))
+ 
+-        from tinyassets.bid.node_bid import NodeBid
+-        from tinyassets.branches import NodeDefinition
+-        from tinyassets.executors.node_bid import execute_node_bid
+-        node = NodeDefinition(node_id='oracle', display_name='Oracle',
+-            source_code="def run(state):\n    return {'oracle': True}\n").mark_approved()
+-        check('node-bid-artifact', lambda: execute_node_bid(
+-            NodeBid(node_bid_id='oracle', node_def_id='oracle', status='open'),
+-            node_lookup_fn=lambda _: node, output_dir=root / 'output'),
+-            produces=('output/bid_outputs/oracle/output.json',))
+-
+     # The actual periodic maintenance bodies, synchronously, with empty queues
+     # and the request/queue records above. A swallowed blocked result is a fail.
+     from tinyassets.command_center_update_maintenance import tick as update_centers
+@@ -143,9 +132,6 @@ def exercise(base, center, principal):
+         ('workspace-sweep', sweep_data_root),
+     ):
+         check(name, lambda operation=operation: operation(base))
+-    check('execution-log', lambda: append_execution_log_entry(root, {'oracle': True}),
+-          produces=('bid_execution_log.json',))
+-    check('execution-log-append', lambda: append_execution_log_entry(root, {'second': True}))
+     from tinyassets.auto_ship_ledger import ShipAttempt, record_attempt, update_attempt
+     check('auto-ship-content', lambda: record_attempt(root, ShipAttempt(
+         ship_attempt_id='oracle', created_at='', updated_at='', ship_status='skipped')),
+diff --git a/tinyassets/api/extensions.py b/tinyassets/api/extensions.py
+index 014ac539..7da5013b 100644
+--- a/tinyassets/api/extensions.py
++++ b/tinyassets/api/extensions.py
+@@ -61,7 +61,6 @@ from tinyassets.api.extensions_leaderboard_actions import _LEADERBOARD_ACTIONS
+ from tinyassets.api.helpers import _base_path, _read_json
+ from tinyassets.api.market import (
+     _ATTRIBUTION_ACTIONS,
+-    _ESCROW_ACTIONS,
+     _GATE_EVENT_ACTIONS,
+     _OUTCOME_ACTIONS,
+ )
+@@ -400,15 +399,6 @@ def _extensions_impl(
+     child_run_id: str = "",
+     notes: str = "",
+     lock_id: str = "",
+-    escrow_amount: int = 0,
+-    escrow_currency: str = "MicroToken",
+-    escrow_recipient_id: str = "",
+-    escrow_evidence: str = "",
+-    escrow_reason: str = "",
+-    escrow_staker_id: str = "",
+-    escrow_wallet_address: str = "",
+-    escrow_chain_id: int = 0,
+-    escrow_idempotency_key: str = "",
+     event_id: str = "",
+     event_type: str = "",
+     event_date: str = "",
+@@ -651,24 +641,6 @@ def _extensions_impl(
+         }
+         return messaging_handler(messaging_kwargs)
+ 
+-    # ── Escrow ─────────────────────────────────────────────────────────────
+-    escrow_handler = _ESCROW_ACTIONS.get(action)
+-    if escrow_handler is not None:
+-        escrow_kwargs: dict[str, Any] = {
+-            "node_id": node_id,
+-            "lock_id": lock_id,
+-            "amount": escrow_amount,
+-            "currency": escrow_currency,
+-            "recipient_id": escrow_recipient_id,
+-            "evidence": escrow_evidence,
+-            "reason": escrow_reason,
+-            "staker_id": escrow_staker_id,
+-            "wallet_address": escrow_wallet_address,
+-            "chain_id": escrow_chain_id,
+-            "idempotency_key": escrow_idempotency_key,
+-        }
+-        return escrow_handler(escrow_kwargs)
+-
+     # ── Gate events (real-world outcome attestation) ───────────────────────
+     gate_event_handler = _GATE_EVENT_ACTIONS.get(action)
+     if gate_event_handler is not None:
+@@ -909,8 +881,6 @@ def _extensions_impl(
+             "messaging_send", "messaging_receive", "messaging_ack",
+             "publish_version", "get_branch_version", "list_branch_versions",
+             "fork_tree",
+-            "escrow_lock", "escrow_release", "escrow_refund", "escrow_inspect",
+-            "escrow_fund", "escrow_balance", "escrow_set_wallet", "escrow_withdraw",
+             "attest_gate_event", "verify_gate_event", "dispute_gate_event",
+             "retract_gate_event", "get_gate_event", "list_gate_events",
+             "subscribe_branch", "unsubscribe_branch", "list_scheduler_subscriptions",

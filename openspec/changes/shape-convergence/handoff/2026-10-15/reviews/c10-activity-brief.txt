@@ -1,0 +1,13 @@
+Review TinyAssets PR4938 https://github.com/TinyAssets/TinyAssets/pull/4938 at head410dad284bf1ee80e7f75552e78f575052570492 versus base922b871970373a279d5c0b5b407881d5bb99295c. This is C10 activity/v1 extension checkpoint; no deployment. Use git diff in /workspace/c10-work.
+
+HARD CONSTRAINTS ON HOW YOU WORK:
+- Do NOT dispatch sub-agents. No scripts/peer_agent.py, no claude/codex subprocess, no new worktree. You are the reviewer; review it yourself.
+- Do NOT run the full suite. At most one relevant test file.
+- Budget about 10 minutes. Read the diff and cited files and reason.
+- If overlapping lanes/design differ, report conflict instead of extending scope.
+
+Floor/correctness review: source-bound AGENT_ACTIVITY receipt with branch IDs absent; exact activity owner/generation/run matching before model/tool use; commit binding before submission; same run owner lock/workspace family/account seat/provider allocation and claim/carrier; explicit cancellation/yield/native-stop behavior; no fake served request. v1 ta loader removal preserves v2 activated generation/revocation. Mutation inventory guards must cover new authority. Tests224+99 passed and Ruff passes. Real Linux oracle blocked registry Forbidden. Legacy customized Activities instructions/queued immutable work migration and invoke/await package conversion explicitly incomplete; no deployment allowed until they are completed, do not treat missing migration as permission to silently lose instructions.
+
+Primary code: control_plane/activity_session.py,activity_runner.py,foreground_run_provider.py,execution_subject.py,provider_work_authority.py,control_plane/session.py,ta_cli.py. Related tests test_activity_session.py,test_activity_http_yield.py,test_background_authority_inventory.py,test_extension_activation_boundary.py. Root C7 separately composes owner box binding before session agent-file read; the Activity subclass inherits RunStep binding with stable _run_id. C6 and C12 shared files remain untouched.
+
+Report each floor/correctness finding with severity/file/evidence and exact remediation. End with exactly one line: VERDICT: APPROVE|ADAPT|REJECT. Lead will record AGREE/DISAGREE_EVIDENCE dispositions.

@@ -1,0 +1,7 @@
+Review draft PR4936 C11 checkpoint at 0742c1e94a48167076b5984d619dda43c3f2163e in /workspace/c11-work against 922b871970373a279d5c0b5b407881d5bb99295c. Check floor/correctness only: durable retry identity, voice account/home fences, MCP stream progress-token correlation, untrusted plain-text preview and retained privileged bridge boundaries. Shared C12 shell activation is deliberately NOT applied; staged integration patch is /tmp/c11-seams/c12-shell-integration.patch. No full C11/deploy claim. Identify AGREE or DISAGREE_EVIDENCE for specific findings and end with exactly VERDICT: APPROVE|ADAPT|REJECT.
+HARD CONSTRAINTS ON HOW YOU WORK:
+- Do NOT dispatch sub-agents. No scripts/peer_agent.py, no claude/codex subprocess, no new worktree. You are the reviewer; review it yourself.
+- Do NOT run the full suite. At most one relevant test file.
+- Budget 10 minutes. Read diff and cited files and reason.
+- Read-only. No credential handling, production mutation, commits or deployment.
+- If overlapping lanes need shared-file composition, report it; do not work around ownership.

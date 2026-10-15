@@ -1,0 +1,60 @@
+--- a/tinyassets/api/extensions.py
++++ b/tinyassets/api/extensions.py
+@@ -61,7 +61,6 @@
+ from tinyassets.api.helpers import _base_path, _read_json
+ from tinyassets.api.market import (
+     _ATTRIBUTION_ACTIONS,
+-    _ESCROW_ACTIONS,
+     _GATE_EVENT_ACTIONS,
+     _OUTCOME_ACTIONS,
+ )
+@@ -400,15 +399,6 @@
+     child_run_id: str = "",
+     notes: str = "",
+     lock_id: str = "",
+-    escrow_amount: int = 0,
+-    escrow_currency: str = "MicroToken",
+-    escrow_recipient_id: str = "",
+-    escrow_evidence: str = "",
+-    escrow_reason: str = "",
+-    escrow_staker_id: str = "",
+-    escrow_wallet_address: str = "",
+-    escrow_chain_id: int = 0,
+-    escrow_idempotency_key: str = "",
+     event_id: str = "",
+     event_type: str = "",
+     event_date: str = "",
+@@ -651,24 +641,6 @@
+         }
+         return messaging_handler(messaging_kwargs)
+ 
+-    # ── Escrow ─────────────────────────────────────────────────────────────
+-    escrow_handler = _ESCROW_ACTIONS.get(action)
+-    if escrow_handler is not None:
+-        escrow_kwargs: dict[str, Any] = {
+-            "node_id": node_id,
+-            "lock_id": lock_id,
+-            "amount": escrow_amount,
+-            "currency": escrow_currency,
+-            "recipient_id": escrow_recipient_id,
+-            "evidence": escrow_evidence,
+-            "reason": escrow_reason,
+-            "staker_id": escrow_staker_id,
+-            "wallet_address": escrow_wallet_address,
+-            "chain_id": escrow_chain_id,
+-            "idempotency_key": escrow_idempotency_key,
+-        }
+-        return escrow_handler(escrow_kwargs)
+-
+     # ── Gate events (real-world outcome attestation) ───────────────────────
+     gate_event_handler = _GATE_EVENT_ACTIONS.get(action)
+     if gate_event_handler is not None:
+@@ -909,8 +881,6 @@
+             "messaging_send", "messaging_receive", "messaging_ack",
+             "publish_version", "get_branch_version", "list_branch_versions",
+             "fork_tree",
+-            "escrow_lock", "escrow_release", "escrow_refund", "escrow_inspect",
+-            "escrow_fund", "escrow_balance", "escrow_set_wallet", "escrow_withdraw",
+             "attest_gate_event", "verify_gate_event", "dispute_gate_event",
+             "retract_gate_event", "get_gate_event", "list_gate_events",
+             "subscribe_branch", "unsubscribe_branch", "list_scheduler_subscriptions",
