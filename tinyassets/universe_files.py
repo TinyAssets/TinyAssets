@@ -112,6 +112,22 @@ def _read_nofollow_windows(root: Path, relpath: str, max_bytes: int) -> bytes:
     return data
 
 
+def _center_relative(root: Path, relpath: str) -> tuple[Path, str]:
+    """A path given against the data root names a center: use that center's box.
+
+    ``write_data_path`` and friends pass ``(<data root>, "<center>/<file>")``.
+    Binding on the data root itself matches no session and would fall back to
+    a host path, so the first component selects the center.
+    """
+    from tinyassets.storage import data_dir
+
+    parts = _split(relpath)
+    if (len(parts) > 1 and not parts[0].startswith(".")
+            and os.path.abspath(root) == os.path.abspath(data_dir())):
+        return root / parts[0], "/".join(parts[1:])
+    return root, relpath
+
+
 def read_universe_file(
     universe_dir: Path | str,
     relpath: str,
@@ -124,7 +140,7 @@ def read_universe_file(
     the file is or sits behind a link, is not a regular file, or is over
     ``max_bytes``.
     """
-    root = Path(universe_dir)
+    root, relpath = _center_relative(Path(universe_dir), relpath)
     from tinyassets.control_plane.binding import file_binding
 
     binding = file_binding(root)
@@ -175,7 +191,7 @@ def list_universe_entries(
     universe_dir: Path | str, relpath: str, *, limit: int | None = None,
 ) -> list[tuple[str, os.stat_result]]:
     """Sorted no-follow metadata, optionally scanning only the first limit entries."""
-    root = Path(universe_dir)
+    root, relpath = _center_relative(Path(universe_dir), relpath)
     from tinyassets.control_plane.binding import file_binding
 
     binding = file_binding(root)
@@ -346,7 +362,7 @@ def write_universe_file(
     """
     if mode not in ("replace", "exclusive", "append"):
         raise ValueError(f"unknown write mode {mode!r}")
-    root = Path(universe_dir)
+    root, relpath = _center_relative(Path(universe_dir), relpath)
     parts = _split(relpath)
     name = parts[-1]
     from tinyassets.boxes.provider import WriteConflict, WriteMode

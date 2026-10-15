@@ -437,12 +437,23 @@ def run_in_box(instance, binding, *, invoke, workspace, **request):
         return _rpc_reply_line(rpc["id"], rpc["action"], rpc["kwargs"],
                                        invoke).encode()
 
+    from tinyassets.boxes.provider import BoxError
+
     started = time.monotonic()
-    done = run_bound(binding, "code-node", ["python", "-I", "-c", RUNNER_SCRIPT,
-                                             str(timeout), "1", profile],
-                     stdin=message + b"\n", wall_seconds=timeout + 5,
-                     output_bytes=instance.max_output_bytes,
-                     line_handler=answer)
+    try:
+        done = run_bound(binding, "code-node", ["python", "-I", "-c", RUNNER_SCRIPT,
+                                                 str(timeout), "1", profile],
+                         stdin=message + b"\n", wall_seconds=timeout,
+                         output_bytes=instance.max_output_bytes,
+                         line_handler=answer)
+    except BoxError as exc:
+        # The node's declared timeout is its wall clock, as on the old path;
+        # a kill at that bound is a timed-out node, recorded as failed.
+        if str(exc) != "owner box execution ended: timeout":
+            raise
+        return SandboxResult(node_id=request["node_id"], success=False,
+                             error=f"Execution timed out after {timeout}s",
+                             duration_seconds=time.monotonic() - started)
     result = None
     for line in reversed(done.stdout.splitlines()):
         try:
