@@ -1063,11 +1063,11 @@ class BoxPoolFilesystem:
 
         turn_id = hashlib.sha256(("workspace-sweep:" + center).encode()).hexdigest()
         handle = provider.bind(center, account_id=owner, turn_id=turn_id)
-        return provider, handle
+        return provider, handle, BOX_ROOT + "/" + "/".join(parts[1:])
 
     def exists(self, path: Path) -> bool:
-        provider, handle = self._scope(path)
-        return provider.stat(handle, str(path)) is not None
+        provider, handle, file_path = self._scope(path)
+        return provider.stat(handle, file_path) is not None
 
     def owner_scoped(self, path: Path) -> bool:
         self._scope(path)
@@ -1076,13 +1076,13 @@ class BoxPoolFilesystem:
     def remove_tree_no_follow(self, path: Path) -> None:
         from tinyassets.boxes.provider import BoxNotFound
 
-        provider, handle = self._scope(path)
-        if provider.stat(handle, str(path)) is None:
+        provider, handle, file_path = self._scope(path)
+        if provider.stat(handle, file_path) is None:
             return
         import uuid
 
         try:
-            provider.remove(handle, "workspace-sweep:" + uuid.uuid4().hex, str(path))
+            provider.remove(handle, "workspace-sweep:" + uuid.uuid4().hex, file_path)
         except BoxNotFound:
             return
 

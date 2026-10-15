@@ -568,7 +568,8 @@ def _open_cell_lease(lease_path: Path) -> tuple[Any, Any]:
                 _lease_center_root(binding.universe_dir)):
             raise _Refused("workspace_checkout_failed", "lease has no admitted owner box")
         for path in (lease_path, lease_path / _CONTENT_DIR):
-            info = binding.provider.stat(binding.handle, str(path))
+            info = binding.provider.stat(
+                binding.handle, _box_provider_path(path, binding.universe_dir))
             if info is None or info.kind != "dir":
                 raise _Refused("workspace_checkout_failed", "owner box lease is incomplete")
         return None, None
@@ -1121,7 +1122,9 @@ def _box_tree_bytes(root: Path, bound: int) -> int:
         directory = pending.pop()
         cursor = None
         while True:
-            page = binding.provider.list(binding.handle, directory, cursor=cursor)
+            page = binding.provider.list(
+                binding.handle, _box_provider_path(Path(directory), binding.universe_dir),
+                cursor=cursor)
             for item in page.entries:
                 entries += 1
                 if entries > 100_000 or item.name in ("", ".", "..") or "/" in item.name:
@@ -1138,6 +1141,17 @@ def _box_tree_bytes(root: Path, bound: int) -> int:
     if binding.provider.committed_generation(binding.handle) != before:
         raise _Refused("storage_quota_exceeded", "workspace changed during measure")
     return total
+
+
+def _box_provider_path(guest_path: Path, universe_dir: Path) -> str:
+    """Translate a guest absolute path to the handle's center-relative file path."""
+    try:
+        relative = Path(guest_path).relative_to(_lease_center_root(universe_dir))
+    except ValueError:
+        raise _Refused("workspace_checkout_failed", "path is outside the guest center") from None
+    if not relative.parts or any(part in ("", ".", "..") for part in relative.parts):
+        raise _Refused("workspace_checkout_failed", "invalid guest workspace path")
+    return "/cc/" + relative.as_posix()
 
 
 def _publish(db: Path, lease: Any, *, universe_id: str, repo_key: str, run_id: str) -> int | None:

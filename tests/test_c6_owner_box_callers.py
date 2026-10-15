@@ -245,6 +245,37 @@ def test_workspace_pool_returns_guest_lease_paths(tmp_path, monkeypatch):
     ) == (["workspaces", "scratch"], "0123456789abcdef")
 
 
+def test_guest_lease_uses_center_relative_box_file_api(tmp_path, monkeypatch):
+    from tinyassets import storage_layout
+    from tinyassets.boxes.provider import DirEntry, DirPage, FileStat
+    from tinyassets.effectors import workspace
+
+    monkeypatch.setattr(storage_layout, "ACTIVE_BOX_LAYOUT", "owner-box")
+    binding = _binding(tmp_path)
+    lease = Path("/cc/center/workspaces/scratch/0123456789abcdef")
+    seen = []
+
+    def stat(handle, path):
+        seen.append(path)
+        return FileStat(path, "dir", 0, 0)
+
+    def listing(handle, path, *, cursor):
+        seen.append(path)
+        return DirPage((DirEntry("README.md", "file", 7),), None)
+
+    binding.provider.stat = stat
+    binding.provider.list = listing
+    binding.provider.committed_generation = lambda handle: 1
+    with use_binding(binding):
+        assert workspace._open_cell_lease(lease) == (None, None)
+        assert workspace._box_tree_bytes(lease, 1024) == 7
+    assert seen == ["/cc/workspaces/scratch/0123456789abcdef",
+                    "/cc/workspaces/scratch/0123456789abcdef/repo",
+                    "/cc/workspaces/scratch/0123456789abcdef"]
+    with pytest.raises(workspace._Refused):
+        workspace._box_provider_path(Path("/cc/center/../other/file"), binding.universe_dir)
+
+
 def test_workspace_sweep_removes_only_admitted_guest_lease(tmp_path, monkeypatch):
     from tinyassets import universe_owner
     from tinyassets.agent_loop import served_chat
@@ -263,10 +294,12 @@ def test_workspace_sweep_removes_only_admitted_guest_lease(tmp_path, monkeypatch
 
         def stat(self, handle, path):
             assert handle.account_id == "owner"
+            assert path == "/cc/workspaces/scratch/0123456789abcdef"
             return FileStat(path, "dir", 0, 0) if self.present else None
 
         def remove(self, handle, op_id, path):
-            assert path == str(lease) and op_id.startswith("workspace-sweep:")
+            assert path == "/cc/workspaces/scratch/0123456789abcdef"
+            assert op_id.startswith("workspace-sweep:")
             self.present = False
 
     provider = Provider()
