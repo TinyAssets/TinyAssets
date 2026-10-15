@@ -1288,7 +1288,7 @@ class ProviderRouter:
                             served_authority, "before_provider_launch", None
                         ) if served_authority is not None else None
                         if callable(before_launch):
-                            await off_loop(before_launch)
+                            await off_loop(lambda: before_launch())
                         if (
                             served_authority is not None
                             and served_authority.request_capability is not None
