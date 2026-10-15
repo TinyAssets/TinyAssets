@@ -109,8 +109,9 @@ def _run_bounded(command, *, timeout, cwd):
         raise RuntimeError('owner git bridge requires a command center repository') from None
     if binding is None or len(relative.parts) < 1:
         raise RuntimeError('owner git bridge requires an admitted owner box')
-    binding.validate(binding.handle.account_id, repo.parent if len(relative.parts) == 1
-                     else Path(os.path.abspath(data_dir())) / relative.parts[0])
+    # The center is always the first component, including a repo at its root.
+    binding.validate(binding.handle.account_id,
+                     Path(os.path.abspath(data_dir())) / relative.parts[0])
     root = getattr(binding.handle, 'root', None) or '/cc'
     guest_cwd = root + ('/' + '/'.join(relative.parts[1:]) if len(relative.parts) > 1 else '')
     # Only pathspecs after -- are paths. Commit messages, ref names and options
