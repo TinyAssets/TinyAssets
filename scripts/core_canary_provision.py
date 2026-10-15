@@ -1,7 +1,8 @@
 """Make the dedicated core-canary owner ready, the way a normal user would.
 
 The canary signs in with three secrets (``TINYASSETS_CANARY_EMAIL``,
-``TINYASSETS_CANARY_PASSWORD``, ``TINYASSETS_CANARY_HMAC_KEY``) and then
+``TINYASSETS_CANARY_PASSWORD``, ``TINYASSETS_CANARY_HMAC_KEY``), refuses any
+account whose home is not ``TINYASSETS_CANARY_UNIVERSE_ID``, and then
 creates or repairs, through the same public doors any owner uses:
 
 - a saved default model: a free model (``:free``) its connected source offers,
@@ -42,6 +43,10 @@ BRANCH_SPEC = {
     "state_schema": [{"name": "nonce", "type": "str"}, {"name": "echo", "type": "str"}],
 }
 SECRETS = ("TINYASSETS_CANARY_EMAIL", "TINYASSETS_CANARY_PASSWORD", "TINYASSETS_CANARY_HMAC_KEY")
+# The dedicated canary's home id (repo variable, not a secret). Sign-in refuses
+# any other account, so wrong credentials can never repair a real owner.
+HOME = "TINYASSETS_CANARY_UNIVERSE_ID"
+REQUIRED = (*SECRETS, HOME)
 
 
 class ProvisionError(RuntimeError):
@@ -49,27 +54,31 @@ class ProvisionError(RuntimeError):
 
 
 def credentials() -> dict | None:
-    """The three canary secrets, or None when any is unset."""
-    values = [os.environ.get(name, "") for name in SECRETS]
+    """The canary secrets and dedicated home id, or None when any is unset."""
+    values = [os.environ.get(name, "") for name in REQUIRED]
     if not all(values):
         return None
-    email, password, key = values
-    return {"email": email, "password": password, "service_hmac_key": key}
+    email, password, key, home = values
+    return {"email": email, "password": password, "service_hmac_key": key, "universe_id": home}
 
 
 def missing_secrets() -> list[str]:
-    return [name for name in SECRETS if not os.environ.get(name)]
+    return [name for name in REQUIRED if not os.environ.get(name)]
 
 
 def pick_free_model(options: dict, current: dict | None) -> dict | None:
-    """The current default when it is still a usable free model, else the first one offered."""
+    """The current default when it is still a usable free model, else the first one offered.
+
+    ``options`` is the public door's compact ``model_options`` view searched for
+    ``:free`` (``tinyassets/engine_read_views.py``): flat ``models`` rows.
+    """
     usable = [
-        row["reference"]
-        for row in options.get("options", [])
-        if row.get("in_candidate_catalog")
+        {"provider_ref": row["provider_ref"], "model_id": row["model_id"]}
+        for row in options.get("models") or ()
+        if row.get("selectable")
         and not row.get("reasons")
         and row.get("tools") is not False
-        and str(row["reference"].get("model_id", "")).endswith(":free")
+        and str(row.get("model_id", "")).endswith(":free")
     ]
     if current in usable:
         return current
@@ -81,7 +90,7 @@ async def ensure_model(http, origin: str, call) -> dict:
     response.raise_for_status()
     saved = response.json()
     policy = saved.get("policy") or {}
-    options = await call("read_graph", target="model_options")
+    options = await call("read_graph", target="model_options", query=":free")
     choice = pick_free_model(options, policy.get("saved_default"))
     if choice is None:
         raise ProvisionError("no free model is offered by the canary's connected source")

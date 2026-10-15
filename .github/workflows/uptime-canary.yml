@@ -53,6 +53,9 @@ env:
 
 jobs:
   core-capabilities:
+    # The canary sign-in is a production secret: the main-only environment
+    # refuses a dispatch from any other ref before a step runs.
+    environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -67,6 +70,7 @@ jobs:
           password: ${{ secrets.TINYASSETS_CANARY_PASSWORD }}
           hmac-key: ${{ secrets.TINYASSETS_CANARY_HMAC_KEY }}
           service-url: ${{ vars.TINYASSETS_CANARY_SERVICE_URL }}
+          home: ${{ vars.TINYASSETS_CANARY_UNIVERSE_ID }}
           health-token: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           pushover-user: ${{ secrets.PUSHOVER_USER_KEY }}

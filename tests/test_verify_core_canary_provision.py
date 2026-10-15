@@ -14,6 +14,7 @@ _SECRETS = {
     "TINYASSETS_CANARY_EMAIL": "canary@example.invalid",
     "TINYASSETS_CANARY_PASSWORD": "secret-value",
     "TINYASSETS_CANARY_HMAC_KEY": "hmac-secret",
+    "TINYASSETS_CANARY_UNIVERSE_ID": "u-canary",
 }
 
 
@@ -126,9 +127,11 @@ class _Owner:
         assert arguments.pop("graph_id") == "u-canary"
         target = arguments["target"]
         if name == "read_graph" and target == "model_options":
-            return {"options": [
+            # The public door's compact view, searched for free models.
+            assert arguments["query"] == ":free"
+            return {"view": "compact", "models": [
                 _option("api_key_http:or", "paid/model"),
-                _option("api_key_http:or", "broken:free", reasons=[{"reason": "stale"}]),
+                _option("api_key_http:or", "broken:free", reasons=["stale"]),
                 _option("api_key_http:or", "good:free"),
             ]}
         if name == "read_graph" and target == "branches":
@@ -145,12 +148,10 @@ class _Owner:
 
 
 def _option(provider, model, reasons=()):
-    return {
-        "reference": {"provider_ref": provider, "model_id": model},
-        "in_candidate_catalog": True,
-        "reasons": list(reasons),
-        "tools": True,
-    }
+    row = {"provider_ref": provider, "model_id": model, "selectable": True, "tools": True}
+    if reasons:
+        row["reasons"] = list(reasons)
+    return row
 
 
 def _run(owner, monkeypatch, url="https://sign.example.invalid"):
@@ -202,3 +203,40 @@ def test_a_failing_default_is_replaced_with_a_free_one(monkeypatch):
 def test_no_service_url_and_no_connection_is_not_ready(monkeypatch):
     with pytest.raises(setup.ProvisionError, match="TINYASSETS_CANARY_SERVICE_URL"):
         _run(_Owner(), monkeypatch, url=None)
+
+
+def test_missing_home_id_is_not_provisioned(monkeypatch, capsys):
+    _set(monkeypatch, TINYASSETS_CANARY_UNIVERSE_ID=None)
+    assert provision.main() == 0
+    assert "TINYASSETS_CANARY_UNIVERSE_ID" in capsys.readouterr().err
+
+
+def test_verification_calls_the_real_provisioning_pass(monkeypatch):
+    """The pre-deploy check must reach provision(), not a name the probe lacks."""
+    _set(monkeypatch)
+    from scripts import core_capability_live as live
+
+    reached = []
+
+    async def login(config, http):
+        return "token"
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def provision_pass(config, http, origin, call):
+        reached.append(config["universe_id"])
+
+    monkeypatch.setattr(live, "login", login)
+    monkeypatch.setattr(live, "stream_transport", lambda token, observed: None)
+    monkeypatch.setattr("fastmcp.Client", _Client)
+    monkeypatch.setattr(provision, "provision", provision_pass)
+    assert provision.classify() == (True, "")
+    assert reached == ["u-canary"]

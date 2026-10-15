@@ -13,6 +13,9 @@ inputs:
   service-url:
     description: Canary signing service base URL (repo variable; not a secret)
     required: false
+  home:
+    description: Dedicated canary home id (repo variable; sign-in refuses any other account)
+    required: false
   health-token:
     description: Protected pulse token
     required: false
@@ -45,6 +48,7 @@ runs:
         TINYASSETS_CANARY_PASSWORD: ${{ inputs.password }}
         TINYASSETS_CANARY_HMAC_KEY: ${{ inputs.hmac-key }}
         TINYASSETS_CANARY_SERVICE_URL: ${{ inputs.service-url }}
+        TINYASSETS_CANARY_UNIVERSE_ID: ${{ inputs.home }}
         TINYASSETS_WIKI_CANARY_TOKEN: ${{ inputs.health-token }}
       run: python scripts/core_capability_live.py --report core-capabilities-live.json
     - name: Reconcile incident and notification

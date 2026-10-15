@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.core_canary_provision import credentials, missing_secrets  # noqa: E402
+from scripts.core_canary_provision import credentials, missing_secrets, provision  # noqa: E402
 
 
 async def _provision(config: dict) -> None:
@@ -45,7 +45,7 @@ async def _provision(config: dict) -> None:
                     raise live.ProbeFailure(name + " refused: " + live.failure_code(code))
                 return value
 
-            await live.provision(config, http, live.ORIGIN, call)
+            await provision(config, http, live.ORIGIN, call)
 
 
 def classify() -> tuple[bool, str]:

@@ -94,9 +94,10 @@ async def login(config, http):
     me = await http.get(ORIGIN + "/app/me")
     me.raise_for_status()
     home = me.json().get("universe_id", "")
-    if not home:
-        raise ProbeFailure("signed-in canary owner has no home")
-    config["universe_id"] = home
+    # The canary repairs whatever account it signs in to, so it must be the
+    # dedicated one: secrets naming any other owner stop here, before a write.
+    if not home or home != config.get("universe_id"):
+        raise ProbeFailure("signed-in home differs from dedicated canary home")
     return token
 
 
