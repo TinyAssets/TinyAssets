@@ -269,6 +269,34 @@ def _serving_universe_owners(base: Path, *, graph_id: str | None = None) -> list
         return []
 
 
+#: The host name a box uses for its owner's engine route; the broker relay
+#: maps it to the daemon's per-center socket (``box_engine_socket``).
+BOX_ENGINE_HOST = "engine.tinyassets.box"
+ENGINE_SOCKET_DIR = ".engine-mcp"
+
+
+def box_engine_socket(root: Path, universe_id: str) -> Path | None:
+    """The daemon-owned, broker-readable socket of one center's engine route.
+
+    None outside the owner-box frontend (no box provider): then no box can
+    reach the route and nothing listens for one.
+    """
+    from tinyassets.agent_loop.served_chat import configured_box_provider
+
+    if configured_box_provider()[0] is None or os.name != "posix":
+        return None
+    from tinyassets.boxes.layout import BROKER_READ_GID
+
+    directory = Path(root) / ENGINE_SOCKET_DIR
+    directory.mkdir(mode=0o2770, exist_ok=True)
+    if BROKER_READ_GID in os.getgroups() or os.geteuid() == 0:
+        os.chown(directory, -1, BROKER_READ_GID)
+        os.chmod(directory, 0o2770)
+    path = directory / f"{universe_id}.sock"
+    path.unlink(missing_ok=True)
+    return path
+
+
 class _EngineServer:
     """One pinned loopback endpoint using the daemon's installed role clients."""
 
@@ -298,6 +326,19 @@ class _EngineServer:
             target=self.server.run, name=f"engine-mcp-{self.universe_id}", daemon=True,
         )
         self.thread.start()
+        self.box_server = self.box_thread = None
+        socket_path = box_engine_socket(data_dir(), self.universe_id)
+        if socket_path is not None:
+            # The same endpoint, reachable from the owner's box through the
+            # broker relay (``engine.tinyassets.box``). Never the daemon's TCP.
+            self.box_server = uvicorn.Server(uvicorn.Config(
+                self.endpoint, uds=str(socket_path), log_level="warning",
+            ))
+            self.box_thread = threading.Thread(
+                target=self.box_server.run, name=f"engine-mcp-box-{self.universe_id}",
+                daemon=True,
+            )
+            self.box_thread.start()
         return True
 
     def alive(self) -> bool:
@@ -306,6 +347,10 @@ class _EngineServer:
     def stop(self) -> None:
         if self.server is not None:
             self.server.should_exit = True
+        if getattr(self, "box_server", None) is not None:
+            self.box_server.should_exit = True
+        if getattr(self, "box_thread", None) is not None:
+            self.box_thread.join(timeout=10)
         if self.thread is not None:
             self.thread.join(timeout=10)
             if self.thread.is_alive():

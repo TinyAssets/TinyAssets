@@ -1,22 +1,52 @@
-"""Admit a pinned lease to its owner's bounded provisioning cell.
+"""Provision a checked-out workspace lease inside the admitted owner's box.
 
-Consent and reservations remain the workspace effector's responsibility.
-The daemon holds no package-manager process, only the fixed registry relay.
+The coordinator supplies admitted manifests and the lease only AFTER consent,
+manifest admission and the maximum transfer reservation. One bounded execution
+in the box creates the environment (a ``.venv`` from the Python manifest, an
+``npm ci`` from the Node manifests) with the box's own public egress; the
+storage charge is the lease's measured growth, never more than the
+reservation. This module grants no authority, creates no lease and publishes
+no checkout. Package logs are internal diagnostics, never public evidence.
 """
+
 from __future__ import annotations
 
+import asyncio
 import json
 import math
-import os
-import select
-import stat
-import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
-from tinyassets import workspace_fs as fs
-from tinyassets.node_sandbox import MAX_WORKSPACE_TIMEOUT_SECONDS
-from tinyassets.workspace_provision_cell import FRAME_BOUND
+from tinyassets.boxes.node import MAX_WORKSPACE_TIMEOUT_SECONDS
 from tinyassets.workspace_resolver import ProvisionManifests
+
+FRAME_BOUND = 12 * 1024 * 1024
+_OUTPUT_BYTES = 1024 * 1024
+
+_STAGE = r'''
+import json, os, subprocess, sys
+settings = json.loads(sys.stdin.readline())
+repo = settings["repo"]
+os.chdir(repo)
+def command(argv):
+    subprocess.run(argv, cwd=repo, stdin=subprocess.DEVNULL, close_fds=True, check=True)
+if settings["python"] is not None:
+    # Exclusive creation refuses a checkout-provided .venv or symlink.
+    os.mkdir(os.path.join(repo, ".venv"), 0o700)
+    command([sys.executable, "-I", "-m", "venv", os.path.join(repo, ".venv")])
+    manifest = os.path.join(os.environ["TMPDIR"], "ta-requirements.txt")
+    with open(manifest, "w", encoding="utf-8") as stream:
+        stream.write(settings["python"])
+    command([os.path.join(repo, ".venv", "bin", "python"), "-I", "-m", "pip", "install",
+             "--no-input", "--disable-pip-version-check", "--requirement", manifest])
+if settings["node"] is not None:
+    for name, expected in zip(("package.json", "package-lock.json"), settings["node"]):
+        with open(os.path.join(repo, name), "rb") as stream:
+            if stream.read() != expected.encode("utf-8"):
+                raise SystemExit(65)
+    command(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"])
+'''
 
 
 @dataclass(frozen=True)
@@ -25,11 +55,10 @@ class ProvisionResult:
     bytes_to_charge: int
 
 
-def execute_provision(manifests, *, lease_fd, repo_fd, max_transfer_bytes,
-                      storage_bound, timeout_s, cancelled, universe_dir, principal):
-    from tinyassets.role_relays import pin_for_owner
-    from tinyassets.role_remote_git import _scope
-    from tinyassets.workspace_registry_relay import RegistryRelay
+def execute_provision(manifests, *, lease_path, max_transfer_bytes, storage_bound,
+                      timeout_s, cancelled, universe_dir, principal) -> ProvisionResult:
+    from tinyassets.control_plane.binding import current_binding
+    from tinyassets.effectors.workspace import _box_tree_bytes, _lease_center_root
 
     if type(manifests) is not ProvisionManifests or not (manifests.python or manifests.node):
         raise ValueError('provisioning requires admitted manifests')
@@ -38,98 +67,68 @@ def execute_provision(manifests, *, lease_fd, repo_fd, max_transfer_bytes,
     if (type(timeout_s) not in (int, float) or not math.isfinite(timeout_s)
             or not 0 < timeout_s <= MAX_WORKSPACE_TIMEOUT_SECONDS or not callable(cancelled)):
         raise ValueError('invalid provisioning deadline or cancellation')
-    client, center, principal, identity = _scope(universe_dir, principal)
-    lease, repo = os.fstat(lease_fd), os.fstat(repo_fd)
-    for info in (lease, repo):
-        if (not stat.S_ISDIR(info.st_mode)
-                or (info.st_uid, info.st_gid) != (identity.uid, identity.gid)):
-            raise PermissionError('provisioning lease is not owned by the admitted owner')
-    held = fs.open_subdir_nofollow(lease_fd, 'repo')
+    binding = current_binding()
+    if binding is None:
+        raise PermissionError('provisioning requires the admitted owner box')
+    binding.validate(principal, Path(universe_dir))
+    lease = Path(lease_path)
     try:
-        if not os.path.samestat(repo, os.fstat(held)):
-            raise PermissionError('provisioning checkout differs from the pinned lease')
-    finally:
-        os.close(held)
-    request = dict(python=manifests.python.normalized_text if manifests.python else None,
-                   node=[manifests.node.normalized_package_json, manifests.node.normalized_lockfile]
-                   if manifests.node else None, storage_bound=storage_bound, timeout_s=timeout_s)
-    payload = json.dumps(request).encode() + b'\n'
+        relative = lease.relative_to(_lease_center_root(Path(universe_dir)))
+    except ValueError:
+        raise PermissionError('provisioning lease is outside the admitted center') from None
+    if any(part in ('', '.', '..') for part in relative.parts) or not relative.parts:
+        raise PermissionError('invalid provisioning lease path')
+    root = getattr(binding.handle, 'root', None) or '/cc'
+    settings = {
+        'repo': root + '/' + (relative / 'repo').as_posix(),
+        'python': manifests.python.normalized_text if manifests.python else None,
+        'node': ([manifests.node.normalized_package_json, manifests.node.normalized_lockfile]
+                 if manifests.node else None),
+    }
+    payload = json.dumps(settings).encode() + b'\n'
     if len(payload) > FRAME_BOUND:
-        raise ValueError('provisioning manifests exceed the cell frame bound')
+        raise ValueError('provisioning manifests exceed the box frame bound')
     if cancelled():
         return ProvisionResult('cancelled', 0)
-    relay = RegistryRelay(center, max_bytes=max_transfer_bytes, timeout_s=timeout_s)
-    descriptor = None
-    charge = max_transfer_bytes
+    before = _box_tree_bytes(lease, storage_bound)
+    failure = asyncio.run(_stage(binding, root, payload, timeout_s, cancelled))
+    after = _box_tree_bytes(lease, storage_bound + 1)
+    if failure is None and after > storage_bound:
+        failure = 'storage_limit'
+    charge = min(max(after - before, 0), max_transfer_bytes)
+    return ProvisionResult(failure, charge if failure is None else max_transfer_bytes)
+
+
+async def _stage(binding, root: str, payload: bytes, timeout_s: float,
+                 cancelled: Callable[[], bool]) -> str | None:
+    from tinyassets.agent_loop.box_tools import BoxExecutor
+
+    executor = BoxExecutor(binding.provider, binding.handle, limits=binding.limits, cwd=root)
+    call = asyncio.ensure_future(executor.run(
+        binding.operation_id('workspace-provision'), ['python', '-I', '-c', _STAGE],
+        stdin=payload, wall_seconds=float(timeout_s), output_bytes=_OUTPUT_BYTES,
+    ))
+    while True:
+        done, _ = await asyncio.wait({call}, timeout=0.5)
+        if done:
+            break
+        try:
+            stop = bool(cancelled())
+        except Exception:  # noqa: BLE001 - a broken cancel check refuses the stage
+            stop = True
+        if stop:
+            call.cancel()
+            try:
+                await call
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            return 'cancelled'
     try:
-        descriptor = pin_for_owner(relay.path, center, identity.uid, kind='registry')
-        relay_info = os.fstat(descriptor)
-        with client.start_cell(kind='workspace-provision', principal=principal,
-                command_center=center.name, identity=identity, directory_fd=lease_fd,
-                socket_fds=(descriptor,)) as cell:
-            cell.stream.setblocking(False)
-            deadline = time.monotonic() + timeout_s
-            pending = bytearray()
-
-            def read():
-                while b'\n' not in pending:
-                    if cancelled():
-                        raise InterruptedError('cancelled')
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError('timeout')
-                    if not select.select([cell.stream], [], [], 0.05)[0]:
-                        continue
-                    data = cell.stream.recv(16384)
-                    if not data:
-                        raise RuntimeError('provisioning cell ended without a receipt')
-                    pending.extend(data)
-                    if len(pending) > 16384:
-                        raise RuntimeError('provisioning receipt exceeds its bound')
-                line, _, rest = pending.partition(b'\n')
-                pending[:] = rest
-                return json.loads(line)
-
-            def send(data):
-                remaining = memoryview(data)
-                while remaining:
-                    if cancelled():
-                        raise InterruptedError('cancelled')
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError('timeout')
-                    if select.select([], [cell.stream], [], 0.05)[1]:
-                        remaining = remaining[cell.stream.send(remaining[:65536]):]
-
-            proof = read()['cell']
-            inner = identity.uid - 300000
-            if (proof.get('uid') != inner or proof.get('gid') != inner
-                    or proof.get('source') != [lease.st_dev, lease.st_ino]
-                    or proof.get('relay') != [relay_info.st_dev, relay_info.st_ino]
-                    or proof.get('fds') != [0, 1, 2] or proof.get('groups') != []
-                    or proof.get('caps') != 'zero' or proof.get('nnp') != 1
-                    or proof.get('profile') != 'cell-nested'):
-                raise RuntimeError('provisioning cell proof is absent')
-            send(payload)
-            answer = read()
-            acquired = answer == {'acquired': True}
-            if acquired:
-                relay.close()
-                if relay.failure:
-                    cell.cancel()
-                    return ProvisionResult('registry_failed', max_transfer_bytes)
-                charge = relay.charge
-                send(b'{"install":true}\n')
-                answer = read()
-            if (set(answer) != {'failure'} or answer['failure'] is not None
-                    and (type(answer['failure']) is not str or len(answer['failure']) > 80)):
-                raise RuntimeError('invalid provisioning terminal receipt')
-            if answer['failure'] is None and not acquired:
-                raise RuntimeError('provisioning success has no acquisition receipt')
-            if cell.wait(30) != 0:
-                raise RuntimeError('provisioning cell did not terminate')
-            return ProvisionResult(answer['failure'], charge)
-    except (InterruptedError, TimeoutError) as exc:
-        return ProvisionResult(str(exc), max_transfer_bytes)
-    finally:
-        relay.close()
-        if descriptor is not None:
-            os.close(descriptor)
+        outcome = call.result()
+    except Exception:  # noqa: BLE001 - an unknown outcome never publishes
+        return 'launch_or_supervision_failed'
+    if outcome.killed == 'timeout':
+        return 'timeout'
+    if outcome.killed:
+        return 'output_limit' if outcome.killed == 'output_limit' else str(outcome.killed)
+    return None if outcome.exit_code == 0 else 'process_failed'

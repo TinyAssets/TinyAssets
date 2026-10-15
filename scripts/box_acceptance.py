@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tinyassets.boxes.bootstrap import channel_factory
 from tinyassets.boxes.production_files import ProductionFileProvider, ProductionHandle
-from tinyassets.boxes.provider import BoxAuthError, BoxError, ExecLimits, WriteMode
+from tinyassets.boxes.provider import BoxAuthError, BoxError, ExecLimits, ExecState, WriteMode
 
 
 def _daemon_start() -> str:
@@ -109,6 +109,7 @@ def seed(args) -> None:
     path = "/cc/.box-acceptance-" + uuid.uuid4().hex
     body = ("box-acceptance:" + uuid.uuid4().hex).encode()
     op_id = "acceptance:write:" + session
+    interrupted_op_id = "acceptance:interrupted:" + session
     with_provider = ProductionFileProvider(channel_factory=channel_factory)
     try:
         a = with_provider.bind(args.center_a, account_id=args.owner_a, turn_id=session)
@@ -125,13 +126,20 @@ def seed(args) -> None:
                            "owner_b": args.owner_b, "center_b": args.center_b,
                            "session": session, "path": path, "body": body.hex(),
                            "op_id": op_id, "written": asdict(written),
+                           "interrupted_op_id": interrupted_op_id,
                            "usage": asdict(after), "daemon_start": _daemon_start()})
         _g2(with_provider, owner_a=args.owner_a, center_a=args.center_a,
             owner_b=args.owner_b, session=session,
             phase="seed", path=path, handle_a=a, handle_b=b)
+        # The operation ID is durable before dispatch. Restart while this sleep
+        # is running: recovery must mark the receipt unknown and never replay it.
+        with_provider.start_exec(
+            a, interrupted_op_id, ["/bin/sleep", "600"],
+            limits=ExecLimits(wall_seconds=600, output_bytes=4096),
+        )
     finally:
         with_provider.close()
-    print("G2 seed passed; G5 usage passed; restart the daemon container, then run verify")
+    print("G2 seed passed; G5 usage passed; restart the daemon promptly, then run verify")
 
 
 def verify(args) -> None:
@@ -155,6 +163,18 @@ def verify(args) -> None:
         if (data.data != body or usage.generation < state["usage"]["generation"]
                 or usage.bound_bytes != state["usage"]["bound_bytes"]):
             raise AssertionError("G5: data, generation or quota changed after restart")
+        interrupted = provider.exec_status(a, state["interrupted_op_id"])
+        if interrupted.state is not ExecState.UNKNOWN_AFTER_RESTORE:
+            raise AssertionError("G5: interrupted execution was not journaled unknown")
+        try:
+            provider.start_exec(
+                a, state["interrupted_op_id"], ["/bin/sleep", "600"],
+                limits=ExecLimits(wall_seconds=600, output_bytes=4096),
+            )
+        except BoxError:
+            pass
+        else:
+            raise AssertionError("G5: interrupted execution replayed after restart")
         _g2(provider, owner_a=args.owner_a, center_a=args.center_a,
             owner_b=args.owner_b, session=state["session"],
             phase="verify", path=state["path"], handle_a=a, handle_b=b)
@@ -164,7 +184,8 @@ def verify(args) -> None:
         args.state.unlink()
     finally:
         provider.close()
-    print("G2 cross-owner and handle checks passed; G5 restart journal, usage and quota passed")
+    print("G2 cross-owner and handle checks passed; "
+          "G5 restart journal, unknown execution, usage and quota passed")
 
 
 DISPOSABLE_MARKER = Path("/data/.disposable-copy")

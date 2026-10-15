@@ -263,27 +263,48 @@ def preview_public_component(component: dict[str, Any]) -> dict[str, Any]:
 
 
 def _render_spec(spec: dict[str, Any], wall_seconds: float) -> dict[str, Any]:
+    from tinyassets.control_plane.binding import file_binding
+
+    binding = (file_binding(Path(spec["base_path"]) / spec["universe_id"])
+               if spec["base_path"] else None)
     if _POISONED:
         raise PreviewUnavailable(_POISONED)
-    if not available():
+    if binding is None and not available():
         raise PreviewUnavailable(
             "ui_preview_unavailable: this host has no headless browser to render with")
     if not _SLOT.acquire(blocking=False):
         raise PreviewUnavailable("ui_preview_busy: another preview is rendering; try again")
     try:
-        return _run_child(spec, wall_seconds)
+        return _run_child(spec, wall_seconds, binding=binding)
     finally:
         if not _POISONED:
             _SLOT.release()
 
 
-def _run_child(spec: dict[str, Any], wall_seconds: float) -> dict[str, Any]:
+def _run_child(spec: dict[str, Any], wall_seconds: float, *, binding=None) -> dict[str, Any]:
     """The render happens in the owner's preview cell and nowhere else."""
-    from tinyassets.role_preview import render
+    if binding is not None:
+        from tinyassets.app_ui_store import read_app_ui_asset
+        from tinyassets.box_process import run_bound
 
-    with _host_slot():
-        result = render(spec, wall_seconds)
-        out, err, code, breach = result.stdout, b'', result.returncode, ''
+        if (spec["owner_user_id"] != binding.handle.account_id
+                or spec["universe_id"] != binding.handle.command_center_id):
+            raise PreviewUnavailable("preview owner scope differs from admitted box")
+        assets = {}
+        total = 0
+        for path, sha in spec["hashes"].items():
+            data = read_app_ui_asset(spec["base_path"],
+                                     owner_user_id=spec["owner_user_id"], sha256=sha)
+            if data is not None:
+                total += len(data)
+                if total > MAX_CHILD_OUTPUT // 2:
+                    raise PreviewUnavailable("preview assets exceed their bound")
+                assets[path] = base64.b64encode(data).decode("ascii")
+        prepared = dict(spec, base_path="/absent", asset_bytes=assets)
+        result = run_bound(binding, "ui-preview", ["python", "-m", "tinyassets.ui_preview"],
+                           stdin=json.dumps(prepared).encode(), wall_seconds=wall_seconds,
+                           output_bytes=MAX_CHILD_OUTPUT)
+        out, err, code, breach = result.stdout, b"", result.returncode, ""
     if breach:
         raise PreviewUnavailable(f"ui_preview_{breach}")
     lines = [line for line in out.decode("utf-8", "replace").splitlines()
@@ -497,16 +518,24 @@ def _checked_ui_id(ui_id: str) -> str:
 def write_preview(universe_dir: str | Path, ui_id: str, png: bytes) -> str:
     """Put ``png`` at ``/u/previews/<ui_id>.png``; the path as the agent sees it.
 
-    Daemon side: nothing is written here. The bytes and the id go to the
-    owner's preview-write cell (:func:`tinyassets.role_preview.write`), which
-    runs :func:`write_preview_in_cell` against the pinned center descriptor.
+    An admitted owner-box session writes through its bound file provider.
+    The pre-migration image still uses the owner preview cell.
     """
     ui_id = _checked_ui_id(ui_id)
     name = f"{ui_id}.png"
     try:
-        from tinyassets.role_preview import write
+        from tinyassets.control_plane.binding import file_binding
 
-        return write(universe_dir, ui_id, png)
+        binding = file_binding(Path(universe_dir))
+        if binding is not None:
+            from tinyassets.boxes.file_wire import MAX_DATA
+
+            binding.provider.write(
+                binding.handle, binding.operation_id(f"preview:{ui_id}"),
+                f"/cc/{PREVIEW_DIR}/{name}", png, max_bytes=MAX_DATA,
+            )
+            return f"/u/{PREVIEW_DIR}/{name}"
+        raise PermissionError("preview write requires the admitted owner box")
     except Exception as exc:  # noqa: BLE001 - every filesystem refusal is a named failure
         # UniverseFileError (a link or a non-directory on the path), a directory
         # at the target, permissions: the screenshot is not written, and the

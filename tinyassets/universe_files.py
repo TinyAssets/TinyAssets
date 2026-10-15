@@ -349,7 +349,7 @@ def write_universe_file(
     root = Path(universe_dir)
     parts = _split(relpath)
     name = parts[-1]
-    from tinyassets.boxes.provider import WriteMode
+    from tinyassets.boxes.provider import WriteConflict, WriteMode
     from tinyassets.control_plane.binding import file_binding
 
     binding = file_binding(root)
@@ -369,17 +369,15 @@ def write_universe_file(
             else:
                 data = previous.data + data
                 generation, write_mode = previous.generation, WriteMode.CAS
-        binding.provider.write(binding.handle, binding.operation_id("write"), relpath,
-                               data, max_bytes=len(data), mode=write_mode,
-                               expect_generation=generation)
+        try:
+            binding.provider.write(binding.handle, binding.operation_id("write"), relpath,
+                                   data, max_bytes=len(data), mode=write_mode,
+                                   expect_generation=generation)
+        except WriteConflict as exc:
+            if mode == "exclusive":
+                raise FileExistsError(relpath) from exc
+            raise
         return
-    if getattr(fs, "_POSIX", False):
-        from tinyassets import role_content
-
-        selected = role_content.locate(root, parts)
-        if selected is not None:
-            role_content.write(*selected, data, make_parents=make_parents, mode=mode)
-            return
     nofollow = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     if not getattr(fs, "_POSIX", False):
         parent = _windows_parent(root, parts, create=make_parents)
@@ -457,12 +455,6 @@ def publish_staged_universe_file(
     source_root, target_root = Path(staging_root), Path(universe_dir)
     source_parts, target_parts = _split(staged_relpath), _split(relpath)
     if getattr(fs, "_POSIX", False):
-        from tinyassets import role_content
-
-        selected = role_content.locate(target_root, target_parts)
-        if selected is not None:
-            role_content.write(*selected, read_universe_file(source_root, staged_relpath))
-            return
         source_fd = _parent_dir_fd(source_root, source_parts, create=False)
         try:
             target_fd = _parent_dir_fd(target_root, target_parts, create=True)
@@ -527,7 +519,7 @@ def open_broker_liveness_lock(root: Path | str, name: str) -> int:
     """
     from contextlib import ExitStack
 
-    from tinyassets import role_modes
+    from tinyassets.boxes import layout as platform
 
     _check_component(name)
     with ExitStack() as stack:
@@ -556,10 +548,10 @@ def open_broker_liveness_lock(root: Path | str, name: str) -> int:
                     or not os.path.samestat(parent_info, os.stat(
                         directory, dir_fd=root_fd, follow_symlinks=False))):
                 raise UniverseFileError("daemon liveness proof changed")
-            os.fchown(parent, -1, role_modes.BROKER_READ_GID)
-            os.fchmod(parent, role_modes.LIVENESS_DIRECTORY_MODE)
-            os.fchown(fd, -1, role_modes.BROKER_READ_GID)
-            os.fchmod(fd, role_modes.LIVENESS_FILE_MODE)
+            os.fchown(parent, -1, platform.BROKER_READ_GID)
+            os.fchmod(parent, platform.LIVENESS_DIRECTORY_MODE)
+            os.fchown(fd, -1, platform.BROKER_READ_GID)
+            os.fchmod(fd, platform.LIVENESS_FILE_MODE)
             return fd
         except BaseException:
             os.close(fd)
@@ -680,27 +672,13 @@ def ensure_data_directory(path: Path | str) -> None:
         return
     root, relative = located
     parts = _split(relative)
-    from tinyassets import role_content
+    if parts and not parts[0].startswith('.'):
+        from tinyassets.control_plane.binding import file_binding
 
-    content = role_content.locate(root, parts)
-    if content is not None:
-        center, content_parts = content
-        descriptor = fs.open_dir_nofollow(center)
-        try:
-            machine = os.fstat(descriptor).st_gid
-        finally:
-            os.close(descriptor)
-        try:
-            existing = fs.open_dir_nofollow(target)
-        except FileNotFoundError:
-            pass
-        else:
-            try:
-                role_content._check_owner_directory(existing, machine)
-            finally:
-                os.close(existing)
-            return
-        role_content.ensure_directories(center, content_parts, machine=machine)
+        # A command center's directories live in its owner's box; a write
+        # through the admitted handle makes its parents. Nothing is created on
+        # a host path for a center, admitted or not.
+        file_binding(root / parts[0])
         return
     descriptor = _parent_dir_fd(root, [*parts, 'unused'], create=True)
     os.close(descriptor)

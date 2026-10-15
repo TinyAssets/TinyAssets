@@ -108,7 +108,7 @@ def test_box_forwarder_child_does_not_hold_command_output_open():
     import subprocess
     import sys
 
-    from tinyassets.universe_egress import FORWARDER
+    from tinyassets.boxes.network import FORWARDER
 
     if os.name != "posix":
         pytest.skip("guest forwarder uses POSIX fork")

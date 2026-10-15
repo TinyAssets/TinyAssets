@@ -8,9 +8,11 @@ import pytest
 from tinyassets.broker.fence import Fence
 from tinyassets.broker.ledger_queries import (
     DISCOVERY_FACTS,
+    GIT_GRANTS,
     HAS_PRICED_SOURCE,
     local_query,
     query_ledger,
+    selected_git_connections,
 )
 from tinyassets.broker.server import _Connection
 from tinyassets.storage.outbound_connections import ConnectionLedger, GrantResolutionError
@@ -118,6 +120,55 @@ def test_an_unavailable_broker_never_constructs_a_local_ledger(ledger, monkeypat
     with pytest.raises(ProxyRequestError, match="not running"):
         query_ledger(tmp_path, query=DISCOVERY_FACTS, principal="alice",
                      command_center="cc-alice", grant_id="grant-alice")
+
+
+def test_git_grants_select_only_live_owner_center_scopes(ledger):
+    for owner, center in (("alice", "cc-alice"), ("alice", "other"),
+                          ("bob", "cc-alice")):
+        suffix = f"{owner}-{center}"
+        ledger.create_connection(
+            connection_id=f"git-{suffix}", owner_user_id=owner,
+            connection_class="http", connection_type="http", auth_scheme="bearer",
+            scopes=("git_read:team/repo",), provider="http", destination="git",
+            credential_ref="vault://http/fixture", git_host="git.example.com",
+            allowed_endpoints=[{"host": "git.example.com", "path_template": "/team/repo.git",
+                                "methods": ["GET"]}],
+        )
+        ledger.grant_connection(grant_id=f"git-grant-{suffix}",
+                                connection_id=f"git-{suffix}", owner_user_id=owner,
+                                universe_id=center)
+    assert _query(ledger, query=GIT_GRANTS)["selected"] == [
+        ("git-grant-alice-cc-alice", "git-alice-cc-alice")]
+    ledger.revoke_grant("git-grant-alice-cc-alice")
+    assert _query(ledger, query=GIT_GRANTS)["selected"] == []
+
+
+def test_cli_git_projection_rechecks_exact_grant_without_secret(ledger, monkeypatch, tmp_path):
+    ledger.create_connection(
+        connection_id="git-alice", owner_user_id="alice", connection_class="http",
+        connection_type="http", auth_scheme="bearer", scopes=("git_read:team/repo",),
+        provider="http", destination="git", credential_ref="vault://http/private",
+        git_host="git.example.com",
+        allowed_endpoints=[{"host": "git.example.com", "path_template": "/team/repo.git",
+                            "methods": ["GET"]}],
+    )
+    ledger.grant_connection(grant_id="git-grant", connection_id="git-alice",
+                            owner_user_id="alice", universe_id="cc-alice")
+
+    def broker_query(data_root, **kwargs):
+        assert data_root == tmp_path
+        return local_query(ledger, **kwargs)
+
+    monkeypatch.setattr("tinyassets.broker.ledger_queries.query_ledger", broker_query)
+    selected = selected_git_connections(tmp_path, principal="alice", command_center="cc-alice")
+    assert len(selected) == 1
+    grant, view, incarnation = selected[0]
+    assert (grant.grant_id, view.connection_id, view.scopes) == (
+        "git-grant", "git-alice", ("git_read:team/repo",))
+    assert incarnation == ledger.incarnation("git-alice")
+    assert not hasattr(view, "credential_ref")
+    ledger.revoke_grant("git-grant")
+    assert selected_git_connections(tmp_path, principal="alice", command_center="cc-alice") == ()
 
 
 def test_wire_whitelist_and_fence_are_checked_before_ledger_open(ledger, tmp_path):

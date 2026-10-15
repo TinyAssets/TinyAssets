@@ -505,7 +505,7 @@ def run_test(
 
     **The draft actually runs.** Every code node (one declaring ``source_code``)
     is executed through the shipped subprocess sandbox
-    (:class:`tinyassets.node_sandbox.NodeSandbox`: separate process, import
+    (:class:`tinyassets.boxes.node.NodeSandbox`: separate process, import
     allowlist, stripped environment, hard timeout, output cap), and the wall-time
     and output budgets are charged from the *measured* run — so a node that
     raises, hangs, or floods output fails the test instead of reporting a nominal
@@ -704,7 +704,7 @@ def _execute_draft_nodes(
     from the measured run, so "the budget fired" is an observation, not a
     declaration. Execution stops at the first budget breach.
     """
-    from tinyassets.node_sandbox import NodeSandbox, SandboxUnavailableError
+    from tinyassets.boxes.node import NodeSandbox, SandboxUnavailableError
 
     if session.artifact_kind != "node":
         return [], None

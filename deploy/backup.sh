@@ -150,19 +150,29 @@ fi
 
 # Root host receipts are part of the data member. The pair is coherent only
 # while every owner-box service is excluded and no guest survived its host.
+OWNER_BOX=0
 if [[ -f "${VOLUME_DIR}/.layout.json" ]] && python3 - "${VOLUME_DIR}/.layout.json" <<'BOX_LAYOUT_PY'
 import json
 import sys
 sys.exit(0 if json.load(open(sys.argv[1])).get("box_layout") == "owner-box" else 1)
 BOX_LAYOUT_PY
 then
-    if [[ "${BACKUP_MODE:-}" != snapshot ]] || ! flock -n -x 9; then
-        log "ERROR: owner-box backup requires a quiesced paired snapshot with every writer stopped"
+    OWNER_BOX=1
+    if [[ ! -d "${BOX_STORE_DIR}" || -L "${BOX_STORE_DIR}" ]]; then
+        log "ERROR: committed owner-box layout requires its mounted box store"
         exit 2
     fi
-    if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
+    if [[ "${BACKUP_MODE:-}" != snapshot ]]; then
+        # The host barrier takes the mutation lock before reacquiring this
+        # layout lock exclusively. Never wait for it while holding fd 9.
+        flock -u 9
+        exec 9>&-
+        exec "$(dirname "$(realpath "$0")")/backup-owner-box.sh" \
+            "${VOLUME_DIR}" "${BOX_STORE_DIR}" "${BACKUP_DEST}"
+    fi
+    if ! flock -n -x 9 || ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
             --snapshot-data "${VOLUME_DIR}" --quiescent; then
-        log "ERROR: owner-box receipt/survivor census refused the snapshot"
+        log "ERROR: owner-box offline snapshot needs stopped writers and an empty guest census"
         exit 2
     fi
 fi
@@ -323,6 +333,16 @@ INVENTORY_PY
             "${SNAPSHOT_PATH}" "${BACKUP_DEST}/${SNAPSHOT_NAME}"; then
         log "ERROR: snapshot upload failed (local copy kept)"
         exit 3
+    fi
+    if [[ "$OWNER_BOX" == 1 ]]; then
+        PAIR_MANIFEST="${SNAPSHOT_DIR}/tinyassets-pair-${TS}.json"
+        if ! python3 "$(dirname "$(realpath "$0")")/backup-pair.py" create \
+                "$SNAPSHOT_PATH" "$BOX_SNAPSHOT_PATH" "$PAIR_MANIFEST" \
+                || ! rclone copyto --contimeout 60s --timeout 60s \
+                    "$PAIR_MANIFEST" "${BACKUP_DEST}/$(basename "$PAIR_MANIFEST")"; then
+            log "ERROR: owner-box snapshot manifest failed"
+            exit 3
+        fi
     fi
     log "SNAPSHOT id=${SNAPSHOT_NAME} sha256=${sha} bytes=${bytes} names=${names}"
     exit 0

@@ -40,17 +40,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/boxes/gvisor_files.py::GvisorFileBackend._wake": (
         CALL_SCOPED, "host capacity FIFO waits only until this admitted request's deadline",
     ),
-    'tinyassets/browser_sessions.py::owner_action [Timer]': (
-        CALL_SCOPED, 'One protected login capture expires and destroys its owner browser cell.'),
-    "tinyassets/role_preview_cell.py::supervised": (
-        CALL_SCOPED, "one preview cell waits for its browser until the call deadline",
-    ),
-    "tinyassets/role_preview_cell.py::supervised#2": (
-        CALL_SCOPED, "bounded cleanup wait for that preview's PID namespace",
-    ),
-    "tinyassets/workspace_provision_process.py::run_provision_stage": (
-        CALL_SCOPED, "bounded dependency stage inside one owner cell; ends with the call",
-    ),
     # -- always-on duties of the execution owner ------------------------------
     "tinyassets/mcp_events_http.py::delivery_lifespan.run": (
         CONTROL_PLANE,
@@ -106,11 +95,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         "one owner-key acquisition waits for a live holder only until wait_s; "
         "it returns a lease or refuses, without scheduling work",
     ),
-    "tinyassets/owner_launcher_client.py::OwnerLauncherClient.start_cell": (
-        CALL_SCOPED,
-        "one cell start retries while the owner's cell slots are full, until "
-        "its deadline, then refuses; it does not schedule another start",
-    ),
     "tinyassets/agent_turn_coordinator.py::AgentTurnCoordinator._pause_before_retry": (
         CALL_SCOPED,
         "bad-reply backoff bounded by the remaining turn deadline; polls Stop "
@@ -124,15 +108,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CALL_SCOPED,
         "one broker stream waits for the daemon's refresh answer only until "
         "that stream's own deadline; nothing reschedules",
-    ),
-    "tinyassets/role_node.py::run": (
-        CALL_SCOPED, "one node-sandbox cell is supervised until exit or its call deadline",
-    ),
-    "tinyassets/role_package_cell.py::run": (
-        CALL_SCOPED, "one package payload is polled for exit, limits or broker revocation",
-    ),
-    "tinyassets/role_tools.py::run": (
-        CALL_SCOPED, "one TOOL cell is drained and reaped within its requested wall bound",
     ),
     "tinyassets/activity_runner.py::linked_activity": (
         CALL_SCOPED,
@@ -198,9 +173,13 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/external_agents/home.py::exclusive_refresh": (
         CALL_SCOPED, "owner/service refresh lease wait; 30-second deadline",
     ),
+    "tinyassets/universe_tools.py::_bash": (
+        CALL_SCOPED, "one box bash call polls its activity's stop check until the call ends",
+    ),
+    "tinyassets/workspace_provision_execution.py::_stage": (
+        CALL_SCOPED, "one box provisioning stage polls its run's cancel check until it ends",
+    ),
     "tinyassets/execution_authority/blob_proof.py::_lock_fd": (CALL_SCOPED, "lock acquisition"),
-    "tinyassets/node_sandbox.py::NodeSandbox.run_nested": (CALL_SCOPED, "child process wait"),
-    "tinyassets/node_sandbox.py::_watch_process_tree_rss": (CALL_SCOPED, "child RSS watch"),
     "tinyassets/provider_admission.py::_acquire_waiting": (CALL_SCOPED, "slot wait"),
     "tinyassets/provider_admission.py::blocking_provider_child": (CALL_SCOPED, "slot wait"),
     "tinyassets/provider_admission.py::provider_slot_async": (CALL_SCOPED, "slot wait"),
@@ -247,11 +226,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     ),
     "tinyassets/ttl_memo.py::TTLMemo.get": (CALL_SCOPED, "single-flight wait"),
     "tinyassets/universe_seats.py::_wait_for_seat": (CALL_SCOPED, "seat wait"),
-    "tinyassets/universe_tools.py::_remove_cgroup": (CALL_SCOPED, "cgroup teardown retry"),
-    "tinyassets/universe_tools.py::_slot": (CALL_SCOPED, "tool slot wait"),
-    "tinyassets/universe_tools.py::_watch": (
-        CALL_SCOPED, "watches ONE jailed tool call from outside the jail",
-    ),
     "tinyassets/workflow_agent.py::WorkAgentAdapter._until_activity_stops": (
         CALL_SCOPED,
         "polls ONE native activity call's activity status; ends when the call "

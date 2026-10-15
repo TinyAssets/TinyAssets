@@ -236,7 +236,13 @@ def scratch_pool_root(universe_dir: Path) -> Path:
     from tinyassets.workspace_owner_pool import SCRATCH_DIR
     from tinyassets.workspace_pool import WORKSPACES_DIR
 
-    return Path(universe_dir) / WORKSPACES_DIR / SCRATCH_DIR
+    return _lease_center_root(universe_dir) / WORKSPACES_DIR / SCRATCH_DIR
+
+
+def _lease_center_root(universe_dir: Path) -> Path:
+    from tinyassets.boxes.provider import BOX_ROOT
+
+    return Path(BOX_ROOT) / Path(universe_dir).name
 
 
 def universe_workspace_root(universe_dir: Path) -> Path:
@@ -246,7 +252,7 @@ def universe_workspace_root(universe_dir: Path) -> Path:
     itself, so this is the universe directory -- passing
     ``<universe>/workspaces`` here produced ``workspaces/workspaces/...``.
     """
-    return Path(universe_dir)
+    return _lease_center_root(universe_dir)
 
 
 # --------------------------------------------------------------------------- #
@@ -526,7 +532,7 @@ def _lease_names(base_path: Path, lease_path: Path) -> tuple[list[str], str]:
     components through its own descriptors, so a host path never crosses.
     """
     try:
-        relative = Path(lease_path).relative_to(base_path)
+        relative = Path(lease_path).relative_to(_lease_center_root(base_path))
     except ValueError:
         raise _Refused(
             "workspace_checkout_failed",
@@ -541,23 +547,23 @@ def _lease_names(base_path: Path, lease_path: Path) -> tuple[list[str], str]:
 
 
 def _open_cell_lease(lease_path: Path) -> tuple[Any, Any]:
-    """Open the lease the OWNER CELL created, and its content directory.
+    """Check the lease and its content directory exist in the admitted owner box.
 
-    The daemon no longer creates either: only the owner's cell can make a
-    directory the owner owns, and a node sandbox mounts nothing else. What the
-    daemon still does is hold the descriptors -- the capability the effect
-    chain hands to a node is a dup of these, so a discard racing a run closes
-    the originals rather than letting a path be re-resolved.
+    The daemon holds no descriptor on an owner tree: the box handle is the
+    capability, and every path under the lease is re-checked by the host.
     """
-    fs = _fs()
-    with _fs_refusals("opening the lease the owner cell created"):
-        lease_fd = fs.open_dir_nofollow(str(lease_path))
-    try:
-        with _fs_refusals(f"opening {_CONTENT_DIR!r} in the lease"):
-            return lease_fd, fs.open_subdir_nofollow(lease_fd, _CONTENT_DIR)
-    except BaseException:
-        _close_handles(lease_fd)
-        raise
+    from tinyassets.control_plane.binding import current_binding
+
+    binding = current_binding()
+    if binding is None or not Path(lease_path).is_relative_to(
+            _lease_center_root(binding.universe_dir)):
+        raise _Refused("workspace_checkout_failed", "lease has no admitted owner box")
+    for path in (lease_path, lease_path / _CONTENT_DIR):
+        info = binding.provider.stat(
+            binding.handle, _box_provider_path(path, binding.universe_dir))
+        if info is None or info.kind != "dir":
+            raise _Refused("workspace_checkout_failed", "owner box lease is incomplete")
+    return None, None
 
 
 def _operation_id(run_id: str, node_id: str, op: str) -> str:
@@ -705,7 +711,7 @@ def _pool_db(base_path: Path) -> Path:
 
 def _provision_checkout(
     requested: Any, *, base_path: Path, resource: Any, host: str, repo: str,
-    lease: Any, lease_fd: int, repo_fd: int, run_id: str, node_id: str,
+    lease: Any, run_id: str, node_id: str,
     universe_id: str, timeout_seconds: float, should_cancel: Callable[[], bool] | None,
     principal: str,
 ) -> dict[str, Any]:
@@ -733,9 +739,27 @@ def _provision_checkout(
             or ("node" in requested and type(requested["node"]) is not bool)
             or not (requested.get("python") or requested.get("node"))):
         return refuse("invalid_request", "provision requires a Python manifest path or node: true")
+    from tinyassets.control_plane.binding import current_binding
+
+    binding = current_binding()
+    if binding is None:
+        return refuse("invalid_request", "provisioning requires the admitted owner box")
+    universe_dir = Path(base_path) / universe_id
+
+    def read_in_box(path: str, bound: int) -> bytes:
+        if not path or path.startswith("/") or any(
+                part in ("", ".", "..") for part in path.split("/")):
+            raise FileNotFoundError(path)
+        target = _box_provider_path(Path(lease.path) / _CONTENT_DIR / path, universe_dir)
+        info = binding.provider.stat(binding.handle, target)
+        if info is None or info.kind != "file":
+            raise FileNotFoundError(path)
+        return binding.provider.read(binding.handle, target, max_bytes=bound).data
+
     try:
         manifests = read_provision_manifests(
-            repo_fd, python_path=requested.get("python"), node=requested.get("node", False))
+            python_path=requested.get("python"), node=requested.get("node", False),
+            reader=read_in_box)
     except ProvisionRefused as exc:
         evidence = refuse(exc.reason, "dependency manifest is outside the supported grammar")
         if exc.line_no is not None:
@@ -751,7 +775,7 @@ def _provision_checkout(
         base_path, universe_id=universe_id, run_id=run_id, operation_id=operation_id,
         max_bytes=bound, refusal="workspace_provision_failed")
     result = execute_provision(
-        manifests, lease_fd=lease_fd, repo_fd=repo_fd, max_transfer_bytes=bound,
+        manifests, lease_path=Path(lease.path), max_transfer_bytes=bound,
         universe_dir=base_path, principal=principal,
         storage_bound=bound, timeout_s=timeout_seconds,
         cancelled=should_cancel if should_cancel is not None else lambda: False)
@@ -918,8 +942,7 @@ def _checkout(
         if packet.get("provision") is not None:
             provision_evidence = _provision_checkout(
                 packet["provision"], base_path=base_path, resource=resource,
-                host=host, repo=repo, lease=lease, lease_fd=lease_fd, repo_fd=repo_fd,
-                principal=principal,
+                host=host, repo=repo, lease=lease, principal=principal,
                 run_id=run_id, node_id=node_id, universe_id=universe_id,
                 timeout_seconds=timeout_seconds, should_cancel=should_cancel)
         # A cancellation arriving between the final stage and publication still
@@ -1069,9 +1092,7 @@ def _settle_permanent(
 def _require_generation_fits(lease: Any, bound: int) -> int:
     """Measure the new generation -- provisioning included -- and refuse it if it
     outgrew its reservation, before publication (D6). Returns its size."""
-    from tinyassets import storage_accounting
-
-    size = storage_accounting._walk_bytes(Path(lease.path))
+    size = _box_tree_bytes(Path(lease.path), bound)
     if size > bound:
         raise _Refused(
             "storage_quota_exceeded",
@@ -1079,6 +1100,52 @@ def _require_generation_fits(lease: Any, bound: int) -> int:
             "account storage could hold; nothing was published",
         )
     return size
+
+
+def _box_tree_bytes(root: Path, bound: int) -> int:
+    from tinyassets.control_plane.binding import current_binding
+
+    binding = current_binding()
+    if binding is None or not root.is_relative_to(_lease_center_root(binding.universe_dir)):
+        raise _Refused("storage_quota_exceeded", "workspace measure has no admitted owner")
+    before = binding.provider.committed_generation(binding.handle)
+    pending = [str(root)]
+    total = 0
+    entries = 0
+    while pending:
+        directory = pending.pop()
+        cursor = None
+        while True:
+            page = binding.provider.list(
+                binding.handle, _box_provider_path(Path(directory), binding.universe_dir),
+                cursor=cursor)
+            for item in page.entries:
+                entries += 1
+                if entries > 100_000 or item.name in ("", ".", "..") or "/" in item.name:
+                    raise _Refused("storage_quota_exceeded", "workspace measure exceeds bound")
+                if item.kind == "dir":
+                    pending.append(directory + "/" + item.name)
+                else:
+                    total += max(0, item.size)
+                    if total > bound:
+                        return total
+            if page.next_cursor is None:
+                break
+            cursor = page.next_cursor
+    if binding.provider.committed_generation(binding.handle) != before:
+        raise _Refused("storage_quota_exceeded", "workspace changed during measure")
+    return total
+
+
+def _box_provider_path(guest_path: Path, universe_dir: Path) -> str:
+    """Translate a guest absolute path to the handle's center-relative file path."""
+    try:
+        relative = Path(guest_path).relative_to(_lease_center_root(universe_dir))
+    except ValueError:
+        raise _Refused("workspace_checkout_failed", "path is outside the guest center") from None
+    if not relative.parts or any(part in ("", ".", "..") for part in relative.parts):
+        raise _Refused("workspace_checkout_failed", "invalid guest workspace path")
+    return "/cc/" + relative.as_posix()
 
 
 def _publish(db: Path, lease: Any, *, universe_id: str, repo_key: str, run_id: str) -> int | None:
@@ -1398,6 +1465,7 @@ def _push(
         answer = execute(
             {
                 "op": "push",
+                "operation_id": operation_id,
                 "universe_dir": str(base_path),
                 "principal": principal,
                 "agent": _agent_for(run_id, node_id),

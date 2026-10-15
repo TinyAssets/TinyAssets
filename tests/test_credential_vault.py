@@ -10,11 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.support.cell_double import CELL_OWNER_UID
 from tinyassets.credential_vault import (
     VAULT_FILENAME,
     apply_provider_auth_env,
     claude_subscription_auth_available,
+    credential_vault_path,
     ensure_claude_config_dir_from_vault,
     load_credential_vault,
     provider_auth_env_overrides,
@@ -26,18 +26,13 @@ from tinyassets.credential_vault import (
 
 @pytest.fixture(autouse=True)
 def _admitted_owner_identity(monkeypatch):
-    """The broker resolves the owner's uid/gid; a test process has no broker.
-
-    Snapshot custody compares the center's label against the broker's answer,
-    so the stand-in here must be the same number the cell double's
-    ``role_snapshot.owner_uid`` reports.
-    """
+    """The broker resolves the owner's uid/gid; a test process has no broker."""
     from tinyassets.broker import owner_identities
 
     monkeypatch.setattr(
         owner_identities, "owner_identity",
         lambda root, *, principal, allocate=False: owner_identities.OwnerIdentity(
-            CELL_OWNER_UID, CELL_OWNER_UID),
+            300001, 300001),
     )
 
 
@@ -318,6 +313,7 @@ def test_single_vcs_write_reports_dropped_purpose_slots(tmp_path):
 
 def test_single_subscription_write_preserves_sibling_fields(tmp_path):
     configured = tmp_path / "claude_cfg"
+    custody = credential_vault_path(tmp_path).parent / "claude_cfg"
     write_credential_vault(tmp_path, [{
         "credential_type": "llm_subscription",
         "service": "claude",
@@ -337,7 +333,8 @@ def test_single_subscription_write_preserves_sibling_fields(tmp_path):
         "claude_config_dir": str(configured),
         "oauth_token": "tok-ROTATED",
     }]
-    assert resolve_claude_config_dir(tmp_path) == configured
+    # A config dir named inside the center resolves into platform custody.
+    assert resolve_claude_config_dir(tmp_path) == custody
     assert resolve_claude_oauth_token(tmp_path) == "tok-ROTATED"
 
 
@@ -477,11 +474,12 @@ def test_claude_config_dir_from_vault_sets_provider_env(tmp_path):
         ],
     )
 
-    assert ensure_claude_config_dir_from_vault(tmp_path) == configured
-    assert resolve_claude_config_dir(tmp_path) == configured
+    custody = credential_vault_path(tmp_path).parent / "durable-claude"
+    assert ensure_claude_config_dir_from_vault(tmp_path) == custody
+    assert resolve_claude_config_dir(tmp_path) == custody
     assert claude_subscription_auth_available(tmp_path) is True
     assert provider_auth_env_overrides(tmp_path, "claude-code") == {
-        "CLAUDE_CONFIG_DIR": str(configured)
+        "CLAUDE_CONFIG_DIR": str(custody)
     }
 
 
@@ -501,7 +499,7 @@ def test_apply_provider_auth_env_uses_workflow_universe(tmp_path):
 
     apply_provider_auth_env(env, "claude-code")
 
-    assert env["CLAUDE_CONFIG_DIR"] == str(configured)
+    assert env["CLAUDE_CONFIG_DIR"] == str(credential_vault_path(tmp_path).parent / "claude-dir")
 
 
 def test_missing_vault_loads_as_empty(tmp_path: Path):
@@ -513,7 +511,7 @@ def test_snapshot_refuses_symlinked_root_before_writing_secret(tmp_path, link_le
     from tinyassets.credential_vault import snapshot_llm_subscription_credential
 
     universe_dir, custody = _credential_snapshot_fixture(tmp_path)
-    runtime_dir = universe_dir / ".runtime"
+    runtime_dir = credential_vault_path(universe_dir).parent / ".runtime"
     outside = tmp_path / "outside-snapshot-root"
     outside.mkdir()
     if link_level == "runtime":
@@ -579,26 +577,24 @@ def test_snapshot_directory_and_files_are_owner_only(tmp_path):
         custody=custody,
     )
     try:
-        # Sealed to exactly the dedicated owner: the per-snapshot directory is
-        # readable, the two platform directories above it only traversable, the
-        # files read-only, and nothing anywhere is granted to other.
-        assert stat.S_IMODE(snapshot.directory.stat().st_mode) == 0o750
-        assert stat.S_IMODE(snapshot.directory.parent.stat().st_mode) == 0o710
-        assert stat.S_IMODE(snapshot.directory.parent.parent.stat().st_mode) == 0o710
+        # The daemon's own, private: the snapshot and the two platform
+        # directories above it, and the files, are granted to nobody else.
+        assert stat.S_IMODE(snapshot.directory.stat().st_mode) == 0o700
+        assert stat.S_IMODE(snapshot.directory.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(snapshot.directory.parent.parent.stat().st_mode) == 0o700
         assert {
             path.name: stat.S_IMODE(path.stat().st_mode)
             for path in snapshot.directory.iterdir()
-        } == {".lock": 0o440, "auth.json": 0o440, "config.toml": 0o440}
+        } == {".lock": 0o600, "auth.json": 0o600, "config.toml": 0o600}
     finally:
         cleanup_llm_credential_snapshot(snapshot)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows does not enforce POSIX roles")
 def test_role_snapshot_custody_is_the_owners_and_survives_reprepare(tmp_path):
-    """One identity holds a launch snapshot: this center's dedicated owner.
+    """One identity holds a launch snapshot: the daemon, in platform custody.
 
-    There is no shared work group left to fall back to, and re-preparing the
-    root must not loosen what is already published.
+    Re-preparing the root must not loosen what is already published.
     """
     from tinyassets import credential_vault as vault
 
@@ -606,19 +602,19 @@ def test_role_snapshot_custody_is_the_owners_and_survives_reprepare(tmp_path):
     snapshot = vault.snapshot_llm_subscription_credential(universe_dir=universe, custody=custody)
     try:
         vault._prepare_snapshot_root(universe)
-        assert stat.S_IMODE(snapshot.directory.stat().st_mode) == 0o750
+        assert stat.S_IMODE(snapshot.directory.stat().st_mode) == 0o700
         for path in (snapshot.directory.parent, snapshot.directory.parent.parent):
-            assert stat.S_IMODE(path.stat().st_mode) == 0o710
+            assert stat.S_IMODE(path.stat().st_mode) == 0o700
         for path in snapshot.directory.iterdir():
-            assert stat.S_IMODE(path.stat().st_mode) == 0o440
-            assert not path.stat().st_mode & 0o007
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
+            assert not path.stat().st_mode & 0o077
         assert (snapshot.directory / "auth.json").read_bytes()
     finally:
         vault.cleanup_llm_credential_snapshot(snapshot)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows does not enforce POSIX roles")
-@pytest.mark.parametrize("operation", ["fchmod", "fsync"])
+@pytest.mark.parametrize("operation", ["fsync"])
 def test_role_snapshot_permission_or_sync_failure_never_returns_credentials(
     tmp_path, monkeypatch, operation,
 ):
@@ -635,4 +631,4 @@ def test_role_snapshot_permission_or_sync_failure_never_returns_credentials(
     monkeypatch.setattr(os, operation, fail_file)
     with pytest.raises(OSError, match="publication fixture"):
         vault.snapshot_llm_subscription_credential(universe_dir=universe, custody=custody)
-    assert not list((universe / ".runtime/provider-launch-credentials").glob("*/auth.json"))
+    assert not list(vault._snapshot_root_path(universe).glob("*/auth.json"))

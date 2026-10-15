@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import re
-import shutil
 
 
 def _run(home, owner, run_id):
@@ -109,20 +108,31 @@ def matches(home, row, condition, *, probe=None):
 
 
 def run_probe(home, row, condition):
-    from tinyassets import universe_egress, universe_tools
-    from tinyassets.api.permissions import owner_run_identity
+    import asyncio
+    import uuid
 
-    # The production four-tool path: owner tool cell, nested jail, storage
-    # accounting and the owner's checking egress proxy. Never a daemon shell.
+    from tinyassets.agent_loop.box_tools import BoxExecutor
+    from tinyassets.agent_loop.served_chat import configured_box_provider
+    from tinyassets.api.permissions import owner_run_identity
+    from tinyassets.control_plane.binding import bind_session, use_binding
+
+    # The probe is a bash command in the owner's box, bound for this wake
+    # alone: the box's own egress, limits and accounting. Never a daemon shell.
     with owner_run_identity(home.parent, home.name, row["owner"]) as authorized:
         if not authorized:
             raise PermissionError("wake probe owner unavailable")
-        argv = [universe_tools._system_binary("bash"), "-c", condition["command"]]
-        socket = universe_tools._egress_socket(home)
-        python = shutil.which("python3", path="/usr/bin:/bin")
-        if socket is not None and python:
-            argv = universe_egress.forwarder_argv(python, argv)
-        outcome = universe_tools.run_jailed(
-            home, argv, agent_id=row["agent"], egress_socket=socket,
-            wall_seconds=condition.get("timeout_seconds", 60))
+        provider, limits = configured_box_provider()
+        if provider is None:
+            raise PermissionError("wake probe requires the owner box provider")
+        binding = bind_session(
+            provider=provider, limits=limits, universe_dir=home, owner=row["owner"],
+            execution_id=f"wake:{row['owner']}:{home.name}:{row['agent']}:{uuid.uuid4().hex}",
+        )
+        root = getattr(binding.handle, "root", None) or "/cc"
+        executor = BoxExecutor(provider, binding.handle, limits=limits, cwd=root)
+        with use_binding(binding):
+            outcome = asyncio.run(executor.run(
+                binding.operation_id("wake-probe"), ["/bin/bash", "-c", condition["command"]],
+                wall_seconds=float(condition.get("timeout_seconds", 60)),
+            ))
     return outcome.exit_code == 0 and not outcome.killed

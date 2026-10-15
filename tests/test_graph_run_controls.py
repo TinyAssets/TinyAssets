@@ -182,7 +182,8 @@ def _exercise_exposed_cancel(controls, monkeypatch, *, queued, with_neighbors=Fa
     import threading
     from concurrent.futures import ThreadPoolExecutor
 
-    from tinyassets import node_sandbox, runs
+    from tinyassets import runs
+    from tinyassets.boxes import node as node_sandbox
     from tinyassets.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
 
     served, base, _ = controls
@@ -201,7 +202,6 @@ def _exercise_exposed_cancel(controls, monkeypatch, *, queued, with_neighbors=Fa
         return proc
 
     def local_test_sandbox(**kwargs):
-        kwargs["launcher"] = node_sandbox.PlainSubprocessLauncher()
         return sandbox_type(**kwargs)
 
     monkeypatch.setattr(node_sandbox, "NodeSandbox", local_test_sandbox)

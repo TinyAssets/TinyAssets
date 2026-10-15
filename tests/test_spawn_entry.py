@@ -60,11 +60,14 @@ def test_no_executor_is_started_outside_the_starter():
         "input, parent):\n  " + "\n  ".join(offenders))
 
 
-def test_every_parent_kind_resolves_the_agent_from_its_files(tmp_path):
+def test_every_parent_kind_resolves_the_agent_from_its_files(tmp_path, _owner_box_double):
     """``start`` loads the agent once, from ``agents/<name>/``, before any executor."""
     import pytest
 
     from tinyassets.control_plane import session
+
+    if _owner_box_double is None:
+        pytest.skip("the owner box double needs Linux")
 
     (tmp_path / "u").mkdir()
     folder = tmp_path / "u" / "agents" / "scout"
@@ -74,12 +77,24 @@ def test_every_parent_kind_resolves_the_agent_from_its_files(tmp_path):
     theirs.mkdir()
     (theirs / "settings.yaml").write_text("schema_version: 1\nagent: {owner: p}\n",
                                           encoding="utf-8")
-    parent = session.ChildOf(base_path=tmp_path, universe_id="u", owner="o", agent_id="main")
+    from tinyassets.boxes.provider import ExecLimits
+    from tinyassets.control_plane.binding import SessionBinding
+
+    def admitted(center):
+        # A child carries its parent's admitted binding on the owner box.
+        (tmp_path / center).mkdir(exist_ok=True)
+        handle = _owner_box_double.bind_under(tmp_path, center, account_id="o",
+                                              turn_id=f"parent-{center}")
+        return SessionBinding(_owner_box_double, handle, ExecLimits(), tmp_path / center)
+
+    parent = session.ChildOf(base_path=tmp_path, universe_id="u", owner="o", agent_id="main",
+                             box_binding=admitted("u"))
     with pytest.raises(session.AgentUnavailable):
         session.start("nobody", "hi", parent)
     with pytest.raises(session.AgentUnavailable):
         session.start("scout", "hi", session.ChildOf(
-            base_path=tmp_path, universe_id="elsewhere", owner="o", agent_id="main"))
+            base_path=tmp_path, universe_id="elsewhere", owner="o", agent_id="main",
+            box_binding=admitted("elsewhere")))
     # A co-admin's own agent on this shared command center is not "o"'s to start.
     with pytest.raises(session.AgentUnavailable):
         session.start("theirs", "hi", parent)
@@ -89,4 +104,4 @@ def test_every_parent_kind_resolves_the_agent_from_its_files(tmp_path):
     with pytest.raises(ActivityRefused):
         session.start("scout", "hi", session.ChildOf(
             base_path=tmp_path, universe_id="u", owner="o", agent_id="main",
-            inside_activity=True))
+            inside_activity=True, box_binding=admitted("u")))

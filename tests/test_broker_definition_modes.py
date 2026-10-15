@@ -4,7 +4,7 @@ import stat
 
 import pytest
 
-from tinyassets import role_modes
+from tinyassets.boxes import layout as role_modes
 from tinyassets.providers import definition
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX broker metadata permissions")

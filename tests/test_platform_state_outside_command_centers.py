@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 from tinyassets import storage_layout as layout
-from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
+from tinyassets.boxes.layout import UNIVERSE_SIDECARS_DIR
 from tinyassets.storage import platform_state_move as psm
 from tinyassets.storage.effector_consents import (
     consents_db_path,

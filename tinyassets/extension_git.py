@@ -1,5 +1,5 @@
-"""Revision-bound git routes on the existing owner broker and checking egress."""
-from contextlib import ExitStack, contextmanager
+"""Revision-bound git grants, projected into a box command's environment."""
+from contextlib import contextmanager
 from dataclasses import replace
 
 from tinyassets.extension_manifest import ExtensionError
@@ -7,20 +7,21 @@ from tinyassets.extension_manifest import ExtensionError
 
 @contextmanager
 def for_launch(backend):
-    with ExitStack() as stack:
-        try:
-            prefix = stack.enter_context(_routes_for_launch(backend))
-        except (OSError, RuntimeError, LookupError, ValueError):
-            prefix = ("printf '%s\\n' 'Authenticated git unavailable: extension binding, "
-                      "broker or egress not admitted.' >&2; export GIT_TERMINAL_PROMPT=0; ")
-        yield prefix
+    """The ``TINYASSETS_BOX_GIT`` projection for the launch, or an empty mapping.
+
+    The box's forwarder opens the broker git routes from it before the command
+    forks (``boxes.git_bridge.prepare``); a binding, broker or grant refusal
+    leaves the command with no authenticated git, never with the daemon's.
+    """
+    try:
+        yield _environment_for_launch(backend)
+    except (OSError, RuntimeError, LookupError, ValueError):
+        yield {}
 
 
-@contextmanager
-def _routes_for_launch(backend):
+def _environment_for_launch(backend):
     if backend is None:
-        yield ""
-        return
+        return {}
     from tinyassets.extension_capabilities import ExtensionCapabilities
     from tinyassets.storage.workspace_authority import parse_git_scope
 
@@ -38,11 +39,8 @@ def _routes_for_launch(backend):
             if pin is not None:
                 contributions.append((state, row, pin, scopes))
     if not contributions:
-        yield ""
-        return
-    from tinyassets import universe_egress
-    from tinyassets.git_egress import routes
-    from tinyassets.storage.outbound_connections import _broker_channel
+        return {}
+    from tinyassets.boxes.git_bridge import environment
 
     def check():
         service._authority()
@@ -56,16 +54,4 @@ def _routes_for_launch(backend):
     for _, _, pin, scopes in contributions:
         grant, view, _ = current[f"connection:{pin['connection_id']}:{scopes[0]}"]
         records.append((grant, replace(view, scopes=scopes), pin["incarnation"]))
-    first = contributions[0][2]
-    channel = _broker_channel(backend.root.parent, principal=backend.context.owner,
-                              command_center=backend.context.universe,
-                              grant_id=first["grant_id"], connection_id=first["connection_id"])
-    if channel is None:
-        raise ExtensionError("authenticated git requires the existing credential broker")
-    proxy = universe_egress._PROXIES.get(str(backend.root.resolve()))
-    if proxy is None:
-        raise ExtensionError("authenticated git requires the checking egress proxy")
-    with ExitStack() as stack:
-        prefix = stack.enter_context(routes(proxy, channel._client, records,
-                                            backend.context.initiating_agent, authority=check))
-        yield prefix
+    return environment(records, backend.context.initiating_agent)

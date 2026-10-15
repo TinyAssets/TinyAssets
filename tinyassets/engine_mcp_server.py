@@ -4781,13 +4781,13 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
 
 
 # ── the universe's four tools (universe-harness S1) ─────────────────────────
-# ``read`` / ``write`` / ``edit`` / ``bash`` over the agent's OWN universe
-# folder, executed by the platform inside the tool jail
-# (``tinyassets.universe_tools``): public network only through the checking
-# proxy (``tinyassets.universe_egress``), no credential, resource-limited,
-# the universe at ``/u`` and nothing else. The graph pin picks the folder; no
-# parameter names a universe, and a path outside ``/u`` does not exist in the
-# jail. Every call first rechecks current serving-owner authority.
+# ``read`` / ``write`` / ``edit`` / ``bash`` over the agent's OWN command
+# center, executed inside the owner's box (``tinyassets.universe_tools`` over
+# ``agent_loop.box_tools``): public network only through the box relay, no
+# credential, resource-limited, the center at ``/u`` and nothing else. The
+# graph pin picks the center; no parameter names one, and a path outside
+# ``/u`` does not exist in the box. Every call first rechecks current
+# serving-owner authority.
 
 
 async def _universe_tool(op, /, **kwargs) -> str:
@@ -4799,7 +4799,7 @@ async def _universe_tool(op, /, **kwargs) -> str:
     from tinyassets import universe_tools
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.engine_steering import launch_tools
-    from tinyassets.providers.provider_jail import ProviderConfinementError
+    from tinyassets.exceptions import ProviderConfinementError
 
     grant = launch_tools()
     required = {universe_tools.read_file: "read", universe_tools.write_file: "write",
@@ -4818,9 +4818,15 @@ async def _universe_tool(op, /, **kwargs) -> str:
     if required == 'read' and PurePosixPath(str(kwargs.get('path', ''))).suffix.lower() in (
             '.png', '.jpg', '.jpeg', '.webp', '.gif'):
         capability = 'read_image'
+    from tinyassets.control_plane.binding import active_binding, use_binding
+
     try:
         udir = _universe_dir(_GRAPH_ID)
-        result = await asyncio.to_thread(op, udir, **kwargs)
+        binding = active_binding(_ACTOR_ID, _GRAPH_ID)
+        if binding is None:
+            return "error: no admitted session owns this command center's box"
+        with use_binding(binding):
+            result = await asyncio.to_thread(op, udir, **kwargs)
         error = result_error(result)
         if error is not IGNORED:
             RATES.record(capability, failure_code(error) if error else 'ok')
@@ -4901,7 +4907,6 @@ async def run_bash(command: str, timeout: int = 0) -> str:
     err = _binding_error()
     if err is not None:
         return err
-    # The tool jail itself is Linux-only; non-POSIX callers retain its refusal.
     completed: list[str] = []
     dispatch = (await engine_dispatch(sys.modules[__name__], completed=completed)
                 if os.name == "posix" else None)

@@ -352,6 +352,54 @@ if ! chown --reference="${VOLUME_DIR}" "${STAGE_DIR}" \
 fi
 log "  archive validated and staged at ${STAGE_DIR}"
 
+# A committed owner-box backup is one generation only when its manifest binds
+# the exact data and box bytes. Remote members are downloaded before hashing;
+# a missing manifest is an incomplete backup, never a legacy fallback.
+if ! staged_layout="$(python3 - "${STAGE_DIR}/.layout.json" <<'PY'
+import json
+import pathlib
+import sys
+
+marker = pathlib.Path(sys.argv[1])
+document = json.loads(marker.read_text()) if marker.exists() else {}
+layout = document.get("box_layout", "owner-split")
+if layout not in ("owner-split", "owner-box"):
+    raise SystemExit("unknown staged box layout")
+print(layout)
+PY
+)"; then
+    log "ERROR: staged layout marker is invalid"
+    exit 4
+fi
+if [[ "$staged_layout" == owner-box ]]; then
+    if [[ -z "${BOX_NAME:-}" ]]; then
+        log "ERROR: owner-box generation has no box member"
+        exit 4
+    fi
+    pair_ts="${TAR_NAME#tinyassets-data-}"
+    pair_ts="${pair_ts#tinyassets-snapshot-}"
+    pair_ts="${pair_ts%.tar.gz}"
+    pair_name="tinyassets-pair-${pair_ts}.json"
+    if [[ -n "${BOX_REMOTE}" ]]; then
+        pair_path="${DOWNLOAD_DIR}/${pair_name}"
+        BOX_TAR_PATH="${DOWNLOAD_DIR}/${BOX_NAME}"
+        if ! rclone copyto "${BACKUP_DEST}/${pair_name}" "$pair_path" \
+                || ! rclone copyto "$BOX_REMOTE" "$BOX_TAR_PATH"; then
+            log "ERROR: paired owner-box manifest or member download failed"
+            exit 4
+        fi
+        BOX_REMOTE=""
+    else
+        pair_path="${PAIR_MANIFEST_FILE:-$(dirname "$TAR_PATH")/$pair_name}"
+    fi
+    if [[ -L "$pair_path" || ! -f "$pair_path" ]] \
+            || ! python3 "$(dirname "$(realpath "$0")")/backup-pair.py" verify \
+                "$TAR_PATH" "$BOX_TAR_PATH" "$pair_path"; then
+        log "ERROR: owner-box generation manifest refused the archive pair"
+        exit 4
+    fi
+fi
+
 if [[ -e "${BOX_STORE_DIR}" && -z "${BOX_NAME:-}" && "$ALLOW_PRE_STORE_BACKUP" == 1 ]]; then
     if ! python3 - "${STAGE_DIR}/.layout.json" "${VOLUME_DIR}/.layout.json" <<'PY'
 import json

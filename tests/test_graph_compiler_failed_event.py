@@ -264,14 +264,12 @@ def test_code_failure_records_actual_graph_node(
     tmp_path, monkeypatch, graph_id, parallel, failure_kind,
 ):
     """A real child failure must not leave a running node or use a definition ID."""
-    from tinyassets import node_sandbox
+    from tinyassets.boxes import node as node_sandbox
 
     sandbox_type = node_sandbox.NodeSandbox
 
     def local_test_sandbox(**kwargs):
-        # Only this isolated test replaces the Linux jail launcher. Production
-        # remains fail-closed without its sandbox. The child and error are real.
-        kwargs["launcher"] = node_sandbox.PlainSubprocessLauncher()
+        # The child runs in the owner box double. The child and error are real.
         return sandbox_type(**kwargs)
 
     monkeypatch.setattr(node_sandbox, "NodeSandbox", local_test_sandbox)

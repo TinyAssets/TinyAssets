@@ -1441,27 +1441,25 @@ def _ext_branch_validate(kwargs: dict[str, Any]) -> str:
     ]
     problems = _source_code_problems(source_dict.get("node_defs", []))
 
-    # sandbox-compat warning: list any requires_sandbox=True nodes when
-    # the host's bwrap probe says sandbox is unavailable. Non-fatal.
+    # sandbox-compat warning: list any requires_sandbox=True nodes when this
+    # process serves no owner box. Non-fatal.
     sandbox_warnings: list[str] = []
     try:
         from tinyassets.providers.base import get_sandbox_status
         sb = get_sandbox_status()
-        if not sb.get("bwrap_available"):
+        if not sb.get("box_available"):
             sandbox_nodes = [
                 nd.node_id
                 for nd in branch.node_defs
                 if getattr(nd, "requires_sandbox", False)
             ]
             if sandbox_nodes:
-                reason = sb.get("reason") or "bwrap unavailable"
+                reason = sb.get("reason") or "owner box unavailable"
                 sandbox_warnings.append(
                     f"This branch contains {len(sandbox_nodes)} node(s) that "
                     f"require a sandbox ({', '.join(sorted(sandbox_nodes))}) but "
-                    f"the host sandbox probe returned: {reason}. "
-                    f"These nodes will fail at runtime. Options: enable bwrap "
-                    f"on the host, or use a branch variant without "
-                    f"requires_sandbox=true nodes (design-only branch)."
+                    f"this process serves no owner box: {reason}. "
+                    f"These nodes will fail at runtime."
                 )
     except Exception:  # noqa: BLE001 — best-effort non-blocking warning
         pass

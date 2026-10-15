@@ -18,9 +18,8 @@ import pytest
 from PIL import Image
 
 from tests.engine_authority_helpers import mock_engine_admission
-from tinyassets import tool_images, universe_tools
+from tinyassets import tool_images
 from tinyassets.tool_images import ToolImage, bound_image
-from tinyassets.universe_tools import ToolRun
 
 
 def _encode(image: Image.Image, fmt: str, **options) -> bytes:
@@ -194,83 +193,12 @@ def test_a_webp_canvas_is_refused_before_pillow_opens_it():
 
 
 # --------------------------------------------------------------------------- #
-# universe_tools.read_file: the jailed read
-# --------------------------------------------------------------------------- #
-
-
-class _Spy:
-    def __init__(self, run: ToolRun) -> None:
-        self.calls: list[dict] = []
-        self._run = run
-
-    def __call__(self, universe_dir, inner, **kwargs):
-        self.calls.append({"inner": list(inner), **kwargs})
-        return self._run
-
-
-def _universe(tmp_path: Path) -> Path:
-    path = tmp_path / "data" / "u-alpha"
-    path.mkdir(parents=True)
-    return path
-
-
-def test_an_image_is_read_whole_inside_the_jail_with_its_own_output_cap(tmp_path, monkeypatch):
-    from tinyassets import role_decoder
-
-    data = _png(10, 10)
-    spy = _Spy(ToolRun(0, data, None, 0.0))
-    monkeypatch.setattr(universe_tools, "RUNNER", spy)
-    root = _universe(tmp_path)
-    decode = role_decoder.decode
-    scopes = []
-
-    def scoped_decode(data, mime, universe_dir):
-        scopes.append(universe_dir)
-        return decode(data, mime, universe_dir)
-
-    monkeypatch.setattr(role_decoder, 'decode', scoped_decode)
-    shown = universe_tools.read_file(
-        root, "previews/village.png", agent_id="main",
-    )
-    assert scopes == [root]
-    assert isinstance(shown, ToolImage) and (shown.width, shown.height) == (10, 10)
-    call = spy.calls[0]
-    assert call["inner"][-1] == "/u/previews/village.png"
-    assert "cat --" in call["inner"][2]
-    # An image read is attributed like every other jailed call.
-    assert call["agent_id"] == "main"
-    assert call["limits"].output_bytes == tool_images.MAX_IMAGE_SOURCE_BYTES
-    # Every other limit is the default: only the output cap is raised.
-    assert call["limits"].memory_bytes == universe_tools.DEFAULT_LIMITS.memory_bytes
-    assert call["limits"].wall_seconds == universe_tools.DEFAULT_LIMITS.wall_seconds
-
-
-def test_text_reads_keep_the_default_cap(tmp_path, monkeypatch):
-    spy = _Spy(ToolRun(0, b"hello\n", None, 0.0))
-    monkeypatch.setattr(universe_tools, "RUNNER", spy)
-    assert universe_tools.read_file(
-        _universe(tmp_path), "notes/a.md", agent_id="main",
-    ) == "hello\n"
-    assert spy.calls[0]["limits"].output_bytes == universe_tools.DEFAULT_LIMITS.output_bytes
-
-
-@pytest.mark.parametrize("run, needle", [
-    (ToolRun(None, b"x" * 10, "output_limit", 0.0), "too large to show"),
-    (ToolRun(1, b"no such file: /u/a.png\n", None, 0.0), "no such file"),
-    (ToolRun(0, b"plain text, misnamed", None, 0.0), "its bytes say otherwise"),
-])
-def test_an_unreadable_image_is_an_error_line(tmp_path, monkeypatch, run, needle):
-    monkeypatch.setattr(universe_tools, "RUNNER", _Spy(run))
-    out = universe_tools.read_file(_universe(tmp_path), "a.png", agent_id="main")
-    assert isinstance(out, str) and out.startswith("error:") and needle in out
-
-
-# --------------------------------------------------------------------------- #
 # the engine `read`: image content through the real middleware stack
 # --------------------------------------------------------------------------- #
 
 
-def test_the_engine_read_returns_image_content_the_client_accepts(tmp_path, monkeypatch):
+def test_the_engine_read_returns_image_content_the_client_accepts(tmp_path, monkeypatch,
+                                                                 _owner_box_double):
     from fastmcp import Client
 
     import tinyassets.api.helpers as helpers
@@ -284,12 +212,18 @@ def test_the_engine_read_returns_image_content_the_client_accepts(tmp_path, monk
     monkeypatch.setattr(s, "_ACTOR_ID", "actor-a")
     monkeypatch.setattr(s, "_GRAPH_ID", "u-a")
     mock_engine_admission(monkeypatch, {"u-a"})
-    image = _png(3000, 1000)
+    if _owner_box_double is None:
+        pytest.skip("the owner box double needs Linux")
+    (root / "u-a" / "previews").mkdir()
+    (root / "u-a" / "previews" / "v.png").write_bytes(_png(3000, 1000))
+    (root / "u-a" / "notes").mkdir()
+    (root / "u-a" / "notes" / "a.md").write_text("text body\n", encoding="utf-8")
+    from tinyassets.boxes.provider import ExecLimits
+    from tinyassets.control_plane.binding import bind_session, use_binding
 
-    def runner(universe_dir, inner, **kwargs):
-        return ToolRun(0, image if inner[-1].endswith(".png") else b"text body\n", None, 0.0)
-
-    monkeypatch.setattr(universe_tools, "RUNNER", runner)
+    binding = bind_session(provider=_owner_box_double, limits=ExecLimits(),
+                           universe_dir=root / "u-a", owner="actor-a",
+                           execution_id="engine-read")
 
     async def calls():
         async with Client(s.mcp) as client:
@@ -300,7 +234,8 @@ def test_the_engine_read_returns_image_content_the_client_accepts(tmp_path, monk
                                           raise_on_error=False)
             return tool, shot, text
 
-    tool, shot, text = asyncio.run(calls())
+    with use_binding(binding):
+        tool, shot, text = asyncio.run(calls())
     assert tool.outputSchema is None
     assert not shot.is_error, shot
     kinds = [block.type for block in shot.content]
@@ -365,19 +300,18 @@ def test_an_apng_poster_is_skipped_for_the_first_animation_frame():
 
 
 def test_the_daemon_never_decodes_in_a_child_of_its_own():
-    """The decode happens in the owner's decoder cell and nowhere else.
+    """The decode happens in the owner's box and nowhere else.
 
-    The address-space and CPU limits that used to be applied to a daemon-side
-    subprocess are now the cell's, applied by the launcher before any owner
-    bytes are read. What this module must no longer contain is a way to spawn
-    that child itself.
+    The address-space and CPU limits are applied inside the box before any
+    owner bytes are read. What this module must no longer contain is a way to
+    spawn that child itself.
     """
     import inspect
 
     source = inspect.getsource(tool_images)
     assert "subprocess" not in source
     assert "_decode_in_child" in source
-    assert "from tinyassets.role_decoder import decode" in source
+    assert "from tinyassets.boxes.media import decode_image as decode" in source
 
 
 def test_a_version_one_image_row_keeps_the_rule_it_was_written_under():

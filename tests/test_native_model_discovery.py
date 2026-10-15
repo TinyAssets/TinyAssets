@@ -5,9 +5,8 @@ import os
 import sys
 from dataclasses import replace
 from datetime import datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -27,24 +26,25 @@ pytestmark = pytest.mark.usefixtures("metadata_transport_processes")
 
 @pytest.fixture
 def metadata_transport_processes(monkeypatch):
-    """Exercise real protocol children at the cell seam; the cell has its own proofs.
+    """Exercise real protocol children at the box seam; the box has its own proofs.
 
-    The production transport starts the CLI in the owner's provider-discovery
-    cell (``role_external_agent.aspawn_cell``); this stands a plain child
-    in for the cell, so the protocol, the decoder and the bounded reads are real.
+    The production transport starts the CLI in the owner's box
+    (``owned_process.aspawn_owned``); this stands a plain child in for the box,
+    so the protocol, the decoder and the bounded reads are real.
     """
     import asyncio as _asyncio
 
-    from tinyassets import role_external_agent
+    from tinyassets.providers import native_jsonrpc_discovery as discovery
 
-    async def plain_child(argv, *, env, view, universe_dir, snapshot_dir, limit, **kw):
-        assert Path(snapshot_dir).is_relative_to(Path(universe_dir))
+    async def plain_child(argv, *, env=None, **kw):
         return await _asyncio.create_subprocess_exec(
-            *argv, env={**env, **dict(view.setenv)}, cwd=snapshot_dir,
+            *argv, env=dict(env or {}),
             stdin=_asyncio.subprocess.PIPE, stdout=_asyncio.subprocess.PIPE,
-            stderr=_asyncio.subprocess.DEVNULL, limit=limit)
+            stderr=_asyncio.subprocess.DEVNULL, limit=discovery._MAX_BYTES)
 
-    monkeypatch.setattr(role_external_agent, "aspawn_cell", plain_child)
+    from tinyassets.providers import owned_process
+
+    monkeypatch.setattr(owned_process, "aspawn_owned", plain_child)
 
 
 def metadata_snapshot(universe):
@@ -192,39 +192,6 @@ def test_child_is_reaped_on_every_failure(tmp_path, mode):
         assert children and all(child.returncode is not None for child in children)
     asyncio.run(exercise())
 
-
-def test_native_registration_uses_owned_environment_and_direct_metadata_only(tmp_path):
-    from tinyassets.role_external_agent import CellLauncher
-
-    package = resolve("codex")
-    auth = package.row["auth"]
-    argv = [str(package.executable), *package.row["catalogue"]["argv"]]
-    home = "/agent-home/" + auth["home_dir"]
-    center = tmp_path / "u-owner"
-    center.mkdir()
-    process = object()
-    with (
-        patch("tinyassets.role_scope.owner_principal", return_value="owner"),
-        patch("tinyassets.role_external_agent.aspawn_cell", new_callable=AsyncMock,
-              return_value=process) as launch,
-    ):
-        assert asyncio.run(CellLauncher(
-            universe_dir=center, owner_user_id="owner",
-        ).spawn(
-            argv, {auth["home_env"]: home}, home="/agent-home",
-            workdir="/agent-home/jobs/0123456789abcdef0123456789abcdef",
-            egress=center.name, auth_files={"auth.json": b"owned"}, auth=auth,
-        )) is process
-    args, kwargs = launch.call_args
-    assert args == (argv,)
-    assert kwargs["env"] == {auth["home_env"]: home}
-    assert kwargs["auth_files"] == {"auth.json": b"owned"}
-    assert kwargs["external_agent"] is True
-    assert "snapshot_dir" not in kwargs
-    assert kwargs["owner_user_id"] == "owner"
-    assert kwargs["universe_dir"] == center
-    assert kwargs["workdir"] == "/agent-home/jobs/0123456789abcdef0123456789abcdef"
-    assert package.row["catalogue"]["transport"] == "jsonrpc"
 
 
 def test_new_executor_can_describe_other_metadata_methods_and_fields(tmp_path):

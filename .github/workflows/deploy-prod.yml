@@ -613,36 +613,6 @@ jobs:
             echo "::error::deploy failed (rc=${rc}); see log above"; exit 1
           fi
 
-      - name: Repair owner content online
-        id: content_repair
-        if: ${{ success() && steps.deploy.outputs.rc == '0' }}
-        continue-on-error: true
-        timeout-minutes: 15
-        env:
-          IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
-        run: |
-          set -euo pipefail
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes deploy/repair_content_after_deploy.py \
-            "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/repair_content_after_deploy.py"
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o ConnectTimeout=10 \
-            -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
-            "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            "sudo systemd-run --quiet --wait --pipe --collect -p EnvironmentFile=/etc/tinyassets/env -p RuntimeMaxSec=840 /usr/bin/python3 /tmp/repair_content_after_deploy.py ${IMAGE_REF}"
-
-      - name: Alert on incomplete owner content repair
-        if: ${{ always() && steps.content_repair.outcome == 'failure' }}
-        continue-on-error: true
-        timeout-minutes: 1
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "::warning::Online owner-content repair refused or reported skipped entries. Healthy deployment is retained; inspect the repair log."
-          echo "### WARNING: owner-content repair incomplete; see repair log and alert issue. Healthy deployment retained." >> "$GITHUB_STEP_SUMMARY"
-          gh issue create --repo "${{ github.repository }}" \
-            --title "owner-content-repair: run ${{ github.run_id }}" \
-            --label "deploy-failed" \
-            --body "Automatic online content repair did not converge or skipped daemon symlinks. This does not roll back the healthy deployment. Inspect the repair step: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}. The next deploy retries automatically; manual fallback is in docs/ops/owner-split-cutover-runbook.md section 8."
-
       - name: Core user capabilities and systemic failure rates
         id: core_canary
         uses: ./.github/actions/core-capability-canary
@@ -1088,6 +1058,5 @@ jobs:
             echo "- public canary: \`${{ steps.canary.outcome }}\`"
             echo "- app surface probe: \`${{ steps.app_probe.outcome }}\`"
             echo "- protected receipt assertion: \`${{ steps.deployed_sha.outcome }}\`"
-            echo "- owner-content repair: \`${{ steps.content_repair.outcome }}\` (failure alerts without rollback)"
             echo "- image retention: \`${{ steps.retention.outcome }}\`"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -647,6 +647,20 @@ _PROVIDER_AUTH_OVERLAY_ENV_VARS: dict[str, frozenset[str]] = {
 }
 
 
+def launch_auth_from_overlay(provider_name: str, home_dir: str, token_prefix: str) -> dict:
+    """An executor's box lease shape, read off its declared auth variables.
+
+    The directory variable (``*_DIR``/``*_HOME``) names where the leased files
+    appear; a token variable (``*_TOKEN``) is exported inside the box from the
+    leased ``auth.json`` when that file starts with ``token_prefix``.
+    """
+    names = sorted(_PROVIDER_AUTH_OVERLAY_ENV_VARS[provider_name])
+    home_env = next(n for n in names if n.endswith(_AUTH_DIR_ENV_SUFFIXES))
+    token_env = next((n for n in names if n.endswith("_TOKEN")), None)
+    return {"home_env": home_env, "home_dir": home_dir, "token_env": token_env,
+            "token_prefix": token_prefix}
+
+
 #: How a DIRECTORY variable is told apart from a credential variable, by shape
 #: rather than by name. Widen this when an executor declares an auth directory
 #: spelled some other way.
@@ -1020,97 +1034,22 @@ def subscription_auth_health(
             "detail": "no subscription-auth probe for this provider"}
 
 
-# bwrap failure signature emitted to stderr on Linux hosts that lack
-# unprivileged user namespaces. When this appears the CLI silently wrote
-# the error to state and returned exit=0 — hard-rule #8 demands we detect
-# and raise rather than let the garbage propagate.
-_BWRAP_FAILURE_PATTERNS: tuple[str, ...] = (
-    "bwrap: No permissions to create a new namespace",
-    "bwrap: No permissions to create new namespace",
-    "bwrap: No such file or directory",
-    "sandbox initialization failed",
-    # The 2026-08-21 production outage: Docker's masked /proc paths make the
-    # --proc mount EPERM inside the sandbox namespace.
-    "bwrap: Can't mount proc",
-    "Can't mount proc on",
-)
-
-
-class SandboxUnavailableError(Exception):
-    """Raised when bwrap / sandbox is unavailable on the host.
-
-    Carries the exact stderr excerpt so callers can surface guidance.
-    """
-
-
-def check_bwrap_failure(stderr_text: str) -> None:
-    """Raise SandboxUnavailableError if *stderr_text* contains a bwrap error.
-
-    Called by subprocess-backed providers after every CLI invocation so the
-    failure is loud (raises) rather than silent (appears in state as output).
-    No-op on Windows (bwrap is Linux-only).
-    """
-    import sys as _sys
-    if _sys.platform == "win32":
-        return
-    lower = stderr_text.lower()
-    for pattern in _BWRAP_FAILURE_PATTERNS:
-        if pattern.lower() in lower:
-            raise SandboxUnavailableError(
-                f"Sandbox (bwrap) is unavailable on this host. "
-                f"The CLI subprocess emitted a sandboxing failure:\n"
-                f"  {stderr_text[:400].strip()}\n\n"
-                f"Fix options:\n"
-                f"  1. Enable unprivileged user namespaces: "
-                f"sysctl -w kernel.unprivileged_userns_clone=1\n"
-                f"  2. Use a branch that contains only design-only nodes "
-                f"(requires_sandbox=false). These nodes don't need bwrap.\n"
-                f"  3. Run the daemon on a host where bwrap is available."
-            )
-
-
-def probe_sandbox_available() -> dict[str, object]:
-    """Probe whether bwrap is available on this host.
-
-    Returns {bwrap_available: bool, reason: str | None}.  Cached at
-    module level after first call so get_status probes once at startup.
-
-    This is a THIN adapter over :func:`tinyassets.sandbox.detect.detect_bwrap`
-    and deliberately owns no probe of its own. It used to carry a second,
-    divergent one -- ``bwrap --ro-bind / / /bin/sh -c true`` -- which asks a
-    different question than the launcher does. #2736 fixed that in
-    ``sandbox/detect.py`` and this copy survived, so the two answered
-    differently on the same host: measured 2026-08-31 in the Linux oracle
-    container, the old probe here exited 1 ("Creating new namespace failed:
-    Operation not permitted") while the launcher's real argv exited 0.
-
-    Two consequences, both silent. ``get_status`` would advertise the sandbox
-    as unavailable on a host where every code node in fact runs; and
-    ``tests/test_node_sandbox.py`` gates ``requires_bwrap`` on THIS function,
-    so the six hostile-code jail tests -- including the positive control that
-    proves the jail runs a node at all -- skipped on CI and on the oracle
-    rather than failing. A boundary test that skips is a boundary that is
-    never checked.
-
-    One probe, one answer. The dict shape is kept because callers and the
-    status surface read these keys.
-    """
-    from tinyassets.sandbox.detect import detect_bwrap
-
-    status = detect_bwrap()
-    return {"bwrap_available": status.available, "reason": status.reason}
-
-
-# Module-level cache populated on first get_status call.
-_sandbox_probe_cache: dict[str, object] | None = None
+class SandboxUnavailableError(PermissionError):
+    """A code node or CLI has no admitted owner box to run in."""
 
 
 def get_sandbox_status() -> dict[str, object]:
-    """Return cached sandbox probe result (probes once per process)."""
-    global _sandbox_probe_cache  # noqa: PLW0603
-    if _sandbox_probe_cache is None:
-        _sandbox_probe_cache = probe_sandbox_available()
-    return _sandbox_probe_cache
+    """Whether this process serves owner boxes: ``{box_available, reason}``.
+
+    The box provider is installed once at daemon start by the owner-box
+    frontend; a process without one runs no owner code at all.
+    """
+    from tinyassets.agent_loop.served_chat import configured_box_provider
+
+    provider, _ = configured_box_provider()
+    if provider is None:
+        return {"box_available": False, "reason": "no owner-box provider is configured"}
+    return {"box_available": True, "reason": ""}
 
 
 class BaseProvider(abc.ABC):
@@ -1124,6 +1063,11 @@ class BaseProvider(abc.ABC):
 
     agent_execution_kind: str | None = None
     """Installed execution capability; unknown executors cannot claim an agent lane."""
+
+    native_launch_auth: dict | None = None
+    """How this executor's one-run credential lease appears inside the owner box:
+    ``home_env`` (the directory variable), ``home_dir`` and, for a raw token
+    leased as a file, ``token_env`` and ``token_prefix``. None: no CLI launch."""
 
     supports_text_only: bool = False
     """Adapter enforces tool-free requests, including at its direct call boundary."""

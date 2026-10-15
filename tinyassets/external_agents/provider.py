@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 
 from tinyassets.exceptions import ExternalAgentUnavailable
 from tinyassets.external_agents import receipts
-from tinyassets.external_agents.home import Custody
+from tinyassets.external_agents.home import box_custody
 from tinyassets.external_agents.registry import resolve
 from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
-from tinyassets.providers.native_discovery import _custody
 
 
 class ExternalAgentProvider(BaseProvider):
@@ -20,6 +20,7 @@ class ExternalAgentProvider(BaseProvider):
         self.name = agent
         self.family = package.row["family"]
         self.native_credential_service = package.row["auth"]["service"]
+        self.native_launch_auth = dict(package.row["auth"])
 
     async def complete(self, prompt: str, system: str, config: ModelConfig,
                        *, universe_dir: Path | None = None) -> ProviderResponse:
@@ -28,15 +29,18 @@ class ExternalAgentProvider(BaseProvider):
         owner = config.invocation_owner_user_id
         if universe_dir is None or not owner:
             raise ExternalAgentUnavailable(self.name, model, "job_failed:custody")
-        universe = Path(universe_dir).absolute()
-        reference = _custody(universe.parent, universe, owner,
-                             self.native_credential_service)
-        if reference is None:
+        universe = Path(os.path.abspath(universe_dir))
+        from tinyassets.control_plane.binding import current_binding
+
+        binding = current_binding()
+        if binding is None:
+            raise ExternalAgentUnavailable(self.name, model, "job_failed:custody")
+        custody = box_custody(universe, owner, self.native_credential_service, binding)
+        if custody is None:
             raise ExternalAgentUnavailable(self.name, model, "signed_out")
         from tinyassets.control_plane.native_launch import launcher
         from tinyassets.external_agents.runner import run_job
 
-        custody = Custody(universe, owner, reference)
         budget = config.request_budget
         if budget is None or not budget.usage_id or type(config.request_attempt) is not int:
             raise ExternalAgentUnavailable(self.name, model, "job_failed:custody")
@@ -47,20 +51,18 @@ class ExternalAgentProvider(BaseProvider):
         )).encode()).hexdigest()
         operation_id = receipts.claim_cli(
             universe.parent, owner=owner, universe_id=universe.name,
-            logical_key=logical_key, custody_digest=reference.reference_digest,
+            logical_key=logical_key,
+            custody_digest=custody.reference.reference_digest,
         )
 
-        from tinyassets.agent_loop.served_chat import configured_box_provider
-        from tinyassets.control_plane.binding import bind_session
+        from tinyassets.broker.ledger_queries import selected_git_connections
 
-        box_provider, limits = configured_box_provider()
-        binding = (bind_session(provider=box_provider, limits=limits,
-                                universe_dir=universe, owner=owner,
-                                execution_id=operation_id)
-                   if box_provider is not None else None)
-
+        connections = selected_git_connections(
+            universe.parent, principal=owner, command_center=universe.name)
+        launch = launcher(custody, binding=binding, operation_id=operation_id,
+                          connections=connections, agent=config.agent_node_id or "main")
         return await run_job(
-            self.name, launcher(custody, operation_id=operation_id, binding=binding),
+            self.name, launch,
             custody, prompt=prompt, system=system,
             config=config,
         )

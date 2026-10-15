@@ -172,9 +172,9 @@ def ensure_founder_home(base: Path, founder: str) -> str:
                 founder,
                 exc_info=True,
             )
-            from tinyassets.role_center_admission import AdmissionRefused
+            from tinyassets.boxes.provider import BoxAuthError
 
-            refused = isinstance(exc, AdmissionRefused)
+            refused = isinstance(exc, BoxAuthError)
         if not home_is_complete(base, winner):
             return _no_home("admission" if refused else "incomplete")
     return winner

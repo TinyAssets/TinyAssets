@@ -202,7 +202,7 @@ def _write(universe_id: str, rows: list[dict[str, Any]]) -> None:
     tmp = Path(tmp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            from tinyassets.role_modes import BROKER_METADATA_FILE_MODE, BROKER_READ_GID
+            from tinyassets.boxes.layout import BROKER_METADATA_FILE_MODE, BROKER_READ_GID
 
             # The broker (gid 1102 reader) resolves definitions; nobody else reads them.
             os.fchown(handle.fileno(), -1, BROKER_READ_GID)

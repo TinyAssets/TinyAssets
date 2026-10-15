@@ -1848,7 +1848,8 @@ def test_custom_agent_write_brain_refuses_main_identity_but_writes_shared_fields
 
 
 
-def test_custom_agent_write_tool_passes_session_agent_to_runner(monkeypatch, tmp_path):
+def test_custom_agent_write_tool_passes_session_agent_to_runner(monkeypatch, tmp_path,
+                                                                 _owner_box_double):
     import asyncio
     from types import SimpleNamespace
     from urllib.parse import parse_qsl, urlsplit
@@ -1856,7 +1857,6 @@ def test_custom_agent_write_tool_passes_session_agent_to_runner(monkeypatch, tmp
     from fastmcp.server import dependencies
 
     from tinyassets import engine_mcp_server as s
-    from tinyassets import universe_tools
     from tinyassets.engine_steering import route_with_session
 
     udir = _seed_brain_universe(monkeypatch, tmp_path)
@@ -1865,31 +1865,31 @@ def test_custom_agent_write_tool_passes_session_agent_to_runner(monkeypatch, tmp
         "http://localhost/mcp", f"thread:agent:{agent_id}:principal:sub-brain")
     monkeypatch.setattr(dependencies, "get_http_request", lambda: SimpleNamespace(
         query_params=dict(parse_qsl(urlsplit(route).query))))
-    calls = []
+    if _owner_box_double is None:
+        pytest.skip("the owner box double needs Linux")
+    from tinyassets.boxes.provider import ExecLimits
+    from tinyassets.control_plane.binding import bind_session, use_binding
 
-    def runner(universe_dir, inner, *, agent_id, **kwargs):
-        calls.append((universe_dir, agent_id, inner, kwargs))
-        return universe_tools.ToolRun(0, b"", None, 0.0)
-
-    monkeypatch.setattr(universe_tools, "RUNNER", runner)
-    out = asyncio.run(s.write_file(path="founder.md", content="shared learning"))
+    assert s._acting_agent() == agent_id
+    binding = bind_session(provider=_owner_box_double, limits=ExecLimits(), universe_dir=udir,
+                           owner=s._ACTOR_ID, execution_id="engine-write")
+    with use_binding(binding):
+        out = asyncio.run(s.write_file(path="founder.md", content="shared learning"))
     assert out.startswith("wrote "), out
-    assert len(calls) == 1
-    assert calls[0][0] == udir
-    assert calls[0][1] == agent_id
-    assert calls[0][3]["stdin"] == b"shared learning"
+    assert (udir / "founder.md").read_text(encoding="utf-8") == "shared learning"
 
 
-@pytest.mark.skipif(os.name != "posix", reason="the tool jail and its bash are Linux-only")
-def test_an_activity_bash_is_handed_the_stop_its_activity_polls(monkeypatch, tmp_path):
+@pytest.mark.skipif(os.name != "posix", reason="the box tools and their bash are Linux-only")
+def test_an_activity_bash_is_handed_the_stop_its_activity_polls(monkeypatch, tmp_path,
+                                                                 _owner_box_double):
     """A bash run for an activity is killed when the activity stops: the
-    engine hands the jail runner that activity's stop check."""
+    engine hands the box tools that activity's stop check."""
     from types import SimpleNamespace
     from urllib.parse import parse_qsl, urlsplit
 
     from fastmcp.server import dependencies
 
-    from tinyassets import agent_activities, universe_tools
+    from tinyassets import agent_activities
     from tinyassets import engine_mcp_server as s
     from tinyassets.activity_fence import STOPPED
     from tinyassets.engine_steering import route_with_session
@@ -1903,15 +1903,19 @@ def test_an_activity_bash_is_handed_the_stop_its_activity_polls(monkeypatch, tmp
     route = route_with_session("http://localhost/mcp", f"activity:{aid}")
     monkeypatch.setattr(dependencies, "get_http_request", lambda: SimpleNamespace(
         query_params=dict(parse_qsl(urlsplit(route).query))))
-    calls = []
+    if _owner_box_double is None:
+        pytest.skip("the owner box double needs Linux")
+    import threading
 
-    def runner(universe_dir, inner, *, agent_id, **kwargs):
-        calls.append(kwargs)
-        return universe_tools.ToolRun(0, b"", None, 0.0)
+    from tinyassets.activity_fence import stop_check
+    from tinyassets.boxes.provider import ExecLimits
+    from tinyassets.control_plane.binding import bind_session, use_binding
 
-    monkeypatch.setattr(universe_tools, "RUNNER", runner)
-    asyncio.run(s.run_bash(command="echo hi"))
-    (kwargs,) = calls
-    assert kwargs["stop"]() is None
-    agent_activities.wait_on(udir, aid, "req-1", "asked")
-    assert kwargs["stop"]() == STOPPED
+    assert stop_check(udir, f"activity:{aid}")() is None
+    binding = bind_session(provider=_owner_box_double, limits=ExecLimits(), universe_dir=udir,
+                           owner=s._ACTOR_ID, execution_id="engine-bash")
+    threading.Timer(1.0, agent_activities.wait_on, (udir, aid, "req-1", "asked")).start()
+    with use_binding(binding):
+        out = asyncio.run(s.run_bash(command="sleep 20; echo survived"))
+    assert stop_check(udir, f"activity:{aid}")() == STOPPED
+    assert "survived" not in out and "the activity stopped running" in out

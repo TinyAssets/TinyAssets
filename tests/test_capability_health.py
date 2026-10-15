@@ -135,8 +135,7 @@ def test_capability_image_keeps_real_execution_seams():
 
     scripts = Path(__file__).resolve().parents[1] / "scripts"
     for name in (
-        "core_capability_image.py",
-        "core_capability_fixture.py",
+        "box_acceptance.py",
         "core_capability_live.py",
     ):
         source = (scripts / name).read_text(encoding="utf-8")

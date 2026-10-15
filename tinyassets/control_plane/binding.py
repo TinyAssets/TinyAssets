@@ -85,6 +85,11 @@ class SessionBinding:
 
 
 _CURRENT: ContextVar[SessionBinding | None] = ContextVar("owner_box_session", default=None)
+#: The admitted session per (owner, center): one seat per owner (S26) means one
+#: live top-level session, and children inherit its binding. The engine server
+#: resolves a tool call's handle here; a request carries no handle of its own.
+_ACTIVE: dict[tuple[str, str], list[SessionBinding]] = {}
+_ACTIVE_GUARD = threading.Lock()
 _READ_GENERATION: ContextVar[tuple | None] = ContextVar("owner_box_read_generation", default=None)
 
 
@@ -101,10 +106,31 @@ def current_binding() -> SessionBinding | None:
 @contextmanager
 def use_binding(binding: SessionBinding | None):
     token = _CURRENT.set(binding)
+    key = None
+    if binding is not None:
+        key = (binding.handle.account_id, binding.handle.command_center_id)
+        with _ACTIVE_GUARD:
+            _ACTIVE.setdefault(key, []).append(binding)
     try:
         yield binding
     finally:
         _CURRENT.reset(token)
+        if key is not None:
+            with _ACTIVE_GUARD:
+                stack = _ACTIVE.get(key, [])
+                for index in range(len(stack) - 1, -1, -1):
+                    if stack[index] is binding:
+                        del stack[index]
+                        break
+                if not stack:
+                    _ACTIVE.pop(key, None)
+
+
+def active_binding(owner: str, center: str) -> SessionBinding | None:
+    """The live admitted session of ``owner`` on ``center``, or None."""
+    with _ACTIVE_GUARD:
+        stack = _ACTIVE.get((owner, center), [])
+        return stack[-1] if stack else None
 
 
 def bind_session(*, provider, limits, universe_dir, owner, execution_id):
@@ -131,14 +157,10 @@ def file_binding(root: Path) -> SessionBinding | None:
             raise BoxAuthError("owner file access must use its admitted root")
         if root.parent == binding.universe_dir.parent and not root.name.startswith("."):
             raise BoxAuthError("owner file access differs from admitted session")
-    # During the staged migration the old layout still serves its old paths.
-    # An owner-box image must never fall back to those paths, even if a caller
-    # lost its context while handing work to an executor.
-    from tinyassets.storage_layout import ACTIVE_BOX_LAYOUT
+    # Owner files never fall back to a host path, even if a caller lost its
+    # context while handing work to an executor.
+    from tinyassets.storage import data_dir
 
-    if ACTIVE_BOX_LAYOUT == "owner-box":
-        from tinyassets.storage import data_dir
-
-        if root.parent == _path(data_dir()) and not root.name.startswith("."):
-            raise BoxAuthError("owner files require an admitted session binding")
+    if root.parent == _path(data_dir()) and not root.name.startswith("."):
+        raise BoxAuthError("owner files require an admitted session binding")
     return None

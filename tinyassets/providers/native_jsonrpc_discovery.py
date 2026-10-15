@@ -13,10 +13,8 @@ from datetime import datetime, timezone
 from tinyassets.exceptions import ProviderError
 from tinyassets.providers.native_catalogue import NativeCatalogue, NativeModel
 from tinyassets.providers.owned_process import (
-    FamilyAnchorError,
     kill_owned_tree,
 )
-from tinyassets.providers.provider_jail import metadata_view
 
 
 class NativeMetadataUnsupported(ProviderError):
@@ -43,17 +41,15 @@ _log = logging.getLogger(__name__)
 
 
 async def _close_cell_process(proc):
-    """Revoke a D82 owner cell; its authenticated receipt is authoritative."""
+    """End the box execution; the host's receipt is authoritative."""
     proc.stdin.close()
-    kill_owned_tree(proc)  # Revocation through the lifetime channel only.
+    kill_owned_tree(proc)
     try:
         await asyncio.wait_for(proc.wait(), timeout=_REAP_TIMEOUT + 5)
     except asyncio.CancelledError:
         raise
     except Exception:
-        raise ProviderError("native model discovery cell receipt unavailable") from None
-    finally:
-        proc._transport.close()
+        raise ProviderError("native model discovery receipt unavailable") from None
 
 
 async def _close_metadata_process(proc):
@@ -367,15 +363,13 @@ async def read_native_catalogue(
         del spawn_kwargs, install_mounts
         async with asyncio.timeout(timeout):
             if owned:
-                view = metadata_view(universe_dir, cwd, env, auth_env_names)
-                from tinyassets.role_external_agent import aspawn_cell
+                del cwd, auth_env_names
+                from tinyassets.providers.owned_process import FamilyAnchorError, aspawn_owned
 
-                # Legacy Claude discovery still owns its provider cell.
                 try:
-                    proc = await aspawn_cell(argv, env=env, view=view, universe_dir=universe_dir,
-                                             snapshot_dir=cwd, limit=_MAX_BYTES)
-                except (PermissionError, RuntimeError, KeyError) as exc:
-                    raise ProviderError("native model discovery cell refused") from exc
+                    proc = await aspawn_owned(argv, env=env)
+                except (PermissionError, RuntimeError, KeyError, FamilyAnchorError) as exc:
+                    raise ProviderError("native model discovery box launch refused") from exc
             consumed = 0
 
             async def send(message):

@@ -31,6 +31,9 @@ ABSENT = 4
 UNREADABLE = 3
 MAX_BACKUP_AGE_S = 3600
 _CENTER = re.compile(r"[A-Za-z0-9_-]{1,128}")
+_CREDENTIAL_ENTRIES = (".credential-vault.json", ".credentials", ".credentials.json",
+                       ".oauth-refresh")
+_EPHEMERAL_ENTRIES = (".runtime",)
 
 
 @dataclass(frozen=True)
@@ -330,11 +333,13 @@ def _atomic_json(path: Path, value: dict) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _copy(source: Path, target: Path, uid: int) -> None:
+def _copy(source: Path, target: Path, uid: int, *, extra_excludes=()) -> None:
     command = [
         "rsync", "-aH", "--xattrs", "--one-file-system", "--numeric-ids",
         "--chown", f"{uid}:{uid}", f"{source}/", f"{target}/",
     ]
+    command[-2:-2] = [f"--exclude=/{name}" for name in
+                      (*_CREDENTIAL_ENTRIES, *_EPHEMERAL_ENTRIES, *extra_excludes)]
     subprocess.run(command, check=True)
     result = subprocess.run(
         [*command[:-2], "--checksum", "--dry-run", "--itemize-changes", *command[-2:]],
@@ -342,6 +347,38 @@ def _copy(source: Path, target: Path, uid: int) -> None:
     )
     if result.stdout.strip():
         raise RuntimeError(f"rsync checksum differs for {source}")
+
+
+def _copy_credentials(source: Path, target: Path) -> None:
+    """Copy only recognized credential artifacts into platform custody."""
+    from tinyassets.boxes.layout import BROKER_READ_GID
+
+    for name in _CREDENTIAL_ENTRIES:
+        entry = source / name
+        if not entry.exists() and not entry.is_symlink():
+            continue
+        for directory, dirs, files in os.walk(entry, followlinks=False):
+            for child in (Path(directory), *(Path(directory) / item for item in dirs + files)):
+                info = child.lstat()
+                if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+                    raise RuntimeError(f"non-regular credential source: {child}")
+        info = entry.lstat()
+        if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+            raise RuntimeError(f"non-regular credential source: {entry}")
+    target.mkdir(mode=0o710)
+    os.chown(target, 1001, BROKER_READ_GID)
+    filters = [f"--include=/{name}" for name in _CREDENTIAL_ENTRIES]
+    filters += [f"--include=/{name}/***" for name in _CREDENTIAL_ENTRIES]
+    command = ["rsync", "-aH", "--xattrs", "--one-file-system", "--numeric-ids",
+               "--chown", f"1001:{BROKER_READ_GID}", "--chmod=D710,F640",
+               *filters, "--exclude=*", f"{source}/", f"{target}/"]
+    subprocess.run(command, check=True)
+    result = subprocess.run(
+        [*command[:-2], "--checksum", "--dry-run", "--itemize-changes", *command[-2:]],
+        check=True, capture_output=True, text=True,
+    )
+    if result.stdout.strip():
+        raise RuntimeError(f"credential checksum differs for {source}")
 
 
 def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
@@ -359,11 +396,22 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
         _owner_inode_preflight(data, plan)
         if any(entry.name != "lost+found" for entry in store.iterdir()):
             raise RuntimeError("box store must be empty before the one-shot move")
+        custody_root = data / ".platform" / "credential-vaults"
+        if custody_root.exists() or custody_root.is_symlink():
+            raise RuntimeError("private credential custody already exists")
         # This is the point of no automatic restart. A failed copy remains
         # visibly migrating until the paired snapshot is restored by an operator.
         _atomic_json(storage_layout.marker_path(data), {
             **marker, "state": "migrating", "migration": "owner-box",
         })
+        from tinyassets.boxes.layout import BROKER_READ_GID
+
+        custody_root.parent.mkdir(mode=0o711, exist_ok=True)
+        if custody_root.parent.is_symlink() or not custody_root.parent.is_dir():
+            raise RuntimeError("platform credential parent is invalid")
+        os.chown(custody_root.parent, 1001, 1001)
+        custody_root.mkdir(mode=0o710)
+        os.chown(custody_root, 1001, BROKER_READ_GID)
         for owner in plan:
             tree = store / str(owner.uid)
             tree.mkdir(mode=0o700)
@@ -378,6 +426,7 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
                 check=True,
             )
             for center in owner.centers:
+                _copy_credentials(data / center, custody_root / center)
                 destination = tree / center
                 destination.mkdir(mode=0o700)
                 os.chown(destination, owner.uid, owner.uid)
@@ -389,7 +438,19 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
                 destination = tree / ".agent-home"
                 destination.mkdir(mode=0o700)
                 os.chown(destination, owner.uid, owner.uid)
-                _copy(agent_home, destination, owner.uid)
+                # Packages write authentication into a one-run tmpfs now, but
+                # an interrupted old cell may have left its named auth file
+                # in the persistent home. Derive exclusions from every shipped
+                # package manifest rather than trusting a fixed filename list.
+                from tinyassets.external_agents.registry import PACKAGES
+
+                auth_paths = tuple(
+                    f"{package.row['auth']['home_dir']}/{name}"
+                    for package in PACKAGES.values()
+                    for name in package.row["auth"]["files"]
+                )
+                _copy(agent_home, destination, owner.uid,
+                      extra_excludes=auth_paths)
         broker_state = data / ".broker" / "state"
         with sqlite3.connect(broker_state / "owner-identities.db") as db:
             db.execute("PRAGMA synchronous=FULL")
