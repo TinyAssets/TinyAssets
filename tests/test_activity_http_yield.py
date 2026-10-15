@@ -3,7 +3,8 @@
 import asyncio
 import json
 import sqlite3
-from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -30,6 +31,42 @@ def run_cancel_ledger(tmp_path):
 
 http_wire = workflow_tests.http_wire
 work_agent = workflow_tests.work_agent
+
+
+def test_queued_activity_takes_its_own_provider_slot(tmp_path, monkeypatch):
+    from tinyassets import provider_admission as admission
+    from tinyassets import runs
+    from tinyassets.api import permissions
+    from tinyassets.control_plane import activity_session
+
+    monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "3")
+    admission.reset_for_tests()
+    record = {
+        "activity_id": "activity-1", "runner_generation": 1, "runner_token": "",
+        "status": agent_activities.IN_PROGRESS, "owner_principal": "owner-1",
+        "session_key": "session-1",
+    }
+    monkeypatch.setattr(agent_activities, "get", lambda *args: record)
+    monkeypatch.setattr(agent_activities, "bind_run", lambda *args: True)
+    monkeypatch.setattr(permissions, "owner_run_identity", lambda *args: nullcontext(True))
+    monkeypatch.setattr(runs, "create_run", lambda *args, **kwargs: "run-1")
+    futures = []
+    monkeypatch.setattr(runs, "_track_future", lambda _run_id, future: futures.append(future))
+
+    def activity_worker(*args):
+        # call_sync enters this scope before its own provider admission.
+        with admission.blocking_provider_child():
+            with admission.provider_slot(parent_slot=admission.blocking_parent_slot()):
+                return admission.admission_snapshot()["live"]
+
+    monkeypatch.setattr(activity_session, "execute", activity_worker)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        monkeypatch.setattr(runs, "_get_executor", lambda **kwargs: executor)
+        with admission.provider_slot() as parent:
+            assert activity_session.enqueue(tmp_path, "universe-1", record, 1) == "run-1"
+            assert futures[0].result(timeout=5) == 2
+            assert not parent.lent
+    assert admission.admission_snapshot()["live"] == 0
 
 
 @pytest.mark.parametrize("batched_tool", [False, True])

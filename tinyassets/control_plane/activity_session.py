@@ -38,7 +38,12 @@ def enqueue(base: Path, universe: str, record: dict, generation: int) -> str:
         return run_id
     try:
         current_owner_lease().check()
-        context = contextvars.copy_context()
+        from tinyassets.provider_admission import independent_provider_work
+        from tinyassets.universe_seats import detach_seat
+
+        with independent_provider_work():
+            context = contextvars.copy_context()
+        context.run(detach_seat)
         future = runs._get_executor(pool_key=runs.run_pool_key(base, universe)).submit(
             context.run, execute, base, universe, stored["activity_id"], generation, run_id,
         )
