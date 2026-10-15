@@ -14,6 +14,7 @@ After=docker.service
 Type=oneshot
 EnvironmentFile=/etc/tinyassets/env
 WorkingDirectory=/opt/tinyassets-host-uptime/current
+ExecStartPre=/usr/bin/python3 /opt/tinyassets-host-uptime/current/scripts/backup_snapshot_retention.py --apply
 ExecStart=/usr/bin/python3 /opt/tinyassets-host-uptime/current/scripts/disk_autoprune.py --apply
 TimeoutStartSec=180s
 PrivateTmp=yes
