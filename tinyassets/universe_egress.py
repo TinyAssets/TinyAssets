@@ -91,12 +91,20 @@ for spec in args[:sep]:
     srv.listen(64)
     servers.append((srv, path))
 command = args[sep + 1:]
+box_proxy = any(path == "/run/boxhostd/relay.sock" for _, path in servers)
+git_context, git_proxy = None, None
+if box_proxy:
+    sys.path.insert(0, "/app")
+    from tinyassets.boxes.git_bridge import prepare
+    git_context, git_proxy = prepare()
 if os.fork():
     for srv, _ in servers:
         srv.close()
     os.execvp(command[0], command)
 null = os.open(os.devnull, os.O_RDWR)
-for fd in (0, 1):
+# A persistent gVisor box outlives this exec. Do not keep its output pipe
+# open through the proxy child after the command exits; the host stops the box.
+for fd in (0, 1, 2) if box_proxy else (0, 1):
     os.dup2(null, fd)
 threading.stack_size(256 * 1024)
 def pump(a, b):
@@ -124,7 +132,27 @@ def pump(a, b):
 def serve(c, path, slots):
     u = socket.socket(socket.AF_UNIX)
     try:
+        first = b""
+        if git_proxy is not None and path == "/run/boxhostd/relay.sock":
+            from tinyassets.universe_egress import _read_head, EgressRefused
+            try:
+                first = _read_head(c)
+            except EgressRefused:
+                raise OSError("git proxy header incomplete or exceeds bound") from None
+            from tinyassets.git_egress import serve as serve_git
+            if serve_git(git_proxy, c, first):
+                c.close(); u.close(); slots.release(); return
         u.connect(path)
+        if path == "/run/boxhostd/relay.sock":
+            sys.path.insert(0, "/app")
+            from tinyassets import rpc_frames as rf
+            u.sendall(rf.control(rf.CONNECTION, {
+                "op": "BOX_PUBLIC", "center": os.environ["TINYASSETS_BOX_CENTER"]}))
+            answer = rf.read_frame_blocking(u)
+            if answer is None or answer.control() != {"op": "BOX_CONNECTED"}:
+                raise OSError("owner relay refused")
+        if first:
+            u.sendall(first)
     except OSError as exc:
         report(exc, 'connect')
         c.close(); u.close(); slots.release(); return
