@@ -5,8 +5,8 @@ import contextlib
 import sqlite3
 
 from tinyassets import rpc_frames as rf
+from tinyassets.boxes.network import EgressRefused, _checked_addresses, _destination
 from tinyassets.broker.box_admission import resolve
-from tinyassets.universe_egress import EgressRefused, _checked_addresses, _destination
 
 
 class PublicEgress:
