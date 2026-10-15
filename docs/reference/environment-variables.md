@@ -190,7 +190,6 @@ Each flag reads as a string; truthy = `"on"`, `"1"`, `"true"`, `"yes"` (case-ins
 | Var | Purpose | Default |
 |-----|---------|---------|
 | `TINYASSETS_DISPATCHER_ENABLED` | Master switch for the dispatcher. Off = every request runs inline; on = dispatch goes through the claim surface. | `on`. |
-| `TINYASSETS_PAID_MARKET` | Gates escrow money actions and gate-bonus stake, unstake, and release. Default off. The node-bid producer is gone; this flag does not register one. | `off`. |
 | `TINYASSETS_PRODUCER_INTERFACE` | Enables the producer-interface surface — multi-producer concurrency for branches. | `on`. |
 | `TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED` | Master transport gate for credential-blind outbound HTTP through user-owned connection grants, including compatible realtime Voice bridges. This gate never grants provider authority, selects a provider, or authorizes platform-funded usage; each call still requires its exact owner, universe, grant, method, endpoint, credential, and capability checks. | `off`. |
 | `TINYASSETS_CREDENTIAL_BROKER` | `process` starts the credential broker process (S6, change `broker-streaming-contract`) under the daemon and routes every http connection's `proxy.request` through its socket instead of a spawned worker per proxy. Selected but not running is a loud refusal, never a fall back. Until the per-role uid split (daemon / engine children / broker) the daemon refuses to start with it selected. Temporary rollout switch: removed once the broker is the only path. | unset (per-proxy worker). |

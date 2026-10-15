@@ -595,7 +595,7 @@ _LANDING_HTML = """<!doctype html>
 
 <p>This is the public surface of a local-first platform for building
 custom multi-step AI workflows &mdash; typed state, registered nodes,
-evaluation hooks, iteration loops, paid-market bid/claim mechanics.
+evaluation hooks and iteration loops.
 The engine is domain-agnostic.</p>
 
 <p>If you arrived here looking for an MCP connector, the live endpoint

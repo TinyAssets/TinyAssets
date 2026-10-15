@@ -7,7 +7,7 @@ Two tables:
   attribution_credit — per-artifact credit share for each contributor in the chain
 
 Design invariant: credit_share values for a given artifact_id sum to <= 1.0.
-The platform holds the residual (1.0 - sum(shares)) as treasury allocation.
+Shares record contribution credit, without monetary distribution.
 
 All shares are stored as REAL in [0.0, 1.0]. Generation depth starts at 0
 for the original artifact and increments for each remix step.

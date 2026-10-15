@@ -48,14 +48,10 @@ Single authoritative gate. **Every box below MUST be checked before any public l
 - [ ] **`training_excluded = true` structural enforcement verified** — any query as `workflow_analytics` role errors on training-excluded rows (smoke test green).
 - [ ] **Weekly pg_dump scheduled** + client-side-encrypted with `age` (per `SUCCESSION.md §3.2`).
 - [ ] **Monthly manual restore-test** performed + row-counts verified within 30 days of launch.
-- [ ] **`treasury_config` seeded** with Base Sepolia treasury address (testnet launch) + CC0-1.0 in `default_content_license` (per spec #29 §6.5 + #32 §5.1).
 
 ## E. Paid market + crypto
 
-- [ ] **TinyAssets test-token (ERC-20) deployed to Base Sepolia** + address in `treasury_config`.
-- [ ] **Treasury wallet seed in vault** (testnet single-key OK; multisig REQUIRED before any mainnet value accrues).
 - [ ] **WalletConnect integration verified** end-to-end (connect → verify → top-up → bid → settle on testnet).
-- [ ] **Min-bid threshold set** per capability (default 0.01 test-token).
 - [ ] **Account-age + interaction-count gates** enforced on `place_paid_request` RPC.
 - [ ] **Settlement batch cron** scheduled (weekly default per spec #29 §3).
 - [ ] **Dispute window + auto-accept cron** live (per spec #29 §8).

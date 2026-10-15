@@ -4,7 +4,6 @@ from tinyassets.control_plane.queue_policy import load_dispatcher_config, score_
 
 
 def test_legacy_paid_config_is_inert_and_preserved(tmp_path, monkeypatch):
-    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on")
     path = tmp_path / "dispatcher_config.yaml"
     raw = (
         "accept_paid_bids: true\nbid_coefficient: 100\nbid_term_cap: 9999\n"
@@ -26,7 +25,6 @@ def test_legacy_paid_config_is_inert_and_preserved(tmp_path, monkeypatch):
 
 
 def test_paid_market_flag_does_not_enable_unconfigured_tier(tmp_path, monkeypatch):
-    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on")
     config = load_dispatcher_config(tmp_path)
     assert not config.tier_enabled("paid_bid")
     assert config.tier_enabled("user_request")

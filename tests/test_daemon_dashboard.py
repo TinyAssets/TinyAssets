@@ -212,7 +212,6 @@ def test_daemon_overview_cache_invalidated_on_set_tier_config(universe_harness):
 
 
 def test_daemon_overview_does_not_advertise_retired_paid_market(universe_harness, monkeypatch):
-    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on")
     resp = json.loads(_action_daemon_overview(universe_id=universe_harness["uid"]))
     assert "paid_bid" not in resp["dispatcher"]["tier_status_map"]
     assert "accept_paid_bids" not in resp["dispatcher"]["config"]

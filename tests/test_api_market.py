@@ -177,7 +177,6 @@ def test_gates_actions_keys():
 @pytest.mark.parametrize("action", ["stake_bonus", "unstake_bonus", "release_bonus"])
 def test_paid_market_flag_cannot_restore_retired_money_routes(monkeypatch, action):
     monkeypatch.setenv("GATES_ENABLED", "1")
-    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on")
     assert not hasattr(mkt_mod, "_ESCROW_ACTIONS")
     result = json.loads(gates(action=action))
     assert "error" in result
@@ -189,7 +188,6 @@ def test_paid_market_flag_cannot_restore_retired_money_routes(monkeypatch, actio
     "escrow_fund", "escrow_balance", "escrow_set_wallet", "escrow_withdraw",
 ])
 def test_extensions_refuses_retired_escrow_actions(monkeypatch, action):
-    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on")
     result = json.loads(_extensions_impl(action=action))
     assert result == {
         "status": "rejected",
