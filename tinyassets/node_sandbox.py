@@ -2518,6 +2518,24 @@ class NodeSandbox:
         Raises:
             SandboxUnavailableError: no OS sandbox and no launcher injected.
         """
+        from tinyassets.storage_layout import ACTIVE_BOX_LAYOUT
+
+        if ACTIVE_BOX_LAYOUT == "owner-box":
+            from pathlib import Path
+
+            from tinyassets.boxes.node import run as run_box
+            from tinyassets.control_plane.binding import file_binding
+
+            if self.universe_dir is None:
+                raise PermissionError("code node requires an admitted owner box")
+            binding = file_binding(Path(self.universe_dir))
+            if binding is None:
+                raise PermissionError("code node requires an admitted owner box")
+            return run_box(self, binding, node_id=node_id, source_code=source_code,
+                           input_state=input_state, input_keys=input_keys,
+                           output_keys=output_keys, timeout=timeout or self.default_timeout,
+                           effects=effects, dependencies=dependencies, invoke=invoke,
+                           workspace=workspace)
         from tinyassets.role_node import run
 
         return run(self, node_id=node_id, source_code=source_code,

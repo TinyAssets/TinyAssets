@@ -172,6 +172,24 @@ def test_code_node_uses_box_runner(tmp_path):
     assert binding.provider.calls[0][3]["interactive_stdin"] is True
 
 
+def test_code_node_public_runner_requires_admitted_box(tmp_path, monkeypatch):
+    from tinyassets import role_node, storage_layout
+    from tinyassets.node_sandbox import NodeSandbox
+
+    monkeypatch.setattr(storage_layout, "ACTIVE_BOX_LAYOUT", "owner-box")
+    monkeypatch.setattr(role_node, "run", lambda *args, **kwargs: pytest.fail("old node cell"))
+    binding = _binding(tmp_path, b'{"success":true,"output_state":{"value":4}}\n')
+    node = NodeSandbox(universe_dir=binding.universe_dir)
+    request = dict(node_id="node", source_code="def run(state): return {'value': 4}",
+                   input_state={}, input_keys=[], output_keys=["value"], timeout=5)
+    with pytest.raises(PermissionError, match="admitted owner box"):
+        node.run_sync(**request)
+    with use_binding(binding):
+        result = node.run_sync(**request)
+    assert result.success and result.output_state == {"value": 4}
+    assert binding.provider.calls[0][0] is binding.handle
+
+
 def test_code_node_accepts_only_guest_workspace_path(tmp_path):
     from tinyassets.node_sandbox import WorkspaceLimits, WorkspaceMount
     from tinyassets.role_node import _run_box
