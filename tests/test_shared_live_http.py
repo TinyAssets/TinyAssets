@@ -542,7 +542,8 @@ def _play_slice(port, universe, players, since, etags, ready, out_path):
 
 
 def test_http_movement_ramp(tmp_path: Path, capsys):
-    open("/tmp/http-measured.jsonl", "w", encoding="utf-8").close()
+    measured = tmp_path / "http-measured.jsonl"
+    measured.write_text("", encoding="utf-8")
     runtime = _runtime()
     why = "" if runtime else (
         "no docker, podman, or nerdctl; this machine is already a container "
@@ -671,7 +672,7 @@ def test_http_movement_ramp(tmp_path: Path, capsys):
             cursor = max(wanted) if wanted else cursor
             line = "HTTP_MEASURED " + json.dumps(stats)
             print(line, flush=True)
-            with open("/tmp/http-measured.jsonl", "a", encoding="utf-8") as handle:
+            with measured.open("a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
             assert stats["lost"] == 0
             assert stats["drops"] == 0
@@ -694,7 +695,7 @@ def test_http_movement_ramp(tmp_path: Path, capsys):
     }
     cost_line = "HTTP_COST " + json.dumps(cost)
     print(cost_line, flush=True)
-    with open("/tmp/http-measured.jsonl", "a", encoding="utf-8") as handle:
+    with measured.open("a", encoding="utf-8") as handle:
         handle.write(cost_line + "\n")
     assert cost["owner_runs"] == 0
     assert cost["owner_seats_running"] == 0
