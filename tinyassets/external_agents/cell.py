@@ -14,7 +14,11 @@ import stat
 import subprocess
 from pathlib import Path
 
-from tinyassets.role_provider_cell import read_config, resolve_executable, safe_environment
+from tinyassets.external_agents.launch_security import (
+    read_config,
+    resolve_executable,
+    safe_environment,
+)
 
 _FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _HOME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
