@@ -152,6 +152,36 @@ def test_candidate_guard_rejects_old_image_after_owner_box_commit(tmp_path):
     assert subprocess.run(["bash", "-c", program], env=env, check=False).returncode == 0
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="fail-safe guard uses bash and flock; owner=c6-owner-box runs-in=linux-ci",
+)
+@pytest.mark.parametrize("cutover,allowed", [("1", True), ("0", False), ("", False)])
+def test_owner_box_image_passes_on_owner_split_only_for_a_forward_cutover(
+    tmp_path, cutover, allowed
+):
+    """A forward deploy reaches the gated box move; a restore or rollback never
+    moves data, so an owner-box-only image must not start on owner-split data."""
+    script = (REPO / "deploy" / "deploy_fail_safe.sh").read_text(encoding="utf-8")
+    match = re.search(r"^layout_allows_candidate\(\) \{.*?^\}\n", script, re.S | re.M)
+    assert match
+    docker = tmp_path / "docker"
+    docker.write_text(
+        '#!/bin/sh\nprintf \'%s\\n\' \'{"layouts":[1,2],"boxes":["owner-box"]}\'\n',
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    marker = tmp_path / layout.MARKER
+    _write(tmp_path, {"layout": 2, "state": "stable", "box_layout": "owner-split"})
+    call = f'layout_allows_candidate "{marker}" candidate {cutover}'.rstrip()
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+    result = subprocess.run(["bash", "-c", match.group(0) + call + "\n"], env=env, check=False)
+    assert (result.returncode == 0) is allowed
+    _write(tmp_path, {"layout": 2, "state": "migrating", "box_layout": "owner-split"})
+    result = subprocess.run(["bash", "-c", match.group(0) + call + "\n"], env=env, check=False)
+    assert result.returncode != 0
+
+
 def _bash_has_python3() -> bool:
     if _BASH is None:
         return False

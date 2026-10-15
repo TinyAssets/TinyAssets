@@ -2623,8 +2623,8 @@ def test_owner_box_move_commits_once_or_requires_snapshot_restore(box: Box, outc
     box.set_docker_state(
         migration_pending=False,
         active_box_layout={NEW_IMAGE: "owner-box"},
-        known_layouts={NEW_IMAGE: {"layouts": [1, 2],
-                                   "boxes": ["owner-split", "owner-box"]}},
+        # The real C6 image declares owner-box only (storage_layout.py).
+        known_layouts={NEW_IMAGE: {"layouts": [1, 2], "boxes": ["owner-box"]}},
         box_migration_apply=outcome,
     )
     env["BOX_STORE_CHECK"] = "/bin/true"
@@ -2962,8 +2962,7 @@ def test_unprovisioned_canary_refuses_an_owner_box_candidate(box: Box):
     box.set_docker_state(
         migration_pending=False,
         active_box_layout={NEW_IMAGE: "owner-box"},
-        known_layouts={NEW_IMAGE: {"layouts": [1, 2],
-                                   "boxes": ["owner-split", "owner-box"]}},
+        known_layouts={NEW_IMAGE: {"layouts": [1, 2], "boxes": ["owner-box"]}},
     )
     env["CORE_CANARY_PROVISIONED"] = "0"
     env["BOX_STORE_CHECK"] = "/bin/true"
