@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import secrets
@@ -95,29 +96,45 @@ async def _run_catalogue_locked(agent, launch, custody):
         agent=agent, package_digest=package.digest,
         custody_digest=custody.reference.reference_digest,
     )
+    operation_id = receipts.claim_cli(
+        universe.parent, owner=custody.owner_user_id, universe_id=universe.name,
+        logical_key=f"catalogue:{agent}:{package.digest}",
+        custody_digest=custody.reference.reference_digest, repeatable=True,
+    )
+    admitted_custody = receipts.cli_custody_digest(universe.parent, operation_id)
     proc, original, result, error = None, {}, None, None
     receipts.start(universe.parent, receipt_id)
     observed = datetime.now(timezone.utc)
     try:
+        if callable(launch):
+            launch = launch(operation_id)
         original = materialize(custody, package.row["auth"])
-        operation = package.row["catalogue"]
-        argv = [str(package.executable), *operation["argv"]]
-        home = "/agent-home/" + package.row["auth"]["home_dir"]
-        env = {package.row["auth"]["home_env"]: home}
-        proc = await launch.spawn(argv, env, home="/agent-home",
-                                  workdir="/agent-home/jobs/" + secrets.token_hex(16),
-                                  egress=universe.name, auth_files=original,
-                                  auth=package.row["auth"])
-        catalogue = await read_native_catalogue(
-            argv, protocol=_protocol(operation), env=env, cwd=None,
-            universe_dir=universe, timeout=receipts.REFRESH_TIMEOUT_SECONDS,
-            process=proc,
-        )
-        completed = datetime.now(timezone.utc)
-        if not custody.current():
-            raise PermissionError("external-agent custody changed during catalogue")
-        result = NativeDiscoverySnapshot(agent, custody.owner_user_id, universe,
-                                         custody.reference, observed, completed, catalogue)
+        proc = await launch.resume() if hasattr(launch, "resume") else None
+        if (proc is None and admitted_custody != custody.reference.reference_digest):
+            receipts.acknowledge_cli(universe.parent, operation_id)
+            raise PermissionError("native catalogue custody changed before launch")
+        if proc is None:
+            operation = package.row["catalogue"]
+            argv = [str(package.executable), *operation["argv"]]
+            home = "/agent-home/" + package.row["auth"]["home_dir"]
+            env = {package.row["auth"]["home_env"]: home}
+            work_id = hashlib.sha256(operation_id.encode()).hexdigest()[:32]
+            proc = await launch.spawn(argv, env, home="/agent-home",
+                                      workdir="/agent-home/jobs/" + work_id,
+                                      egress=universe.name, auth_files=original,
+                                      auth=package.row["auth"])
+            catalogue = await read_native_catalogue(
+                argv, protocol=_protocol(operation), env=env, cwd=None,
+                universe_dir=universe, timeout=receipts.REFRESH_TIMEOUT_SECONDS,
+                process=proc,
+            )
+            completed = datetime.now(timezone.utc)
+            if not custody.current():
+                raise PermissionError("external-agent custody changed during catalogue")
+            result = NativeDiscoverySnapshot(agent, custody.owner_user_id, universe,
+                                             custody.reference, observed, completed, catalogue)
+        else:
+            error = ProviderError("native catalogue recovered; refresh again")
     except BaseException as exc:
         error = exc
     finally:
@@ -126,8 +143,15 @@ async def _run_catalogue_locked(agent, launch, custody):
                 returned = await launch.close(proc)
                 changed = {name: data for name, data in returned.items()
                            if name in original and data != original[name]}
+                if admitted_custody != custody.reference.reference_digest:
+                    await launch.acknowledge(proc)
+                    receipts.acknowledge_cli(universe.parent, operation_id)
+                    raise PermissionError("native catalogue custody changed before writeback")
                 if changed:
                     if not compare_and_swap(custody, package.row["auth"], changed):
+                        if hasattr(launch, "acknowledge"):
+                            await launch.acknowledge(proc)
+                            receipts.acknowledge_cli(universe.parent, operation_id)
                         raise PermissionError("external-agent custody changed before writeback")
                     carried = custody.reload()
                     if (carried is None or
@@ -137,6 +161,7 @@ async def _run_catalogue_locked(agent, launch, custody):
                         result = replace(result, custody=carried)
                 if hasattr(launch, "acknowledge"):
                     await launch.acknowledge(proc)
+                    receipts.acknowledge_cli(universe.parent, operation_id)
                 if getattr(returned, "exit_code", 0) != 0:
                     raise RuntimeError("external-agent process failed")
             except BaseException as exc:
@@ -271,6 +296,9 @@ async def _run_job_locked(agent, launch, custody, *, prompt, system, config):
         agent=agent, package_digest=package.digest,
         custody_digest=custody.reference.reference_digest, requested_model=model,
     )
+    admitted_custody = (receipts.cli_custody_digest(universe.parent,
+                         launch.operation_id) if hasattr(launch, "operation_id")
+                        else custody.reference.reference_digest)
     proc = None
     turn = None
     original = {}
@@ -279,6 +307,12 @@ async def _run_job_locked(agent, launch, custody, *, prompt, system, config):
     started = time.monotonic()
     try:
         original = materialize(custody, package.row["auth"])
+        proc = await launch.resume() if hasattr(launch, "resume") else None
+        if proc is None and admitted_custody != custody.reference.reference_digest:
+            receipts.acknowledge_cli(universe.parent, launch.operation_id)
+            raise PermissionError("native CLI custody changed before launch")
+        if proc is not None:
+            raise ProviderError("native CLI recovered; turn response unavailable")
         job = package.row["job"]
         if job["transport"] != "jsonrpc":
             raise ValueError("external-agent job transport is unsupported")
@@ -293,7 +327,9 @@ async def _run_job_locked(agent, launch, custody, *, prompt, system, config):
                     if locked else None)
                 resume = str(record["handle"]) if record else ""
                 input_text = ref.resume_prompt if record else prompt
-                workdir = "/agent-home/jobs/" + secrets.token_hex(16)
+                workdir = "/agent-home/jobs/" + hashlib.sha256(
+                    launch.operation_id.encode()).hexdigest()[:32] if hasattr(
+                        launch, "operation_id") else "/agent-home/jobs/" + secrets.token_hex(16)
                 argv = [str(package.executable), *job["argv"]]
                 home = "/agent-home/" + package.row["auth"]["home_dir"]
                 proc = await launch.spawn(
@@ -340,10 +376,18 @@ async def _run_job_locked(agent, launch, custody, *, prompt, system, config):
                 returned = await launch.close(proc)
                 changed = {name: data for name, data in returned.items()
                            if name in original and data != original[name]}
+                if admitted_custody != custody.reference.reference_digest:
+                    await launch.acknowledge(proc)
+                    receipts.acknowledge_cli(universe.parent, launch.operation_id)
+                    raise PermissionError("native CLI custody changed before writeback")
                 if changed and not compare_and_swap(custody, package.row["auth"], changed):
+                    if hasattr(launch, "acknowledge"):
+                        await launch.acknowledge(proc)
+                        receipts.acknowledge_cli(universe.parent, launch.operation_id)
                     raise PermissionError("external-agent custody changed before writeback")
                 if hasattr(launch, "acknowledge"):
                     await launch.acknowledge(proc)
+                    receipts.acknowledge_cli(universe.parent, launch.operation_id)
                 if getattr(returned, "exit_code", 0) != 0:
                     raise RuntimeError("external-agent process failed")
             except BaseException as exc:

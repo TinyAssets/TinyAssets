@@ -826,10 +826,11 @@ class _ForegroundRunProviderSession:
             # The one starter (S2): an agent node is the main agent; an
             # activity's run is the agent its record names.
             return session.start(
-                "main", prompt,
+                activity["agent_id"] if activity is not None else "main", prompt,
                 session.RunStep(
                     session=self, prompt_config=config, policy=policy, node=node,
-                    response_observer=response_observer,
+                    box_binding=session.current_binding(),
+                    activity=activity, response_observer=response_observer,
                     metadata_observer=metadata_observer,
                 ),
             )

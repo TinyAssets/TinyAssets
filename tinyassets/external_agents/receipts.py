@@ -1,6 +1,7 @@
 """Durable catalogue attempt facts; status is derived from these rows."""
 from __future__ import annotations
 
+import secrets
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
@@ -34,6 +35,54 @@ def _table(conn):
 
 def _now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def claim_cli(base: Path, *, owner: str, universe_id: str, logical_key: str,
+              custody_digest: str,
+              repeatable: bool = False) -> str:
+    """Persist an invocation before dispatch; retry an unacknowledged one."""
+    with SQLiteProviderWorkAuthorityStore(base).connection() as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS external_agent_cli_invocations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_user_id TEXT NOT NULL, universe_id TEXT NOT NULL,
+            logical_key TEXT NOT NULL, operation_id TEXT NOT NULL UNIQUE,
+            custody_digest TEXT NOT NULL, admitted_at TEXT NOT NULL,
+            acknowledged_at TEXT)""")
+        conn.execute("BEGIN IMMEDIATE")
+        previous = conn.execute("""SELECT operation_id, acknowledged_at
+            FROM external_agent_cli_invocations
+            WHERE owner_user_id=? AND universe_id=? AND logical_key=?
+            ORDER BY id DESC LIMIT 1""", (owner, universe_id, logical_key)).fetchone()
+        if previous is not None and (previous[1] is None or not repeatable):
+            return previous[0]
+        operation_id = "native:" + secrets.token_hex(16)
+        conn.execute("""INSERT INTO external_agent_cli_invocations
+            (owner_user_id, universe_id, logical_key, operation_id,
+             custody_digest, admitted_at)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (owner, universe_id, logical_key, operation_id, custody_digest, _now()))
+        conn.commit()
+        return operation_id
+
+
+def cli_custody_digest(base: Path, operation_id: str) -> str:
+    with SQLiteProviderWorkAuthorityStore(base).connection() as conn:
+        row = conn.execute("""SELECT custody_digest
+            FROM external_agent_cli_invocations WHERE operation_id=?""",
+            (operation_id,)).fetchone()
+    if row is None:
+        raise RuntimeError("native CLI invocation was not admitted")
+    return row[0]
+
+
+def acknowledge_cli(base: Path, operation_id: str) -> None:
+    with SQLiteProviderWorkAuthorityStore(base).connection() as conn:
+        changed = conn.execute("""UPDATE external_agent_cli_invocations
+            SET acknowledged_at=COALESCE(acknowledged_at, ?)
+            WHERE operation_id=?""", (_now(), operation_id))
+        if changed.rowcount != 1:
+            raise RuntimeError("native CLI invocation was not admitted")
+        conn.commit()
 
 
 def admit(base: Path, *, owner: str, universe_id: str, agent: str,

@@ -48,12 +48,18 @@ def make_interactive_agent_turn(*, prompt, system, universe_context, config):
     if _router is None:
         raise ProviderAuthorityHeldError("interactive agent requires a provider router")
     register_open_providers_for(universe_context)
-    from tinyassets.agent_loop.served_chat import ThinLoopChatAdapter, thin_loop_selected
+    from tinyassets.control_plane.binding import current_binding
+    from tinyassets.interactive_http_agent import ServedChatAgentAdapter
 
-    thin = {"adapter": ThinLoopChatAdapter()} if thin_loop_selected() else {}
+    adapter = ServedChatAgentAdapter()
+    if current_binding() is not None:
+        from tinyassets.agent_loop.served_chat import ThinLoopChatAdapter
+
+        adapter = ThinLoopChatAdapter()
+
     return InteractiveHttpAgentTurn(
         router=_router, prompt=prompt, system=system,
-        universe_context=universe_context, config=config, **thin,
+        universe_context=universe_context, config=config, adapter=adapter,
     )
 
 

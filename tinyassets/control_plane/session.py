@@ -28,11 +28,18 @@ are C9's one loop in waiting; nothing starts them except this function.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from contextlib import nullcontext
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
 from tinyassets.agent_definition import MAIN_AGENT, AgentFile, load_agent
+from tinyassets.control_plane.binding import (
+    SessionBinding,
+    bind_session,
+    current_binding,
+    use_binding,
+)
 
 
 class AgentUnavailable(LookupError):
@@ -48,6 +55,8 @@ class OwnerTurn:
     owner: str
     tier: str
     session_key: str
+    execution_id: str = ""
+    box_binding: SessionBinding | None = field(default=None, repr=False, compare=False)
     conversation_history: list = field(default_factory=list)
     input_method: str = "unknown"
     model_choice: dict | None = None
@@ -63,6 +72,7 @@ class RunStep:
     session: Any
     prompt_config: Any
     policy: Any
+    box_binding: SessionBinding | None = field(default=None, repr=False, compare=False)
     node: dict | None = None
     activity: dict | None = None
     response_observer: Callable | None = None
@@ -82,6 +92,7 @@ class ChildOf:
     universe_id: str
     owner: str
     agent_id: str
+    box_binding: SessionBinding | None = field(default=None, repr=False, compare=False)
     inside_activity: bool = False
 
 
@@ -107,17 +118,83 @@ def start(agent_ref: str, input: str, parent: Parent):
     The agent is resolved among the parent's admitted account's agents only:
     on a shared command center, a co-admin's own agent is not this account's.
     """
-    try:
-        agent = load_agent(_universe_dir(parent), agent_ref, owner=_owner(parent))
-    except (LookupError, ValueError, OSError) as exc:
-        raise AgentUnavailable(f"no agent named {agent_ref!r} in this command center") from exc
-    if isinstance(parent, OwnerTurn):
-        return _owner_turn(agent, input, parent)
-    if isinstance(parent, RunStep):
-        return _run_step(agent, input, parent)
+    if not isinstance(parent, (OwnerTurn, RunStep, ChildOf)):
+        raise TypeError(f"unknown parent {type(parent).__name__}")
+    binding = _binding(parent)
+    parent = replace(parent, box_binding=binding)
+    with use_binding(binding):
+        try:
+            try:
+                with binding.coherent_reads() if binding is not None else nullcontext():
+                    agent = load_agent(_universe_dir(parent), agent_ref, owner=_owner(parent))
+            except (LookupError, ValueError, OSError) as exc:
+                raise AgentUnavailable(
+                    f"no agent named {agent_ref!r} in this command center") from exc
+            if isinstance(parent, OwnerTurn):
+                return _owner_turn(agent, input, parent)
+            if isinstance(parent, RunStep):
+                return _run_step(agent, input, parent)
+            return _child(agent, input, parent)
+        finally:
+            if binding is not None and _terminal_stop(parent):
+                binding.cancel_terminal()
+
+
+def _binding(parent: Parent) -> SessionBinding | None:
+    from tinyassets.agent_loop.served_chat import configured_box_provider
+    from tinyassets.boxes.provider import BoxAuthError
+
+    inherited = current_binding()
+    if (parent.box_binding is not None and inherited is not None
+            and parent.box_binding is not inherited):
+        raise BoxAuthError("child binding differs from its active parent session")
+    binding = parent.box_binding or inherited
+    if binding is not None:
+        binding.validate(_owner(parent), _universe_dir(parent))
+        return binding
+    provider, limits = configured_box_provider()
+    if provider is None:
+        from tinyassets.storage_layout import ACTIVE_BOX_LAYOUT
+
+        if ACTIVE_BOX_LAYOUT == "owner-box":
+            raise BoxAuthError("owner-box session provider is not configured")
+        return None  # Existing pre-cutover layout; never an owner-box fallback.
     if isinstance(parent, ChildOf):
-        return _child(agent, input, parent)
-    raise TypeError(f"unknown parent {type(parent).__name__}")
+        raise BoxAuthError("a child requires its parent's admitted box binding")
+    if isinstance(parent, OwnerTurn):
+        execution_id = parent.execution_id
+    else:
+        run_id = parent.session.bound_run_id
+        if not run_id:
+            raise BoxAuthError("an agent step requires an admitted durable run")
+        execution_id = f"run:{run_id}"
+        # One provider session may execute several nodes, sometimes on different
+        # worker threads. Retain its binding and operation sequence for the run.
+        with parent.session._lock:
+            binding = getattr(parent.session, "_box_binding", None)
+            if binding is None:
+                binding = bind_session(provider=provider, limits=limits,
+                                       universe_dir=_universe_dir(parent), owner=_owner(parent),
+                                       execution_id=execution_id)
+                parent.session._box_binding = binding
+            binding.validate(_owner(parent), _universe_dir(parent))
+            return binding
+    return bind_session(provider=provider, limits=limits,
+                        universe_dir=_universe_dir(parent), owner=_owner(parent),
+                        execution_id=execution_id)
+
+
+def _terminal_stop(parent: Parent) -> bool:
+    if isinstance(parent, OwnerTurn):
+        from tinyassets.turn_interrupt import current
+
+        live = current()
+        return live is not None and live.requested()
+    if isinstance(parent, RunStep):
+        from tinyassets.runs import is_cancel_requested
+
+        return is_cancel_requested(parent.session._base_path, parent.session.bound_run_id)
+    return False
 
 
 def _owner_turn(agent: AgentFile, message: str, parent: OwnerTurn) -> str:

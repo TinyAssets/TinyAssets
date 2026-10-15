@@ -44,7 +44,7 @@ class EscrowLock:
             lock_id=d["lock_id"],
             gate_claim_id=d["gate_claim_id"],
             staker_id=d["staker_id"],
-            currency=d.get("currency") or "MicroToken",
+            currency=d.get("currency") or "",
             amount=int(d["amount"]),
             status=d["status"],
             locked_at=d["locked_at"],

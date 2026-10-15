@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { RitualLabel } from "@tiny/design-system";
-import { TokenContracts } from "../../components/TokenContracts";
 import { legal } from "../../lib/legal";
 import styles from "./page.module.css";
 

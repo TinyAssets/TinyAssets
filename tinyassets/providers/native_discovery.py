@@ -116,14 +116,28 @@ async def refresh_native_catalogue(
         from tinyassets.external_agents.registry import PACKAGES
 
         if provider.name in PACKAGES:
+            from tinyassets.agent_loop.served_chat import configured_box_provider
+            from tinyassets.control_plane.binding import bind_session, current_binding
+            from tinyassets.control_plane.native_launch import launcher
             from tinyassets.external_agents.home import Custody
             from tinyassets.external_agents.runner import run_catalogue
-            from tinyassets.role_external_agent import CellLauncher
+
+            custody = Custody(universe, owner_user_id, expected_custody)
+
+            def launch_catalogue(operation_id):
+                box_provider, limits = configured_box_provider()
+                binding = current_binding()
+                if box_provider is not None:
+                    binding = bind_session(
+                        provider=box_provider, limits=limits, universe_dir=universe,
+                        owner=owner_user_id, execution_id=operation_id,
+                    )
+                return launcher(custody, binding=binding,
+                                operation_id=operation_id)
 
             return await run_catalogue(
                 provider.name,
-                CellLauncher(universe_dir=universe, owner_user_id=owner_user_id),
-                Custody(universe, owner_user_id, expected_custody),
+                launch_catalogue, custody,
             )
         snapshot = snapshot_llm_subscription_credential(
             universe_dir=universe, custody=expected_custody,

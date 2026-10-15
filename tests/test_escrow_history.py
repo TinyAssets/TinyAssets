@@ -20,7 +20,9 @@ def test_existing_escrow_is_read_only(tmp_path, currency_column):
     before = path.read_bytes()
     with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as conn:
         conn.row_factory = sqlite3.Row
-        assert escrow.get_lock(conn, "lock").amount == 12
+        lock = escrow.get_lock(conn, "lock")
+        assert lock.amount == 12
+        assert lock.currency == ("historical-unit" if currency_column else "")
         assert escrow.get_lock_for_claim(conn, "claim", "owner").lock_id == "lock"
         assert len(escrow.list_locks_for_claim(conn, "claim")) == 1
         assert escrow.get_lock(conn, "absent") is None

@@ -29,8 +29,8 @@ the order. Measured on `origin/main` `13f4ff4459f`, 2026-10-11.
   The owner app writes them, and nothing proves that only the owner can.
 - **`BoxProvider`** (`boxes/provider.py`, `state.py`, `local.py`) has a
   contract suite and a local driver with no kernel boundary. Its callers are
-  `agent_loop/box_tools.py` and `served_chat.py`, which sit behind the dark
-  `TINYASSETS_AGENT_LOOP`.
+  `agent_loop/box_tools.py` and `served_chat.py`; the thin route is selected
+  when session admission has bound a box.
 
 ## 2. The boundary
 
@@ -710,7 +710,10 @@ host before dispatch. C6 does not overwrite those files. Integration needs:
   stdout is durable and must never carry credential writeback. The integration
   constructs `BoxLauncher(provider, handle, custody, operation_id=stable_id)`
   and passes it to the existing `run_job`/`run_catalogue` runner. The runner now
-  acknowledges its private result only after successful CAS. Existing provider
+  acknowledges its private result after successful CAS, or after refusing a
+  stale result whose admitted custody was superseded. The broker persists the
+  invocation ID and admitted custody digest before dispatch, reuses the ID on
+  retry, and derives the same box session from it. Existing provider
   factory callsites remain unchanged until C7 supplies this binding.
 
 One additional inventory row is required in C7-owned
