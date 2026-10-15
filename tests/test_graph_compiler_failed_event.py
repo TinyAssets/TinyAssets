@@ -302,7 +302,12 @@ def test_code_failure_records_actual_graph_node(
         branch.state_schema.append({"name": "sibling_out", "type": "str"})
     base = tmp_path / "runs"
     base.mkdir()
-    outcome = execute_branch(base, branch=branch, inputs={"x": "test"}, actor="tester")
+    # The run executes inside its owner's admitted box session: every code
+    # node, parallel siblings included, carries that one binding.
+    from tinyassets.control_plane import binding as binding_module
+
+    with binding_module.use_binding(binding_module.file_binding(base)):
+        outcome = execute_branch(base, branch=branch, inputs={"x": "test"}, actor="tester")
     assert outcome.status == RUN_STATUS_FAILED
     assert ("timeout" if failure_kind == "timeout" else "intentional-code-probe") in outcome.error
     events = list_events(base, outcome.run_id, since_step=-1)

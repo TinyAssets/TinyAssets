@@ -43,6 +43,19 @@ def env(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def alice_home(env):
+    """Alice's command center: a draft code node runs only in its owner's box."""
+    from tinyassets.daemon_server import claim_founder_home, ensure_universe_registered
+
+    home = env / "alice-home"
+    home.mkdir()
+    ensure_universe_registered(env, universe_id=home.name, universe_path=home,
+                               display_name=home.name)
+    claim_founder_home(env, "alice", home.name)
+    return home
+
+
+@pytest.fixture
 def store(env):
     from tinyassets.authoring.store import AuthoringStore
 
@@ -715,7 +728,7 @@ def _code_session(store, source, **overrides):
     return started["session_id"]
 
 
-def test_working_code_node_executes_and_reports_measured_budget(store):
+def test_working_code_node_executes_and_reports_measured_budget(store, alice_home):
     from tinyassets.authoring import service
 
     session_id = _code_session(
@@ -737,7 +750,7 @@ def test_working_code_node_executes_and_reports_measured_budget(store):
     assert result["published"] is False
 
 
-def test_raising_code_node_fails_the_test_and_blocks_publication(store):
+def test_raising_code_node_fails_the_test_and_blocks_publication(store, alice_home):
     from tinyassets.authoring import service
     from tinyassets.authoring.models import AuthoringValidationError
 

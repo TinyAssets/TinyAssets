@@ -19,6 +19,23 @@ from tinyassets.graph_compiler import (
     compile_branch,
 )
 
+
+@pytest.fixture
+def center(tmp_path, monkeypatch):
+    """A command center whose owner's box session is bound for the test.
+
+    Code nodes run only in the admitted owner box of the center they belong to.
+    """
+    from tinyassets.control_plane import binding as binding_module
+
+    data_root = tmp_path / "data"
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
+    cc = data_root / "cc-reducer"
+    cc.mkdir(parents=True)
+    with binding_module.use_binding(binding_module.file_binding(cc)):
+        yield cc
+
+
 _UPDATES = (
     {"shared": "alpha", "alpha_only": 1},
     {"shared": "omega", "omega_only": 2},
@@ -96,7 +113,7 @@ def test_merge_reducer_rejects_nonconvergent_fan_in() -> None:
         )
 
 
-def test_single_merge_writer_converges_across_randomized_graph_order() -> None:
+def test_single_merge_writer_converges_across_randomized_graph_order(center) -> None:
     rng = random.Random(20260610)
     outcomes: list[dict[str, object]] = []
 
@@ -142,12 +159,14 @@ def test_single_merge_writer_converges_across_randomized_graph_order() -> None:
             ],
         )
 
-        outcomes.append(compile_branch(branch).graph.compile().invoke({})["facts"])
+        outcomes.append(
+            compile_branch(branch, base_path=center).graph.compile().invoke({})["facts"],
+        )
 
     assert outcomes == [{"shared": "stable", "only": 1}] * 32
 
 
-def test_merge_reducer_rejects_an_undeclared_second_writer_at_runtime() -> None:
+def test_merge_reducer_rejects_an_undeclared_second_writer_at_runtime(center) -> None:
     declared_writer = _source_node("declared_writer", _UPDATES[0])
     undeclared_writer = NodeDefinition(
         node_id="undeclared_writer",
@@ -178,6 +197,6 @@ def test_merge_reducer_rejects_an_undeclared_second_writer_at_runtime() -> None:
         ],
     )
 
-    app = compile_branch(branch).graph.compile()
+    app = compile_branch(branch, base_path=center).graph.compile()
     with pytest.raises(CompilerError, match="without declaring it"):
         app.invoke({})

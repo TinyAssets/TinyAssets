@@ -104,10 +104,27 @@ class _Adapter:
         return json.loads(json.dumps(self.script[node_id]))
 
 
-def _run(branch, packets, adapter, monkeypatch, run_id="r1"):
+@pytest.fixture
+def center(tmp_path, monkeypatch):
+    """A command center whose owner's box session is bound for the test.
+
+    Code nodes run only in the admitted owner box of the center they belong to.
+    """
+    from tinyassets.control_plane import binding as binding_module
+
+    data_root = tmp_path / "data"
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
+    cc = data_root / "cc-effects"
+    cc.mkdir(parents=True)
+    with binding_module.use_binding(binding_module.file_binding(cc)):
+        yield cc
+
+
+def _run(branch, packets, adapter, monkeypatch, run_id="r1", base_path=None):
     monkeypatch.setitem(effectors._EFFECTORS, SINK, adapter)
     chain = EffectChain(run_id=run_id, base_path=None)
-    compiled = compile_branch(branch, provider_call=_provider_for(packets), effect_chain=chain)
+    compiled = compile_branch(branch, provider_call=_provider_for(packets), effect_chain=chain,
+                              base_path=base_path)
     app = compiled.graph.compile(checkpointer=InMemorySaver())
     app.invoke({}, config={"configurable": {"thread_id": run_id}})
     return chain
@@ -351,7 +368,7 @@ def _fetch_edit_write_branch(edit_source=_EDIT_SOURCE):
     return b
 
 
-def test_fetch_code_write_in_one_run_without_any_operator(monkeypatch):
+def test_fetch_code_write_in_one_run_without_any_operator(monkeypatch, center):
     """The shape the whole change exists for (live 2026-08-30: four deploys of
     `$ta.*` operators to change one line). A code node reads the fetch's full
     parsed body, edits it deterministically, and the write node's packet reads
@@ -360,6 +377,7 @@ def test_fetch_code_write_in_one_run_without_any_operator(monkeypatch):
     chain = _run(
         _fetch_edit_write_branch(),
         {"fetch": _packet(), "write": _packet("PUT")}, adapter, monkeypatch, run_id="r7",
+        base_path=center,
     )
     assert [c["node_id"] for c in adapter.calls] == ["fetch", "write"]
     # aGVsbG8= is "hello"; the code node produced "hello world", and the write
@@ -428,7 +446,7 @@ def test_resume_carries_the_runs_authority_so_foreign_code_cannot_fail_open(tmp_
     assert "invocation_depth=effect_chain.invocation_depth" in src   # R3: depth survives resume
 
 
-def test_rpc_runs_the_invoker_inside_the_requests_context(monkeypatch):
+def test_rpc_runs_the_invoker_inside_the_requests_context(monkeypatch, center):
     """R2 P0: the sandbox answers RPCs from a drain thread, which carries no
     ContextVars, so an invoker resolved the daemon's env identity instead of
     the run's actor. The node thread's context is copied into the call."""
@@ -450,7 +468,8 @@ def test_rpc_runs_the_invoker_inside_the_requests_context(monkeypatch):
     branch = _linear(node)
     branch.state_schema = [{"name": "r", "type": "dict"}]
     chain = EffectChain(run_id="r8")
-    compiled = compile_branch(branch, provider_call=None, effect_chain=chain)
+    compiled = compile_branch(branch, provider_call=None, effect_chain=chain,
+                              base_path=center)
     app = compiled.graph.compile(checkpointer=InMemorySaver())
     out = app.invoke({}, config={"configurable": {"thread_id": "r8"}})
     assert out["r"] == {"actor": "alice", "action": "probe"}
@@ -476,7 +495,7 @@ def test_rpc_calls_are_counted_and_never_capped():
     assert chain.rpc_calls == 6000, "the count is kept, it just refuses nothing"
 
 
-def test_a_bad_reducer_delta_fails_before_any_effect_fires(monkeypatch):
+def test_a_bad_reducer_delta_fails_before_any_effect_fires(monkeypatch, center):
     """R2 P0: `_delta_view` overwrote an append field with a non-list, the PUT
     fired, then LangGraph raised on the reducer. Validate first, fire never."""
     adapter = _Adapter({"write": _OK_PUT})
@@ -495,14 +514,15 @@ def test_a_bad_reducer_delta_fails_before_any_effect_fires(monkeypatch):
         {"name": "write_packet", "type": "str"},
     ]
     chain = EffectChain(run_id="r10")
-    compiled = compile_branch(branch, provider_call=None, effect_chain=chain)
+    compiled = compile_branch(branch, provider_call=None, effect_chain=chain,
+                              base_path=center)
     app = compiled.graph.compile(checkpointer=InMemorySaver())
     with pytest.raises(Exception, match="reducer is append"):
         app.invoke({"log": []}, config={"configurable": {"thread_id": "r10"}})
     assert adapter.calls == []
 
 
-def test_the_merge_writer_guard_runs_before_effects(monkeypatch):
+def test_the_merge_writer_guard_runs_before_effects(monkeypatch, center):
     """R2 P0: the guard wrapped the effect wrapper, so a PUT fired before the
     guard refused an undeclared merge writer. Now guard -> effects."""
     adapter = _Adapter({"write": _OK_PUT})
@@ -525,7 +545,8 @@ def test_the_merge_writer_guard_runs_before_effects(monkeypatch):
         {"name": "write_packet", "type": "str"},
     ]
     chain = EffectChain(run_id="r11")
-    compiled = compile_branch(branch, provider_call=None, effect_chain=chain)
+    compiled = compile_branch(branch, provider_call=None, effect_chain=chain,
+                              base_path=center)
     app = compiled.graph.compile(checkpointer=InMemorySaver())
     with pytest.raises(Exception, match="without declaring it"):
         app.invoke({}, config={"configurable": {"thread_id": "r11"}})
