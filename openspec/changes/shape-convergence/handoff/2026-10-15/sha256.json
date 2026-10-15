@@ -1,0 +1,14 @@
+{
+  "c10-extensions-retirement.patch": "00d0c5ed84880bb520963d5e1aa42e5f312d52a6bdc6680244009cb403629427",
+  "c10-role-writer-retirement.patch": "b9c5defa59f598df8905fe6240432c9a57bc18798af4de632734e28689046b90",
+  "c10-uncommitted-worktree.patch": "2b0348c91407e52e9b9b968224c7168c5fdda3793c7cabaa35de0ee1ec7e726d",
+  "c11-c12-shell-integration.patch": "5b16873b5892c79a3b7ec53a9eab0e1f8aa0312d22bdacea65824a2fe9e7ed32",
+  "c9-aclient-inference-usage.patch": "2a2e1620f6bc3735fdb4381601975af94ef06a0935274b7d283ed2878af18953",
+  "evidence/patch-apply-checks.json": "3fc792b078865caf0daa3284f63faf9fefb7e09431445d014aa00002f856d04f",
+  "integration-contracts.md": "8a6690692d19be59172ebbf9b30ca7f535bb0f1d9e0bf89d1981f30b85c5cd08",
+  "reviews/c10-activity-brief.txt": "4d670ebaa4fa237c46d462af346f8eca1b7f066617e46d70fb541a1bc509025c",
+  "reviews/c10-engine-brief.txt": "40626f63c710de0b8919a20db4066107652c970113c6f35fffd433cee023efcd",
+  "reviews/c11-ui-brief.txt": "675b236bd4594ce76ef77ce32ffe30b407355f86547a4aafc0a00e891b8cc85f",
+  "reviews/c7-c9-brief.txt": "68ca3f32a5239a22da7843bff0e373779c90395fb8d6d2fd0c27572ea136850f",
+  "reviews/c9-stream-brief.md": "d3188c90c24b46305152126d0c273e360dd74a533c58c7cedb6b7ee757d736e7"
+}

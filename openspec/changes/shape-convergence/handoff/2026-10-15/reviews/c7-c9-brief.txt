@@ -1,0 +1,22 @@
+Review TinyAssets/TinyAssets draft PR4939, branch codex/c7-c9-session-convergence.
+Review exact final head b1a1e82a8ca2850a85688dea02e8ce10d3f77df5 (verify current PR head). Integration anchor922b871970373a279d5c0b5b407881d5bb99295c contains reused C7 PR4845 c1eb3d44 and unchanged C6 PR4920 bc418c32. Review new commits after anchor for floor/correctness; inherited C7 retirement remains visible against actual PR base C6. Parent owns integration and deploy. Roundtable PR4861/4864 have priority and must remain untouched.
+
+HARD CONSTRAINTS ON HOW YOU WORK:
+- Do NOT dispatch sub-agents, run scripts/peer_agent.py or claude/codex subprocesses, or create a worktree. Review yourself, read-only.
+- Do NOT run full suite, scripts/ci_required_tests.py, or pytest -m 'not slow'. At most one focused test file.
+- Budget about10 minutes. Read diff and cited files and reason.
+- Report conflicting lane/direction assumptions instead of editing or bypassing boundaries. No credential creation, cost, production actions, merge or deploy.
+
+Focus:
+- tinyassets/control_plane/binding.py and session.py: bind explicit admitted owner/center before load_agent, validate inherited root/identity, stable reconnect/session namespace, coherent generation reads, explicit terminal cancellation only, child context handoff.
+- universe_files.py routes only exact admitted root through provider; no host owner IO fallback in owner-box layout. tools retain original operation/journal namespace and ta bridge distinguishes bound session identity.
+- agent_loop/execution.py: one event loop, task contexts, cancellation drains durable commits. provider_assignment.py: async/sync reader-writer interoperability, writer preference, cancel-safe local/fcntl admission, fixed platform lock path. Review new workspace_fs helper if present at final head.
+- agent_turn_coordinator.py, providers/router.py and storage/agent_turn_journal.py: reservation/commit offloop, exact owner lease generation fencing, no stale commits/replays, correct usage finalization/cancellation.
+- external_agents/provider.py and control_plane/native_launch.py: exact router budget/attempt scope and required bound launcher. This is not complete native cutover: home/runner/discovery old-cell assumptions remain explicitly pending C6 composition; no new credentials or grants.
+- Gate edits only classify real bounded output/wait operations or remove retired raw IO pins; no gate weakening.
+
+Evidence at /tmp/c7-c9-focused-final.log (128 pass), /tmp/c7-definition.log (13 pass), /tmp/c7-heavy.log (1351 pass21 fail), /tmp/c7-heavy-baseline.log (same21 fail on anchor), /tmp/c7-openspec-validation.log and /tmp/c7-hygiene-stacked.log. Final structural rerun is /tmp/c7-c9-structural-final.log (829 pass). New platform lock explicitly refuses Windows. C9 streaming is a separate uncomposed draft pending broker aclient inference_usage seam and is NOT in PR4939.
+
+Known deployment blockers, do not mistake checkpoint for completed C7/C9: protected no-mixed-worker migration for moved admission lock, complete owner-journal storage cutover, platform-only pause/heartbeat and whole-writer backup drain, C6 old-cell/native/git-grant composition, C9 streaming and server progress bridge, C10/C11/C12 coordinated patches, real Linux oracle and restore proof. Linux image fetch returned Forbidden, no manual dispatch bypass. Published root request is draft only.
+
+Return floor/correctness findings with file/line, concrete failure and evidence. Give each resolved/disputed finding AGREE or DISAGREE_EVIDENCE when applicable. End exactly with VERDICT: APPROVE, VERDICT: ADAPT, or VERDICT: REJECT. Distinguish approval of bounded code from deployment readiness.

@@ -1,0 +1,26 @@
+[
+  {
+    "patch": "/tmp/c9-aclient-inference-usage.patch",
+    "base": "f7144464",
+    "applies": true,
+    "diagnostic": ""
+  },
+  {
+    "patch": "/tmp/c10-extensions-retirement.patch",
+    "base": "6540bdcb",
+    "applies": true,
+    "diagnostic": ""
+  },
+  {
+    "patch": "/tmp/c10-role-writer-retirement.patch",
+    "base": "6540bdcb",
+    "applies": true,
+    "diagnostic": ""
+  },
+  {
+    "patch": "/tmp/c11-seams/c12-shell-integration.patch",
+    "base": "b098b1e097f60bda5722639d145b1aab9f4a76ce",
+    "applies": true,
+    "diagnostic": ""
+  }
+]
