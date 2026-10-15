@@ -137,7 +137,6 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     # handle bound to the turn's own owner and command center, and runs no
     # branch. The package build copies the canonical module.
     CallSite("tinyassets/agent_loop/box_tools.py", "BoxExecutor._collect", "self.stream"),
-    CallSite("tinyassets/boxes/cli_launcher.py", "Process._output", "self.stream"),
     # Reviewed 2026-08-25 (run-provider-authority): server-owned trigger
     # enqueue enters the same governed foreground admission as the MCP action.
     # Reviewed 2026-08-29 (user-owned-automations 3.2). A due automation is a

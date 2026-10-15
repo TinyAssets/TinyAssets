@@ -131,20 +131,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/role_tools.py::run": (
         CALL_SCOPED, "one TOOL cell is drained and reaped within its requested wall bound",
     ),
-    "tinyassets/activity_runner.py::linked_activity": (
-        CALL_SCOPED,
-        "one activity run waits up to wait_s for the dispatcher to bind its "
-        "record, then returns or refuses before inference; no background scheduling",
-    ),
-    "tinyassets/boxes/host_service.py::_serve": (
-        CONTROL_PLANE,
-        "root box host reaps idle sandboxes; no owner task or inference scheduling",
-    ),
-    "tinyassets/boxes/production_files.py::ProductionFileProvider.stream": (
-        CALL_SCOPED,
-        "caller consumes one bounded host execution; ends at terminal receipt, "
-        "unknown outcome or caller deadline",
-    ),
     "tinyassets/boxes/boxd.py::BoxdCore._supervise": (
         CALL_SCOPED,
         "host-side thread for one exec; stops at leader exit, cancel, wall or "
