@@ -16,6 +16,7 @@ import logging
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from starlette.responses import JSONResponse, StreamingResponse
@@ -24,6 +25,10 @@ _log = logging.getLogger(__name__)
 _FLUSH_STARTED = False
 _FLUSH_GUARD = threading.Lock()
 _THREADS: Any = None
+# One thread owns commits. A pool of request threads waiting on that lock
+# spends the turn switching, so latency grew with the number of players.
+_WRITER: ThreadPoolExecutor | None = None
+_WRITER_LOCK = threading.Lock()
 
 
 def _base():
@@ -111,6 +116,20 @@ async def _run(fn):
     return await run_sync(fn, limiter=_limiter())
 
 
+def _writer_pool() -> ThreadPoolExecutor:
+    global _WRITER
+    with _WRITER_LOCK:
+        if _WRITER is None:
+            _WRITER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="live-write")
+        return _WRITER
+
+
+async def _run_write(fn):
+    import asyncio
+
+    return await asyncio.get_running_loop().run_in_executor(_writer_pool(), fn)
+
+
 def _dispatch(actor: str, payload: dict, base) -> dict:
     from tinyassets.shared_state import read_record, scheduled_runs, sync, write_record
 
@@ -158,7 +177,7 @@ async def handle_live(request: Any) -> JSONResponse:
         return _error(400, "a live request is an object")
     base = _base()
     try:
-        result = await _run(lambda: _dispatch(actor, payload, base))
+        result = await _run_write(lambda: _dispatch(actor, payload, base))
     except Exception as exc:
         mapped = _guard(exc)
         if mapped is not None:
@@ -167,8 +186,25 @@ async def handle_live(request: Any) -> JSONResponse:
     return JSONResponse(result)
 
 
+_SSE_LOCK = threading.Lock()
+_SSE_CACHE: dict[tuple, tuple[dict, str]] = {}
+
+
 def _sse(page: dict) -> str:
-    return "data: " + json.dumps(page, separators=(",", ":")) + "\n\n"
+    """One encoding of a shared page. Sockets then write the same bytes."""
+    events = page.get("events") or []
+    first = events[0]["seq"] if events else 0
+    last = events[-1]["seq"] if events else 0
+    key = (id(page), page.get("cursor"), len(events), first, last)
+    with _SSE_LOCK:
+        hit = _SSE_CACHE.get(key)
+        if hit is not None and hit[0] is page:
+            return hit[1]
+        text = "data: " + json.dumps(page, separators=(",", ":")) + "\n\n"
+        if len(_SSE_CACHE) > 64:
+            _SSE_CACHE.clear()
+        _SSE_CACHE[key] = (page, text)
+        return text
 
 
 async def handle_live_stream(request: Any) -> Any:

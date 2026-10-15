@@ -11,8 +11,8 @@ actor is the authenticated account (S14). An app is still one command center
 1. The hot path is an ordered log. `sync` reads it and does not start a
    run, take a seat, or wake a box. A client may name an interest (kinds
    and keys); the cursor moves past every row examined. A burst of writes
-   wakes waiters once per short tick, and each waiter reads only the new
-   tail. The signed-in shell holds `GET /app/api/live/stream` and pushes
+   wakes waiters once per short tick. Watchers of the same public interest
+   share one page. The signed-in shell holds `GET /app/api/live/stream` and pushes
    those deltas into the screen. The screen has no socket. This is not an
    eighth MCP handle.
 2. The document is data. Kinds, secrecy, transitions, transfers, groups,

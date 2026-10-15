@@ -589,6 +589,91 @@ def sync(
     return {"events": events, "cursor": cursor}
 
 
+_FLIGHT_LOCK = threading.Lock()
+_FLIGHT: dict[tuple, threading.Event] = {}
+_PAGES: dict[tuple, dict] = {}
+
+
+def _public_interest(document: dict, kinds: list[str] | None) -> bool:
+    """True when every named kind is public, so members see one shared page."""
+    names = list(document["records"]) if kinds is None else kinds
+    if not names:
+        return False
+    for name in names:
+        spec = document["records"].get(name)
+        if spec is None or spec.get("read") != "public":
+            return False
+    return True
+
+
+def _flight(token: tuple, build) -> dict | None:
+    """One waiter builds a page. The others wait and reuse it."""
+    with _FLIGHT_LOCK:
+        hit = _PAGES.get(token)
+        if hit is not None:
+            return hit
+        event = _FLIGHT.get(token)
+        leader = event is None
+        if leader:
+            event = threading.Event()
+            _FLIGHT[token] = event
+    if not leader:
+        event.wait(timeout=5)
+        with _FLIGHT_LOCK:
+            return _PAGES.get(token)
+    try:
+        page = build()
+    except BaseException:
+        with _FLIGHT_LOCK:
+            _FLIGHT.pop(token, None)
+        event.set()
+        raise
+    with _FLIGHT_LOCK:
+        if page is not None:
+            _PAGES[token] = page
+            if len(_PAGES) > 128:
+                _PAGES.clear()
+                _PAGES[token] = page
+        _FLIGHT.pop(token, None)
+    event.set()
+    return page
+
+
+def _shared_page(
+    base, *, actor: str, universe_id: str, since: int, limit: int,
+    kinds: list[str] | None, keys: list[str] | None,
+) -> dict:
+    """Ring page for ``actor``. Public interests are built once per tick."""
+    uid = _uid(universe_id)
+    member = _actor(actor)
+    document = _DOCS.get(uid)
+    role = _ROLE.get((uid, member))
+    if document is None or not role or not _public_interest(document, kinds):
+        return _page(
+            base, actor=member, universe_id=uid, since=since, limit=limit,
+            kinds=kinds, keys=keys,
+        )
+    with _LIVE:
+        tip = _TIP.get(uid, 0)
+    if int(since) >= tip:
+        return {"events": [], "cursor": int(since)}
+    kind_key = None if kinds is None else tuple(kinds)
+    key_key = None if keys is None else tuple(keys)
+    token = (uid, int(since), int(limit), kind_key, key_key, int(tip))
+
+    def build() -> dict | None:
+        hit = _from_ring(uid, member, int(since), int(limit), kinds, keys)
+        return hit
+
+    shared = _flight(token, build)
+    if shared is None:
+        return _page(
+            base, actor=member, universe_id=uid, since=since, limit=limit,
+            kinds=kinds, keys=keys,
+        )
+    return shared
+
+
 def wait_live(
     base, *, actor: str, universe_id: str, since: int = 0, limit: int = 500,
     kinds: list[str] | None = None, keys: list[str] | None = None, timeout: float = 15,
@@ -599,7 +684,7 @@ def wait_live(
     start a run. The first call with ``since`` 0 still returns only one page.
     """
     def page_at() -> dict:
-        return _page(
+        return _shared_page(
             base, actor=actor, universe_id=universe_id, since=since, limit=limit,
             kinds=kinds, keys=keys,
         )
