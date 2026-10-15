@@ -1,20 +1,12 @@
-"""The thin loop for served chat, and the switch that selects it.
+"""Serve HTTP chat on the shared loop with tools bound to the turn's box.
 
-``TINYASSETS_AGENT_LOOP=thin`` routes an HTTP-protocol chat turn through the
-thin loop: the same :class:`AgentTurnCoordinator` and journal, with its tools
-opened by :func:`~.tool_session.open_loop_tools` -- box tools on a handle bound
-at turn start, with backend capabilities reached through ta. Unset, or any
-other value, keeps today's path. Native (CLI) turns are untouched either way:
-command adapters and file-OAuth CLIs keep running as CLIs (D6).
-
-The switch is opt-in and fails loudly: with the thin loop selected and no box
-provider configured, a turn that is granted a box tool is refused before
-anything runs, never quietly served by the tool jail instead.
+The coordinator keeps the journal; :func:`~.tool_session.open_loop_tools`
+opens box tools and reaches backend capabilities through ta. A granted box
+tool refuses before launch if no box provider is configured.
 """
 
 from __future__ import annotations
 
-import os
 import threading
 from typing import Any
 
@@ -22,14 +14,6 @@ from tinyassets.agent_loop.box_tools import BOX_ROOT, BoxExecutor, BoxTools
 from tinyassets.agent_loop.tool_session import open_loop_tools
 from tinyassets.interactive_http_agent import ServedChatAgentAdapter
 from tinyassets.served_tools import granted_tools, model_tools
-
-ENV_SWITCH = "TINYASSETS_AGENT_LOOP"
-THIN = "thin"
-
-
-def thin_loop_selected() -> bool:
-    return (os.environ.get(ENV_SWITCH) or "").strip().lower() == THIN
-
 
 _box_lock = threading.Lock()
 _box_provider: Any = None

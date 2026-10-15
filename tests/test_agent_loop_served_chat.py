@@ -23,13 +23,13 @@ run = base.run
 
 @pytest.fixture
 def agent(base_agent, monkeypatch):
-    monkeypatch.setenv(served_chat.ENV_SWITCH, served_chat.THIN)
     box = FakeBox(lambda argv, stdin: (
         b'\x1eTA1 {"ready":true}\n\x1eTA1 '
         + json.dumps({"output": base64.b64encode(b"box says hi").decode()})
         .encode() + b'\n', 0))
     monkeypatch.setattr(served_chat, "_box_provider", box)
     monkeypatch.setattr(served_chat, "_box_limits", ExecLimits())
+    base_agent.adapter = served_chat.ThinLoopChatAdapter()
     base_agent.box = box
     return base_agent
 
@@ -145,10 +145,3 @@ def test_no_box_provider_refuses_before_any_tool_runs(agent, monkeypatch):
     with pytest.raises(EngineToolError, match="box_unavailable"):
         run(agent)
     assert agent.wires == [] and agent.tools == []
-
-
-def test_switch_off_keeps_todays_path(agent, monkeypatch):
-    monkeypatch.delenv(served_chat.ENV_SWITCH)
-    agent.tool_call = ("bash", '{"command": "true"}')
-    assert run(agent) == "finished exact answer"
-    assert agent.box.starts == [] and agent.tools == [("bash", {"command": "true"})]
