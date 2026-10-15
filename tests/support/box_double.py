@@ -197,10 +197,27 @@ def _host_argv(core, handle, args, kwargs):
             return host + value[len(BOX_ROOT):]
         return value
 
+    def mapped_argv(argv):
+        argv = [mapped(value) for value in argv]
+        # The box image's `python` has tinyassets installed; in a test that
+        # interpreter is the one running the suite, not whatever PATH finds.
+        if argv and argv[0] in ("python", "python3"):
+            argv[0] = sys.executable
+        return argv
+
     if len(args) > 1:
-        args[1] = [mapped(value) for value in args[1]]
+        args[1] = mapped_argv(args[1])
     elif "argv" in kwargs:
-        kwargs["argv"] = [mapped(value) for value in kwargs["argv"]]
+        kwargs["argv"] = mapped_argv(kwargs["argv"])
+    # The box image names its browsers (gvisor_runtime) and installs this
+    # package; here, the test host's browsers and the source tree under test.
+    import tinyassets
+
+    browsers = os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or str(
+        Path.home() / ".cache" / "ms-playwright")
+    kwargs["env"] = {"PLAYWRIGHT_BROWSERS_PATH": browsers,
+                     "PYTHONPATH": str(Path(tinyassets.__file__).resolve().parent.parent),
+                     **(kwargs.get("env") or {})}
     return args, kwargs
 
 

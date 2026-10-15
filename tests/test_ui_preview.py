@@ -32,6 +32,17 @@ def _isolate_preview_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
 
+@pytest.fixture
+def alice_home(tmp_path):
+    """Alice is the recorded owner of her center, so her box admits her render."""
+    from tinyassets.daemon_server import _connect, initialize_author_server
+    from tinyassets.universe_owner import record_creation
+
+    initialize_author_server(tmp_path)
+    with _connect(tmp_path) as conn:
+        record_creation(conn, universe_id=HOME, owner_id=OWNER)
+
+
 def _png(rgb=(32, 160, 64), size=8) -> bytes:
     def chunk(kind: bytes, data: bytes) -> bytes:
         return (struct.pack(">I", len(data)) + kind + data
@@ -62,7 +73,7 @@ def _need_browser():
 
 
 @pytest.mark.real_browser
-def test_the_agent_sees_its_ui_as_rendered_with_its_assets(tmp_path):
+def test_the_agent_sees_its_ui_as_rendered_with_its_assets(tmp_path, alice_home):
     _need_browser()
     _add(tmp_path, "village",
          markup='<div id=sky></div><img id=grass src="ta-asset:img/grass.png">',
@@ -88,7 +99,7 @@ def test_the_agent_sees_its_ui_as_rendered_with_its_assets(tmp_path):
 
 
 @pytest.mark.real_browser
-def test_a_broken_ui_reports_its_error_and_its_blocked_egress(tmp_path):
+def test_a_broken_ui_reports_its_error_and_its_blocked_egress(tmp_path, alice_home):
     _need_browser()
     _add(tmp_path, "broken", libraries=["three"], script_type="module",
          script='import * as THREE from "three";\n'
@@ -837,7 +848,7 @@ def test_the_preview_whoami_hands_over_the_components_own_alias_maps(tmp_path):
 
 
 @pytest.mark.real_browser
-def test_a_ui_that_awaits_the_live_reads_renders_in_the_preview(tmp_path):
+def test_a_ui_that_awaits_the_live_reads_renders_in_the_preview(tmp_path, alice_home):
     """The whole point of the preview is that it answers like the app, so the
     proof is a render: a UI that awaits ``readLive()`` and reads the alias maps
     off ``whoami()`` paints green only if both answered in the shape it expects.
@@ -866,7 +877,7 @@ def test_a_ui_that_awaits_the_live_reads_renders_in_the_preview(tmp_path):
 
 
 @pytest.mark.real_browser
-def test_a_hostile_ui_cannot_break_out_or_flood_the_report(tmp_path):
+def test_a_hostile_ui_cannot_break_out_or_flood_the_report(tmp_path, alice_home):
     _need_browser()
     _add(tmp_path, "hostile",
          markup="</script><script>window.top.__pwned=1</script><p id=ok>still a frame</p>",
@@ -908,7 +919,7 @@ def test_preview_refuses_a_read_only_caller_before_writing(tmp_path, monkeypatch
 
 
 @pytest.mark.real_browser
-def test_owner_preview_timeout_retires_child_before_next_render(tmp_path):
+def test_owner_preview_timeout_retires_child_before_next_render(tmp_path, alice_home):
     _need_browser()
     _add(tmp_path, 'bounded', markup='<div>bounded preview</div>')
     with pytest.raises(ui_preview.PreviewUnavailable, match='timeout'):

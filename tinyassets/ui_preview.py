@@ -250,63 +250,83 @@ def preview_app_ui(
     return _render_spec(spec, wall_seconds)
 
 
-def preview_public_component(component: dict[str, Any]) -> dict[str, Any]:
+def preview_public_component(component: dict[str, Any], *,
+                             universe_dir: str | Path | None = None) -> dict[str, Any]:
     """The same app_ui_preview renderer, with only an immutable public screen.
 
     No owner identity or private blob references reach the browser. Published
     screens currently exclude assets; refuse rather than resolving private ones.
+    The render runs in the publisher's box (``universe_dir``, their own center);
+    with no box there is nowhere to render.
     """
     if component.get("assets"):
         raise PreviewUnavailable("published_preview_assets_unsupported")
+    if universe_dir is None:
+        raise PreviewUnavailable(
+            "ui_preview_unavailable: a published screen renders in its publisher's box")
     spec = _component_spec("", "", "preview", component, DEFAULT_WIDTH, DEFAULT_HEIGHT)
-    return _render_spec(spec, WALL_SECONDS)
+    return _render_spec(spec, WALL_SECONDS, universe_dir=Path(universe_dir))
 
 
-def _render_spec(spec: dict[str, Any], wall_seconds: float) -> dict[str, Any]:
+def _render_spec(spec: dict[str, Any], wall_seconds: float, *,
+                 universe_dir: Path | None = None) -> dict[str, Any]:
     from tinyassets.control_plane.binding import file_binding
 
-    binding = (file_binding(Path(spec["base_path"]) / spec["universe_id"])
-               if spec["base_path"] else None)
+    public = universe_dir is not None
+    if universe_dir is None and spec["base_path"]:
+        universe_dir = Path(spec["base_path"]) / spec["universe_id"]
+    binding = file_binding(universe_dir) if universe_dir is not None else None
     if _POISONED:
         raise PreviewUnavailable(_POISONED)
-    if binding is None and not available():
+    if binding is None:
         raise PreviewUnavailable(
-            "ui_preview_unavailable: this host has no headless browser to render with")
+            "ui_preview_unavailable: previews render only in an admitted owner box")
     if not _SLOT.acquire(blocking=False):
         raise PreviewUnavailable("ui_preview_busy: another preview is rendering; try again")
     try:
-        return _run_child(spec, wall_seconds, binding=binding)
+        return _run_child(spec, wall_seconds, binding=binding, public=public)
     finally:
         if not _POISONED:
             _SLOT.release()
 
 
-def _run_child(spec: dict[str, Any], wall_seconds: float, *, binding=None) -> dict[str, Any]:
-    """The render happens in the owner's preview cell and nowhere else."""
-    if binding is not None:
-        from tinyassets.app_ui_store import read_app_ui_asset
-        from tinyassets.box_process import run_bound
+def _run_child(spec: dict[str, Any], wall_seconds: float, *, binding,
+               public: bool = False) -> dict[str, Any]:
+    """The render happens in the owner's box and nowhere else."""
+    from tinyassets.app_ui_store import read_app_ui_asset
+    from tinyassets.box_process import BoxExecCancelled, run_bound
+    from tinyassets.boxes.provider import BoxError
 
-        if (spec["owner_user_id"] != binding.handle.account_id
-                or spec["universe_id"] != binding.handle.command_center_id):
-            raise PreviewUnavailable("preview owner scope differs from admitted box")
-        assets = {}
-        total = 0
-        for path, sha in spec["hashes"].items():
-            data = read_app_ui_asset(spec["base_path"],
-                                     owner_user_id=spec["owner_user_id"], sha256=sha)
-            if data is not None:
-                total += len(data)
-                if total > MAX_CHILD_OUTPUT // 2:
-                    raise PreviewUnavailable("preview assets exceed their bound")
-                assets[path] = base64.b64encode(data).decode("ascii")
-        prepared = dict(spec, base_path="/absent", asset_bytes=assets)
+    if public:
+        # Only immutable public content: no owner, no private asset.
+        if spec["owner_user_id"] or spec["hashes"]:
+            raise PreviewUnavailable("public preview carries owner scope")
+    elif (spec["owner_user_id"] != binding.handle.account_id
+            or spec["universe_id"] != binding.handle.command_center_id):
+        raise PreviewUnavailable("preview owner scope differs from admitted box")
+    assets = {}
+    total = 0
+    for path, sha in spec["hashes"].items():
+        data = read_app_ui_asset(spec["base_path"],
+                                 owner_user_id=spec["owner_user_id"], sha256=sha)
+        if data is not None:
+            total += len(data)
+            if total > MAX_CHILD_OUTPUT // 2:
+                raise PreviewUnavailable("preview assets exceed their bound")
+            assets[path] = base64.b64encode(data).decode("ascii")
+    prepared = dict(spec, base_path="/absent", asset_bytes=assets)
+    try:
         result = run_bound(binding, "ui-preview", ["python", "-m", "tinyassets.ui_preview"],
                            stdin=json.dumps(prepared).encode(), wall_seconds=wall_seconds,
                            output_bytes=MAX_CHILD_OUTPUT)
-        out, err, code, breach = result.stdout, b"", result.returncode, ""
-    if breach:
-        raise PreviewUnavailable(f"ui_preview_{breach}")
+    except BoxExecCancelled:
+        raise
+    except BoxError as exc:
+        if str(exc).endswith(": timeout"):
+            raise PreviewUnavailable(
+                f"ui_preview_timeout: the render took over {wall_seconds:g} s") from exc
+        raise PreviewUnavailable(f"ui_preview_failed: {str(exc)[:300]}") from exc
+    out, err, code = result.stdout, b"", result.returncode
     lines = [line for line in out.decode("utf-8", "replace").splitlines()
              if line.startswith("{")]
     if code != 0 or not lines:
