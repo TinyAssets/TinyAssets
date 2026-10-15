@@ -52,6 +52,7 @@ def test_restore_retains_all_seen_operations_as_unknown_and_advances_epochs(tmp_
     try:
         assert restored.epoch("alice") > old_epoch
         assert restored.generation("alice") > old_generation
+        assert restored.record_etag("alice", "a", "wiki/file.md") > 0
         for op_id, digest in (("before-snapshot", "digest1"), ("after-snapshot", "digest2")):
             receipt = restored.begin("alice", op_id, "write", digest)
             assert receipt["state"] == "unknown_after_restore"

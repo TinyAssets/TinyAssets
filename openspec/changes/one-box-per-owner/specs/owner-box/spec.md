@@ -117,3 +117,27 @@ then the owner's egress policy, then connection grants.
 - **AND** epochs and generations advance beyond both the live and archived copies
 - **AND** every operation ID seen in either copy is retained as unknown, never replayed
 - **AND** differing identity, admission or deletion frontiers refuse the swap until reviewed forward recovery is available
+
+### Requirement: A shared record commits only at its own path etag
+The owner-box host journal SHALL keep a monotonic etag for each command-center
+path. A write SHALL carry `expect_etag` equal to that etag. A mismatch SHALL
+raise `RecordConflict` before any effect and SHALL NOT bump the etag or the
+owner generation. A matching write SHALL bump that path's etag and the owner
+generation in one journal transaction before the guest runs, and the write
+result SHALL return the new etag from the host, never from the guest. A write
+to a different path SHALL NOT invalidate this etag. Owner-generation
+compare-and-swap SHALL keep its meaning. Arbitrary execution, host recovery
+and journal restore SHALL fence every path etag, including paths with no row,
+so an unpublished or unknown effect cannot be overwritten by a stale etag.
+The guest SHALL NOT observe `expect_etag`.
+
+#### Scenario: Two writers share one record
+- **WHEN** two writers read the same path etag and both write with it
+- **THEN** the first write publishes and returns the next etag
+- **AND** the second write raises `RecordConflict` without a guest call
+- **AND** a write of a different path with its own etag still publishes
+
+#### Scenario: A lost write is not silently replaced
+- **WHEN** a write bumps the etag and the guest response is lost
+- **THEN** a new write that presents the old etag raises `RecordConflict`
+- **AND** the original operation stays unknown and is not replayed

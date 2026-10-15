@@ -50,7 +50,14 @@ _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS boxes ("
     " command_center_id TEXT PRIMARY KEY,"
     " epoch INTEGER NOT NULL,"
-    " generation INTEGER NOT NULL)",
+    " generation INTEGER NOT NULL,"
+    " record_fence INTEGER NOT NULL DEFAULT 0)",
+    "CREATE TABLE IF NOT EXISTS records ("
+    " owner_id TEXT NOT NULL,"
+    " center TEXT NOT NULL,"
+    " path TEXT NOT NULL,"
+    " etag INTEGER NOT NULL,"
+    " PRIMARY KEY (owner_id, center, path))",
     "CREATE TABLE IF NOT EXISTS ops ("
     " command_center_id TEXT NOT NULL,"
     " op_id TEXT NOT NULL,"
@@ -123,9 +130,15 @@ class BoxHostState:
                 data = json.loads(outcome) if outcome else {}
                 _reap_survivor(data.get("pgid"), data.get("start_time"))
             # Content may have changed under an operation whose outcome is now unknown:
-            # advance those boxes' generations so no cache or cas trusts the old one.
+            # advance those boxes' generations and every path etag so no cache or cas
+            # trusts the old one, including paths the lost operation never named.
             conn.execute(
-                "UPDATE boxes SET generation = generation + 1 WHERE command_center_id IN"
+                "UPDATE boxes SET generation = generation + 1, record_fence = record_fence + 1"
+                " WHERE command_center_id IN"
+                " (SELECT DISTINCT command_center_id FROM ops WHERE state = 'running')"
+            )
+            conn.execute(
+                "UPDATE records SET etag = etag + 1 WHERE owner_id IN"
                 " (SELECT DISTINCT command_center_id FROM ops WHERE state = 'running')"
             )
             conn.execute(
@@ -209,14 +222,67 @@ class BoxHostState:
             )
             return gen + 1
 
+    def record_etag(self, owner: str, center: str, path: str) -> int:
+        """Etag of one path. A path with no row is the owner's fence (0 until anything moves)."""
+        with self._lock, self._conn() as conn:
+            self._row(conn, owner)
+            fence = conn.execute(
+                "SELECT record_fence FROM boxes WHERE command_center_id = ?", (owner,)
+            ).fetchone()
+            row = conn.execute(
+                "SELECT etag FROM records WHERE owner_id = ? AND center = ? AND path = ?",
+                (owner, center, path),
+            ).fetchone()
+            return int(fence[0]) if row is None else int(row[0])
+
+    def note_path_effect(self, owner: str, center: str, path: str) -> tuple[int, int]:
+        """Bump the owner generation and this path's etag in one transaction.
+
+        Called only once a write or remove is being attempted. A pre-effect
+        refusal must not call this. Returns ``(generation, etag)``.
+        """
+        with self._lock, self._conn() as conn:
+            _, gen = self._row(conn, owner)
+            fence = conn.execute(
+                "SELECT record_fence FROM boxes WHERE command_center_id = ?", (owner,)
+            ).fetchone()
+            row = conn.execute(
+                "SELECT etag FROM records WHERE owner_id = ? AND center = ? AND path = ?",
+                (owner, center, path),
+            ).fetchone()
+            etag = (int(fence[0]) if row is None else int(row[0])) + 1
+            conn.execute(
+                "UPDATE boxes SET generation = ? WHERE command_center_id = ?", (gen + 1, owner)
+            )
+            conn.execute(
+                "INSERT INTO records (owner_id, center, path, etag) VALUES (?, ?, ?, ?)"
+                " ON CONFLICT(owner_id, center, path) DO UPDATE SET etag = excluded.etag",
+                (owner, center, path, etag),
+            )
+            return gen + 1, etag
+
+    def fence_records(self, owner: str) -> int:
+        """Invalidate every path etag. Arbitrary execution or recovery may have touched any file."""
+        with self._lock, self._conn() as conn:
+            _, gen = self._row(conn, owner)
+            conn.execute(
+                "UPDATE boxes SET generation = generation + 1, record_fence = record_fence + 1"
+                " WHERE command_center_id = ?",
+                (owner,),
+            )
+            conn.execute("UPDATE records SET etag = etag + 1 WHERE owner_id = ?", (owner,))
+            return gen + 1
+
     def bump_epoch(self, cc: str) -> int:
         """A destroy or re-import: every handle minted before this is stale."""
         with self._lock, self._conn() as conn:
             epoch, gen = self._row(conn, cc)
             conn.execute(
-                "UPDATE boxes SET epoch = ?, generation = ? WHERE command_center_id = ?",
+                "UPDATE boxes SET epoch = ?, generation = ?, record_fence = record_fence + 1"
+                " WHERE command_center_id = ?",
                 (epoch + 1, gen + 1, cc),
             )
+            conn.execute("UPDATE records SET etag = etag + 1 WHERE owner_id = ?", (cc,))
             return epoch + 1
 
     def owner_destroy(self, owner: str) -> dict | None:
@@ -233,8 +299,12 @@ class BoxHostState:
                                "FROM owner_destroys WHERE owner_id=?", (owner,)).fetchone()
             if row is None:
                 epoch, generation = self._row(conn, owner)
-                conn.execute("UPDATE boxes SET epoch=?, generation=? WHERE command_center_id=?",
-                             (epoch + 1, generation + 1, owner))
+                conn.execute(
+                    "UPDATE boxes SET epoch=?, generation=?, record_fence=record_fence+1"
+                    " WHERE command_center_id=?",
+                    (epoch + 1, generation + 1, owner),
+                )
+                conn.execute("UPDATE records SET etag = etag + 1 WHERE owner_id=?", (owner,))
                 row = (op_id, uid, center, epoch + 1, None, "deleting")
                 conn.execute("INSERT INTO owner_destroys VALUES (?,?,?,?,?,?,?)", (owner, *row))
             elif row[:3] != (op_id, uid, center):
@@ -252,6 +322,7 @@ class BoxHostState:
             # permanent epoch and minimal deletion receipt needed for retries.
             conn.execute("DELETE FROM ops WHERE command_center_id=?", (owner,))
             conn.execute("DELETE FROM execs WHERE command_center_id=?", (owner,))
+            conn.execute("DELETE FROM records WHERE owner_id=?", (owner,))
             changed = conn.execute("UPDATE owner_destroys SET state='done' WHERE owner_id=? "
                                    "AND entries IS NOT NULL", (owner,)).rowcount
             if changed != 1:

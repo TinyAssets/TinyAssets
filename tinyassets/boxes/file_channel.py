@@ -71,7 +71,7 @@ def send(sock: socket.socket, document: dict) -> None:
 
 _ERRORS = {name: getattr(contract, name) for name in (
     "BoxError", "BoxAuthError", "BoxOperationRefused", "BoxBusy", "BoxNotFound",
-    "BoxPathError", "WriteConflict", "OpIdReuse", "StaleHandle",
+    "BoxPathError", "WriteConflict", "RecordConflict", "OpIdReuse", "StaleHandle",
 )}
 
 
