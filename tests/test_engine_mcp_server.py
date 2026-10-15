@@ -736,12 +736,21 @@ def test_engine_mcp_flags_seal_an_http_route_config_into_the_snapshot(tmp_path, 
     snapshot.mkdir(parents=True)
     cfg = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="sub-9",
                       engine_mcp_graph_id="u-9", credential_snapshot_dir=snapshot)
-    flags = _engine_mcp_flags(cfg, tmp_path / "u-9")
+    from tinyassets.engine_mcp_http import BOX_ENGINE_HOST
+    from tinyassets.providers.owned_process import guest_job_dir, launch_scope
+
+    # Without an admitted launch there is no box to seal the route into.
+    assert _engine_mcp_flags(cfg, tmp_path / "u-9") == []
+    with launch_scope(tmp_path / "u-9", owner="sub-9", service="claude-code",
+                      credential_dir=snapshot, operation_id="op-seal"):
+        flags = _engine_mcp_flags(cfg, tmp_path / "u-9")
     assert flags[0] == "--mcp-config" and flags[2] == "--strict-mcp-config"
-    config_path = Path(flags[1])
-    assert config_path.parent == snapshot  # the only daemon state a cell receives
-    server = json.loads(config_path.read_text())["mcpServers"]["tinyassets"]
-    assert server["type"] == "http" and server["url"].startswith("http://127.0.0.1:8790/mcp")
+    # The box path the leased snapshot lands under for this launch.
+    assert flags[1] == guest_job_dir("op-seal") + "/claude/engine-mcp.json"
+    sealed = snapshot / "engine-mcp.json"  # the only daemon state the box receives
+    server = json.loads(sealed.read_text())["mcpServers"]["tinyassets"]
+    assert server["type"] == "http" and server["url"].startswith(
+        f"http://{BOX_ENGINE_HOST}:8790/mcp")
     assert server["headers"] == {"Authorization": "Bearer " + "s" * 40}
     assert "command" not in server  # no stdio engine
 

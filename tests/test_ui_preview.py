@@ -118,12 +118,34 @@ def test_another_persons_ui_is_not_reachable(tmp_path):
                                   ui_id="village")
 
 
-def test_no_browser_is_a_loud_refusal_not_a_blank_image(tmp_path, monkeypatch):
+def test_no_browser_is_a_loud_refusal_not_a_blank_image(tmp_path, monkeypatch,
+                                                        _owner_box_double):
+    import subprocess
+
+    from tinyassets import box_process
+    from tinyassets.boxes.provider import ExecLimits
+    from tinyassets.control_plane.binding import bind_session, use_binding
+
+    assert _owner_box_double is not None, "the owner box double needs Linux"
     _add(tmp_path, "village")
     monkeypatch.setattr(ui_preview, "available", lambda: False)
-    with pytest.raises(ui_preview.PreviewUnavailable, match="ui_preview_unavailable"):
+    # The render runs in the owner's box; a box without a browser says so.
+    ran = []
+
+    def no_browser(binding, purpose, argv, **kwargs):
+        ran.append((binding.handle.account_id, purpose))
+        return subprocess.CompletedProcess(
+            argv, 0, b'{"unavailable": "no chromium in this box"}\n', b"")
+
+    monkeypatch.setattr(box_process, "run_bound", no_browser)
+    binding = bind_session(provider=_owner_box_double, limits=ExecLimits(),
+                           universe_dir=tmp_path / HOME, owner=OWNER,
+                           execution_id="preview-no-browser")
+    with use_binding(binding), pytest.raises(ui_preview.PreviewUnavailable,
+                                             match="ui_preview_unavailable"):
         ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
                                   ui_id="village")
+    assert ran == [(OWNER, "ui-preview")]
 
 
 def test_one_render_at_a_time(tmp_path, monkeypatch):

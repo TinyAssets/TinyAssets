@@ -263,7 +263,7 @@ def test_owned_boundary_pins_custody_and_always_cleans_snapshot(tmp_path, outcom
     universe.mkdir()
     custody = LLMCredentialCustodyReference("ref", "owner", "universe", "native-service",
                                             1, "digest", "record-digest")
-    snapshot = SimpleNamespace(directory=universe / "sealed")
+    snapshot = SimpleNamespace(directory=universe / "sealed", generation=1)
     seen = []
 
     async def enumerate_models(**kwargs):

@@ -58,12 +58,6 @@ TURN_PATH = (
 #: agent-writable universe file. Adding a row needs a reason a reviewer can
 #: check; a row that stops matching fails the test (no dead exemptions).
 ALLOWED = {
-    ("tinyassets/universe_tools.py", "_root_cgroup"):
-        "reads /sys/fs/cgroup controller lists, not a universe path",
-    ("tinyassets/universe_tools.py", "_remove_cgroup"):
-        "reads /sys/fs/cgroup/<jail>/cgroup.procs, not a universe path",
-    ("tinyassets/universe_tools.py", "_try_lock_one"):
-        "opens a slot lock under the data dir's .universe-tool-slots, O_NOFOLLOW",
     ("tinyassets/wiki/okf_export.py", "_conformance_report"):
         "reads the bundle this export just wrote into target_dir, which is refused "
         "when inside the wiki root; not an agent-written file",

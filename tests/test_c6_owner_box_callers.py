@@ -125,7 +125,8 @@ def test_native_cli_receives_only_broker_selected_git_grants(tmp_path, monkeypat
     selected = ((grant, view, "incarnation"),)
     calls = []
     monkeypatch.setattr(home, "box_custody", lambda *args: SimpleNamespace(
-        owner_user_id="owner", universe_dir=binding.universe_dir))
+        owner_user_id="owner", universe_dir=binding.universe_dir,
+        reference=SimpleNamespace(reference_digest="d" * 64)))
     monkeypatch.setattr(provider, "box_custody", home.box_custody)
     monkeypatch.setattr(ledger_queries, "selected_git_connections",
                         lambda *args, **kwargs: selected)
@@ -167,6 +168,7 @@ def test_code_node_uses_box_runner(tmp_path):
     assert binding.provider.calls[0][3]["interactive_stdin"] is True
 
 
+@pytest.mark.role_split  # production admission: no double binds a center by its path
 def test_code_node_public_runner_requires_admitted_box(tmp_path, monkeypatch):
     from tinyassets.boxes.node import NodeSandbox
 

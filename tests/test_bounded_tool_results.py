@@ -329,7 +329,6 @@ def test_resolve_ceiling_prefers_the_override_then_the_window_then_the_default()
 @pytest.mark.asyncio
 async def test_the_engine_turn_passes_the_selected_window_to_its_server(monkeypatch, tmp_path):
     """The HTTP request carries the selected window without changing daemon env."""
-    from pathlib import Path
     from types import SimpleNamespace
     from urllib.parse import urlsplit
 
@@ -345,6 +344,8 @@ async def test_the_engine_turn_passes_the_selected_window_to_its_server(monkeypa
                         lambda path, data: path.write_bytes(data))
     monkeypatch.delenv(bounds.CEILING_ENV, raising=False)
     monkeypatch.delenv(bounds.CONTEXT_TOKENS_ENV, raising=False)
+
+    from tinyassets.providers.owned_process import guest_job_dir, launch_scope
 
     endpoint = object.__new__(engine_endpoint.EngineEndpoint)
     endpoint.module = SimpleNamespace(_bearer_ok=lambda value, secret: value == "Bearer " + secret)
@@ -362,8 +363,12 @@ async def test_the_engine_turn_passes_the_selected_window_to_its_server(monkeypa
         config = ModelConfig(engine_mcp_actor_id="sub-1", engine_mcp_graph_id="u-pinned",
                              credential_snapshot_dir=tmp_path,
                              selected_model=selected)
-        flags = claude_provider._engine_mcp_flags(config, tmp_path)
-        written = json.loads(Path(flags[1]).read_text())
+        with launch_scope(tmp_path, owner="sub-1", service="claude-code",
+                          credential_dir=tmp_path, operation_id=f"op-{window}"):
+            flags = claude_provider._engine_mcp_flags(config, tmp_path)
+        # The route is sealed into the snapshot the box leases at flags[1].
+        assert flags[1] == guest_job_dir(f"op-{window}") + "/claude/engine-mcp.json"
+        written = json.loads((tmp_path / "engine-mcp.json").read_text())
         server = written["mcpServers"]["tinyassets"]
         assert server["type"] == "http" and "env" not in server
         query = urlsplit(server["url"]).query.encode()
