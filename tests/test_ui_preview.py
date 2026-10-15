@@ -169,6 +169,34 @@ def test_the_screenshot_lands_in_previews_and_replaces_a_planted_hard_link(tmp_p
     assert sorted(p.name for p in (universe / "previews").iterdir()) == ["village.png"]
 
 
+def test_admitted_preview_write_uses_only_the_box_handle(tmp_path):
+    from tinyassets.boxes.provider import BoxHandle, ExecLimits
+    from tinyassets.control_plane.binding import SessionBinding, use_binding
+
+    class Provider:
+        def __init__(self):
+            self.calls = []
+
+        def write(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+
+    root = tmp_path / "u-alice"  # Deliberately absent on the frontend.
+    provider = Provider()
+    handle = BoxHandle("u-alice", OWNER, 1, "turn")
+    binding = SessionBinding(provider, handle, ExecLimits(), root)
+    with use_binding(binding):
+        assert ui_preview.write_preview(root, "village", b"png") == "/u/previews/village.png"
+        with pytest.raises(ui_preview.PreviewUnavailable):
+            ui_preview.write_preview(tmp_path / "u-bob", "village", b"png")
+
+    assert len(provider.calls) == 1
+    args, kwargs = provider.calls[0]
+    assert args[:2] == (handle, "session:turn:1:preview:village")
+    assert args[2:] == ("/cc/previews/village.png", b"png")
+    assert kwargs["max_bytes"] == 4 * 1024 * 1024
+    assert not root.exists()
+
+
 @pytest.mark.parametrize("ui_id", ["../soul", "a/b", "", "UPPER", "x" * 65, "con", "lpt1"])
 def test_only_the_apps_id_shape_names_a_file(tmp_path, ui_id):
     with pytest.raises(ui_preview.PreviewUnavailable, match="ui_id"):

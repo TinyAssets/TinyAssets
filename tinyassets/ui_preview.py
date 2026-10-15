@@ -497,13 +497,23 @@ def _checked_ui_id(ui_id: str) -> str:
 def write_preview(universe_dir: str | Path, ui_id: str, png: bytes) -> str:
     """Put ``png`` at ``/u/previews/<ui_id>.png``; the path as the agent sees it.
 
-    Daemon side: nothing is written here. The bytes and the id go to the
-    owner's preview-write cell (:func:`tinyassets.role_preview.write`), which
-    runs :func:`write_preview_in_cell` against the pinned center descriptor.
+    An admitted owner-box session writes through its bound file provider.
+    The pre-migration image still uses the owner preview cell.
     """
     ui_id = _checked_ui_id(ui_id)
     name = f"{ui_id}.png"
     try:
+        from tinyassets.control_plane.binding import file_binding
+
+        binding = file_binding(Path(universe_dir))
+        if binding is not None:
+            from tinyassets.boxes.file_wire import MAX_DATA
+
+            binding.provider.write(
+                binding.handle, binding.operation_id(f"preview:{ui_id}"),
+                f"/cc/{PREVIEW_DIR}/{name}", png, max_bytes=MAX_DATA,
+            )
+            return f"/u/{PREVIEW_DIR}/{name}"
         from tinyassets.role_preview import write
 
         return write(universe_dir, ui_id, png)
