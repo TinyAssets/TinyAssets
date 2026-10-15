@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -19,8 +21,11 @@ def name(kind: str, stamp: str, checksum: bool = False) -> str:
     return f"tinyassets-{kind}-{stamp}.tar.gz" + (".sha256" if checksum else "")
 
 
-def put(directory: Path, filename: str, size: int = 3) -> None:
-    (directory / filename).write_bytes(b"x" * size)
+def put(directory: Path, filename: str, size: int = 3, age_s: float = 2 * 86400) -> None:
+    path = directory / filename
+    path.write_bytes(b"x" * size)
+    then = time.time() - age_s
+    os.utime(path, (then, then))
 
 
 def run(directory: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -69,6 +74,14 @@ def test_orphan_box_next_to_latest_data_is_removed(tmp_path: Path) -> None:
     assert {p.name for p in tmp_path.iterdir()} == {
         name("snapshot", NEW), name("snapshot", NEW, True)
     }
+
+
+def test_fresh_incomplete_set_may_still_be_written_and_is_kept(tmp_path: Path) -> None:
+    put(tmp_path, name("snapshot", NEW))
+    put(tmp_path, name("snapshot", NEW, True))
+    put(tmp_path, name("snapshot", PARTIAL), age_s=60)  # a cutover tar in progress
+    assert run(tmp_path, "--apply").returncode == 0
+    assert name("snapshot", PARTIAL) in {p.name for p in tmp_path.iterdir()}
 
 
 @pytest.mark.parametrize("unsafe", ["symlink", "directory"])

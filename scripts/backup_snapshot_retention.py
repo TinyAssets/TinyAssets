@@ -7,16 +7,22 @@ import os
 import re
 import stat
 import sys
+import time
 from pathlib import Path
 
 SNAPSHOT_DIR = Path("/var/backups/tinyassets")
+# A set without its checksum may still be being written by a running cutover
+# (tar of the whole volume takes minutes); only an old one is a failed leftover.
+INCOMPLETE_MIN_AGE_S = 6 * 3600
 NAME = re.compile(
     r"tinyassets-(snapshot|box-store)-"
     r"(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z)\.tar\.gz(\.sha256)?\Z"
 )
 
 
-def plan(directory: Path) -> tuple[list[tuple[Path, os.stat_result]], str | None]:
+def plan(
+    directory: Path, now: float | None = None
+) -> tuple[list[tuple[Path, os.stat_result]], str | None]:
     """Inspect all managed names before selecting any deletion."""
     try:
         mode = directory.lstat().st_mode
@@ -44,8 +50,13 @@ def plan(directory: Path) -> tuple[list[tuple[Path, os.stat_result]], str | None
         if "snapshot" in files and "snapshot.sha256" in files
     ]
     newest = max(complete, default=None)
+    now = time.time() if now is None else now
     remove = []
     for stamp, files in sets.items():
+        if stamp not in complete and any(
+            now - info.st_mtime < INCOMPLETE_MIN_AGE_S for _, info in files.values()
+        ):
+            continue  # possibly a snapshot still being written
         keep = set()
         if stamp == newest:
             keep.update(("snapshot", "snapshot.sha256"))
