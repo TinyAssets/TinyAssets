@@ -634,13 +634,13 @@ class AgentTurnJournal:
         with self._transaction(universe) as (conn, lease):
             check_current_home(conn, owner, universe)
             row = conn.execute(
-                f"SELECT owner_generation, runner_token FROM agent_turns WHERE {_SCOPE}",
-                scope,
+                f"SELECT owner_generation FROM agent_turns WHERE {_SCOPE}", scope,
             ).fetchone()
             if row is not None and row[0] != lease.generation:
+                # Taking a higher generation proves every member of the old
+                # owner tree is gone; only the startup sweep may settle its row.
                 if not (self._recovering_turn.get() == turn_id
-                        and row[0] < lease.generation
-                        and runner.orphan(self._ledger.base_path, row[1])):
+                        and row[0] < lease.generation):
                     raise owner_lease.LeaseLost(
                         "agent turn belongs to an earlier owner generation")
             current = _read(conn, scope)
