@@ -275,26 +275,36 @@ def _owner_plan(data: Path) -> list[OwnerMove]:
     return plan
 
 
-def _boxed_activity_roots(data: Path, store: Path) -> dict[str, Path]:
-    """Resolve legacy activity centers through C6's committed box records."""
+def _boxed_activity_roots(data: Path, store: Path) -> tuple[dict[str, Path], dict[str, str]]:
+    """Resolve each owner's centers independently through committed box records."""
     from tinyassets.activity_shape_migration import _centers, _pending
 
     identity_db = data / ".broker" / "state" / "owner-identities.db"
     with sqlite3.connect(f"{identity_db.resolve().as_uri()}?mode=ro", uri=True) as db:
         records = dict(db.execute("SELECT principal, machine FROM box_records"))
     centers = _centers(data)
-    roots = {}
+    by_owner: dict[str, list[str]] = {}
     for center in _pending(data):
         if not _CENTER.fullmatch(center) or center not in centers:
             raise RuntimeError(f"activity center has no admitted owner: {center}")
-        uid = records.get(centers[center])
+        by_owner.setdefault(centers[center], []).append(center)
+    roots = {}
+    failures = {}
+    for owner, owner_centers in by_owner.items():
+        uid = records.get(owner)
         if type(uid) is not int or not OWNER_ID_FIRST <= uid <= OWNER_ID_LAST:
-            raise RuntimeError(f"activity owner has no box: {center}")
-        root = store / str(uid) / center
-        if root.is_symlink() or not root.is_dir():
-            raise RuntimeError(f"activity owner box is absent: {center}")
-        roots[center] = root
-    return roots
+            reason = "Activities conversion refused: owner has no box record"
+        else:
+            owner_roots = {center: store / str(uid) / center for center in owner_centers}
+            absent = [center for center, root in owner_roots.items()
+                      if root.is_symlink() or not root.is_dir()]
+            reason = (f"Activities conversion refused: owner box is absent: {absent[0]}"
+                      if absent else "")
+        if reason:
+            failures.update({center: reason for center in owner_centers})
+        else:
+            roots.update(owner_roots)
+    return roots, failures
 
 
 def _mounted(store: Path) -> None:
@@ -428,13 +438,17 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
         if marker.get("box_layout") == "owner-box":
             if marker.get("activity_shape") == "v1" or not _pending(data):
                 raise RuntimeError("owner-box has no pending activity conversion")
-            roots = _boxed_activity_roots(data, store)
+            roots, failures = _boxed_activity_roots(data, store)
             _atomic_json(storage_layout.marker_path(data), {
                 **marker, "state": "migrating", "migration": "owner-box",
             })
-            convert(data, roots)
+            convert(data, roots, centers_to_convert=roots)
+            for center, reason in sorted(failures.items()):
+                print(f"box layout activity conversion refused for {center}: {reason}",
+                      file=sys.stderr)
             _atomic_json(storage_layout.marker_path(data), {
-                **marker, "state": "stable", "activity_shape": "v1",
+                **marker, "state": "stable", "activity_shape_failures": failures,
+                **({"activity_shape": "v1"} if not failures else {}),
             })
             return
         if marker.get("box_layout", "owner-split") != "owner-split":

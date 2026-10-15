@@ -11,6 +11,7 @@ import pytest
 from tinyassets import agent_activities as activities
 from tinyassets import box_layout_migration as migration
 from tinyassets import runs
+from tinyassets.api import activities as activity_api
 from tinyassets.automations import _failure_pause_reason
 from tinyassets.branches import BranchDefinition
 from tinyassets.control_plane.session import _activity_instructions
@@ -79,6 +80,11 @@ def _apply_boxed(data: Path, store: Path, monkeypatch):
     migration.apply(data, store, Path("unused-data-backup"), Path("unused-box-backup"))
 
 
+def _run_row(data: Path, run_id: str) -> tuple:
+    with sqlite3.connect(data / ".runs.db") as db:
+        return db.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone()
+
+
 def test_conversion_is_per_owner_idempotent_and_restoreable(tmp_path, monkeypatch):
     data = tmp_path / "data"
     data.mkdir()
@@ -90,6 +96,7 @@ def test_conversion_is_per_owner_idempotent_and_restoreable(tmp_path, monkeypatc
     _snapshot(data, backup)
     box_backup = tmp_path / "tinyassets-box-store-test.tar.gz"
     _snapshot(store, box_backup)
+    foreign_before = _run_row(data, "run-two")
 
     assert migration.check(data) == 10
     _apply_boxed(data, store, monkeypatch)
@@ -100,6 +107,7 @@ def test_conversion_is_per_owner_idempotent_and_restoreable(tmp_path, monkeypatc
     assert denied["status"] == activities.FAILED
     assert "cross-owner" in denied["result_summary"]
     assert "cross-owner" in activities.events_page(data / "two", refused)["events"][-1]["line"]
+    assert _run_row(data, "run-two") == foreign_before
     prompt, node = _activity_instructions(
         store / "300001" / "one", activities.get(data / "one", good))
     assert prompt == "Owner's exact text: Do it\nDetails\n"
@@ -121,6 +129,44 @@ def test_conversion_is_per_owner_idempotent_and_restoreable(tmp_path, monkeypatc
     assert not (restore_dir / "box" / "data" / "300001" / "one" / "Activities.md").exists()
 
 
+def test_missing_owner_box_record_is_reported_and_retried(tmp_path, monkeypatch, capsys):
+    data = tmp_path / "data"
+    data.mkdir()
+    good = _legacy(data, "one", "owner-one")
+    delayed = _legacy(data, "two", "owner-two")
+    store = tmp_path / "box-store"
+    _boxed(data, store, {"one": ("owner-one", 300001), "two": ("owner-two", 300002)})
+    with sqlite3.connect(data / ".broker" / "state" / "owner-identities.db") as db:
+        db.execute("DELETE FROM box_records WHERE principal='owner-two'")
+    delayed_activity = activities.get(data / "two", delayed)
+    delayed_run = _run_row(data, "run-two")
+
+    _apply_boxed(data, store, monkeypatch)
+
+    assert activities.get(data / "one", good)["status"] == activities.SCHEDULED
+    assert activities.get(data / "two", delayed) == delayed_activity
+    assert _run_row(data, "run-two") == delayed_run
+    marker = json.loads((data / ".layout.json").read_text())
+    assert marker["state"] == "stable"
+    assert "activity_shape" not in marker
+    assert "no box record" in marker["activity_shape_failures"]["two"]
+    assert "no box record" in capsys.readouterr().err
+    assert "no box record" in activity_api.read(data, universe_id="two")["migration_error"]
+    assert "migration_error" not in activity_api.read(data, universe_id="one")
+    assert migration.check(data) == migration.PENDING
+
+    with sqlite3.connect(data / ".broker" / "state" / "owner-identities.db") as db:
+        db.execute("INSERT INTO box_records VALUES ('owner-two', 300002)")
+    _apply_boxed(data, store, monkeypatch)
+
+    assert activities.get(data / "two", delayed)["status"] == activities.SCHEDULED
+    marker = json.loads((data / ".layout.json").read_text())
+    assert marker["activity_shape"] == "v1"
+    assert marker["activity_shape_failures"] == {}
+    assert "migration_error" not in activity_api.read(data, universe_id="two")
+    assert migration.check(data) == 0
+
+
 def test_cross_owner_definition_is_not_copied(tmp_path, monkeypatch):
     data = tmp_path / "data"
     data.mkdir()
@@ -134,6 +180,21 @@ def test_cross_owner_definition_is_not_copied(tmp_path, monkeypatch):
     assert activities.get(data / "one", activity_id)["status"] == activities.FAILED
     assert not (store / "300001" / "one" / "Activities.md").exists()
     assert "different owner" in (store / "300001" / "one" / "Activities.error.txt").read_text()
+
+
+def test_foreign_activity_row_is_untouched(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    _legacy(data, "one", "owner-one")
+    foreign = activities.create(data / "one", owner_principal="owner-two",
+                                title="Foreign", brief="Other owner's work", origin_kind="ask")
+    before = activities.get(data / "one", foreign["activity_id"])
+    store = tmp_path / "box-store"
+    _boxed(data, store, {"one": ("owner-one", 300001)})
+
+    _apply_boxed(data, store, monkeypatch)
+
+    assert activities.get(data / "one", foreign["activity_id"]) == before
 
 
 def test_retired_activities_branch_cannot_be_started_as_a_workflow(tmp_path):

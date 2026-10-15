@@ -148,13 +148,13 @@ def _settle_center(data: Path, center: str, owner: str, reason: str) -> dict:
                 rows = db.execute("SELECT * FROM activities WHERE status NOT IN "
                                   "('completed','failed')").fetchall()
                 for row in rows:
+                    if row["owner_principal"] != owner:
+                        continue
                     if row["runner_token"]:
                         linked.add(row["runner_token"])
                     old = next((run for run in old_runs
                                 if run["run_id"] == row["runner_token"]), None)
                     cause = reason
-                    if row["owner_principal"] != owner:
-                        cause = "cross-owner activity record refused"
                     if old and old["owner_user_id"] != owner:
                         cause = "cross-owner legacy run refused"
                     if old and old["queue_universe_id"] != center:
@@ -182,9 +182,10 @@ def _settle_center(data: Path, center: str, owner: str, reason: str) -> dict:
                                 row["activity_id"]))
                     activities._event(db, {**dict(row), "status": status}, status,
                                       summary)
-    for run in old_runs:
-        if run["owner_user_id"] != owner or run["queue_universe_id"] != center:
-            message = f"{REASON}: cross-owner or cross-center run refused"
+    owned_runs = [run for run in old_runs if run["owner_user_id"] == owner]
+    for run in owned_runs:
+        if run["queue_universe_id"] != center:
+            message = f"{REASON}: cross-center run refused"
         elif reason:
             message = f"{REASON}: {reason}"
         elif run["run_id"] not in linked:
@@ -194,15 +195,15 @@ def _settle_center(data: Path, center: str, owner: str, reason: str) -> dict:
                        "conversion; see its activity status")
         runs.update_run_status(data, run["run_id"], status="failed", error=message,
                                finished_at=time.time())
-    return {"converted": converted, "failed": failed, "legacy_runs_ended": len(old_runs)}
+    return {"converted": converted, "failed": failed, "legacy_runs_ended": len(owned_runs)}
 
 
-def convert(data: Path, owner_roots: dict[str, Path]) -> dict:
+def convert(data: Path, owner_roots: dict[str, Path], *, centers_to_convert=None) -> dict:
     """Convert under the box migration's stopped-writer and paired-backup gate."""
     report = {}
     unsafe = []
     centers = _centers(data)
-    for center in _pending(data):
+    for center in centers_to_convert if centers_to_convert is not None else _pending(data):
         owner = centers.get(center, "")
         root = owner_roots.get(center)
         try:
