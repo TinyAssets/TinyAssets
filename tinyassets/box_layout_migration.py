@@ -31,6 +31,7 @@ MAX_BACKUP_AGE_S = 3600
 _CENTER = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _CREDENTIAL_ENTRIES = (".credential-vault.json", ".credentials", ".credentials.json",
                        ".oauth-refresh")
+_EPHEMERAL_ENTRIES = (".runtime",)
 
 
 @dataclass(frozen=True)
@@ -212,12 +213,13 @@ def _atomic_json(path: Path, value: dict) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _copy(source: Path, target: Path, uid: int) -> None:
+def _copy(source: Path, target: Path, uid: int, *, extra_excludes=()) -> None:
     command = [
         "rsync", "-aH", "--xattrs", "--one-file-system", "--numeric-ids",
         "--chown", f"{uid}:{uid}", f"{source}/", f"{target}/",
     ]
-    command[-2:-2] = [f"--exclude=/{name}" for name in _CREDENTIAL_ENTRIES]
+    command[-2:-2] = [f"--exclude=/{name}" for name in
+                      (*_CREDENTIAL_ENTRIES, *_EPHEMERAL_ENTRIES, *extra_excludes)]
     subprocess.run(command, check=True)
     result = subprocess.run(
         [*command[:-2], "--checksum", "--dry-run", "--itemize-changes", *command[-2:]],
@@ -316,7 +318,19 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
                 destination = tree / ".agent-home"
                 destination.mkdir(mode=0o700)
                 os.chown(destination, owner.uid, owner.uid)
-                _copy(agent_home, destination, owner.uid)
+                # Packages write authentication into a one-run tmpfs now, but
+                # an interrupted old cell may have left its named auth file
+                # in the persistent home. Derive exclusions from every shipped
+                # package manifest rather than trusting a fixed filename list.
+                from tinyassets.external_agents.registry import PACKAGES
+
+                auth_paths = tuple(
+                    f"{package.row['auth']['home_dir']}/{name}"
+                    for package in PACKAGES.values()
+                    for name in package.row["auth"]["files"]
+                )
+                _copy(agent_home, destination, owner.uid,
+                      extra_excludes=auth_paths)
         broker_state = data / ".broker" / "state"
         with sqlite3.connect(broker_state / "owner-identities.db") as db:
             db.execute("PRAGMA synchronous=FULL")
