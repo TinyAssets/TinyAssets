@@ -93,8 +93,15 @@ async def login(config, http):
     http.headers["Authorization"] = "Bearer " + token
     me = await http.get(ORIGIN + "/app/me")
     me.raise_for_status()
-    if me.json().get("universe_id") != config["universe_id"]:
-        raise ProbeFailure("signed-in home differs from dedicated canary home")
+    universe = me.json().get("universe_id")
+    if not isinstance(universe, str) or not universe or universe != universe.strip():
+        raise ProbeFailure("signed-in home is missing")
+    from tinyassets.core_canary import probe_config
+
+    email = config["email"]
+    password = config["password"]
+    config.clear()
+    config.update(probe_config(email, password, universe))
     return token
 
 
@@ -426,25 +433,10 @@ async def exercise(config, http, token, report):
 async def run(report):
     import httpx
 
-    raw = os.environ.get("TINYASSETS_CORE_CANARY_CONFIG", "")
-    if not raw:
-        report["configuration_missing"] = True
-        return
-    try:
-        config = json.loads(raw)
-        required = (
-            "email",
-            "password",
-            "universe_id",
-            "connection_id",
-            "service_path",
-            "service_hmac_key",
-            "intake_receiver_id",
-            "branch_id",
-        )
-        if any(not isinstance(config.get(key), str) or not config[key] for key in required):
-            raise ValueError("incomplete")
-    except (ValueError, AttributeError):
+    from tinyassets.core_canary import parse_founder_config
+
+    config, _reason = parse_founder_config(os.environ.get("TINYASSETS_CORE_CANARY_CONFIG", ""))
+    if config is None:
         report["configuration_missing"] = True
         return
     async with httpx.AsyncClient(

@@ -1,10 +1,10 @@
-"""Record whether the dedicated core-canary owner is configured.
+"""Record whether the dedicated core-canary owner secret is configured.
 
-The synthetic owner is a one-time founder step (``docs/host-actions.md``,
-"One-time core-canary setup"). This script does not create that owner. It
-checks that ``TINYASSETS_CORE_CANARY_CONFIG`` is JSON with the eight non-empty
-string fields ``scripts/core_capability_live.py`` probes. Secret values are
-never printed.
+The founder signs up at https://tinyassets.io and pastes JSON with exactly
+``email`` and ``password`` (``docs/host-actions.md``). This script does not
+create that owner and does not provision the host. The deploy pipes the same
+secret to ``python -m tinyassets.core_canary``, which derives and stores the
+HMAC key and the other probe fields. Secret values are never printed.
 
 A missing or incomplete config is not provisioned: this prints a loud warning,
 writes ``provisioned=0``, and exits 0. ``deploy_fail_safe.sh`` refuses only a
@@ -14,39 +14,21 @@ continues. A complete config writes ``provisioned=1``.
 
 from __future__ import annotations
 
-import json
 import os
 import sys
+from pathlib import Path
 
-REQUIRED = (
-    "email",
-    "password",
-    "universe_id",
-    "connection_id",
-    "service_path",
-    "service_hmac_key",
-    "intake_receiver_id",
-    "branch_id",
-)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from tinyassets.core_canary import CONFIG_FIELDS, parse_founder_config  # noqa: E402
+
+REQUIRED = CONFIG_FIELDS
 
 
 def classify(raw: str) -> tuple[bool, str]:
     """Return ``(provisioned, reason)``. ``reason`` is empty when provisioned."""
-    if not raw.strip():
-        return False, "TINYASSETS_CORE_CANARY_CONFIG is empty"
-    try:
-        config = json.loads(raw)
-    except ValueError:
-        return False, "core canary config is not JSON"
-    if not isinstance(config, dict):
-        return False, "core canary config is not a JSON object"
-    missing = [
-        key for key in REQUIRED
-        if not isinstance(config.get(key), str) or not config[key]
-    ]
-    if missing:
-        return False, "missing or empty: " + ", ".join(missing)
-    return True, ""
+    parsed, reason = parse_founder_config(raw)
+    return parsed is not None, reason
 
 
 def main() -> int:

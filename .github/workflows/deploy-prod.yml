@@ -643,6 +643,27 @@ jobs:
             --label "deploy-failed" \
             --body "Automatic online content repair did not converge or skipped daemon symlinks. This does not roll back the healthy deployment. Inspect the repair step: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}. The next deploy retries automatically; manual fallback is in docs/ops/owner-split-cutover-runbook.md section 8."
 
+      # After the new image is the one serving. The secret stays on stdin:
+      # it is not an argument, not a docker -e value, and the module prints
+      # only core_canary_provisioned=1. A missing secret was already warned
+      # and must not fail this step.
+      - name: Provision core canary on the host
+        id: core_canary_host
+        if: ${{ success() && steps.deploy.outputs.rc == '0' }}
+        env:
+          TINYASSETS_CORE_CANARY_CONFIG: ${{ secrets.TINYASSETS_CORE_CANARY_CONFIG }}
+        run: |
+          set +x
+          set -euo pipefail
+          if [ "${{ steps.core_canary_provision.outputs.provisioned }}" != "1" ]; then
+            echo "core canary secret incomplete; host provisioning skipped"
+            exit 0
+          fi
+          printf '%s' "${TINYASSETS_CORE_CANARY_CONFIG}" | \
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o ConnectTimeout=10 \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo -n docker exec -i tinyassets-daemon python -m tinyassets.core_canary"
+
       - name: Core user capabilities and systemic failure rates
         id: core_canary
         uses: ./.github/actions/core-capability-canary
@@ -783,7 +804,7 @@ jobs:
       # test_prune_units). The CONDITION is what had to change — the app probe
       # is a second public surface that must trigger the same rollback.
       - name: Roll back if the public canary is red
-        if: ${{ failure() && steps.deploy.outputs.rc == '0' && (steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure' || steps.core_canary.outcome == 'failure') }}
+        if: ${{ failure() && steps.deploy.outputs.rc == '0' && (steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure' || steps.core_canary.outcome == 'failure' || steps.core_canary_host.outcome == 'failure') }}
         env:
           PREV_IMAGE: ${{ steps.capture.outputs.prev_image }}
         run: |

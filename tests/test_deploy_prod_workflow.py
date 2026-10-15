@@ -271,6 +271,12 @@ def test_canary_step_only_probes_canonical():
         "CORE_CANARY_PROVISIONED='${{ steps.core_canary_provision.outputs.provisioned }}'"
         in deploy["run"]
     )
+    host = next(s for s in steps if s.get("id") == "core_canary_host")
+    assert steps.index(deploy) < steps.index(host) < steps.index(core)
+    assert "docker exec -i tinyassets-daemon python -m tinyassets.core_canary" in host["run"]
+    assert "printf '%s'" in host["run"]
+    assert "--password" not in host["run"]
+    assert "core canary secret incomplete; host provisioning skipped" in host["run"]
     public = next(s for s in steps if s.get("id") == "canary")
     assert "https://tinyassets.io/mcp --assert-handles" in public["run"]
     assert not public.get("continue-on-error")
@@ -433,7 +439,8 @@ def test_rollback_step_present():
     assert (
         rollback["if"] == "${{ failure() && steps.deploy.outputs.rc == '0' && "
         "(steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure' "
-        "|| steps.core_canary.outcome == 'failure') }}"
+        "|| steps.core_canary.outcome == 'failure' "
+        "|| steps.core_canary_host.outcome == 'failure') }}"
     )
     assert "--restore-bundle" in rollback["run"]
     assert rollback["env"]["PREV_IMAGE"] == "${{ steps.capture.outputs.prev_image }}"

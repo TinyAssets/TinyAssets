@@ -20,17 +20,19 @@ from tinyassets.core_canary import (
     CONFIG_FIELDS,
     ECHO_BRANCH_ID,
     ECHO_SOURCE,
+    INTAKE_RECEIVER_ID,
     RECORD_SOURCE,
     SERVICE_PATH,
     CoreCanaryProvisionError,
     CoreCanaryRecordError,
-    _read_password,
-    config_document,
+    _read_founder_secret,
     install,
     load_record,
     lookup_workos_user,
     main,
     offered_intake,
+    probe_config,
+    service_hmac_key,
 )
 from tinyassets.daemon_server import (
     get_branch_definition,
@@ -71,9 +73,21 @@ def _prepare(base, owner, universe):
     )
 
 
-def _install(base, owner="user_01TESTCANARY", universe="u-canary", email="canary@example.invalid"):
+def _install(
+    base,
+    owner="user_01TESTCANARY",
+    universe="u-canary",
+    email="canary@example.invalid",
+    password="pw-canary",
+):
     _prepare(base, owner, universe)
-    return install(base, owner_id=owner, universe_id=universe, email=email)
+    return install(
+        base,
+        owner_id=owner,
+        universe_id=universe,
+        email=email,
+        password=password,
+    )
 
 
 def test_config_fields_match_the_deploy_verifier():
@@ -134,13 +148,20 @@ def test_install_is_idempotent_and_keeps_secrets_out_of_the_universe(root, monke
             owner_id="user_01OTHERACCOUNT",
             universe_id="u-canary",
             email="other@example.invalid",
+            password="pw-canary",
         )
     assert load_record(root)["hmac_key"] == first["hmac_key"]
-    document = config_document(first, "pw-for-github")
-    assert set(document) == set(provision.REQUIRED)
-    assert provision.classify(json.dumps(document)) == (True, "")
-    assert "bearer" not in document
-    assert document["service_hmac_key"] == first["hmac_key"]
+    derived = probe_config("canary@example.invalid", "pw-canary", "u-canary")
+    assert derived["service_hmac_key"] == first["hmac_key"]
+    assert derived["connection_id"] == first["connection_id"]
+    assert derived["intake_receiver_id"] == first["intake_receiver_id"] == INTAKE_RECEIVER_ID
+    assert derived["branch_id"] == ECHO_BRANCH_ID
+    assert derived["service_path"] == SERVICE_PATH
+    assert first["hmac_key"] == service_hmac_key("canary@example.invalid", "pw-canary")
+    founder = {"email": "canary@example.invalid", "password": "pw-canary"}
+    assert set(founder) == set(provision.REQUIRED) == set(CONFIG_FIELDS)
+    assert provision.classify(json.dumps(founder)) == (True, "")
+    assert "pw-canary" not in _tree_text(root)
 
 
 def test_stored_sources_echo_and_record(root):
@@ -452,34 +473,48 @@ def test_corrupt_record_does_not_fall_through_to_production(
     assert record["hmac_key"] not in json.dumps(sent)
 
 
-def test_cli_prints_the_secret_and_stores_no_password(root, monkeypatch, capsys):
+def _founder_json(password="pw-not-stored-7f3a", email="canary@example.invalid"):
+    return json.dumps({"email": email, "password": password})
+
+
+def test_cli_stores_the_derived_key_and_prints_no_secret(root, monkeypatch, capsys):
     monkeypatch.setattr(
         "tinyassets.core_canary.lookup_workos_user",
         lambda email, **kwargs: "user_01TESTCANARY",
     )
-    monkeypatch.setenv("TINYASSETS_CORE_CANARY_PASSWORD", "pw-not-stored-7f3a")
-    assert main(["--email", "canary@example.invalid"]) == 0
+    monkeypatch.setenv("TINYASSETS_CORE_CANARY_CONFIG", _founder_json())
+    assert main([]) == 0
     captured = capsys.readouterr()
-    assert "core_canary_provisioned=1" in captured.out
-    assert "universe_id" in captured.out
-    assert "connection_id" in captured.out
-    assert "intake_receiver_id" in captured.out
-    assert "branch_id" in captured.out
-    assert "/app/me" in captured.out
-    assert SERVICE_PATH in captured.out
-    marker = "TINYASSETS_CORE_CANARY_CONFIG\n"
-    assert marker in captured.out
-    document = json.loads(captured.out.split(marker, 1)[1].split("\ncore_canary_provisioned=")[0])
-    assert provision.classify(json.dumps(document)) == (True, "")
-    assert set(document) == set(CONFIG_FIELDS)
-    assert document["password"] == "pw-not-stored-7f3a"
-    assert document["email"] == "canary@example.invalid"
+    assert captured.out == "core_canary_provisioned=1\n"
+    assert "pw-not-stored-7f3a" not in captured.out
+    assert "pw-not-stored-7f3a" not in captured.err
     record = load_record(root)
     assert record is not None
-    assert document["service_hmac_key"] == record["hmac_key"]
+    assert record["hmac_key"] == service_hmac_key("canary@example.invalid", "pw-not-stored-7f3a")
     assert record["bearer"] not in captured.out
+    assert record["hmac_key"] not in captured.out
+    assert record["hmac_key"] not in captured.err
     assert "pw-not-stored-7f3a" not in _tree_text(root)
     assert record["hmac_key"] not in _tree_text(root / record["universe_id"])
+    derived = probe_config("Canary@Example.invalid", "pw-not-stored-7f3a", record["universe_id"])
+    assert derived["service_hmac_key"] == record["hmac_key"]
+    assert derived["connection_id"] == record["connection_id"]
+
+
+def test_password_change_rotates_only_the_derived_key(root, monkeypatch):
+    monkeypatch.setattr(
+        "tinyassets.core_canary.lookup_workos_user",
+        lambda email, **kwargs: "user_01TESTCANARY",
+    )
+    first = _install(root, password="pw-one")
+    second = _install(root, password="pw-two")
+    assert second["hmac_key"] == service_hmac_key("canary@example.invalid", "pw-two")
+    assert second["hmac_key"] != first["hmac_key"]
+    assert second["bearer"] == first["bearer"]
+    assert second["connection_id"] == first["connection_id"]
+    assert second["intake_receiver_id"] == first["intake_receiver_id"]
+    assert "pw-one" not in _tree_text(root)
+    assert "pw-two" not in _tree_text(root)
 
 
 def test_missing_workos_user_creates_nothing(root, monkeypatch, capsys):
@@ -489,8 +524,11 @@ def test_missing_workos_user_creates_nothing(root, monkeypatch, capsys):
         )
 
     monkeypatch.setattr("tinyassets.core_canary.lookup_workos_user", _missing)
-    monkeypatch.setenv("TINYASSETS_CORE_CANARY_PASSWORD", "pw-not-stored-7f3a")
-    assert main(["--email", "missing@example.invalid"]) == 1
+    monkeypatch.setenv(
+        "TINYASSETS_CORE_CANARY_CONFIG",
+        _founder_json(email="missing@example.invalid"),
+    )
+    assert main([]) == 1
     captured = capsys.readouterr()
     assert "sign up at https://tinyassets.io" in captured.err
     assert "pw-not-stored-7f3a" not in captured.err
@@ -499,18 +537,17 @@ def test_missing_workos_user_creates_nothing(root, monkeypatch, capsys):
     assert not (root / ".runtime" / "core-canary.json").exists()
 
 
-def test_password_channels(monkeypatch):
-    monkeypatch.setenv("TINYASSETS_CORE_CANARY_PASSWORD", "from-env")
-    assert _read_password() == "from-env"
-    monkeypatch.delenv("TINYASSETS_CORE_CANARY_PASSWORD")
+def test_secret_channels(monkeypatch):
+    monkeypatch.setenv("TINYASSETS_CORE_CANARY_CONFIG", "from-env")
+    assert _read_founder_secret() == "from-env"
+    monkeypatch.setenv("TINYASSETS_CORE_CANARY_CONFIG", "")
+    assert _read_founder_secret() == ""
+    monkeypatch.delenv("TINYASSETS_CORE_CANARY_CONFIG")
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    monkeypatch.setattr("getpass.getpass", lambda prompt="": "from-tty")
-    assert _read_password() == "from-tty"
+    assert _read_founder_secret() == ""
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
-    monkeypatch.setattr("sys.stdin.readline", lambda: "from-stdin\n")
-    assert _read_password() == "from-stdin"
-    monkeypatch.setenv("TINYASSETS_CORE_CANARY_PASSWORD", "")
-    assert _read_password() == ""
+    monkeypatch.setattr("sys.stdin.read", lambda: "from-stdin")
+    assert _read_founder_secret() == "from-stdin"
 
 
 def test_workos_lookup_names_no_secret(monkeypatch):
@@ -571,12 +608,48 @@ def test_workos_lookup_names_no_secret(monkeypatch):
 
 
 def test_empty_password_exits_before_lookup(root, monkeypatch, capsys):
-    monkeypatch.setenv("TINYASSETS_CORE_CANARY_PASSWORD", "")
+    monkeypatch.setenv(
+        "TINYASSETS_CORE_CANARY_CONFIG",
+        json.dumps({"email": "canary@example.invalid", "password": ""}),
+    )
 
     def _boom(*_args, **_kwargs):
         raise AssertionError("lookup")
 
     monkeypatch.setattr("tinyassets.core_canary.lookup_workos_user", _boom)
-    assert main(["--email", "canary@example.invalid"]) == 1
-    assert "password is required" in capsys.readouterr().err
+    assert main([]) == 1
+    captured = capsys.readouterr()
+    assert "missing or empty: password" in captured.err
+    assert "canary@example.invalid" not in captured.err
     assert load_record(root) is None
+
+
+def test_arguments_are_refused_without_echoing_them(capsys):
+    assert main(["--password", "pw-not-stored-7f3a"]) == 1
+    captured = capsys.readouterr()
+    assert "stdin" in captured.err
+    assert "pw-not-stored-7f3a" not in captured.err
+    assert "pw-not-stored-7f3a" not in captured.out
+
+
+def test_live_probe_rejects_derived_fields_in_the_secret(monkeypatch):
+    import asyncio
+
+    from scripts import core_capability_live as live
+
+    monkeypatch.setenv(
+        "TINYASSETS_CORE_CANARY_CONFIG",
+        json.dumps(
+            {
+                "email": "canary@example.invalid",
+                "password": "pw-not-stored-7f3a",
+                "service_hmac_key": "hmac-secret",
+            }
+        ),
+    )
+    report: dict = {}
+    asyncio.run(live.run(report))
+    assert report.get("configuration_missing") is True
+    rendered = json.dumps(report)
+    assert "hmac-secret" not in rendered
+    assert "pw-not-stored-7f3a" not in rendered

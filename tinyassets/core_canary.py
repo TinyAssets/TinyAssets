@@ -9,23 +9,18 @@ owner and checks three things that must already exist:
   and does not file an issue.
 * A private ``source_code`` branch echoes ``nonce`` back as ``echo``.
 
-The HMAC key lives only in ``{data}/.runtime/core-canary.json`` (mode 0600),
-outside every universe, and in the JSON this command prints for the GitHub
-secret. The connection bearer is a different secret in the ordinary credential
-vault. The password is never stored.
-
-On the host, after this code is deployed::
-
-    docker exec -it tinyassets-daemon \\
-        python3 -m tinyassets.core_canary --email <email>
-
-Signup itself stays a person at https://tinyassets.io. This command looks that
-account up, installs the pieces, and prints the secret to paste.
+The founder pastes one GitHub secret, JSON with exactly ``email`` and
+``password``. The deploy pipes that document to this module on stdin inside
+the daemon container. The HMAC key is derived from that password, so the
+probe recomputes it and the key is never printed or written back to GitHub.
+The key and the connection bearer live only in
+``{data}/.runtime/core-canary.json`` (mode 0600), outside every universe.
+The bearer is a different secret in the ordinary credential vault. The
+password is never stored.
 """
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import hmac
 import json
@@ -48,7 +43,9 @@ DESTINATION = "core-canary-hmac"
 ECHO_BRANCH_ID = "core-canary-echo"
 RECORD_BRANCH_ID = "core-canary-record"
 RECORDING_LABEL = "Core canary"
+INTAKE_RECEIVER_ID = "core-canary-intake"
 _RECORD_NAME = "core-canary.json"
+_KEY_LABEL = b"tinyassets-core-canary-hmac-v1\0"
 _MAX_RECORD_BYTES = 8192
 _MAX_BODY_BYTES = 4096
 _MAX_NONCE_CHARS = 256
@@ -57,17 +54,10 @@ _DUMMY_BEARER = "0" * 64
 ECHO_SOURCE = 'def run(state):\n    return {"echo": state["nonce"]}\n'
 RECORD_SOURCE = 'def run(state):\n    return {"recorded": state["report"]}\n'
 
-#: The GitHub secret's fields, in the order ``scripts/verify_core_canary_provision``
-#: classifies. Tests pin the two tuples together.
+#: The GitHub secret's fields. Tests pin this to the deploy verifier.
 CONFIG_FIELDS = (
     "email",
     "password",
-    "universe_id",
-    "connection_id",
-    "service_path",
-    "service_hmac_key",
-    "intake_receiver_id",
-    "branch_id",
 )
 
 _RECORD_FIELDS = (
@@ -197,31 +187,59 @@ def offered_intake(universe_id: str) -> dict[str, str] | None:
     return {"receiver_id": record["intake_receiver_id"], "label": RECORDING_LABEL}
 
 
-def config_document(record: dict[str, Any], password: str) -> dict[str, str]:
-    """The eight-field GitHub secret. The connection bearer is not a field."""
-    return {
-        "email": record["email"],
-        "password": password,
-        "universe_id": record["universe_id"],
-        "connection_id": record["connection_id"],
-        "service_path": record["service_path"],
-        "service_hmac_key": record["hmac_key"],
-        "intake_receiver_id": record["intake_receiver_id"],
-        "branch_id": record["branch_id"],
-    }
+def canonical_email(email: str) -> str:
+    return email.strip()
 
 
-def config_is_complete(document: dict[str, Any]) -> tuple[bool, str]:
-    """Same rule as the deploy verifier: eight non-empty strings, nothing else."""
+def service_hmac_key(email: str, password: str) -> str:
+    """The HMAC key for this signup. Same password and email, same key.
+
+    The probe recomputes this from the GitHub secret. The value is stored on
+    the host and is not the password.
+    """
+    message = _KEY_LABEL + canonical_email(email).casefold().encode("utf-8")
+    return hmac.new(password.encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def parse_founder_config(raw: str) -> tuple[dict[str, str] | None, str]:
+    """The pasted secret, or ``(None, reason)``. The reason names no secret."""
+    if not raw.strip():
+        return None, "TINYASSETS_CORE_CANARY_CONFIG is empty"
+    try:
+        document = json.loads(raw)
+    except ValueError:
+        return None, "core canary config is not JSON"
+    if not isinstance(document, dict):
+        return None, "core canary config is not a JSON object"
+    extra = sorted(key for key in document if key not in CONFIG_FIELDS)
+    if extra:
+        return None, "unexpected: " + ", ".join(extra)
     missing = [
         key for key in CONFIG_FIELDS if not isinstance(document.get(key), str) or not document[key]
     ]
-    extra = sorted(key for key in document if key not in CONFIG_FIELDS)
-    if extra:
-        return False, "unexpected: " + ", ".join(extra)
     if missing:
-        return False, "missing or empty: " + ", ".join(missing)
-    return True, ""
+        return None, "missing or empty: " + ", ".join(missing)
+    return {key: document[key] for key in CONFIG_FIELDS}, ""
+
+
+def probe_config(email: str, password: str, universe_id: str) -> dict[str, str]:
+    """The fields the live probe uses, derived from the signup and the home.
+
+    ``connection_id`` is the same deterministic id ``connect_http`` stores.
+    """
+    from tinyassets.api.http_connection import _ids
+
+    connection_id, _grant = _ids(universe_id=universe_id, destination=DESTINATION)
+    return {
+        "email": canonical_email(email),
+        "password": password,
+        "universe_id": universe_id,
+        "connection_id": connection_id,
+        "service_path": SERVICE_PATH,
+        "service_hmac_key": service_hmac_key(email, password),
+        "intake_receiver_id": INTAKE_RECEIVER_ID,
+        "branch_id": ECHO_BRANCH_ID,
+    }
 
 
 def _identity(owner_id: str):
@@ -319,13 +337,21 @@ def _require_admin(base: Path, owner_id: str, universe_id: str) -> None:
         raise CoreCanaryProvisionError("core canary owner is not an admin of this home")
 
 
-def install(base: str | Path, *, owner_id: str, universe_id: str, email: str) -> dict[str, Any]:
+def install(
+    base: str | Path,
+    *,
+    owner_id: str,
+    universe_id: str,
+    email: str,
+    password: str,
+) -> dict[str, Any]:
     """Install or refresh the canary pieces. Idempotent for the same account.
 
-    Reuses the HMAC key and the connection bearer, so a secret already pasted
-    into GitHub stays valid. A record for a different account is refused and
-    left untouched. Returns the record, including both secrets — callers must
-    not log it.
+    The HMAC key is derived from ``password``, so a repeat with the same
+    password stores the same key and a changed password replaces only that
+    key. The connection bearer is reused. A record for a different account
+    is refused and left untouched. Returns the record, including both
+    secrets — callers must not log it. The password is not stored.
     """
     from tinyassets.api.http_connection import connect_http
     from tinyassets.api.receiver_links import save_receiver
@@ -341,7 +367,9 @@ def install(base: str | Path, *, owner_id: str, universe_id: str, email: str) ->
     root = Path(base)
     owner_id = _require_token(owner_id, "owner")
     universe_id = _require_token(universe_id, "universe")
-    email = _require_token(email, "email")
+    email = canonical_email(_require_token(email, "email"))
+    if not isinstance(password, str) or not password:
+        raise CoreCanaryProvisionError("core canary password is required")
     if "@" not in email.strip("@") or email.count("@") != 1:
         raise CoreCanaryProvisionError("core canary email is required")
     universe_dir = root / universe_id
@@ -355,17 +383,18 @@ def install(base: str | Path, *, owner_id: str, universe_id: str, email: str) ->
         or existing["universe_id"] != universe_id
     ):
         raise CoreCanaryRecordError("core canary record belongs to a different account")
+    hmac_key = service_hmac_key(email, password)
     if existing is None:
-        hmac_key = secrets.token_hex(32)
         bearer = secrets.token_hex(32)
         while bearer == hmac_key:
             bearer = secrets.token_hex(32)
-        receiver_id = None
         stored_email = email
     else:
-        hmac_key = existing["hmac_key"]
         bearer = existing["bearer"]
-        receiver_id = existing["intake_receiver_id"]
+        if bearer == hmac_key:
+            bearer = secrets.token_hex(32)
+            while bearer == hmac_key:
+                bearer = secrets.token_hex(32)
         stored_email = existing["email"]
 
     _require_admin(root, owner_id, universe_id)
@@ -400,16 +429,17 @@ def install(base: str | Path, *, owner_id: str, universe_id: str, email: str) ->
 
     with identity_context(_identity(owner_id)):
         expected = None
-        if receiver_id is not None:
-            try:
-                current = store.inspect_receiver(
-                    root,
-                    receiver_id=receiver_id,
-                    principal_id=owner_id,
-                    owner_universe_id=universe_id,
-                )
-            except (store.ReceiverAccessDenied, ValueError):
+        try:
+            current = store.inspect_receiver(
+                root,
+                receiver_id=INTAKE_RECEIVER_ID,
+                principal_id=owner_id,
+                owner_universe_id=universe_id,
+            )
+        except (store.ReceiverAccessDenied, ValueError):
+            if existing is not None:
                 raise CoreCanaryProvisionError("core canary intake is missing") from None
+        else:
             expected = current["generation"]
         try:
             receiver = save_receiver(
@@ -419,7 +449,7 @@ def install(base: str | Path, *, owner_id: str, universe_id: str, email: str) ->
                 input_keys=["report"],
                 allowed_senders=[owner_id],
                 description="Records canary patch requests.",
-                receiver_id=receiver_id,
+                receiver_id=INTAKE_RECEIVER_ID,
                 expected_generation=expected,
                 open_to_all=False,
                 discoverable=False,
@@ -615,59 +645,32 @@ def lookup_workos_user(email: str, *, opener=urllib.request.urlopen) -> str:
     return user_id
 
 
-def _read_password() -> str:
-    """Env, then a hidden prompt on a tty, then one stdin line.
+def _read_founder_secret() -> str:
+    """The deploy's stdin document. An empty env value does not fall through.
 
-    An empty env value is empty — it does not fall through to the prompt.
-    ``--password`` is refused by argparse because it would show up in process
-    listings.
+    Arguments are refused without being echoed: a ``--password`` would show
+    up in process listings and in this process's error text.
     """
-    if "TINYASSETS_CORE_CANARY_PASSWORD" in os.environ:
-        return os.environ["TINYASSETS_CORE_CANARY_PASSWORD"]
+    if "TINYASSETS_CORE_CANARY_CONFIG" in os.environ:
+        return os.environ["TINYASSETS_CORE_CANARY_CONFIG"]
     if sys.stdin.isatty():
-        import getpass
-
-        return getpass.getpass("Canary owner password: ")
-    line = sys.stdin.readline()
-    if line.endswith("\n"):
-        line = line[:-1]
-    if line.endswith("\r"):
-        line = line[:-1]
-    return line
-
-
-def _explain(record: dict[str, Any]) -> str:
-    universe = record["universe_id"]
-    connection = record["connection_id"]
-    receiver = record["intake_receiver_id"]
-    branch = record["branch_id"]
-    return (
-        "Where these values come from:\n"
-        f"- universe_id ({universe}): the signed-in home. "
-        "GET /app/me as this owner, field universe_id.\n"
-        f"- connection_id ({connection}): the HTTP connection whose destination "
-        f"is {DESTINATION}, host {SERVICE_HOST}, POST {SERVICE_PATH}.\n"
-        f"- service_path ({SERVICE_PATH}): the path the probe sends.\n"
-        f"- intake_receiver_id ({receiver}): the recording receiver on this home. "
-        "It stores the delivery. It does not file a GitHub issue.\n"
-        f"- branch_id ({branch}): the private source_code branch. "
-        "run(state) returns echo set to the nonce.\n"
-        "Paste the JSON below into GitHub → Settings → Environments → "
-        "production → Environment secrets → TINYASSETS_CORE_CANARY_CONFIG.\n"
-    )
+        return ""
+    return sys.stdin.read()
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="tinyassets.core_canary")
-    parser.add_argument("--email", required=True)
-    args = parser.parse_args(argv)
-    email = str(args.email or "").strip()
-    if not email or "@" not in email:
-        print("core canary email is required", file=sys.stderr)
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args:
+        print("core canary reads the secret from stdin", file=sys.stderr)
         return 1
-    password = _read_password()
-    if not password:
-        print("password is required", file=sys.stderr)
+    parsed, reason = parse_founder_config(_read_founder_secret())
+    if parsed is None:
+        print(reason, file=sys.stderr)
+        return 1
+    email = canonical_email(parsed["email"])
+    password = parsed["password"]
+    if "@" not in email.strip("@") or email.count("@") != 1:
+        print("core canary email is required", file=sys.stderr)
         return 1
     try:
         owner_id = lookup_workos_user(email)
@@ -691,18 +694,21 @@ def main(argv: list[str] | None = None) -> int:
                 owner_id=owner_id,
                 universe_id=universe_id,
                 email=email,
+                password=password,
             )
         except (CoreCanaryRecordError, CoreCanaryProvisionError, ValueError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
-    document = config_document(record, password)
-    ready, reason = config_is_complete(document)
-    if not ready or set(document) != set(CONFIG_FIELDS):
-        print(reason or "missing or empty: " + ", ".join(CONFIG_FIELDS), file=sys.stderr)
+    derived = probe_config(email, password, universe_id)
+    if (
+        record["hmac_key"] != derived["service_hmac_key"]
+        or record["connection_id"] != derived["connection_id"]
+        or record["intake_receiver_id"] != INTAKE_RECEIVER_ID
+        or record["branch_id"] != ECHO_BRANCH_ID
+        or record["service_path"] != SERVICE_PATH
+    ):
+        print("core canary pieces were not stored", file=sys.stderr)
         return 1
-    print(_explain(record), end="")
-    print("TINYASSETS_CORE_CANARY_CONFIG")
-    print(json.dumps(document, indent=2, sort_keys=True))
     print("core_canary_provisioned=1")
     return 0
 

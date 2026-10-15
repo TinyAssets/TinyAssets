@@ -54,8 +54,8 @@ NON_PRODUCTION_SECRETS: dict[str, str] = {
         "beyond get_status / read_graph status (docs/reference/environment-variables.md)"
     ),
     "TINYASSETS_CORE_CANARY_CONFIG": (
-        "sign-in of the dedicated synthetic canary owner with no founder data behind it "
-        "(docs/host-actions.md, one-time core-canary setup)"
+        "email and password of the dedicated synthetic canary owner; the deploy derives "
+        "the HMAC key on the host. No founder data (docs/host-actions.md)"
     ),
     "PUSHOVER_APP_TOKEN": "send-only notification credential",
     "PUSHOVER_USER_KEY": "send-only notification recipient",

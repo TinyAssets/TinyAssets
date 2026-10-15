@@ -301,10 +301,28 @@ def save_receiver(
             "or accepted deliveries per sender per hour"
         )
     with transaction(base_path) as conn:
+        creating = receiver_id is None
         if receiver_id is None:
             if expected_generation is not None:
                 raise ValueError("new receiver has no expected generation")
             receiver_id = uuid.uuid4().hex
+        else:
+            row = conn.execute(
+                "SELECT * FROM graph_receivers WHERE receiver_id=?",
+                (receiver_id,),
+            ).fetchone()
+            if row is None:
+                # A caller-chosen address is created only while it is free.
+                # An address that already exists is never overwritten from here.
+                if expected_generation is not None:
+                    raise ReceiverAccessDenied()
+                _name(receiver_id)
+                creating = True
+            elif row["owner_id"] != owner_id or row["universe_id"] != universe_id:
+                raise ReceiverAccessDenied()
+            else:
+                creating = False
+        if creating:
             # Explicit column names, not positional VALUES: the positional form
             # silently mis-assigned every column past a schema addition.
             conn.execute(
