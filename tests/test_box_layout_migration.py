@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import os
+import shutil
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -108,6 +110,141 @@ def test_census_reports_each_layout_and_does_not_invent_a_zero(tmp_path):
     assert migration.check(data) == 0
     (data / ".layout.json").write_text("{")
     assert migration.check(data) == migration.UNREADABLE
+
+
+def _identities(path: Path, principal: str, uid: int, center: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "CREATE TABLE owner_identities ("
+            "principal TEXT PRIMARY KEY NOT NULL, "
+            "machine_id INTEGER NOT NULL UNIQUE "
+            "CHECK(machine_id BETWEEN 300001 AND 399999))"
+        )
+        db.execute(
+            "CREATE TABLE center_admissions ("
+            "generation INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "event TEXT NOT NULL CHECK (event IN ('admit','retire')), "
+            "principal TEXT NOT NULL, center TEXT NOT NULL, "
+            "machine INTEGER NOT NULL CHECK(machine BETWEEN 300001 AND 399999), "
+            "UNIQUE(center, event))"
+        )
+        db.execute(
+            "INSERT INTO owner_identities (principal, machine_id) VALUES (?, ?)",
+            (principal, uid),
+        )
+        db.execute(
+            "INSERT INTO center_admissions (event, principal, center, machine) "
+            "VALUES ('admit', ?, ?, ?)",
+            (principal, center, uid),
+        )
+
+
+def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambiguous(
+    tmp_path, monkeypatch,
+):
+    """A real owner-split tree is detected and moved from the census.
+
+    The agent-files binding count on this tree is zero. Absent and ambiguous
+    censuses are not a skip: check refuses them instead of reporting owner-box.
+    """
+    from tinyassets.agent_file_migration import pending
+
+    data = tmp_path / "data"
+    store = tmp_path / "owners"
+    center = data / "home"
+    center.mkdir(parents=True)
+    (center / "note.txt").write_text("owner sentence")
+    (data / ".layout.json").write_text(json.dumps({
+        "layout": 2, "state": "stable", "box_layout": "owner-split",
+    }))
+    (data / ".layout.lock").touch()
+    store.mkdir()
+    _identities(
+        data / ".broker" / "state" / "owner-identities.db", "person", 300001, "home",
+    )
+    assert pending(data) == 0
+
+    code = migration.check(data)
+    census = migration.layout_census(data)
+    assert code == migration.PENDING
+    assert census["pending"] is True
+    assert census["box_layout"] == "owner-split"
+    assert census["marker_state"] == "stable"
+    assert census["counts"]["owner-split"]["centers"] == 1
+    assert census["counts"]["owner-split"]["admitted_owners"] == 1
+    assert census["counts"]["owner-box"]["registry_present"] is False
+
+    absent = tmp_path / "absent"
+    (absent / "home").mkdir(parents=True)
+    assert migration.check(absent) == migration.ABSENT
+    assert migration.layout_census(absent)["pending"] is None
+    assert migration.layout_census(absent)["box_layout"] == "absent"
+
+    ambiguous = tmp_path / "ambiguous"
+    ambiguous.mkdir()
+    (ambiguous / ".layout.json").write_text("{")
+    assert migration.check(ambiguous) == migration.UNREADABLE
+    assert migration.layout_census(ambiguous)["pending"] is None
+    (ambiguous / ".layout.json").write_text(json.dumps({
+        "layout": 2, "state": "migrating", "box_layout": "owner-split",
+    }))
+    assert migration.check(ambiguous) == migration.UNREADABLE
+    (ambiguous / ".layout.json").write_text(json.dumps({
+        "layout": 2, "state": "stable", "box_layout": "neither",
+    }))
+    assert migration.check(ambiguous) == migration.UNREADABLE
+
+    real_stat = os.stat
+
+    def stat(path, *args, **kwargs):
+        info = real_stat(path, *args, **kwargs)
+        target = Path(path)
+        if target.name == "home" and target.parent == data:
+            return os.stat_result((
+                info.st_mode, info.st_ino, info.st_dev, info.st_nlink,
+                1001, 300001, info.st_size, info.st_atime, info.st_mtime, info.st_ctime,
+            ))
+        return info
+
+    def run(command, *args, **kwargs):
+        argv = list(command)
+        if argv and argv[0] == "rsync" and "--dry-run" not in argv:
+            source = Path(argv[-2])
+            target = Path(argv[-1])
+            for item in source.iterdir():
+                dest = target / item.name
+                if item.is_dir() and not item.is_symlink():
+                    shutil.copytree(item, dest)
+                elif item.is_file():
+                    dest.write_bytes(item.read_bytes())
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(os, "stat", stat)
+    monkeypatch.setattr(os, "chown", lambda *args: None)
+    monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(migration, "_mounted", lambda *args: None)
+    monkeypatch.setattr(migration.subprocess, "run", run)
+    data_backup = tmp_path / "tinyassets-snapshot-2026-10-15T00-00-00Z.tar.gz"
+    box_backup = tmp_path / "tinyassets-box-store-2026-10-15T00-00-00Z.tar.gz"
+    _archive(data_backup, b"data snapshot")
+    _archive(box_backup, b"box snapshot")
+
+    migration.apply(data, store, data_backup, box_backup)
+
+    assert (store / "300001" / "home" / "note.txt").read_text() == "owner sentence"
+    assert (data / "home" / "note.txt").read_text() == "owner sentence"
+    marker = json.loads((data / ".layout.json").read_text())
+    assert marker["box_layout"] == "owner-box"
+    assert marker["state"] == "stable"
+    moved = migration.layout_census(data)
+    assert moved["box_layout"] == "owner-box"
+    assert moved["pending"] is False
+    assert migration.check(data) == 0
+    with sqlite3.connect(data / ".broker" / "state" / "owner-identities.db") as db:
+        assert db.execute(
+            "SELECT principal, machine, project_id FROM box_records"
+        ).fetchall() == [("person", 300001, 300001)]
 
 
 def test_xfs_mount_accepts_real_prjquota_output(monkeypatch, tmp_path):

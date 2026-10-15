@@ -353,24 +353,12 @@ def main(argv):
         if "tinyassets.box_layout_migration" in argv:
             marker = os.path.join(os.environ.get("FAKE_DOCKER_VOLUME_DIR") or "", ".layout.json")
             command = argv[argv.index("tinyassets.box_layout_migration") + 1]
-            if command == "check" and not os.path.isfile(marker):
-                print(json.dumps({
-                    "box_layout": "absent",
-                    "pending": None,
-                    "counts": {
-                        "owner-split": {"centers": None, "admitted_owners": None},
-                        "owner-box": {"registered_boxes": None, "registry_present": False},
-                    },
-                }))
-                return 4
-            with open(marker, encoding="utf-8") as handle:
-                document = json.load(handle)
-            if command == "check":
-                layout = document.get("box_layout", "owner-split")
+
+            def census(layout, marker_state, pending):
                 print(json.dumps({
                     "box_layout": layout,
-                    "marker_state": document.get("state"),
-                    "pending": layout == "owner-split",
+                    "marker_state": marker_state,
+                    "pending": pending,
                     "counts": {
                         "owner-split": {"centers": 1, "admitted_owners": None},
                         "owner-box": {
@@ -378,7 +366,36 @@ def main(argv):
                             "registry_present": layout == "owner-box",
                         },
                     },
-                }))
+                }, sort_keys=True))
+
+            if command == "check" and state.get("box_census_rc") is not None:
+                forced = int(state["box_census_rc"])
+                census("unreadable" if forced == 3 else "absent", None, None)
+                return forced
+            if command == "check" and not os.path.isfile(marker):
+                census("absent", None, None)
+                return 4
+            try:
+                with open(marker, encoding="utf-8") as handle:
+                    document = json.load(handle)
+            except (OSError, ValueError):
+                if command == "check":
+                    census("unreadable", None, None)
+                    return 3
+                raise
+            if not isinstance(document, dict):
+                document = {}
+            if command == "check":
+                layout = document.get("box_layout", "owner-split")
+                marker_state = document.get("state")
+                if marker_state != "stable" or layout not in ("owner-split", "owner-box"):
+                    census(layout, marker_state, None)
+                    return 3
+                census(
+                    layout,
+                    marker_state,
+                    True if layout == "owner-split" else False,
+                )
                 return 0 if layout == "owner-box" else 10
             state["box_migration_apply_attempted"] = True
             outcome = state.get("box_migration_apply", "commit")
@@ -939,6 +956,11 @@ class Box:
             "MIGRATION_BACKUP_DIR": str(self.root / "backups"),
             "TURNS_PROBE": str(self.root / "turns_probe.py"),
             "VERIFY_BACKUP_PY": str(REPO / "scripts" / "verify_deploy_backup.py"),
+            # A provisioned canary is the ordinary path. Tests of the missing
+            # config set this to 0. The volume marker is stable owner-split so
+            # the census is a real layout, not an absent one.
+            "CORE_CANARY_PROVISIONED": "1",
+            "FAKE_DOCKER_VOLUME_DIR": str(self.root / "default-data-volume"),
         }
         env.update(overrides)
         return env
@@ -1004,6 +1026,12 @@ def box(tmp_path: Path) -> Box:
     backup.chmod(0o755)
     (fake.root / "backups").mkdir()
     (fake.root / "turns_probe.py").write_text("# in-flight probe stand-in\n", encoding="utf-8")
+    default_volume = fake.root / "default-data-volume"
+    default_volume.mkdir()
+    (default_volume / ".layout.json").write_text(
+        '{"layout": 1, "state": "stable", "box_layout": "owner-split"}\n',
+        encoding="utf-8",
+    )
 
     import hashlib
 
@@ -1591,6 +1619,11 @@ def test_no_image_rollback_onto_data_the_failed_candidate_began_migrating(box: B
     restore (design D7.2)."""
     volume = box.root / "data-volume"
     volume.mkdir()
+    # Stable before the swap, so the census is not the refusal. The candidate
+    # then rewrites the marker to migrating as it boots.
+    (volume / ".layout.json").write_text(
+        '{"layout": 1, "state": "stable"}', encoding="utf-8",
+    )
     box.stage_bundle()
     box.set_docker_state(
         unhealthy_images=[NEW_IMAGE],
@@ -2774,7 +2807,8 @@ def test_every_forward_deploy_verifies_a_fresh_backup_before_the_probe(box: Box)
         "migration: asking"
     )
     assert "migration: nothing to move; inspected" in stdout
-    assert "box layout inspected: candidate=owner-split rc=4" in stdout
+    assert "box layout inspected: candidate=owner-split rc=10" in stdout
+    assert "stable owner-split census" in stdout
     archives = list((box.root / "backups").glob("tinyassets-snapshot-*.tar.gz"))
     assert len(archives) == 1
     assert archives[0].with_name(archives[0].name + ".sha256").is_file()
@@ -2819,4 +2853,89 @@ def test_a_backup_older_than_this_run_is_refused(box: Box):
     assert "check=backup_verify" in reason
     assert "older than this run" in reason
     assert "agent_file_migration" not in box.docker_calls_text()
+    assert "start tinyassets-daemon" in box.docker_calls_text()
+
+
+def test_unprovisioned_canary_warns_and_continues_when_the_deploy_does_not_move_data(box: Box):
+    """Missing canary config is a loud warning on a deploy that moves nothing."""
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE, CORE_CANARY_PROVISIONED="0")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert _result(completed) == "deployed"
+    assert "core canary is not provisioned" in completed.stdout
+    assert "::warning::core canary is not provisioned" in completed.stderr
+    calls = box.docker_calls_text()
+    assert "agent_file_migration apply" not in calls
+    assert "box_layout_migration apply" not in calls
+    assert "stable owner-split census" in completed.stdout
+
+
+def test_unprovisioned_canary_refuses_an_owner_box_candidate(box: Box):
+    """An owner-box candidate would move data, so a missing canary stops first."""
+    _volume, env = _cutover(box)
+    box.set_docker_state(
+        migration_pending=False,
+        active_box_layout={NEW_IMAGE: "owner-box"},
+        known_layouts={NEW_IMAGE: {"layouts": [1, 2],
+                                   "boxes": ["owner-split", "owner-box"]}},
+    )
+    env["CORE_CANARY_PROVISIONED"] = "0"
+    env["BOX_STORE_CHECK"] = "/bin/true"
+    before = box.live()
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE, **env)
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    assert _result(completed) == "migration_refused"
+    assert "check=core_canary_not_provisioned move=owner-box_candidate" in (
+        _migration_refusal(completed)
+    )
+    calls = box.docker_calls_text()
+    assert "stop --time" not in calls
+    assert "box_layout_migration apply" not in calls
+    assert "agent_file_migration apply" not in calls
+    assert box.live() == before
+
+
+def test_unprovisioned_canary_refuses_a_pending_migration(box: Box):
+    """Agent-files pending is a data move even when the candidate is owner-split."""
+    _volume, env = _cutover(box)
+    env["CORE_CANARY_PROVISIONED"] = "0"
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE, **env)
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    assert _result(completed) == "migration_refused"
+    assert "check=core_canary_not_provisioned move=agent_files_pending" in (
+        _migration_refusal(completed)
+    )
+    calls = box.docker_calls_text()
+    assert "agent_file_migration apply" not in calls
+    assert "box_layout_migration apply" not in calls
+    assert "start tinyassets-daemon" in calls
+
+
+def test_an_absent_layout_census_refuses_instead_of_skipping(box: Box):
+    """No marker is not 'nothing to move'. The census refuses the deploy."""
+    volume = box.root / "empty-volume"
+    volume.mkdir()
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE, FAKE_DOCKER_VOLUME_DIR=str(volume))
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    assert _result(completed) == "migration_refused"
+    reason = _migration_refusal(completed)
+    assert "check=box_layout_absent" in reason
+    assert "box_layout_migration apply" not in box.docker_calls_text()
+    assert "stable owner-split census" not in completed.stdout
+    assert "start tinyassets-daemon" in box.docker_calls_text()
+
+
+def test_an_ambiguous_layout_census_refuses_instead_of_skipping(box: Box):
+    """An unreadable census is a refusal, not a skip past the move."""
+    box.set_docker_state(box_census_rc=3)
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE)
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    assert _result(completed) == "migration_refused"
+    reason = _migration_refusal(completed)
+    assert "check=box_layout_ambiguous rc=3" in reason
+    assert "box_layout_migration apply" not in box.docker_calls_text()
     assert "start tinyassets-daemon" in box.docker_calls_text()

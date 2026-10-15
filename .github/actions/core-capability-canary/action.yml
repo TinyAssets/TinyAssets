@@ -1,5 +1,5 @@
 name: Core capability canary
-description: Observe production capabilities. Not-provisioned fails the deploy and rolls back; other rows stay advisory.
+description: Observe production capabilities. Not-provisioned warns and does not roll back; deploy_fail_safe refuses a data-moving deploy when the canary is not provisioned. Other rows stay advisory. A red public canary still rolls back.
 inputs:
   config:
     description: Dedicated owner configuration

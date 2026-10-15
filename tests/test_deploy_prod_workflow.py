@@ -261,10 +261,16 @@ def test_canary_step_only_probes_canonical():
     assert core["uses"] == "./.github/actions/core-capability-canary"
     assert "if" not in core and not core.get("continue-on-error")
     provision = next(s for s in steps if s.get("name") == "Verify core canary is provisioned")
+    assert provision.get("id") == "core_canary_provision"
     assert "verify_core_canary_provision.py" in provision["run"]
     assert not provision.get("continue-on-error")
     names = [step.get("name") for step in steps]
     assert steps.index(provision) < names.index("Prepare data volume root")
+    deploy = next(s for s in steps if s.get("id") == "deploy")
+    assert (
+        "CORE_CANARY_PROVISIONED='${{ steps.core_canary_provision.outputs.provisioned }}'"
+        in deploy["run"]
+    )
     public = next(s for s in steps if s.get("id") == "canary")
     assert "https://tinyassets.io/mcp --assert-handles" in public["run"]
     assert not public.get("continue-on-error")

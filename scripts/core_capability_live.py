@@ -493,18 +493,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     report = asyncio.run(collect())
     Path(args.report).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    # A missing dedicated owner means the probe never ran. That is a failed
-    # deploy, and the workflow rolls the new image back. Every other row stays
-    # advisory: model, provider and rate errors do not say the previous image
-    # would fare better.
-    code = 0
+    # A missing dedicated owner means the probe never ran. That is a loud
+    # warning, not a rollback: deploy_fail_safe already refused a data-moving
+    # deploy before the swap, and an ordinary deploy continues. Once the canary
+    # is provisioned, a red public canary still fails the deploy and rolls
+    # back. Probed rows stay advisory: model, provider and rate errors do not
+    # say the previous image would fare better.
     for row in report.get("warnings", []) + report.get("failures", []):
-        if row.get("code") == "canary_not_provisioned":
-            print("::error::core canary " + row["capability"] + ": " + row["code"])
-            code = 1
-        else:
-            print("::warning::core canary " + row["capability"] + ": " + row["code"])
-    return code
+        print("::warning::core canary " + row["capability"] + ": " + row["code"])
+    return 0
 
 
 async def collect():
@@ -528,8 +525,9 @@ async def collect():
         except Exception as exc:
             report["probe_error"] = type(exc).__name__
         if report.get("configuration_missing"):
-            # Not an observation. The probe never ran, so this cannot pass.
-            report["failures"].append(dict(capability="canary", code="canary_not_provisioned"))
+            # Not an observation and not a fabricated capability failure.
+            # deploy_fail_safe refuses the data-moving cases before the swap.
+            report["warnings"].append(dict(capability="canary", code="canary_not_provisioned"))
             return report
         for failure in validate_report(report):
             destination = (

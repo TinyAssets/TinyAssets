@@ -1760,6 +1760,9 @@ migration_refused() {  # $1 = which check failed, with its values; volume unchan
 }
 TURNS_PROBE="${TURNS_PROBE:-}"
 VERIFY_BACKUP_PY="${VERIFY_BACKUP_PY:-/tmp/verify_deploy_backup.py}"
+# 1 only when verify_core_canary_provision.py saw a complete config. Unset
+# refuses a data move and warns on every other forward deploy.
+CORE_CANARY_PROVISIONED="${CORE_CANARY_PROVISIONED:-}"
 prove_turns_idle() {
   # Root on a read-only mount: /data/.broker is 1002:1101 mode 2700, so the
   # daemon uid cannot stat it, and a writable root sqlite open creates sidecars.
@@ -1800,6 +1803,18 @@ if [ "$RESTORE_BUNDLE" = "1" ]; then
   MIGRATION_RC=0  # a rollback never migrates and does not take this snapshot
   probe_out=""
 else
+  # A missing canary blocks only a deploy that would move data. An owner-box
+  # candidate is one. A pending migration and the box move are checked at the
+  # step that would apply them. Every other deploy warns and continues.
+  # Only the literal 1 from verify_core_canary_provision.py counts; anything
+  # else, including an unset value, is not provisioned.
+  if [ "$CORE_CANARY_PROVISIONED" != "1" ] && [ "$BOX_CANDIDATE_LAYOUT" = "owner-box" ]; then
+    migration_refused "check=core_canary_not_provisioned move=owner-box_candidate"
+  fi
+  if [ "$CORE_CANARY_PROVISIONED" != "1" ]; then
+    log "WARNING: core canary is not provisioned (TINYASSETS_CORE_CANARY_CONFIG missing or canary_not_provisioned); continuing because this deploy is not an owner-box candidate. A pending migration or other data move still refuses."
+    printf '%s\n' "::warning::core canary is not provisioned (TINYASSETS_CORE_CANARY_CONFIG missing or canary_not_provisioned). Data-moving deploys refuse; this deploy continues only if it does not move data." >&2
+  fi
   # Every forward deploy, before the migration probe or any data move: prove
   # no turn is in flight, stop writers, snapshot, and verify that archive.
   # "Could not prove" refuses here, with the volume still unchanged.
@@ -1849,6 +1864,9 @@ case "$MIGRATION_RC" in
     fi
     ;;
   10)
+    if [ "$CORE_CANARY_PROVISIONED" != "1" ]; then
+      migration_refused "check=core_canary_not_provisioned move=agent_files_pending"
+    fi
     if [ "$BOX_CANDIDATE_LAYOUT" = "owner-box" ]; then
       migration_refused "check=agent_files_pending; complete C8 before the owner-box window"
     fi
@@ -1893,11 +1911,13 @@ rm -f "$MIGRATION_DETAIL_FILE"
 
 # --- 3d. layout census, and the one-shot move only for an owner-box candidate
 # The census always runs on a forward deploy, as root against a read-only
-# mount, and the log carries counts per layout. An owner-split candidate does
-# not apply the move: rc 10 (stable owner-split) and rc 4 (no marker) are
-# logged and the deploy continues. rc 0 on that candidate is a conflict.
-# An owner-box candidate applies only on rc 10, using the snapshot already
-# verified above. After apply begins, a failure needs that paired restore.
+# mount, and the log carries counts per layout. The move decision is this
+# census, never the agent-files binding count printed above. An owner-split
+# candidate does not apply the cutover: only rc 10 (stable owner-split) continues.
+# rc 4 (no marker) and rc 3 (unreadable, unstable, or unrecognized) refuse.
+# rc 0 on that candidate is a conflict. An owner-box candidate applies only on
+# rc 10, using the snapshot already verified above. After apply begins, a
+# failure needs that paired restore.
 box_migration_container() {  # $1 = check|apply, then module arguments
   local posture=(--user 0)
   local data_mount="tinyassets-data:/data:ro"
@@ -1924,9 +1944,14 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
   case "$BOX_CANDIDATE_LAYOUT" in
     owner-split)
       case "$box_probe_rc" in
-        4|10) ;;
+        10)
+          log "box layout: stable owner-split census; this candidate does not apply the cutover"
+          ;;
+        4)
+          migration_refused "check=box_layout_absent candidate=owner-split census=${census_line}"
+          ;;
         0) migration_refused "check=box_layout_conflict candidate=owner-split census=${census_line}" ;;
-        *) migration_refused "check=box_layout_probe rc=${box_probe_rc} output=${census_line}" ;;
+        *) migration_refused "check=box_layout_ambiguous rc=${box_probe_rc} output=${census_line}" ;;
       esac
       ;;
     owner-box)
@@ -1936,7 +1961,10 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
       case "$box_probe_rc" in
         0) log "box layout: already owner-box; no move" ;;
         10)
-          log "box layout: one-shot move using fresh snapshot ${MIGRATION_SNAPSHOT}"
+          if [ "$CORE_CANARY_PROVISIONED" != "1" ]; then
+            migration_refused "check=core_canary_not_provisioned move=box_layout_pending"
+          fi
+          log "box layout: one-shot move using fresh snapshot ${MIGRATION_SNAPSHOT} (census, not the agent-files binding count)"
           box_backup="tinyassets-box-store-${MIGRATION_SNAPSHOT#tinyassets-snapshot-}"
           box_apply="$(box_migration_container apply /data --store /box-store \
             --backup "/backup/${MIGRATION_SNAPSHOT}" \
