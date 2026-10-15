@@ -44,6 +44,11 @@ class OwnerBoxLiveBackupTest(unittest.TestCase):
             private = data / ".platform" / "credential-vaults" / "center"
             private.mkdir(parents=True)
             (private / ".credential-vault.json").write_text("platform credential")
+            registry = data / ".broker" / "state"
+            registry.mkdir(parents=True)
+            with sqlite3.connect(registry / "owner-identities.db") as db:
+                db.execute("CREATE TABLE box_records (machine, project_id, bhard_bytes)")
+                db.execute("INSERT INTO box_records VALUES (300001, 300001, 1048576)")
             owner = box / "300001"
             owner.mkdir()
             (owner / "file").write_text("owner bytes")
@@ -126,6 +131,56 @@ esac
                 self.assertEqual(copy.execute("SELECT v FROM t").fetchall(), [("committed",)])
             finally:
                 copy.close()
+
+    def test_unreserved_owner_tree_fails_the_backup_loudly(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ta-backup-pair-", dir="/tmp") as temporary:
+            root = Path(temporary)
+            deploy, binary = root / "deploy", root / "bin"
+            deploy.mkdir()
+            binary.mkdir()
+            for name in ("backup-owner-box.sh", "backup-live-sqlite.py"):
+                shutil.copy2(REPO / "deploy" / name, deploy / name)
+            shim(deploy, "box-store-check.sh", "exit 0\n")
+            shim(binary, "cp", 'exec /bin/cp "${@/--reflink=always/--reflink=auto}"\n')
+            shim(binary, "rclone", 'echo "rclone $*" >> "$TEST_LOG"\nexit 1\n')
+            data, box = root / "_data", root / "owners"
+            (data / ".broker" / "state").mkdir(parents=True)
+            with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
+                db.execute("CREATE TABLE box_records (machine, project_id, bhard_bytes)")
+            (box / "300002").mkdir(parents=True)
+            log = root / "actions.log"
+            result = subprocess.run(
+                ["bash", str(deploy / "backup-owner-box.sh"), str(data), str(box),
+                 str(root / "remote")],
+                env={**os.environ, "PATH": f"{binary}:{os.environ['PATH']}",
+                     "TEST_LOG": str(log), "BACKUP_SNAPSHOT_DIR": str(root / "stage")},
+                capture_output=True, text=True, check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("without a paired reservation", result.stderr)
+            self.assertFalse(log.exists(), "nothing may be uploaded")
+
+
+class LiveSqliteRetakeTest(unittest.TestCase):
+    def test_a_database_created_after_the_tree_copy_is_backed_up(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "backup_live_sqlite", REPO / "deploy" / "backup-live-sqlite.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as temporary:
+            live, copy = Path(temporary) / "live", Path(temporary) / "copy"
+            (live / "late" / "nested").mkdir(parents=True)
+            copy.mkdir()
+            with sqlite3.connect(live / "late" / "nested" / "new.db") as db:
+                db.execute("CREATE TABLE t (v TEXT)")
+                db.execute("INSERT INTO t VALUES ('committed')")
+            db.close()
+            module.main(live, copy)
+            with sqlite3.connect(copy / "late" / "nested" / "new.db") as db:
+                self.assertEqual(db.execute("SELECT v FROM t").fetchall(), [("committed",)])
+            db.close()
 
 
 if __name__ == "__main__":

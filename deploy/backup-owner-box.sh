@@ -69,8 +69,10 @@ box_root="$(basename "$BOX_DIR")"
 [[ "$data_root" != "$box_root" ]] || { log "ERROR: backup roots collide"; exit 2; }
 DATA_COPY="$STAGE/$data_root"
 
-cp -a --reflink=auto -- "$DATA_DIR" "$DATA_COPY"
-python3 "$HERE/backup-live-sqlite.py" "$DATA_DIR" "$DATA_COPY"
+# Owner trees first, then the data volume. Box reservations are permanent
+# broker rows, so every tree copied here already has its reservation in the
+# later data copy; the reverse order could archive an owner admitted between
+# the two copies without its reservation, and restore would refuse the pair.
 # The owner store is a separate XFS mount. A destination under that mount is
 # necessary for a real reflink; copying to /var/backups silently falls back to
 # a full copy. Keep only numeric owner trees.
@@ -83,6 +85,25 @@ for tree in "$BOX_DIR"/[0-9]*; do
     cp -a --reflink=always -- "$tree" "$BOX_COPY/$(basename "$tree")"
     python3 "$HERE/backup-live-sqlite.py" "$tree" "$BOX_COPY/$(basename "$tree")"
 done
+cp -a --reflink=auto -- "$DATA_DIR" "$DATA_COPY"
+python3 "$HERE/backup-live-sqlite.py" "$DATA_DIR" "$DATA_COPY"
+# Fail loudly on a pair restore would refuse (box-store-quotas.py reapply).
+python3 - "$BOX_COPY" "$DATA_COPY/.broker/state/owner-identities.db" <<'PY' || exit 2
+import sqlite3
+import sys
+from pathlib import Path
+
+trees, registry = Path(sys.argv[1]), Path(sys.argv[2])
+owners = {entry.name for entry in trees.iterdir()
+          if entry.name.isdecimal() and entry.is_dir() and not entry.is_symlink()}
+if owners:
+    if registry.is_symlink() or not registry.is_file():
+        raise SystemExit("owner trees copied without the broker identity database")
+    with sqlite3.connect(registry.as_uri() + "?mode=ro", uri=True) as db:
+        reserved = {str(row[0]) for row in db.execute("SELECT machine FROM box_records")}
+    if missing := sorted(owners - reserved):
+        raise SystemExit(f"owner trees without a paired reservation: {missing}")
+PY
 # The copies are now immutable; release the layout lock before the slow part.
 flock -u 9 2>/dev/null || true
 log "live copy staged; services were never paused"

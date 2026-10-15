@@ -61,6 +61,18 @@ def retake(live: Path, copy: Path) -> None:
     _drop_sidecars(copy)
 
 
+def _make_parents(live_root: Path, copy_root: Path, relative: Path) -> None:
+    """Create missing copy directories with their live owner and mode."""
+    for part in reversed(relative.parents[:-1]):
+        target = copy_root / part
+        if target.is_dir():
+            continue
+        stat = (live_root / part).stat()
+        target.mkdir()
+        os.chown(target, stat.st_uid, stat.st_gid)
+        os.chmod(target, stat.st_mode & 0o7777)
+
+
 def main(live_root: Path, copy_root: Path) -> int:
     taken = 0
     for directory, _dirs, files in os.walk(copy_root):
@@ -69,6 +81,18 @@ def main(live_root: Path, copy_root: Path) -> int:
             if copy.is_symlink() or not _is_sqlite(copy):
                 continue
             retake(live_root / copy.relative_to(copy_root), copy)
+            taken += 1
+    # A database created after the tree copy passed its directory is absent
+    # from the copy; take it from the live tree so no committed data is lost.
+    for directory, _dirs, files in os.walk(live_root):
+        for name in files:
+            live = Path(directory) / name
+            relative = live.relative_to(live_root)
+            copy = copy_root / relative
+            if live.is_symlink() or copy.exists() or copy.is_symlink() or not _is_sqlite(live):
+                continue
+            _make_parents(live_root, copy_root, relative)
+            retake(live, copy)
             taken += 1
     print(f"online-backup copies: {taken} SQLite file(s) under {copy_root}")
     return 0
