@@ -75,7 +75,7 @@ async def login(config, http):
             page = await context.new_page()
             await page.goto(ORIGIN + "/app/owner-sign-in?app=1")
             await page.locator("input[type=email]").fill(config["email"])
-            await page.get_by_role("button", name=re.compile("^continue$", re.I)).click()
+            await page.get_by_role("button", name=re.compile("^continue( with email)?$", re.I)).click()
             await page.locator("input[type=password]").fill(config["password"])
             await page.get_by_role("button", name=re.compile("^(sign in|continue)$", re.I)).click()
             await page.wait_for_url(ORIGIN + "/app**", timeout=60000)
