@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import stat
 import subprocess
@@ -125,6 +126,7 @@ def test_xfs_mount_accepts_real_prjquota_output(monkeypatch, tmp_path):
         migration._mounted(tmp_path)
 
 
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="real migration copy needs rsync")
 def test_guest_copy_omits_persistent_credential_sources(tmp_path):
     source, guest = tmp_path / "center", tmp_path / "guest"
     source.mkdir()
@@ -146,6 +148,7 @@ def test_guest_copy_omits_persistent_credential_sources(tmp_path):
     assert not (guest / ".runtime").exists()
 
 
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="real migration copy needs rsync")
 def test_guest_agent_home_omits_package_auth_files(tmp_path):
     from tinyassets.external_agents.registry import PACKAGES
 
@@ -164,8 +167,9 @@ def test_guest_agent_home_omits_package_auth_files(tmp_path):
     assert (guest / "codex" / "sessions.json").read_text() == "session state"
 
 
-@pytest.mark.skipif(os.name != "posix" or os.geteuid() != 0,
-                    reason="private ownership proof requires Linux root")
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() != 0
+                    or shutil.which("rsync") is None,
+                    reason="private ownership proof requires Linux root and rsync")
 def test_real_copy_places_vault_only_in_platform_custody(tmp_path):
     source, guest, private = (tmp_path / name for name in ("center", "guest", "private"))
     source.mkdir()
