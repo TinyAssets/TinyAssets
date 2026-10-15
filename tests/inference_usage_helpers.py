@@ -84,6 +84,9 @@ def broker_accounting_resolver(resolve):
                        if inference_usage is not None else {}),
                 )
 
+            def stream(self, *args, **kwargs):
+                return synthetic_stream(self, *args, **kwargs)
+
             def close(self):
                 delegate.close()
 
