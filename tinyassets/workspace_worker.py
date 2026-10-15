@@ -222,7 +222,35 @@ def execute_workspace_operation(
         if op not in WORKSPACE_OPS:
             raise _Refused("bad_argument", f"unknown workspace op: {op or '(none)'}")
         universe_dir = Path(_require(request, "universe_dir"))
-        from tinyassets.control_plane.binding import file_binding
+        from tinyassets.control_plane.binding import (
+            bind_session,
+            current_binding,
+            file_binding,
+            use_binding,
+        )
+        from tinyassets.storage_layout import ACTIVE_BOX_LAYOUT
+
+        if ACTIVE_BOX_LAYOUT == "owner-box" and current_binding() is None:
+            # Startup push reconciliation runs outside a turn. It still needs
+            # the broker-admitted owner capability before probing the remote.
+            from tinyassets.agent_loop.served_chat import configured_box_provider
+
+            provider, limits = configured_box_provider()
+            if provider is None:
+                raise _Refused("transport", "owner box provider is unavailable")
+            scope = "\0".join(str(request.get(key, "")) for key in (
+                "principal", "universe_dir", "agent", "grant_id", "connection_id",
+                "owner_repo", "remote_ref", "operation_id",
+            ))
+            import hashlib
+
+            binding = bind_session(
+                provider=provider, limits=limits, universe_dir=universe_dir,
+                owner=_require(request, "principal"),
+                execution_id="workspace:" + hashlib.sha256(scope.encode()).hexdigest(),
+            )
+            with use_binding(binding):
+                return _boxed(request, op, binding)
 
         binding = file_binding(universe_dir)
         if binding is not None:

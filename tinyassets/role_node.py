@@ -194,7 +194,9 @@ def _run_box(instance, binding, *, invoke, workspace, **request):
     if workspace is not None:
         # A host descriptor or host path cannot cross this boundary. The pool
         # must provide the lease's path in this exact admitted guest tree.
-        guest_root = getattr(binding.handle, 'root', None)
+        from tinyassets.boxes.provider import BOX_ROOT
+
+        guest_root = BOX_ROOT + '/' + binding.handle.command_center_id
         source = workspace.bind_source
         if (not isinstance(guest_root, str) or not isinstance(source, str)
                 or workspace.pass_fds or not source.startswith(guest_root + '/')

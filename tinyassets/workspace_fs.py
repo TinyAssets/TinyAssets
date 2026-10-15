@@ -1033,6 +1033,63 @@ def _remove_tree_windows(
             continue
 
 
+class BoxPoolFilesystem:
+    """Reclaim lease paths through the authenticated owner box provider."""
+
+    def __init__(self, data_root: Path) -> None:
+        self.data_root = Path(data_root)
+
+    def _scope(self, path: Path):
+        from tinyassets.agent_loop.served_chat import configured_box_provider
+        from tinyassets.boxes.provider import BOX_ROOT, BoxPathError, box_relpath
+        from tinyassets.universe_owner import owner_of
+
+        try:
+            relative = box_relpath(str(path))
+        except BoxPathError:
+            raise UnsafePoolPath("workspace lease is outside an owner box") from None
+        parts = relative.split("/")
+        if (len(parts) < 3 or parts[0].startswith(".")
+                or str(path) != BOX_ROOT + "/" + relative):
+            raise UnsafePoolPath("workspace lease is outside an owner box")
+        center = parts[0]
+        owner = owner_of(self.data_root, center)
+        if not owner:
+            raise UnsafePoolPath("workspace lease has no owner")
+        provider, _ = configured_box_provider()
+        if provider is None:
+            raise UnsafePoolPath("owner box provider is unavailable")
+        import hashlib
+
+        turn_id = hashlib.sha256(("workspace-sweep:" + center).encode()).hexdigest()
+        handle = provider.bind(center, account_id=owner, turn_id=turn_id)
+        return provider, handle
+
+    def exists(self, path: Path) -> bool:
+        provider, handle = self._scope(path)
+        return provider.stat(handle, str(path)) is not None
+
+    def owner_scoped(self, path: Path) -> bool:
+        self._scope(path)
+        return True
+
+    def remove_tree_no_follow(self, path: Path) -> None:
+        from tinyassets.boxes.provider import BoxNotFound
+
+        provider, handle = self._scope(path)
+        if provider.stat(handle, str(path)) is None:
+            return
+        import uuid
+
+        try:
+            provider.remove(handle, "workspace-sweep:" + uuid.uuid4().hex, str(path))
+        except BoxNotFound:
+            return
+
+    def rename(self, src: Path, dst: Path) -> None:
+        raise UnsafePoolPath("owner box workspaces are removed in place")
+
+
 class RealPoolFilesystem:
     """``exists``/``rename``/``remove_tree_no_follow`` against the real disk.
 

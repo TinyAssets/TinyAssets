@@ -111,17 +111,11 @@ def test_code_node_accepts_only_guest_workspace_path(tmp_path):
     from tinyassets.node_sandbox import WorkspaceLimits, WorkspaceMount
     from tinyassets.role_node import _run_box
 
-    class GuestHandle(BoxHandle):
-        @property
-        def root(self):
-            return "/home/owner/center"
-
     binding = _binding(tmp_path, b'{"success":true,"output_state":{}}\n')
-    binding.handle = GuestHandle("center", "owner", 1, "turn")
     instance = SimpleNamespace(validate_source=lambda _: [], max_output_bytes=4096)
     request = dict(node_id="node", source_code="def run(state): return {}",
                    input_state={}, input_keys=[], output_keys=[], timeout=5)
-    guest = WorkspaceMount("/home/owner/center/workspaces/repo",
+    guest = WorkspaceMount("/cc/center/workspaces/repo",
                            limits=WorkspaceLimits())
     _run_box(instance, binding, invoke=None, workspace=guest, **request)
     payload = json.loads(binding.provider.calls[0][3]["stdin"])
@@ -141,3 +135,82 @@ def test_workspace_git_refuses_the_cell_on_committed_box_layout(tmp_path, monkey
             ["status"], cwd=tmp_path, home_dir=tmp_path, path="/usr/bin",
             timeout_s=5,
         )
+
+
+def test_startup_workspace_reconciliation_binds_an_owner_box(tmp_path, monkeypatch):
+    from tinyassets import storage_layout, workspace_worker
+    from tinyassets.agent_loop import served_chat
+    from tinyassets.control_plane.binding import current_binding
+
+    class Admitted:
+        def bind(self, center, *, account_id, turn_id):
+            assert center == "center" and account_id == "owner"
+            return BoxHandle(center, account_id, 1, turn_id)
+
+    monkeypatch.setattr(storage_layout, "ACTIVE_BOX_LAYOUT", "owner-box")
+    monkeypatch.setattr(served_chat, "configured_box_provider", lambda: (Admitted(), None))
+
+    def boxed(request, operation, binding):
+        assert operation == "ls_remote"
+        assert current_binding() is binding
+        assert binding.handle.account_id == "owner"
+        return {"ok": True, "observed_sha": ""}
+
+    monkeypatch.setattr(workspace_worker, "_boxed", boxed)
+    answer = workspace_worker.execute_workspace_operation({
+        "op": "ls_remote", "universe_dir": str(tmp_path / "center"),
+        "principal": "owner", "agent": "workspace-intent-test",
+        "grant_id": "grant", "connection_id": "connection",
+        "owner_repo": "owner/repo", "remote_ref": "refs/heads/main",
+    })
+    assert answer == {"ok": True, "observed_sha": ""}
+    assert current_binding() is None
+
+
+def test_workspace_pool_returns_guest_lease_paths(tmp_path, monkeypatch):
+    from tinyassets import storage_layout
+    from tinyassets.effectors import workspace
+
+    monkeypatch.setattr(storage_layout, "ACTIVE_BOX_LAYOUT", "owner-box")
+    center = tmp_path / "center"
+    assert workspace.scratch_pool_root(center) == Path("/cc/center/workspaces/scratch")
+    assert workspace.universe_workspace_root(center) == Path("/cc/center")
+    assert workspace._lease_names(
+        center, Path("/cc/center/workspaces/scratch/0123456789abcdef"),
+    ) == (["workspaces", "scratch"], "0123456789abcdef")
+
+
+def test_workspace_sweep_removes_only_admitted_guest_lease(tmp_path, monkeypatch):
+    from tinyassets import universe_owner
+    from tinyassets.agent_loop import served_chat
+    from tinyassets.boxes.provider import FileStat
+    from tinyassets.workspace_fs import BoxPoolFilesystem, UnsafePoolPath
+
+    lease = Path("/cc/center/workspaces/scratch/0123456789abcdef")
+
+    class Provider:
+        present = True
+
+        def bind(self, center, *, account_id, turn_id):
+            assert (center, account_id) == ("center", "owner")
+            assert turn_id
+            return BoxHandle(center, account_id, 1, turn_id)
+
+        def stat(self, handle, path):
+            assert handle.account_id == "owner"
+            return FileStat(path, "dir", 0, 0) if self.present else None
+
+        def remove(self, handle, op_id, path):
+            assert path == str(lease) and op_id.startswith("workspace-sweep:")
+            self.present = False
+
+    provider = Provider()
+    monkeypatch.setattr(universe_owner, "owner_of", lambda root, center: "owner")
+    monkeypatch.setattr(served_chat, "configured_box_provider", lambda: (provider, None))
+    fs = BoxPoolFilesystem(tmp_path)
+    assert fs.exists(lease)
+    assert fs.owner_scoped(lease)
+    fs.remove_tree_no_follow(lease)
+    assert not fs.exists(lease)
+    with pytest.raises(UnsafePoolPath):
+        fs.remove_tree_no_follow(Path("/cc/../other/workspaces/x"))
