@@ -70,6 +70,12 @@ logger = logging.getLogger("universe_server.market")
 ENV_CAPABILITIES_VAR = "UNIVERSE_SERVER_CAPABILITIES"
 
 
+def paid_market_enabled() -> bool:
+    return os.environ.get("TINYASSETS_PAID_MARKET", "off").strip().lower() in {
+        "on", "1", "true", "yes",
+    }
+
+
 def _current_actor_grants() -> tuple[str, ...]:
     raw = os.environ.get(ENV_CAPABILITIES_VAR, "")
     return tuple(part for part in raw.replace(",", " ").split() if part)
@@ -453,7 +459,6 @@ def _resolve_escrow_actor(
 def _action_escrow_lock(kwargs: dict[str, Any]) -> str:
     """Lock escrow for a node request. Requires TINYASSETS_PAID_MARKET=on."""
     from tinyassets.payments.actions import action_escrow_lock
-    from tinyassets.producers.node_bid import paid_market_enabled
     from tinyassets.storage import _connect
 
     if not paid_market_enabled():
@@ -493,7 +498,6 @@ def _action_escrow_release(kwargs: dict[str, Any]) -> str:
     """Release locked escrow to a recipient on completion verdict."""
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.payments.actions import action_escrow_release
-    from tinyassets.producers.node_bid import paid_market_enabled
     from tinyassets.storage import _connect
 
     if not paid_market_enabled():
@@ -531,7 +535,6 @@ def _action_escrow_refund(kwargs: dict[str, Any]) -> str:
     """Refund locked escrow to staker on abandonment or rejection."""
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.payments.actions import action_escrow_refund
-    from tinyassets.producers.node_bid import paid_market_enabled
     from tinyassets.storage import _connect
 
     if not paid_market_enabled():
@@ -579,7 +582,6 @@ def _action_escrow_fund(kwargs: dict[str, Any]) -> str:
     actor (or the host acting on behalf of another).
     """
     from tinyassets.payments.actions import action_escrow_fund
-    from tinyassets.producers.node_bid import paid_market_enabled
     from tinyassets.storage import _connect
 
     if not paid_market_enabled():
@@ -635,7 +637,6 @@ def _action_escrow_set_wallet(kwargs: dict[str, Any]) -> str:
     """
     from tinyassets.payments.actions import action_escrow_set_wallet
     from tinyassets.payments.settlement_backend import BASE_SEPOLIA_CHAIN_ID
-    from tinyassets.producers.node_bid import paid_market_enabled
     from tinyassets.storage import _connect
 
     if not paid_market_enabled():
@@ -669,7 +670,6 @@ def _action_escrow_withdraw(kwargs: dict[str, Any]) -> str:
     configured settlement backend. Requires TINYASSETS_PAID_MARKET=on."""
     from tinyassets.payments.actions import action_escrow_withdraw
     from tinyassets.payments.settlement_backend import BASE_SEPOLIA_CHAIN_ID
-    from tinyassets.producers.node_bid import paid_market_enabled
     from tinyassets.storage import _connect
 
     if not paid_market_enabled():
@@ -3649,7 +3649,6 @@ def _action_gates_stake_bonus(kwargs: dict[str, Any]) -> str:
     """
     from tinyassets.api.branches import _ensure_workflow_db
     from tinyassets.gates.actions import stake_bonus, validate_stake_amount
-    from tinyassets.producers.node_bid import paid_market_enabled
 
     if not paid_market_enabled():
         return json.dumps({
@@ -3734,7 +3733,6 @@ def _action_gates_unstake_bonus(kwargs: dict[str, Any]) -> str:
     """
     from tinyassets.api.branches import _ensure_workflow_db
     from tinyassets.gates.actions import unstake_bonus
-    from tinyassets.producers.node_bid import paid_market_enabled
 
     if not paid_market_enabled():
         return json.dumps({
@@ -3773,7 +3771,6 @@ def _action_gates_release_bonus(kwargs: dict[str, Any]) -> str:
     from tinyassets.daemon_server import CAP_RETRACT_GATE_CLAIM, get_goal
     from tinyassets.gates.actions import release_bonus
     from tinyassets.gates.schema import GateBonusClaim
-    from tinyassets.producers.node_bid import paid_market_enabled
 
     if not paid_market_enabled():
         return json.dumps({

@@ -2194,20 +2194,6 @@ def _action_estimate_run_cost(kwargs: dict[str, Any]) -> str:
     else:
         confidence = "high"
 
-    # Free-queue ETA: best-effort from dispatcher queue depth.
-    free_queue_eta_hours: float | None = None
-    free_queue_caveat: str | None = None
-    try:
-        from tinyassets.dispatcher import get_queue_depth
-        queue_depth = get_queue_depth()
-        # Rough heuristic: ~10 min per queued run ahead of this one.
-        free_queue_eta_hours = round((queue_depth * 10) / 60, 2)
-    except Exception:
-        free_queue_caveat = (
-            "Dispatcher queue depth unavailable — free_queue_eta_hours is null. "
-            "Dispatcher may be disabled or not yet initialised."
-        )
-
     # Build a chatbot-quotable basis string.
     llm_nodes = sum(1 for n in branch.node_defs if n.prompt_template)
     code_nodes = node_count - llm_nodes
@@ -2216,20 +2202,12 @@ def _action_estimate_run_cost(kwargs: dict[str, Any]) -> str:
         f"{code_nodes} code/other node(s) at ~0.001 credits each.",
         f"Confidence: {confidence} ({run_count} prior completed run(s)).",
     ]
-    if free_queue_caveat:
-        basis_parts.append(free_queue_caveat)
-    else:
-        basis_parts.append(
-            f"Free-queue ETA based on ~{free_queue_eta_hours}h "
-            "(estimated from current queue depth)."
-        )
     basis = " ".join(basis_parts)
 
     return json.dumps({
         "branch_def_id": bid,
         "node_count": node_count,
         "estimated_paid_market_credits": estimated_paid_market_credits,
-        "free_queue_eta_hours": free_queue_eta_hours,
         "confidence": confidence,
         "basis": basis,
         "prior_run_count": run_count,

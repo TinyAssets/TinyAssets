@@ -55,7 +55,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Directories whose .py files make up the import graph. Top-level modules in
 # scripts/ and tests/ are imported by bare name (tests put scripts/ on
 # sys.path), so those two are also searched for a bare top-level name.
-GRAPH_ROOTS = ("tinyassets", "scripts", "tests", "fantasy_daemon", "domains", "packaging")
+GRAPH_ROOTS = ("tinyassets", "scripts", "tests", "domains", "packaging")
 BARE_NAME_DIRS = ("", "scripts", "tests")
 
 # Any change here can move the verdict of an arbitrary test. The CI machinery

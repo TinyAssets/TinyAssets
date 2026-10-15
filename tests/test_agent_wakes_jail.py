@@ -6,7 +6,7 @@ import pytest
 
 from tests.test_agent_wakes import home as home
 from tests.test_agent_wakes import register, status
-from tinyassets import agent_wakes
+from tinyassets.control_plane import agent_wakes
 
 pytestmark = [pytest.mark.real_jail, pytest.mark.skipif(
     sys.platform != "linux" or not shutil.which("bwrap"),

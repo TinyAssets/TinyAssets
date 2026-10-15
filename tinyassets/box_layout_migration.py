@@ -277,6 +277,37 @@ def _mounted(store: Path) -> None:
         raise RuntimeError("owner store must be mounted XFS with project quota, no discard")
 
 
+def _owner_inode_preflight(data: Path, plan: list[OwnerMove]) -> None:
+    """Census before the first write, while all source writers are stopped."""
+    seen: dict[tuple[int, int], tuple[str, Path]] = {}
+    from tinyassets.boxes.destroy import _mount
+
+    data_fd = os.open(data, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        mount = _mount(data_fd)
+    finally:
+        os.close(data_fd)
+    for owner in plan:
+        sources = [data / center for center in owner.centers]
+        home = data / ".platform" / "owners" / str(owner.uid) / "agent-home"
+        if home.exists() or home.is_symlink():
+            sources.append(home)
+        for source in sources:
+            info = source.lstat()
+            if not stat.S_ISDIR(info.st_mode):
+                raise RuntimeError(f"owner source is not a real directory: {source}")
+            for directory, dirs, files, fd in os.fwalk(source, follow_symlinks=False):
+                if _mount(fd) != mount:
+                    raise RuntimeError(f"foreign mount in owner source: {directory}")
+                for name in (".", *dirs, *files):
+                    info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                    path = Path(directory) if name == "." else Path(directory) / name
+                    key = (info.st_dev, info.st_ino)
+                    previous = seen.setdefault(key, (owner.principal, path))
+                    if previous[0] != owner.principal:
+                        raise RuntimeError(f"cross-owner inode: {previous[1]} and {path}")
+
+
 def _atomic_json(path: Path, value: dict) -> None:
     temporary = path.with_name(path.name + f".{os.getpid()}.tmp")
     try:
@@ -325,6 +356,7 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
         if marker.get("box_layout", "owner-split") != "owner-split":
             raise RuntimeError("one-shot box migration requires owner-split")
         plan = _owner_plan(data)
+        _owner_inode_preflight(data, plan)
         if any(entry.name != "lost+found" for entry in store.iterdir()):
             raise RuntimeError("box store must be empty before the one-shot move")
         # This is the point of no automatic restart. A failed copy remains
@@ -332,7 +364,6 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
         _atomic_json(storage_layout.marker_path(data), {
             **marker, "state": "migrating", "migration": "owner-box",
         })
-        rows = []
         for owner in plan:
             tree = store / str(owner.uid)
             tree.mkdir(mode=0o700)
@@ -359,8 +390,6 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
                 destination.mkdir(mode=0o700)
                 os.chown(destination, owner.uid, owner.uid)
                 _copy(agent_home, destination, owner.uid)
-            rows.append({"uid": owner.uid, "gid": owner.uid,
-                         "project_id": owner.uid, "bhard_bytes": owner.quota})
         broker_state = data / ".broker" / "state"
         with sqlite3.connect(broker_state / "owner-identities.db") as db:
             db.execute("PRAGMA synchronous=FULL")
@@ -372,10 +401,13 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
                 "INSERT INTO box_records VALUES (?, ?, ?, ?)",
                 ((owner.principal, owner.uid, owner.uid, owner.quota) for owner in plan),
             )
-        registry = data / ".broker" / "box-registry.json"
-        _atomic_json(registry, {"boxes": rows})
-        os.chown(registry, 1002, 1002)
-        os.chmod(registry, 0o600)
+        from tinyassets.boxes.state import BoxHostState
+
+        journal = data / ".boxhost"
+        journal.mkdir(mode=0o700)  # one-shot migration; never adopt an existing receipt root
+        host_state = BoxHostState(journal / "boxhost.db", max_bytes=16 * 1024 * 1024)
+        host_state.close()
+        os.chmod(journal / "boxhost.db", 0o600)
         _atomic_json(storage_layout.marker_path(data), {
             **marker, "box_layout": "owner-box", "state": "stable",
         })

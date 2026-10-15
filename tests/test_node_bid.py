@@ -38,40 +38,17 @@ from tinyassets.bid.node_bid import (
     validate_node_bid_inputs,
     write_node_bid_post,
 )
-from tinyassets.branch_tasks import BranchTask
-from tinyassets.dispatcher import (
+from tinyassets.control_plane.queue_policy import (
     DispatcherConfig,
     load_dispatcher_config,
-    score_task,
-    select_next_task,
-)
-from tinyassets.dispatcher import (
-    paid_market_enabled as dispatcher_paid_market_enabled,
 )
 from tinyassets.executors.node_bid import execute_node_bid
-from tinyassets.producers import branch_task as bt_producer_mod
-from tinyassets.producers.branch_task import (
-    reset_branch_task_registry,
-)
-from tinyassets.producers.node_bid import (
-    NODE_BID_SENTINEL_PREFIX,
-    NodeBidProducer,
-    paid_market_enabled,
-    register_if_enabled,
-)
 
 # ───────────────────────────────────────────────────────────────────────
 # Fixtures
 # ───────────────────────────────────────────────────────────────────────
 
 
-@pytest.fixture(autouse=True)
-def _clean_registry():
-    saved = list(bt_producer_mod._REGISTRY)
-    reset_branch_task_registry()
-    yield
-    reset_branch_task_registry()
-    bt_producer_mod._REGISTRY.extend(saved)
 
 
 @pytest.fixture
@@ -289,77 +266,18 @@ def test_update_node_bid_status(repo_root):
 # ───────────────────────────────────────────────────────────────────────
 
 
-def test_producer_emits_open_bids(repo_root, universe_dir):
-    _write_bid_yaml(repo_root, "nb_1", node_def_id="foo", bid=2.5)
-    _write_bid_yaml(repo_root, "nb_2", node_def_id="bar", bid=1.0)
-    producer = NodeBidProducer()
-    tasks = producer.produce(universe_dir, subscribed_goals=[])
-    assert len(tasks) == 2
-    for t in tasks:
-        assert t.branch_def_id.startswith(NODE_BID_SENTINEL_PREFIX)
-        assert t.trigger_source == "paid_bid"
-        assert t.bid > 0
 
 
-def test_producer_skips_non_open_status(repo_root, universe_dir):
-    _write_bid_yaml(repo_root, "nb_open", node_def_id="foo")
-    _write_bid_yaml(repo_root, "nb_done", node_def_id="bar", status="succeeded")
-    _write_bid_yaml(repo_root, "nb_claimed", node_def_id="baz", status="claimed:d1")
-    producer = NodeBidProducer()
-    tasks = producer.produce(universe_dir, subscribed_goals=[])
-    assert [t.inputs["__node_bid_id"] for t in tasks] == ["nb_open"]
 
 
-def test_producer_filters_llm_type_mismatch(repo_root, universe_dir):
-    _write_bid_yaml(repo_root, "nb_opus", node_def_id="f", required_llm_type="claude-opus")
-    _write_bid_yaml(repo_root, "nb_sonnet", node_def_id="f", required_llm_type="claude-sonnet")
-    _write_bid_yaml(repo_root, "nb_any", node_def_id="f", required_llm_type="")
-    producer = NodeBidProducer()
-    tasks = producer.produce(
-        universe_dir, subscribed_goals=[],
-        config={"served_llm_type": "claude-opus"},
-    )
-    ids = sorted(t.inputs["__node_bid_id"] for t in tasks)
-    assert ids == ["nb_any", "nb_opus"]
 
 
-def test_producer_empty_served_llm_accepts_all(repo_root, universe_dir):
-    _write_bid_yaml(repo_root, "nb_opus", node_def_id="f", required_llm_type="claude-opus")
-    _write_bid_yaml(repo_root, "nb_sonnet", node_def_id="f", required_llm_type="claude-sonnet")
-    producer = NodeBidProducer()
-    tasks = producer.produce(universe_dir, subscribed_goals=[])
-    assert len(tasks) == 2
 
 
-def test_producer_skips_invalid_inputs(repo_root, universe_dir):
-    _write_bid_yaml(
-        repo_root, "nb_bad", node_def_id="f",
-        inputs={"_universe_path": "/etc"},
-    )
-    _write_bid_yaml(repo_root, "nb_ok", node_def_id="f", inputs={"x": 1})
-    producer = NodeBidProducer()
-    tasks = producer.produce(universe_dir, subscribed_goals=[])
-    assert [t.inputs["__node_bid_id"] for t in tasks] == ["nb_ok"]
 
 
-def test_producer_stamps_internal_input_keys(repo_root, universe_dir):
-    _write_bid_yaml(
-        repo_root, "nb_stamp", node_def_id="foo", inputs={"x": 1},
-    )
-    producer = NodeBidProducer()
-    tasks = producer.produce(universe_dir, subscribed_goals=[])
-    assert tasks[0].inputs["__node_bid_id"] == "nb_stamp"
-    assert tasks[0].inputs["__node_def_id"] == "foo"
-    assert tasks[0].inputs["x"] == 1
 
 
-def test_producer_mtime_cache(repo_root, universe_dir):
-    _write_bid_yaml(repo_root, "nb_c", node_def_id="foo")
-    producer = NodeBidProducer()
-    first = producer.produce(universe_dir, subscribed_goals=[])
-    # Second call with no mtime change should hit cache.
-    second = producer.produce(universe_dir, subscribed_goals=[])
-    assert [t.branch_task_id for t in first] == [t.branch_task_id for t in second]
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -488,97 +406,20 @@ def test_execute_node_that_raises_fails(tmp_path):
 # ───────────────────────────────────────────────────────────────────────
 
 
-def _mk_task(**kw):
-    defaults = dict(
-        branch_task_id=kw.pop("tid", "t1"),
-        branch_def_id="foo",
-        universe_id="uni",
-        trigger_source="paid_bid",
-        status="pending",
-        queued_at="2026-04-14T12:00:00+00:00",
-    )
-    defaults.update(kw)
-    return BranchTask(**defaults)
 
 
-def test_score_bid_zero_when_coefficient_zero():
-    task = _mk_task(bid=100.0)
-    cfg = DispatcherConfig(bid_coefficient=0.0)
-    s1 = score_task(task, now_iso="2026-04-14T12:00:00+00:00", config=cfg)
-    task0 = _mk_task(bid=0.0)
-    s0 = score_task(task0, now_iso="2026-04-14T12:00:00+00:00", config=cfg)
-    assert s1 == s0
 
 
-def test_score_bid_scales_with_coefficient():
-    cfg = DispatcherConfig(bid_coefficient=1.0, bid_term_cap=1000.0)
-    t1 = _mk_task(tid="a", bid=1.0)
-    t10 = _mk_task(tid="b", bid=10.0)
-    now = "2026-04-14T12:00:00+00:00"
-    assert (
-        score_task(t10, now_iso=now, config=cfg)
-        > score_task(t1, now_iso=now, config=cfg)
-    )
 
 
-def test_bid_term_cap_enforced():
-    cfg = DispatcherConfig(bid_coefficient=1.0, bid_term_cap=5.0)
-    t_big = _mk_task(bid=10000.0)
-    t_cap = _mk_task(bid=5.0)
-    now = "2026-04-14T12:00:00+00:00"
-    s_big = score_task(t_big, now_iso=now, config=cfg)
-    s_cap = score_task(t_cap, now_iso=now, config=cfg)
-    assert s_big == s_cap
 
 
-def test_host_request_beats_max_bid_paid(tmp_path):
-    from tinyassets.branch_tasks import append_task
-    u = tmp_path / "u"
-    u.mkdir()
-    append_task(u, _mk_task(
-        tid="host1", trigger_source="host_request", bid=0.0,
-    ))
-    append_task(u, _mk_task(
-        tid="paid1", trigger_source="paid_bid", bid=99999.0,
-    ))
-    cfg = DispatcherConfig(
-        accept_paid_bids=True, bid_coefficient=1.0, bid_term_cap=30.0,
-    )
-    picked = select_next_task(u, config=cfg)
-    assert picked.branch_task_id == "host1"
 
 
-def test_llm_type_filter_empty_served_passes_all(tmp_path):
-    from tinyassets.branch_tasks import append_task
-    u = tmp_path / "u"
-    u.mkdir()
-    append_task(u, _mk_task(
-        tid="t1", trigger_source="paid_bid", required_llm_type="claude-opus",
-    ))
-    cfg = DispatcherConfig(accept_paid_bids=True, served_llm_type="")
-    assert select_next_task(u, config=cfg) is not None
 
 
-def test_llm_type_filter_matching_passes(tmp_path):
-    from tinyassets.branch_tasks import append_task
-    u = tmp_path / "u"
-    u.mkdir()
-    append_task(u, _mk_task(
-        tid="t1", trigger_source="paid_bid", required_llm_type="claude-opus",
-    ))
-    cfg = DispatcherConfig(accept_paid_bids=True, served_llm_type="claude-opus")
-    assert select_next_task(u, config=cfg) is not None
 
 
-def test_llm_type_filter_mismatch_skipped(tmp_path):
-    from tinyassets.branch_tasks import append_task
-    u = tmp_path / "u"
-    u.mkdir()
-    append_task(u, _mk_task(
-        tid="t1", trigger_source="paid_bid", required_llm_type="claude-opus",
-    ))
-    cfg = DispatcherConfig(accept_paid_bids=True, served_llm_type="claude-sonnet")
-    assert select_next_task(u, config=cfg) is None
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -601,74 +442,14 @@ def mcp_harness(tmp_path, monkeypatch, paid_flag_on):
     return {"base": base, "uid": uid, "repo": repo}
 
 
-def test_submit_node_bid_flag_off_returns_not_available(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "off")
-    base = tmp_path / "output"
-    base.mkdir()
-    uid = "test-uni"
-    (base / uid).mkdir()
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
-    monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", uid)
-
-    from tinyassets.api.universe import _action_submit_node_bid
-    resp = json.loads(_action_submit_node_bid(
-        universe_id=uid, node_def_id="foo", inputs_json="{}", bid=1.0,
-    ))
-    assert resp["status"] == "not_available"
 
 
-def test_submit_node_bid_valid_writes_yaml(mcp_harness):
-    from tinyassets.api.universe import _action_submit_node_bid
-    resp = json.loads(_action_submit_node_bid(
-        universe_id=mcp_harness["uid"],
-        node_def_id="extract_entities",
-        inputs_json=json.dumps({"text": "hi"}),
-        bid=2.5,
-    ))
-    assert resp["status"] == "posted"
-    assert Path(resp["path"]).exists()
-    bid_id = resp["node_bid_id"]
-    data = yaml.safe_load((mcp_harness["repo"] / "bids" / f"{bid_id}.yaml").read_text())
-    assert data["node_def_id"] == "extract_entities"
-    assert data["bid"] == 2.5
-    assert data["status"] == "open"
 
 
-def test_submit_node_bid_response_has_git_push_hint(mcp_harness):
-    from tinyassets.api.universe import _action_submit_node_bid
-    resp = json.loads(_action_submit_node_bid(
-        universe_id=mcp_harness["uid"],
-        node_def_id="extract_entities",
-        inputs_json="{}",
-        bid=1.0,
-    ))
-    assert "git add" in resp["next_step"]
-    assert "git push" in resp["next_step"]
 
 
-def test_submit_node_bid_rejects_nested_inputs(mcp_harness):
-    from tinyassets.api.universe import _action_submit_node_bid
-    resp = json.loads(_action_submit_node_bid(
-        universe_id=mcp_harness["uid"],
-        node_def_id="f",
-        inputs_json=json.dumps({"nested": {"bad": 1}}),
-        bid=1.0,
-    ))
-    assert resp["status"] == "rejected"
-    assert "invalid_inputs" in resp["error"]
 
 
-def test_submit_node_bid_rejects_negative_bid(mcp_harness):
-    from tinyassets.api.universe import _action_submit_node_bid
-    resp = json.loads(_action_submit_node_bid(
-        universe_id=mcp_harness["uid"],
-        node_def_id="f",
-        inputs_json="{}",
-        bid=-1.0,
-    ))
-    assert resp["status"] == "rejected"
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -676,31 +457,10 @@ def test_submit_node_bid_rejects_negative_bid(mcp_harness):
 # ───────────────────────────────────────────────────────────────────────
 
 
-def test_flag_off_producer_not_registered(monkeypatch):
-    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "off")
-    reset_branch_task_registry()
-    registered = register_if_enabled()
-    assert registered is False
-    names = [p.name for p in bt_producer_mod._REGISTRY]
-    assert "node_bid" not in names
 
 
-def test_flag_on_producer_registered(monkeypatch):
-    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on")
-    reset_branch_task_registry()
-    registered = register_if_enabled()
-    assert registered is True
-    names = [p.name for p in bt_producer_mod._REGISTRY]
-    assert "node_bid" in names
 
 
-def test_dispatcher_paid_market_enabled_reads_env(monkeypatch):
-    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on")
-    assert dispatcher_paid_market_enabled() is True
-    assert paid_market_enabled() is True
-    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "off")
-    assert dispatcher_paid_market_enabled() is False
-    assert paid_market_enabled() is False
 
 
 def test_load_dispatcher_config_flag_on_defaults_bid_coefficient(
@@ -1022,65 +782,10 @@ def test_claim_returns_none_when_already_claimed(repo_root):
 # ───────────────────────────────────────────────────────────────────────
 
 
-def test_producer_rejects_unapproved_node(repo_root):
-    """Layer 1 at the producer boundary: unapproved node skipped
-    before BranchTask emission.
-    """
-    from tinyassets.producers.node_bid import NodeBidProducer
-
-    _write_bid_yaml(repo_root, "nb_unapproved")
-
-    class _UnapprovedNode:
-        approved = False
-        source_code = _VALID_SOURCE
-
-    prod = NodeBidProducer(
-        node_lookup_fn=lambda _slug: _UnapprovedNode(),
-    )
-    out = prod.produce(
-        repo_root / "uni", subscribed_goals=[],
-    )
-    assert out == []
 
 
-def test_producer_rejects_dangerous_source_pattern(repo_root):
-    """Layer 2 at the producer boundary: dangerous source pattern
-    skipped before BranchTask emission.
-    """
-    from tinyassets.producers.node_bid import NodeBidProducer
-
-    _write_bid_yaml(repo_root, "nb_dangerous_src")
-
-    class _EvilApprovedNode:
-        approved = True
-        source_code = "import pickle\ndef run(s): return {}\n"
-
-    prod = NodeBidProducer(
-        node_lookup_fn=lambda _slug: _EvilApprovedNode(),
-    )
-    out = prod.produce(
-        repo_root / "uni", subscribed_goals=[],
-    )
-    assert out == []
 
 
-def test_producer_accepts_approved_clean_node(repo_root):
-    """Happy path: layer 1+2 pass → bid enters the queue."""
-    from tinyassets.producers.node_bid import NodeBidProducer
-
-    _write_bid_yaml(repo_root, "nb_clean")
-
-    class _CleanNode:
-        approved = True
-        source_code = _VALID_SOURCE
-
-    prod = NodeBidProducer(
-        node_lookup_fn=lambda _slug: _CleanNode(),
-    )
-    out = prod.produce(
-        repo_root / "uni", subscribed_goals=[],
-    )
-    assert len(out) == 1
 
 
 def test_bid_dangerous_patterns_strict_superset_of_wrapper():
@@ -1127,138 +832,7 @@ def _init_repo_with_remote(repo_root: Path) -> None:
     )
 
 
-def test_race_bypass_rejected_when_remote_configured(
-    repo_root, universe_dir, monkeypatch,
-):
-    """Phase G.2: multi-daemon race — A wins the push, B loses. B's
-    local `git reset --hard origin/<branch>` restores a stale view
-    where B's local clone of the bid YAML still says `status=open`
-    (A's claim hasn't propagated to B's local tracking ref yet).
-
-    Pre-fix, B's fallback read-only path would see `existing.status ==
-    "open"` and execute anyway, double-spending the bid. Post-fix:
-    the fallback is gated on `git_has_remote == False`; in prod
-    repos (remote configured), B returns `(False, "claim_race_lost")`
-    instead.
-
-    Simulated by: configure a remote, write a YAML that still reads
-    `open` locally, monkeypatch `claim_node_bid` to return None
-    (simulates race loss). The function under test MUST return
-    `claim_race_lost` — not execute.
-    """
-    _init_repo_with_remote(repo_root)
-    _write_bid_yaml(repo_root, "nb_race_bypass", status="open")
-
-    # Re-import the fantasy_author module with the monkeypatched
-    # claim_node_bid. We patch at `tinyassets.bid.node_bid` so the
-    # function-local import in _try_execute_claimed_node_bid picks
-    # up the patched callable.
-    import tinyassets.bid.node_bid as nb_mod
-
-    def _patched_claim(repo, bid_id, daemon_id, **_kwargs):
-        return None  # always "race lost"
-    monkeypatch.setattr(nb_mod, "claim_node_bid", _patched_claim)
-
-    from fantasy_daemon.__main__ import _try_execute_claimed_node_bid
-    from tinyassets.branch_tasks import BranchTask
-
-    task = BranchTask(
-        branch_task_id="t_race_1",
-        branch_def_id="universe-cycle",
-        universe_id="uni-a",
-        inputs={
-            "__node_bid_id": "nb_race_bypass",
-            "__node_def_id": "extract_entities",
-        },
-    )
-    success, error = _try_execute_claimed_node_bid(
-        universe_dir, task, daemon_id="daemon-b",
-    )
-    assert success is False
-    assert error == "claim_race_lost"
 
 
-def test_fallback_still_works_without_remote(
-    repo_root, universe_dir, monkeypatch,
-):
-    """Phase G.2: without a remote, the read-only fallback is still
-    legitimate — single-process, no race is physically possible.
-    Local test harnesses that pre-populate the bid YAML outside the
-    claim flow keep working.
-
-    To assert the fallback fires we'd need a full executor run, which
-    is tested elsewhere. Here we just confirm the function does NOT
-    short-circuit on `claim_race_lost` when the claim returns None
-    AND the YAML is still `open` AND no remote is configured. The
-    legitimate fallback path proceeds past the race-gate; any
-    subsequent error (node_lookup_error, execution failure) is a
-    different failure class that proves the fallback took the
-    non-race-lost branch.
-    """
-    import subprocess
-    subprocess.run(
-        ["git", "init", "-b", "main"], cwd=repo_root, check=True,
-        capture_output=True,
-    )
-    # NO `git remote add` — single-daemon local repo.
-    _write_bid_yaml(repo_root, "nb_local_fb", status="open")
-
-    import tinyassets.bid.node_bid as nb_mod
-
-    def _patched_claim(repo, bid_id, daemon_id):
-        return None
-    monkeypatch.setattr(nb_mod, "claim_node_bid", _patched_claim)
-
-    from fantasy_daemon.__main__ import _try_execute_claimed_node_bid
-    from tinyassets.branch_tasks import BranchTask
-
-    task = BranchTask(
-        branch_task_id="t_local_1",
-        branch_def_id="universe-cycle",
-        universe_id="uni-a",
-        inputs={
-            "__node_bid_id": "nb_local_fb",
-            "__node_def_id": "nonexistent_node",
-        },
-    )
-    success, error = _try_execute_claimed_node_bid(
-        universe_dir, task, daemon_id="daemon-local",
-    )
-    # Execution will fail (unknown node), but NOT with claim_race_lost
-    # — that means the fallback path took the non-race-gated branch.
-    assert error != "claim_race_lost"
 
 
-def test_fallback_rejected_when_remote_and_yaml_missing(
-    repo_root, universe_dir, monkeypatch,
-):
-    """Edge case: remote configured, YAML missing — the fallback's
-    ``existing is None`` check would also return ``claim_race_lost``,
-    but this test pins that outcome independently of the remote-gate
-    so a future refactor doesn't collapse them.
-    """
-    _init_repo_with_remote(repo_root)
-    # Note: NO call to _write_bid_yaml — the file is missing.
-
-    import tinyassets.bid.node_bid as nb_mod
-    monkeypatch.setattr(
-        nb_mod, "claim_node_bid", lambda r, b, d, **_kwargs: None,
-    )
-
-    from fantasy_daemon.__main__ import _try_execute_claimed_node_bid
-    from tinyassets.branch_tasks import BranchTask
-
-    task = BranchTask(
-        branch_task_id="t_missing_1",
-        branch_def_id="universe-cycle",
-        universe_id="uni-a",
-        inputs={
-            "__node_bid_id": "nb_does_not_exist",
-            "__node_def_id": "extract_entities",
-        },
-    )
-    success, error = _try_execute_claimed_node_bid(
-        universe_dir, task, daemon_id="daemon-c",
-    )
-    assert success is False
-    assert error == "claim_race_lost"

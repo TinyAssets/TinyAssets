@@ -422,7 +422,7 @@ def cron_min_gap_seconds(expr: str) -> int:
 
     The schedules lane imports this after merge -- keep the signature stable.
     """
-    from tinyassets.scheduler import CronSchedule
+    from tinyassets.control_plane.events import CronSchedule
 
     schedule = CronSchedule.parse(expr)
     week_minutes = 7 * 24 * 60
@@ -1337,7 +1337,7 @@ def _validated_event(event_type: Any, event_filter: Any) -> tuple[str, dict[str,
 
 
 def _validated_trigger(interval_seconds: Any, cron_expr: Any) -> tuple[str, int, str]:
-    from tinyassets.scheduler import CronParseError, CronSchedule
+    from tinyassets.control_plane.events import CronParseError, CronSchedule
 
     try:
         seconds = int(interval_seconds or 0)
@@ -1394,6 +1394,9 @@ def register_automation(
 
     ``paused_reason`` stores the row PAUSED in the same insert, so it is never
     runnable before its owner resumes it (an installed package's automations).
+
+    The assigned-queue consumer flag does not refuse this insert. A row that
+    admission accepts is stored, and the owner tick fires it when it is due.
     """
     existing = AutomationStore(base_path).get_by_event_key(event_key)
     if existing is not None:
@@ -1402,16 +1405,11 @@ def register_automation(
     from tinyassets.daemon_server import get_founder_home, universe_access_permission
     from tinyassets.provider_assignment import load_provider_assignment
     from tinyassets.providers.served_model_plan import connected_sources
-    from tinyassets.runtime.assigned_queue_consumer import (
-        assigned_queue_consumer_enabled,
-    )
 
     base = Path(base_path)
     uid = str(universe_id or "").strip()
     owner = named_principal(owner_principal_id)
 
-    if not paused_reason and not assigned_queue_consumer_enabled():
-        raise AutomationUnavailable("consumer_disabled")
     if not owner:
         raise AutomationUnavailable("authentication_required")
     if universe_access_permission(base, universe_id=uid, actor_id=owner) != "admin":
@@ -1602,7 +1600,7 @@ def _latest_cron_slot(
     creating a 7am schedule at 07:59 local immediately owed 07:00 -- before
     there was an automation (same review, claim 3).
     """
-    from tinyassets.scheduler import CronParseError, CronSchedule
+    from tinyassets.control_plane.events import CronParseError, CronSchedule
 
     try:
         schedule = CronSchedule.parse(automation.cron_expr)
@@ -1804,7 +1802,7 @@ def next_due_at(automation: Automation, now: datetime) -> str:
         due = _once_due(automation)
         return "" if due is None else _iso(due)
     if automation.trigger_kind == TRIGGER_CRON:
-        from tinyassets.scheduler import CronParseError, CronSchedule
+        from tinyassets.control_plane.events import CronParseError, CronSchedule
 
         try:
             schedule = CronSchedule.parse(automation.cron_expr)
@@ -2344,7 +2342,7 @@ def _run_due_automation(
     # _error_reason is the consumer's bounded, path/secret-stripped formatter.
     # Imported rather than duplicated so both halves of the pump sanitise
     # identically; the function-local import keeps the two modules acyclic.
-    from tinyassets.runtime.assigned_queue_consumer import _error_reason
+    from tinyassets.control_plane.tick import _error_reason
 
     base = Path(base_path)
     moment = _as_utc(now or datetime.now(timezone.utc))

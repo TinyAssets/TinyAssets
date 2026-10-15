@@ -70,16 +70,6 @@ class RunStep:
 
 
 @dataclass(frozen=True)
-class BackgroundStep:
-    """An agent node of a queued (background) run, on the queue consumer's session."""
-
-    session: Any
-    prompt_config: Any
-    policy: Any
-    node: dict | None = None
-
-
-@dataclass(frozen=True)
 class ChildOf:
     """An agent, mid-turn, handing work to another agent of the same owner."""
 
@@ -90,14 +80,12 @@ class ChildOf:
     inside_activity: bool = False
 
 
-Parent = OwnerTurn | RunStep | BackgroundStep | ChildOf
+Parent = OwnerTurn | RunStep | ChildOf
 
 
 def _universe_dir(parent: Parent) -> Path:
     if isinstance(parent, RunStep):
         return Path(parent.session._universe_dir)
-    if isinstance(parent, BackgroundStep):
-        return Path(parent.session._base_path) / parent.session._task.universe_id
     return Path(parent.base_path) / parent.universe_id
 
 
@@ -105,8 +93,6 @@ def _owner(parent: Parent) -> str:
     """The admitted account the agent runs for: the one whose agents it may be."""
     if isinstance(parent, RunStep):
         return parent.session._principal_id
-    if isinstance(parent, BackgroundStep):
-        return parent.session._task.actor_id
     return parent.owner
 
 
@@ -124,8 +110,6 @@ def start(agent_ref: str, input: str, parent: Parent):
         return _owner_turn(agent, input, parent)
     if isinstance(parent, RunStep):
         return _run_step(agent, input, parent)
-    if isinstance(parent, BackgroundStep):
-        return _background_step(agent, input, parent)
     if isinstance(parent, ChildOf):
         return _child(agent, input, parent)
     raise TypeError(f"unknown parent {type(parent).__name__}")
@@ -172,22 +156,6 @@ def _run_step(agent: AgentFile, prompt: str, parent: RunStep):
            if parent.response_observer is not None else {}),
         **({"metadata_observer": parent.metadata_observer}
            if parent.metadata_observer is not None else {}),
-    )
-
-
-def _background_step(agent: AgentFile, prompt: str, parent: BackgroundStep):
-    from tinyassets.addressed_agents import AddressedAgent
-    from tinyassets.shared_self import prepare_shared_self_turn
-    from tinyassets.workflow_agent import call_background_work_agent
-
-    session = parent.session
-    prompt, system, config = prepare_shared_self_turn(
-        session._base_path, session._task.universe_id, session._task.actor_id, prompt,
-        parent.prompt_config, parent.node,
-        agent=None if agent.slug == MAIN_AGENT else AddressedAgent.of(agent),
-    )
-    return call_background_work_agent(
-        session, prompt=prompt, system=system, config=config, policy=parent.policy,
     )
 
 

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import os
+import sqlite3
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 
@@ -28,10 +29,11 @@ def test_box_store_archive_and_temp_restore(tmp_path: Path, remote_restore: bool
     volume.mkdir(parents=True)
     broker = volume / ".broker"
     broker.mkdir()
-    uid, gid = os.getuid(), os.getgid()
-    (broker / "box-registry.json").write_text(json.dumps({"boxes": [{
-        "uid": uid, "gid": gid, "project_id": 123456, "bhard_bytes": 8 * 1024 * 1024,
-    }]}))
+    uid = 300001
+    (broker / "state").mkdir()
+    with sqlite3.connect(broker / "state" / "owner-identities.db") as db:
+        db.execute("CREATE TABLE box_records (machine INT, project_id INT, bhard_bytes INT)")
+        db.execute("INSERT INTO box_records VALUES (?,?,?)", (uid, uid, 8 * 1024 * 1024))
     (volume / "record.txt").write_text("data")
     store = tmp_path / "owners"
     owner = store / str(uid)
@@ -84,6 +86,27 @@ case "$1" in
   *) exit 1 ;;
 esac
 ''')
+    # This existing archive/rollback test has always substituted host tools and
+    # used the runner's UID. Keep it running unprivileged: substitute only the
+    # permanent-UID chown, not tar, SQLite, quota validation or swap/rollback.
+    # Actual cross-UID ownership remains covered by the separate root proof.
+    python_shim = bin_dir / "python3"
+    python_shim.write_text("#!" + sys.executable + "\n" + r'''import os, runpy, sys
+from pathlib import Path
+if sys.argv[1].endswith("box-store-quotas.py"):
+    original = os.chown
+    def mapped_chown(path, uid, gid, **kwargs):
+        assert uid == gid == 300001
+        assert Path(path).resolve().is_relative_to(Path(os.environ["BOX_STORE_DIR"]))
+        return original(path, os.getuid(), os.getgid(), **kwargs)
+    if os.geteuid() != 0:
+        os.chown = mapped_chown
+    sys.argv = sys.argv[1:]
+    runpy.run_path(sys.argv[0], run_name="__main__")
+else:
+    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
+''')
+    python_shim.chmod(0o755)
     env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
            "TEST_VOLUME_DIR": str(volume), "TEST_COMMAND_LOG": str(log),
            "BOX_STORE_DIR": str(store), "BACKUP_VOLUME": "test-volume",
@@ -133,7 +156,7 @@ esac
     assert (volume / "record.txt").read_text() == "data"
     assert (owner / "box.txt").read_text() == "box"
     assert (owner / "link.txt").read_text() == "box"
-    assert "bhard=8192k 123456" in log.read_text()
+    assert "bhard=8192k 300001" in log.read_text()
     assert "report -p -n" in log.read_text()
     assert "project -C -p" in log.read_text()
     commands = log.read_text().splitlines()
@@ -153,7 +176,7 @@ esac
     assert failed.returncode == 4, failed.stdout + failed.stderr
     assert (volume / "record.txt").read_text() == "current"
     assert (owner / "box.txt").read_text() == "current-box"
-    assert log.read_text().count("bhard=8192k 123456") >= 2
+    assert log.read_text().count("bhard=8192k 300001") >= 2
     env.pop("FAIL_RESTORED_QUOTA")
     env["FAIL_DATA_SWAP"] = "1"
     failed_data = subprocess.run(
@@ -173,6 +196,34 @@ esac
     assert missing_pair.returncode == 2
     assert "paired box-store archive missing" in missing_pair.stdout
     env["ALLOW_PRE_STORE_BACKUP"] = "1"
+    marker = volume / ".layout.json"
+    marker.write_text('{"box_layout": "owner-box", "state": "stable"}')
+    guard_env = {**env, "BACKUP_FILE": str(data_archive)}
+    stopped_before = log.read_text().count("stop boxhostd.service")
+    live_owner_box = subprocess.run(
+        ["bash", str(ROOT / "deploy/backup-restore.sh")],
+        env=guard_env, capture_output=True, text=True,
+    )
+    assert live_owner_box.returncode == 4, live_owner_box.stdout + live_owner_box.stderr
+    assert "layout marker" in live_owner_box.stdout
+    assert log.read_text().count("stop boxhostd.service") == stopped_before
+    assert (volume / "record.txt").read_text() == "current"
+
+    owner_box_data = tmp_path / "owner-box-archive" / data_archive.name
+    owner_box_data.parent.mkdir()
+    with tarfile.open(owner_box_data, "w:gz") as archive:
+        archive.add(volume, arcname="_data")
+    marker.unlink()
+    staged_owner_box = subprocess.run(
+        ["bash", str(ROOT / "deploy/backup-restore.sh")],
+        env={**guard_env, "BACKUP_FILE": str(owner_box_data)},
+        capture_output=True, text=True,
+    )
+    assert staged_owner_box.returncode == 4, staged_owner_box.stdout + staged_owner_box.stderr
+    assert "layout marker" in staged_owner_box.stdout
+    assert log.read_text().count("stop boxhostd.service") == stopped_before
+    assert (volume / "record.txt").read_text() == "current"
+
     legacy = subprocess.run(
         ["bash", str(ROOT / "deploy/backup-restore.sh"), *restore_args],
         env=env, capture_output=True, text=True,

@@ -34,6 +34,7 @@ def bound(tmp_path, monkeypatch):
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "1")
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
     _install_native_executor(monkeypatch)
     _seed_serving_assignment(tmp_path)
     _seed_owner(tmp_path)

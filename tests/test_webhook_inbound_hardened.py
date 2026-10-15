@@ -36,6 +36,7 @@ def env(tmp_path: Path, monkeypatch, authenticate_request):
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "1")
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
     from tinyassets.daemon_server import initialize_author_server
     from tinyassets.runs import initialize_runs_db
 
@@ -181,7 +182,7 @@ def test_create_source_mints_a_source_hook_and_registers_a_trigger(env):
     source_id = out["source_id"]
     binding = webhook_hooks.resolve(base, token=out["token"])
     assert binding["source_id"] == source_id and binding["universe_id"] == uid
-    from tinyassets.scheduler import list_scheduler_subscriptions
+    from tinyassets.control_plane.events import list_scheduler_subscriptions
     subs = list_scheduler_subscriptions(
         base, owner_actor=f"universe:{uid}", event_type=f"source:{source_id}",
     )
@@ -205,7 +206,7 @@ def test_revoke_source_tears_down_both_hook_and_trigger(env):
     revoked = _source_op("revoke", uid, source_id=created["source_id"])
     assert revoked["revoked"] is True
     assert webhook_hooks.resolve(base, token=created["token"]) is None
-    from tinyassets.scheduler import list_scheduler_subscriptions
+    from tinyassets.control_plane.events import list_scheduler_subscriptions
     assert list_scheduler_subscriptions(
         base, owner_actor=f"universe:{uid}", event_type=f"source:{created['source_id']}",
         active_only=True,
@@ -213,11 +214,15 @@ def test_revoke_source_tears_down_both_hook_and_trigger(env):
 
 
 def test_a_source_delivery_flows_through_the_real_bus_to_a_run(env):
-    # End-to-end: create a Source, start the REAL scheduler, POST to its /hooks token, and
-    # assert the bus fires a REAL run for the owning universe (no spies on the run path).
+    # End-to-end: create a Source, POST to its /hooks token, and let the
+    # execution owner's tick dispatch the real event into a real run.
     import time as _time
 
-    from tinyassets.scheduler import get_or_create_scheduler, shutdown_scheduler
+    from tinyassets.control_plane.events import (
+        get_or_create_scheduler,
+        shutdown_scheduler,
+        tick_events,
+    )
     from tinyassets.universe_server import _inbound_event_run_fn
 
     base, authenticate = env
@@ -230,6 +235,7 @@ def test_a_source_delivery_flows_through_the_real_bus_to_a_run(env):
     try:
         status, payload = wh.handle_hook(token=token, body=b'{"e":1}', headers={}, base_path=base)
         assert status == 202 and payload.get("via") == "event"
+        assert tick_events() == 1
         # the event loop fires the run asynchronously — poll the REAL runs DB for it
         deadline = _time.time() + 5
         while _time.time() < deadline and not _runs_for_universe(base, uid):
@@ -281,6 +287,31 @@ def test_flag_off_means_no_route_and_no_enqueue(env, monkeypatch):
     status, _ = wh.handle_hook(token=token, body=b"{}", headers={}, base_path=base)
     assert status == 404
     assert _runs_for_universe(base, uid) == []
+
+
+def test_disabled_execution_owner_refuses_delivery_without_claim(env, monkeypatch):
+    base, authenticate = env
+    uid = _create_universe("founder-a", authenticate)
+    _seed_branch(base, bid="b", author="founder-a")
+    token = _source_op("create", uid, branch_def_id="b")["token"]
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "0")
+
+    assert wh.handle_hook(token=token, body=b'{}', headers={}, base_path=base) == (
+        404, {"error": "not_found"},
+    )
+    assert _runs_for_universe(base, uid) == []
+
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    from tinyassets.control_plane.events import get_or_create_scheduler, shutdown_scheduler
+    from tinyassets.universe_server import _inbound_event_run_fn
+
+    shutdown_scheduler()
+    get_or_create_scheduler(base, _inbound_event_run_fn)
+    try:
+        status, payload = wh.handle_hook(token=token, body=b'{}', headers={}, base_path=base)
+        assert status == 202 and payload.get("via") == "event"
+    finally:
+        shutdown_scheduler()
 
 
 def _route_paths(app) -> list[str]:
@@ -482,7 +513,7 @@ def test_every_non_deliverable_state_answers_404(env, monkeypatch):
     assert wh.handle_hook(token="nope", body=b"{}", headers={}, base_path=base)[0] == 404
 
     # a source hook whose event bus is off -> 404 (NOT 500), and no run
-    from tinyassets.scheduler import shutdown_scheduler
+    from tinyassets.control_plane.events import shutdown_scheduler
     shutdown_scheduler()
     src_token = webhook_hooks.mint(
         base,

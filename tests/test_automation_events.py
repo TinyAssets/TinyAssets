@@ -947,7 +947,7 @@ def test_a_dead_owners_liveness_file_outlives_its_unrecovered_run(home: Path) ->
     """The consumer's cleanup of dead holders' files must not delete the proof
     a run still needs to be recovered."""
     from tinyassets import process_liveness
-    from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
+    from tinyassets.control_plane.tick import AssignedQueueConsumer
 
     _child, run_id = _run_owned_by_child(home, die=True)
     token = _owner_token(home, run_id)
@@ -1117,8 +1117,8 @@ def test_cleanup_reads_references_after_proving_death(home: Path, monkeypatch) -
     """A run committed just before its process died must keep that process's
     lock file: the references are read AFTER the probe proves death."""
     from tinyassets import process_liveness
+    from tinyassets.control_plane.tick import AssignedQueueConsumer
     from tinyassets.runs import runs_db_path
-    from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
 
     token = "proc_dead_race"
     path = process_liveness.liveness_path(home, token)

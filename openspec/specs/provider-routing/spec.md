@@ -592,13 +592,15 @@ interactive-deadline outcome, not as provider unavailability.
   only the terminal `turn.completed` / `turn.failed` close the turn and its
   in-flight tools (verified on codex-cli 0.146.0)
 
-#### Scenario: The served absolute cap is a runaway backstop with per-universe overrides
+#### Scenario: The served absolute cap follows the owner's loaded configuration
 
-- **GIVEN** a granted served founder turn (`_sandboxed_config(..., granted=True)`)
-- **THEN** its absolute cap is 3600s (`_SERVED_ABSOLUTE_CAP_S`) unless the universe
-  context carries a numeric `absolute_cap_s` / `idle_timeout_s`; a non-numeric
-  override falls back to the default rather than disabling the cap; non-granted
-  paths (the learning extractor) keep the library default profile
+- **GIVEN** a granted served founder turn or native agent node
+- **WHEN** the owner's config.yaml supplies a positive finite `absolute_cap_s`
+- **THEN** the real configuration loader exposes that value to the shared served-cap resolver and runtime stream profile
+- **AND** values above the runtime's 30-day safe wait horizon are clamped to that horizon so finite values cannot overflow executor waits
+- **AND** an absent, nonpositive, boolean, nonnumeric or nonfinite value retains the unbounded served default; numeric strings remain accepted
+- **AND** non-granted paths (the learning extractor) keep the library default profile
+- **AND** this preference grants no provider access or spending authority
 
 #### Scenario: Identified native tool work is not model-idle silence
 

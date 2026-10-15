@@ -87,6 +87,7 @@ def main() -> int:
     artifacts = sys.argv[1:] or [
         sys.executable,
         "/usr/local/libexec/ta-entry.sh",
+        "/usr/local/libexec/ta-box-entry.py",
         "/usr/local/libexec/ta-chain.py",
         "/usr/local/libexec/ta-launch.py",
         "/usr/local/libexec/ta-owner-launch.py",

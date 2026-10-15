@@ -15,12 +15,6 @@ import rfc8785
 
 import tinyassets.storage.request_admissions as request_admission_storage
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
-from tinyassets.branch_tasks import (
-    BranchTask,
-    append_task,
-    claim_task,
-    read_queue,
-)
 from tinyassets.branch_tasks_v2 import (
     AssignedConsumerLease,
     Epoch2BranchTaskAdapter,
@@ -1219,73 +1213,8 @@ def test_claim_event_failure_rolls_back_running_transition(
     ) == "pending"
 
 
-def test_v1_claim_code_cannot_open_or_mutate_epoch2(
-    tmp_path: Path,
-) -> None:
-    initialize_author_server(tmp_path)
-    committed = _commit(tmp_path)
-    adapter = Epoch2BranchTaskAdapter(tmp_path)
-    universe_path = tmp_path / "universe-a"
-    universe_path.mkdir()
-    v1 = BranchTask(
-        branch_task_id="v1-task",
-        branch_def_id="loop-branch",
-        universe_id="universe-a",
-    )
-    append_task(universe_path, v1)
-
-    claimed_v1 = claim_task(universe_path, "v1-task", "legacy-worker")
-    claimed_v2 = claim_task(
-        universe_path,
-        committed["branch_task_id"],
-        "legacy-worker",
-    )
-
-    assert claimed_v1 is not None
-    assert claimed_v1.status == "running"
-    assert claimed_v2 is None
-    assert [task.status for task in read_queue(universe_path)] == ["running"]
-    epoch2_task = adapter.get(committed["branch_task_id"])
-    assert epoch2_task is not None
-    assert epoch2_task.status == "pending"
 
 
-def test_v2_worker_can_drain_both_epochs_through_epoch_specific_claimers(
-    tmp_path: Path,
-) -> None:
-    initialize_author_server(tmp_path)
-    committed = _commit(tmp_path)
-    adapter = Epoch2BranchTaskAdapter(
-        tmp_path,
-        clock=_MutableClock("2026-07-24T08:01:00+00:00"),
-    )
-    universe_path = tmp_path / "universe-a"
-    universe_path.mkdir()
-    append_task(
-        universe_path,
-        BranchTask(
-            branch_task_id="v1-task",
-            branch_def_id="loop-branch",
-            universe_id="universe-a",
-        ),
-    )
-    descriptor = _descriptor()
-
-    claimed_v1 = claim_task(
-        universe_path,
-        "v1-task",
-        descriptor.worker_id,
-    )
-    claimed_v2 = adapter.claim(
-        committed["branch_task_id"],
-        descriptor=descriptor,
-        descriptor_reader=lambda _conn, _worker_id: descriptor,
-    )
-
-    assert claimed_v1 is not None
-    assert claimed_v1.status == "running"
-    assert claimed_v2 is not None
-    assert claimed_v2.status == "running"
 
 
 def test_directed_epoch2_task_preserves_owner_tier_and_assignment(

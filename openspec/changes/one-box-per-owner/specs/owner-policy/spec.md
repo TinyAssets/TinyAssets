@@ -7,25 +7,29 @@ grants, the egress mode and allowlist, spending caps and the ask threshold,
 per-source model-spend ceilings, and declared operation kinds. It SHALL be
 stored in broker-private state that only the broker opens. It SHALL NOT be
 stored in a box, in a command-center directory or in daemon-writable records.
-A fixed platform floor SHALL sit beneath it, and the owner SHALL NOT be able
-to loosen that floor.
 
 #### Scenario: The box cannot reach the store
 - **WHEN** any process in the owner's box searches for or opens the policy store
 - **THEN** the store is not present in the box's filesystem or reachable through its channel
+- **AND** a fixed platform floor sits beneath owner policy and the owner cannot loosen it
 
 ### Requirement: Only the owner writes policy, through the protected owner session
 Policy SHALL be written only through the owner-door policy route, carrying
 an interactive owner-session token bound to the account. Bearer, MCP and
 `/api` clients SHALL NOT acquire that token. The broker SHALL look up the
 opaque cookie's hash read-only in the existing owner-session store and verify
-its interactive identity, account binding and expiry before it writes. In P1,
-that store remains daemon-writable, so a compromised daemon can mint a session;
-P2/P3 SHALL move session minting and validation into broker custody. The
-daemon forwards the cookie on the intended owner route. The
-model door, `/mcp`, `/api`, the box channel and every `ta` command SHALL
-offer no policy-write operation. Tightening and loosening SHALL require the
-same token.
+its interactive identity, account binding and expiry before it writes.
+
+#### Scenario: Session authority moves into broker custody
+- **WHEN** P1 serves policy writes
+- **THEN** the daemon forwards the cookie on the intended owner route
+- **AND** the session store remains daemon-writable, so a compromised daemon can mint a session
+- **AND** P2/P3 SHALL move session minting and validation into broker custody
+
+#### Scenario: Only the protected owner door offers writes
+- **WHEN** a caller uses the model door, `/mcp`, `/api`, the box channel or any `ta` command
+- **THEN** no policy-write operation is offered
+- **AND** tightening and loosening require the same interactive owner-session token
 
 #### Scenario: A prompt injection tries to change a rule
 - **WHEN** content the agent reads instructs it to allow sending, edit `/policy/policy.json`, or call a policy write through `ta`
@@ -42,25 +46,30 @@ generation and digest. `ta policy show` SHALL return the same projection.
 `ta policy propose` SHALL create an owner request showing the literal change.
 The change SHALL take effect only when the owner approves it in the
 protected owner session, and the owner door then performs the write.
-`agent_review.py` SHALL propose rule suggestions through the existing pending
-owner-request path and SHALL NOT write `rules.db`. Every box process SHALL
-have only read-only access to the effective projection.
 
 #### Scenario: Rule suggestion awaits the owner
 - **WHEN** the agent proposes a different approval rule through `ta policy propose`
 - **THEN** a pending owner request shows the literal proposed policy and the effective generation stays unchanged
 - **AND** only the protected owner session can apply that request
+- **AND** `agent_review.py` proposes suggestions through the existing pending owner-request path and never writes `rules.db`
+- **AND** every box process has only read-only access to the effective projection
 
 ### Requirement: One default policy per account
 The account SHALL have exactly one broker-private policy under
 `.broker/accounts/<sha>/policy.db`. The broker SHALL create its directories
 with mode 0700 and its database with mode 0600. Every account SHALL start
-with `DEFAULT_RULES`; the agent asks and the owner re-grants once. Legacy
-`rules.db` files SHALL remain untouched until P6. The broker SHALL never
-read or traverse `.agent-sessions`. Entries SHALL carry account or command-center
-scope, and evaluation SHALL apply the strictest matching entry. Failure to
-initialize one owner's policy SHALL refuse that owner with an alert without
-stopping the broker or other owners.
+with `DEFAULT_RULES`; the agent asks and the owner re-grants once.
+Entries SHALL carry account or command-center
+scope, and evaluation SHALL apply the strictest matching entry.
+
+#### Scenario: Legacy files remain outside policy initialization
+- **WHEN** the broker initializes an owner's policy
+- **THEN** legacy `rules.db` files remain untouched until P6
+- **AND** the broker never reads or traverses `.agent-sessions`
+
+#### Scenario: One account cannot initialize its policy
+- **WHEN** one owner's policy fails to initialize
+- **THEN** the broker refuses that owner with an alert without stopping the broker or other owners
 
 #### Scenario: The agent proposes a looser egress policy
 - **WHEN** the agent proposes adding a host to the allowlist
@@ -77,9 +86,11 @@ For each request that crosses the box channel, the broker gate SHALL:
 - reserve spend atomically against the caps.
 
 A spend above the threshold SHALL ask. A spend above a cap SHALL be denied,
-and no approval SHALL exceed a cap. A once approval SHALL re-check the
-current generation before dispatch. Changes inside the box SHALL NOT be
-policy-gated; snapshot restore SHALL undo them.
+and no approval SHALL exceed a cap.
+
+#### Scenario: Internal edits do not require policy approval
+- **WHEN** a process changes files inside its box
+- **THEN** those changes are not policy-gated and snapshot restore can undo them
 
 #### Scenario: Ask before send
 - **WHEN** the owner's rule is "ask before people.message" and the agent sends an email through the owner's connected mail account
@@ -96,6 +107,7 @@ policy-gated; snapshot restore SHALL undo them.
 #### Scenario: Policy changed after approval
 - **WHEN** the owner tightens a rule after a once approval was issued but before dispatch
 - **THEN** the stale approval cannot execute the action
+- **AND** a once approval re-checks the current generation before dispatch
 
 #### Scenario: An unrelated edit preserves a standing grant
 - **WHEN** the owner adds another scoped policy entry while a site grant remains in the policy

@@ -330,6 +330,49 @@ def _connect(broker):
     return sock
 
 
+@pytest.mark.parametrize("attempt", ["policy", "foreign", "valid"])
+def test_box_channel_uses_host_identity_and_cannot_enter_owner_control(
+    broker, monkeypatch, attempt,
+):
+    from types import SimpleNamespace
+
+    from tinyassets.broker import box_admission
+    from tinyassets.broker.server import BOX_HOST
+
+    broker.server._roles = {os.getuid(): BOX_HOST}
+    broker.server._owner_identities = SimpleNamespace(admitted_owner=lambda center: "alice")
+
+    def admitted(identities, request):
+        assert request == {"op": "BOX_ADMISSION", "principal": "alice", "center": "cc-alice"}
+        return {"op": "BOX_ADMITTED", "uid": 300001, "quota": 1024**3}
+
+    monkeypatch.setattr(box_admission, "resolve", admitted)
+    with _connect(broker) as sock:
+        sock.sendall(rf.control(rf.CONNECTION, {
+            "op": "BOX_CHANNEL", "principal": "alice", "center": "cc-alice"}))
+        assert rf.read_frame_blocking(sock).control()["op"] == "BOX_ADMITTED"
+        if attempt == "policy":
+            sock.sendall(rf.control(rf.CONNECTION, {
+                "op": "OWNER_POLICY", "action": "write", "principal": "alice"}))
+        else:
+            sock.sendall(rf.control(1, {
+                "op": "OPEN", "op_id": new_op_id(),
+                "principal": "bob" if attempt == "foreign" else "alice",
+                "command_center": "cc-alice", "grant_id": "grant-a", "connection_id": "conn-a",
+                "verb": "POST", "request": {"url": "u", "body": {}}, "credit": 8192,
+                "generation": -1, "token": "guest-cannot-choose-fence"}))
+        if attempt == "valid":
+            while True:
+                frame = rf.read_frame_blocking(sock)
+                assert frame is not None
+                if frame.kind == rf.CONTROL and frame.control().get("op") == "END":
+                    break
+            assert len(broker.sent) == 1 and broker.sent[0][0] == "alice"
+        else:
+            assert rf.read_frame_blocking(sock) is None
+            assert broker.sent == []
+
+
 def test_a_refusal_after_the_operation_sent_reports_unknown_not_none(broker):
     op = new_op_id()
     _call(broker, op_id=op)

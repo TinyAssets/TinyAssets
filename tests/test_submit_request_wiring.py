@@ -42,8 +42,6 @@ from tinyassets.storage import db_path
 from tinyassets.storage.request_admissions import RequestAdmissionStore
 from tinyassets.work_targets import (
     ROLE_NOTES,
-    choose_authorial_targets,
-    list_selectable_targets,
     load_work_targets,
     materialize_pending_requests,
     requests_path,
@@ -352,73 +350,6 @@ def test_materialize_leaves_unclaimed_or_not_ready_epoch2_work_inert(
 # ─── authorial_priority_review integration ─────────────────────────────
 
 
-def test_epoch2_target_selection_tracks_exact_current_live_claim(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from fantasy_daemon.branch_registrations import _restartable_work_exists
-
-    universe_dir = tmp_path / "test-universe"
-    universe_dir.mkdir()
-    initialize_author_server(tmp_path)
-    committed = _commit_epoch2_request(tmp_path, universe_dir.name)
-    adapter = _claim_epoch2_request(tmp_path, committed)
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
-    monkeypatch.setattr(
-        "tinyassets.branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY",
-        True,
-    )
-
-    created = materialize_pending_requests(universe_dir)
-    assert len(created) == 1
-    target_id = created[0].target_id
-    assert [
-        target.target_id for target in list_selectable_targets(universe_dir)
-    ] == [target_id]
-
-    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-b")
-    assert list_selectable_targets(universe_dir) == []
-    assert choose_authorial_targets(
-        universe_dir,
-        candidate_override=created,
-    ) == []
-
-    with sqlite3.connect(db_path(tmp_path)) as conn:
-        conn.execute(
-            """
-            UPDATE branch_tasks_v2
-            SET lease_expires_at = ?
-            WHERE branch_task_id = ?
-            """,
-            ("2000-01-01T00:00:00+00:00", committed["branch_task_id"]),
-        )
-    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
-    assert list_selectable_targets(universe_dir) == []
-    assert choose_authorial_targets(
-        universe_dir,
-        candidate_override=created,
-    ) == []
-    assert _restartable_work_exists(universe_dir) is False
-
-    assert adapter.recover_expired()
-    _claim_epoch2_request(
-        tmp_path,
-        committed,
-        worker_id="worker-b",
-    )
-    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-b")
-    rematerialized = materialize_pending_requests(universe_dir)
-
-    assert len(rematerialized) == 1
-    assert rematerialized[0].metadata["claimed_by"] == "worker-b"
-    assert [
-        target.target_id for target in list_selectable_targets(universe_dir)
-    ] == [target_id]
-    assert choose_authorial_targets(
-        universe_dir,
-        candidate_override=rematerialized,
-    )[0].target_id == target_id
 
 
 def test_epoch2_materialization_rejects_same_basename_outside_data_root(
@@ -673,137 +604,9 @@ def test_corrupt_requests_json_warns_and_returns_empty(
     )
 
 
-def test_submit_request_rejects_oversize_text(tmp_path, monkeypatch):
-    """Task #22.2: 8 KiB cap on submit_request.text.
-
-    Prevents pasting full drafts into the request channel; private long prose
-    routes through the canonical relay. Cap is UTF-8 byte length.
-    """
-    import importlib
-
-    base = tmp_path / "output"
-    base.mkdir()
-    universe_dir = base / "test-universe"
-    universe_dir.mkdir()
-    _declare_legacy_loop(universe_dir)
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    _authorize_submitter(
-        monkeypatch,
-        base=base,
-        universe_id="test-universe",
-        actor_id="tester",
-    )
-    from tinyassets.api import universe as us
-    importlib.reload(us)
-    try:
-        oversize = "x" * (us._SUBMIT_REQUEST_MAX_BYTES + 1)
-        result = json.loads(us._action_submit_request(
-            universe_id="test-universe",
-            text=oversize,
-            request_type="general",
-        ))
-        assert "error" in result
-        assert "exceeds" in result["error"]
-        assert "add_canon" not in result["error"]
-        assert "converse" in result["error"]
-        # No file should be created on rejection.
-        assert not (base / "test-universe" / "requests.json").exists()
-    finally:
-        importlib.reload(us)
 
 
-def test_submit_request_accepts_text_at_cap(tmp_path, monkeypatch):
-    """Exactly _SUBMIT_REQUEST_MAX_BYTES bytes must still land."""
-    import importlib
-
-    base = tmp_path / "output"
-    base.mkdir()
-    universe_dir = base / "test-universe"
-    universe_dir.mkdir()
-    _declare_legacy_loop(universe_dir)
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    _authorize_submitter(
-        monkeypatch,
-        base=base,
-        universe_id="test-universe",
-        actor_id="tester",
-    )
-    from tinyassets.api import universe as us
-    importlib.reload(us)
-    try:
-        at_cap = "x" * us._SUBMIT_REQUEST_MAX_BYTES
-        result = json.loads(us._action_submit_request(
-            universe_id="test-universe",
-            text=at_cap,
-            request_type="general",
-        ))
-        assert "error" not in result
-        assert result["status"] == "pending"
-    finally:
-        importlib.reload(us)
 
 
-def test_submit_request_response_includes_queue_position(monkeypatch, tmp_path):
-    """Response shape: queue_position + ahead_of_yours + what_happens_next.
-
-    Replaces the opaque request_id-only response with information a user
-    can act on: where they are in the queue and what to do next.
-    """
-    import importlib
-
-    base = tmp_path / "uni"
-    universe_dir = base / "test-universe"
-    universe_dir.mkdir(parents=True)
-    _declare_legacy_loop(universe_dir)
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
-    _authorize_submitter(
-        monkeypatch,
-        base=base,
-        universe_id="test-universe",
-        actor_id="alice",
-    )
-    from tinyassets.api import universe as us
-    importlib.reload(us)
-    try:
-        first = json.loads(us._action_submit_request(
-            universe_id="test-universe", text="first", request_type="general"))
-        assert first["queue_position"] == 1
-        assert first["ahead_of_yours"] == 0
-        assert "next in the daemon's queue" in first["what_happens_next"]
-        assert 'read_graph target="graph"' in first["what_happens_next"]
-
-        second = json.loads(us._action_submit_request(
-            universe_id="test-universe", text="second", request_type="general"))
-        assert second["queue_position"] == 2
-        assert second["ahead_of_yours"] == 1
-        assert "1 other request is ahead" in second["what_happens_next"]
-    finally:
-        importlib.reload(us)
 
 
-def test_submit_request_write_uses_centralized_filename_constant():
-    """Task #22.3: write site imports REQUESTS_FILENAME, doesn't hardcode.
-
-    Source-level check — ensures the two previously duplicated string
-    literals now share the work_targets constant.
-    """
-    from pathlib import Path as _Path
-
-    # Step 9 (decomp): _action_submit_request and _action_inspect_universe
-    # moved to tinyassets/api/universe.py. Scan there now.
-    src = _Path("tinyassets/api/universe.py").read_text(encoding="utf-8")
-    # _action_submit_request and _action_inspect_universe should both
-    # import REQUESTS_FILENAME rather than hardcoding "requests.json".
-    # Two imports expected (one per action). Zero bare literals of the
-    # filename allowed outside import statements.
-    import_hits = src.count("from tinyassets.work_targets import REQUESTS_FILENAME")
-    assert import_hits >= 2, (
-        f"expected >=2 REQUESTS_FILENAME imports, found {import_hits}"
-    )
-    # No remaining bare "requests.json" strings in the module.
-    assert "\"requests.json\"" not in src, (
-        "still a hardcoded 'requests.json' literal after centralization"
-    )
