@@ -364,8 +364,8 @@ layout_marker_path() {
   [ -n "$dir" ] || return 1
   printf '%s/.layout.json' "$dir"
 }
-layout_allows_candidate() {  # $1 = marker path; $2 = immutable candidate image
-  local marker="$1" candidate="$2" dir supported
+layout_allows_candidate() {  # $1 = marker path; $2 = immutable candidate image; $3 = 1 for a forward deploy that may apply the box move
+  local marker="$1" candidate="$2" cutover="${3:-0}" dir supported
   # Query the pulled candidate's own declaration, never the host checkout or
   # the running image. No data mount: this probe must not run a migration.
   supported="$(timeout 90 docker run --rm --memory=512m --memory-swap=512m --network=none \
@@ -375,7 +375,7 @@ layout_allows_candidate() {  # $1 = marker path; $2 = immutable candidate image
   (
     exec 8>>"$dir/.layout.lock" || exit 1
     flock -s -n 8 || exit 1
-    python3 - "$marker" "$supported" <<'CANDIDATE_LAYOUT_PY'
+    python3 - "$marker" "$supported" "$cutover" <<'CANDIDATE_LAYOUT_PY'
 import json
 import sys
 
@@ -395,13 +395,17 @@ try:
         doc = {"layout": 1, "state": "stable"}
 except (OSError, ValueError):
     sys.exit(1)
-# An owner-box candidate on stable owner-split data is the cutover itself: it
-# passes here and the box-move step later decides, behind its own gates
-# (provisioned canary, idle turns, fresh verified backup), whether to apply it.
+# On a forward deploy only, an owner-box candidate on stable owner-split data
+# is the cutover itself: it passes here and the box-move step decides, behind
+# its own gates (provisioned canary, idle turns, fresh verified backup), whether
+# to apply it. A restore bundle or a rollback never moves data, so it must
+# serve the marker's layout as it stands.
+cutover = sys.argv[3] == "1"
 box = doc.get("box_layout", "owner-split") if isinstance(doc, dict) else None
 ok = (isinstance(doc, dict) and type(doc.get("layout")) is int
       and doc["layout"] in layouts and doc.get("state") == "stable"
-      and (box in boxes or (box == "owner-split" and "owner-box" in boxes)))
+      and (box in boxes
+           or (cutover and box == "owner-split" and "owner-box" in boxes)))
 sys.exit(0 if ok else 1)
 CANDIDATE_LAYOUT_PY
   )
@@ -1517,7 +1521,9 @@ log "candidate image loads cleanly"
 # Normal and explicit bundle deploys check the image they will start. An
 # automatic rollback checks the previous image again after the failed boot.
 LAYOUT_MARKER="$(layout_marker_path)" || LAYOUT_MARKER=""
-if [ -z "$LAYOUT_MARKER" ] || ! layout_allows_candidate "$LAYOUT_MARKER" "$NEW_IMAGE"; then
+LAYOUT_CUTOVER=1
+[ "$RESTORE_BUNDLE" != "1" ] || LAYOUT_CUTOVER=0
+if [ -z "$LAYOUT_MARKER" ] || ! layout_allows_candidate "$LAYOUT_MARKER" "$NEW_IMAGE" "$LAYOUT_CUTOVER"; then
   err "data layout check failed before converging ${NEW_IMAGE}: incompatible or unreadable candidate/layout, unfinished or locked migration; prod untouched"
   echo "deploy_result=layout_refused"
   exit 1
