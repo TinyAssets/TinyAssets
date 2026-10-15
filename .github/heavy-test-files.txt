@@ -44,7 +44,6 @@ tests/test_outcome_gate_claims.py
 tests/test_outcome_gates.py
 tests/test_patch_branch_metadata.py
 tests/test_patch_branch_node_keys.py
-tests/test_payments_escrow_mcp.py
 tests/test_provider_work_authority.py
 tests/test_public_goal_visibility.py
 tests/test_retire_cheat_loop_deploy_fence.py
