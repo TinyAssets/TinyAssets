@@ -549,3 +549,46 @@ def perform(
         return {"ok": False, "error": _safe_error(exc), "stderr_class": exc.code}
     except Exception as exc:  # noqa: BLE001 - loud, but never leaky
         return {"ok": False, "error": _safe_error(exc), "stderr_class": "other"}
+
+
+def box_main() -> int:
+    """Run the existing descriptor-safe git operation inside the admitted box."""
+    import json
+    import sys
+    import tempfile
+
+    from tinyassets.workspace_fs import open_dir_nofollow
+
+    raw = sys.stdin.buffer.read(MAX_REQUEST_BYTES + 1)
+    if len(raw) > MAX_REQUEST_BYTES:
+        raise ValueError("workspace request exceeds its bound")
+    request = json.loads(raw)
+    if not isinstance(request, dict):
+        raise ValueError("workspace request must be an object")
+    count = int(os.environ.get("GIT_CONFIG_COUNT", "0"))
+    if not 0 <= count <= 32:
+        raise ValueError("git route count exceeds its bound")
+    options = []
+    if count:
+        options.extend(("-c", "http.proxy=http://127.0.0.1:3128"))
+    for index in range(count):
+        key = os.environ[f"GIT_CONFIG_KEY_{index}"]
+        value = os.environ[f"GIT_CONFIG_VALUE_{index}"]
+        if not key.startswith("url.http://ta-git.invalid/") or not key.endswith(".insteadOf"):
+            raise ValueError("unrecognized box git route")
+        options.extend(("-c", f"{key}={value}"))
+    request["options"] = options
+    # The host pins this process's cwd to the admitted center before exec.
+    root = os.getcwd()
+    root_fd = open_dir_nofollow(root)
+    try:
+        with tempfile.TemporaryDirectory(prefix="workspace-git-") as scratch:
+            answer = perform(request, root_fd=root_fd, root_path=root, scratch=scratch)
+    finally:
+        os.close(root_fd)
+    sys.stdout.write(json.dumps(answer, separators=(",", ":")) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(box_main())

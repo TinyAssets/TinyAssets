@@ -222,6 +222,11 @@ def execute_workspace_operation(
         if op not in WORKSPACE_OPS:
             raise _Refused("bad_argument", f"unknown workspace op: {op or '(none)'}")
         universe_dir = Path(_require(request, "universe_dir"))
+        from tinyassets.control_plane.binding import file_binding
+
+        binding = file_binding(universe_dir)
+        if binding is not None:
+            return _boxed(request, op, binding)
         if op in ROUTED_OPS:
             return _routed(request, op, universe_dir)
         from tinyassets import role_remote_git
@@ -239,6 +244,38 @@ def execute_workspace_operation(
 
         return {"ok": False, "stderr_class": "other",
                 "error": scrub_text(f"the workspace cell refused: {type(exc).__name__}: {exc}")}
+
+
+def _boxed(request, op, binding):
+    """Project one selected grant, then send the bounded operation to its box."""
+    import json
+
+    from tinyassets.box_process import run_bound
+    from tinyassets.boxes.git_bridge import environment
+    from tinyassets.workspace_remote_cell import MAX_REQUEST_BYTES
+
+    binding.validate(_require(request, "principal"), Path(request["universe_dir"]))
+    env = None
+    if op in ROUTED_OPS:
+        agent = _require(request, "agent")
+        if not _AGENT_RE.fullmatch(agent):
+            raise _Refused("bad_argument", "request.agent must name the acting run")
+        env = environment([_authority(request, op)], agent)
+    payload = json.dumps(_cell_request(request, op, []), separators=(",", ":")).encode()
+    if len(payload) > MAX_REQUEST_BYTES:
+        raise _Refused("bad_argument", "workspace request exceeds its bound")
+    done = run_bound(
+        binding, f"workspace:{op}", ["python", "-m", "tinyassets.workspace_remote_cell"],
+        stdin=payload, env=env, wall_seconds=_DEFAULT_TIMEOUT_S,
+        output_bytes=64 * 1024,
+        operation_id=request.get("operation_id"),
+    )
+    if done.returncode:
+        raise _Refused("other", "workspace box execution failed")
+    lines = done.stdout.splitlines()
+    if len(lines) != 1:
+        raise _Refused("other", "workspace box returned no bounded answer")
+    return _validated(json.loads(lines[0]))
 
 
 def reconcile_push_intents(base_path: Any, **kwargs: Any) -> list[tuple[str, str]]:

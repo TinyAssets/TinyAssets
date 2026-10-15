@@ -1210,6 +1210,11 @@ def run_git(
     Output is truncated to the last 64 KiB of each stream and scrubbed before
     it is returned or classified.
     """
+    from tinyassets.control_plane.binding import current_binding
+    from tinyassets.storage_layout import ACTIVE_BOX_LAYOUT
+
+    if current_binding() is not None or ACTIVE_BOX_LAYOUT == "owner-box":
+        raise WorkspaceGitError("auth", "owner git requires the admitted box operation")
     _checked_git_request(
         argv, cwd=cwd, home_dir=home_dir, path=path, options=options,
         timeout_s=timeout_s, git_binary=git_binary, extra_secrets=extra_secrets,

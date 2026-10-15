@@ -474,3 +474,23 @@ def test_the_module_call_exemption_is_exactly_one_pair():
     )}
     assert ".touch()" in ops, "a path touch is still raw file I/O"
     assert ".unlink()" in ops, "only the touch pair is exempt, not the module"
+
+
+def test_owner_box_callers_never_open_host_paths():
+    """Daemon-side node, media, preview and git box routes use their handle."""
+    box_routes = {
+        "tinyassets/box_process.py": {"run_bound"},
+        "tinyassets/role_node.py": {"_run_box"},
+        "tinyassets/role_decoder.py": {"decode"},
+        "tinyassets/role_video.py": {"frames"},
+        "tinyassets/ui_preview.py": {"_run_child"},
+        "tinyassets/workspace_git.py": {"run_git"},
+        "tinyassets/workspace_worker.py": {"_boxed"},
+    }
+    for module, functions in box_routes.items():
+        source = (_REPO / module).read_text(encoding="utf-8")
+        raw = [(name, operation) for _, name, operation in _raw_ops(source)
+               if name in functions]
+        assert not raw, f"{module} opens an owner host path in its box route: {raw}"
+        assert ("run_bound(" in source or module.endswith("box_process.py")
+                or module.endswith("workspace_git.py"))

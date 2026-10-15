@@ -263,27 +263,54 @@ def preview_public_component(component: dict[str, Any]) -> dict[str, Any]:
 
 
 def _render_spec(spec: dict[str, Any], wall_seconds: float) -> dict[str, Any]:
+    from tinyassets.control_plane.binding import file_binding
+
+    binding = (file_binding(Path(spec["base_path"]) / spec["universe_id"])
+               if spec["base_path"] else None)
     if _POISONED:
         raise PreviewUnavailable(_POISONED)
-    if not available():
+    if binding is None and not available():
         raise PreviewUnavailable(
             "ui_preview_unavailable: this host has no headless browser to render with")
     if not _SLOT.acquire(blocking=False):
         raise PreviewUnavailable("ui_preview_busy: another preview is rendering; try again")
     try:
-        return _run_child(spec, wall_seconds)
+        return _run_child(spec, wall_seconds, binding=binding)
     finally:
         if not _POISONED:
             _SLOT.release()
 
 
-def _run_child(spec: dict[str, Any], wall_seconds: float) -> dict[str, Any]:
+def _run_child(spec: dict[str, Any], wall_seconds: float, *, binding=None) -> dict[str, Any]:
     """The render happens in the owner's preview cell and nowhere else."""
-    from tinyassets.role_preview import render
+    if binding is not None:
+        from tinyassets.app_ui_store import read_app_ui_asset
+        from tinyassets.box_process import run_bound
 
-    with _host_slot():
-        result = render(spec, wall_seconds)
-        out, err, code, breach = result.stdout, b'', result.returncode, ''
+        if (spec["owner_user_id"] != binding.handle.account_id
+                or spec["universe_id"] != binding.handle.command_center_id):
+            raise PreviewUnavailable("preview owner scope differs from admitted box")
+        assets = {}
+        total = 0
+        for path, sha in spec["hashes"].items():
+            data = read_app_ui_asset(spec["base_path"],
+                                     owner_user_id=spec["owner_user_id"], sha256=sha)
+            if data is not None:
+                total += len(data)
+                if total > MAX_CHILD_OUTPUT // 2:
+                    raise PreviewUnavailable("preview assets exceed their bound")
+                assets[path] = base64.b64encode(data).decode("ascii")
+        prepared = dict(spec, base_path="/absent", asset_bytes=assets)
+        result = run_bound(binding, "ui-preview", ["python", "-m", "tinyassets.ui_preview"],
+                           stdin=json.dumps(prepared).encode(), wall_seconds=wall_seconds,
+                           output_bytes=MAX_CHILD_OUTPUT)
+        out, err, code, breach = result.stdout, b"", result.returncode, ""
+    else:
+        from tinyassets.role_preview import render
+
+        with _host_slot():
+            result = render(spec, wall_seconds)
+            out, err, code, breach = result.stdout, b'', result.returncode, ''
     if breach:
         raise PreviewUnavailable(f"ui_preview_{breach}")
     lines = [line for line in out.decode("utf-8", "replace").splitlines()

@@ -357,3 +357,6 @@ def main() -> int:  # pragma: no cover - exercised through bound_image
     out.flush()
     return 0
 
+
+if __name__ == "__main__":
+    raise SystemExit(main())
