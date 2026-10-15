@@ -158,16 +158,10 @@ services:
       # 15). Each universe's provider child gets its own CLI home from that
       # universe's credentials (tinyassets/providers/base.py
       # subprocess_env_for_provider); the daemon process has none to share.
-      # Shared community-pool root on the durable volume. Load-bearing: the
-      # container has no `.git`, so `producers.goal_pool.repo_root_path()`
-      # git-detect fallback finds nothing and raises `repo_root_not_resolvable`
-      # if this is unset. Do NOT "clean this up" by dropping it. The directory
-      # need not pre-exist — `write_pool_post()` mkdirs parents on first write.
+      # Shared community-pool directory on the durable volume. No in-process
+      # reader remains after the goal-pool producer was removed.
       TINYASSETS_REPO_ROOT: /data/community-pool
       TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
-      # Fleet activation only. Goal-pool/marketplace economy stays dark
-      # until the PR-177 follow-on intentionally unstubs it.
-      TINYASSETS_GOAL_POOL: "off"
       # Coding-lane eval gates (S2 output-rubric + S3 trajectory) — ENFORCE.
       # Host-approved flip 2026-06-25: the auto-ship MCP action
       # (validate_ship_packet) now BLOCKS on a conclusive rubric/trajectory FAIL

@@ -131,12 +131,12 @@ np "14 descriptor boundary" "an exit status cannot show it: printenv exits 0 whe
 
 echo "=== row 16: env-summary filters on the NAME, never the value ==="
 if [ "$guard_ok" -eq 1 ]; then
-  out="$(FOO=1 TINYASSETS_GOAL_POOL=off SECRET_TOKEN=ollama-token "$BIN" env-summary 2>&1)"
+  out="$(FOO=1 TINYASSETS_AUTO_SHIP_RUBRIC_MODE=enforce SECRET_TOKEN=ollama-token "$BIN" env-summary 2>&1)"
   if echo "$out" | grep -Eq "$IDENTITY_TAGS"; then
     np "16 env-summary" "identity guard refused before the builtin ran: $out"
   elif [ "${out#*SECRET_TOKEN}" != "$out" ]; then
     bad "16 env-summary" "a value-only match leaked: $out"
-  elif [ "${out#*TINYASSETS_GOAL_POOL=off}" != "$out" ]; then
+  elif [ "${out#*TINYASSETS_AUTO_SHIP_RUBRIC_MODE=enforce}" != "$out" ]; then
     ok "16 env-summary: name match printed, value match withheld"
   else
     bad "16 env-summary" "expected flag missing: $out"

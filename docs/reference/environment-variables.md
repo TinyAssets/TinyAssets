@@ -69,7 +69,7 @@ the separately tracked daemon/engine UID and procfs isolation work.
 | `TINYASSETS_DATA_DIR` | Canonical root for all on-disk state (SQLite checkpoint, LanceDB indexes, per-universe output dirs). Absolute path. | Platform default — Windows: `%APPDATA%\TinyAssets`; Linux/macOS/container: `~/.workflow`. |
 | `TINYASSETS_UNIVERSE` | Per-universe override — specific universe dir for the stdio MCP shim (`workflow.mcp_server`). | `$TINYASSETS_DATA_DIR/default-universe`. |
 | `UNIVERSE_SERVER_DEFAULT_UNIVERSE` | Which universe ID is active when none explicit. | First subdir of `$TINYASSETS_DATA_DIR`. |
-| `TINYASSETS_REPO_ROOT` | Path to the local git checkout for `workflow.producers.goal_pool` + git-backed catalog writes. When unset, resolved via `Path(__file__).resolve().parent.parent`. | Derived from module path. |
+| `TINYASSETS_REPO_ROOT` | Shared community-pool directory on the data volume. Deploy sets `/data/community-pool`. Nothing in the process reads it after the goal-pool producer was removed. | `/data/community-pool` in the daemon container. |
 | `TINYASSETS_WIKI_PATH` | Canonical root for the cross-project knowledge wiki the `wiki` tool reads/writes. Resolved via `workflow.storage.wiki_path()`; inherits `data_dir()` platform handling when unset. | `$TINYASSETS_DATA_DIR/wiki` (platform default). |
 
 ## Account storage quota
@@ -189,9 +189,8 @@ Each flag reads as a string; truthy = `"on"`, `"1"`, `"true"`, `"yes"` (case-ins
 
 | Var | Purpose | Default |
 |-----|---------|---------|
-| `TINYASSETS_DISPATCHER_ENABLED` | Master switch for the dispatcher. Off = every request runs inline; on = dispatch goes through the claim/bid surface. | `on`. |
-| `TINYASSETS_PAID_MARKET` | Enables the paid-market bid/claim surface. `TINYASSETS_DISPATCHER_ENABLED` must also be on. Phase-G flag. | `off`. |
-| `TINYASSETS_GOAL_POOL` | Enables the goal-pool producer in `workflow.producers.goal_pool` — cross-branch goal aggregation. | `off`. |
+| `TINYASSETS_DISPATCHER_ENABLED` | Master switch for the dispatcher. Off = every request runs inline; on = dispatch goes through the claim surface. | `on`. |
+| `TINYASSETS_PAID_MARKET` | Gates escrow money actions and gate-bonus stake, unstake, and release. Default off. The node-bid producer is gone; this flag does not register one. | `off`. |
 | `TINYASSETS_PRODUCER_INTERFACE` | Enables the producer-interface surface — multi-producer concurrency for branches. | `on`. |
 | `TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED` | Master transport gate for credential-blind outbound HTTP through user-owned connection grants, including compatible realtime Voice bridges. This gate never grants provider authority, selects a provider, or authorizes platform-funded usage; each call still requires its exact owner, universe, grant, method, endpoint, credential, and capability checks. | `off`. |
 | `TINYASSETS_CREDENTIAL_BROKER` | `process` starts the credential broker process (S6, change `broker-streaming-contract`) under the daemon and routes every http connection's `proxy.request` through its socket instead of a spawned worker per proxy. Selected but not running is a loud refusal, never a fall back. Until the per-role uid split (daemon / engine children / broker) the daemon refuses to start with it selected. Temporary rollout switch: removed once the broker is the only path. | unset (per-proxy worker). |
