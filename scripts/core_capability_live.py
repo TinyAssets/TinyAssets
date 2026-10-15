@@ -18,7 +18,6 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.core_canary_provision import ProvisionError, credentials, provision  # noqa: E402
 from tinyassets.core_capabilities import CAPABILITIES, failure_code, validate_report  # noqa: E402
 
 ORIGIN = "https://tinyassets.io"
@@ -191,6 +190,9 @@ async def exercise(config, http, token, report):
                 )
                 raise ProbeFailure(name + " refused: " + failure_code(code))
             return value
+
+        # Imported here: core_capability_image.py mounts this file without the package.
+        from scripts.core_canary_provision import ProvisionError, provision
 
         report["active_capability"] = "canary_setup"
         try:
@@ -434,6 +436,8 @@ async def exercise(config, http, token, report):
 
 async def run(report):
     import httpx
+
+    from scripts.core_canary_provision import credentials
 
     config = credentials()
     if config is None:
