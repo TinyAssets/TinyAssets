@@ -395,9 +395,13 @@ try:
         doc = {"layout": 1, "state": "stable"}
 except (OSError, ValueError):
     sys.exit(1)
+# An owner-box candidate on stable owner-split data is the cutover itself: it
+# passes here and the box-move step later decides, behind its own gates
+# (provisioned canary, idle turns, fresh verified backup), whether to apply it.
+box = doc.get("box_layout", "owner-split") if isinstance(doc, dict) else None
 ok = (isinstance(doc, dict) and type(doc.get("layout")) is int
       and doc["layout"] in layouts and doc.get("state") == "stable"
-      and doc.get("box_layout", "owner-split") in boxes)
+      and (box in boxes or (box == "owner-split" and "owner-box" in boxes)))
 sys.exit(0 if ok else 1)
 CANDIDATE_LAYOUT_PY
   )
