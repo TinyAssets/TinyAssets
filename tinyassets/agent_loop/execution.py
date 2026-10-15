@@ -32,8 +32,15 @@ async def off_loop(function: Callable[..., T], /, *args, **kwargs) -> T:
         except asyncio.CancelledError:
             cancelled = True
             if task.done():
-                result = task.result()
+                try:
+                    result = task.result()
+                except BaseException:
+                    break
                 break
+        except BaseException:
+            if cancelled:
+                raise asyncio.CancelledError from None
+            raise
     if cancelled:
         raise asyncio.CancelledError
     return result
