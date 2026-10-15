@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import json
+from pathlib import Path
 
 import pytest
 
@@ -145,3 +146,21 @@ def test_no_box_provider_refuses_before_any_tool_runs(agent, monkeypatch):
     with pytest.raises(EngineToolError, match="box_unavailable"):
         run(agent)
     assert agent.wires == [] and agent.tools == []
+
+
+def test_switch_off_keeps_todays_path(agent, monkeypatch):
+    monkeypatch.delenv(served_chat.ENV_SWITCH, raising=False)
+    agent.adapter = served_chat.ServedChatAgentAdapter()
+    agent.tool_call = ("bash", '{"command": "true"}')
+    assert run(agent) == "finished exact answer"
+    assert agent.box.starts == [] and agent.tools == [("bash", {"command": "true"})]
+
+
+def test_the_served_chat_factory_keeps_todays_adapter_unless_selected(monkeypatch):
+    from tinyassets.providers import call
+
+    monkeypatch.delenv(served_chat.ENV_SWITCH, raising=False)
+    assert not served_chat.thin_loop_selected()
+    monkeypatch.setenv(served_chat.ENV_SWITCH, served_chat.THIN)
+    assert served_chat.thin_loop_selected()
+    assert "thin_loop_selected()" in Path(call.__file__).read_text(encoding="utf-8")

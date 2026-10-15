@@ -7,6 +7,7 @@ tool refuses before launch if no box provider is configured.
 
 from __future__ import annotations
 
+import os
 import threading
 from typing import Any
 
@@ -14,6 +15,16 @@ from tinyassets.agent_loop.box_tools import BOX_ROOT, BoxExecutor, BoxTools
 from tinyassets.agent_loop.tool_session import open_loop_tools
 from tinyassets.interactive_http_agent import ServedChatAgentAdapter
 from tinyassets.served_tools import granted_tools, model_tools
+
+# The thin loop needs a box; until the C6 cutover binds one per session, a
+# served chat keeps today's engine-tool path unless this switch selects it.
+ENV_SWITCH = "TINYASSETS_AGENT_LOOP"
+THIN = "thin"
+
+
+def thin_loop_selected() -> bool:
+    return (os.environ.get(ENV_SWITCH) or "").strip().lower() == THIN
+
 
 _box_lock = threading.Lock()
 _box_provider: Any = None
