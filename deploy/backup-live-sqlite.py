@@ -11,9 +11,10 @@ already contains every committed page. A database created after the tree copy
 passed its directory is taken from the live tree too.
 
 ``--as-owner`` (owner trees) drops to the live root's uid/gid first, so a
-symlink the owner plants can never make root read another owner's data, and an
-owner file that cannot be read cleanly is left out with a warning instead of
-failing everyone's backup. The data volume is not owner-writable and runs as
+symlink the owner plants can never make root read another owner's data. An
+owner file that cannot be re-taken (unreadable, read-only directory, symlinked
+parent) keeps its reflink copy with a warning; one owner never fails everyone's
+backup. The data volume is not owner-writable and runs as
 root; there only a file that vanished mid-backup is skipped.
 
 Usage: backup-live-sqlite.py [--as-owner] LIVE_ROOT COPY_ROOT
@@ -23,8 +24,10 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import stat as stat_module
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 MAGIC = b"SQLite format 3\x00"
 SIDECARS = ("-wal", "-shm", "-journal")
@@ -48,8 +51,16 @@ def _drop(copy: Path) -> None:
 
 
 def _plain(live_root: Path, live: Path) -> bool:
-    """No component of ``live`` below the root is a symlink."""
-    return os.path.realpath(live) == str(live) and live.is_relative_to(live_root)
+    """No component of ``live`` below the root is a symlink (lstat, never realpath:
+    realpath treats an unreadable component as plain)."""
+    if not live.is_relative_to(live_root):
+        return False
+    current = live_root
+    for part in live.relative_to(live_root).parts:
+        current = current / part
+        if stat_module.S_ISLNK(current.lstat().st_mode):
+            return False
+    return True
 
 
 def retake(live_root: Path, live: Path, copy: Path) -> None:
@@ -64,7 +75,7 @@ def retake(live_root: Path, live: Path, copy: Path) -> None:
         stat = live.stat()
         temporary = copy.with_name(copy.name + ".backup-tmp")
         temporary.unlink(missing_ok=True)
-        source = sqlite3.connect(live.as_uri() + "?mode=ro", uri=True)
+        source = sqlite3.connect("file:" + quote(str(live)) + "?mode=ro", uri=True)
         try:
             target = sqlite3.connect(temporary)
             try:
@@ -111,14 +122,24 @@ def _take(live_root: Path, live: Path, copy: Path, *, owner: bool) -> bool:
         if not owner:
             raise
         reason = type(exc).__name__
-    _drop(copy)
-    print(f"WARN: left out of the backup ({reason}): {live}", file=sys.stderr)
+    if owner:
+        # Keep the reflink copy (possibly torn, never lost); only the temporary goes.
+        try:
+            Path(str(copy) + ".backup-tmp").unlink(missing_ok=True)
+        except OSError:
+            pass
+        print(f"WARN: reflink copy kept, not re-taken ({reason}): {live}", file=sys.stderr)
+    else:
+        _drop(copy)
+        print(f"WARN: left out of the backup ({reason}): {live}", file=sys.stderr)
     return False
 
 
 def _drop_privileges(live_root: Path) -> None:
     stat = live_root.lstat()
-    if os.geteuid() == 0 and stat.st_uid != 0:
+    if stat.st_uid == 0:
+        raise SystemExit(f"owner tree {live_root} is owned by root; refusing to re-take it as root")
+    if os.geteuid() == 0:
         os.setgroups([])
         os.setgid(stat.st_gid)
         os.setuid(stat.st_uid)
@@ -127,7 +148,18 @@ def _drop_privileges(live_root: Path) -> None:
 def main(live_root: Path, copy_root: Path, *, owner: bool = False) -> int:
     live_root = Path(os.path.realpath(live_root))
     if owner:
+        # Enter the store as root, then drop: the owner uid needs no access to
+        # the store's parents (/var/lib/boxhostd), only to the two trees.
+        copy_root = Path(os.path.realpath(copy_root))
+        base = Path(os.path.commonpath([live_root, copy_root]))
+        os.chdir(base)
+        live_root, copy_root = live_root.relative_to(base), copy_root.relative_to(base)
         _drop_privileges(live_root)
+        for tree in (live_root, copy_root):
+            try:
+                os.listdir(tree)
+            except OSError as exc:
+                raise SystemExit(f"owner cannot reach {base / tree}: {exc.strerror}") from exc
     taken = 0
     for directory, _dirs, files in os.walk(copy_root):
         for name in files:
@@ -146,6 +178,11 @@ def main(live_root: Path, copy_root: Path, *, owner: bool = False) -> int:
             try:
                 _make_parents(live_root, copy_root, relative)
             except Skip:
+                continue
+            except OSError as exc:
+                if not owner:
+                    raise
+                print(f"WARN: not backed up ({type(exc).__name__}): {live}", file=sys.stderr)
                 continue
             taken += _take(live_root, live, copy, owner=owner)
     print(f"online-backup copies: {taken} SQLite file(s) under {copy_root}")

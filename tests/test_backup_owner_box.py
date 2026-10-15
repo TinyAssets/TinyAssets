@@ -60,6 +60,8 @@ class OwnerBoxLiveBackupTest(unittest.TestCase):
                            " ('o2', 'op', 300002, 'c', 1, NULL, 'deleting')")
             (box / "300002").mkdir()
             (box / "300002" / "file").write_text("erased owner bytes")
+            for path in (box / "300002", box / "300002" / "file"):
+                os.chown(path, 300002, 300002)
             owner = box / "300001"
             owner.mkdir()
             (owner / "file").write_text("owner bytes")
@@ -70,6 +72,10 @@ class OwnerBoxLiveBackupTest(unittest.TestCase):
             live.execute("CREATE TABLE t (v TEXT)")
             live.execute("INSERT INTO t VALUES ('committed')")
             live.commit()
+            # Owner trees are re-taken as their owner, never as root.
+            root.chmod(0o755)
+            for path in (owner, *owner.rglob("*")):
+                os.chown(path, 300001, 300001)
             for name in (
                 "tinyassets-data-2026-01-01T00-00-00Z.tar.gz",
                 "tinyassets-box-store-2026-01-01T00-00-00Z.tar.gz",
@@ -160,6 +166,7 @@ esac
             with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
                 db.execute("CREATE TABLE box_records (machine, project_id, bhard_bytes)")
             (box / "300002").mkdir(parents=True)
+            os.chown(box / "300002", 300002, 300002)
             log = root / "actions.log"
             result = subprocess.run(
                 ["bash", str(deploy / "backup-owner-box.sh"), str(data), str(box),
@@ -240,7 +247,61 @@ class LiveSqliteRetakeTest(unittest.TestCase):
                 capture_output=True, text=True, check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertFalse((copy / "d" / "secret.db").exists(), result.stderr)
+            # The owner's own reflink copy is kept; the other owner's rows never land.
+            with sqlite3.connect(copy / "d" / "secret.db") as db:
+                self.assertEqual(db.execute("SELECT * FROM s").fetchall(), [])
+            db.close()
+
+    @unittest.skipUnless(os.name == "posix" and os.geteuid() == 0, "needs Linux root host")
+    def test_an_owners_read_only_directories_never_fail_the_backup(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ta-backup-ro-", dir="/tmp") as temporary:
+            # The store's parent stays root-only (like /var/lib/boxhostd).
+            root = Path(temporary) / "store"
+            root.mkdir(mode=0o755)
+            live = root / "300001"
+            (live / "ro").mkdir(parents=True)
+            with sqlite3.connect(live / "ro" / "a.db") as db:
+                db.execute("CREATE TABLE t (v)")
+                db.execute("INSERT INTO t VALUES ('kept')")
+            db.close()
+            for path in (live, *live.rglob("*")):
+                os.chown(path, 300001, 300001)
+            stage = root / "stage"
+            stage.mkdir(mode=0o711)
+            copy = stage / "300001"
+            subprocess.run(["cp", "-a", str(live), str(copy)], check=True)
+            (copy / "ro").chmod(0o555)
+            (live / "ro" / "a.db").chmod(0o000)  # case A: unreadable, read-only copy dir
+            (live / "late" / "b").mkdir(parents=True)  # case B: new db under a 0555 parent
+            with sqlite3.connect(live / "late" / "b" / "x.db") as db:
+                db.execute("CREATE TABLE t (v)")
+            db.close()
+            for path in (live / "late", *(live / "late").rglob("*")):
+                os.chown(path, 300001, 300001)
+            (live / "late").chmod(0o555)
+            result = subprocess.run(
+                [sys.executable, str(REPO / "deploy" / "backup-live-sqlite.py"),
+                 "--as-owner", str(live), str(copy)],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("reflink copy kept", result.stderr)
+            (copy / "ro").chmod(0o755)
+            with sqlite3.connect(copy / "ro" / "a.db") as db:
+                self.assertEqual(db.execute("SELECT v FROM t").fetchall(), [("kept",)])
+            db.close()
+
+    def test_a_root_owned_tree_is_refused_in_owner_mode(self) -> None:
+        if os.geteuid() != 0:
+            self.skipTest("needs root")
+        with tempfile.TemporaryDirectory() as temporary:
+            result = subprocess.run(
+                [sys.executable, str(REPO / "deploy" / "backup-live-sqlite.py"),
+                 "--as-owner", temporary, temporary],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("owned by root", result.stderr)
 
     def test_a_database_created_after_the_tree_copy_is_backed_up(self) -> None:
         module = _module()
