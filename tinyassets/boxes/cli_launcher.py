@@ -122,7 +122,7 @@ class BoxLauncher:
         return proc
 
     async def close(self, proc):
-        from tinyassets.role_external_agent import AuthWriteback
+        from tinyassets.external_agents.writeback import AuthWriteback
 
         if proc not in self.processes:
             raise BoxAuthError("foreign CLI process")
