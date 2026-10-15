@@ -59,7 +59,7 @@ That ordering decides what each row can prove:
 | 3 | malformed NAME (`printenv 'a b'`, `printenv lower`, `printenv 9X`, `printenv ''`) | **post-identity** — uid 1001 in production posture, or uid 0 with exactly the four bootstrap caps | exit 78, `TA_OP_REFUSED:env-name`. An identity tag here is NOT_PROVEN for this row, not a failure of it |
 | 4 | no mode at all | any uid | exit 78, `TA_OP_REFUSED:no-mode` |
 | 5 | unexpected entry uid | Linux, run as a uid that is neither 0 nor 1001 | exit 78, `TA_OP_REFUSED:unexpected-entry-uid` |
-| 6 | **rootless exact groups** — uid/gid 1001, `Groups: 1001` | Linux container matching production posture (`--user 1001:1001`, `--cap-drop ALL`, `--security-opt no-new-privileges`) | `version` exits 0 and prints `ta-op 1 modes=6` |
+| 6 | **rootless exact groups** — uid/gid 1001, `Groups: 1001` | Linux container matching production posture (`--user 1001:1001`, `--cap-drop ALL`, `--security-opt no-new-privileges`) | `version` exits 0 and prints `ta-op 1 modes=7` |
 | 7 | rootless with a foreign supplementary group | same, plus `--group-add 65534` | exit 78, `TA_OP_REFUSED:legacy-entry-unexpected-group` |
 | 8 | **mutation control** — rootless entry into a container with caps | `--user 1001:1001 --cap-add SYS_ADMIN` | exit 78, `TA_OP_REFUSED:legacy-entry-caps-not-empty`. *Without this row the legacy branch is decorative.* |
 | 9 | rootless without NNP | `--user 1001:1001 --cap-drop ALL` and no `no-new-privileges` | exit 78 at `nnp-readback` |

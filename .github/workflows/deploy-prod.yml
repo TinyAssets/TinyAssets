@@ -662,7 +662,7 @@ jobs:
           printf '%s' "${TINYASSETS_CORE_CANARY_CONFIG}" | \
             ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o ConnectTimeout=10 \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo -n docker exec -i tinyassets-daemon python -m tinyassets.core_canary"
+              "sudo -n docker exec -i tinyassets-daemon /usr/local/libexec/ta-op core-canary"
 
       - name: Core user capabilities and systemic failure rates
         id: core_canary

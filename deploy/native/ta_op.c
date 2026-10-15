@@ -63,7 +63,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define TA_OP_VERSION "ta-op 1 modes=6"
+#define TA_OP_VERSION "ta-op 1 modes=7"
 #define TA_UID 1001
 #define TA_GID 1001
 #define SELF "/usr/local/libexec/ta-op"
@@ -115,6 +115,10 @@ static const struct mode MODES[] = {
     {"printenv", 3, 0, {"/usr/bin/printenv", NULL}},
     {"bwrap-oracle", 2, 0,
      {"/opt/venv/bin/python", "/app/scripts/workspace_bwrap_oracle.py", NULL}},
+    /* Deploy provisioner. Argv is fixed. The founder secret arrives on stdin
+     * and is not an argument. The child prints only core_canary_provisioned=1. */
+    {"core-canary", 2, 0,
+     {"/opt/venv/bin/python", "-m", "tinyassets.core_canary", NULL}},
 };
 #define N_MODES ((int)(sizeof(MODES) / sizeof(MODES[0])))
 

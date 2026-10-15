@@ -28,3 +28,4 @@ pulse	2	exec	/opt/venv/bin/python|/app/scripts/mcp_public_canary.py|--pulse-only
 canary	2	exec	/opt/venv/bin/python|/app/scripts/mcp_public_canary.py|--url|http://127.0.0.1:8001/mcp|--timeout|10
 printenv	3	exec	/usr/bin/printenv
 bwrap-oracle	2	exec	/opt/venv/bin/python|/app/scripts/workspace_bwrap_oracle.py
+core-canary	2	exec	/opt/venv/bin/python|-m|tinyassets.core_canary

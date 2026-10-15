@@ -273,7 +273,7 @@ def test_canary_step_only_probes_canonical():
     )
     host = next(s for s in steps if s.get("id") == "core_canary_host")
     assert steps.index(deploy) < steps.index(host) < steps.index(core)
-    assert "docker exec -i tinyassets-daemon python -m tinyassets.core_canary" in host["run"]
+    assert "docker exec -i tinyassets-daemon /usr/local/libexec/ta-op core-canary" in host["run"]
     assert "printf '%s'" in host["run"]
     assert "--password" not in host["run"]
     assert "core canary secret incomplete; host provisioning skipped" in host["run"]
