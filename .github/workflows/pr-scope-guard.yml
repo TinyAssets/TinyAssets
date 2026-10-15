@@ -454,6 +454,13 @@ jobs:
           # The receipt check above already passed for this head, so the
           # declaration is applied here rather than by hand. A failed label
           # write fails closed: the PR stays blocked until a rerun labels it.
+          # The POST labels the PR, not a commit, so refuse if a newer,
+          # unreceipted head arrived after this run's receipt check.
+          CURRENT_HEAD="$(gh api "repos/${REPO}/pulls/${PR}" --jq .head.sha)" || CURRENT_HEAD=""
+          if [ "$CURRENT_HEAD" != "$HEAD_OID" ]; then
+            echo "scope guard: BLOCKED — PR head moved from ${HEAD_OID} to ${CURRENT_HEAD:-unknown}; the new head's run decides the label"
+            exit 1
+          fi
           if ! gh api -X POST "repos/${REPO}/issues/${PR}/labels" \
               -f 'labels[]=infra-change' >/dev/null; then
             echo "::error::could not add the infra-change label; rerun this check"

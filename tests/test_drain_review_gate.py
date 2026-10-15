@@ -1041,6 +1041,10 @@ def test_scope_guard_labels_only_after_the_receipt_passes() -> None:
     tail = text[label:text.index("# Honesty note")]
     assert "exit 1" in tail.split("fi", 1)[0], "a failed label write must fail closed"
     assert "pull-requests: write" in text
+    # The label lands on the PR, not a commit: re-read the head right before
+    # the POST so a newer, unreceipted head is never labelled.
+    recheck = text.index('[ "$CURRENT_HEAD" != "$HEAD_OID" ]')
+    assert receipt < recheck < label
 
 
 def test_scope_guard_wires_the_blocking_review_decision() -> None:
