@@ -23,7 +23,9 @@ transfer. Neither app is copied.
 What this module will not do, because it would be a second path or a guess:
 
 * It will not execute arbitrary rules supplied as code.
-* It will not push bytes into the sandboxed screen. A client pulls ``sync``.
+* It will not give the sandboxed screen its own network. The signed-in shell
+  holds one stream and pushes deltas into the screen. The screen names an
+  interest (kinds and keys); it cannot name an account or a different app.
 * It will not hide a secret that the document itself copied into a public field
   when that value is a short string. Long secret strings echoed into the public
   projection are refused.
@@ -33,8 +35,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 import secrets
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -42,6 +47,8 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from tinyassets.principals import named_principal
+
+_log = logging.getLogger(__name__)
 
 SCHEMA = "app/v1"
 _DOC_KEYS = frozenset({
@@ -58,6 +65,62 @@ _ACTORS = frozenset({"owner", "members", "app", "not_subject", "timer"})
 _MAX_RECORD = 262144
 _MAX_DOC = 262144
 _SECRET_ECHO = 8
+# Admit storage in batches. A same-sized live update owes only its log line
+# and does not call the quota ledger until a batch is full.
+_MEM_FLUSH = 65536
+
+_WRITERS: dict[str, tuple[threading.Lock, sqlite3.Connection]] = {}
+_WRITERS_GUARD = threading.Lock()
+# One wake for a burst. Waiters read the ring; they are not woken per write.
+_NOTIFY_EVERY = 0.005
+_KICK = threading.Event()
+_NOTIFIER_LOCK = threading.Lock()
+_NOTIFIER_ON = False
+_PENDING: dict[int, list] = {}
+_LIVE = threading.Condition()
+_LIVE_TICK = 0
+_RINGS: dict[str, "_Ring"] = {}
+_TIP: dict[str, int] = {}
+_DOCS: dict[str, dict] = {}
+_OWNERS: dict[str, str] = {}
+_ROLE: dict[tuple[str, str], str] = {}
+_RING_MAX = 8192
+
+
+class _Ring:
+    """Committed public deltas, indexed by sequence so a waiter copies only its tail."""
+
+    __slots__ = ("items", "base")
+
+    def __init__(self) -> None:
+        self.items: list[dict] = []
+        self.base = 0
+
+    def append(self, event: dict) -> None:
+        seq = int(event["seq"])
+        if self.items and seq != self.base + len(self.items):
+            self.items.clear()
+            self.base = seq
+        elif not self.items:
+            self.base = seq
+        self.items.append(event)
+        extra = len(self.items) - _RING_MAX
+        if extra > 0:
+            del self.items[:extra]
+            self.base += extra
+
+    def tail(self, since: int) -> list[dict] | None:
+        """Events with seq > since, or None when since falls in a gap."""
+        if not self.items:
+            return []
+        if self.base > int(since) + 1:
+            return None
+        start = int(since) + 1 - self.base
+        if start < 0:
+            start = 0
+        if start >= len(self.items):
+            return []
+        return self.items[start:]
 
 APP_PERMISSION = "app"
 VIEW_PERMISSION = "view"
@@ -67,6 +130,21 @@ class StateConflict(RuntimeError):
     """The record changed since it was read. The caller can retry."""
 
     retryable = True
+
+
+class _NeedFlush(Exception):
+    """The account already owes a full batch. Charge it before another write."""
+
+    def __init__(self, account: str) -> None:
+        self.account = account
+
+
+class _NeedPrepay(Exception):
+    """This write is itself a full batch. Charge it before it commits."""
+
+    def __init__(self, account: str, nbytes: int) -> None:
+        self.account = account
+        self.nbytes = nbytes
 
 
 def definition_bytes(base: Path, account_id: str) -> int:
@@ -133,6 +211,7 @@ def save_app(base, *, actor: str, universe_id: str, document: dict) -> dict[str,
             (uid, owner, raw),
         )
         _replace_schedules(conn, uid, body)
+    _forget(uid)
     return {"universe_id": uid, "etag": 1, "owner": owner}
 
 
@@ -167,6 +246,7 @@ def revise_app(
         if updated != 1:
             raise StateConflict("record changed")
         _replace_schedules(conn, uid, body)
+    _forget(uid)
     return {"universe_id": uid, "etag": etag, "owner": owner}
 
 
@@ -234,6 +314,7 @@ def redeem_invite(base, *, token: str, actor: str) -> dict[str, str]:
                 " VALUES (?, ?, ?, ?, ?)",
                 (uid, member, APP_PERMISSION, now, row["granted_by"] or ""),
             )
+    _forget(uid)
     return {"universe_id": uid, "actor_id": member, "permission": APP_PERMISSION}
 
 
@@ -265,6 +346,7 @@ def grant_view(base, *, actor: str, universe_id: str, viewer: str) -> dict[str, 
                 " VALUES (?, ?, ?, ?, ?)",
                 (uid, watch, VIEW_PERMISSION, time.time(), owner),
             )
+    _forget(uid)
     return {"universe_id": uid, "actor_id": watch, "permission": VIEW_PERMISSION}
 
 
@@ -286,6 +368,7 @@ def revoke_member(base, *, actor: str, universe_id: str, member: str) -> bool:
             " WHERE universe_id = ? AND actor_id = ? AND revoked_at IS NULL",
             (time.time(), uid, who),
         )
+    _forget(uid)
     return deleted > 0
 
 
@@ -296,23 +379,45 @@ def write_record(
     """Create or replace a record. No run is started and no seat is taken."""
     member = _actor(actor)
     uid = _uid(universe_id)
-    spec = _kind(base, uid, kind)
-    born = spec["write"] in {"transition", "transfer"}
-    if born and int(expect_etag) != 0:
-        raise PermissionError("this record changes only through its declared path")
     payload = _body(body)
-    stored_key = _stored_key(spec, member, key)
-    _private, _public, client_raw, client_public = _project(payload, spec, None)
-    replay = _replay(base, member, token, client_raw)
-    if replay is not None:
-        return replay
-    _charge(base, _bill_to(base, uid, spec, member), "app_records",
-            len(client_raw.encode("utf-8")) + len(client_public.encode("utf-8")))
+    prepaid: dict[str, int] = {}
+    last: BaseException | None = None
+    for _attempt in range(8):
+        try:
+            return _commit_record(
+                base, member=member, uid=uid, kind=kind, key=key, payload=payload,
+                expect_etag=int(expect_etag), token=token, prepaid=prepaid,
+            )
+        except _NeedFlush as need:
+            flush_due(base, need.account)
+            last = need
+        except _NeedPrepay as need:
+            _charge(base, need.account, "app_records", need.nbytes)
+            prepaid[need.account] = prepaid.get(need.account, 0) + int(need.nbytes)
+            last = need
+    assert last is not None
+    raise last
+
+
+def _commit_record(
+    base, *, member: str, uid: str, kind: str, key: str, payload: dict,
+    expect_etag: int, token: str, prepaid: dict[str, int],
+) -> dict[str, Any]:
     with _immediate(base) as conn:
+        spec = _kind_on(conn, uid, kind)
+        born = spec["write"] in {"transition", "transfer"}
+        if born and int(expect_etag) != 0:
+            raise PermissionError("this record changes only through its declared path")
+        stored_key = _stored_key(spec, member, key)
+        client_raw = _project(payload, spec, None)[2]
+        if token:
+            replay = _replay_on(conn, member, token, client_raw)
+            if replay is not None:
+                return replay
         doc_owner = _doc_owner(conn, uid)
         _require_member(conn, uid, member, doc_owner)
         row = conn.execute(
-            "SELECT owner_user_id, etag, kind, private_json FROM app_records"
+            "SELECT owner_user_id, etag, kind, private_json, public_json FROM app_records"
             " WHERE universe_id = ? AND record_key = ?",
             (uid, stored_key),
         ).fetchone()
@@ -336,6 +441,13 @@ def write_record(
             etag = int(row["etag"]) + 1
         old = json.loads(row["private_json"]) if row is not None else None
         _kept, _shown, raw_private, raw_public = _project(payload, spec, old)
+        old_priv = len(row["private_json"]) if row is not None else 0
+        old_pub = len(row["public_json"]) if row is not None else 0
+        growth = (
+            max(0, len(raw_private) - old_priv) + max(0, len(raw_public) - old_pub)
+            + len(raw_public)
+        )
+        _admit(conn, owner, growth, prepaid)
         seq = _bump(conn, uid)
         conn.execute(
             "INSERT INTO app_records"
@@ -409,11 +521,20 @@ def delete_record(
     return {"key": key, "seq": seq, "deleted": True}
 
 
-def sync(base, *, actor: str, universe_id: str, since: int = 0, limit: int = 500) -> dict:
-    """Ordered public changes after ``since``. No run, no seat, no box."""
+def sync(
+    base, *, actor: str, universe_id: str, since: int = 0, limit: int = 500,
+    kinds: list[str] | None = None, keys: list[str] | None = None,
+) -> dict:
+    """Public changes after ``since``. ``kinds`` and ``keys`` are an interest.
+
+    The cursor moves past every row examined, so a client that names an
+    interest does not re-read the rest of the log. No run, no seat, no box.
+    """
     member = _actor(actor)
     uid = _uid(universe_id)
     cap = max(1, min(int(limit), 2000))
+    wanted_kinds = None if kinds is None else [str(item) for item in kinds]
+    wanted_keys = None if keys is None else [str(item) for item in keys]
     with _read(base) as conn:
         _ensure(conn)
         doc_owner = _doc_owner(conn, uid)
@@ -421,16 +542,30 @@ def sync(base, *, actor: str, universe_id: str, since: int = 0, limit: int = 500
         if role is None:
             raise PermissionError("record not found")
         document = _load(conn, uid)
-        kinds = set(document.get("sync") or document["records"])
-        rows = conn.execute(
+        _cache_view(uid, document, doc_owner, member, role)
+        published = set(document.get("sync") or document["records"])
+        sql = (
             "SELECT seq, record_key, owner_user_id, kind, op, public_json FROM app_log"
-            " WHERE universe_id = ? AND seq > ? ORDER BY seq LIMIT ?",
-            (uid, int(since), cap),
-        ).fetchall()
+            " WHERE universe_id = ? AND seq > ?"
+        )
+        params: list[Any] = [uid, int(since)]
+        if wanted_kinds is not None:
+            if not wanted_kinds:
+                return {"events": [], "cursor": int(since)}
+            sql += f" AND kind IN ({', '.join('?' for _ in wanted_kinds)})"
+            params.extend(wanted_kinds)
+        if wanted_keys is not None:
+            if not wanted_keys:
+                return {"events": [], "cursor": int(since)}
+            sql += f" AND record_key IN ({', '.join('?' for _ in wanted_keys)})"
+            params.extend(wanted_keys)
+        sql += " ORDER BY seq LIMIT ?"
+        params.append(cap)
+        rows = conn.execute(sql, params).fetchall()
         events = []
         for row in rows:
             kind = row["kind"]
-            if kind not in kinds:
+            if kind not in published:
                 continue
             spec = document["records"].get(kind)
             if spec is None:
@@ -441,12 +576,108 @@ def sync(base, *, actor: str, universe_id: str, since: int = 0, limit: int = 500
             events.append({
                 "seq": int(row["seq"]),
                 "key": row["record_key"],
+                "kind": kind,
                 "op": row["op"],
                 "owner": row["owner_user_id"],
                 "body": json.loads(row["public_json"]),
             })
         cursor = int(rows[-1]["seq"]) if rows else int(since)
+        tip = conn.execute(
+            "SELECT seq FROM app_seq WHERE universe_id = ?", (uid,),
+        ).fetchone()
+    _advance_tip(uid, int(tip["seq"]) if tip else 0)
     return {"events": events, "cursor": cursor}
+
+
+def wait_live(
+    base, *, actor: str, universe_id: str, since: int = 0, limit: int = 500,
+    kinds: list[str] | None = None, keys: list[str] | None = None, timeout: float = 15,
+) -> dict:
+    """The next matching public deltas, or nothing if ``timeout`` passes.
+
+    A waiter is woken by the writer. It does not poll the log and it does not
+    start a run. The first call with ``since`` 0 still returns only one page.
+    """
+    def page_at() -> dict:
+        return _page(
+            base, actor=actor, universe_id=universe_id, since=since, limit=limit,
+            kinds=kinds, keys=keys,
+        )
+
+    page = page_at()
+    if page["events"]:
+        return page
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    while time.monotonic() < deadline:
+        with _LIVE:
+            seen = _LIVE_TICK
+        page = page_at()
+        if page["events"]:
+            return page
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        with _LIVE:
+            if _LIVE_TICK == seen:
+                _LIVE.wait(timeout=remaining)
+    return page_at()
+
+
+def scheduled_runs(base, *, actor: str, universe_id: str) -> dict[str, Any]:
+    """What the app document bills to its owner. Only the owner can see it.
+
+    A scheduled run is the owner's because the owner stored the document that
+    asks for it. It draws that owner's background seats and that owner's
+    provider, never an invitee's. ``capped`` means the owner's background
+    seats are already full, so a due run is not queued.
+    """
+    member = _actor(actor)
+    uid = _uid(universe_id)
+    with _read(base) as conn:
+        _ensure(conn)
+        owner = _doc_owner(conn, uid)
+        if member != owner:
+            raise PermissionError("only the app owner can see what the app is billed")
+        schedules = conn.execute(
+            "SELECT name, every_s, next_at FROM app_schedules WHERE universe_id = ?"
+            " ORDER BY name",
+            (uid,),
+        ).fetchall()
+        inflight = conn.execute(
+            "SELECT name, state, provider FROM app_runs"
+            " WHERE owner_user_id = ? AND state IN ('queued', 'waiting_seat', 'running')"
+            " ORDER BY created_at",
+            (owner,),
+        ).fetchall()
+    limit = _background_limit(base, owner)
+    running = [row for row in inflight if row["state"] == "running"]
+    by_name = {}
+    for row in inflight:
+        by_name.setdefault(row["name"], row["state"])
+    full = len(inflight) >= limit
+    listed = []
+    for row in schedules:
+        state = by_name.get(row["name"], "idle")
+        listed.append({
+            "name": row["name"],
+            "every_s": row["every_s"],
+            "next_at": row["next_at"],
+            "state": "capped" if state == "idle" and full else state,
+            "charged_to": owner,
+        })
+    return {
+        "charged_to": owner,
+        "pays": "owner_seat_and_provider",
+        "because": (
+            "a run declared on the app is the owner's, so it draws the owner's "
+            "background seats and the provider bound on the owner's own home"
+        ),
+        "background_seats": limit,
+        "in_flight": len(inflight),
+        "running": len(running),
+        "capped": full,
+        "runs": listed,
+    }
 
 
 def transfer(
@@ -743,27 +974,32 @@ def advance(base, *, universe_id: str, now: float) -> list[dict[str, Any]]:
     """Step declared numeric motion. No run, no seat, no box."""
     uid = _uid(universe_id)
     clock = float(now)
-    with _read(base) as conn:
-        _ensure(conn)
-        document = _load(conn, uid)
-        kinds = [rule["kind"] for rule in document.get("motion") or []]
-        owners = []
-        for kind in kinds:
-            owners.extend(
-                row["owner_user_id"] for row in conn.execute(
-                    "SELECT owner_user_id FROM app_records WHERE universe_id = ? AND kind = ?",
-                    (uid, kind),
-                )
-            )
-    for account in set(owners):
-        _charge(base, account, "app_records", 256 * owners.count(account))
+    prepaid: dict[str, int] = {}
+    last: BaseException | None = None
+    for _attempt in range(8):
+        try:
+            return _advance_once(base, uid, clock, prepaid)
+        except _NeedFlush as need:
+            flush_due(base, need.account)
+            last = need
+        except _NeedPrepay as need:
+            _charge(base, need.account, "app_records", need.nbytes)
+            prepaid[need.account] = prepaid.get(need.account, 0) + int(need.nbytes)
+            last = need
+    assert last is not None
+    raise last
+
+
+def _advance_once(
+    base, uid: str, clock: float, prepaid: dict[str, int],
+) -> list[dict[str, Any]]:
     applied: list[dict[str, Any]] = []
     with _immediate(base) as conn:
         document = _load(conn, uid)
         for rule in document.get("motion") or []:
             rows = conn.execute(
-                "SELECT record_key, owner_user_id, etag, private_json FROM app_records"
-                " WHERE universe_id = ? AND kind = ?",
+                "SELECT record_key, owner_user_id, etag, private_json, public_json"
+                " FROM app_records WHERE universe_id = ? AND kind = ?",
                 (uid, rule["kind"]),
             ).fetchall()
             tick = float(rule["tick_s"])
@@ -792,6 +1028,12 @@ def advance(base, *, universe_id: str, now: float) -> list[dict[str, Any]]:
                 if len(raw_private.encode("utf-8")) > cap:
                     raise ValueError("record is too large")
                 etag = int(row["etag"]) + 1
+                growth = (
+                    max(0, len(raw_private) - len(row["private_json"]))
+                    + max(0, len(raw_public) - len(row["public_json"]))
+                    + len(raw_public)
+                )
+                _admit(conn, row["owner_user_id"], growth, prepaid)
                 seq = _bump(conn, uid)
                 conn.execute(
                     "UPDATE app_records SET private_json = ?, public_json = ?, etag = ?, seq = ?"
@@ -1130,6 +1372,14 @@ def _enqueue_due(base, now: float) -> None:
             if live is not None:
                 continue
             owner = _doc_owner(conn, uid)
+            limit = _background_limit(base, owner)
+            inflight = conn.execute(
+                "SELECT COUNT(*) FROM app_runs WHERE owner_user_id = ?"
+                " AND state IN ('queued', 'waiting_seat', 'running')",
+                (owner,),
+            ).fetchone()[0]
+            if int(inflight) >= limit:
+                continue
             conn.execute(
                 "INSERT INTO app_runs"
                 " (run_id, universe_id, owner_user_id, provider, seat_id, state,"
@@ -1301,6 +1551,17 @@ def _log(conn, uid, seq, key, owner, kind, op, public, actor) -> None:
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (uid, seq, key, owner, kind, op, public, actor),
     )
+    pending = _PENDING.get(id(conn))
+    if pending is not None:
+        pending.append({
+            "universe": uid,
+            "seq": int(seq),
+            "key": key,
+            "kind": kind,
+            "op": op,
+            "owner": owner,
+            "body": json.loads(public),
+        })
 
 
 def _bump(conn, uid: str) -> int:
@@ -1318,14 +1579,20 @@ def _bump(conn, uid: str) -> int:
 def _replay(base, actor: str, token: str, payload: str) -> dict | None:
     if not token:
         return None
-    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     with _read(base) as conn:
         _ensure(conn)
-        row = conn.execute(
-            "SELECT payload_hash, result_json FROM app_idempotency"
-            " WHERE actor_id = ? AND token = ?",
-            (actor, token),
-        ).fetchone()
+        return _replay_on(conn, actor, token, payload)
+
+
+def _replay_on(conn, actor: str, token: str, payload: str) -> dict | None:
+    if not token:
+        return None
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    row = conn.execute(
+        "SELECT payload_hash, result_json FROM app_idempotency"
+        " WHERE actor_id = ? AND token = ?",
+        (actor, token),
+    ).fetchone()
     if row is None:
         return None
     if row["payload_hash"] != digest:
@@ -1414,7 +1681,20 @@ def _hash(token: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+_SCHEMA_READY: set[str] = set()
+
+
 def _ensure(conn) -> None:
+    """Create tables once per database file. Later calls do not take a write lock."""
+    key = conn.execute("PRAGMA database_list").fetchone()[2]
+    if key in _SCHEMA_READY:
+        return
+    _ensure_sql(conn)
+    if key:
+        _SCHEMA_READY.add(key)
+
+
+def _ensure_sql(conn) -> None:
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS app_definitions (
@@ -1474,6 +1754,10 @@ def _ensure(conn) -> None:
             next_at REAL NOT NULL,
             PRIMARY KEY (universe_id, name)
         );
+        CREATE TABLE IF NOT EXISTS app_byte_due (
+            owner_user_id TEXT PRIMARY KEY,
+            bytes INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS universe_invites (
             token_hash TEXT PRIMARY KEY,
             universe_id TEXT NOT NULL,
@@ -1502,25 +1786,271 @@ def _read(base) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-@contextmanager
-def _immediate(base) -> Iterator[sqlite3.Connection]:
+def _writer(base) -> tuple[threading.Lock, sqlite3.Connection]:
+    """One connection per database. Schema is applied once, outside a transaction."""
+    key = os.fspath(base)
+    with _WRITERS_GUARD:
+        found = _WRITERS.get(key)
+        if found is not None:
+            return found
     from tinyassets.daemon_server import initialize_author_server
     from tinyassets.storage import db_path
 
     initialize_author_server(base)
-    conn = sqlite3.connect(db_path(base), timeout=30.0)
-    try:
+    path = str(db_path(base))
+    with _WRITERS_GUARD:
+        found = _WRITERS.get(key)
+        if found is not None:
+            return found
+        conn = sqlite3.connect(path, timeout=30.0, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.isolation_level = None
         conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
         conn.execute("PRAGMA busy_timeout = 30000")
         _ensure(conn)
+        pair = (threading.Lock(), conn)
+        _WRITERS[key] = pair
+        return pair
+
+
+@contextmanager
+def _immediate(base) -> Iterator[sqlite3.Connection]:
+    """Serialize writers on one connection, then wake stream waiters after commit."""
+    lock, conn = _writer(base)
+    published = False
+    token = id(conn)
+    with lock:
+        _PENDING[token] = []
         conn.execute("BEGIN IMMEDIATE")
         try:
             yield conn
             conn.execute("COMMIT")
+            published = list(_PENDING.get(token) or [])
         except BaseException:
-            conn.execute("ROLLBACK")
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            _PENDING.pop(token, None)
             raise
-    finally:
-        conn.close()
+        _PENDING.pop(token, None)
+    if published:
+        _publish(published)
+
+
+def _forget(uid: str) -> None:
+    """Drop cached reads so the next sync sees a new document or membership."""
+    _DOCS.pop(uid, None)
+    _OWNERS.pop(uid, None)
+    for key in [item for item in _ROLE if item[0] == uid]:
+        _ROLE.pop(key, None)
+
+
+def _cache_view(uid: str, document: dict, owner: str, actor: str, role: str) -> None:
+    _DOCS[uid] = document
+    _OWNERS[uid] = owner
+    _ROLE[(uid, actor)] = role or ""
+
+
+def _advance_tip(uid: str, seq: int) -> None:
+    with _LIVE:
+        _TIP[uid] = max(_TIP.get(uid, 0), int(seq))
+
+
+def _ensure_notifier() -> None:
+    global _NOTIFIER_ON
+    if _NOTIFIER_ON:
+        return
+    with _NOTIFIER_LOCK:
+        if _NOTIFIER_ON:
+            return
+        threading.Thread(target=_notify_loop, name="live-notify", daemon=True).start()
+        _NOTIFIER_ON = True
+
+
+def _notify_loop() -> None:
+    """Wake stream waiters on a short tick so a burst is one fan-out."""
+    while True:
+        _KICK.wait()
+        time.sleep(_NOTIFY_EVERY)
+        _KICK.clear()
+        with _LIVE:
+            _LIVE.notify_all()
+
+
+def _publish(events: list[dict]) -> None:
+    """Hand committed public deltas to waiters. The log remains the record.
+
+    The wake is coalesced. A waiter reads the ring when it runs, so skipping
+    a per-write wake does not drop a committed delta.
+    """
+    global _LIVE_TICK
+    with _LIVE:
+        for event in events:
+            uid = event["universe"]
+            ring = _RINGS.get(uid)
+            if ring is None:
+                ring = _Ring()
+                _RINGS[uid] = ring
+            ring.append(event)
+            _TIP[uid] = max(_TIP.get(uid, 0), int(event["seq"]))
+        _LIVE_TICK += 1
+    _ensure_notifier()
+    _KICK.set()
+
+
+def _show(document: dict, role: str, actor: str, event: dict) -> bool:
+    kind = event["kind"]
+    published = set(document.get("sync") or document["records"])
+    if kind not in published:
+        return False
+    spec = document["records"].get(kind)
+    if spec is None:
+        return False
+    return _may_read(spec, role, actor == event["owner"])
+
+
+def _from_ring(
+    uid: str, actor: str, since: int, limit: int,
+    kinds: list[str] | None, keys: list[str] | None,
+) -> dict | None:
+    """Deltas this process already published. None when the log has to be read."""
+    if uid not in _DOCS or uid not in _TIP or (uid, actor) not in _ROLE:
+        return None
+    role = _ROLE[(uid, actor)]
+    if not role:
+        raise PermissionError("record not found")
+    document = _DOCS[uid]
+    with _LIVE:
+        tip = _TIP.get(uid, 0)
+        ring = _RINGS.get(uid)
+        if int(since) >= tip:
+            return {"events": [], "cursor": int(since)}
+        # Tip can move from a log read before this process has published.
+        # An empty tail then means the log, not the ring, has the rows.
+        items = ring.tail(int(since)) if ring is not None else None
+    if not items:
+        return None
+    wanted_kinds = None if kinds is None else set(kinds)
+    wanted_keys = None if keys is None else set(keys)
+    if wanted_kinds is not None and not wanted_kinds:
+        return {"events": [], "cursor": int(since)}
+    if wanted_keys is not None and not wanted_keys:
+        return {"events": [], "cursor": int(since)}
+    cap = max(1, min(int(limit), 2000))
+    matched = []
+    high = int(since)
+    examined = 0
+    for event in items:
+        if event["seq"] <= int(since):
+            continue
+        high = event["seq"]
+        examined += 1
+        kind_ok = wanted_kinds is None or event["kind"] in wanted_kinds
+        key_ok = wanted_keys is None or event["key"] in wanted_keys
+        if kind_ok and key_ok and _show(document, role, actor, event):
+            matched.append({
+                "seq": event["seq"], "key": event["key"], "kind": event["kind"],
+                "op": event["op"], "owner": event["owner"],
+                "body": event["body"],
+            })
+        if examined >= cap:
+            break
+    return {"events": matched, "cursor": high}
+
+
+def _page(
+    base, *, actor: str, universe_id: str, since: int, limit: int,
+    kinds: list[str] | None, keys: list[str] | None,
+) -> dict:
+    member = _actor(actor)
+    uid = _uid(universe_id)
+    hit = _from_ring(uid, member, int(since), int(limit), kinds, keys)
+    if hit is not None:
+        return hit
+    return sync(
+        base, actor=member, universe_id=uid, since=since, limit=limit,
+        kinds=kinds, keys=keys,
+    )
+
+
+def _due_on(conn, account: str) -> int:
+    row = conn.execute(
+        "SELECT bytes FROM app_byte_due WHERE owner_user_id = ?", (account,),
+    ).fetchone()
+    return int(row["bytes"]) if row else 0
+
+
+def _owe(conn, account: str, nbytes: int) -> None:
+    if nbytes <= 0:
+        return
+    conn.execute(
+        "INSERT INTO app_byte_due (owner_user_id, bytes) VALUES (?, ?)"
+        " ON CONFLICT(owner_user_id) DO UPDATE SET bytes = bytes + excluded.bytes",
+        (account, int(nbytes)),
+    )
+
+
+def _admit(conn, account: str, growth: int, prepaid: dict[str, int]) -> None:
+    """Record owed bytes, or refuse to commit until a full batch is charged."""
+    covered = int(prepaid.get(account, 0))
+    if covered >= growth > 0:
+        left = covered - growth
+        if left:
+            prepaid[account] = left
+        else:
+            prepaid.pop(account, None)
+        return
+    if _due_on(conn, account) >= _MEM_FLUSH:
+        raise _NeedFlush(account)
+    if growth >= _MEM_FLUSH:
+        raise _NeedPrepay(account, growth)
+    _owe(conn, account, growth)
+
+
+def flush_due(base, account: str) -> int:
+    """Charge one account's owed bytes outside the writer lock.
+
+    A crash after the charge and before the subtraction charges twice. A crash
+    before the charge leaves the owed row for the next flush. The write that
+    filled the batch already waited for this charge, so a refusal stops it.
+    """
+    person = named_principal(account)
+    if not person:
+        return 0
+    with _read(base) as conn:
+        _ensure(conn)
+        due = _due_on(conn, person)
+    if due <= 0:
+        return 0
+    _charge(base, person, "app_records", due)
+    with _immediate(base) as conn:
+        current = _due_on(conn, person)
+        take = min(current, due)
+        if take:
+            conn.execute(
+                "UPDATE app_byte_due SET bytes = bytes - ? WHERE owner_user_id = ?",
+                (take, person),
+            )
+    return due
+
+
+def flush_pending(base) -> None:
+    """Charge every account that owes bytes. One refusal does not skip the rest."""
+    with _read(base) as conn:
+        _ensure(conn)
+        rows = conn.execute(
+            "SELECT owner_user_id FROM app_byte_due WHERE bytes > 0",
+        ).fetchall()
+    for row in rows:
+        try:
+            flush_due(base, row["owner_user_id"])
+        except Exception:
+            _log.exception("shared-state storage flush failed for %s", row["owner_user_id"])
+
+
+def _background_limit(base, owner: str) -> int:
+    from tinyassets.universe_seats import account_pool, limits_for_key
+
+    return int(limits_for_key(account_pool(owner), root=base).background_seats)

@@ -26,6 +26,7 @@ from tinyassets.shared_state import (
     read_record,
     runs_for,
     save_app,
+    scheduled_runs,
     sync,
     transfer,
     transition,
@@ -332,6 +333,14 @@ def test_blind_npcs_keep_a_schedule_while_nobody_is_present(tmp_path: Path, monk
     assert running
     assert running[0]["owner"] == "owner"
     assert running[0]["provider"] == "source-owner"
+    bill = scheduled_runs(tmp_path, actor="owner", universe_id=universe)
+    assert bill["charged_to"] == "owner"
+    assert bill["pays"] == "owner_seat_and_provider"
+    assert "owner's" in bill["because"]
+    assert bill["running"] == 1
+    assert bill["capped"] is False
+    with pytest.raises(PermissionError, match="billed"):
+        scheduled_runs(tmp_path, actor="member", universe_id=universe)
     held = occupancy(account_pool("owner"), db=ledger_path(tmp_path))
     assert int(held["running"]) == 1
     # Still inside the interval, and one run is in flight: no second seat.
@@ -346,3 +355,43 @@ def test_blind_npcs_keep_a_schedule_while_nobody_is_present(tmp_path: Path, monk
     assert started[0]["owner"] == "owner"
     assert definition_count(tmp_path, universe) == 1
     finish_run(tmp_path, started[0]["run_id"])
+
+
+def test_scheduled_runs_stop_at_the_owners_background_seats(tmp_path: Path, monkeypatch):
+    """More declared runs than background seats: the rest stay capped on the owner."""
+    from tinyassets.universe_seats import limits_for_key
+
+    limit = limits_for_key(account_pool("owner"), root=tmp_path).background_seats
+    names = [f"tick-{index}" for index in range(limit + 1)]
+    document = {
+        "schema": "app/v1",
+        "records": {
+            "marker": {
+                "ownership": "app", "read": "public", "write": "app",
+                "public": ["n"], "secret": [],
+            },
+        },
+        "runs": [{"name": name, "actor": "app", "every_s": 30} for name in names],
+        "sync": ["marker"],
+    }
+    monkeypatch.setattr(
+        "tinyassets.shared_state.starter_sources",
+        lambda _base, account: frozenset({f"source-{account}"}),
+    )
+    _app(tmp_path, "owner", "app-world", document)
+    pumped = pump_runs(tmp_path, now=2_000.0)
+    running = [row for row in pumped if row["state"] == "running"]
+    assert len(running) == limit
+    assert {row["owner"] for row in running} == {"owner"}
+    assert {row["provider"] for row in running} == {"source-owner"}
+    bill = scheduled_runs(tmp_path, actor="owner", universe_id="app-world")
+    assert bill["charged_to"] == "owner"
+    assert bill["pays"] == "owner_seat_and_provider"
+    assert bill["background_seats"] == limit
+    assert bill["in_flight"] == limit
+    assert bill["capped"] is True
+    assert sum(1 for row in bill["runs"] if row["state"] == "capped") == 1
+    again = pump_runs(tmp_path, now=2_010.0)
+    assert [row for row in again if row["state"] == "running"] == []
+    for row in running:
+        finish_run(tmp_path, row["run_id"])

@@ -8,9 +8,13 @@ actor is the authenticated account (S14). An app is still one command center
 
 ## Decisions
 
-1. The hot path is an ordered log a client pulls with `sync`. It does not
-   start a run, take a seat, or wake a box. There is no push into the
-   sandboxed screen.
+1. The hot path is an ordered log. `sync` reads it and does not start a
+   run, take a seat, or wake a box. A client may name an interest (kinds
+   and keys); the cursor moves past every row examined. A burst of writes
+   wakes waiters once per short tick, and each waiter reads only the new
+   tail. The signed-in shell holds `GET /app/api/live/stream` and pushes
+   those deltas into the screen. The screen has no socket. This is not an
+   eighth MCP handle.
 2. The document is data. Kinds, secrecy, transitions, transfers, groups,
    timers, motion, and scheduled runs are fields. The module has no nouns
    for any app.
@@ -28,8 +32,15 @@ actor is the authenticated account (S14). An app is still one command center
 7. Motion adds `velocity * tick_s * steps` to `position`, at most 8 steps of
    catch-up. It does not run code.
 8. A scheduled run's actor is `app`, so the seat and the provider are the
-   app owner's. The host enqueues it only when no queued, waiting, or running
-   row of that name exists.
+   app owner's. That is intended: the owner stored the document. The host
+   enqueues it only when no queued, waiting, or running row of that name
+   exists, and only while the owner's in-flight runs are under the owner's
+   background seats. `scheduled_runs` tells the owner who is billed. A
+   member cannot read it.
+9. A live write records owed bytes in the same transaction. The quota
+   ledger is charged when an account owes 65536 bytes, or by the stream
+   process about every 2 seconds. The charge happens outside the writer
+   lock. A same-sized position update does not call the ledger.
 
 ## Non-goals
 
@@ -37,5 +48,5 @@ actor is the authenticated account (S14). An app is still one command center
 - Calling a model from the schedule. Foreground model admission is unchanged.
 - Moving a record row into a second app.
 - A physics engine: collisions, forces, and constraint solvers are not a step.
-- A websocket or an eighth MCP handle. The screen allowlist does not call
-  `sync` yet.
+- A socket inside the sandboxed screen, or an eighth MCP handle. The shell
+  holds the stream. The frame's connect-src stays `data:` and `blob:`.

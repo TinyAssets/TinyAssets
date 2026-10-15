@@ -59,13 +59,33 @@ again.
 ### Requirement: A scheduled run is charged to the app owner
 A document MAY declare a repeating run whose actor is the app. The host
 SHALL enqueue that run when its interval has elapsed and no such run is
-queued, waiting, or running. The run SHALL take a seat from the app owner's
-pool and SHALL record a provider bound on the app owner's own home. The
-pump SHALL NOT call a model.
+queued, waiting, or running, and only while that owner's in-flight runs are
+below the owner's background-seat limit. A run that would pass the limit
+SHALL stay due and SHALL be reported as capped. The run SHALL take a seat
+from the app owner's pool and SHALL record a provider bound on the app
+owner's own home. The pump SHALL NOT call a model. Only the app owner SHALL
+be able to read which runs are billed, and that reading SHALL name the
+owner as the account that pays with the owner's seat and provider.
 
 #### Scenario: Nobody is connected
 - **WHEN** the host pumps due runs and no client has enqueued one
 - **THEN** one run is charged to the app owner on that owner's provider, and an invitee's seat count does not change
+
+#### Scenario: The owner is already at the background-seat limit
+- **WHEN** the document declares more scheduled runs than the owner's background seats and the host pumps them
+- **THEN** at most that many runs are in flight, the rest are capped, and a member cannot read the billing
+
+### Requirement: Live updates are pushed to the signed-in shell
+A member SHALL be able to read public deltas after a cursor, limited to
+named kinds and keys. The cursor SHALL move past every row examined. A
+waiter SHALL be woken by a committed write. `POST /app/api/live` and
+`GET /app/api/live/stream` SHALL take the actor from the signed-in session.
+The sandboxed screen SHALL NOT open a socket. The signed-in shell SHALL
+hold the stream and push matching deltas into the screen.
+
+#### Scenario: A screen subscribes
+- **WHEN** a screen names kinds and keys
+- **THEN** the shell requests that interest as the signed-in account, and the screen's connect-src does not include http or ws
 
 ### Requirement: Secret fields stay with the record owner
 The public log and a read by anyone except the record owner SHALL omit

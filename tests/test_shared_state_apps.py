@@ -255,6 +255,7 @@ def test_world_movement_never_starts_a_run(tmp_path: Path, monkeypatch, capsys):
         elapsed = time.perf_counter() - started
         stats["elapsed_s"] = round(elapsed, 4)
         stats["players"] = count
+        stats["source"] = "in_process"
         levels.append(stats)
         print("MEASURED", stats, flush=True)
         assert stats["drops"] == 0

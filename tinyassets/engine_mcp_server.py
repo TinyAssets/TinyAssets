@@ -2301,7 +2301,10 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     **What my UI can do.** It runs sealed off from the app: no cookies, no sign-in
     token, no reach into the surrounding page, and NO network of its own (only its
     own assets and libraries load) -- fetch,
-    WebSocket, form posts, remote images and WebRTC are all unavailable. Its only
+    WebSocket, form posts, remote images and WebRTC are all unavailable. Live
+    updates arrive because the signed-in shell holds one stream and pushes
+    deltas in. The screen names an interest (kinds and keys). It cannot open a
+    socket, name an account, or name a different app. Its only
     capability is these calls on a ``tinyassets`` object, acting as whoever is
     LOOKING at it, inside their own command center:
 
@@ -2323,6 +2326,12 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
         await tinyassets.readLive()                -> {as_of, agents:[{agent_id,name,
                   state:"working"|"idle", since, steps:[{tool,summary,state,age_s}]}]}
                   # each agent's live state; poll it to animate agents at work
+        tinyassets.subscribe({kinds, keys}, onEvent)
+                  # the shell pushes public record deltas. kinds and keys are
+                  # the interest. Omit either to receive all of that dimension.
+                  # onEvent is called in the screen with one public event.
+                  # Returns an unsubscribe handle's ack; the screen still has
+                  # no socket. tinyassets.unsubscribe({kinds, keys}) stops one.
         await tinyassets.readRun(run_id)           -> {status,nodes:[{node_id,status}],
                   error,output_fields:[...]}
         await tinyassets.readRunOutput(run_id, field, offset)

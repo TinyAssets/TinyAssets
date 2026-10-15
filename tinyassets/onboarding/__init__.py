@@ -2434,6 +2434,8 @@ def onboarding_routes() -> list[Any]:
     from tinyassets.onboarding.ui_frame import handle_ui_frame
     from tinyassets.onboarding.wakes import handle_wakes
     from tinyassets.owner_door import owner_door_routes
+    from tinyassets.shared_live import handle_live as handle_shared_live
+    from tinyassets.shared_live import handle_live_stream
 
     return [
         Route("/app", _handle_app, methods=["GET", "HEAD"]),
@@ -2476,6 +2478,10 @@ def onboarding_routes() -> list[Any]:
         Route("/app/account/timezone", _handle_account_timezone, methods=["POST"]),
         Route("/app/ui-prefs", _handle_ui_prefs, methods=["GET", "POST"]),
         Route("/app/api/policy", _handle_policy, methods=["GET", "POST"]),
+        # Shared live state. The session is the actor. The sandboxed screen
+        # does not call these; the signed-in shell holds the stream.
+        Route("/app/api/live", handle_shared_live, methods=["POST"]),
+        Route("/app/api/live/stream", handle_live_stream, methods=["GET"]),
         Route("/app/wakes", handle_wakes, methods=["GET", "POST"]),
         Route("/app/memory", _handle_memory, methods=["GET", "POST"]),
         Route("/app/soul", handle_soul, methods=["GET", "POST"]),

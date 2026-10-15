@@ -13,3 +13,11 @@
 
 - [x] Three app documents exercise movement, trades, and hidden state.
 - [x] A separate blind pass builds further documents as data only.
+
+## 3. Live path
+
+- [x] Admit record bytes in a batch so a position update does not call the quota ledger.
+- [x] Wake waiters and filter `sync` by kinds and keys.
+- [x] Push those deltas through the signed-in shell. The screen has no socket.
+- [x] Show the owner that a scheduled run bills the owner's seat and provider, and cap it.
+- [x] Measure the movement ramp through the HTTP handlers.
