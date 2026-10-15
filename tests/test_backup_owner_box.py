@@ -101,7 +101,12 @@ for arg in "$@"; do
   fi
 done
 # The fixture is on ext4, while the host store is XFS.
-exec /bin/cp "${args[@]}"
+/bin/cp "${args[@]}"
+# A live tree: a file listed by cp vanished before it was copied.
+if [[ " $* " == *" --reflink=auto "* ]]; then
+  echo "cp: cannot stat '${@: -2:1}/tmp-123': No such file or directory" >&2
+  exit 1
+fi
 """)
             shim(binary, "rclone", """
 case "$1" in

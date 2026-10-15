@@ -25,6 +25,19 @@ BOX_STAGE=""
 
 log() { echo "[backup $(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 
+# A live tree keeps changing while it is copied. GNU cp exits 1 when a file it
+# listed vanishes first; that file is no longer data, and every SQLite file is
+# re-taken afterwards, so only that error is tolerated. Any other is fatal.
+copy_live() {
+    local errors
+    errors="$(cp -a "$@" 2>&1 >/dev/null)" && return 0
+    if grep -qv ': No such file or directory$' <<<"$errors"; then
+        printf '%s\n' "$errors" >&2
+        return 1
+    fi
+    log "WARN: $(grep -c . <<<"$errors") file(s) vanished during the live copy"
+}
+
 finish() {
     local rc=$?
     trap - EXIT
@@ -84,14 +97,14 @@ BOX_COPY="$BOX_STAGE/$box_root"
 mkdir -m 0711 "$BOX_COPY"
 for tree in "$BOX_DIR"/[0-9]*; do
     [[ -d "$tree" && ! -L "$tree" ]] || continue
-    cp -a --reflink=always -- "$tree" "$BOX_COPY/$(basename "$tree")"
+    copy_live --reflink=always -- "$tree" "$BOX_COPY/$(basename "$tree")"
     # One owner can never fail everyone's night: if its re-take cannot run
     # (unreachable tree, root-owned while being provisioned), the reflink copy
     # stays as taken and the run continues.
     python3 "$HERE/backup-live-sqlite.py" --as-owner "$tree" "$BOX_COPY/$(basename "$tree")" \
         || log "WARN: owner $(basename "$tree") kept as its reflink copy; SQLite re-take failed"
 done
-cp -a --reflink=auto -- "$DATA_DIR" "$DATA_COPY"
+copy_live --reflink=auto -- "$DATA_DIR" "$DATA_COPY"
 python3 "$HERE/backup-live-sqlite.py" "$DATA_DIR" "$DATA_COPY"
 # An owner whose destruction began (a durable fence written before any
 # deletion IO) is left out: the later data copy records it as destroyed, so
