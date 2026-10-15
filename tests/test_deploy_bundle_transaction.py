@@ -140,6 +140,7 @@ import re
 import sys
 import tarfile
 import io
+import time
 
 
 STATE_PATH = os.environ["FAKE_DOCKER_STATE"]
@@ -494,6 +495,10 @@ def main(argv):
                 % (argv[-1], (container or {}).get("status", "missing"))
             )
             return 1
+        if argv[0] == "stop" and state.get("stop_delay_s"):
+            delay = state.pop("stop_delay_s")
+            save_state(state)
+            time.sleep(delay)
         if container is not None:
             container["status"] = "running" if argv[0] == "start" else "exited"
             save_state(state)
@@ -587,6 +592,8 @@ def main(argv):
             return 0
         if "up" in argv:
             ref = env_values.get("TINYASSETS_IMAGE", "")
+            if ref in (state.get("up_start_delay_s") or {}):
+                time.sleep(state["up_start_delay_s"][ref])
             partial = ref in (state.get("up_partial_images") or [])
             if not partial and (
                 not state.get("up_ok", True)
@@ -1629,6 +1636,57 @@ def test_layout_two_still_refuses_rollback_to_an_older_image(box: Box, explicit)
     else:
         assert box.env_image() == NEW_IMAGE, "automatic rollback must not start the old image"
         assert "stop tinyassets-daemon" in box.docker_calls_text()
+
+
+def test_idle_proof_allows_candidate_start_longer_than_drain_bound(box: Box):
+    """Starting the candidate may take longer than the old daemon's drain."""
+    box.set_docker_state(up_start_delay_s={NEW_IMAGE: 21})
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert _result(completed) == "deployed"
+    assert "in-flight proof: idle" in completed.stdout
+    assert "converge took 2" in completed.stdout
+    assert "old daemon drain took" in completed.stdout
+    assert box.env_image() == NEW_IMAGE
+
+
+def test_drain_bound_still_refuses_a_cut_turn(box: Box):
+    box.set_docker_state(stop_delay_s=20.2)
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 2, completed.stdout + completed.stderr
+    assert _result(completed) == "rolled_back"
+    assert "refusing this deploy rather than accepting a cut turn" in completed.stderr
+    assert box.env_image() == OLD_IMAGE
+    assert "up -d --timeout 20" in box.docker_calls_text()
+
+
+def test_rollback_accepts_current_stable_owner_split_marker(box: Box):
+    marker = box.root / "default-data-volume" / ".layout.json"
+    marker.write_text(json.dumps({
+        "layout": 2, "state": "stable", "box_layout": "owner-split",
+        "moves": {"consents_outside_command_centers": "done"},
+    }), encoding="utf-8")
+    box.set_docker_state(
+        known_layouts={
+            NEW_IMAGE: {"layouts": [1, 2], "boxes": ["owner-split"]},
+            OLD_IMAGE: {"layouts": [1, 2], "boxes": ["owner-split"]},
+        },
+        unhealthy_images=[NEW_IMAGE],
+    )
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 2, completed.stdout + completed.stderr
+    assert _result(completed) == "rolled_back"
+    assert box.env_image() == OLD_IMAGE
+    assert "rollback_needs_restore" not in completed.stdout
 
 
 def test_no_image_rollback_onto_data_the_failed_candidate_began_migrating(box: Box):

@@ -250,19 +250,19 @@ def test_uvicorn_accepts_the_keyword_we_are_passing():
     assert "timeout_graceful_shutdown" in inspect.signature(uvicorn.Config).parameters
 
 
-def test_the_converge_is_timed_so_the_bound_can_be_measured():
-    """The bound is a judgement, and it is only revisable with data.
-
-    `restart_stack` logs how long the converge took, and says so when it reaches
-    the grace bound -- which is the observable that says whether turns are still
-    being cut off.
-    """
+def test_only_the_old_daemon_stop_is_compared_with_the_drain_bound():
+    """Candidate startup time cannot be mistaken for a cut old-daemon turn."""
     body = SCRIPT.read_text(encoding="utf-8")
     match = re.search(r"^restart_stack\(\) \{\n(.*?)^\}", body, re.S | re.M)
     assert match, "restart_stack is no longer a plain shell function"
     function = match.group(1)
     assert 'started="$SECONDS"' in function
     assert "SECONDS - started" in function
+    assert 'docker stop --time "$MAX_DAEMON_STOP_GRACE_S" "$DAEMON_CONTAINER"' in function
+    stop = function.index("docker stop --time")
+    bound = function.index('if [ "$elapsed" -ge "$MAX_DAEMON_STOP_GRACE_S" ]')
+    compose = function.index("docker compose")
+    assert stop < bound < compose
     assert "converge took" in function
     assert "MAX_DAEMON_STOP_GRACE_S" in function, (
         "reaching the bound is the signal that a turn was cut off; say so in the log")
