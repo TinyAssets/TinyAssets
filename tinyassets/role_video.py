@@ -12,6 +12,23 @@ MAX_RESULT_BYTES = MAX_FRAME_BYTES * MAX_FRAMES + 16384
 
 
 def frames(data, universe_dir):
+    from tinyassets.control_plane.binding import file_binding
+
+    if universe_dir is None:
+        raise RuntimeError('video requires an admitted command center')
+    binding = file_binding(Path(universe_dir))
+    if binding is not None:
+        if type(data) is not bytes or not 0 < len(data) <= MAX_SOURCE_BYTES:
+            raise ValueError('video input exceeds its bound or is empty')
+        from tinyassets.box_process import run_bound
+
+        done = run_bound(binding, 'video-frames',
+                         ['python', '-m', 'tinyassets.role_video_codec'], stdin=data,
+                         wall_seconds=160, output_bytes=MAX_RESULT_BYTES)
+        if done.returncode:
+            raise RuntimeError('video box execution did not complete')
+        return parse_result(done.stdout)
+
     from tinyassets import role_decoder
     from tinyassets.broker.owner_identities import owner_identity
     from tinyassets.role_scope import owner_principal

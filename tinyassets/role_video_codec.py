@@ -7,6 +7,7 @@ import os
 import resource
 import subprocess
 import sys
+import tempfile
 
 from tinyassets.role_video import MAX_FRAME_BYTES, MAX_FRAMES, MAX_SOURCE_BYTES
 
@@ -19,8 +20,7 @@ def cell_main():
     data = sys.stdin.buffer.read(MAX_SOURCE_BYTES + 1)
     if not 0 < len(data) <= MAX_SOURCE_BYTES:
         raise ValueError('invalid video input size')
-    os.mkdir('/tmp/video', 0o700)
-    os.chdir('/tmp/video')
+    os.chdir(tempfile.mkdtemp(prefix='video-', dir='/tmp'))
     with open('source', 'xb') as target:
         target.write(data)
     del data
@@ -63,3 +63,7 @@ def cell_main():
     for frame in frames:
         sys.stdout.buffer.write(frame)
     return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(cell_main())
