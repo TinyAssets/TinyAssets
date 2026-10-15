@@ -1848,8 +1848,8 @@ def test_custom_agent_write_brain_refuses_main_identity_but_writes_shared_fields
 
 
 
-def test_custom_agent_write_tool_passes_session_agent_to_runner(monkeypatch, tmp_path,
-                                                                 _owner_box_double):
+def test_custom_agent_write_tool_writes_through_the_owner_box(monkeypatch, tmp_path,
+                                                              _owner_box_double):
     import asyncio
     from types import SimpleNamespace
     from urllib.parse import parse_qsl, urlsplit
@@ -1865,8 +1865,7 @@ def test_custom_agent_write_tool_passes_session_agent_to_runner(monkeypatch, tmp
         "http://localhost/mcp", f"thread:agent:{agent_id}:principal:sub-brain")
     monkeypatch.setattr(dependencies, "get_http_request", lambda: SimpleNamespace(
         query_params=dict(parse_qsl(urlsplit(route).query))))
-    if _owner_box_double is None:
-        pytest.skip("the owner box double needs Linux")
+    assert _owner_box_double is not None, "the owner box double needs Linux"
     from tinyassets.boxes.provider import ExecLimits
     from tinyassets.control_plane.binding import bind_session, use_binding
 
@@ -1879,7 +1878,6 @@ def test_custom_agent_write_tool_passes_session_agent_to_runner(monkeypatch, tmp
     assert (udir / "founder.md").read_text(encoding="utf-8") == "shared learning"
 
 
-@pytest.mark.skipif(os.name != "posix", reason="the box tools and their bash are Linux-only")
 def test_an_activity_bash_is_handed_the_stop_its_activity_polls(monkeypatch, tmp_path,
                                                                  _owner_box_double):
     """A bash run for an activity is killed when the activity stops: the
@@ -1903,8 +1901,7 @@ def test_an_activity_bash_is_handed_the_stop_its_activity_polls(monkeypatch, tmp
     route = route_with_session("http://localhost/mcp", f"activity:{aid}")
     monkeypatch.setattr(dependencies, "get_http_request", lambda: SimpleNamespace(
         query_params=dict(parse_qsl(urlsplit(route).query))))
-    if _owner_box_double is None:
-        pytest.skip("the owner box double needs Linux")
+    assert _owner_box_double is not None, "the owner box double needs Linux"
     import threading
 
     from tinyassets.activity_fence import stop_check

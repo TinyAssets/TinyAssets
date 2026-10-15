@@ -128,6 +128,7 @@ def test_another_user_cannot_drive_the_tools_over_someone_elses_universe(
     s = _bind_engine(monkeypatch, root, actor="actor-a", graph="u-a")
     for out in _call_all_four(s):
         assert "no admitted session" in out, out
+        assert "private founder notes" not in out
 
 
 def test_an_unbound_engine_refuses_every_tool(monkeypatch):

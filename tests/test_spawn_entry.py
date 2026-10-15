@@ -66,8 +66,7 @@ def test_every_parent_kind_resolves_the_agent_from_its_files(tmp_path, _owner_bo
 
     from tinyassets.control_plane import session
 
-    if _owner_box_double is None:
-        pytest.skip("the owner box double needs Linux")
+    assert _owner_box_double is not None, "the owner box double needs Linux"
 
     (tmp_path / "u").mkdir()
     folder = tmp_path / "u" / "agents" / "scout"

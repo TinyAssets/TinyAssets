@@ -212,8 +212,7 @@ def test_the_engine_read_returns_image_content_the_client_accepts(tmp_path, monk
     monkeypatch.setattr(s, "_ACTOR_ID", "actor-a")
     monkeypatch.setattr(s, "_GRAPH_ID", "u-a")
     mock_engine_admission(monkeypatch, {"u-a"})
-    if _owner_box_double is None:
-        pytest.skip("the owner box double needs Linux")
+    assert _owner_box_double is not None, "the owner box double needs Linux"
     (root / "u-a" / "previews").mkdir()
     (root / "u-a" / "previews" / "v.png").write_bytes(_png(3000, 1000))
     (root / "u-a" / "notes").mkdir()

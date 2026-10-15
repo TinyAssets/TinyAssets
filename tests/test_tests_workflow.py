@@ -811,7 +811,7 @@ def test_affected_tests_select_then_run_their_slice_through_the_gate_script() ->
 # ---- the conservative merge gate (round-2 fixes from the #4359 review) ------
 
 
-def test_pr_tiers_use_fast_units_and_require_the_real_production_image():
+def test_pr_tiers_use_fast_units_on_the_box_runner():
     jobs = _load()["jobs"]
     unit = "\n".join(s.get("run", "") for s in jobs["affected-tests"]["steps"])
     assert "--ci-select pr --base HEAD^1" in unit
