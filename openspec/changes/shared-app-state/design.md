@@ -37,10 +37,23 @@ actor is the authenticated account (S14). An app is still one command center
    exists, and only while the owner's in-flight runs are under the owner's
    background seats. `scheduled_runs` tells the owner who is billed. A
    member cannot read it.
-9. A live write records owed bytes in the same transaction. The quota
-   ledger is charged when an account owes 65536 bytes, or by the stream
-   process about every 2 seconds. The charge happens outside the writer
-   lock. A same-sized position update does not call the ledger.
+9. A durable live write records owed bytes in the same transaction. The
+   quota ledger is charged when an account owes 65536 bytes, or by the
+   stream process about every 2 seconds. The charge happens outside the
+   writer lock. A same-sized position update does not call the ledger.
+10. A record kind declares `durability` `transient` or `durable` (the
+    default). Transient updates of an existing record are authoritative in
+    memory for that one app, fanned out on the stream, and checkpointed on
+    the document's `checkpoint_s` or before a transition, transfer, or
+    document replace. A checkpoint is one transaction: the latest body and
+    one log row per dirty record, billed as stored bytes, not as one row
+    per tick. Creation of a transient record is a durable insert. Durable
+    writes, transitions, and transfers still commit with an etag. A crash
+    between checkpoints drops uncheckpointed transient ticks. Group commit
+    of every tick stays off the hot path: the serial cost is the apply, and
+    a commit per burst is still linear in N. A writer per app does not
+    split the players of one app; the per-app memory lock is what keeps
+    unrelated apps off that path.
 
 ## Non-goals
 

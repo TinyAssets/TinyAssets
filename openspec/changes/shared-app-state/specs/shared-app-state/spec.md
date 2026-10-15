@@ -75,6 +75,26 @@ owner as the account that pays with the owner's seat and provider.
 - **WHEN** the document declares more scheduled runs than the owner's background seats and the host pumps them
 - **THEN** at most that many runs are in flight, the rest are capped, and a member cannot read the billing
 
+### Requirement: Transient records are not committed on every tick
+A record kind MAY declare `durability` `transient`. The default is
+`durable`. An update of an existing transient record SHALL be applied in
+memory for that app, fanned out on the stream, and SHALL NOT commit on
+that tick. A checkpoint SHALL store the latest body and one log row for
+that record in one transaction, and SHALL bill the stored growth plus
+that log row. Creation of a transient record SHALL be a durable insert.
+A durable write, transition, or transfer SHALL still conflict when the
+etag does not match, and SHALL NOT lose an update. A checkpoint SHALL
+run before a transition or transfer so that compare-and-swap sees the
+memory etag. Unrelated apps SHALL NOT share the transient lock.
+
+#### Scenario: A burst of position updates
+- **WHEN** a transient record is created and then updated many times before one checkpoint
+- **THEN** the stored body is the latest one, the log has the create plus one checkpoint row, and a second writer using the stale etag conflicts
+
+#### Scenario: A durable record is written twice at one etag
+- **WHEN** two durable writes present the same etag
+- **THEN** one write commits and the other raises a retryable conflict
+
 ### Requirement: Live updates are pushed to the signed-in shell
 A member SHALL be able to read public deltas after a cursor, limited to
 named kinds and keys. The cursor SHALL move past every row examined. A

@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -26,9 +27,12 @@ from tinyassets.daemon_server import (
 )
 from tinyassets.onboarding.ui_frame import FRAME_CSP
 from tinyassets.shared_state import (
+    StateConflict,
+    checkpoint,
     definition_bytes,
     definition_count,
     read_record,
+    record_key_bytes,
     runs_for,
     save_app,
     sync,
@@ -48,6 +52,7 @@ WORLD = {
         "ship": {
             "ownership": "creator", "read": "public", "write": "owner",
             "public": ["where", "heading"], "secret": [],
+            "durability": "transient",
         },
         "presence": {
             "ownership": "creator", "read": "public", "write": "owner",
@@ -55,6 +60,7 @@ WORLD = {
         },
     },
     "sync": ["character", "ship", "presence"],
+    "checkpoint_s": 60,
 }
 
 
@@ -102,6 +108,66 @@ def _runtime() -> str:
         if shutil.which(name):
             return name
     return ""
+
+
+def test_transient_checkpoint_is_one_log_row(tmp_path: Path):
+    """Ticks stay in memory. A checkpoint stores the latest body once."""
+    universe = "app-motion"
+    _app(tmp_path, "owner", universe, WORLD)
+    _join(tmp_path, "owner", universe, "ada")
+    created = write_record(
+        tmp_path, actor="ada", universe_id=universe, kind="ship", key="ship",
+        body={"where": [0, 0], "heading": 0}, expect_etag=0,
+    )
+    assert created["etag"] == 1
+    etag = 1
+    for step in range(30):
+        wrote = write_record(
+            tmp_path, actor="ada", universe_id=universe, kind="ship", key="ship",
+            body={"where": [step + 1, 0], "heading": step}, expect_etag=etag,
+        )
+        etag = int(wrote["etag"])
+    assert checkpoint(tmp_path, universe) == 1
+    stored = read_record(tmp_path, actor="ada", universe_id=universe, key="ada/ship")
+    assert stored["body"]["where"] == [30, 0]
+    assert stored["etag"] == 31
+    with _connect(tmp_path) as conn:
+        row = conn.execute(
+            "SELECT private_json, etag FROM app_records"
+            " WHERE universe_id = ? AND record_key = ?",
+            (universe, "ada/ship"),
+        ).fetchone()
+        logged = conn.execute(
+            "SELECT COUNT(*) FROM app_log WHERE universe_id = ? AND record_key = ?",
+            (universe, "ada/ship"),
+        ).fetchone()[0]
+    assert json.loads(row["private_json"])["where"] == [30, 0]
+    assert int(row["etag"]) == 31
+    assert record_key_bytes(tmp_path, universe, "ada/ship") > int(row["etag"])
+    assert int(logged) == 2
+    barrier = threading.Barrier(2)
+    outcomes: list[str] = []
+
+    def again() -> None:
+        barrier.wait(timeout=5)
+        try:
+            write_record(
+                tmp_path, actor="ada", universe_id=universe, kind="ship", key="ship",
+                body={"where": [99, 0], "heading": 1}, expect_etag=etag,
+            )
+        except StateConflict:
+            outcomes.append("conflict")
+        else:
+            outcomes.append("ok")
+
+    threads = [threading.Thread(target=again) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+    assert sorted(outcomes) == ["conflict", "ok"]
+    final = read_record(tmp_path, actor="ada", universe_id=universe, key="ada/ship")
+    assert final["etag"] == etag + 1
 
 
 def test_frame_receives_live_events_without_a_socket():
@@ -179,13 +245,20 @@ def _start_server(base: Path) -> tuple[subprocess.Popen, int, str]:
         proc = subprocess.Popen(
             [sys.executable, "-m", "tinyassets.shared_live"],
             env=env, cwd=str(Path.cwd()),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL, stderr=open("/tmp/live-server.err", "w"),
         )
         source = "http_process"
     deadline = time.time() + 30
     while time.time() < deadline:
         if proc.poll() is not None:
-            err = proc.stderr.read().decode("utf-8", "replace") if proc.stderr else ""
+            err = ""
+            if proc.stderr is not None:
+                err = proc.stderr.read().decode("utf-8", "replace")
+            else:
+                try:
+                    err = open("/tmp/live-server.err", encoding="utf-8", errors="replace").read()
+                except OSError:
+                    err = ""
             raise RuntimeError(err[-2000:])
         try:
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
@@ -204,59 +277,120 @@ def _start_server(base: Path) -> tuple[subprocess.Popen, int, str]:
     raise RuntimeError("live server did not accept a connection")
 
 
+# Linux SO_TIMESTAMPNS. The kernel records when the bytes arrived, so a
+# reader that wakes late does not move the delivery clock.
+_SO_TIMESTAMPNS = 35
+
+
+def _arrived(ancillary) -> float:
+    """perf_counter-domain time of the packet the kernel just handed up."""
+    for _level, kind, raw in ancillary:
+        if kind == _SO_TIMESTAMPNS and len(raw) >= 16:
+            sec, nsec = struct.unpack_from("qq", raw)
+            return time.perf_counter() - time.time() + sec + nsec / 1e9
+    return time.perf_counter()
+
+
 def _watch(port: int, actor: str, universe: str, since: int, gate, stop, seen, order, errors):
+    """One player, one stream. Delivery is the kernel time of the recv."""
     entered = False
     while not stop.is_set():
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+        sock = socket.socket()
+        sock.settimeout(30)
         try:
+            sock.connect(("127.0.0.1", port))
+            sock.setsockopt(socket.SOL_SOCKET, _SO_TIMESTAMPNS, 1)
             path = (
-                f"/app/api/live/stream?universe_id={universe}&since={since}"
-                "&kinds=ship"
+                f"/app/api/live/stream?universe_id={universe}&since={since}&kinds=ship"
             )
-            conn.request("GET", path, headers={"Authorization": f"Bearer acct:{actor}"})
-            resp = conn.getresponse()
-            if resp.status != 200:
-                errors.append(f"stream {resp.status}")
+            raw = (
+                f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                f"Authorization: Bearer acct:{actor}\r\nConnection: keep-alive\r\n\r\n"
+            ).encode()
+            sock.sendall(raw)
+            buf = b""
+            while b"\r\n\r\n" not in buf:
+                data, _anc, _flags, _addr = sock.recvmsg(65536, 256)
+                if not data:
+                    errors.append("stream closed")
+                    return
+                buf += data
+            head, buf = buf.split(b"\r\n\r\n", 1)
+            status = int(head.split(b"\r\n", 1)[0].split()[1])
+            if status != 200:
+                errors.append(f"stream {status}")
                 return
-            if conn.sock is not None:
-                conn.sock.settimeout(5.0)
             if not entered:
                 entered = True
                 try:
-                    gate.wait(timeout=30)
+                    gate.wait(timeout=60)
                 except threading.BrokenBarrierError:
                     return
-            buf = b""
+            sock.settimeout(5.0)
+            pending = buf
+            payload = b""
             while not stop.is_set():
                 try:
-                    chunk = resp.read1(8192)
-                except (TimeoutError, socket.timeout, ValueError):
+                    data, anc, _flags, _addr = sock.recvmsg(65536, 256)
+                except (TimeoutError, socket.timeout):
                     break
-                if not chunk:
+                if not data:
                     break
-                buf += chunk
-                while b"\n\n" in buf:
-                    block, buf = buf.split(b"\n\n", 1)
-                    for line in block.split(b"\n"):
-                        if not line.startswith(b"data:"):
-                            continue
-                        page = json.loads(line[5:])
-                        now = time.perf_counter()
-                        for event in page.get("events") or []:
-                            seq = int(event["seq"])
-                            seen.setdefault(seq, now)
-                            order.append(seq)
-                            if event.get("kind") != "ship":
-                                errors.append("unexpected kind")
-                            if isinstance(page.get("cursor"), int):
-                                since = max(since, int(page["cursor"]))
+                arrived = _arrived(anc)
+                pending += data
+                while True:
+                    line, sep, rest = pending.partition(b"\r\n")
+                    if not sep:
+                        break
+                    try:
+                        size = int(line.split(b";", 1)[0], 16)
+                    except ValueError:
+                        errors.append("chunk")
+                        return
+                    if len(rest) < size + 2:
+                        break
+                    payload += rest[:size]
+                    pending = rest[size + 2:]
+                    while b"\n\n" in payload:
+                        block, _, payload = payload.partition(b"\n\n")
+                        for row in block.split(b"\n"):
+                            if not row.startswith(b"data:"):
+                                continue
+                            page = json.loads(row[5:])
+                            for event in page.get("events") or []:
+                                seq = int(event["seq"])
+                                seen.setdefault(seq, arrived)
+                                order.append(seq)
+                                if event.get("kind") != "ship":
+                                    errors.append("unexpected kind")
+                                if isinstance(page.get("cursor"), int):
+                                    since = max(since, int(page["cursor"]))
         except (TimeoutError, socket.timeout, OSError) as exc:
             if stop.is_set():
                 return
             errors.append(str(exc))
             return
         finally:
-            conn.close()
+            sock.close()
+
+
+def _checkpoint(port: int, universe: str) -> None:
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    try:
+        body = json.dumps({"op": "checkpoint", "universe_id": universe}).encode()
+        conn.request(
+            "POST", "/app/api/live", body=body,
+            headers={
+                "Authorization": "Bearer acct:p0",
+                "Content-Type": "application/json",
+            },
+        )
+        resp = conn.getresponse()
+        raw = resp.read()
+        if resp.status != 200:
+            raise AssertionError(f"checkpoint {resp.status} {raw[:200]!r}")
+    finally:
+        conn.close()
 
 
 def _move(port: int, universe: str, player: str, etag: int, updates: int, writes, errors):
@@ -315,7 +449,7 @@ def test_http_movement_ramp(tmp_path: Path, capsys):
     )
     universe = "app-echoes"
     _app(tmp_path, "owner", universe, WORLD)
-    players = [f"p{index}" for index in range(256)]
+    players = [f"p{index}" for index in range(512)]
     for player in players:
         _join(tmp_path, "owner", universe, player)
         write_record(
@@ -326,12 +460,21 @@ def test_http_movement_ramp(tmp_path: Path, capsys):
             tmp_path, actor=player, universe_id=universe, kind="ship", key="ship",
             body={"where": [0, 0], "heading": 0}, expect_etag=0,
         )
-    cursor = sync(tmp_path, actor="owner", universe_id=universe, since=0)["cursor"]
+    cursor = 0
+    while True:
+        page = sync(
+            tmp_path, actor="owner", universe_id=universe, since=cursor, limit=500,
+        )
+        nxt = int(page["cursor"])
+        if not page["events"] or nxt == cursor:
+            cursor = nxt
+            break
+        cursor = nxt
     etags = {player: 1 for player in players}
     proc, port, source = _start_server(tmp_path)
     levels = []
     try:
-        for count in (16, 64, 128, 256):
+        for count in (16, 64, 128, 256, 512):
             group = players[:count]
             gate = threading.Barrier(count + 1)
             stop = threading.Event()
@@ -350,7 +493,7 @@ def test_http_movement_ramp(tmp_path: Path, capsys):
                 )
                 thread.start()
                 watchers.append(thread)
-            gate.wait(timeout=30)
+            gate.wait(timeout=60)
             movers = []
             for player in group:
                 thread = threading.Thread(
@@ -363,7 +506,7 @@ def test_http_movement_ramp(tmp_path: Path, capsys):
                 thread.start()
                 movers.append(thread)
             for thread in movers:
-                thread.join(timeout=60)
+                thread.join(timeout=120)
             deadline = time.time() + 20
             wanted = {row["seq"] for row in writes}
             while time.time() < deadline:
@@ -420,6 +563,7 @@ def test_http_movement_ramp(tmp_path: Path, capsys):
             assert stats["conflicts"] == 0
             assert not write_errors
             assert not watch_errors
+        _checkpoint(port, universe)
     finally:
         proc.kill()
         proc.wait(timeout=10)
@@ -428,9 +572,7 @@ def test_http_movement_ramp(tmp_path: Path, capsys):
         "source": "in_process_read_of_http_data",
         "owner_runs": len(runs_for(tmp_path, "owner")),
         "owner_definition_bytes": definition_bytes(tmp_path, "owner"),
-        "player_record_bytes": read_record(
-            tmp_path, actor="p0", universe_id=universe, key="p0/ship",
-        )["etag"],
+        "player_record_bytes": record_key_bytes(tmp_path, universe, "p0/ship"),
         "owner_seats_running": int(held["running"]),
         "definitions": definition_count(tmp_path, universe),
     }
@@ -441,7 +583,18 @@ def test_http_movement_ramp(tmp_path: Path, capsys):
     assert cost["owner_runs"] == 0
     assert cost["owner_seats_running"] == 0
     assert cost["definitions"] == 1
-    assert cost["player_record_bytes"] > 1
-    assert levels and [row["players"] for row in levels] == [16, 64, 128, 256]
+    stored = read_record(tmp_path, actor="p0", universe_id=universe, key="p0/ship")
+    assert stored["body"]["where"] == [4, 0]
+    assert cost["player_record_bytes"] == record_key_bytes(tmp_path, universe, "p0/ship")
+    assert cost["player_record_bytes"] > stored["etag"]
+    with _connect(tmp_path) as conn:
+        logged = conn.execute(
+            "SELECT COUNT(*) FROM app_log WHERE universe_id = ? AND record_key = ?",
+            (universe, "p0/ship"),
+        ).fetchone()[0]
+    assert 1 < int(logged) < 20
+    row_256 = next(row for row in levels if row["players"] == 256)
+    assert row_256["deliver_p50_ms"] < 50, row_256
+    assert levels and [row["players"] for row in levels] == [16, 64, 128, 256, 512]
     captured = capsys.readouterr()
     assert "HTTP_MEASURED" in captured.out

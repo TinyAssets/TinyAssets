@@ -20,6 +20,11 @@ app that stored it. A declared transfer may debit and credit the same numeric
 field in another app the actor belongs to, when that app declares the same
 transfer. Neither app is copied.
 
+A kind marked ``transient`` keeps its latest body in memory and on the
+stream. The stored row is a checkpoint, not a commit of every update.
+Durable kinds still commit with an etag. Unrelated apps do not share that
+memory.
+
 What this module will not do, because it would be a second path or a guess:
 
 * It will not execute arbitrary rules supplied as code.
@@ -53,11 +58,13 @@ _log = logging.getLogger(__name__)
 SCHEMA = "app/v1"
 _DOC_KEYS = frozenset({
     "schema", "records", "transitions", "transfers", "timers", "groups", "sync",
-    "runs", "motion",
+    "runs", "motion", "checkpoint_s",
 })
 _RECORD_KEYS = frozenset({
     "ownership", "read", "write", "secret", "public", "max_bytes", "server",
+    "durability",
 })
+_DURABILITY = frozenset({"durable", "transient"})
 _OWNERSHIP = frozenset({"creator", "app"})
 _READ = frozenset({"owner", "members", "public"})
 _WRITE = frozenset({"owner", "members", "app", "transition", "transfer"})
@@ -88,13 +95,18 @@ _RING_MAX = 8192
 
 
 class _Ring:
-    """Committed public deltas, indexed by sequence so a waiter copies only its tail."""
+    """Committed public deltas, indexed by sequence so a waiter copies only its tail.
 
-    __slots__ = ("items", "base")
+    ``snap`` is the tuple waiters read. It is replaced on the notify tick, so a
+    burst does not make every waiter copy the live list under the writer lock.
+    """
+
+    __slots__ = ("items", "base", "snap")
 
     def __init__(self) -> None:
         self.items: list[dict] = []
         self.base = 0
+        self.snap: tuple[int, tuple] = (0, ())
 
     def append(self, event: dict) -> None:
         seq = int(event["seq"])
@@ -121,6 +133,36 @@ class _Ring:
         if start >= len(self.items):
             return []
         return self.items[start:]
+
+
+class _Board:
+    """In-memory authority for one app's transient records.
+
+    Unrelated apps do not share this lock. A checkpoint copies ``dirty`` and
+    releases the lock before it touches sqlite.
+    """
+
+    __slots__ = (
+        "lock", "seq", "seeded", "next_pub", "ready", "records", "dirty",
+        "warm", "warm_lock", "last_checkpoint",
+    )
+
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.seq = 0
+        self.seeded = False
+        self.next_pub = 1
+        self.ready: dict[int, dict] = {}
+        self.records: dict[str, dict] = {}
+        self.dirty: set[str] = set()
+        self.warm = False
+        self.warm_lock = threading.Lock()
+        self.last_checkpoint = time.monotonic()
+
+
+_BOARDS: dict[str, _Board] = {}
+_BOARDS_GUARD = threading.Lock()
+_BUMPED = threading.local()
 
 APP_PERMISSION = "app"
 VIEW_PERMISSION = "view"
@@ -177,6 +219,26 @@ def record_bytes(base: Path, account_id: str) -> int:
     return private + public
 
 
+def record_key_bytes(base, universe_id: str, key: str) -> int:
+    """Stored bytes of one record: its private body plus its public log rows."""
+    uid = _uid(universe_id)
+    with _read(base) as conn:
+        _ensure(conn)
+        private = conn.execute(
+            "SELECT length(private_json) FROM app_records"
+            " WHERE universe_id = ? AND record_key = ?",
+            (uid, key),
+        ).fetchone()
+        logged = conn.execute(
+            "SELECT SUM(length(public_json)) FROM app_log"
+            " WHERE universe_id = ? AND record_key = ?",
+            (uid, key),
+        ).fetchone()
+    stored = int(private[0] or 0) if private and private[0] is not None else 0
+    public = int(logged[0] or 0) if logged and logged[0] is not None else 0
+    return stored + public
+
+
 def definition_count(base, universe_id: str) -> int:
     """How many copies of the app document exist. The only legal count is one."""
     uid = _uid(universe_id)
@@ -223,6 +285,7 @@ def revise_app(
     uid = _uid(universe_id)
     if owner not in _owners(base, uid):
         raise PermissionError("only the app owner can store the app")
+    checkpoint(base, uid)
     body = _document(document)
     raw = json.dumps(body, sort_keys=True, separators=(",", ":"))
     if len(raw.encode("utf-8")) > _MAX_DOC:
@@ -380,6 +443,14 @@ def write_record(
     member = _actor(actor)
     uid = _uid(universe_id)
     payload = _body(body)
+    spec = _cached_spec(base, uid, kind)
+    if spec.get("durability") == "transient" and not token:
+        live = _write_transient(
+            base, member=member, uid=uid, kind=kind, key=key, payload=payload,
+            expect_etag=int(expect_etag), spec=spec,
+        )
+        if live is not None:
+            return live
     prepaid: dict[str, int] = {}
     last: BaseException | None = None
     for _attempt in range(8):
@@ -469,12 +540,27 @@ def read_record(base, *, actor: str, universe_id: str, key: str) -> dict[str, An
     """The caller's view of one record. Secret fields stay with the record owner."""
     member = _actor(actor)
     uid = _uid(universe_id)
+    role = _cached_role(base, uid, member)
+    if role is None:
+        raise PermissionError("record not found")
+    board = _BOARDS.get(uid)
+    if board is not None:
+        with board.lock:
+            live = board.records.get(key)
+        if live is not None:
+            spec = _cached_spec(base, uid, live["kind"])
+            if spec.get("durability") == "transient":
+                if not _may_read(spec, role, member == live["owner"]):
+                    raise PermissionError("record not found")
+                show_private = member == live["owner"]
+                body = live["private"] if show_private else live["public"]
+                return {
+                    "key": key, "kind": live["kind"], "owner": live["owner"],
+                    "etag": int(live["etag"]), "seq": int(live["seq"]),
+                    "body": body, "private": show_private,
+                }
     with _read(base) as conn:
         _ensure(conn)
-        doc_owner = _doc_owner(conn, uid)
-        role = _role(conn, uid, member, doc_owner)
-        if role is None:
-            raise PermissionError("record not found")
         row = conn.execute(
             "SELECT kind, owner_user_id, private_json, public_json, etag, seq"
             " FROM app_records WHERE universe_id = ? AND record_key = ?",
@@ -518,6 +604,11 @@ def delete_record(
             (uid, key),
         )
         _log(conn, uid, seq, key, row["owner_user_id"], row["kind"], "delete", "{}", member)
+    board = _BOARDS.get(uid)
+    if board is not None:
+        with board.lock:
+            board.records.pop(key, None)
+            board.dirty.discard(key)
     return {"key": key, "seq": seq, "deleted": True}
 
 
@@ -533,6 +624,9 @@ def sync(
     member = _actor(actor)
     uid = _uid(universe_id)
     cap = max(1, min(int(limit), 2000))
+    hit = _from_ring(uid, member, int(since), cap, kinds, keys)
+    if hit is not None:
+        return hit
     wanted_kinds = None if kinds is None else [str(item) for item in kinds]
     wanted_keys = None if keys is None else [str(item) for item in keys]
     with _read(base) as conn:
@@ -653,25 +747,45 @@ def _shared_page(
             base, actor=member, universe_id=uid, since=since, limit=limit,
             kinds=kinds, keys=keys,
         )
-    with _LIVE:
-        tip = _TIP.get(uid, 0)
+    tip = int(_TIP.get(uid, 0))
     if int(since) >= tip:
         return {"events": [], "cursor": int(since)}
+    ring = _RINGS.get(uid)
+    snap = ring.snap if ring is not None else (0, ())
     kind_key = None if kinds is None else tuple(kinds)
     key_key = None if keys is None else tuple(keys)
-    token = (uid, int(since), int(limit), kind_key, key_key, int(tip))
-
-    def build() -> dict | None:
-        hit = _from_ring(uid, member, int(since), int(limit), kinds, keys)
-        return hit
-
-    shared = _flight(token, build)
-    if shared is None:
-        return _page(
+    last = snap[1][-1]["seq"] if snap[1] else 0
+    if last <= int(since):
+        # The snapshot has not caught this burst yet. Callers wait and retry.
+        return {"events": [], "cursor": int(since)}
+    token = (uid, int(since), int(limit), kind_key, key_key, int(last))
+    cached = _PAGES.get(token)
+    if cached is not None:
+        return cached
+    page = _filter_events(
+        document, role, member, int(since), int(limit), kinds, keys, snap,
+    )
+    if page is None:
+        # The ring starts after this cursor. The log still has the hole, and
+        # the live tail has to keep moving once that hole is delivered.
+        logged = _page(
             base, actor=member, universe_id=uid, since=since, limit=limit,
             kinds=kinds, keys=keys,
         )
-    return shared
+        if logged.get("events"):
+            return logged
+        if snap[1]:
+            jumped = _filter_events(
+                document, role, member, int(snap[1][0]["seq"]) - 1, int(limit),
+                kinds, keys, snap,
+            )
+            if jumped is not None:
+                return jumped
+        return {"events": [], "cursor": int(since)}
+    if len(_PAGES) > 128:
+        _PAGES.clear()
+    _PAGES[token] = page
+    return page
 
 
 def wait_live(
@@ -777,6 +891,7 @@ def transfer(
     replay = _replay(base, member, token, raw)
     if replay is not None:
         return replay
+    checkpoint(base, uid)
     with _immediate(base) as conn:
         doc_owner = _doc_owner(conn, uid)
         _require_member(conn, uid, member, doc_owner)
@@ -879,6 +994,7 @@ def transition(
     replay = _replay(base, member, token, raw)
     if replay is not None:
         return replay
+    checkpoint(base, uid)
     with _immediate(base) as conn:
         result = _apply_transition(
             conn, uid=uid, actor=member, key=key, name=name,
@@ -1059,11 +1175,12 @@ def advance(base, *, universe_id: str, now: float) -> list[dict[str, Any]]:
     """Step declared numeric motion. No run, no seat, no box."""
     uid = _uid(universe_id)
     clock = float(now)
+    transient = _advance_transient(base, uid, clock)
     prepaid: dict[str, int] = {}
     last: BaseException | None = None
     for _attempt in range(8):
         try:
-            return _advance_once(base, uid, clock, prepaid)
+            return transient + _advance_once(base, uid, clock, prepaid)
         except _NeedFlush as need:
             flush_due(base, need.account)
             last = need
@@ -1082,6 +1199,9 @@ def _advance_once(
     with _immediate(base) as conn:
         document = _load(conn, uid)
         for rule in document.get("motion") or []:
+            kind_spec = document["records"].get(rule["kind"]) or {}
+            if kind_spec.get("durability") == "transient":
+                continue
             rows = conn.execute(
                 "SELECT record_key, owner_user_id, etag, private_json, public_json"
                 " FROM app_records WHERE universe_id = ? AND kind = ?",
@@ -1505,9 +1625,13 @@ def _document(document: dict) -> dict:
         max_bytes = int(spec.get("max_bytes") or 4096)
         if max_bytes < 1 or max_bytes > _MAX_RECORD:
             raise ValueError("record max_bytes is out of range")
+        durability = spec.get("durability") or "durable"
+        if durability not in _DURABILITY:
+            raise ValueError("record durability is unknown")
         cleaned.append((kind, {
             "ownership": spec["ownership"], "read": spec["read"], "write": spec["write"],
             "secret": secret, "public": public, "server": server, "max_bytes": max_bytes,
+            "durability": durability,
         }))
     kinds = {kind for kind, _ in cleaned}
     transitions = []
@@ -1573,6 +1697,11 @@ def _document(document: dict) -> dict:
         if not isinstance(sync, list) or not set(sync) <= kinds:
             raise ValueError("sync names record kinds")
         sync_kinds = list(sync)
+    checkpoint_s = document.get("checkpoint_s", 1.0)
+    if type(checkpoint_s) not in {int, float} or isinstance(checkpoint_s, bool):
+        raise ValueError("checkpoint_s must be a number")
+    if not 0.2 <= float(checkpoint_s) <= 60:
+        raise ValueError("checkpoint_s is out of range")
     return {
         "schema": SCHEMA,
         "records": {kind: spec for kind, spec in cleaned},
@@ -1583,6 +1712,7 @@ def _document(document: dict) -> dict:
         "runs": runs,
         "motion": motion,
         "sync": sync_kinds,
+        "checkpoint_s": float(checkpoint_s),
     }
 
 
@@ -1654,10 +1784,25 @@ def _bump(conn, uid: str) -> int:
         "SELECT seq FROM app_seq WHERE universe_id = ?", (uid,),
     ).fetchone()
     if row is None:
+        seq = 1
         conn.execute("INSERT INTO app_seq (universe_id, seq) VALUES (?, 1)", (uid,))
-        return 1
-    seq = int(row["seq"]) + 1
-    conn.execute("UPDATE app_seq SET seq = ? WHERE universe_id = ?", (seq, uid))
+    else:
+        seq = int(row["seq"]) + 1
+        conn.execute("UPDATE app_seq SET seq = ? WHERE universe_id = ?", (seq, uid))
+    board = _BOARDS.get(uid)
+    if board is not None and board.seeded:
+        with board.lock:
+            if board.seq >= seq:
+                board.seq += 1
+                seq = board.seq
+                conn.execute(
+                    "UPDATE app_seq SET seq = ? WHERE universe_id = ?", (seq, uid),
+                )
+            else:
+                board.seq = seq
+    notes = getattr(_BUMPED, "notes", None)
+    if notes is not None and board is not None and board.seeded:
+        notes.append((uid, seq))
     return seq
 
 
@@ -1905,6 +2050,7 @@ def _immediate(base) -> Iterator[sqlite3.Connection]:
     lock, conn = _writer(base)
     published = False
     token = id(conn)
+    _BUMPED.notes = []
     with lock:
         _PENDING[token] = []
         conn.execute("BEGIN IMMEDIATE")
@@ -1918,8 +2064,13 @@ def _immediate(base) -> Iterator[sqlite3.Connection]:
             except sqlite3.OperationalError:
                 pass
             _PENDING.pop(token, None)
+            abandoned = list(_BUMPED.notes)
+            _BUMPED.notes = []
+            for universe, seq in abandoned:
+                _void_seq(universe, seq)
             raise
         _PENDING.pop(token, None)
+    _BUMPED.notes = []
     if published:
         _publish(published)
 
@@ -1938,6 +2089,423 @@ def _cache_view(uid: str, document: dict, owner: str, actor: str, role: str) -> 
     _ROLE[(uid, actor)] = role or ""
 
 
+def _board(uid: str) -> _Board:
+    found = _BOARDS.get(uid)
+    if found is not None:
+        return found
+    with _BOARDS_GUARD:
+        found = _BOARDS.get(uid)
+        if found is None:
+            found = _Board()
+            _BOARDS[uid] = found
+        return found
+
+
+def _cached_document(base, uid: str) -> dict:
+    document = _DOCS.get(uid)
+    if document is not None:
+        return document
+    with _read(base) as conn:
+        _ensure(conn)
+        document = _load(conn, uid)
+        owner = _doc_owner(conn, uid)
+    _DOCS[uid] = document
+    _OWNERS.setdefault(uid, owner)
+    return document
+
+
+def _cached_spec(base, uid: str, kind: str) -> dict:
+    spec = _cached_document(base, uid)["records"].get(kind)
+    if spec is None:
+        raise PermissionError("record not found")
+    return spec
+
+
+def _cached_role(base, uid: str, member: str) -> str | None:
+    if uid in _OWNERS and (uid, member) in _ROLE:
+        return _ROLE[(uid, member)] or None
+    with _read(base) as conn:
+        _ensure(conn)
+        owner = _doc_owner(conn, uid)
+        document = _load(conn, uid)
+        role = _role(conn, uid, member, owner)
+    _cache_view(uid, document, owner, member, role or "")
+    return role
+
+
+def _memory_row(row) -> dict:
+    return {
+        "kind": row["kind"],
+        "owner": row["owner_user_id"],
+        "etag": int(row["etag"]),
+        "seq": int(row["seq"]),
+        "private": json.loads(row["private_json"]),
+        "public": json.loads(row["public_json"]),
+        "raw_private": row["private_json"],
+        "raw_public": row["public_json"],
+    }
+
+
+def _seed_board(base, uid: str) -> _Board:
+    """One sequence with sqlite. Seeded under the writer lock so a durable bump cannot overlap."""
+    board = _board(uid)
+    if board.seeded:
+        return board
+    lock, conn = _writer(base)
+    with lock:
+        with board.lock:
+            if board.seeded:
+                return board
+            row = conn.execute(
+                "SELECT seq FROM app_seq WHERE universe_id = ?", (uid,),
+            ).fetchone()
+            tip = int(row["seq"]) if row else 0
+            with _LIVE:
+                tip = max(tip, int(_TIP.get(uid, 0)))
+            board.seq = max(int(board.seq), tip)
+            board.next_pub = int(board.seq) + 1
+            board.seeded = True
+    return board
+
+
+def _load_stored(base, uid: str, stored: str) -> dict | None:
+    with _read(base) as conn:
+        _ensure(conn)
+        row = conn.execute(
+            "SELECT record_key, kind, owner_user_id, private_json, public_json, etag, seq"
+            " FROM app_records WHERE universe_id = ? AND record_key = ?",
+            (uid, stored),
+        ).fetchone()
+    if row is None:
+        return None
+    return _memory_row(row)
+
+
+def _fill_transient(base, uid: str) -> None:
+    """Load stored transient rows once. Later ticks do not read sqlite."""
+    document = _cached_document(base, uid)
+    kinds = [
+        kind for kind, spec in document["records"].items()
+        if spec.get("durability") == "transient"
+    ]
+    if not kinds:
+        return
+    rows = []
+    with _read(base) as conn:
+        _ensure(conn)
+        for kind in kinds:
+            rows.extend(conn.execute(
+                "SELECT record_key, kind, owner_user_id, private_json, public_json, etag, seq"
+                " FROM app_records WHERE universe_id = ? AND kind = ?",
+                (uid, kind),
+            ).fetchall())
+    board = _seed_board(base, uid)
+    with board.lock:
+        for row in rows:
+            board.records.setdefault(row["record_key"], _memory_row(row))
+
+
+def _cache_roster(base, uid: str) -> None:
+    with _read(base) as conn:
+        _ensure(conn)
+        document = _load(conn, uid)
+        owner = _doc_owner(conn, uid)
+        acl = conn.execute(
+            "SELECT actor_id, permission FROM universe_acl WHERE universe_id = ?",
+            (uid,),
+        ).fetchall()
+    _DOCS[uid] = document
+    _OWNERS[uid] = owner
+    _ROLE[(uid, owner)] = "owner"
+    for row in acl:
+        permission = row["permission"]
+        if permission == APP_PERMISSION:
+            mapped = "app"
+        elif permission == VIEW_PERMISSION:
+            mapped = "view"
+        elif permission == "admin":
+            mapped = "owner"
+        else:
+            continue
+        _ROLE[(uid, row["actor_id"])] = mapped
+
+
+def warm_live(base, *, actor: str, universe_id: str) -> None:
+    """Cache the document, roster, and transient rows before a stream waits.
+
+    The first page of a burst then does not open sqlite. Creation of a
+    transient record is still a durable insert; this only warms rows that
+    already exist.
+    """
+    member = _actor(actor)
+    uid = _uid(universe_id)
+    board = _board(uid)
+    if not board.warm:
+        with board.warm_lock:
+            if not board.warm:
+                _cache_roster(base, uid)
+                _fill_transient(base, uid)
+                board.warm = True
+    role = _ROLE.get((uid, member)) or _cached_role(base, uid, member)
+    if not role:
+        raise PermissionError("record not found")
+
+
+def _publish_memory(
+    board: _Board, *, uid: str, stored: str, kind: str, owner: str, public: dict,
+    op: str,
+) -> int:
+    board.seq += 1
+    seq = int(board.seq)
+    _stage(board, {
+        "universe": uid, "seq": seq, "key": stored, "kind": kind,
+        "op": op, "owner": owner, "body": public,
+    })
+    return seq
+
+
+def _write_transient(
+    base, *, member: str, uid: str, kind: str, key: str, payload: dict,
+    expect_etag: int, spec: dict,
+) -> dict | None:
+    """Apply one update of an existing transient record. None means create it durably."""
+    role = _cached_role(base, uid, member)
+    if role not in {"owner", "app"}:
+        raise PermissionError("record not found")
+    stored = _stored_key(spec, member, key)
+    board = _seed_board(base, uid)
+    with board.lock:
+        live = board.records.get(stored)
+    loaded = None
+    if live is None:
+        loaded = _load_stored(base, uid, stored)
+        if loaded is None:
+            return None
+    with board.lock:
+        live = board.records.get(stored)
+        if live is None:
+            if loaded is None:
+                return None
+            live = board.records.setdefault(stored, loaded)
+        if spec["write"] in {"transition", "transfer"}:
+            raise PermissionError("this record changes only through its declared path")
+        if live["kind"] != kind:
+            raise PermissionError("record not found")
+        if int(live["etag"]) != int(expect_etag):
+            raise StateConflict("record changed")
+        doc_owner = _OWNERS.get(uid, "")
+        if not _may_write(spec, member, live["owner"], doc_owner, True):
+            raise PermissionError("record not found")
+        private, public, raw_private, raw_public = _project(payload, spec, live["private"])
+        seq = _publish_memory(
+            board, uid=uid, stored=stored, kind=kind, owner=live["owner"],
+            public=public, op="write",
+        )
+        board.records[stored] = {
+            "kind": kind, "owner": live["owner"], "etag": int(live["etag"]) + 1,
+            "seq": seq, "private": private, "public": public,
+            "raw_private": raw_private, "raw_public": raw_public,
+        }
+        board.dirty.add(stored)
+        owner = live["owner"]
+        etag = int(live["etag"]) + 1
+    return {"key": stored, "etag": etag, "seq": seq, "owner": owner}
+
+
+def _advance_transient(base, uid: str, clock: float) -> list[dict[str, Any]]:
+    """Step transient motion in memory. Durable kinds stay on the sqlite path."""
+    document = _cached_document(base, uid)
+    rules = []
+    for rule in document.get("motion") or []:
+        spec = document["records"].get(rule["kind"]) or {}
+        if spec.get("durability") == "transient":
+            rules.append(rule)
+    if not rules:
+        return []
+    _fill_transient(base, uid)
+    board = _seed_board(base, uid)
+    applied: list[dict[str, Any]] = []
+    with board.lock:
+        planned = []
+        for rule in rules:
+            spec = document["records"][rule["kind"]]
+            tick = float(rule["tick_s"])
+            secret = set(spec["secret"]) | {"_sim_at"}
+            cap = int(spec["max_bytes"])
+            for stored, live in board.records.items():
+                if live["kind"] != rule["kind"]:
+                    continue
+                private = dict(live["private"])
+                where = private.get(rule["position"])
+                velocity = private.get(rule["velocity"])
+                if not _vector(where) or not _vector(velocity) or len(where) != len(velocity):
+                    continue
+                sim = private.get("_sim_at")
+                sim_at = float(sim) if type(sim) in {int, float} and type(sim) is not bool else 0.0
+                steps = int((clock - sim_at) / tick)
+                if steps < 1:
+                    continue
+                steps = min(steps, 8)
+                private[rule["position"]] = [
+                    float(origin) + float(speed) * tick * steps
+                    for origin, speed in zip(where, velocity)
+                ]
+                private["_sim_at"] = sim_at + tick * steps
+                private, public = _split(private, secret)
+                raw_private = _dump(private)
+                raw_public = _dump(public)
+                if len(raw_private.encode("utf-8")) > cap:
+                    raise ValueError("record is too large")
+                planned.append((stored, live, private, public, raw_private, raw_public, rule))
+        for stored, live, private, public, raw_private, raw_public, rule in planned:
+            seq = _publish_memory(
+                board, uid=uid, stored=stored, kind=live["kind"], owner=live["owner"],
+                public=public, op="advance",
+            )
+            etag = int(live["etag"]) + 1
+            board.records[stored] = {
+                "kind": live["kind"], "owner": live["owner"], "etag": etag, "seq": seq,
+                "private": private, "public": public,
+                "raw_private": raw_private, "raw_public": raw_public,
+            }
+            board.dirty.add(stored)
+            applied.append({
+                "key": stored, "etag": etag, "seq": seq, "where": private[rule["position"]],
+            })
+    return applied
+
+
+def _snapshot_dirty(uid: str) -> tuple[_Board, list[dict], int] | None:
+    board = _BOARDS.get(uid)
+    if board is None or not board.seeded:
+        return None
+    with board.lock:
+        if not board.dirty:
+            return None
+        keys = list(board.dirty)
+        board.dirty.clear()
+        snap = []
+        for key in keys:
+            live = board.records.get(key)
+            if live is None:
+                continue
+            snap.append({
+                "key": key, "kind": live["kind"], "owner": live["owner"],
+                "etag": int(live["etag"]), "seq": int(live["seq"]),
+                "raw_private": live["raw_private"], "raw_public": live["raw_public"],
+            })
+        tip = int(board.seq)
+    if not snap:
+        return None
+    return board, snap, tip
+
+
+def _restore_dirty(board: _Board, snap: list[dict]) -> None:
+    with board.lock:
+        for item in snap:
+            if item["key"] in board.records:
+                board.dirty.add(item["key"])
+
+
+def _write_checkpoint(base, uid: str, snap: list[dict], tip: int, prepaid: dict[str, int]) -> None:
+    """One transaction for the dirty rows. Does not republish seqs the stream already has."""
+    with _immediate(base) as conn:
+        for item in snap:
+            row = conn.execute(
+                "SELECT private_json, public_json, etag FROM app_records"
+                " WHERE universe_id = ? AND record_key = ?",
+                (uid, item["key"]),
+            ).fetchone()
+            if row is not None and int(row["etag"]) > int(item["etag"]):
+                continue
+            old_priv = len(row["private_json"]) if row is not None else 0
+            old_pub = len(row["public_json"]) if row is not None else 0
+            logged = conn.execute(
+                "SELECT 1 FROM app_log WHERE universe_id = ? AND seq = ?",
+                (uid, item["seq"]),
+            ).fetchone()
+            extra = 0 if logged is not None else len(item["raw_public"])
+            growth = (
+                max(0, len(item["raw_private"]) - old_priv)
+                + max(0, len(item["raw_public"]) - old_pub)
+                + extra
+            )
+            _admit(conn, item["owner"], growth, prepaid)
+            conn.execute(
+                "INSERT INTO app_records"
+                " (universe_id, record_key, kind, owner_user_id, private_json,"
+                "  public_json, etag, seq)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(universe_id, record_key) DO UPDATE SET"
+                " private_json = excluded.private_json, public_json = excluded.public_json,"
+                " etag = excluded.etag, seq = excluded.seq, kind = excluded.kind",
+                (
+                    uid, item["key"], item["kind"], item["owner"],
+                    item["raw_private"], item["raw_public"], item["etag"], item["seq"],
+                ),
+            )
+            if logged is None:
+                conn.execute(
+                    "INSERT INTO app_log"
+                    " (universe_id, seq, record_key, owner_user_id, kind, op,"
+                    "  public_json, actor_id)"
+                    " VALUES (?, ?, ?, ?, ?, 'checkpoint', ?, ?)",
+                    (
+                        uid, item["seq"], item["key"], item["owner"], item["kind"],
+                        item["raw_public"], item["owner"],
+                    ),
+                )
+        conn.execute(
+            "INSERT INTO app_seq (universe_id, seq) VALUES (?, ?)"
+            " ON CONFLICT(universe_id) DO UPDATE SET seq = MAX(seq, excluded.seq)",
+            (uid, int(tip)),
+        )
+
+
+def checkpoint(base, universe_id: str) -> int:
+    """Persist dirty transient rows. One commit, one log line each, no per-tick charge."""
+    uid = _uid(universe_id)
+    taken = _snapshot_dirty(uid)
+    if taken is None:
+        return 0
+    board, snap, tip = taken
+    prepaid: dict[str, int] = {}
+    last: BaseException | None = None
+    for _attempt in range(8):
+        try:
+            _write_checkpoint(base, uid, snap, tip, prepaid)
+            board.last_checkpoint = time.monotonic()
+            return len(snap)
+        except _NeedFlush as need:
+            flush_due(base, need.account)
+            last = need
+        except _NeedPrepay as need:
+            _charge(base, need.account, "app_records", need.nbytes)
+            prepaid[need.account] = prepaid.get(need.account, 0) + int(need.nbytes)
+            last = need
+        except BaseException:
+            _restore_dirty(board, snap)
+            raise
+    _restore_dirty(board, snap)
+    assert last is not None
+    raise last
+
+
+def checkpoint_all(base) -> int:
+    """Checkpoint apps whose interval has elapsed. The hot path does not call this."""
+    now = time.monotonic()
+    total = 0
+    for uid, board in list(_BOARDS.items()):
+        if not board.dirty:
+            continue
+        document = _DOCS.get(uid) or {}
+        interval = float(document.get("checkpoint_s") or 1.0)
+        if now - board.last_checkpoint < interval:
+            continue
+        total += checkpoint(base, uid)
+    return total
+
+
 def _advance_tip(uid: str, seq: int) -> None:
     with _LIVE:
         _TIP[uid] = max(_TIP.get(uid, 0), int(seq))
@@ -1954,23 +2522,39 @@ def _ensure_notifier() -> None:
         _NOTIFIER_ON = True
 
 
+def publish_snaps() -> None:
+    """Freeze one snapshot for waiters. Safe to call from the event loop."""
+    global _LIVE_TICK
+    with _LIVE:
+        changed = False
+        for ring in _RINGS.values():
+            fresh = (ring.base, tuple(ring.items))
+            if fresh[0] != ring.snap[0] or len(fresh[1]) != len(ring.snap[1]):
+                ring.snap = fresh
+                changed = True
+        if changed:
+            _LIVE_TICK += 1
+            _LIVE.notify_all()
+
+
 def _notify_loop() -> None:
-    """Wake stream waiters on a short tick so a burst is one fan-out."""
+    """Publish one snapshot, then wake waiters. Writers do not wait for them."""
+    global _LIVE_TICK
     while True:
         _KICK.wait()
         time.sleep(_NOTIFY_EVERY)
         _KICK.clear()
         with _LIVE:
+            for ring in _RINGS.values():
+                ring.snap = (ring.base, tuple(ring.items))
+            _LIVE_TICK += 1
             _LIVE.notify_all()
 
 
-def _publish(events: list[dict]) -> None:
-    """Hand committed public deltas to waiters. The log remains the record.
-
-    The wake is coalesced. A waiter reads the ring when it runs, so skipping
-    a per-write wake does not drop a committed delta.
-    """
-    global _LIVE_TICK
+def _ring_publish(events: list[dict]) -> None:
+    """Append already-ordered deltas. The notify tick publishes the snapshot."""
+    if not events:
+        return
     with _LIVE:
         for event in events:
             uid = event["universe"]
@@ -1980,9 +2564,54 @@ def _publish(events: list[dict]) -> None:
                 _RINGS[uid] = ring
             ring.append(event)
             _TIP[uid] = max(_TIP.get(uid, 0), int(event["seq"]))
-        _LIVE_TICK += 1
     _ensure_notifier()
     _KICK.set()
+
+
+def _stage(board: _Board, event: dict) -> None:
+    """Hold a seq until every earlier seq is ready, then append that run.
+
+    The append is ordered under the app lock. Waiters do not take that lock,
+    and they do not take the ring lock while they read the snapshot.
+    """
+    board.ready[int(event["seq"])] = event
+    ready: list[dict] = []
+    while board.next_pub in board.ready:
+        ready.append(board.ready.pop(board.next_pub))
+        board.next_pub += 1
+    if ready:
+        _ring_publish(ready)
+
+
+def _void_seq(uid: str, seq: int) -> None:
+    board = _BOARDS.get(uid)
+    if board is None or not board.seeded:
+        return
+    with board.lock:
+        _stage(board, {
+            "universe": uid, "seq": int(seq), "key": "", "kind": "",
+            "op": "void", "owner": "", "body": {},
+        })
+
+
+def _publish(events: list[dict]) -> None:
+    """Hand committed public deltas to waiters. The log remains the record.
+
+    The wake is coalesced. A waiter reads the snapshot when it runs, so
+    skipping a per-write wake does not drop a committed delta. A transient
+    seq and a durable seq share one order: a later seq waits until the
+    earlier one lands.
+    """
+    direct: list[dict] = []
+    for event in events:
+        board = _BOARDS.get(event["universe"])
+        if board is None or not board.seeded:
+            direct.append(event)
+            continue
+        with board.lock:
+            _stage(board, event)
+    if direct:
+        _ring_publish(direct)
 
 
 def _show(document: dict, role: str, actor: str, event: dict) -> bool:
@@ -1994,6 +2623,52 @@ def _show(document: dict, role: str, actor: str, event: dict) -> bool:
     if spec is None:
         return False
     return _may_read(spec, role, actor == event["owner"])
+
+
+def _filter_events(
+    document: dict, role: str, actor: str, since: int, limit: int,
+    kinds: list[str] | None, keys: list[str] | None,
+    snap: tuple[int, tuple],
+) -> dict | None:
+    """One page from a snapshot. None when ``since`` falls in a gap."""
+    base, items = snap
+    if not items:
+        return None
+    if base > int(since) + 1:
+        return None
+    wanted_kinds = None if kinds is None else set(kinds)
+    wanted_keys = None if keys is None else set(keys)
+    if wanted_kinds is not None and not wanted_kinds:
+        return {"events": [], "cursor": int(since)}
+    if wanted_keys is not None and not wanted_keys:
+        return {"events": [], "cursor": int(since)}
+    start = int(since) + 1 - base
+    if start < 0:
+        start = 0
+    if start >= len(items):
+        return None
+    cap = max(1, min(int(limit), 2000))
+    matched = []
+    high = int(since)
+    examined = 0
+    for event in items[start:]:
+        if event["seq"] <= int(since):
+            continue
+        high = event["seq"]
+        examined += 1
+        if event.get("op") == "void":
+            continue
+        kind_ok = wanted_kinds is None or event["kind"] in wanted_kinds
+        key_ok = wanted_keys is None or event["key"] in wanted_keys
+        if kind_ok and key_ok and _show(document, role, actor, event):
+            matched.append({
+                "seq": event["seq"], "key": event["key"], "kind": event["kind"],
+                "op": event["op"], "owner": event["owner"],
+                "body": event["body"],
+            })
+        if examined >= cap:
+            break
+    return {"events": matched, "cursor": high}
 
 
 def _from_ring(
@@ -2012,37 +2687,13 @@ def _from_ring(
         ring = _RINGS.get(uid)
         if int(since) >= tip:
             return {"events": [], "cursor": int(since)}
-        # Tip can move from a log read before this process has published.
-        # An empty tail then means the log, not the ring, has the rows.
+        # Copy the tail pointer under the lock. Filtering happens outside it.
         items = ring.tail(int(since)) if ring is not None else None
     if not items:
         return None
-    wanted_kinds = None if kinds is None else set(kinds)
-    wanted_keys = None if keys is None else set(keys)
-    if wanted_kinds is not None and not wanted_kinds:
-        return {"events": [], "cursor": int(since)}
-    if wanted_keys is not None and not wanted_keys:
-        return {"events": [], "cursor": int(since)}
-    cap = max(1, min(int(limit), 2000))
-    matched = []
-    high = int(since)
-    examined = 0
-    for event in items:
-        if event["seq"] <= int(since):
-            continue
-        high = event["seq"]
-        examined += 1
-        kind_ok = wanted_kinds is None or event["kind"] in wanted_kinds
-        key_ok = wanted_keys is None or event["key"] in wanted_keys
-        if kind_ok and key_ok and _show(document, role, actor, event):
-            matched.append({
-                "seq": event["seq"], "key": event["key"], "kind": event["kind"],
-                "op": event["op"], "owner": event["owner"],
-                "body": event["body"],
-            })
-        if examined >= cap:
-            break
-    return {"events": matched, "cursor": high}
+    # ``tail`` already starts at since + 1.
+    snap = (int(since) + 1, tuple(items))
+    return _filter_events(document, role, actor, int(since), int(limit), kinds, keys, snap)
 
 
 def _page(

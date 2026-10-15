@@ -21,3 +21,9 @@
 - [x] Push those deltas through the signed-in shell. The screen has no socket.
 - [x] Show the owner that a scheduled run bills the owner's seat and provider, and cap it.
 - [x] Measure the movement ramp through the HTTP handlers.
+
+## 4. Transient authority
+
+- [x] Keep durable writes on compare-and-swap, and apply transient updates in memory.
+- [x] Checkpoint dirty transient rows in one transaction, billed as stored bytes.
+- [x] Add 512 players to the HTTP ramp and report real record bytes.

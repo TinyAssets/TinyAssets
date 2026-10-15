@@ -16,7 +16,6 @@ import logging
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from starlette.responses import JSONResponse, StreamingResponse
@@ -25,10 +24,32 @@ _log = logging.getLogger(__name__)
 _FLUSH_STARTED = False
 _FLUSH_GUARD = threading.Lock()
 _THREADS: Any = None
-# One thread owns commits. A pool of request threads waiting on that lock
-# spends the turn switching, so latency grew with the number of players.
-_WRITER: ThreadPoolExecutor | None = None
-_WRITER_LOCK = threading.Lock()
+_TICK_ON = False
+
+
+def _nodelay() -> None:
+    """Send small live frames immediately.
+
+    Nagle holds a short write until the previous one is acknowledged, and
+    delayed ACKs turn that into a tenth of a second. A position update is
+    one short frame.
+    """
+    import socket
+    import sys
+
+    frame = sys._getframe()
+    while frame is not None:
+        owner = frame.f_locals.get("self")
+        transport = getattr(owner, "transport", None)
+        get = getattr(transport, "get_extra_info", None)
+        sock = get("socket") if get is not None else None
+        if sock is not None:
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                return
+            return
+        frame = frame.f_back
 
 
 def _base():
@@ -81,7 +102,7 @@ def _interest(params: Any, name: str) -> list[str] | None:
 
 
 def ensure_flusher() -> None:
-    """Admit owed bytes on a timer. A live write does not call the ledger."""
+    """Checkpoint transient rows and admit owed bytes off the hot path."""
     global _FLUSH_STARTED
     with _FLUSH_GUARD:
         if _FLUSH_STARTED:
@@ -89,10 +110,18 @@ def ensure_flusher() -> None:
         _FLUSH_STARTED = True
 
         def loop() -> None:
-            from tinyassets.shared_state import flush_pending
+            from tinyassets.shared_state import checkpoint_all, flush_pending
 
+            tick = 0
             while True:
-                time.sleep(2)
+                time.sleep(1)
+                tick += 1
+                try:
+                    checkpoint_all(_base())
+                except Exception:
+                    _log.exception("live checkpoint failed")
+                if tick % 2:
+                    continue
                 try:
                     flush_pending(_base())
                 except Exception:
@@ -101,12 +130,61 @@ def ensure_flusher() -> None:
         threading.Thread(target=loop, name="app-live-flush", daemon=True).start()
 
 
+def _ensure_tick() -> None:
+    """One loop task copies the snapshot and hands the same bytes to every stream."""
+    global _TICK_ON
+    if _TICK_ON:
+        return
+    _TICK_ON = True
+    import asyncio
+
+    from tinyassets.shared_state import _shared_page, publish_snaps
+
+    async def tick() -> None:
+        while True:
+            await asyncio.sleep(0.01)
+            try:
+                publish_snaps()
+                groups: dict[tuple, list[_Out]] = {}
+                for sub in list(_SUBS):
+                    if sub.closed:
+                        continue
+                    kind_key = None if sub.kinds is None else tuple(sub.kinds)
+                    key_key = None if sub.keys is None else tuple(sub.keys)
+                    groups.setdefault(
+                        (sub.universe, int(sub.cursor), kind_key, key_key), [],
+                    ).append(sub)
+                for (universe, cursor, kind_key, key_key), members in groups.items():
+                    sample = members[0]
+                    page = _shared_page(
+                        sample.base, actor=sample.actor, universe_id=universe,
+                        since=cursor, limit=500,
+                        kinds=None if kind_key is None else list(kind_key),
+                        keys=None if key_key is None else list(key_key),
+                    )
+                    if not page.get("events"):
+                        continue
+                    text = _sse(page)
+                    nxt = int(page.get("cursor") or cursor)
+                    for sub in members:
+                        # A stream still holding a frame keeps its cursor.
+                        # Advancing it would drop the events in that frame.
+                        if sub.queue.qsize() >= 1:
+                            continue
+                        sub.cursor = nxt
+                        sub.queue.put_nowait(text)
+            except Exception:
+                _log.exception("live snapshot failed")
+
+    asyncio.get_running_loop().create_task(tick())
+
+
 def _limiter():
     global _THREADS
     if _THREADS is None:
         from anyio import CapacityLimiter
 
-        _THREADS = CapacityLimiter(1024)
+        _THREADS = CapacityLimiter(4096)
     return _THREADS
 
 
@@ -116,22 +194,15 @@ async def _run(fn):
     return await run_sync(fn, limiter=_limiter())
 
 
-def _writer_pool() -> ThreadPoolExecutor:
-    global _WRITER
-    with _WRITER_LOCK:
-        if _WRITER is None:
-            _WRITER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="live-write")
-        return _WRITER
-
-
-async def _run_write(fn):
-    import asyncio
-
-    return await asyncio.get_running_loop().run_in_executor(_writer_pool(), fn)
-
-
 def _dispatch(actor: str, payload: dict, base) -> dict:
-    from tinyassets.shared_state import read_record, scheduled_runs, sync, write_record
+    from tinyassets.shared_state import (
+        checkpoint,
+        read_record,
+        scheduled_runs,
+        sync,
+        warm_live,
+        write_record,
+    )
 
     op = str(payload.get("op") or "")
     universe_id = str(payload.get("universe_id") or "")
@@ -160,12 +231,16 @@ def _dispatch(actor: str, payload: dict, base) -> dict:
         )
     if op == "scheduled":
         return scheduled_runs(base, actor=actor, universe_id=universe_id)
+    if op == "checkpoint":
+        warm_live(base, actor=actor, universe_id=universe_id)
+        return {"checkpointed": checkpoint(base, universe_id)}
     raise ValueError("unknown live op")
 
 
 async def handle_live(request: Any) -> JSONResponse:
     """POST ``/app/api/live``. The session is the actor."""
     ensure_flusher()
+    _nodelay()
     try:
         actor = _actor()
         payload = await request.json()
@@ -176,8 +251,13 @@ async def handle_live(request: Any) -> JSONResponse:
     if not isinstance(payload, dict):
         return _error(400, "a live request is an object")
     base = _base()
+    _ensure_tick()
     try:
-        result = await _run_write(lambda: _dispatch(actor, payload, base))
+        # Transient applies are a few dictionary operations. Hopping to a
+        # worker thread costs more than the apply, and a burst of those hops
+        # queues on the loop. Durable writes still take the sqlite lock inside
+        # the call; they are not the motion path.
+        result = _dispatch(actor, payload, base)
     except Exception as exc:
         mapped = _guard(exc)
         if mapped is not None:
@@ -188,6 +268,25 @@ async def handle_live(request: Any) -> JSONResponse:
 
 _SSE_LOCK = threading.Lock()
 _SSE_CACHE: dict[tuple, tuple[dict, str]] = {}
+_SUBS: list["_Out"] = []
+
+
+class _Out:
+    """One signed-in stream. The tick pushes shared frames; the stream does not poll."""
+
+    __slots__ = ("base", "actor", "universe", "cursor", "kinds", "keys", "queue", "closed")
+
+    def __init__(self, base, actor, universe, cursor, kinds, keys) -> None:
+        import asyncio
+
+        self.base = base
+        self.actor = actor
+        self.universe = universe
+        self.cursor = int(cursor)
+        self.kinds = kinds
+        self.keys = keys
+        self.queue: asyncio.Queue = asyncio.Queue()
+        self.closed = False
 
 
 def _sse(page: dict) -> str:
@@ -210,10 +309,12 @@ def _sse(page: dict) -> str:
 async def handle_live_stream(request: Any) -> Any:
     """GET ``/app/api/live/stream``. Server push of one interest, as SSE.
 
-    The handler waits on the writer. It does not poll the log. A quiet stream
-    ends after about 20 seconds so the shell reconnects with its cursor.
+    One tick builds a page and enqueues that text on every matching stream.
+    A quiet stream ends after about 20 seconds so the shell reconnects with
+    its cursor. The screen still has no socket of its own.
     """
     ensure_flusher()
+    _nodelay()
     try:
         actor = _actor()
     except PermissionError as exc:
@@ -227,31 +328,42 @@ async def handle_live_stream(request: Any) -> Any:
     kinds = _interest(params, "kinds")
     keys = _interest(params, "keys")
     base = _base()
+    _ensure_tick()
+    try:
+        await _run(lambda: _prime(base, actor, universe_id))
+    except Exception as exc:
+        mapped = _guard(exc)
+        if mapped is not None:
+            return mapped
+        raise
+
+    sub = _Out(base, actor, universe_id, since, kinds, keys)
+    _SUBS.append(sub)
 
     async def generate():
         # A first chunk makes the status line observable before the wait, so a
         # client blocked on headers cannot deadlock a writer that has not run.
+        # The roster and transient rows were loaded before this.
+        import asyncio
+
         yield ": ok\n\n"
-        cursor = since
         deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            if await request.is_disconnected():
-                return
-            timeout = min(2.0, max(0.05, deadline - time.monotonic()))
+        try:
+            while time.monotonic() < deadline:
+                if await request.is_disconnected():
+                    return
+                timeout = min(2.0, max(0.05, deadline - time.monotonic()))
+                try:
+                    text = await asyncio.wait_for(sub.queue.get(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    continue
+                yield text
+        finally:
+            sub.closed = True
             try:
-                page = await _run(lambda cursor=cursor, timeout=timeout: _wait(
-                    base, actor, universe_id, cursor, kinds, keys, timeout,
-                ))
-            except Exception as exc:
-                mapped = _guard(exc)
-                if mapped is None:
-                    raise
-                detail = json.loads(mapped.body.decode("utf-8"))
-                yield _sse({"events": [], "cursor": cursor, "error": detail.get("error")})
-                return
-            cursor = int(page.get("cursor") or cursor)
-            if page.get("events"):
-                yield _sse(page)
+                _SUBS.remove(sub)
+            except ValueError:
+                pass
 
     return StreamingResponse(
         generate(),
@@ -260,13 +372,10 @@ async def handle_live_stream(request: Any) -> Any:
     )
 
 
-def _wait(base, actor, universe_id, cursor, kinds, keys, timeout):
-    from tinyassets.shared_state import wait_live
+def _prime(base, actor, universe_id) -> None:
+    from tinyassets.shared_state import warm_live
 
-    return wait_live(
-        base, actor=actor, universe_id=universe_id, since=cursor,
-        kinds=kinds, keys=keys, timeout=timeout, limit=500,
-    )
+    warm_live(base, actor=actor, universe_id=universe_id)
 
 
 def measurement_app():
