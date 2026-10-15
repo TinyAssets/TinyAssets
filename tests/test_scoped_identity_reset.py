@@ -98,6 +98,86 @@ def test_inventory_classifies_current_schema_and_epoch2_stores(
     )
 
 
+def test_shared_app_rows_reset_with_the_home_and_a_foreign_player_blocks(
+    seeded: Path,
+) -> None:
+    """The home's app rows go with the home. Another universe's rows stay.
+
+    An invitee's record in the home blocks, instead of being deleted as if it
+    were the founder's. Replay tokens and the owed-byte queue are the account.
+    """
+    from tinyassets.account_deletion import deletion_plan
+    from tinyassets.scoped_reset import inspect_reset_scope, plan_test_identity_reset
+    from tinyassets.shared_state import _ensure_sql
+
+    with _connect(seeded) as conn:
+        _ensure_sql(conn)
+        conn.execute(
+            "INSERT INTO app_definitions (universe_id, owner_user_id, document, etag)"
+            " VALUES (?, ?, '{}', 1)",
+            (_HOME_A, _SUBJECT_A),
+        )
+        conn.execute(
+            "INSERT INTO app_records"
+            " (universe_id, record_key, kind, owner_user_id, private_json,"
+            "  public_json, etag, seq) VALUES (?, 'ship', 'ship', ?, '{}', '{}', 1, 1)",
+            (_HOME_A, _SUBJECT_A),
+        )
+        conn.execute(
+            "INSERT INTO app_records"
+            " (universe_id, record_key, kind, owner_user_id, private_json,"
+            "  public_json, etag, seq) VALUES (?, 'ship', 'ship', ?, '{}', '{}', 1, 1)",
+            (_HOME_B, _SUBJECT_A),
+        )
+        conn.execute(
+            "INSERT INTO app_seq (universe_id, seq) VALUES (?, 1)",
+            (_HOME_A,),
+        )
+        conn.execute(
+            "INSERT INTO app_idempotency (actor_id, token, payload_hash, result_json)"
+            " VALUES (?, 't', 'h', '{}')",
+            (_SUBJECT_A,),
+        )
+        conn.execute(
+            "INSERT INTO app_byte_due (owner_user_id, bytes) VALUES (?, 4)",
+            (_SUBJECT_A,),
+        )
+        conn.commit()
+
+    assert inspect_reset_scope(seeded, principal=_SUBJECT_A).blockers == ()
+    plan = plan_test_identity_reset(seeded, alias="alice", roster=_roster())
+    deleted = [
+        (action["table"], action["keys"])
+        for action in plan["database_actions"]
+        if action["table"] in {
+            "app_definitions", "app_records", "app_seq",
+            "app_idempotency", "app_byte_due",
+        }
+    ]
+    assert deleted == [
+        ("app_definitions", {"universe_id": _HOME_A}),
+        ("app_records", {"record_key": "ship", "universe_id": _HOME_A}),
+        ("app_seq", {"universe_id": _HOME_A}),
+    ]
+
+    with _connect(seeded) as conn:
+        conn.execute(
+            "INSERT INTO app_records"
+            " (universe_id, record_key, kind, owner_user_id, private_json,"
+            "  public_json, etag, seq) VALUES (?, 'seat', 'seat', ?, '{}', '{}', 1, 2)",
+            (_HOME_A, _SUBJECT_B),
+        )
+        conn.commit()
+        account = deletion_plan(conn, principal=_SUBJECT_A, home=_HOME_A)
+    blocked = inspect_reset_scope(seeded, principal=_SUBJECT_A).blockers
+    assert "foreign actor owns shared-app state in app_records" in blocked
+    assert ("universe_id", "universe") in account["app_records"]
+    assert ("owner_user_id", "principal") in account["app_records"]
+    assert account["app_idempotency"] == [("actor_id", "principal")]
+    assert account["app_byte_due"] == [("owner_user_id", "principal")]
+    assert account["app_log"] == [("universe_id", "universe")]
+
+
 def test_unclassified_schema_growth_fails_loudly(seeded: Path) -> None:
     from tinyassets.scoped_reset import ScopedResetSchemaError, inspect_reset_scope
 

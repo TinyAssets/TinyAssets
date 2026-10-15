@@ -511,7 +511,23 @@ def _play_slice(port, universe, players, since, etags, ready, out_path):
         thread.start()
     for thread in movers:
         thread.join(timeout=120)
-    time.sleep(1.0)
+    # Writers finishing is not the stream finishing. On a busy machine one
+    # reader process is still catching up after a fixed second, and those
+    # observations would count as drops. Wait until the streams go quiet.
+    deadline = time.monotonic() + 30
+    stable = None
+    previous = -1
+    while time.monotonic() < deadline:
+        count = sum(len(bucket["seen"]) for bucket in buckets)
+        if count == previous:
+            if stable is None:
+                stable = time.monotonic()
+            elif time.monotonic() - stable >= 0.75:
+                break
+        else:
+            stable = None
+            previous = count
+        time.sleep(0.05)
     stop.set()
     for thread in threads:
         thread.join(timeout=8)

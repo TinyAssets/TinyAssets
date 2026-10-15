@@ -164,6 +164,12 @@ PERSON_KEYED_DESPITE_UNIVERSE = MappingProxyType({
     # Accepted execution inputs belong to their run owner independently of
     # old home bindings or personal delivery controls. Delete before parent run.
     "run_input_admissions": "owner_id",
+    # A record's private body is the record owner's, including a secret they
+    # hold inside someone else's app. The public log of that app stays.
+    "app_records": "owner_user_id",
+    "app_runs": "owner_user_id",
+    # A redeemed invite is this person's grant into that app.
+    "universe_invites": "actor_id",
 })
 
 #: Reached through a parent rather than by their own key, and/or entangled in
