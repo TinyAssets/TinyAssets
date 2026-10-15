@@ -105,8 +105,9 @@ def boot_sentinels(monkeypatch, tmp_path):
     ``main`` already swallows failures there, so the raise only bounds the test.
     """
     from tinyassets import engine_mcp_http, provider_assignment
+    from tinyassets.broker import supervisor
+    from tinyassets.control_plane import tick as assigned_queue_consumer
     from tinyassets.onboarding import session_store
-    from tinyassets.runtime import assigned_queue_consumer
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     reached: list[str] = []
@@ -122,6 +123,7 @@ def boot_sentinels(monkeypatch, tmp_path):
         raise RuntimeError("sentinel: boot maintenance must not run unadmitted")
 
     monkeypatch.setattr(session_store, "arm", _arm)
+    monkeypatch.setattr(supervisor, "get_supervisor", lambda *_a, **_k: object())
     monkeypatch.setattr(
         provider_assignment, "reconcile_orphaned_reservations_on_boot", _maintenance
     )
@@ -135,10 +137,17 @@ def boot_sentinels(monkeypatch, tmp_path):
         "create_streamable_http_app",
         lambda *a, **k: (reached.append("app-build"), object())[1],
     )
-    monkeypatch.setattr(
-        assigned_queue_consumer, "assigned_queue_consumer_enabled",
-        lambda: (reached.append("queue-worker-check"), False)[1],
-    )
+    class _Consumer:
+        def __init__(self, *_a, **_k):
+            reached.append("queue-worker-create")
+
+        def start(self):
+            reached.append("queue-worker-start")
+
+        def stop(self):
+            reached.append("queue-worker-stop")
+
+    monkeypatch.setattr(assigned_queue_consumer, "AssignedQueueConsumer", _Consumer)
     monkeypatch.setattr(
         us.uvicorn, "run", lambda *a, **k: reached.append("listener"),
     )
@@ -172,10 +181,11 @@ def test_serving_boot_refuses_unadmitted_with_a_nonzero_exit(
     )
 
 
-def test_serving_boot_refuses_an_unobserved_process_that_resolves_not_cloud(
-    unresolved, boot_sentinels
+@pytest.mark.parametrize("transport", ["streamable-http", "stdio", "sse"])
+def test_every_transport_refuses_unadmitted_before_startup(
+    unresolved, boot_sentinels, transport,
 ):
-    """No observation exists yet: boot must resolve one and refuse on it."""
+    """No transport may reach downstream boot actions without admission."""
     calls: list[int] = []
 
     def _resolver():
@@ -183,11 +193,11 @@ def test_serving_boot_refuses_an_unobserved_process_that_resolves_not_cloud(
         return UNADMITTED
 
     unresolved(_resolver)
-
-    with pytest.raises(SystemExit):
-        us.main(transport="stdio")
+    with pytest.raises(SystemExit) as excinfo:
+        us.main(transport=transport)
 
     assert calls == [1], "boot must resolve exactly once"
+    assert excinfo.value.code == us.PLATFORM_NOT_CLOUD_EXIT_CODE
     assert boot_sentinels == ["seal-arm"]
 
 

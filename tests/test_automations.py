@@ -42,7 +42,7 @@ from tinyassets.branches import (
     GraphNodeRef,
     NodeDefinition,
 )
-from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
+from tinyassets.control_plane.tick import AssignedQueueConsumer
 from tinyassets.storage import db_path
 
 OWNER = "acct_alice"
@@ -611,19 +611,6 @@ def _registration_kwargs(**overrides):
     return kwargs
 
 
-def test_registration_refuses_when_the_consumer_is_dark(
-    tmp_path: Path, monkeypatch
-) -> None:
-    monkeypatch.delenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", raising=False)
-    _seed_serving_assignment(tmp_path)
-    _seed_owner(tmp_path)
-    _seed_branch(tmp_path)
-
-    with pytest.raises(AutomationUnavailable) as caught:
-        register_automation(tmp_path, **_registration_kwargs())
-
-    assert caught.value.reason == "consumer_disabled"
-    assert AutomationStore(tmp_path).list(universe_id=UNIVERSE) == []
 
 
 @pytest.mark.parametrize("principal", ["", "   ", "anonymous"])
@@ -1007,6 +994,46 @@ def _consumer_with_inline_executor(tmp_path: Path, *, max_concurrency: int = 2):
     return consumer, inline
 
 
+def test_consumer_off_stores_and_the_owner_tick_fires(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Registration while the assigned-queue consumer is off is stored, then fired."""
+    monkeypatch.delenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", raising=False)
+    _seed_serving_assignment(tmp_path)
+    _seed_owner(tmp_path)
+    _seed_branch(tmp_path)
+    stored = register_automation(
+        tmp_path,
+        universe_id=UNIVERSE,
+        owner_principal_id=OWNER,
+        name="Wake while the consumer is off",
+        branch_def_id=BRANCH,
+        interval_seconds=600,
+        inputs={"topic": "spec drift"},
+        now=NOW,
+    )
+    assert stored.desired_state == "active"
+    monkeypatch.setattr(
+        "tinyassets.provider_serving_binding.list_serving_universes",
+        lambda _base: [UNIVERSE],
+    )
+    ran: list[str] = []
+    monkeypatch.setattr(
+        automations_module,
+        "run_due_automation",
+        lambda base, automation, due_at, **kwargs: ran.append(automation.automation_id)
+        or "ok:ran:run_1",
+    )
+    consumer, _inline = _consumer_with_inline_executor(tmp_path)
+    try:
+        submitted = consumer.poll_once()
+    finally:
+        consumer.stop()
+    assert submitted == 1
+    assert ran == [stored.automation_id]
+
+
 def test_poll_once_submits_a_universes_due_automations(
     tmp_path: Path,
     registered: Automation,
@@ -1067,7 +1094,7 @@ def test_poll_once_leaves_a_paused_universe_alone(
         consumer.stop()
 
     assert scanned == []
-    assert inline.submissions == []
+    assert not any(args[0] == UNIVERSE for args in inline.submissions)
 
 
 def test_one_universes_scan_failure_does_not_stop_the_poll(
@@ -1121,27 +1148,6 @@ def test_one_universes_scan_failure_does_not_stop_the_poll(
     )
 
 
-def test_a_dark_consumer_scans_no_automations_at_all(
-    tmp_path: Path,
-    registered: Automation,
-    monkeypatch,
-) -> None:
-    monkeypatch.delenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", raising=False)
-    scanned: list[str] = []
-    monkeypatch.setattr(
-        automations_module,
-        "due_automations",
-        lambda base, *, universe_id, now: scanned.append(universe_id) or [],
-    )
-    consumer, inline = _consumer_with_inline_executor(tmp_path)
-
-    try:
-        assert consumer.poll_once() == 0
-    finally:
-        consumer.stop()
-
-    assert scanned == []
-    assert inline.submissions == []
 
 
 # -- Codex ADAPT 2026-08-29 folds ---------------------------------------------
@@ -1550,7 +1556,7 @@ def test_the_run_row_names_the_authority_loss_not_a_generic_cancel(
     assert "cancelled between nodes" not in str(record["error"])
 
 
-def test_stop_cancels_the_run_through_the_real_callback_timing(
+def test_stop_sees_the_live_run_and_leaves_it_running(
     tmp_path: Path,
     registered: Automation,
     monkeypatch,
@@ -1559,7 +1565,8 @@ def test_stop_cancels_the_run_through_the_real_callback_timing(
 
     `on_run_started` used to fire only after `_execute` had finished waiting, so
     `stop()` could never see a live run. This drives the REAL callback, from
-    inside the wait, the way the consumer does.
+    inside the wait, the way the consumer does. Shutdown leaves that run
+    running; the next boot marks it interrupted.
     """
     from tinyassets.runs import is_cancel_requested
 
@@ -1588,7 +1595,7 @@ def test_stop_cancels_the_run_through_the_real_callback_timing(
         )
 
     assert seen, "the run never reached the wait"
-    assert is_cancel_requested(tmp_path, seen[0]) is True
+    assert is_cancel_requested(tmp_path, seen[0]) is False
 
 
 def test_a_run_that_ignores_cancellation_keeps_the_universe_leased(
@@ -2161,7 +2168,7 @@ def test_a_run_that_outlives_its_timeout_is_cancelled_not_abandoned(
 
 
 @pytest.mark.parametrize("status", ["running", "completed"])
-def test_stop_cancels_an_in_flight_automation_run(tmp_path: Path, status: str) -> None:
+def test_stop_leaves_an_in_flight_automation_run(tmp_path: Path, status: str) -> None:
     from tinyassets.runs import create_run, is_cancel_requested, update_run_status
 
     consumer, _inline = _consumer_with_inline_executor(tmp_path)
@@ -2174,7 +2181,7 @@ def test_stop_cancels_an_in_flight_automation_run(tmp_path: Path, status: str) -
 
     consumer.stop()
 
-    assert is_cancel_requested(tmp_path, run_id) is (status == "running")
+    assert is_cancel_requested(tmp_path, run_id) is False
 
 
 # §6 -- no silent skips
@@ -2345,7 +2352,7 @@ def test_a_poll_beats_for_a_serving_universe_with_no_runtime_at_all(
     by backdating it and polling again. `ts` is asserted too because that is the
     field human readers and `_classify_epoch2_workers` consume.
     """
-    from tinyassets.runtime.assigned_queue_consumer import (
+    from tinyassets.control_plane.tick import (
         supervisor_heartbeat_filename,
     )
 
@@ -2403,7 +2410,7 @@ def test_a_paused_universe_still_beats(
 ) -> None:
     """Skipping the beat while paused turns the P0 pause repair into a restart
     loop: a restart preserves `.pause`, so the daemon would never beat again."""
-    from tinyassets.runtime.assigned_queue_consumer import (
+    from tinyassets.control_plane.tick import (
         supervisor_heartbeat_filename,
     )
 

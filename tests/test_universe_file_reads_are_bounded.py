@@ -57,15 +57,7 @@ TURN_PATH = (
 #: (module, enclosing function) -> why this read can never be of an
 #: agent-writable universe file. Adding a row needs a reason a reviewer can
 #: check; a row that stops matching fails the test (no dead exemptions).
-ALLOWED = {
-    ("tinyassets/universe_tools.py", "_root_cgroup"):
-        "reads /sys/fs/cgroup controller lists, not a universe path",
-    ("tinyassets/universe_tools.py", "_remove_cgroup"):
-        "reads /sys/fs/cgroup/<jail>/cgroup.procs, not a universe path",
-    ("tinyassets/universe_tools.py", "_try_lock_one"):
-        "opens a slot lock under the data dir's .universe-tool-slots, O_NOFOLLOW",
-
-}
+ALLOWED = {}
 
 _READ_ATTRS = {"read_text", "read_bytes", "open"}
 _YAML_LOADERS = {"load", "safe_load", "full_load", "unsafe_load", "load_all", "safe_load_all"}

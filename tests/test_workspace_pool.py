@@ -311,14 +311,14 @@ def test_lost_bytes_still_count_against_the_pool(db: Path, roots: Roots) -> None
 
 
 def test_busy_owner_cleanup_defers_and_retries_without_losing_lease(db, roots):
-    from tinyassets.owner_launcher_client import OwnerLaunchRefused
+    from tinyassets.boxes.provider import BoxBusy
 
     lease = admit_scratch(db, roots, lease_id_factory=_ids('deferred'))
     with terminal_txn(db) as conn:
         wp.enqueue_terminal(conn, run_id='run-1', universe_id='u1', lease=lease)
     class Busy(FakeFs):
         def remove_tree_no_follow(self, path):
-            raise OwnerLaunchRefused('owner launcher refused cell scope')
+            raise BoxBusy('the owner box stayed busy past the wait bound')
     assert wp.periodic_sweep(db, fs=Busy(present=(lease.path,)),
                              claimant='test', now=lambda: 1000) == 0
     assert wp.pool_usage(db).lost_leases == 0

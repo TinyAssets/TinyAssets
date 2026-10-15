@@ -49,6 +49,27 @@ def _init_git_repo(path: Path) -> None:
     )
 
 
+@pytest.fixture
+def bound_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A repository path inside a command center whose owner box session is bound.
+
+    Owner git runs only in an admitted owner box, so the auto-probe sees a
+    repository only there.
+    """
+    from tinyassets.control_plane import binding as binding_module
+
+    data_root = tmp_path / "data"
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
+    center = data_root / "cc-catalog"
+    center.mkdir(parents=True)
+    binding = binding_module.file_binding(center)
+    assert binding is not None, "the owner box double binds a test center"
+    repo = center / "repo"
+    repo.mkdir()
+    with binding_module.use_binding(binding):
+        yield repo
+
+
 # ─── get_backend — env-var selection ─────────────────────────────────────
 
 
@@ -84,11 +105,11 @@ def test_env_var_unknown_value_falls_through_to_autoprobe(
 # ─── get_backend — auto-probe ────────────────────────────────────────────
 
 
-def test_autoprobe_chooses_cached_when_git_enabled(tmp_path):
+def test_autoprobe_chooses_cached_when_git_enabled(tmp_path, bound_repo):
     if shutil.which("git") is None:
         pytest.skip("git not available")
-    _init_git_repo(tmp_path)
-    backend = get_backend(tmp_path / "output", repo_root=tmp_path)
+    _init_git_repo(bound_repo)
+    backend = get_backend(tmp_path / "output", repo_root=bound_repo)
     assert isinstance(backend, SqliteCachedBackend)
 
 
@@ -121,18 +142,18 @@ def test_invalidate_backend_cache_reprobes(tmp_path, monkeypatch):
     assert b_second is not b_first
 
 
-def test_invalidate_also_clears_git_bridge_cache(tmp_path):
+def test_invalidate_also_clears_git_bridge_cache(tmp_path, bound_repo):
     """So a fresh get_backend() picks up a newly-initialized repo."""
     if shutil.which("git") is None:
         pytest.skip("git not available")
     # First call: no repo → sqlite_only + git_bridge.is_enabled cached False
-    b_first = get_backend(tmp_path / "output", repo_root=tmp_path)
+    b_first = get_backend(tmp_path / "output", repo_root=bound_repo)
     assert isinstance(b_first, SqliteOnlyBackend)
 
-    _init_git_repo(tmp_path)
+    _init_git_repo(bound_repo)
     invalidate_backend_cache()
     # After invalidate, git_bridge probes fresh → cached
-    b_second = get_backend(tmp_path / "output", repo_root=tmp_path)
+    b_second = get_backend(tmp_path / "output", repo_root=bound_repo)
     assert isinstance(b_second, SqliteCachedBackend)
 
 

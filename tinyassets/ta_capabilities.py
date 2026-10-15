@@ -6,13 +6,9 @@ The socket grants exactly the authority of ONE bash invocation.
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import json
 import re
 import secrets
-import socket
-import tempfile
-import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -290,6 +286,7 @@ class Capabilities:
                 base_path=self.root.parent, universe_id=self.context.universe,
                 owner=self.context.owner, agent_id=self.context.initiating_agent,
                 inside_activity=_session_key().startswith("activity:"),
+                box_binding=session.current_binding(),
             )
             try:
                 return {"result": await asyncio.to_thread(
@@ -308,17 +305,9 @@ class Capabilities:
         if name == 'browser':
             if not self.connections_granted:
                 return {'error': 'connections not granted'}
-            from tinyassets.browser_sessions import agent
-
-            def checkpoint():
-                if self.check_authority() or (self.stopped and self.stopped() is not None):
-                    raise PermissionError('browser authority ended')
-
-            try:
-                return {'result': await asyncio.to_thread(
-                    agent, self.root.parent, self.context, arguments, checkpoint)}
-            except Exception:  # noqa: BLE001 - browser exceptions can contain secrets
-                return {'error': 'browser operation unavailable; do not retry an uncertain action'}
+            # The owner-cell browser left with the cells; the box browser view
+            # (registry N4) is the next shape of this capability.
+            return {'error': 'browser sessions are unavailable until the owner box view'}
         if name.startswith("extension:"):
             from tinyassets.extension_capabilities import ExtensionCapabilities
 
@@ -536,94 +525,6 @@ class Capabilities:
         finally:
             if not locals().get("deferred", False):
                 revoke_provider_request(capability)
-
-
-class JailBridge:
-    """Short-lived Unix socket in a private host directory, bound by exact path.
-
-    One reader bounds concurrent daemon work. Requests never supply context,
-    headers, a bearer or a route. Closing the bash invocation revokes the socket.
-    """
-
-    def __init__(self, dispatch, *, universe_dir=None):
-        if universe_dir is None:
-            raise ValueError("capability bridge requires an admitted command center")
-        self.universe_dir = Path(universe_dir)
-        self.dispatch = dispatch
-        self._context = contextvars.copy_context()
-        self._closed = threading.Event()
-
-    def __enter__(self):
-        self._directory = tempfile.TemporaryDirectory(prefix="ta-")
-        self.extension_root = None
-        backend = getattr(self.dispatch, "extension_backend", None)
-        if backend is not None:
-            from tinyassets.extension_capabilities import ExtensionCapabilities
-
-            candidate = Path(self._directory.name) / "extensions"
-            try:
-                if self._context.run(ExtensionCapabilities(backend).materialize, candidate):
-                    self.extension_root = candidate
-            except Exception:
-                self._directory.cleanup()
-                raise
-        from tinyassets import role_relays
-        from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
-
-        self.path = (self.universe_dir.parent / UNIVERSE_SIDECARS_DIR
-                     / self.universe_dir.name / ("ta-" + secrets.token_hex(16) + ".sock"))
-        self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            self._socket_identity = role_relays.bind(self._server, self.path)
-            self._server.listen(8)
-        except BaseException:
-            self._server.close()
-            self._directory.cleanup()
-            raise
-        self._server.settimeout(0.1)
-        self._thread = threading.Thread(target=self._serve, daemon=True)
-        self._thread.start()
-        return self
-
-    def _serve(self):
-        while not self._closed.is_set():
-            try:
-                client, _ = self._server.accept()
-            except TimeoutError:
-                continue
-            except OSError:
-                return
-            with client:
-                client.settimeout(10)
-                try:
-                    with client.makefile("rb") as stream:
-                        raw = stream.readline(MAX_REQUEST + 1)
-                    if len(raw) > MAX_REQUEST or not raw.endswith(b"\n"):
-                        answer = {"error": "invalid or oversized ta request"}
-                    elif self._closed.is_set():
-                        return
-                    else:
-                        answer = self._context.copy().run(self.dispatch, json.loads(raw))
-                    data = json.dumps(answer).encode() + b"\n"
-                    if len(data) > MAX_RESPONSE:
-                        data = b'{"error":"ta response too large; request a smaller page"}\n'
-                    client.sendall(data)
-                except Exception:  # no host exception text crosses into the jail
-                    try:
-                        client.sendall(b'{"error":"ta request failed"}\n')
-                    except OSError:
-                        pass
-
-    def __exit__(self, *_):
-        self._closed.set()
-        self._server.close()
-        self._thread.join(timeout=1)
-        from tinyassets import role_relays
-
-        try:
-            role_relays.remove(self.path, self._socket_identity)
-        finally:
-            self._directory.cleanup()
 
 
 async def engine_dispatch(server, *, completed: list | None = None):

@@ -736,12 +736,21 @@ def test_engine_mcp_flags_seal_an_http_route_config_into_the_snapshot(tmp_path, 
     snapshot.mkdir(parents=True)
     cfg = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="sub-9",
                       engine_mcp_graph_id="u-9", credential_snapshot_dir=snapshot)
-    flags = _engine_mcp_flags(cfg, tmp_path / "u-9")
+    from tinyassets.engine_mcp_http import BOX_ENGINE_HOST
+    from tinyassets.providers.owned_process import guest_job_dir, launch_scope
+
+    # Without an admitted launch there is no box to seal the route into.
+    assert _engine_mcp_flags(cfg, tmp_path / "u-9") == []
+    with launch_scope(tmp_path / "u-9", owner="sub-9", service="claude-code",
+                      credential_dir=snapshot, operation_id="op-seal"):
+        flags = _engine_mcp_flags(cfg, tmp_path / "u-9")
     assert flags[0] == "--mcp-config" and flags[2] == "--strict-mcp-config"
-    config_path = Path(flags[1])
-    assert config_path.parent == snapshot  # the only daemon state a cell receives
-    server = json.loads(config_path.read_text())["mcpServers"]["tinyassets"]
-    assert server["type"] == "http" and server["url"].startswith("http://127.0.0.1:8790/mcp")
+    # The box path the leased snapshot lands under for this launch.
+    assert flags[1] == guest_job_dir("op-seal") + "/claude/engine-mcp.json"
+    sealed = snapshot / "engine-mcp.json"  # the only daemon state the box receives
+    server = json.loads(sealed.read_text())["mcpServers"]["tinyassets"]
+    assert server["type"] == "http" and server["url"].startswith(
+        f"http://{BOX_ENGINE_HOST}:8790/mcp")
     assert server["headers"] == {"Authorization": "Bearer " + "s" * 40}
     assert "command" not in server  # no stdio engine
 
@@ -1848,7 +1857,8 @@ def test_custom_agent_write_brain_refuses_main_identity_but_writes_shared_fields
 
 
 
-def test_custom_agent_write_tool_passes_session_agent_to_runner(monkeypatch, tmp_path):
+def test_custom_agent_write_tool_writes_through_the_owner_box(monkeypatch, tmp_path,
+                                                              _owner_box_double):
     import asyncio
     from types import SimpleNamespace
     from urllib.parse import parse_qsl, urlsplit
@@ -1856,7 +1866,6 @@ def test_custom_agent_write_tool_passes_session_agent_to_runner(monkeypatch, tmp
     from fastmcp.server import dependencies
 
     from tinyassets import engine_mcp_server as s
-    from tinyassets import universe_tools
     from tinyassets.engine_steering import route_with_session
 
     udir = _seed_brain_universe(monkeypatch, tmp_path)
@@ -1865,31 +1874,29 @@ def test_custom_agent_write_tool_passes_session_agent_to_runner(monkeypatch, tmp
         "http://localhost/mcp", f"thread:agent:{agent_id}:principal:sub-brain")
     monkeypatch.setattr(dependencies, "get_http_request", lambda: SimpleNamespace(
         query_params=dict(parse_qsl(urlsplit(route).query))))
-    calls = []
+    assert _owner_box_double is not None, "the owner box double needs Linux"
+    from tinyassets.boxes.provider import ExecLimits
+    from tinyassets.control_plane.binding import bind_session, use_binding
 
-    def runner(universe_dir, inner, *, agent_id, **kwargs):
-        calls.append((universe_dir, agent_id, inner, kwargs))
-        return universe_tools.ToolRun(0, b"", None, 0.0)
-
-    monkeypatch.setattr(universe_tools, "RUNNER", runner)
-    out = asyncio.run(s.write_file(path="founder.md", content="shared learning"))
+    assert s._acting_agent() == agent_id
+    binding = bind_session(provider=_owner_box_double, limits=ExecLimits(), universe_dir=udir,
+                           owner=s._ACTOR_ID, execution_id="engine-write")
+    with use_binding(binding):
+        out = asyncio.run(s.write_file(path="founder.md", content="shared learning"))
     assert out.startswith("wrote "), out
-    assert len(calls) == 1
-    assert calls[0][0] == udir
-    assert calls[0][1] == agent_id
-    assert calls[0][3]["stdin"] == b"shared learning"
+    assert (udir / "founder.md").read_text(encoding="utf-8") == "shared learning"
 
 
-@pytest.mark.skipif(os.name != "posix", reason="the tool jail and its bash are Linux-only")
-def test_an_activity_bash_is_handed_the_stop_its_activity_polls(monkeypatch, tmp_path):
+def test_an_activity_bash_is_handed_the_stop_its_activity_polls(monkeypatch, tmp_path,
+                                                                 _owner_box_double):
     """A bash run for an activity is killed when the activity stops: the
-    engine hands the jail runner that activity's stop check."""
+    engine hands the box tools that activity's stop check."""
     from types import SimpleNamespace
     from urllib.parse import parse_qsl, urlsplit
 
     from fastmcp.server import dependencies
 
-    from tinyassets import agent_activities, universe_tools
+    from tinyassets import agent_activities
     from tinyassets import engine_mcp_server as s
     from tinyassets.activity_fence import STOPPED
     from tinyassets.engine_steering import route_with_session
@@ -1903,15 +1910,18 @@ def test_an_activity_bash_is_handed_the_stop_its_activity_polls(monkeypatch, tmp
     route = route_with_session("http://localhost/mcp", f"activity:{aid}")
     monkeypatch.setattr(dependencies, "get_http_request", lambda: SimpleNamespace(
         query_params=dict(parse_qsl(urlsplit(route).query))))
-    calls = []
+    assert _owner_box_double is not None, "the owner box double needs Linux"
+    import threading
 
-    def runner(universe_dir, inner, *, agent_id, **kwargs):
-        calls.append(kwargs)
-        return universe_tools.ToolRun(0, b"", None, 0.0)
+    from tinyassets.activity_fence import stop_check
+    from tinyassets.boxes.provider import ExecLimits
+    from tinyassets.control_plane.binding import bind_session, use_binding
 
-    monkeypatch.setattr(universe_tools, "RUNNER", runner)
-    asyncio.run(s.run_bash(command="echo hi"))
-    (kwargs,) = calls
-    assert kwargs["stop"]() is None
-    agent_activities.wait_on(udir, aid, "req-1", "asked")
-    assert kwargs["stop"]() == STOPPED
+    assert stop_check(udir, f"activity:{aid}")() is None
+    binding = bind_session(provider=_owner_box_double, limits=ExecLimits(), universe_dir=udir,
+                           owner=s._ACTOR_ID, execution_id="engine-bash")
+    threading.Timer(1.0, agent_activities.wait_on, (udir, aid, "req-1", "asked")).start()
+    with use_binding(binding):
+        out = asyncio.run(s.run_bash(command="sleep 20; echo survived"))
+    assert stop_check(udir, f"activity:{aid}")() == STOPPED
+    assert "survived" not in out and "the activity stopped running" in out

@@ -590,15 +590,21 @@ def read_graph(
             the exact output field to retrieve. Omit to
             discover names/types/sizes (no value previews). Strings are verbatim;
             other values are Unicode JSON. A complete first read also has value.
+            For branch, @definition returns lossless JSON chunks of the complete
+            definition. Concatenate, verify stable sha256/lengths, then JSON-decode.
         output_offset: For conversation catalogs, the returned before-message-id
             cursor (0 starts at newest); for a message, a Unicode character offset.
             For run_output, Unicode code-point offset in a field, or field index in
             the catalog. Continue by passing the returned next_offset.
+            For branch @definition, a JSON character offset; otherwise a node index.
         output_max_chars: Maximum field chunk length, 1..32768 (default 8192).
         branch_id: For ``target="branch"`` only - the ``branch_def_id`` of the
             workflow to read (get it from ``target="branches"``). Ignored for every
             other target. You can read your own branches and public ones; a private
-            branch belonging to someone else reads as not found.
+            branch belonging to someone else reads as not found. A branch that
+            fits is the whole graph. One that does not pages ``node_defs``:
+            continue with ``output_offset`` set to the returned ``next_offset``
+            until it is null. Each page repeats the rest of the branch.
         target: What to read: ``status`` (a factual daemon + serving snapshot),
             ``graph`` (inspect your command center's graph), ``branches`` (list YOUR OWN
             workflows by name + ``branch_def_id`` + tags — use it to find the id of a
@@ -709,7 +715,10 @@ def read_graph(
     from tinyassets.auth.middleware import _current_identity
     from tinyassets.universe_server import read_graph as _impl
 
-    token = _bind_founder_identity()
+    token = _bind_founder_identity(
+        (*_READ_CAPABILITIES, "tinyassets.extensions.read")
+        if normalized == "branch" else _READ_CAPABILITIES
+    )
     try:
         if normalized == "model_options":
             from tinyassets.api.graph_reads import read_graph as _domain_read
@@ -828,11 +837,20 @@ def read_graph(
         # branch_id widens nothing this agent could not already run.
         if normalized == "branch":
             bid = (branch_id or "").strip()
-            payload = _impl(
-                target=normalized,
-                graph_id=_GRAPH_ID,
-                branch_id=bid,
-            )
+            # universe_server.read_graph pages node_defs and leaves headroom
+            # for this envelope. Paging that page again would hide nodes.
+            # output_offset stays off a first read so the call is the three
+            # keys a one-branch read has always been.
+            selectors = {
+                "target": normalized,
+                "graph_id": _GRAPH_ID,
+                "branch_id": bid,
+            }
+            if output_offset:
+                selectors["output_offset"] = output_offset
+            if field_name:
+                selectors.update(field_name=field_name, output_max_chars=output_max_chars)
+            payload = _impl(**selectors)
             # A PUBLIC branch authored by somebody else reads fine here (the
             # target is deliberately not author-gated), so it is another user's
             # content and carries the untrusted envelope. A branch this founder
@@ -1464,7 +1482,9 @@ _WRITE_GRAPH_BRANCHES_CHAPTER = """\
     limits. overlap ``skip``/``cancel_previous`` drops a due cadence run (a
     one-shot wake waits) or stops the running one. Or event_type ``run_completed`` (event_filter
     ``{"branch_def_id"}``), ``pending_request_answered`` or ``owner_message``
-    wakes it with ``inputs.event``.
+    wakes it with ``inputs.event``. The same event again does not start another
+    run: the subscription records ``deduplicated:<wake id>`` for the wake
+    already stored.
     None cancels an already-running job. Read back the trigger and its last run
     before claiming work has stopped.
 
@@ -2168,6 +2188,8 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
 
         read_graph target="app_ui"                  -> {"app_ui": {"uis": [{ui_id, name,
                                    etag, chars}], "ui_selection": ..., "revision": N}}
+        read_graph target="app_ui" query="ui_selection"
+                                                 -> the choice only, no library
         read_graph target="app_ui" query="<ui_id>"  -> {"ui": {...}, "etag": "..."}
         read_graph target="app_ui" query="<ui_id>" field_name="script"
                    output_offset=0                  -> one chunk + next_offset
@@ -4759,13 +4781,13 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
 
 
 # ── the universe's four tools (universe-harness S1) ─────────────────────────
-# ``read`` / ``write`` / ``edit`` / ``bash`` over the agent's OWN universe
-# folder, executed by the platform inside the tool jail
-# (``tinyassets.universe_tools``): public network only through the checking
-# proxy (``tinyassets.universe_egress``), no credential, resource-limited,
-# the universe at ``/u`` and nothing else. The graph pin picks the folder; no
-# parameter names a universe, and a path outside ``/u`` does not exist in the
-# jail. Every call first rechecks current serving-owner authority.
+# ``read`` / ``write`` / ``edit`` / ``bash`` over the agent's OWN command
+# center, executed inside the owner's box (``tinyassets.universe_tools`` over
+# ``agent_loop.box_tools``): public network only through the box relay, no
+# credential, resource-limited, the center at ``/u`` and nothing else. The
+# graph pin picks the center; no parameter names one, and a path outside
+# ``/u`` does not exist in the box. Every call first rechecks current
+# serving-owner authority.
 
 
 async def _universe_tool(op, /, **kwargs) -> str:
@@ -4777,7 +4799,7 @@ async def _universe_tool(op, /, **kwargs) -> str:
     from tinyassets import universe_tools
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.engine_steering import launch_tools
-    from tinyassets.providers.provider_jail import ProviderConfinementError
+    from tinyassets.exceptions import ProviderConfinementError
 
     grant = launch_tools()
     required = {universe_tools.read_file: "read", universe_tools.write_file: "write",
@@ -4796,9 +4818,15 @@ async def _universe_tool(op, /, **kwargs) -> str:
     if required == 'read' and PurePosixPath(str(kwargs.get('path', ''))).suffix.lower() in (
             '.png', '.jpg', '.jpeg', '.webp', '.gif'):
         capability = 'read_image'
+    from tinyassets.control_plane.binding import active_binding, use_binding
+
     try:
         udir = _universe_dir(_GRAPH_ID)
-        result = await asyncio.to_thread(op, udir, **kwargs)
+        binding = active_binding(_ACTOR_ID, _GRAPH_ID)
+        if binding is None:
+            return "error: no admitted session owns this command center's box"
+        with use_binding(binding):
+            result = await asyncio.to_thread(op, udir, **kwargs)
         error = result_error(result)
         if error is not IGNORED:
             RATES.record(capability, failure_code(error) if error else 'ok')
@@ -4879,7 +4907,6 @@ async def run_bash(command: str, timeout: int = 0) -> str:
     err = _binding_error()
     if err is not None:
         return err
-    # The tool jail itself is Linux-only; non-POSIX callers retain its refusal.
     completed: list[str] = []
     dispatch = (await engine_dispatch(sys.modules[__name__], completed=completed)
                 if os.name == "posix" else None)

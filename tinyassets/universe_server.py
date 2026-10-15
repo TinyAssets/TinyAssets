@@ -32,7 +32,6 @@ import contextlib
 import json
 import logging
 import math
-import os
 import re
 import threading
 import uuid
@@ -828,7 +827,10 @@ def read_graph(
             branch, automations, automation, connections, compute, agents (your own
             agents: main and every agents/<name>/ directory), catalog (the commons
             catalogue of published systems and packages), agent, agent_bindings,
-            agent_binding, app_ui (your own UI library and choice),
+            agent_binding, app_ui (your own UI library and choice: no query is
+            the index, ids and sizes only; query=ui_selection is the choice
+            alone, never the library; query=<ui_id> is one UI, and field_name
+            plus output_offset reads one field in chunks),
             command_center_packages (working public packages to try in your own command center),
             command_center_preview (public visual bytes only; no copy or consent),
             command_center_updates (your copy provenance and explicit replacement choices),
@@ -853,7 +855,12 @@ def read_graph(
         run_id: Run identifier for target=run (the single-run result read).
             Falls back to graph_id when omitted.
         branch_id: Branch definition identifier for target=branch (read a
-            branch's full graph + node configs). Falls back to graph_id.
+            branch's graph + node configs). Falls back to graph_id. A branch
+            that fits comes back whole. One that does not pages node_defs:
+            pass output_offset=<the next_offset the page returned> until
+            next_offset is null. Each page repeats the rest of the branch.
+            For complete source, field_name=@definition returns lossless JSON
+            chunks: concatenate, verify the stable sha256 and lengths, then decode.
         automation_id: Identifier of one of this command center's automations, for
             target=automation. The server assigns it on create and returns it
             in the response; use that value for later reads and controls.
@@ -872,12 +879,16 @@ def read_graph(
         field_name: Output field for target=run_output, or a retained turn id for
             target=conversation. For agent, an exact component key or @definition.
             Omit for a metadata/component catalog (no UI bodies).
+            For branch, @definition selects the complete definition as JSON chunks.
         output_offset: Unicode code-point offset within a selected output field or
             conversation message, or field index when reading the catalog (for a
             conversation catalogue, the returned before-message-id key). Continue
             using next_offset. For catalog, a filtered definition index; for an agent
             catalog, a component index; for a selected component, Unicode JSON
-            character offset. Concatenate chunks until next_offset is null.
+            character offset. For branch @definition, a JSON character offset;
+            otherwise for target=branch, the node_defs index a previous
+            page returned as next_offset (0 is the first page). Concatenate
+            chunks until next_offset is null.
         output_max_chars: Selected-field chunk length (1..32768, default 8192).
         request_key: Original UUIDv4 for target=conversation_turn; observation never starts work.
         file_id: For target=run_file, an owned opaque reference bound to run_id.
@@ -963,6 +974,35 @@ def read_graph(
             field_name=field_name, offset=output_offset,
             max_chars=output_max_chars, max_rows=limit,
         ), default=str)
+    if normalized == "branch":
+        # The domain read is the whole branch. This door pages node_defs under
+        # the ceiling instead of letting the ceiling cut the JSON (and its
+        # cursor) in half. A branch that fits is the original text.
+        from tinyassets.engine_read_views import CEILING_HEADROOM_BYTES, project_branch
+        from tinyassets.engine_result_bounds import resolve_ceiling
+
+        if type(output_offset) is not int or output_offset < 0:
+            return json.dumps({"error": "output_offset must be a non-negative integer"})
+        return project_branch(
+            _domain_read_graph(**arguments),
+            offset=output_offset,
+            budget=resolve_ceiling() - CEILING_HEADROOM_BYTES,
+            render_text=lambda text: text,
+            branch_id=branch_id or graph_id,
+            scope=_continuation_scope(graph_id),
+            field_name=field_name, max_chars=output_max_chars,
+        )
+    if normalized == "app_ui":
+        # The same index the engine serves. An empty query used to be the whole
+        # library, which the ceiling then cut. The owner's app reads the whole
+        # row through the owner door, not here.
+        from tinyassets.api.app_ui import INDEX, read_app_ui
+
+        return json.dumps(read_app_ui(
+            universe_id=graph_id, ui_id=(query or "").strip() or INDEX,
+            field_name=field_name, output_offset=output_offset,
+            output_max_chars=output_max_chars,
+        ))
     raw = _domain_read_graph(**arguments)
     if isinstance(raw, str) and raw.startswith('{"error": "unknown_target"'):
         # The domain names its own targets; this door adds its one synonym.
@@ -1875,18 +1915,21 @@ def _inbound_event_run_fn(
 
 
 def start_scheduler_for_serving() -> bool:
-    """Start the process scheduler because the daemon is now serving.
+    """Start the event source while the execution owner is enabled.
 
-    UNCONDITIONAL — it does not consult ``TINYASSETS_INBOUND_ENABLED``. That flag
-    gates the inbound HTTP surface (the ``/hooks/*`` route and publishing Source
-    events onto the bus), not whether the event loop runs.
+    ``TINYASSETS_INBOUND_ENABLED`` gates the inbound HTTP surface; the event
+    source also needs a running owner tick to dispatch anything it accepts.
 
     Returns whether the scheduler is running afterwards. A scheduler fault must not
     block boot, so a failure is logged and reported, never raised.
     """
-    from tinyassets.scheduler import get_or_create_scheduler
+    from tinyassets.control_plane.events import get_or_create_scheduler
+    from tinyassets.control_plane.tick import assigned_queue_consumer_enabled
     from tinyassets.storage import data_dir
 
+    if not assigned_queue_consumer_enabled():
+        logger.info("scheduler not started: execution owner disabled")
+        return False
     try:
         get_or_create_scheduler(data_dir(), _inbound_event_run_fn)
     except Exception:  # noqa: BLE001 - a scheduler fault must not block boot
@@ -1898,7 +1941,7 @@ def start_scheduler_for_serving() -> bool:
 
 def stop_scheduler_for_serving() -> None:
     """Stop the process scheduler on daemon teardown. Never masks a teardown error."""
-    from tinyassets.scheduler import shutdown_scheduler
+    from tinyassets.control_plane.events import shutdown_scheduler
 
     try:
         shutdown_scheduler()
@@ -1983,6 +2026,7 @@ def run_graph(
     operation=emit_event takes inputs_json {"name", "data"} under your own home
     graph_id and wakes only YOUR automations subscribed to that name
     (event_type app_event). Returns how many wakes it stored.
+    viewer.account_id is the signed-in account, not data.
 
     File inputs: a file the user attached in the app is ALREADY a run-file
     reference, arriving inside their message as a delimited JSON attachment
@@ -2783,11 +2827,11 @@ def _served_failure_code(exc: BaseException) -> str:
     from tinyassets.conversation_failure import FAILURE_CODES
     from tinyassets.exceptions import (
         ProviderAuthorityHeldError,
+        ProviderConfinementError,
         SelectedModelUnavailableError,
         WorkModelExhaustedError,
     )
     from tinyassets.providers.model_pins import ModelPinError
-    from tinyassets.providers.provider_jail import ProviderConfinementError
     from tinyassets.providers.served_model_plan import NO_ELIGIBLE_MODEL
 
     try:
@@ -3209,11 +3253,18 @@ def converse(
 
             home_failure = founder_home_failure()
     except Exception:
+        # An unreadable store is not a classified birth failure. Labeling it
+        # "incomplete" returned home_unavailable, which tells the client the
+        # home is missing rather than that this read could not authorize the
+        # turn. The ACL check below already uses auth_scope_required for the
+        # same defect; this read is one call earlier.
         logger.warning(
             "converse: could not resolve the command center for %r", graph_id, exc_info=True
         )
-        uid = ""
-        home_failure = "incomplete"
+        return json.dumps({
+            "error": "Your home command center could not be created or loaded.",
+            "auth_scope_required": True,
+        })
     if not uid:
         # A missing create scope is an auth problem. Admission, a deleted
         # account, or a birth that did not finish is not: calling it
@@ -3429,6 +3480,7 @@ def converse(
                 base_path=memory_universe_dir.parent, universe_id=uid,
                 owner=current_actor_id(), tier=turn.interlocutor.tier,
                 session_key=f"thread:{memory_session}",
+                execution_id=f"send:{memory_session}:{client_send_id or live_id}",
                 conversation_history=conversation_history, input_method=input_method,
                 model_choice=model_choice, response_observer=_observe_execution,
                 learning_observer=lesson_settled.append,
@@ -4376,29 +4428,6 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
     return app
 
 
-def _serve_configs(app, host: str, port: int, socket_path: str):
-    """Keep TCP defaults; only the additional socket bypasses lifespan."""
-    import uvicorn
-
-    from tinyassets.owner_socket import OwnerSocketMiddleware
-
-    return (
-        uvicorn.Config(app, host=host, port=port,
-                       timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S),
-        uvicorn.Config(OwnerSocketMiddleware(app), uds=socket_path, lifespan="off",
-                       proxy_headers=False,
-                       timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S),
-    )
-
-
-async def _serve_owner_listeners(configs):
-    import asyncio
-
-    import uvicorn
-
-    await asyncio.gather(*(uvicorn.Server(config).serve() for config in configs))
-
-
 def main(
     host: str = "0.0.0.0",
     port: int = 8001,
@@ -4444,19 +4473,11 @@ def main(
     )
 
     # Serving admission (openspec change cloud-only-runtime-admission,
-    # enforcement site C). The serving process refuses to boot unless it is an
-    # admitted cloud runtime: NOT_CLOUD, an unobserved process and a failed or
-    # unreachable resolution are all refusals, and there is no degraded local
-    # mode to fall back to. Foreground and served provider execution never reach
-    # the queue, so startup plus the last provider-authority boundary is the only
-    # pair of gates that covers them.
+    # enforcement site C). Every transport refuses to boot unless this is an
+    # admitted cloud runtime. No maintenance, worker, or listener runs first.
     #
-    # Placed exactly here on purpose. After the session-seal arm, which stays the
-    # first statement in this function (anything spawned before it inherits the
-    # seal key), and before every other thing boot does: no maintenance, thread,
-    # queue worker, provider child, engine-MCP child, listener or storage writer
-    # runs ahead of it, and it is outside every database transaction, so the one
-    # bounded link-local read can never happen under the SQLite write lock.
+    # Placed after the session-seal arm and outside every database transaction,
+    # so the bounded metadata read never holds a SQLite write lock.
     #
     # Resolves at most once per process; the logged shape is sanitized (verdict +
     # reason token + booleans, never an id, address or secret). A cached refusal
@@ -4469,8 +4490,6 @@ def main(
     try:
         _provenance = require_process_cloud_admission(surface="platform serving startup")
     except PermissionError as exc:
-        # Loud, sanitized, non-zero. Not swallowed: an admission failure that
-        # let boot continue would be the opt-out this gate exists to remove.
         logger.error("refusing to serve: %s", exc)
         raise SystemExit(PLATFORM_NOT_CLOUD_EXIT_CODE) from exc
     except Exception as exc:  # noqa: BLE001 - fail closed on an unexpected failure
@@ -4478,7 +4497,6 @@ def main(
             "refusing to serve: platform runtime provenance could not be resolved"
         )
         raise SystemExit(PLATFORM_NOT_CLOUD_EXIT_CODE) from exc
-
     logger.info(
         "platform runtime provenance (serving admitted): %s",
         sanitized_observation_fields(_provenance),
@@ -4613,21 +4631,6 @@ def main(
 
     start_owner_tree(_owner_data_dir())
     _ensure_runs_recovery()
-    def _resume_request_loop(base):
-        import time
-
-        from tinyassets.request_continuations import tick
-        # Bound at boot: this process serves one root, and a re-resolved root
-        # would sweep (and take owner control of) homes this server never served.
-        while True:
-            try:
-                tick(base)
-            except Exception:
-                logger.exception("request continuation sweep failed")
-            time.sleep(5)
-    import threading
-    threading.Thread(target=_resume_request_loop, args=(_owner_data_dir(),),
-                     name="request-continuations", daemon=True).start()
     # And keep recovering: an engine child that dies mid-run while this server
     # lives is found within one tick, by proof that it died.
     start_run_owner_watcher()
@@ -4653,33 +4656,21 @@ def main(
         _engine_http_procs = start_engine_mcp_http_servers()  # noqa: F841
         app = create_streamable_http_app()
         assigned_consumer = None
-        from tinyassets.runtime.assigned_queue_consumer import (
-            AssignedQueueConsumer,
-            assigned_queue_consumer_enabled,
-        )
+        # The lifespan has not run yet. Storage initialization precedes the tick.
+        from tinyassets.consumer_runtime import initialize as initialize_consumer
+        from tinyassets.control_plane.tick import AssignedQueueConsumer
         from tinyassets.storage import data_dir as assigned_data_dir
 
-        if assigned_queue_consumer_enabled():
-            # The lifespan has not run yet. Its storage initialization must also
-            # precede this polling worker; best-effort boot maintenance may fail.
-            from tinyassets.consumer_runtime import initialize as initialize_consumer
-
-            initialize_consumer(assigned_data_dir())
-            assigned_consumer = AssignedQueueConsumer(assigned_data_dir())
-            assigned_consumer.start()
+        # The owner tick starts whether or not the assigned-queue consumer
+        # flag is set. That flag does not refuse a stored automation.
+        initialize_consumer(assigned_data_dir())
+        assigned_consumer = AssignedQueueConsumer(assigned_data_dir())
+        assigned_consumer.start()
         try:
-            socket_path = os.environ.get("TINYASSETS_OWNER_SOCKET")
-            if socket_path:
-                import asyncio
-
-                asyncio.run(_serve_owner_listeners(
-                    _serve_configs(app, host, port, socket_path)
-                ))
-            else:
-                uvicorn.run(
-                    app, host=host, port=port,
-                    timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
-                )
+            uvicorn.run(
+                app, host=host, port=port,
+                timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
+            )
         finally:
             if assigned_consumer is not None:
                 assigned_consumer.stop()
@@ -4691,20 +4682,16 @@ def main(
 
     writer_barrier = prepare_service_writer_barrier(data_dir())
     assigned_consumer = None
-    from tinyassets.runtime.assigned_queue_consumer import (
-        AssignedQueueConsumer,
-        assigned_queue_consumer_enabled,
-    )
+    from tinyassets.control_plane.tick import AssignedQueueConsumer
 
     try:
         from tinyassets.consumer_runtime import initialize as initialize_consumer
 
-        # Do not rely on best-effort boot maintenance: storage must be ready
-        # before the assigned consumer can open the same database.
+        # Storage must be ready before the owner tick opens its database.
+        # The tick starts whether or not the assigned-queue consumer flag is set.
         initialize_consumer(data_dir())
-        if assigned_queue_consumer_enabled():
-            assigned_consumer = AssignedQueueConsumer(data_dir())
-            assigned_consumer.start()
+        assigned_consumer = AssignedQueueConsumer(data_dir())
+        assigned_consumer.start()
         run_visibility_startup_gate()
         start_staging_sweeper_for_serving(data_dir())
         if transport in ("sse", "stdio"):

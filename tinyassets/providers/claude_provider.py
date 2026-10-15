@@ -42,7 +42,7 @@ from tinyassets.providers.base import (
     BaseProvider,
     ModelConfig,
     ProviderResponse,
-    check_bwrap_failure,
+    launch_auth_from_overlay,
     subprocess_env_for_provider,
 )
 from tinyassets.providers.owned_process import (
@@ -446,7 +446,6 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
         session_of,
         turn_of,
     )
-    from tinyassets.role_provider_execution import seal_launch_file
     from tinyassets.served_tools import granted_tools
     from tinyassets.storage import data_dir
 
@@ -464,6 +463,15 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
         context_tokens=getattr(getattr(config, "selected_model", None), "context_tokens", None),
     )
     model_url += ("&" if "?" in model_url else "?") + "model_inventory=four"
+    # Inside the box the daemon's loopback does not exist: the broker relay
+    # maps this host to the owner's own engine socket (engine_mcp_http).
+    from tinyassets.engine_mcp_http import BOX_ENGINE_HOST
+    from tinyassets.providers.owned_process import current_launch_scope, guest_job_dir
+
+    scope = current_launch_scope()
+    if scope is None or snapshot is None:
+        return []
+    model_url = model_url.replace("http://127.0.0.1:", f"http://{BOX_ENGINE_HOST}:", 1)
     mcp_config = {
         "mcpServers": {
             "tinyassets": {
@@ -473,13 +481,16 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
             }
         }
     }
+    from tinyassets.credential_vault import _write_exclusive_snapshot_file
+
     try:
-        config_path = seal_launch_file(
-            snapshot, "engine-mcp", ".json", _json.dumps(mcp_config).encode("utf-8"),
-        )
+        _write_exclusive_snapshot_file(Path(snapshot) / "engine-mcp.json",
+                                       _json.dumps(mcp_config).encode("utf-8"))
     except (OSError, PermissionError):
         return []
-    return ["--mcp-config", str(config_path), "--strict-mcp-config"]
+    # The lease lands at <job>/<home_dir>/<file> in the box (external_agents.cell).
+    config_path = guest_job_dir(scope.operation_id) + "/claude/engine-mcp.json"
+    return ["--mcp-config", config_path, "--strict-mcp-config"]
 
 
 def _confine_workflow_node(config: ModelConfig) -> ModelConfig:
@@ -653,6 +664,9 @@ class ClaudeProvider(BaseProvider):
     name = "claude-code"
     family = "anthropic"
     native_credential_service = "claude"
+    #: The lease lands at ``<job>/<service>/`` in the box; a raw ``setup-token``
+    #: credential is exported from that file inside the box only.
+    native_launch_auth = launch_auth_from_overlay(name, native_credential_service, "sk-ant-")
     native_command_resolver = staticmethod(lambda: _resolve_claude_cmd())
     native_process_options = staticmethod(_no_window_kwargs)
     native_metadata_arguments = _METADATA_ARGUMENTS
@@ -910,7 +924,6 @@ class ClaudeProvider(BaseProvider):
         async def _raise_timeout(bound_is_absolute: bool, allow: float) -> None:
             await self._terminate(proc)
             stderr_text = await _finish_stderr()
-            check_bwrap_failure(stderr_text)
             # A silent CLI usually said why on stderr; carry its last words.
             said = f"; stderr: {stderr_excerpt(stderr_text)}" if stderr_text.strip() else ""
             if bound_is_absolute:
@@ -983,7 +996,6 @@ class ClaudeProvider(BaseProvider):
                 events, malformed = self._parse_line(line)
                 if malformed:
                     await self._terminate(proc)
-                    check_bwrap_failure(await _finish_stderr())
                     raise _attach(ProviderProtocolError(
                         "claude -p emitted a malformed (non-JSON) stream line"
                     ))
@@ -1088,7 +1100,6 @@ class ClaudeProvider(BaseProvider):
             await self._terminate(proc)
             returncode = proc.returncode
             stderr_text = await _finish_stderr()
-            check_bwrap_failure(stderr_text)
             elapsed_ms = (time.monotonic() - start) * 1000
 
             if terminal is not None and _result_is_success(terminal):
@@ -1300,7 +1311,6 @@ class ClaudeProvider(BaseProvider):
                 )
 
             stderr_text_json = stderr.decode(errors="replace")
-            check_bwrap_failure(stderr_text_json)
 
             if proc.returncode != 0:
                 raise ProviderError(

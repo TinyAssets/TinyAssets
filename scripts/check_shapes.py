@@ -302,8 +302,14 @@ MIRROR_ROOT = "packaging/claude-plugin/plugins/tinyassets-universe-server/runtim
 VENDOR_NAMES = re.compile(
     r"anthropic|chatgpt|claude|codex|gemini|grok|groq|kimi|mistral|ollama|openai|openrouter", re.I
 )
-DUAL_FLAGS = re.compile(
-    r"\bTINYASSETS_(?:AGENT_LOOP|ALLOW_CLAUDE_SERVING|ASSIGNED_QUEUE_CONSUMER)\b"
+DUAL_FLAGS = re.compile(r"\bTINYASSETS_(?:AGENT_LOOP|ALLOW_CLAUDE_SERVING)\b")
+CONSUMER_DISABLE_SITES = frozenset({
+    "tinyassets/control_plane/tick.py",
+})
+RETIRED_ACCOUNT_LIMITS = re.compile(
+    r"\b(?:RUN_WRITE_LIMIT|RUN_TOTAL_LIMIT|RUN_DAY_LIMIT|DISPATCHES_PER_HOUR|"
+    r"BYTES_PER_HOUR|BUDGET_WINDOW_S|usage_notice|charge_dispatch|"
+    r"dispatch_window_usage)\b"
 )
 PUBLIC_ROUTE = re.compile(
     r"(?:mount|route|Route|Mount|include_router|add_api_route|@app\.(?:get|post|put|patch|delete))"
@@ -323,7 +329,11 @@ DOC_HOMES = (
 HOST_PATHS = (
     "tinyassets/host_pool",
     "tinyassets/mcp_server.py",
-    "fantasy_daemon/mcp_server.py",
+    "fantasy_daemon",
+    "tinyassets/__main__.py",
+    "tinyassets/background_served_provider.py",
+    "tinyassets/cloud_automation_continuation.py",
+    "tinyassets/branch_tasks.py",
     "tinyassets_tray.py",
     "tinyassets.pyw",
     "tinyassets/desktop/launcher.py",
@@ -332,20 +342,19 @@ HOST_PATHS = (
     "start-tinyassets-server.vbs",
 )
 LIVE_SCRIPTS = {
-    "tinyassets-cli": "tinyassets.__main__:main",
     "tinyassets-universe-server": "tinyassets.universe_server:main",
     "tinyassets-probe": "tinyassets.probe:entry_point",
 }
-LIVE_DOMAIN_ENTRY_POINTS = {
-    # tinyassets-cli still loads these domains; remove this pin with its domain-loading follow-up.
-    "fantasy_daemon": "domains.fantasy_daemon.skill:FantasyAuthorDomain",
-    "research_probe": "domains.research_probe.skill:ResearchProbeDomain",
-}
+LIVE_DOMAIN_ENTRY_POINTS = {}
 
 
 def dead_entry_problems(root: Path = ROOT) -> list[str]:
     """Keep removed host paths and extra start surfaces out of the package."""
-    problems = [f"host-paths: {path}" for path in HOST_PATHS if (root / path).exists()]
+    problems = [
+        f"host-paths: {path}" for path in HOST_PATHS
+        if (root / path).is_file()
+        or ((root / path).is_dir() and any(files(f"{path}/**", root)))
+    ]
     if (root / "prototype").exists():
         problems.append("host-paths: prototype/ fixture tree returned")
     compose = root / "deploy/compose.yml"
@@ -360,11 +369,6 @@ def dead_entry_problems(root: Path = ROOT) -> list[str]:
     domains = project.get("entry-points", {}).get("tinyassets.domains", {})
     if domains != LIVE_DOMAIN_ENTRY_POINTS:
         problems.append(f"domain-entry-points: changed registered domains {domains!r}")
-    runner = root / "fantasy_daemon/__main__.py"
-    if runner.is_file() and re.search(
-        r'"--mcp"|from fantasy_daemon\.mcp_server\b', runner.read_text(encoding="utf-8")
-    ):
-        problems.append("spawn-entry: local MCP runner returned")
     return problems
 
 
@@ -626,10 +630,12 @@ def _borrow_checkout_objects(root: Path) -> bool:
     info = local / "objects" / "info"
     info.mkdir(parents=True, exist_ok=True)
     alternates = info / "alternates"
-    entry = f"{(source / 'objects').resolve()}\n"
-    current = alternates.read_text(encoding="utf-8") if alternates.exists() else ""
+    # Git's alternates file uses slash paths even when the host is Windows.
+    entry = f"{(source / 'objects').resolve().as_posix()}\n"
+    current = alternates.read_bytes().decode("utf-8") if alternates.exists() else ""
     if entry not in current:
-        alternates.write_text(current + entry, encoding="utf-8")
+        # Git reads this file bytewise; Windows text mode would add CR bytes.
+        alternates.write_bytes((current + entry).encode("utf-8"))
         # Local config only: a global safe.directory would outlive this repo.
         subprocess.run(
             ["git", "config", "--add", "safe.directory", str(source.parent.resolve())],
@@ -775,7 +781,10 @@ def added_line_problems(changes: dict[str, str]) -> list[str]:
     for rel, source in changes.items():
         if not rel.startswith("tinyassets/") or not rel.endswith(".py"):
             continue
-        if DUAL_FLAGS.search(source) or re.search(
+        if (DUAL_FLAGS.search(source) or (
+            "TINYASSETS_ASSIGNED_QUEUE_CONSUMER" in source
+            and rel not in CONSUMER_DISABLE_SITES
+        )) or re.search(
             r"(?:getenv|environ|if)\b[^\n]*TINYASSETS_\w*(?:LOOP|LEGACY|V2|FALLBACK)\b", source
         ):
             problems.append(f"opt-in-flags: {rel} selects a second path")
@@ -789,8 +798,24 @@ def added_line_problems(changes: dict[str, str]) -> list[str]:
     return problems
 
 
+def control_plane_policy_problems(root: Path = ROOT) -> list[str]:
+    """Only the explicit consumer-off boundary may gate the owner tick."""
+    problems: list[str] = []
+    for path in files("tinyassets/**/*.py", root) + files("scripts/**/*.py", root):
+        if path.name == "check_shapes.py":
+            continue
+        source = path.read_text(encoding="utf-8", errors="replace")
+        rel = path.relative_to(root).as_posix()
+        if "TINYASSETS_ASSIGNED_QUEUE_CONSUMER" in source and rel not in CONSUMER_DISABLE_SITES:
+            problems.append(f"opt-in-flags: {rel} gates the owner tick")
+        if rel.startswith("tinyassets/") and RETIRED_ACCOUNT_LIMITS.search(source):
+            problems.append(f"limit-names: {rel} contains a retired account meter")
+    return problems
+
+
 def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
     problems: list[str] = []
+    problems.extend(control_plane_policy_problems(root))
     problems.extend(dead_entry_problems(root))
     export_problems = export_runtime_problems(root)
     problems.extend(export_problems)

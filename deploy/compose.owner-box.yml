@@ -1,0 +1,45 @@
+# Reviewed cutover composition input. Merge with compose.yml only for the
+# final owner-box runtime bundle; never select this on owner-split data.
+# Compose >=2.24.4 is required for !override. The release bundle must contain
+# the rendered result as compose.yml, so rollback restores one paired file.
+services:
+  daemon:
+    user: "1001:1001"
+    group_add: ["1100", "1101", "1102"]
+    cap_add: !reset []
+    cap_drop: [ALL]
+    security_opt: !override ["no-new-privileges=true"]
+    volumes: !override
+      - tinyassets-data:/data
+      - /run/tinyassets-boxhostd:/run/tinyassets-boxhostd:ro
+    healthcheck:
+      test: [CMD, /opt/venv/bin/python, /app/scripts/mcp_public_canary.py,
+             --pulse-only, --url, "http://127.0.0.1:8001/mcp", --timeout, "10"]
+    depends_on:
+      broker:
+        condition: service_started
+
+  broker:
+    image: ${TINYASSETS_IMAGE:?Set immutable TINYASSETS_IMAGE}
+    container_name: tinyassets-broker
+    user: "1002:1002"
+    group_add: ["1102"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges=true"]
+    restart: unless-stopped
+    mem_limit: 512m
+    memswap_limit: 512m
+    entrypoint: [/opt/venv/bin/python, -I, -B, /app/broker_main.py]
+    command: [--socket, /run/tinyassets-boxhostd/broker/broker.sock,
+              --state, /data/.broker/state, --data-root, /data,
+              --owner-uid, "1001", --box-host]
+    volumes:
+      - tinyassets-data:/data
+      - tinyassets-browser-keys:/var/lib/ta-broker
+      - /run/tinyassets-boxhostd:/run/tinyassets-boxhostd
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: "127.0.0.1:24224"
+        fluentd-async: "true"
+        tag: "{{.Name}}"

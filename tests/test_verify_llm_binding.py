@@ -82,7 +82,7 @@ _STATUS_BOUND_STRUCTURED_CONTENT = {
         "structuredContent": {
             "schema_version": 1,
             "active_host": {"llm_endpoint_bound": "codex"},
-            "sandbox_status": {"bwrap_available": True, "reason": None},
+            "sandbox_status": {"box_available": True, "reason": None},
         },
     },
 }
@@ -95,7 +95,7 @@ _STATUS_BOUND_SANDBOX_OK = {
                 "type": "text",
                 "text": (
                     '{"active_host": {"llm_endpoint_bound": "codex"}, '
-                    '"sandbox_status": {"bwrap_available": true, "reason": null}}'
+                    '"sandbox_status": {"box_available": true, "reason": null}}'
                 ),
             }
         ]
@@ -110,8 +110,8 @@ _STATUS_BOUND_SANDBOX_MISSING = {
                 "type": "text",
                 "text": (
                     '{"active_host": {"llm_endpoint_bound": "codex"}, '
-                    '"sandbox_status": {"bwrap_available": false, '
-                    '"reason": "bwrap not found on PATH"}}'
+                    '"sandbox_status": {"box_available": false, '
+                    '"reason": "no owner box"}}'
                 ),
             }
         ]
@@ -207,7 +207,7 @@ def test_llm_bound_accepts_structured_content_status_payload():
         "http://fake/mcp", 10.0, require_sandbox=True, post_fn=post_fn
     )
     assert result["active_host"]["llm_endpoint_bound"] == "codex"
-    assert result["sandbox_status"]["bwrap_available"] is True
+    assert result["sandbox_status"]["box_available"] is True
 
 
 def test_llm_bound_add_canon_non_fatal():
@@ -222,7 +222,7 @@ def test_llm_bound_add_canon_non_fatal():
     assert result.get("llm_endpoint_bound") == "anthropic"
 
 
-def test_require_sandbox_accepts_bwrap_available():
+def test_require_sandbox_accepts_box_available():
     post_fn = _make_post_fn(
         (_INIT_OK, "sid1"),
         (_NOTIF_NONE, "sid1"),
@@ -232,10 +232,10 @@ def test_require_sandbox_accepts_bwrap_available():
     result = check_llm_binding(
         "http://fake/mcp", 10.0, require_sandbox=True, post_fn=post_fn
     )
-    assert result["sandbox_status"]["bwrap_available"] is True
+    assert result["sandbox_status"]["box_available"] is True
 
 
-def test_require_sandbox_rejects_missing_bwrap():
+def test_require_sandbox_rejects_missing_owner_box():
     post_fn = _make_post_fn(
         (_INIT_OK, "sid1"),
         (_NOTIF_NONE, "sid1"),
@@ -246,7 +246,7 @@ def test_require_sandbox_rejects_missing_bwrap():
             "http://fake/mcp", 10.0, require_sandbox=True, post_fn=post_fn
         )
     assert exc_info.value.code == 5
-    assert "bwrap not found" in exc_info.value.msg
+    assert "owner box runtime is unavailable: no owner box" in exc_info.value.msg
 
 
 # ---------------------------------------------------------------------------

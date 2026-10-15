@@ -42,7 +42,7 @@ The system SHALL run live checks after every deploy and every five minutes on ho
 
 #### Scenario: Fresh deployment loses a capability
 - **WHEN** the existing public MCP canary or app probe fails after a successful deploy
-- **THEN** the deploy fails, opens the deploy-failed issue and rolls back to the captured previous image; an exposed CF Access origin fails the deploy without image rollback. The new core-capability canary remains advisory, including missing configuration, and never runs a previous-versus-candidate image comparison.
+- **THEN** the deploy fails, opens the deploy-failed issue and rolls back to the captured previous image; an exposed CF Access origin fails the deploy without image rollback. The new core-capability canary remains advisory once provisioned, and never runs a previous-versus-candidate image comparison. Missing configuration warns and does not roll back a deploy that does not move data.
 
 ### Requirement: Systemic runtime failure alarms
 The daemon SHALL record stable failure codes and success denominators for core capability operations, expose bounded aggregate rates only to the existing operational canary authority, and report spikes and systemic absolute failure rates independently of synthetic probe success.
@@ -61,7 +61,7 @@ The daemon SHALL record stable failure codes and success denominators for core c
 
 #### Scenario: Canary not provisioned
 - **WHEN** the dedicated canary configuration is absent or incomplete
-- **THEN** emit a loud canary-not-provisioned warning and issue, without fabricated capability failures or rollback
+- **THEN** emit a loud canary-not-provisioned warning and issue, without fabricated capability failures or rollback, and continue a deploy that does not move data. A deploy that would move data — an owner-box layout candidate, a pending migration, or any other data-moving step — refuses before that move. Once the canary is provisioned, a red public canary, app probe, or failed core-canary step still rolls back.
 
 #### Scenario: Concurrent deploy or probe
 - **WHEN** multiple runs use the canary owner or the daemon restarts during evidence collection

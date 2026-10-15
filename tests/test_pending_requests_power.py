@@ -51,8 +51,13 @@ def manifest_connection(tmp_path, monkeypatch, request):
     universe, agent = _seed_universe(tmp_path)
     providers = getattr(request, "param", ("codex",))
     if "claude-code" in providers:
-        (universe / "claude-config").mkdir()
-        (universe / "claude-config" / ".credentials.json").write_text("{}", encoding="utf-8")
+        from tinyassets.credential_vault import _prepare_credential_root
+
+        # Path-backed material lives in the platform custody root outside the
+        # owner's box; the record names it by its center-relative path.
+        config_dir = _prepare_credential_root(universe) / "claude-config"
+        config_dir.mkdir()
+        (config_dir / ".credentials.json").write_text("{}", encoding="utf-8")
         write_credential_vault(universe, [
             {"credential_type": "llm_subscription", "service": "codex", "auth_json_b64": "e30="},
             {"credential_type": "llm_subscription", "service": "claude",

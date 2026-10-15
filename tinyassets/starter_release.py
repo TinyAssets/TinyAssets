@@ -128,7 +128,7 @@ def abandon_new_provision(root: Path, *, owner_id: str) -> None:
     """
     import uuid
 
-    from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
+    from tinyassets.boxes.layout import UNIVERSE_SIDECARS_DIR
     from tinyassets.starter_seeds import seed_boundary
     from tinyassets.universe_owner import owner_of
 

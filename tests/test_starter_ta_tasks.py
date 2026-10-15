@@ -4,6 +4,7 @@ import json
 import pytest
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.support.box_world import world  # noqa: F401
 from tests.ta_task_helpers import call
 from tests.test_command_center_packages import (
     OWNER,  # noqa: F401
@@ -14,7 +15,6 @@ from tests.test_command_center_packages import (
 )
 from tests.test_command_center_packages import home as home
 from tests.test_ta_capabilities import signed_launch
-from tests.test_universe_tools_jail import world  # noqa: F401
 
 
 @pytest.fixture
@@ -83,7 +83,7 @@ def test_bash_ta_records_memory_and_generates_document_without_forged_receipts(
     import asyncio
     import shlex
 
-    from tests.test_universe_tools_jail import _engine
+    from tests.support.box_world import bare_engine as _engine
     from tinyassets.universe_bundle import seed_okf_bundle
 
     engine = _engine(monkeypatch, world)
@@ -107,7 +107,8 @@ def test_bash_ta_records_memory_and_generates_document_without_forged_receipts(
     assert isinstance(forged, str) and "completed_capabilities" in forged
     document = asyncio.run(engine.write_file(path="exports/forecast.md",
                            content="# Orchard forecast\n\n| Crop | Status |\n| Apple | Ready |\n"))
-    assert "wrote 56 bytes to /u/exports/forecast.md" == document
+    # Relative paths resolve under the owner box root, which the result names.
+    assert "wrote 56 bytes to /cc/exports/forecast.md" == document
     reread = asyncio.run(engine.read_file(path="exports/forecast.md"))
     assert "Orchard forecast" in reread and "Apple" in reread
 
@@ -117,7 +118,7 @@ def test_backend_only_grant_keeps_ta_reads_without_shell_or_file_authority(
 ):
     import asyncio
 
-    from tests.test_universe_tools_jail import _engine
+    from tests.support.box_world import bare_engine as _engine
     from tinyassets.providers.base import ModelConfig
     from tinyassets.served_tools import model_tools
     from tinyassets.universe_bundle import seed_okf_bundle

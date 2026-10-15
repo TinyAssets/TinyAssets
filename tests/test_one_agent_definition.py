@@ -267,18 +267,29 @@ def _claude(definition, tmp_path, monkeypatch):
                         lambda path, data: path.write_bytes(data))
     snapshot = tmp_path / ".runtime" / "provider-launch-credentials" / "claude-1"
     snapshot.mkdir(parents=True)
+    from tinyassets.engine_mcp_http import BOX_ENGINE_HOST
+    from tinyassets.providers.owned_process import guest_job_dir, launch_scope
+
     launch = install_fake_owned_spawn(monkeypatch, claude_provider.__name__,
                                       side_effect=Captured)
     config = _served_config(sandbox_workspace=True, credential_snapshot_dir=snapshot)
-    with pytest.raises(Captured):
+    scope = dict(owner=_OWNER, service="claude", credential_dir=snapshot,
+                 operation_id="native:guard:1",
+                 auth=claude_provider.ClaudeProvider.native_launch_auth)
+    with pytest.raises(Captured), launch_scope(tmp_path, **scope):
         asyncio.run(claude_provider.ClaudeProvider().complete(
             "Reply OK.", definition.instructions, config, universe_dir=tmp_path))
     argv = list(launch.call_args.args)
     pairs = list(zip(argv, argv[1:]))
     native_tools_off = ("--tools", "") in pairs and "--strict-mcp-config" in argv
-    servers = json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text())["mcpServers"]
+    # The config is leased into the box at the job's home; the daemon wrote it
+    # beside the one-run credential snapshot.
+    assert argv[argv.index("--mcp-config") + 1] == (
+        guest_job_dir("native:guard:1") + "/claude/engine-mcp.json")
+    servers = json.loads((snapshot / "engine-mcp.json").read_text())["mcpServers"]
+    box_url = route.url.replace("127.0.0.1", BOX_ENGINE_HOST)
     route_only = list(servers) == ["tinyassets"] and servers["tinyassets"]["url"].startswith(
-        route.url + "?")
+        box_url + "?")
     # What Claude is shown is what the route lists for Claude's own URL: ask
     # the route, through its middleware, with that URL's query.
     query = parse_qs(urlsplit(servers["tinyassets"]["url"]).query)
@@ -302,9 +313,12 @@ def _claude(definition, tmp_path, monkeypatch):
             return held["proc"]
 
         install_fake_owned_spawn(monkeypatch, claude_provider.__name__, side_effect=spawn)
-        call = claude_provider.ClaudeProvider().complete(
-            "Reply OK.", definition.instructions, config, universe_dir=tmp_path)
-        return call, lambda: "proc" in held and held["proc"].killed
+
+        async def call():
+            with launch_scope(tmp_path, **scope):
+                return await claude_provider.ClaudeProvider().complete(
+                    "Reply OK.", definition.instructions, config, universe_dir=tmp_path)
+        return call(), lambda: "proc" in held and held["proc"].killed
 
     return tools, system, _capabilities(route_tools=native_tools_off and route_only,
                                         kind="native_agent", provider_call=hanging_call)
@@ -350,14 +364,33 @@ def _codex(definition, tmp_path, monkeypatch):
             raise
 
     monkeypatch.setattr(runner, "run_job", run_job)
-    monkeypatch.setattr(agent_provider, "_custody", lambda *_: SimpleNamespace(
-        service="codex", reference_digest="guard"))
+    monkeypatch.setattr(agent_provider, "box_custody", lambda *_: SimpleNamespace(
+        owner_user_id=_OWNER, universe_dir=tmp_path,
+        reference=SimpleNamespace(service="codex", reference_digest="guard")))
+    monkeypatch.setattr("tinyassets.control_plane.native_launch.launcher",
+                        lambda custody, **kwargs: SimpleNamespace(custody=custody))
+    from tinyassets.boxes.provider import BoxHandle, ExecLimits
+    from tinyassets.control_plane.binding import SessionBinding, use_binding
+
+    binding = SessionBinding(SimpleNamespace(), BoxHandle(tmp_path.name, _OWNER, 1, "guard"),
+                             ExecLimits(), tmp_path)
 
     def hanging_call():
-        call = agent_provider.ExternalAgentProvider("codex").complete(
-            "Reply OK.", system,
-            _served_config(invocation_owner_user_id=_OWNER), universe_dir=tmp_path)
-        return call, lambda: bool(killed)
+        # The package caller now requires the router's admitted usage/attempt.
+        # This renderer guard scripts run_job; retain its cancellation proof
+        # with the same scoped admission fields production supplies.
+        def check_scope(owner, center):
+            assert (owner, center) == (_OWNER, tmp_path.name)
+
+        budget = SimpleNamespace(usage_id="guard-usage", check_scope=check_scope)
+
+        async def call():
+            with use_binding(binding):
+                return await agent_provider.ExternalAgentProvider("codex").complete(
+                    "Reply OK.", system,
+                    _served_config(invocation_owner_user_id=_OWNER, request_budget=budget,
+                                   request_attempt=1), universe_dir=tmp_path)
+        return call(), lambda: bool(killed)
 
     return visible if route else (), instructions, _capabilities(
         route_tools=route and job["tools"]["mode"] == "dynamic_rpc",

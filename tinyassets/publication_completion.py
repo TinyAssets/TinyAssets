@@ -142,7 +142,7 @@ def start_receipt_preview(completion: dict[str, Any], *, universe_id: str,
     def work():
         try:
             try:
-                report = ui_preview.preview_public_component(screen)
+                report = ui_preview.preview_public_component(screen, universe_dir=udir)
                 from tinyassets.onboarding.public_run import save_preview
 
                 save_preview(base, result["listing_id"], report["png"])

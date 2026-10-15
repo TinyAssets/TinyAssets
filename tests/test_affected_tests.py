@@ -118,7 +118,7 @@ def test_a_changed_test_runs_and_a_deleted_one_does_not(tmp_path):
     ]
     assert at.pr_tier([], root) == []
     for path in ('Dockerfile', 'tinyassets/role_tools.py', 'deploy/role_decoder.py',
-                 'scripts/core_capability_image.py', '.github/workflows/tests.yml'):
+                 '.github/workflows/tests.yml'):
         assert at.needs_image([path]), path
     assert not at.needs_image(['docs/concerns/example.md', 'tests/test_example.py'])
 

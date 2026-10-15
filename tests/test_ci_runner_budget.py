@@ -48,7 +48,6 @@ def test_mobile_builds_do_not_run_on_pull_requests() -> None:
 _DRAFT_SKIPPING = {
     "linux-jail-proof.yml": "linux-jail-proof",
     "real-browser-proof.yml": "real-browser-proof",
-    "preview-security.yml": "contract",
     "build-bundle.yml": "stage-and-probe",
     "docker-build.yml": "build-smoke",
 }

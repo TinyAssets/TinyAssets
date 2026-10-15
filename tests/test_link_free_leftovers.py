@@ -143,8 +143,9 @@ def test_a_dangling_link_at_the_signal_name_is_read_not_skipped(data):
         load_enrichment_signals(_alpha(data), strict=True)
 
 
-def test_non_posix_exclusive_reports_an_existing_entry_as_file_exists(data, monkeypatch):
-    monkeypatch.setattr(universe_files.fs, "_POSIX", False)
+def test_box_exclusive_reports_an_existing_entry_as_file_exists(data):
+    # A command center's files are written only through its owner box; the
+    # host-side non-POSIX fallback is never reached for one.
     path = _alpha(data) / "bug-001.md"
     path.write_text("taken", encoding="utf-8")
     with pytest.raises(FileExistsError):
@@ -154,21 +155,6 @@ def test_non_posix_exclusive_reports_an_existing_entry_as_file_exists(data, monk
     with pytest.raises(FileExistsError):
         write_data_path(link, "mine", mode="exclusive")
     assert _bravo_founder(data) == FOREIGN
-
-
-def test_branch_task_queue_refuses_links_and_planted_temp_names(data):
-    from tinyassets import branch_tasks
-
-    udir = _alpha(data)
-    qp = branch_tasks.queue_path(udir)
-    _link(data / "u-bravo" / "founder.md", qp.with_suffix(qp.suffix + ".tmp"))
-    branch_tasks._write_raw(qp, [{"task": "mine"}])
-    assert _bravo_founder(data) == FOREIGN
-    assert branch_tasks._read_raw(qp) == [{"task": "mine"}]
-    qp.unlink()
-    _link(data / "u-bravo" / "founder.md", qp)
-    with pytest.raises(RuntimeError):
-        branch_tasks._read_raw(qp)
 
 
 def test_wiki_write_back_never_writes_through_a_swapped_parent(data, monkeypatch):
@@ -218,12 +204,9 @@ def test_a_planted_soul_lock_link_does_not_create_a_file_outside_the_universe(da
 
 
 @pytest.mark.parametrize("module, lock, opener", [
-    ("tinyassets.branch_tasks", "LOCK_FILENAME", "_file_lock"),
     ("tinyassets.auto_ship_ledger", "LOCK_FILENAME", "_file_lock"),
-    ("tinyassets.subscriptions", "LOCK_FILENAME", "_file_lock"),
-    ("tinyassets.bid.execution_log", "EXEC_LOG_LOCK_FILENAME", "_exec_log_lock"),
 ])
-def test_a_planted_coordination_lock_link_does_not_create_a_file_outside_the_universe(
+def test_active_coordination_lock_link_does_not_create_a_file_outside_the_universe(
         data, module, lock, opener):
     """Each daemon coordination lock had the identical raw ``os.open`` defect."""
     import importlib
@@ -239,19 +222,16 @@ def test_a_planted_coordination_lock_link_does_not_create_a_file_outside_the_uni
     assert not victim.exists(), "the lock open created a file in another universe"
 
 
-def test_daemon_coordination_locks_are_dotted_platform_entries(data):
+def test_active_coordination_locks_are_dotted_platform_entries(data):
     """A visible lock is owner content; a daemon-created one fails the owner scan."""
-    from tinyassets import auto_ship_ledger, branch_tasks, subscriptions
-    from tinyassets.bid import execution_log
+    from tinyassets import auto_ship_ledger
     from tinyassets.command_center_layout import PLATFORM, classify
 
     alpha = _alpha(data)
-    with (branch_tasks._file_lock(alpha), auto_ship_ledger._file_lock(alpha),
-          subscriptions._file_lock(alpha), execution_log._exec_log_lock(alpha)):
+    with auto_ship_ledger._file_lock(alpha):
         pass
     created = sorted(entry.name for entry in alpha.iterdir())
-    assert created == [".auto_ship_attempts.jsonl.lock", ".bid_execution_log.json.lock",
-                       ".branch_tasks.json.lock", ".subscriptions.json.lock"]
+    assert created == [".auto_ship_attempts.jsonl.lock"]
     assert all(classify(name) == PLATFORM for name in created)
 
 

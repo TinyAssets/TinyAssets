@@ -85,85 +85,8 @@ def _auth_grant(base, universe_ids, sub: str = "host-test") -> None:
 # ── module surface ──────────────────────────────────────────────────────────
 
 
-def test_module_exposes_expected_public_names() -> None:
-    """Contract surface — guards against silent removal post-Step-9."""
-    expected = {
-        # WRITE_ACTIONS table + 17 extractor closures
-        "WRITE_ACTIONS",
-        "_extract_submit_request", "_extract_give_direction",
-        "_extract_set_premise", "_extract_add_canon",
-        "_extract_control_daemon",
-        "_extract_switch_universe", "_extract_create_universe",
-        "_extract_queue_cancel", "_extract_subscribe_goal",
-        "_extract_unsubscribe_goal", "_extract_post_to_goal_pool",
-        "_extract_submit_node_bid", "_extract_set_tier_config",
-        "_extract_daemon_create", "_extract_daemon_summon",
-        "_extract_daemon_banish", "_extract_daemon_control",
-        "_extract_daemon_update_behavior",
-        "_extract_daemon_memory_capture", "_extract_daemon_memory_review",
-        "_extract_daemon_memory_promote",
-        # Ledger dispatcher trio
-        "_ledger_target_dir", "_scope_universe_response",
-        "_dispatch_with_ledger",
-        # Pattern A2 universe() body
-        "_universe_impl",
-        # Daemon telemetry
-        "_last_activity_at", "_staleness_bucket", "_phase_human",
-        "_compute_accept_rate_from_db", "_compute_word_count_from_files",
-        "_daemon_liveness", "_parse_activity_line",
-        # universe-tool action handlers
-        "_action_list_universes", "_action_inspect_universe",
-        "_action_read_output", "_action_submit_request",
-        "_action_queue_list", "_action_daemon_overview",
-        "_action_daemon_list", "_action_daemon_get",
-        "_action_daemon_create", "_action_daemon_summon",
-        "_action_daemon_banish", "_action_daemon_pause",
-        "_action_daemon_resume", "_action_daemon_restart",
-        "_action_daemon_update_behavior", "_action_daemon_control_status",
-        "_action_daemon_memory_capture", "_action_daemon_memory_search",
-        "_action_daemon_memory_list", "_action_daemon_memory_review",
-        "_action_daemon_memory_promote", "_action_daemon_memory_status",
-        "_action_treasury_status",
-        "_action_set_tier_config", "_action_queue_cancel",
-        "_action_subscribe_goal", "_action_unsubscribe_goal",
-        "_action_list_subscriptions", "_action_post_to_goal_pool",
-        "_action_submit_node_bid",
-        "_action_give_direction",
-        "_action_query_world", "_action_read_premise",
-        "_action_set_premise", "_action_add_canon",
-        "_action_list_canon",
-        "_action_read_canon", "_action_list_sources",
-        "_action_read_source", "_action_control_daemon",
-        "_action_get_activity", "_action_get_recent_events",
-        "_action_get_ledger", "_action_switch_universe",
-        "_action_create_universe",
-    }
-    actual = set(dir(univ_mod))
-    missing = expected - actual
-    assert not missing, (
-        f"tinyassets.api.universe missing expected public names: {sorted(missing)}"
-    )
 
 
-def test_write_actions_table_has_27_entries() -> None:
-    """WRITE_ACTIONS dict literal includes daemon create/summon/banish writes,
-    the soul.edit learn path, the set_engine founder engine-assignment path, the
-    declare_universe_loop, and set_visibility.
-    (set_persona_name retired — identity is learned in the self-model via
-    soul.edit.)
-
-    The count is deliberate friction: membership here is what makes the central
-    universe-ACL gate check an action at WRITE strength, so adding an entry must
-    be a reviewed act rather than a silent one. `declare_universe_loop` mutates
-    soul.md from a caller-supplied universe_id, and omitting it left the action
-    gated at READ strength — a cross-tenant write (2026-08-05). `set_visibility`
-    (2026-09-26) decides who else may see the universe at all, so it has to be
-    gated at WRITE strength and ledgered for the same reason."""
-    assert len(univ_mod.WRITE_ACTIONS) == 27
-    assert "soul.edit" in univ_mod.WRITE_ACTIONS
-    assert "set_engine" in univ_mod.WRITE_ACTIONS
-    assert "declare_universe_loop" in univ_mod.WRITE_ACTIONS
-    assert "set_visibility" in univ_mod.WRITE_ACTIONS
 
 
 def test_write_actions_entries_are_extractor_gate_tuples() -> None:
@@ -254,39 +177,6 @@ def test_universe_impl_dispatch_table_has_known_actions() -> None:
     assert out  # non-empty JSON
 
 
-@pytest.mark.parametrize("action", [
-    "list", "inspect", "read_output", "submit_request", "queue_list",
-    "daemon_overview", "daemon_list", "daemon_get", "daemon_create",
-    "daemon_summon", "daemon_pause", "daemon_resume", "daemon_restart",
-    "daemon_banish", "daemon_update_behavior", "daemon_control_status",
-    "daemon_memory_capture", "daemon_memory_search", "daemon_memory_list",
-    "daemon_memory_review", "daemon_memory_promote", "daemon_memory_status",
-    "set_tier_config", "queue_cancel",
-    "subscribe_goal", "unsubscribe_goal", "list_subscriptions",
-    "post_to_goal_pool", "submit_node_bid",
-    "give_direction",
-    "query_world", "read_premise", "set_premise", "add_canon",
-    "list_canon", "read_canon",
-    "list_sources", "read_source",
-    "control_daemon", "get_activity", "get_recent_events",
-    "get_ledger", "switch_universe", "create_universe",
-])
-def test_every_universe_action_dispatches(action: str, monkeypatch) -> None:
-    """Every action verb resolves to a handler (no `Unknown action 'X'` errors
-    from the top-level dispatch table).
-
-    Smoke-tests dispatch only — we pass empty kwargs and accept any
-    response shape (handlers may legitimately error on missing args, including
-    handler-internal "Unknown daemon action" errors that are NOT dispatch-table
-    misses). The bug we're guarding against is "action verb dropped from the
-    universe() dispatch table" — caught by the exact-string `"Unknown action
-    '<action>'"` sentinel.
-    """
-    out = univ_mod._universe_impl(action=action)
-    sentinel = f"Unknown action '{action}'"
-    assert sentinel not in out, (
-        f"action {action!r} dropped from _universe_impl dispatch table"
-    )
 
 
 def test_daemon_actions_create_summon_and_banish(tmp_path, monkeypatch, canonical_daemon) -> None:

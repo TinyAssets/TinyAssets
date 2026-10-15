@@ -109,8 +109,10 @@ def test_stop_is_wired_to_the_button_escape_and_every_entry_point(html):  # noqa
     # visible tap target there too.
     assert ".composer .btn--stop{grid-column:4;grid-row:2}" in html
     # A spoken line waits for a Stop request exactly as a typed one does.
-    assert 'if($("btn-send").disabled || interruptPending) throw new Error("voice_turn_busy");' \
-        in html
+    voice = _js_function(html, "sendVoiceTurn")
+    assert '$("btn-send").disabled || interruptPending || serverTurnLive()' in voice
+    assert 'InlineConnection.waiting()' in voice
+    assert 'throw new Error("voice_turn_busy");' in voice
 
 
 _LATE_STOP = r"""
@@ -262,5 +264,4 @@ def test_stop_names_the_agent_whose_conversation_it_was_pressed_in(tmp_path, htm
     assert out["posts"][0]["body"] == {"universe_id": "u-1", "agent_id": "a-weaver"}, (
         "Stop did not name the agent whose conversation it was pressed in")
     assert out["late"] == "main", "the case did not actually switch conversation"
-
 

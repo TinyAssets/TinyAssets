@@ -190,18 +190,26 @@ def _fs():
     return workspace_fs
 
 
-def _walk(root_fd: int, parts: tuple[str, ...]) -> int:
-    """Open ``parts`` beneath ``root_fd``, following no link and creating nothing.
+def _walk(root_fd: int, parts: tuple[str, ...], *, create: bool = False) -> int:
+    """Open ``parts`` beneath ``root_fd``, following no link.
 
-    The daemon prepared these directories and labelled them for this owner
-    (``workspace_owner_pool``); a missing one is a refusal, never a mkdir, so
-    the cell can never create a pool directory the daemon has not labelled.
+    With ``create`` a missing pool parent is made here, inside the owner box:
+    the box is the owner's alone, so there is no daemon-labelled parent to
+    wait for (``workspace_owner_pool.pool_parts`` names them).
     """
     fs = _fs()
     current = os.dup(root_fd)
     try:
         for part in parts:
-            child = fs.open_subdir_nofollow(current, part)
+            try:
+                child = fs.open_subdir_nofollow(current, part)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                try:
+                    child = fs.create_cell_subdir(current, part)
+                except FileExistsError:
+                    child = fs.open_subdir_nofollow(current, part)
             os.close(current)
             current = child
     except BaseException:
@@ -219,7 +227,7 @@ def _make_lease(root_fd: int, request: dict[str, Any]) -> tuple[int, int, str]:
     fixed-name helper instead -- the same split the daemon side used to make.
     """
     fs = _fs()
-    parent_fd = _walk(root_fd, request["lease_parent"])
+    parent_fd = _walk(root_fd, request["lease_parent"], create=True)
     lease_fd = content_fd = None
     try:
         name = request["lease_name"]
@@ -549,3 +557,46 @@ def perform(
         return {"ok": False, "error": _safe_error(exc), "stderr_class": exc.code}
     except Exception as exc:  # noqa: BLE001 - loud, but never leaky
         return {"ok": False, "error": _safe_error(exc), "stderr_class": "other"}
+
+
+def box_main() -> int:
+    """Run the existing descriptor-safe git operation inside the admitted box."""
+    import json
+    import sys
+    import tempfile
+
+    from tinyassets.workspace_fs import open_dir_nofollow
+
+    raw = sys.stdin.buffer.read(MAX_REQUEST_BYTES + 1)
+    if len(raw) > MAX_REQUEST_BYTES:
+        raise ValueError("workspace request exceeds its bound")
+    request = json.loads(raw)
+    if not isinstance(request, dict):
+        raise ValueError("workspace request must be an object")
+    count = int(os.environ.get("GIT_CONFIG_COUNT", "0"))
+    if not 0 <= count <= 32:
+        raise ValueError("git route count exceeds its bound")
+    options = []
+    if count:
+        options.extend(("-c", "http.proxy=http://127.0.0.1:3128"))
+    for index in range(count):
+        key = os.environ[f"GIT_CONFIG_KEY_{index}"]
+        value = os.environ[f"GIT_CONFIG_VALUE_{index}"]
+        if not key.startswith("url.http://ta-git.invalid/") or not key.endswith(".insteadOf"):
+            raise ValueError("unrecognized box git route")
+        options.extend(("-c", f"{key}={value}"))
+    request["options"] = options
+    # The host pins this process's cwd to the admitted center before exec.
+    root = os.getcwd()
+    root_fd = open_dir_nofollow(root)
+    try:
+        with tempfile.TemporaryDirectory(prefix="workspace-git-") as scratch:
+            answer = perform(request, root_fd=root_fd, root_path=root, scratch=scratch)
+    finally:
+        os.close(root_fd)
+    sys.stdout.write(json.dumps(answer, separators=(",", ":")) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(box_main())

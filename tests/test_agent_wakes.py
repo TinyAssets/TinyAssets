@@ -9,10 +9,11 @@ from types import SimpleNamespace
 import pytest
 
 from tests.test_owner_notifications import _home
-from tinyassets import agent_wakes as wakes
-from tinyassets import request_continuations, runs
+from tinyassets import runs
 from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity
+from tinyassets.control_plane import agent_wakes as wakes
+from tinyassets.control_plane import continuations as request_continuations
 from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
 from tinyassets.storage import pending_requests
 from tinyassets.ta_capabilities import Capabilities, ExecutionContext
@@ -260,7 +261,7 @@ def test_fresh_process_recovers_persisted_follow_up(home):
     script = """
 import sys
 from pathlib import Path
-from tinyassets import agent_wakes
+from tinyassets.control_plane import agent_wakes
 home = Path(sys.argv[1])
 def resumed(home, row):
     print(row['wake_id'])

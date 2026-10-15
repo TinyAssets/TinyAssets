@@ -15,6 +15,7 @@ from tinyassets import engine_mcp_http, engine_tool_client, universe_intelligenc
 from tinyassets.providers import call as provider_calls
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 from tinyassets.providers.base import ModelConfig
+from tinyassets.providers.call import make_interactive_agent_turn as actual_make_turn
 from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 from tinyassets.storage.agent_turn_journal import AgentTurnJournal
 
@@ -179,6 +180,19 @@ def agent(served, monkeypatch):
     monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
                         accounting_resolver(lambda *args, **kwargs: Proxy()))
     monkeypatch.setattr(provider_calls, "_router", served.router)
+    # Coordinator contract tests inject the engine adapter explicitly. Production
+    # construction always chooses ThinLoopChatAdapter; thin integration fixtures
+    # replace state.adapter with it and bind a scripted box before calling run().
+    from tinyassets.interactive_http_agent import InteractiveHttpAgentTurn, ServedChatAgentAdapter
+
+    state.adapter = ServedChatAgentAdapter()
+
+    def make_turn(**kwargs):
+        provider_calls.register_open_providers_for(kwargs["universe_context"])
+        return InteractiveHttpAgentTurn(router=served.router, adapter=state.adapter, **kwargs)
+
+    state.factory = provider_calls.make_interactive_agent_turn
+    monkeypatch.setattr(provider_calls, "make_interactive_agent_turn", make_turn)
     return state
 
 
@@ -195,6 +209,19 @@ def run(agent, observer=None, *, greeting=False):
         config=agent.config,
         response_observer=observer,
     )
+
+
+def test_owner_box_served_turn_selects_engine_tools_before_inference(agent, monkeypatch):
+    from tinyassets.control_plane.binding import use_binding
+    from tinyassets.storage_layout import ACTIVE_BOX_LAYOUT
+
+    assert ACTIVE_BOX_LAYOUT == "owner-box"
+    monkeypatch.setattr(provider_calls, "make_interactive_agent_turn", actual_make_turn)
+    with use_binding(None):
+        assert run(agent) == "finished exact answer"
+    assert len(agent.wires) == 2
+    assert agent.tools and agent.tools[0][0] == "bash"
+    assert agent.latest().state == "completed"
 
 
 def test_actual_writer_runs_tool_then_continues_and_reports_only_final_response(agent):

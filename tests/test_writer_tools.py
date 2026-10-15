@@ -51,6 +51,10 @@ def _state_with_context(tmp_path) -> dict:
     }
 
 
+# Tool selection calls the owner-bound model. With no bound source, text_sync
+# raises ProviderAuthorityHeldError before the deterministic fallback. This
+# fixture answers with an empty selection, so the fallback runs.
+@pytest.mark.usefixtures("connected_fantasy_model")
 class TestWriterTools:
     def test_plan_tools_render_context_and_mark_notes_read(self, tmp_path):
         state = _state_with_context(tmp_path)

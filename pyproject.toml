@@ -77,18 +77,8 @@ dependencies = [
 ]
 
 [project.scripts]
-tinyassets-cli = "tinyassets.__main__:main"
 tinyassets-universe-server = "tinyassets.universe_server:main"
 tinyassets-probe = "tinyassets.probe:entry_point"
-
-# Domain discovery entry-point group (Task #22 / modularity §3.2).
-# Each built-in or third-party domain declares itself here as
-# name = "module.path:ClassName". Discovered at runtime by
-# tinyassets.discovery.discover_domains() — pip-installed packages
-# surface via this table without needing to sit inside the repo tree.
-[project.entry-points."tinyassets.domains"]
-fantasy_daemon = "domains.fantasy_daemon.skill:FantasyAuthorDomain"
-research_probe = "domains.research_probe.skill:ResearchProbeDomain"
 
 [project.optional-dependencies]
 # Real-browser proofs (tests marked real_browser); installed by

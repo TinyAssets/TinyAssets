@@ -24,7 +24,14 @@ GIB = 1024 ** 3
 
 
 class _NoopFs:
-    """A filesystem that has nothing to delete: every entry completes."""
+    """A filesystem that has nothing to delete: every entry completes.
+
+    It stands in for the owner-box reclaimer (``BoxPoolFilesystem``), which
+    is built over the data root.
+    """
+
+    def __init__(self, data_root: Path | None = None) -> None:
+        self.data_root = data_root
 
     def exists(self, path: Path) -> bool:
         return False
@@ -175,7 +182,7 @@ def test_a_universe_enqueue_failure_preserves_terminal_status_and_kicks_repair(
 
     # The kicked pass is the durable recovery half of the two-WAL protocol.
     monkeypatch.setattr(runs, "_enqueue_workspace_terminal", real_enqueue)
-    monkeypatch.setattr("tinyassets.workspace_fs.RealPoolFilesystem", _NoopFs)
+    monkeypatch.setattr("tinyassets.workspace_fs.BoxPoolFilesystem", _NoopFs)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
     runs._workspace_sweep_once(universe, claimant="test")
     after = workspace_pool.get_lease(runs.runs_db_path(universe), lease.lease_id)
@@ -225,7 +232,7 @@ def test_the_kick_releases_the_lock_within_the_same_second(tmp_path, monkeypatch
     base = tmp_path / "data"
     _seed_run(base, "r1b")
     lease = _admit(base, tmp_path, "r1b")
-    monkeypatch.setattr("tinyassets.workspace_fs.RealPoolFilesystem", _NoopFs)
+    monkeypatch.setattr("tinyassets.workspace_fs.BoxPoolFilesystem", _NoopFs)
     threads: list = []
     real_kick = runs._kick_workspace_sweep
     monkeypatch.setattr(runs, "_kick_workspace_sweep", lambda p: threads.append(real_kick(p)))
@@ -304,7 +311,7 @@ def test_the_reconciler_runs_once_and_finishes_old_entries(tmp_path, monkeypatch
     monkeypatch.setattr(runs, "_kick_workspace_sweep", lambda p: None)
     runs.update_run_status(base, "r6", status="completed")
     assert _pending(base, "r6")
-    monkeypatch.setattr("tinyassets.workspace_fs.RealPoolFilesystem", _NoopFs)
+    monkeypatch.setattr("tinyassets.workspace_fs.BoxPoolFilesystem", _NoopFs)
     import os
 
     runs._WORKSPACE_RECONCILED.discard((os.getpid(), str(base.resolve())))
@@ -329,7 +336,7 @@ def test_the_periodic_pass_leaves_a_permanent_generation_alone(tmp_path, monkeyp
         pool_root=tmp_path / "scratch", universe_root=tmp_path / "universes" / "u-1",
         universe_quota_bytes=10 * GIB, universe_used_bytes_fn=lambda _u: 0,
     )
-    monkeypatch.setattr("tinyassets.workspace_fs.RealPoolFilesystem", _NoopFs)
+    monkeypatch.setattr("tinyassets.workspace_fs.BoxPoolFilesystem", _NoopFs)
     runs._workspace_sweep_once(base, claimant="test")
     after = workspace_pool.get_lease(db, lease.lease_id)
     assert after is not None and after.state == "ACTIVE", "the generation is kept"
@@ -682,7 +689,7 @@ def test_the_periodic_pass_repairs_an_orphaned_active_lease(tmp_path, monkeypatc
     lease = _admit(base, tmp_path, "r7")
     # The run is terminal but nothing enqueued (an older terminal writer): the
     # sweep notices the ACTIVE lease with a finished run and repairs it.
-    monkeypatch.setattr("tinyassets.workspace_fs.RealPoolFilesystem", _NoopFs)
+    monkeypatch.setattr("tinyassets.workspace_fs.BoxPoolFilesystem", _NoopFs)
     assert _pending(base, "r7") == []
     runs._workspace_sweep_once(base, claimant="test")
     after = workspace_pool.get_lease(runs.runs_db_path(base), lease.lease_id)
@@ -700,6 +707,7 @@ def test_the_scratch_root_is_inside_the_command_center_and_startup_makes_none(
     per operation, under the admitted owner identity, by the owner's own cell.
     Startup has nobody to name, so it creates nothing.
     """
+    from tinyassets.boxes.provider import BOX_ROOT
     from tinyassets.effectors.workspace import scratch_pool_root
 
     universe = tmp_path / "data" / "universe-x"
@@ -707,7 +715,8 @@ def test_the_scratch_root_is_inside_the_command_center_and_startup_makes_none(
     monkeypatch.setattr(workspace_pool, "startup_sweep", lambda *a, **k: 0)
     assert runs.ensure_workspace_reconciled(universe, start_sweeper=False) is True
     assert runs._ensure_scratch_root(universe) == scratch_pool_root(universe)
-    assert scratch_pool_root(universe) == universe / "workspaces" / "scratch"
+    # The guest path inside the center's owner box.
+    assert scratch_pool_root(universe) == Path(BOX_ROOT) / "universe-x" / "workspaces" / "scratch"
     assert not (tmp_path / "data" / "scratch").exists()
     assert not (universe / "workspaces").exists()
 

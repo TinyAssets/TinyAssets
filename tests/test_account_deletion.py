@@ -131,9 +131,11 @@ def _exec(db: Path, sql: str, params: tuple = ()) -> None:
 
 
 @pytest.fixture
-def two_users(tmp_path: Path) -> Path:
+def two_users(tmp_path: Path, monkeypatch) -> Path:
     base = tmp_path / "data"
     base.mkdir()
+    # Production deletes on the one data root; the owner box binds there.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     _seed_user(base, A, HOME_A)
     _seed_user(base, B, HOME_B)
     _seed_outbound(base)
@@ -1264,8 +1266,9 @@ def test_route_reports_a_refusal_without_pretending(app_route, monkeypatch):
 
 def _app_html() -> str:
     from tinyassets import onboarding
+    from tinyassets.onboarding.app_modules import shell_source
 
-    return (Path(onboarding.__file__).parent / "app.html").read_text(encoding="utf-8")
+    return shell_source(Path(onboarding.__file__).parent / "app.html")
 
 
 def test_the_app_page_carries_the_deletion_path():
@@ -1284,25 +1287,35 @@ def test_the_app_page_carries_the_deletion_path():
 
 def test_the_android_shell_cannot_reach_checkout():
     """Play's payments policy is about capability, not layout: hiding the button
-    is not enough while the code path still POSTs to the checkout endpoint."""
+    is not enough while the code path still POSTs to the checkout endpoint.
+
+    The POST is reached only when ``canPurchase()`` is true, and that is true
+    only when the plan action set ``can_purchase_on_surface``. The native shell
+    asks as surface ``android``, whose policy is false, so this function returns
+    before the request.
+    """
     html = _app_html()
     start = html.index("async function startSubscribe()")
-    guard = html.index("if(NATIVE){", start)
+    guard = html.index("if(!canPurchase()){", start)
     checkout = html.index('billingFetch("/app/billing/checkout"', start)
-    assert guard < checkout, "the native guard must precede any checkout call"
-    assert "if(!b || !PLAN || NATIVE) return;" in html, "and the button stays hidden"
+    assert guard < checkout, "the purchase guard must precede any checkout call"
+    assert "if(NATIVE)" not in html[start:checkout]
+    assert "PLAN.can_purchase_on_surface===true" in html
 
 
 def test_failed_two_pass_owner_tree_keeps_the_binding_and_retry_resumes(
         two_users, monkeypatch):
-    """Failed destruction retains authentication and never stages owner bytes."""
-    from tinyassets.boxes.provider import DestroyReceipt
+    """A migrated home goes through D10's two passes before any root row goes.
 
+    A failed pass must keep the home binding (pass one's admission needs it)
+    and never fall through to the daemon's single-UID staging of that home.
+    """
     calls = []
+    real_destroy = account_deletion._destroy_owner_box
 
     def failing(root, center, *, principal):
         calls.append((center, principal))
-        raise OSError("injected uncertain destroy outcome")
+        raise account_deletion.AccountDeletionError("injected box destruction failure")
 
     identities = []
     with monkeypatch.context() as patch:
@@ -1320,8 +1333,7 @@ def test_failed_two_pass_owner_tree_keeps_the_binding_and_retry_resumes(
 
     def destroyed(root, center, *, principal):
         calls.append((center, principal))
-        account_deletion._rmtree(Path(root) / center)  # stands in for both passes
-        return DestroyReceipt(center, "test-destroy", 1, 2)
+        return real_destroy(root, center, principal=principal)
 
     with monkeypatch.context() as patch:
         patch.setattr(account_deletion, "_destroy_owner_box", destroyed)

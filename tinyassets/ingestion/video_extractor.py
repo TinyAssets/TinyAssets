@@ -59,7 +59,7 @@ def extract_video_description(
     str
         Text description of the video, one section per keyframe.
     """
-    from tinyassets.role_video import frames
+    from tinyassets.boxes.media import frames
 
     if not callable(describe_frame):
         raise RuntimeError(

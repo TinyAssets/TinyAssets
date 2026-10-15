@@ -761,186 +761,6 @@ def _compute_supervisor_liveness_uncached(
         "lease_data_available": True,
     }
 
-    v1_error = ""
-    try:
-        from tinyassets.branch_tasks import read_queue
-        queue = read_queue(udir)
-    except Exception as exc:  # noqa: BLE001 — best-effort observability
-        queue = []
-        v1_error = str(exc)
-        out["warnings"].append(f"queue_read_failed: {exc}")
-
-    out["queue_state"]["depth"] = len(queue)
-
-    dispatcher_config = None
-    try:
-        from tinyassets.dispatcher import load_dispatcher_config
-        dispatcher_config = load_dispatcher_config(Path(udir))
-    except Exception as exc:  # noqa: BLE001 — best-effort status
-        out["warnings"].append(f"dispatcher_config_read_failed: {exc}")
-
-    any_lease_field_seen = False
-    pending_ages: list[float] = []
-    policy_parked_pending_ages: list[float] = []
-    running_ages: list[float] = []
-    recent_succeeded_count = 0
-    any_terminal_at_seen = False
-
-    for task in queue:
-        status = getattr(task, "status", "") or ""
-        if status in out["queue_state"]:
-            out["queue_state"][status] = out["queue_state"].get(status, 0) + 1
-
-        # Completion-health signal. We count recent SUCCESSES (not all
-        # terminals): a loop that only produces failures is still wedged.
-        # ``any_terminal_at_seen`` gates the stall warning so a freshly
-        # deployed queue (terminal_at not yet stamped on any row) cannot
-        # false-fire — during a real wedge the fail-fast tasks stamp
-        # terminal_at, so the gate opens while successes stay at zero.
-        terminal_at = getattr(task, "terminal_at", "") or ""
-        if terminal_at:
-            any_terminal_at_seen = True
-            terminal_ts = _parse_iso_to_epoch(terminal_at)
-            if (
-                status == "succeeded"
-                and terminal_ts is not None
-                and (now_ts - terminal_ts) <= _LOOP_STALL_WINDOW_S
-            ):
-                recent_succeeded_count += 1
-
-        # Pending-task age (queued_at -> now). Detects dispatcher pickup
-        # gaps even before a task gets claimed (today's BUG-009 pattern).
-        queued_at = getattr(task, "queued_at", "") or ""
-        queued_ts = _parse_iso_to_epoch(queued_at) if queued_at else None
-        if status == "pending" and queued_ts is not None:
-            age = max(0.0, now_ts - queued_ts)
-            trigger_source = getattr(task, "trigger_source", "") or ""
-            if (
-                dispatcher_config is not None
-                and not dispatcher_config.tier_enabled(trigger_source)
-            ):
-                out["queue_state"]["policy_parked_pending"] += 1
-                policy_parked_pending_ages.append(age)
-            else:
-                pending_ages.append(age)
-
-        if status != "running":
-            continue
-
-        # Lease metadata (PR #212). Defensive getattr so pre-#212 tasks
-        # surface as empty strings rather than AttributeError.
-        worker_owner_id = getattr(task, "worker_owner_id", "") or ""
-        claimed_by = getattr(task, "claimed_by", "") or ""
-        daemon_id = worker_owner_id or claimed_by
-        executor_worker_id = getattr(task, "executor_worker_id", "") or ""
-        executor_runtime_id = getattr(task, "executor_runtime_id", "") or ""
-        lease_expires_at = getattr(task, "lease_expires_at", "") or ""
-        heartbeat_at = getattr(task, "heartbeat_at", "") or ""
-        last_progress_at = getattr(task, "last_progress_at", "") or ""
-
-        if worker_owner_id or lease_expires_at or heartbeat_at:
-            any_lease_field_seen = True
-
-        lease_expires_ts = _parse_iso_to_epoch(lease_expires_at)
-        heartbeat_ts = _parse_iso_to_epoch(heartbeat_at)
-        progress_ts = _parse_iso_to_epoch(last_progress_at)
-
-        lease_remaining_s: int | None = None
-        if lease_expires_ts is not None:
-            lease_remaining_s = int(lease_expires_ts - now_ts)
-
-        heartbeat_age_s: int | None = None
-        if heartbeat_ts is not None:
-            heartbeat_age_s = max(0, int(now_ts - heartbeat_ts))
-
-        progress_age_s: int | None = None
-        if progress_ts is not None:
-            progress_age_s = max(0, int(now_ts - progress_ts))
-
-        # Running-task age tracked for the queue summary even if no lease
-        # data exists (pre-#212 fallback).
-        if heartbeat_ts is not None:
-            running_ages.append(now_ts - heartbeat_ts)
-        elif queued_ts is not None:
-            running_ages.append(max(0.0, now_ts - queued_ts))
-
-        record = {
-            "branch_task_id": getattr(task, "branch_task_id", ""),
-            "daemon_id": daemon_id,
-            "worker_owner_id": worker_owner_id,
-            "executor_worker_id": executor_worker_id,
-            "executor_runtime_id": executor_runtime_id,
-            "lease_expires_at": lease_expires_at,
-            "lease_remaining_s": lease_remaining_s,
-            "heartbeat_at": heartbeat_at,
-            "heartbeat_age_s": heartbeat_age_s,
-            "last_progress_at": last_progress_at,
-            "progress_age_s": progress_age_s,
-        }
-        out["running_tasks_lease"].append(record)
-
-        # Stale detection: heartbeat older than 2x refresh OR lease
-        # expired. Both signal the daemon owning this task is dead/wedged.
-        # Phase C (Codex) will use the same predicate to actively
-        # reclaim; this field lets operators see the condition before
-        # that ships.
-        is_stale = False
-        stale_reasons: list[str] = []
-        if (
-            heartbeat_age_s is not None
-            and heartbeat_age_s > _HEARTBEAT_STALE_THRESHOLD_S
-        ):
-            is_stale = True
-            stale_reasons.append(
-                f"heartbeat_age_s={heartbeat_age_s} > "
-                f"threshold={_HEARTBEAT_STALE_THRESHOLD_S}"
-            )
-        if lease_remaining_s is not None and lease_remaining_s <= 0:
-            is_stale = True
-            stale_reasons.append(
-                f"lease_expired ({lease_remaining_s}s ago)"
-            )
-
-        if is_stale:
-            stale = dict(record)
-            stale["stale_reasons"] = stale_reasons
-            out["stale_running_tasks"].append(stale)
-
-    v1_lifecycle = {
-        "depth": len(queue),
-        "lifecycle": {
-            status: int(out["queue_state"][status])
-            for status in (
-                "pending",
-                "running",
-                "cancel_requested",
-                "succeeded",
-                "failed",
-                "cancelled",
-            )
-        },
-        "operational": {
-            "policy_parked": int(
-            out["queue_state"]["policy_parked_pending"]
-            ),
-        },
-    }
-    if v1_error:
-        out["queue_state"]["epoch_counts"]["1"] = {
-            "available": False,
-            "error": v1_error,
-        }
-        out["epoch_health"]["1"] = {
-            "available": False,
-            "error": v1_error,
-        }
-        out["counts_complete"] = False
-    else:
-        out["queue_state"]["epoch_counts"]["1"] = {
-            "available": True,
-            **v1_lifecycle,
-        }
-        out["epoch_health"]["1"] = {"available": True}
     try:
         from tinyassets.api.universe import _epoch2_operational_snapshot
 
@@ -1066,82 +886,6 @@ def _compute_supervisor_liveness_uncached(
         out["counts_complete"] = False
         out["warnings"].append(f"epoch2_operational_read_failed: {exc}")
 
-    if pending_ages:
-        out["queue_state"]["stuck_pending_max_age_s"] = max(
-            out["queue_state"]["stuck_pending_max_age_s"],
-            int(max(pending_ages)),
-        )
-    if policy_parked_pending_ages:
-        out["queue_state"]["policy_parked_pending_max_age_s"] = int(
-            max(policy_parked_pending_ages)
-        )
-    if running_ages:
-        out["queue_state"]["stuck_running_max_age_s"] = int(max(running_ages))
-
-    # If any pending task is past the stuck threshold, surface a
-    # warning. Today's BUG-009 RCA: a pending task that sits >2min
-    # without claim means the supervisor restart logic isn't reaching
-    # the queue (the exact pattern PR #205 fixed).
-    out["queue_state"]["recent_succeeded_count"] = recent_succeeded_count
-
-    if (
-        out["queue_state"]["stuck_pending_max_age_s"]
-        > _STUCK_PENDING_THRESHOLD_S
-    ):
-        out["warnings"].append(
-            f"stuck_pending: oldest pending task is "
-            f"{out['queue_state']['stuck_pending_max_age_s']}s old "
-            f"(threshold {_STUCK_PENDING_THRESHOLD_S}s). Likely "
-            "supervisor restart loop, dispatcher disabled, or daemon "
-            "subprocess wedged. See PR #206 spec for incident pattern."
-        )
-
-    # Loop-stall: a backlog older than the window with ZERO successful
-    # completions in that window means the loop is claiming but never
-    # succeeding — the durable 2026-06-25 wedge signature (which ran ~3 weeks
-    # undetected). Distinct from stuck_pending (pickup latency): this is the
-    # completion-rate dimension, and counts successes only so a fail-only loop
-    # still trips it. ``any_terminal_at_seen`` suppresses the false-positive on
-    # a freshly deployed queue whose rows predate the terminal_at field.
-    if (
-        recent_succeeded_count == 0
-        and any_terminal_at_seen
-        and v1_lifecycle["lifecycle"]["pending"] > 0
-        and out["queue_state"]["stuck_pending_max_age_s"] > _LOOP_STALL_WINDOW_S
-    ):
-        out["warnings"].append(
-            f"loop_stalled: 0 successful completions in the last "
-            f"{_LOOP_STALL_WINDOW_S}s despite "
-            f"{v1_lifecycle['lifecycle']['pending']} pending "
-            f"(oldest {out['queue_state']['stuck_pending_max_age_s']}s) and "
-            f"{v1_lifecycle['lifecycle']['failed']} failed total. "
-            "The loop is claiming "
-            "but not succeeding — provider auth, double-claim, or finalize crash "
-            "(2026-06-25 loop-wedge signature). Check worker logs for provider "
-            "'exhausted' / 'Invalid transition'."
-        )
-
-    if (
-        v1_lifecycle["lifecycle"]["running"] > 0
-        and not any_lease_field_seen
-    ):
-        out["lease_data_available"] = False
-        out["warnings"].append(
-            "lease_data_unavailable: running tasks present but no lease "
-            "fields populated. Either pre-PR-#212 deploy, or daemon is "
-            "not stamping heartbeats. Reclaim heuristics cannot run."
-        )
-
-    if out["stale_running_tasks"]:
-        out["warnings"].append(
-            f"{len(out['stale_running_tasks'])} stale running task(s) "
-            "(heartbeat past threshold or lease expired). "
-            "branch_tasks.reclaim_expired_leases sweeps these at every "
-            "dispatcher pick (BUG-011 Phase C, shipped 2026-06-10); a "
-            "persistent entry here means no picks are happening — check "
-            "worker_liveness in command center inspect."
-        )
-
     return out
 
 
@@ -1195,7 +939,7 @@ def _platform_worker_liveness() -> dict[str, Any]:
     The real per-universe writers/readers remain in use for their scoped queue
     and watchdog contracts; this platform projection uses process lifecycle.
     """
-    from tinyassets.runtime.assigned_queue_consumer import current_consumer_liveness
+    from tinyassets.control_plane.tick import current_consumer_liveness
 
     try:
         summary = current_consumer_liveness(_base_path())
@@ -1388,7 +1132,7 @@ def get_status(
         return json.dumps(denial)
     # Load the dispatcher config for the universe.
     try:
-        from tinyassets.dispatcher import (
+        from tinyassets.control_plane.queue_policy import (
             DispatcherConfig,
             load_dispatcher_config,
             paid_market_enabled,
@@ -1684,13 +1428,12 @@ def get_status(
     except Exception:  # noqa: BLE001 — best-effort observability
         pass
 
-    # sandbox_status: probe bwrap availability once per process (cached).
-    # Never raises — a probe error shows as bwrap_available=False with reason.
+    # sandbox_status: whether this process serves owner boxes. Never raises.
     try:
         from tinyassets.providers.base import get_sandbox_status
         sandbox_status = get_sandbox_status()
     except Exception as exc:  # noqa: BLE001 — best-effort observability
-        sandbox_status = {"bwrap_available": False, "reason": f"probe_error: {exc}"}
+        sandbox_status = {"box_available": False, "reason": f"probe_error: {exc}"}
 
     # BUG-027 — probe required static data files so operators can see which
     # files are absent in the cloud image without waiting for ASP to fail.

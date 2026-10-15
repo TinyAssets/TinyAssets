@@ -12,9 +12,6 @@ This file covers the unit-level contracts:
 
 from __future__ import annotations
 
-import sys
-from unittest.mock import patch
-
 import pytest
 
 from tinyassets.branches import (
@@ -112,26 +109,6 @@ def test_non_empty_provider_does_not_raise_empty_response_error():
         config={"configurable": {"thread_id": "t2"}},
     )
     assert result.get("out") == "result"
-
-
-def test_bwrap_provider_output_raises_sandbox_unavailable():
-    """A CLI provider leaking bwrap text in stdout must fail loudly."""
-    from langgraph.checkpoint.memory import InMemorySaver
-
-    from tinyassets.providers.base import SandboxUnavailableError
-
-    def _bwrap_leak(prompt, system, *, role):
-        return "bwrap: No permissions to create new namespace"
-
-    branch = _simple_branch()
-    compiled = compile_branch(branch, provider_call=_bwrap_leak)
-    runnable = compiled.graph.compile(checkpointer=InMemorySaver())
-    with patch.object(sys, "platform", "linux"):
-        with pytest.raises(SandboxUnavailableError):
-            runnable.invoke(
-                {"x": "test"},
-                config={"configurable": {"thread_id": "t-bwrap"}},
-            )
 
 
 # ── _find_empty_response_exception chain walker ───────────────────────────────

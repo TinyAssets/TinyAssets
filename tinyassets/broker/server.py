@@ -64,6 +64,7 @@ _LOG = logging.getLogger(__name__)
 
 OWNER = "owner"
 BOX = "box"
+BOX_HOST = "box_host"
 MAX_WINDOW = 256 * 1024
 LOOKAHEAD = 16 * 1024
 MAX_STREAMS = 4096
@@ -153,7 +154,9 @@ class BrokerServer:
                  dispatch_for: Callable[..., Callable[..., Any]],
                  ops: OpStore, fence: Fence, roles: Mapping[int, str],
                  uid_of: Callable[[socket.socket], int] = peer_uid,
-                 owner_identities: Any = None, policy_store: Any = None) -> None:
+                 owner_identities: Any = None, policy_store: Any = None,
+                 provision_box: Callable[[str, str], None] | None = None,
+                 data_root: Path | None = None) -> None:
         self._ledger_for = ledger_for
         self._dispatch_for = dispatch_for
         self._ops = ops
@@ -162,12 +165,16 @@ class BrokerServer:
         self._uid_of = uid_of
         self._owner_identities = owner_identities
         self._policy_store = policy_store
+        self._provision_box = provision_box
+        from tinyassets.broker.public_egress import PublicEgress
+
+        self._public_egress = PublicEgress(owner_identities, data_root)
         self._streams: dict[tuple[int, int], _Stream] = {}
         self._streams_lock = threading.Lock()
         self._ops.recover()
 
     async def serve(self, path: Path) -> asyncio.AbstractServer:
-        return await asyncio.start_unix_server(self._connection, path=str(path))
+        return await asyncio.start_unix_server(self._connection, path=str(path), limit=16384)
 
     async def _connection(self, reader: asyncio.StreamReader,
                           writer: asyncio.StreamWriter) -> None:
@@ -192,6 +199,11 @@ class BrokerServer:
         pump.add_done_callback(pump_ended)
         try:
             while (frame := await rf.read_frame(reader)) is not None:
+                if (connection._role == BOX_HOST and frame.kind == rf.CONTROL
+                        and frame.stream == rf.CONNECTION
+                        and frame.control()["op"] == "BOX_PUBLIC"):
+                    await self._public_egress.serve(reader, writer, frame.control())
+                    break
                 await connection.handle(frame)
         except rf.FrameError:
             _LOG.warning("broker peer broke the framing; dropping it")
@@ -319,6 +331,21 @@ class _Connection:
                 stream.wake.notify_all()
 
     async def _connection_op(self, op: str, doc: dict[str, Any]) -> None:
+        if self._role == BOX_HOST:
+            if op not in {"BOX_ADMISSION", "BOX_CHANNEL"}:
+                raise rf.FrameError("box host channel is read-only admission")
+            from tinyassets.broker.box_admission import resolve
+
+            try:
+                answer = await asyncio.to_thread(resolve, self._server._owner_identities,
+                                                 {**doc, "op": "BOX_ADMISSION"})
+                if op == "BOX_CHANNEL":
+                    self._box_owner, self._box_center = doc["principal"], doc["center"]
+                    self._role = BOX
+            except Exception:  # no authority or broker data on a refusal
+                answer = {"op": "BOX_REFUSED"}
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+            return
         if self._role != OWNER:
             raise rf.FrameError("only the owner channel may send connection operations")
         if op == "OWNER_IDENTITY":
@@ -424,12 +451,14 @@ class _Connection:
                     doc["event"], doc["principal"], doc["center"])
                 if doc["event"] == "admit" and self._server._policy_store is not None:
                     self._server._policy_store.bootstrap_owner(doc["principal"])
+                if doc["event"] == "admit" and self._server._provision_box is not None:
+                    self._server._provision_box(doc["principal"], doc["center"])
                 return {"op": "CENTER_ADMISSION_IS", "generation": row.generation,
                         "machine": row.machine}
         except CenterUnadmitted:
             # D218 retires a tree-less center only if the log admitted it.
             return {"op": "CENTER_ADMISSION_UNADMITTED"}
-        except Exception:  # noqa: BLE001 - nothing appended or persisted on refusal
+        except Exception:  # noqa: BLE001 - retry completes durable partial admission
             return {"op": "CENTER_ADMISSION_REFUSED"}
 
     def _erase_account(self, doc: dict[str, Any]) -> dict[str, Any]:
@@ -723,6 +752,19 @@ class _Connection:
         return record.state, "unknown" if record.sent else "none"
 
     async def _open(self, stream_id: int, doc: dict[str, Any]) -> None:
+        if self._role == BOX:
+            # Identity and fence originate in the admitted host channel, never
+            # in guest JSON. No connection-level policy writes are exposed.
+            if not getattr(self, "_box_owner", None):
+                raise rf.FrameError("box channel has no host admission")
+            if (doc.get("principal", self._box_owner) != self._box_owner
+                    or doc.get("command_center", self._box_center) != self._box_center
+                    or self._server._owner_identities.admitted_owner(self._box_center)
+                    != self._box_owner):
+                raise rf.FrameError("foreign or retired box namespace")
+            doc = {**doc, "principal": self._box_owner, "command_center": self._box_center,
+                   "generation": self._server._fence.generation,
+                   "token": self._server._fence.token}
         principal, command_center = doc.get("principal"), doc.get("command_center")
         op_id = doc.get("op_id")
 
@@ -740,7 +782,7 @@ class _Connection:
                 "op": "END", "outcome": "refused", "error_class": error_class,
                 "stream_sent": False, "side_effect_state": effect}))
 
-        if self._role != OWNER:
+        if self._role not in {OWNER, BOX}:
             await refuse("refused")  # the box channel's derivation lands with boxhostd
             return
         with self._server._streams_lock:

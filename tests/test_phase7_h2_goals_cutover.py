@@ -98,43 +98,6 @@ def _commit_count(repo: Path) -> int:
     )
 
 
-def _last_commit_subject(repo: Path) -> str:
-    return _run(
-        ["git", "log", "-1", "--format=%s"], repo,
-    ).stdout.strip()
-
-
-def _last_commit_files(repo: Path) -> list[str]:
-    return [
-        line.strip()
-        for line in _run(
-            ["git", "show", "--name-only", "--pretty=format:", "HEAD"], repo,
-        ).stdout.splitlines()
-        if line.strip()
-    ]
-
-
-# ─── propose ─────────────────────────────────────────────────────────────
-
-
-def test_propose_creates_yaml_and_one_commit(repo_env):
-    us, repo, _base = repo_env
-    before = _commit_count(repo)
-    result = _call(us, action="propose", name="Research paper", tags="research")
-    assert result["status"] == "proposed"
-    assert _commit_count(repo) - before == 1
-    assert _last_commit_subject(repo) == "goals.propose: Research paper"
-    assert any(
-        "goals/research-paper.yaml" in f for f in _last_commit_files(repo)
-    )
-
-
-# ─── update ──────────────────────────────────────────────────────────────
-
-
-# ─── bind ────────────────────────────────────────────────────────────────
-
-
 # ─── env-var sqlite_only ─────────────────────────────────────────────────
 
 

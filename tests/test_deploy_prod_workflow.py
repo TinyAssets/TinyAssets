@@ -145,7 +145,7 @@ def test_recovery_override_fences_writers_and_fixed_name_sidecars():
     assert set(services) == default_profile, (
         "recovery override must fence exactly the default-profile services"
     )
-    assert set(services) == {"daemon", "cloudflared", "logs"}
+    assert set(services) == {"daemon", "broker", "cloudflared", "logs"}
     assert all(service.get("restart") == "no" for service in services.values())
 
 
@@ -259,16 +259,30 @@ def test_canary_step_only_probes_canonical():
     steps = _steps(_load())
     core = next(s for s in steps if s.get("id") == "core_canary")
     assert core["uses"] == "./.github/actions/core-capability-canary"
-    assert "if" not in core and core.get("continue-on-error") is True
+    # Only a canary that was ready before the deploy can fail it (and roll back).
+    assert "if" not in core
+    assert core["continue-on-error"] == (
+        "${{ steps.core_canary_provision.outputs.provisioned != '1' }}"
+    )
+    provision = next(s for s in steps if s.get("name") == "Verify core canary is provisioned")
+    assert provision.get("id") == "core_canary_provision"
+    assert "verify_core_canary_provision.py" in provision["run"]
+    assert not provision.get("continue-on-error")
+    names = [step.get("name") for step in steps]
+    assert steps.index(provision) < names.index("Prepare data volume root")
+    deploy = next(s for s in steps if s.get("id") == "deploy")
+    assert (
+        "CORE_CANARY_PROVISIONED='${{ steps.core_canary_provision.outputs.provisioned }}'"
+        in deploy["run"]
+    )
     public = next(s for s in steps if s.get("id") == "canary")
     assert "https://tinyassets.io/mcp --assert-handles" in public["run"]
     assert not public.get("continue-on-error")
     assert not next(s for s in steps if s.get("id") == "app_probe").get("continue-on-error")
     assert not any(s.get("id") == "core_regression" for s in steps)
     deploy = next(i for i, s in enumerate(steps) if s.get("id") == "deploy")
-    repair = next(i for i, s in enumerate(steps) if s.get("id") == "content_repair")
-    # The canary observes the deployed, repaired tree, before the blocking probes.
-    assert deploy < repair < steps.index(core) < steps.index(public)
+    # The canary observes the deployed tree, before the blocking probes.
+    assert deploy < steps.index(core) < steps.index(public)
 
 
 def test_access_gate_step_present():
@@ -421,7 +435,9 @@ def test_rollback_step_present():
     )
     assert (
         rollback["if"] == "${{ failure() && steps.deploy.outputs.rc == '0' && "
-        "(steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure') }}"
+        "(steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure' "
+        "|| (steps.core_canary.outcome == 'failure' "
+        "&& steps.core_canary_provision.outputs.provisioned == '1')) }}"
     )
     assert "--restore-bundle" in rollback["run"]
     assert rollback["env"]["PREV_IMAGE"] == "${{ steps.capture.outputs.prev_image }}"
@@ -852,6 +868,12 @@ TUNNEL_CONTAINER=tinyassets-tunnel
 LOGS_CONTAINER=tinyassets-logs
 INSTALLED_THIS_RUN=0
 MARKER_STALE=0
+# The script assigns these just above the rollback marker. A migration that
+# did not commit leaves both at 0. Leaving them unset trips `set -u` (exit 1)
+# before accept/finish can report the rollback. A healthy rollback of the
+# previous image is exit 2 (`finish rolled_back`); an identity mismatch is 3.
+MIGRATION_COMMITTED=0
+MIGRATION_COMMIT_UNVERIFIED=0
 HEALTH_TIMEOUT=10
 HEALTH_INTERVAL=0
 INSPECT_ERR_TOLERANCE=1

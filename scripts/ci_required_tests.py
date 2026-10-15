@@ -45,13 +45,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 QUARANTINE = REPO_ROOT / ".github" / "known-failing-tests.txt"
 
-# Inode labels and dropping to distinct real UIDs require a root coordinator.
+# Root-only proofs (the live owner-box backup runs as root on the host).
 # These files still belong to their ordinary shard and selection receipt.
 ROOT_TEST_FILES = frozenset({
-    "tests/test_role_owner_tree_deletion.py",
-    "tests/test_role_reader_identity.py",
-    "tests/test_role_center_admission.py",
-    "tests/test_role_content_repair.py",
+    "tests/test_backup_owner_box.py",
 })
 
 # The gate must never pass vacuously. Without a floor, a PR that mass-skips,
@@ -63,14 +60,19 @@ ROOT_TEST_FILES = frozenset({
 # as the suite grows.
 MIN_RAN_FLOOR = 10000
 
-# A heavy-only job runs ~2,235 tests, so it cannot meet the whole-suite floor --
-# and LOWERING the global floor to fit it would disable the vacuity check for
-# the gate too. Named profiles keep the property that matters: a floor is a
-# reviewed constant here, never a number a caller can pick, and the
-# workflow-shape test pins which profile each job uses.
+# A heavy-only job runs the files in .github/heavy-test-files.txt, so it
+# cannot meet the whole-suite floor -- and LOWERING the global floor to fit
+# it would disable the vacuity check for the gate too. Named profiles keep
+# the property that matters: a floor is a reviewed constant here, never a
+# number a caller can pick, and the workflow-shape test pins which profile
+# each job uses.
+# Heavy was 2,000 under a ~2,235 count. Run 38560348649 (2026-10-14) ran
+# 1,683; this tree runs 1,681. The old floor was unreachable, and the check
+# only runs once NEW failures are zero, so the nightly job never reported
+# it. 1,500 keeps the old ~10% cushion under the current count.
 MIN_RAN_FLOORS = {
     "full": MIN_RAN_FLOOR,   # every test under tests/
-    "heavy": 2000,           # .github/heavy-test-files.txt only (~2,235 today)
+    "heavy": 1500,           # .github/heavy-test-files.txt only (1,681 on 2026-10-14)
     # ONE shard of the required gate (~3,600 of ~21,900 at 6 shards). The union
     # floor is checked again by `--aggregate`, but the union floor alone cannot
     # see one shard collapsing: 5 of 6 shards still clear it comfortably.

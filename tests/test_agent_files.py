@@ -196,6 +196,7 @@ def test_agent_directories_are_the_roster_and_main_is_the_root(tmp_path):
     _agent_dir(base, "theirs", settings="schema_version: 1\nagent: {id: agent_binding_01P, "
                                         "name: Private, owner: p}\n")
     (base / "agents" / "notes.md").write_text("not an agent", encoding="utf-8")
+    (base / "agents" / "stray").write_text("not an agent", encoding="utf-8")
     (base / "agents" / "empty").mkdir()
 
     assert [(a.slug, a.agent_id, a.name) for a in list_agent_files(base, owner="o")] == [
@@ -287,10 +288,21 @@ def _sql_agent(base, owner, universe, name, *, instructions, author=None, status
     return binding_id
 
 
+def _served_volume(tmp_path):
+    """The owner-box daemon has served this volume: its admission wrote the
+    marker and its tables exist before the migration takes the catalogue lock."""
+    from tinyassets import storage_layout as layout
+    from tinyassets.daemon_server import initialize_author_server
+
+    layout.check(tmp_path)
+    initialize_author_server(tmp_path)
+
+
 def _migration_fixture(tmp_path):
     """Every binding kind the retired store could hold, across two owners' homes."""
     from tinyassets.onboarding.serving import PLATFORM_DEFINITION_AUTHOR
 
+    _served_volume(tmp_path)
     (tmp_path / "u-home").mkdir()
     (tmp_path / "u-bob").mkdir()
     alice, bob = "alice", "bob"
@@ -423,6 +435,7 @@ def test_migration_lands_every_addressable_binding_as_its_owners_directory(tmp_p
 def test_migration_keeps_an_unrelated_directory_of_the_same_name(tmp_path):
     from tinyassets.agent_file_migration import apply
 
+    _served_volume(tmp_path)
     (tmp_path / "u").mkdir()
     _sql_agent(tmp_path, "alice", "u", "Scout", instructions="Mine.")
     _agent_dir(tmp_path / "u", "scout", instructions="Another agent entirely.")
@@ -486,14 +499,15 @@ def test_any_failure_leaves_sql_untouched_and_publishes_no_file(tmp_path, monkey
     elif failure == "missing_center":
         _sql_agent(tmp_path, "alice", "u-gone", "Later", instructions="Later.")
         before = _bindings(tmp_path)
-        error, expected_marker = FileNotFoundError, None  # refused while planning
+        # Refused while planning: the served volume's marker is never touched.
+        error, expected_marker = FileNotFoundError, "stable"
     elif failure == "missing_backup":
         backup.unlink()
-        error, expected_marker = FileNotFoundError, None
+        error, expected_marker = FileNotFoundError, "stable"
     elif failure == "stale_backup":
         old = time.time() - m.MAX_BACKUP_AGE_S - 1
         os.utime(backup, (old, old))
-        error, expected_marker = ValueError, None
+        error, expected_marker = ValueError, "stable"
     else:
         layout.require_layout(tmp_path)  # the running daemon's lifetime shared lock
         error, expected_marker = RuntimeError, "stable"
@@ -523,6 +537,18 @@ def test_post_commit_marker_failure_still_reports_committed(tmp_path, monkeypatc
     before = _bindings(tmp_path)
     backup = _backup(tmp_path)
     real_replace, real_open, real_fsync = os.replace, os.open, os.fsync
+    # The volume was served (stable) before the run: a failure belongs to the
+    # stable marker this run publishes, after it marked itself migrating.
+    real_mark, began = m._mark, []
+
+    def mark(base, document, state):
+        began.append(state)
+        return real_mark(base, document, state)
+
+    monkeypatch.setattr(m, "_mark", mark)
+
+    def committed():
+        return bool(began) and _marker_state(tmp_path) == "stable"
 
     def replace(source, target):
         if json.loads(Path(source).read_text(encoding="utf-8"))["state"] == "stable":
@@ -530,12 +556,12 @@ def test_post_commit_marker_failure_still_reports_committed(tmp_path, monkeypatc
         return real_replace(source, target)
 
     def open_directory(path, flags, *args, **kwargs):
-        if flags & getattr(os, "O_DIRECTORY", 0) and _marker_state(tmp_path) == "stable":
+        if flags & getattr(os, "O_DIRECTORY", 0) and committed():
             raise OSError("directory open failed")
         return real_open(path, flags, *args, **kwargs)
 
     def fsync(fd):
-        if stat.S_ISDIR(os.fstat(fd).st_mode) and _marker_state(tmp_path) == "stable":
+        if stat.S_ISDIR(os.fstat(fd).st_mode) and committed():
             raise OSError("directory fsync failed")
         return real_fsync(fd)
 
@@ -563,36 +589,3 @@ def test_a_fresh_installation_has_nothing_to_migrate(tmp_path):
     assert m.main(["check", str(tmp_path)]) == 0
     assert m.apply(tmp_path, backup=_backup(tmp_path)) == {}
     assert sorted(p.name for p in tmp_path.iterdir()) == ["backups"]
-
-
-@pytest.mark.skipif(os.name != "posix" or os.geteuid() != 0,
-                    reason="owner labels need root and POSIX ACLs")
-def test_migration_labels_files_on_an_owner_labelled_center_as_the_owner_cell_would(tmp_path):
-    from tinyassets import agent_file_migration as m
-    from tinyassets import role_center_admission as admission
-
-    home = tmp_path / "u"
-    home.mkdir()
-    bid = _sql_agent(tmp_path, "alice", "u", "Scout", instructions="Mine.")
-    machine = 300001
-    fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.setxattr(fd, admission.ACCESS, admission.canonical_root_acl(machine))
-        os.fchown(fd, 1001, machine)
-        os.fchmod(fd, 0o750)
-        assert admission.read_label(fd) == admission.canonical_label(machine)
-    finally:
-        os.close(fd)
-    assert m.apply(tmp_path, backup=_backup(tmp_path)) == {"u": ["agents/scout"]}
-    content = (machine, machine, 0o660, admission._acl(6, {1001: 7}, mask=6), None)
-    for relpath, expected in (("agents", admission.seed_label(machine)),
-                              ("agents/scout", admission.seed_label(machine)),
-                              ("agents/scout/settings.yaml", content),
-                              ("agents/scout/AGENTS.md", content)):
-        fd = os.open(home / relpath, os.O_RDONLY | os.O_NOFOLLOW)
-        try:
-            assert admission.read_label(fd) == expected, relpath
-        finally:
-            os.close(fd)
-    assert read_settings(home, agent_slug="scout").agent.id == bid
-    assert (home / "agents/scout/AGENTS.md").read_text(encoding="utf-8") == "Mine.\n"

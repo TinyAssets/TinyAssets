@@ -70,11 +70,12 @@ def _workflow_job_timeout_s() -> int:
     assert match, "the deploy job's timeout-minutes moved; re-point this"
     steps = yaml.safe_load(text)["jobs"]["deploy"]["steps"]
     wait = next(s for s in steps if s.get("name") == "Wait for in-flight turns")
-    # The post-deploy content repair runs after the converges with its own
-    # bounded step timeout, so its share is not deploy work either.
-    repair = next(s for s in steps if s.get("name") == "Repair owner content online")
+    # The job reserves its owner-box backup verification/repair share apart
+    # from deploy work; the workflow states that share beside its timeout.
+    reserve = re.search(r"(\d+) for backup verification/repair", text)
+    assert reserve, "the deploy job's backup reservation moved; re-point this"
     return (int(match.group(1)) - int(wait["timeout-minutes"])
-            - int(repair["timeout-minutes"])) * 60
+            - int(reserve.group(1))) * 60
 
 
 def _health_timeout_s() -> int:
@@ -251,21 +252,25 @@ def test_uvicorn_accepts_the_keyword_we_are_passing():
 
 
 def test_the_converge_is_timed_so_the_bound_can_be_measured():
-    """The bound is a judgement, and it is only revisable with data.
-
-    `restart_stack` logs how long the converge took, and says so when it reaches
-    the grace bound -- which is the observable that says whether turns are still
-    being cut off.
-    """
+    """Time the old daemon's drain; reaching its bound refuses the converge."""
     body = SCRIPT.read_text(encoding="utf-8")
     match = re.search(r"^restart_stack\(\) \{\n(.*?)^\}", body, re.S | re.M)
     assert match, "restart_stack is no longer a plain shell function"
     function = match.group(1)
     assert 'started="$SECONDS"' in function
     assert "SECONDS - started" in function
+    assert 'docker stop --time "$MAX_DAEMON_STOP_GRACE_S" "$DAEMON_CONTAINER"' in function
+    stop = function.index("docker stop --time")
+    bound = function.index('if [ "$elapsed" -ge "$MAX_DAEMON_STOP_GRACE_S" ]')
+    compose = function.index("docker compose")
+    assert stop < bound < compose
+    assert "old daemon drain took ${elapsed}s" in function
     assert "converge took" in function
     assert "MAX_DAEMON_STOP_GRACE_S" in function, (
         "reaching the bound is the signal that a turn was cut off; say so in the log")
+    assert "refusing this deploy rather than accepting a cut turn" in function
+    after = function.split("refusing this deploy rather than accepting a cut turn", 1)[1]
+    assert "return 1" in after[:80]
 
 
 def test_the_measurement_behind_the_narrowed_claim_is_retained():

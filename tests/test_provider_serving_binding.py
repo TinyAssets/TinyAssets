@@ -143,6 +143,7 @@ def test_custody_adoption_requires_server_recorded_depositor_ownership(tmp_path)
 
 def test_path_backed_codex_rotation_changes_custody_generation_and_digest(tmp_path):
     from tinyassets.credential_vault import (
+        _prepare_credential_root,
         adopt_llm_subscription_custody,
         current_llm_subscription_custody,
         write_credential_vault,
@@ -150,8 +151,11 @@ def test_path_backed_codex_rotation_changes_custody_generation_and_digest(tmp_pa
     from tinyassets.storage import db_path
 
     universe_dir = tmp_path / "u-owner"
-    auth_home = universe_dir / "codex-auth"
-    auth_home.mkdir(parents=True)
+    universe_dir.mkdir()
+    # Path-backed subscription material lives in the platform's custody root,
+    # outside the owner's box; the record names it by its box-relative path.
+    auth_home = _prepare_credential_root(universe_dir) / "codex-auth"
+    auth_home.mkdir()
     auth_file = auth_home / "auth.json"
     auth_file.write_bytes(b'{"tokens":{"access_token":"first"}}')
     write_credential_vault(
@@ -159,7 +163,7 @@ def test_path_backed_codex_rotation_changes_custody_generation_and_digest(tmp_pa
         [{
             "credential_type": "llm_subscription",
             "service": "codex",
-            "codex_home": str(auth_home),
+            "codex_home": str(universe_dir / "codex-auth"),
         }],
         owner_user_id="owner-1",
         universe_id="u-owner",
@@ -269,16 +273,20 @@ def test_custody_refuses_duplicate_and_path_escaping_subscription_records(tmp_pa
 
 def test_custody_refuses_symlinked_subscription_path_components(tmp_path):
     from tinyassets.credential_vault import (
+        _prepare_credential_root,
         adopt_llm_subscription_custody,
         write_credential_vault,
     )
     from tinyassets.storage import db_path
 
     universe_dir, _ = _seed_universe(tmp_path)
-    real_home = universe_dir / "real-codex-home"
+    # Path-backed material is read from the platform custody root; a link
+    # there must not redirect the read.
+    custody = _prepare_credential_root(universe_dir)
+    real_home = custody / "real-codex-home"
     real_home.mkdir()
     (real_home / "auth.json").write_text("{}", encoding="utf-8")
-    linked_home = universe_dir / "linked-codex-home"
+    linked_home = custody / "linked-codex-home"
     try:
         linked_home.symlink_to(real_home, target_is_directory=True)
     except OSError as exc:

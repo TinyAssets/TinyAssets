@@ -29,12 +29,11 @@ _REQUIRED_CONTEXTS = frozenset(
     {"Diff scope declared", "required-tests", "invariants", "slow-tests"},
 )
 
-#: Workflows this change gave a per-PR group, with the group's name prefix. The
-#: first four had no `concurrency:` at all; the last three had one keyed by
-#: `github.ref`, which cancelled their own non-PR runs (see
-#: ``test_no_group_lets_two_non_pull_request_runs_collide``).
+#: Workflows this change gave a per-PR group, with the group's name prefix.
+#: `build-bundle`, `docker-build`, and `android-release` had no `concurrency:`
+#: at all; the last three had one keyed by `github.ref`, which cancelled their
+#: own non-PR runs (see ``test_no_group_lets_two_non_pull_request_runs_collide``).
 _ADDED = {
-    "preview-security.yml": "preview-security",
     "build-bundle.yml": "build-bundle",
     "docker-build.yml": "docker-build",
     "android-release.yml": "android-release",
@@ -105,7 +104,7 @@ def test_no_group_lets_two_non_pull_request_runs_collide() -> None:
 
     A workflow whose ONLY trigger is `pull_request` is exempt because it has no
     non-PR run to collide with: `github.event.pull_request.number` is always
-    set there, so the group is already one per PR (preview-worker.yml).
+    set there, so the group is already one per PR.
     """
     offenders = []
     for name in _pull_request_workflows():

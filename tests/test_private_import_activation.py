@@ -9,7 +9,16 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from tests.test_okf_transfer import archive
-from tests.test_owner_transfer import HOME_A, HOME_B, URL, A, B, door, request, transfer_door  # noqa: F401
+from tests.test_owner_transfer import (  # noqa: F401
+    HOME_A,
+    HOME_B,
+    URL,
+    A,
+    B,
+    door,
+    request,
+    transfer_door,
+)
 from tinyassets import command_center_packages as packages
 from tinyassets.api.helpers import _base_path
 from tinyassets.boxes.provider import WriteMode

@@ -205,6 +205,9 @@ class DirEntry:
     name: str
     kind: str
     size: int
+    #: Identify hard links so byte measures count a linked file once.
+    inode: int = 0
+    links: int = 1
 
 
 @dataclass(frozen=True)

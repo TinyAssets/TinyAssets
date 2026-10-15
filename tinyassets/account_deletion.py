@@ -306,22 +306,27 @@ def _home_dir(root: Path, home: str) -> Path:
 
 
 def _stage_home(root: Path, home: str) -> Path | None:
-    """Stage platform sidecars only, after authenticated owner-box destruction.
+    """Stage the retired home and platform sidecars after owner-box destruction.
 
     The deterministic container survives a crash between renames; retry moves
     only the remaining sources. No destination lies inside user-owned content.
     Failure leaves both the container and unmoved sources for the receipt.
     """
-    from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
+    from tinyassets.boxes.layout import UNIVERSE_SIDECARS_DIR
+    from tinyassets.credential_vault import _credential_root
 
-    _home_dir(root, home)  # validate the binding without treating it as owner storage
+    target = _home_dir(root, home)  # validate without treating it as owner storage
     sidecar = root / UNIVERSE_SIDECARS_DIR / home
+    custody = _credential_root(target)
     staging = root / _STAGING_DIR
     staged = staging / home
-    sources = ((sidecar, staged / "sidecar"),)
+    # The copied pre-cutover home and platform custody follow the account.
+    sources = ((target, staged / "home"), (sidecar, staged / "sidecar"),
+               (custody, staged / "credentials"))
     # Check every parent and source before the first rename. A symlink must
     # never redirect staging or removal into another account's directory.
-    for path in (sidecar.parent, staging, staged, *(p for pair in sources for p in pair)):
+    for path in (sidecar.parent, custody.parent.parent, custody.parent, staging, staged,
+                 *(p for pair in sources for p in pair)):
         if path.is_symlink() or (path.exists() and not path.is_dir()):
             raise AccountDeletionError(f"{path.name} is not a plain directory")
     if not staged.exists() and not any(source.exists() for source, _ in sources):
@@ -1087,10 +1092,24 @@ def delete_account(
     # check the tombstone inside their transaction under this same admission.
     # Release BEFORE staging: Windows cannot rename an open admission-lock file.
     if home and _home_dir(root, home).exists():
+        from tinyassets.agent_sessions import RECORDS_DIR
         from tinyassets.provider_assignment import provider_assignment_admission
 
-        with provider_assignment_admission().exclusive(_home_dir(root, home)):
+        # An unsafe records path also makes the platform admission lock
+        # inaccessible. No new provider can pass that lock, so tombstone the
+        # account and let the records phase report the bad path in the receipt.
+        records_parent = root / RECORDS_DIR
+        records_home = records_parent / home
+        unsafe_records = any(
+            path.is_symlink() or (path.exists() and not path.is_dir())
+            for path in (records_parent, records_home)
+        )
+
+        if unsafe_records:
             write_tombstone(root, principal)
+        else:
+            with provider_assignment_admission().exclusive(_home_dir(root, home)):
+                write_tombstone(root, principal)
     else:
         write_tombstone(root, principal)
     from tinyassets.owner_door.transfer import clear_owner_previews

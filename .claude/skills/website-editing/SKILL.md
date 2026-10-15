@@ -56,10 +56,9 @@ the diff.
 - **Honest availability.** No platform model; Claude is a setup-token deposit,
   not an OAuth button; ChatGPT/Codex is one tap. Android is a pre-release APK;
   desktop builds are unsigned and from source. Say so in words.
-- **Plans.** `/fine-print#plans` states the tiers. Free and paid are the same
-  product and the same security, and differ only by simultaneous runs and
-  storage. No price or cap until the owner sets it. Home and `/start` may
-  summarise that and must not name a price.
+- **Plans.** `/fine-print#plans`: same app and security, runs and storage only,
+  no price. Upgrade entry: `/app?upgrade=1`. Home and `/start` may link there
+  and must not name a price.
 - **Do not advertise** the paid market, crypto or tokens, hardware, host-run
   fleets, per-channel integration lists, the retired `Workflow` name, or
   "powered by <model>". No engagement metrics anywhere.
@@ -98,7 +97,7 @@ for the doc checker):
 
 ```
 cd WebSite/design-system && npm run build   # after any token/component change
-cd ../site-react && npm test                # contract + boundary + preview validators
+cd ../site-react && npm test                # contract + boundary
 npm run build                               # out/<route>/index.html for every route
 ```
 
@@ -130,8 +129,7 @@ Ship through the normal pull-request path. A site-source merge runs
 
 Ratchets already in place: cross-provider drift (`cross-provider-drift`
 invariant); the public-read boundary (node tests); the rendered sweep
-(`WebSite/site-react/scripts/sweep.py`); exact workflow pinning for the hosted-preview trust
-boundary (the pinned preview-worker security test).
+(`WebSite/site-react/scripts/sweep.py`).
 
 ## Files involved
 
@@ -140,7 +138,7 @@ boundary (the pinned preview-worker security test).
 | `WebSite/site-react/` | The site source |
 | `WebSite/site-react/lib/site.ts` | Canonical URLs and the nav |
 | `WebSite/site-react/lib/live.ts` | Browser authentication boundary for live reads |
-| `WebSite/site-react/scripts/` | Tests, snapshot baker, sweep, preview validators |
+| `WebSite/site-react/scripts/` | Tests, snapshot baker, sweep |
 | `WebSite/design-system/` | `@tiny/design-system`: tokens, base, components, `DESIGN.md` |
 | `WebSite/brand/` | The mark's SVGs and exporters |
 | `WebSite/shared/mcp/public-read-contract.js` | Public read contract shared by site and baker |

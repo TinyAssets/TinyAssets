@@ -69,7 +69,7 @@ That ordering decides what each row can prove:
 | 13 | **post-drop target identity** | row 10 with a mode whose target prints `/proc/self/status` | the *target*, not the wrapper, reads uid/gid 1001 and all-zero caps |
 | 14 | **descriptor boundary** | Linux + `strace` (see below) | `close(9)` appears in the trace **before** the `execve`, and fd 9 is absent from the target's `/proc/<pid>/fd` |
 | 15 | **loader / env boundary** | any Linux + `strace` | `strace -f -e trace=openat` shows no `ld.so`, no `/etc/nsswitch.conf`, no `/etc/passwd`, no `/etc/group`, no `/app` or `/data` path opened before the `execve` |
-| 16 | `env-summary` filtering | **post-identity** (same contexts as row 3) | with `FOO=1 TINYASSETS_GOAL_POOL=off SECRET_TOKEN=ollama-token` set, prints exactly `TINYASSETS_GOAL_POOL=off` — the value containing `ollama` is NOT printed |
+| 16 | `env-summary` filtering | **post-identity** (same contexts as row 3) | with `FOO=1 TINYASSETS_AUTO_SHIP_RUBRIC_MODE=enforce SECRET_TOKEN=ollama-token` set, prints exactly `TINYASSETS_AUTO_SHIP_RUBRIC_MODE=enforce` — the value containing `ollama` is NOT printed |
 | 17 | wrapper is not setuid/setgid | any | `stat -c %a` is `555` and `%U` is `root` on the installed path |
 | 18 | **identity readback is a whole-line match** | separate build, uid 1001 | see below — the crafted-status regression |
 

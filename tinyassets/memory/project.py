@@ -18,6 +18,19 @@ SOURCE = "project"
 TABLE = "project_memory"
 HISTORY = "project_memory_history"
 
+# Historical schema used only to seed an empty source during the one-shot
+# owner-box cutover. Existing databases are copied byte-for-byte before census.
+PROJECT_SCHEMA = """
+CREATE TABLE project_memory (
+ project_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+ updated_at TEXT NOT NULL, updated_by TEXT NOT NULL DEFAULT '',
+ version INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(project_id,key));
+CREATE TABLE project_memory_history (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL,
+ key TEXT NOT NULL, value TEXT NOT NULL, updated_at TEXT NOT NULL,
+ updated_by TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL);
+"""
+
 
 def _records(value):
     if not isinstance(value, SourceRecords) or value.source != SOURCE:

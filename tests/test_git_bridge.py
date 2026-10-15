@@ -50,6 +50,31 @@ def _init_repo(path: Path, *, bare: bool = False) -> None:
         _run(["git", "config", "commit.gpgsign", "false"], path)
 
 
+@pytest.fixture
+def center(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A command center under the data root, its owner's box session bound.
+
+    Owner git runs only inside an admitted owner box: the repository must sit
+    in a command center and the call must carry that center's session binding.
+    """
+    from tinyassets.control_plane import binding as binding_module
+
+    data_root = tmp_path / "data"
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
+    cc = data_root / "cc-git"
+    cc.mkdir(parents=True)
+    binding = binding_module.file_binding(cc)
+    assert binding is not None, "the owner box double binds a test center"
+    with binding_module.use_binding(binding):
+        yield cc
+
+
+@pytest.fixture
+def repo(center: Path) -> Path:
+    """A working tree inside the bound command center."""
+    return center / "repo"
+
+
 @pytest.fixture(autouse=True)
 def _reset_cache():
     """Ensure ``is_enabled`` re-probes between tests."""
@@ -61,9 +86,9 @@ def _reset_cache():
 # ─── is_enabled ──────────────────────────────────────────────────────────
 
 
-def test_is_enabled_true_inside_repo(tmp_path: Path):
-    _init_repo(tmp_path)
-    assert git_bridge.is_enabled(repo_path=tmp_path) is True
+def test_is_enabled_true_inside_repo(repo: Path):
+    _init_repo(repo)
+    assert git_bridge.is_enabled(repo_path=repo) is True
 
 
 def test_is_enabled_false_outside_repo(tmp_path: Path):
@@ -72,15 +97,15 @@ def test_is_enabled_false_outside_repo(tmp_path: Path):
 
 
 def test_is_enabled_is_not_cached_across_owners(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    repo: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     """The probe runs in the owner's git cell, so the answer is per-owner.
 
     Caching it process-wide would let one owner's refusal (or one repository's
     absence) disable git for the next owner the daemon serves.
     """
-    _init_repo(tmp_path)
-    assert git_bridge.is_enabled(repo_path=tmp_path) is True
+    _init_repo(repo)
+    assert git_bridge.is_enabled(repo_path=repo) is True
     present = {"git": True}
     real_which = shutil.which
     monkeypatch.setattr(
@@ -88,9 +113,9 @@ def test_is_enabled_is_not_cached_across_owners(
         lambda name: real_which(name) if present.get(name, True) else None,
     )
     present["git"] = False
-    assert git_bridge.is_enabled(repo_path=tmp_path) is False
+    assert git_bridge.is_enabled(repo_path=repo) is False
     present["git"] = True
-    assert git_bridge.is_enabled(repo_path=tmp_path) is True
+    assert git_bridge.is_enabled(repo_path=repo) is True
 
 
 def test_is_enabled_false_when_git_missing(
@@ -110,46 +135,46 @@ def _seed_initial_commit(repo: Path) -> None:
     _run(["git", "commit", "-m", "seed", "--no-gpg-sign"], repo)
 
 
-def test_stage_and_commit_returns_sha(tmp_path: Path):
-    _init_repo(tmp_path)
-    _seed_initial_commit(tmp_path)
+def test_stage_and_commit_returns_sha(repo: Path):
+    _init_repo(repo)
+    _seed_initial_commit(repo)
 
-    f = tmp_path / "branches" / "my-branch.yaml"
+    f = repo / "branches" / "my-branch.yaml"
     f.parent.mkdir()
     f.write_text("name: my-branch\n", encoding="utf-8")
 
-    staged = git_bridge.stage(f, repo_path=tmp_path)
+    staged = git_bridge.stage(f, repo_path=repo)
     assert staged is True
 
-    result = git_bridge.commit("add my-branch", AUTHOR, repo_path=tmp_path)
+    result = git_bridge.commit("add my-branch", AUTHOR, repo_path=repo)
     assert result.ok, result.error
     assert len(result.sha) == 40  # full sha
 
     # Verify the commit really landed
-    log = _run(["git", "log", "-1", "--format=%s"], tmp_path).stdout.strip()
+    log = _run(["git", "log", "-1", "--format=%s"], repo).stdout.strip()
     assert log == "add my-branch"
 
 
-def test_commit_with_paths_arg_stages_and_commits(tmp_path: Path):
-    _init_repo(tmp_path)
-    _seed_initial_commit(tmp_path)
+def test_commit_with_paths_arg_stages_and_commits(repo: Path):
+    _init_repo(repo)
+    _seed_initial_commit(repo)
 
-    f = tmp_path / "goals" / "research-paper.yaml"
+    f = repo / "goals" / "research-paper.yaml"
     f.parent.mkdir()
     f.write_text("name: research-paper\n", encoding="utf-8")
 
     result = git_bridge.commit(
-        "add goal", AUTHOR, paths=[f], repo_path=tmp_path,
+        "add goal", AUTHOR, paths=[f], repo_path=repo,
     )
     assert result.ok, result.error
     assert result.sha
 
 
-def test_commit_returns_nothing_to_commit_on_clean_tree(tmp_path: Path):
-    _init_repo(tmp_path)
-    _seed_initial_commit(tmp_path)
+def test_commit_returns_nothing_to_commit_on_clean_tree(repo: Path):
+    _init_repo(repo)
+    _seed_initial_commit(repo)
 
-    result = git_bridge.commit("empty", AUTHOR, repo_path=tmp_path)
+    result = git_bridge.commit("empty", AUTHOR, repo_path=repo)
     assert result.ok is False
     assert "nothing to commit" in (result.error or result.message).lower()
 
@@ -172,21 +197,21 @@ def test_commit_no_op_when_git_disabled(tmp_path: Path):
 # ─── has_uncommitted_changes ─────────────────────────────────────────────
 
 
-def test_has_uncommitted_changes_detects_dirty_file(tmp_path: Path):
-    _init_repo(tmp_path)
-    _seed_initial_commit(tmp_path)
+def test_has_uncommitted_changes_detects_dirty_file(repo: Path):
+    _init_repo(repo)
+    _seed_initial_commit(repo)
 
-    target = tmp_path / "branches" / "b.yaml"
+    target = repo / "branches" / "b.yaml"
     target.parent.mkdir()
     target.write_text("v: 1\n", encoding="utf-8")
     _run(["git", "add", "b.yaml"], target.parent)
-    _run(["git", "commit", "-m", "add b", "--no-gpg-sign"], tmp_path)
+    _run(["git", "commit", "-m", "add b", "--no-gpg-sign"], repo)
 
     # Clean
-    assert git_bridge.has_uncommitted_changes(target, repo_path=tmp_path) is False
+    assert git_bridge.has_uncommitted_changes(target, repo_path=repo) is False
     # Dirty
     target.write_text("v: 2\n", encoding="utf-8")
-    assert git_bridge.has_uncommitted_changes(target, repo_path=tmp_path) is True
+    assert git_bridge.has_uncommitted_changes(target, repo_path=repo) is True
 
 
 def test_has_uncommitted_changes_false_when_git_disabled(tmp_path: Path):
@@ -215,8 +240,8 @@ def _make_clone_with_remote(tmp_path: Path) -> tuple[Path, Path]:
     return remote, local
 
 
-def test_push_round_trip(tmp_path: Path):
-    _, local = _make_clone_with_remote(tmp_path)
+def test_push_round_trip(center: Path):
+    _, local = _make_clone_with_remote(center)
     (local / "branches.yaml").write_text("a: 1\n", encoding="utf-8")
     result = git_bridge.commit(
         "add branches", AUTHOR, paths=[local / "branches.yaml"], repo_path=local,
@@ -227,11 +252,11 @@ def test_push_round_trip(tmp_path: Path):
     assert pushed.ok, pushed.error
 
 
-def test_pull_advances_head(tmp_path: Path):
-    remote, local_a = _make_clone_with_remote(tmp_path)
+def test_pull_advances_head(center: Path):
+    remote, local_a = _make_clone_with_remote(center)
     # Second clone to push an update from
-    local_b = tmp_path / "local_b"
-    _run(["git", "clone", str(remote), str(local_b)], tmp_path)
+    local_b = center / "local_b"
+    _run(["git", "clone", str(remote), str(local_b)], center)
     _run(["git", "config", "user.email", "ci@example.invalid"], local_b)
     _run(["git", "config", "user.name", "CI Bot"], local_b)
     _run(["git", "config", "commit.gpgsign", "false"], local_b)
@@ -246,10 +271,10 @@ def test_pull_advances_head(tmp_path: Path):
     assert (local_a / "new.yaml").exists()
 
 
-def test_pull_conflict_aborts_and_returns_file_list(tmp_path: Path):
-    remote, local_a = _make_clone_with_remote(tmp_path)
-    local_b = tmp_path / "local_b"
-    _run(["git", "clone", str(remote), str(local_b)], tmp_path)
+def test_pull_conflict_aborts_and_returns_file_list(center: Path):
+    remote, local_a = _make_clone_with_remote(center)
+    local_b = center / "local_b"
+    _run(["git", "clone", str(remote), str(local_b)], center)
     _run(["git", "config", "user.email", "ci@example.invalid"], local_b)
     _run(["git", "config", "user.name", "CI Bot"], local_b)
     _run(["git", "config", "commit.gpgsign", "false"], local_b)

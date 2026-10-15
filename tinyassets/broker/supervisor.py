@@ -70,6 +70,25 @@ class BrokerSupervisor:
         self._bootstrap_pidfd = os.pidfd_open(broker_pid)
 
     @classmethod
+    def from_boxhost(cls, data_root: Path, *, socket_path: Path, proof: str) -> BrokerSupervisor:
+        """Adopt the separately retired broker, from the root-authenticated host handoff."""
+        _protect_daemon()
+        if not isinstance(proof, str) or len(proof) < 32:
+            raise BrokerUidSplitRequired("invalid box-host lease")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+            channel.settimeout(_START_TIMEOUT_S)
+            channel.connect(str(socket_path))
+            identity = _peer(channel)
+        if identity[1:] != (1002, 1002):
+            raise BrokerUidSplitRequired("box broker has the wrong retired identity")
+        self = cls.__new__(cls)
+        self._root, self._pid = Path(data_root).resolve(), os.getpid()
+        self._proof, self._pair, self._socket = proof, None, Path(socket_path)
+        self._bootstrap_pid = identity[0]
+        self._bootstrap_pidfd = os.pidfd_open(identity[0]) if identity[0] else None
+        return self
+
+    @classmethod
     def from_bootstrap(cls, data_root: Path, *, broker_pid: int,
                        socket_path: Path, proof: str) -> BrokerSupervisor:
         """Adopt the broker forked before host authority was retired.
@@ -86,7 +105,8 @@ class BrokerSupervisor:
     def _same_process(self) -> None:
         if os.getpid() != self._pid:
             raise BrokerUidSplitRequired("broker owner state cannot be inherited by a child")
-        if select.select([self._bootstrap_pidfd], [], [], 0)[0]:
+        if (self._bootstrap_pidfd is not None
+                and select.select([self._bootstrap_pidfd], [], [], 0)[0]):
             raise BrokerUidSplitRequired("bootstrapped broker exited; container restart required")
 
     def _fence(self) -> None:

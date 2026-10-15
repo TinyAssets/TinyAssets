@@ -76,8 +76,18 @@ async def test_served_refusals(research, tool, arguments):
 async def test_regular_write_unaffected(research, monkeypatch):
     monkeypatch.setattr(engine_steering, "_session_key", lambda: "thread:owner")
     monkeypatch.setattr(universe_tools, "write_file", lambda *a, **kw: "written")
-    async with Client(server.mcp) as client:
-        result = await client.call_tool("write", {"path": "x", "content": "y"})
+    from tinyassets.agent_loop.served_chat import configured_box_provider
+    from tinyassets.control_plane.binding import bind_session, use_binding
+    from tinyassets.storage import data_dir
+
+    # A regular turn holds its owner's admitted box session on the center.
+    provider, limits = configured_box_provider()
+    binding = bind_session(provider=provider, limits=limits,
+                           universe_dir=data_dir() / "u-test", owner="owner",
+                           execution_id="research-regular-write")
+    with use_binding(binding):
+        async with Client(server.mcp) as client:
+            result = await client.call_tool("write", {"path": "x", "content": "y"})
     assert result.content[0].text == "written"
 
 
@@ -88,9 +98,9 @@ async def test_regular_write_unaffected(research, monkeypatch):
 ])
 def test_jail_refuses_before_runner(research, monkeypatch, tmp_path, op, args):
     def forbidden(*a, **kw):
-        pytest.fail("research must not enter the runner")
+        pytest.fail("research must not enter the owner box")
 
-    monkeypatch.setattr(universe_tools, "RUNNER", forbidden)
+    monkeypatch.setattr(universe_tools, "_box", forbidden)
     assert json.loads(op(tmp_path, *args, agent_id="main"))["error"] == "research_is_read_only"
 
 

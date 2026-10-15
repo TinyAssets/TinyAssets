@@ -306,41 +306,6 @@ def test_plain_graph_bridge_forwards_exact_universe_context(tmp_path):
     assert seen == [context]
 
 
-def test_cloud_automation_policy_cannot_escape_its_authority_owner(monkeypatch):
-    """MUTATION: remove the exact-owner bridge -> shared platform router fires."""
-    from langgraph.checkpoint.memory import InMemorySaver
-
-    from tinyassets.cloud_automation_continuation import (
-        _ClaimedCloudProviderSession,
-    )
-
-    calls: list[dict[str, Any]] = []
-
-    def owned_call(self, _prompt, _system="", **kwargs):
-        calls.append(kwargs)
-        return "cloud-authorized"
-
-    def platform_escape():
-        raise AssertionError("shared platform provider must not be called")
-
-    monkeypatch.setattr(_ClaimedCloudProviderSession, "__call__", owned_call)
-    monkeypatch.setattr(
-        "tinyassets.graph_compiler._get_shared_router", platform_escape,
-    )
-    owner = object.__new__(_ClaimedCloudProviderSession)
-    owner._receipt = SimpleNamespace(provider="claude-code")
-
-    compiled = compile_branch(_policy_branch(), provider_call=owner)
-    result = compiled.graph.compile(checkpointer=InMemorySaver()).invoke(
-        {"topic": "automation"},
-        config={"configurable": {"thread_id": "cloud-owner"}},
-    )
-
-    assert result["answer"] == "cloud-authorized"
-    assert len(calls) == 1
-    assert calls[0]["role"] == "writer"
-
-
 def _patch_run_branch_dependencies(monkeypatch, branch: Any) -> None:
     monkeypatch.setattr(
         "tinyassets.api.branches._resolve_branch_id",

@@ -289,10 +289,9 @@ def _source_code_problems(node_defs: Any) -> list[dict[str, Any]]:
     founder its PR-building branch needed an approval flow that does not
     exist).
 
-    Scope: the owner's own branches through ``run_graph``. The bid-market
-    executor (``executors/node_bid.py``) keeps its own approval gate because
-    a bid-referenced node is another universe's code -- that boundary is
-    cross-user and is not what this receipt describes."""
+    Scope: the owner's own branches through ``run_graph``. The node-bid
+    executor was removed with the bidding feature, so this receipt does not
+    describe a second code-exec path."""
     from tinyassets.graph_compiler import source_code_problems
 
     found: list[dict[str, Any]] = []
@@ -1016,8 +1015,9 @@ def _branch_dependents(
     """
     import sqlite3
 
-    from tinyassets import branch_versions, scheduler
+    from tinyassets import branch_versions
     from tinyassets.automations import AutomationStore
+    from tinyassets.control_plane import events as scheduler
     from tinyassets.daemon_server import list_branch_definitions
     from tinyassets.storage import db_path, webhook_hooks
 
@@ -1441,27 +1441,25 @@ def _ext_branch_validate(kwargs: dict[str, Any]) -> str:
     ]
     problems = _source_code_problems(source_dict.get("node_defs", []))
 
-    # sandbox-compat warning: list any requires_sandbox=True nodes when
-    # the host's bwrap probe says sandbox is unavailable. Non-fatal.
+    # sandbox-compat warning: list any requires_sandbox=True nodes when this
+    # process serves no owner box. Non-fatal.
     sandbox_warnings: list[str] = []
     try:
         from tinyassets.providers.base import get_sandbox_status
         sb = get_sandbox_status()
-        if not sb.get("bwrap_available"):
+        if not sb.get("box_available"):
             sandbox_nodes = [
                 nd.node_id
                 for nd in branch.node_defs
                 if getattr(nd, "requires_sandbox", False)
             ]
             if sandbox_nodes:
-                reason = sb.get("reason") or "bwrap unavailable"
+                reason = sb.get("reason") or "owner box unavailable"
                 sandbox_warnings.append(
                     f"This branch contains {len(sandbox_nodes)} node(s) that "
                     f"require a sandbox ({', '.join(sorted(sandbox_nodes))}) but "
-                    f"the host sandbox probe returned: {reason}. "
-                    f"These nodes will fail at runtime. Options: enable bwrap "
-                    f"on the host, or use a branch variant without "
-                    f"requires_sandbox=true nodes (design-only branch)."
+                    f"this process serves no owner box: {reason}. "
+                    f"These nodes will fail at runtime."
                 )
     except Exception:  # noqa: BLE001 — best-effort non-blocking warning
         pass

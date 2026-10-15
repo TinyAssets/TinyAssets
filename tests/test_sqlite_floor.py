@@ -38,18 +38,21 @@ def test_the_floor_is_the_wal_reset_fix():
 
 
 def test_the_entry_point_checks_before_the_server_loads():
-    """The container CMD is the PID1 launcher (deploy/role_launcher.py). Its
-    main() must assert the floor before universe_server is imported, so no
-    storage is opened by an older library."""
-    tree = ast.parse((REPO / "deploy" / "role_launcher.py").read_text(encoding="utf-8"))
+    """The marker selector execs the owner-box frontend. Its main() checks
+    SQLite before universe_server's main runs and opens storage."""
+    tree = ast.parse((REPO / "tinyassets" / "boxes" / "frontend.py").read_text(encoding="utf-8"))
     main = next(node for node in tree.body
                 if isinstance(node, ast.FunctionDef) and node.name == "main")
-    calls = [ast.unparse(stmt) for stmt in main.body]
-    floor = next(i for i, c in enumerate(calls) if c == "require_sqlite_floor()")
-    server = next(i for i, c in enumerate(calls) if "tinyassets.universe_server" in c)
+    calls = sorted((node.lineno, ast.unparse(node)) for node in ast.walk(main)
+                   if isinstance(node, ast.Call))
+    floor = next(line for line, call in calls if call == "require_sqlite_floor()")
+    server = next(line for line, call in calls if call == "serve()")
     assert floor < server
-    command = '["/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-launch.py"]'
+    assert "from tinyassets.universe_server import main as serve" in ast.unparse(main)
+    command = '["/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-box-entry.py"]'
     assert f"CMD {command}" in DOCKERFILE
+    selector = (REPO / "deploy" / "box_daemon_entry.py").read_text(encoding="utf-8")
+    assert '"-m", "tinyassets.boxes.frontend"' in selector
 
 
 def _arg(name: str) -> str:

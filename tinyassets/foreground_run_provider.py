@@ -739,8 +739,7 @@ class _ForegroundRunProviderSession:
             config = replace(config, request_budget=self._request_budget,
                              request_purpose="helper")
 
-        # Enforcement site (C), foreground half, at the call boundary — the
-        # mirror of the served lane's gate in `background_served_provider._call`.
+        # Enforcement site (C), at the call boundary.
         # `_admit()` alone is not enough here, for two independent reasons:
         #
         #  * the injected-stub branch immediately below dispatches to the
@@ -799,6 +798,7 @@ class _ForegroundRunProviderSession:
                 activity["agent_id"] if activity is not None else "main", prompt,
                 session.RunStep(
                     session=self, prompt_config=config, policy=policy, node=node,
+                    box_binding=session.current_binding(),
                     activity=activity, response_observer=response_observer,
                     metadata_observer=metadata_observer,
                 ),

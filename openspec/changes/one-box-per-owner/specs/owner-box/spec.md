@@ -6,14 +6,13 @@ own kernel boundary, behind `BoxProvider`, run by a box host service outside
 the daemon container. The agent loop, its tools, child sessions, resident
 processes, the browser and native CLIs packaged as external agents SHALL run
 inside the owner's box. Every command center of the owner SHALL be a
-directory inside that box. Credentials, owner policy, the control plane, the
-turn journal and platform stores SHALL stay outside every box. Owner-scoped
-work SHALL NOT run in any other sandbox or cell kind.
+directory inside that box. Owner-scoped work SHALL NOT run in any other sandbox or cell kind.
 
 #### Scenario: A turn and its tools run in the owner's box
 - **WHEN** an owner's session runs a turn that calls `bash`, `git` and the browser
 - **THEN** each of these runs as a process inside that owner's box
 - **AND** no `role_*` cell or per-path jail is started
+- **AND** credentials, owner policy, the control plane, the turn journal and platform stores remain outside every box
 
 #### Scenario: Owners never share a box
 - **WHEN** owner A's box tries to read, write or signal anything belonging to owner B
@@ -24,10 +23,12 @@ The box SHALL have no network interface and no credential, except a
 file-OAuth CLI token leased into its owner's box for one run. Its only
 channel out SHALL be one socket to the box host. The box's identity SHALL be
 taken from that channel, never from a request payload. Every request that
-leaves the box SHALL cross that channel to the broker's gate. This covers
-model calls, connector and `ta` calls, network connections, spend,
-child-session starts, and messages and notifications. The platform SHALL
+leaves the box SHALL cross that channel to the broker's gate. The platform SHALL
 reach box content only through `BoxProvider`, as untrusted input.
+
+#### Scenario: Every outbound action crosses the gate
+- **WHEN** a box makes model, connector or `ta` calls, network connections, spend, child-session starts, messages or notifications
+- **THEN** the action crosses the one channel and the broker gate
 
 #### Scenario: A box names another owner in a payload
 - **WHEN** a request from owner A's box carries owner B's account or connection id
@@ -53,15 +54,38 @@ authenticate every operation by owner, epoch, session and operation id.
 - **WHEN** an operation presents a handle minted for another owner or a stale epoch
 - **THEN** the box host refuses it before any effect
 
+### Requirement: Native CLI invocation identity survives transport retries
+Before native CLI dispatch, the control plane SHALL persist one invocation
+identity with its owner, command center, logical request and admitted custody
+digest. The box session and operation ID SHALL derive from that identity, not
+an attempt receipt. Until its private result is acknowledged, a retry SHALL
+inspect and stream the same operation, collect its private result, and settle
+custody before acknowledgement. It SHALL NOT launch a second CLI under a new
+operation ID. An unknown execution outcome SHALL remain held. A newer owner
+credential deposit SHALL not be overwritten by an old private result.
+
+#### Scenario: CLI result reply is lost
+- **WHEN** the host retains a private CLI result but its result RPC reply is lost
+- **THEN** retry uses the original session and operation ID to collect that result
+- **AND** the control plane acknowledges it after custody settlement, freeing its host pin
+- **AND** no second CLI process starts
+
+#### Scenario: Owner deposits new credentials before retry
+- **WHEN** a new owner deposit supersedes the custody used by a pinned CLI result
+- **THEN** retry discards and acknowledges the old result without changing the new deposit
+
 ### Requirement: The box keeps working with no device and no host online
 A box SHALL stay awake while any session, resident process or owner view is
 live, and SHALL suspend only after it has been idle. Closing every client
 SHALL NOT cancel a session. A daemon deploy SHALL NOT stop a box or its
 running loops. A box host restart SHALL checkpoint and then restore every
-awake box. When a checkpoint or restore fails, the box SHALL cold-boot, and
-its sessions SHALL resume from the turn journal, with operations whose
-outcome is unknown held, never replayed. Only the control plane SHALL wake a
+awake box. Only the control plane SHALL wake a
 box. No owner or founder machine SHALL be on any path.
+
+#### Scenario: Checkpoint or restore fails
+- **WHEN** a checkpoint or restore fails
+- **THEN** the box cold-boots and its sessions resume from the turn journal
+- **AND** operations whose outcome is unknown are held, never replayed
 
 #### Scenario: Two-hour task with every device off
 - **WHEN** the owner starts a multi-step task, closes every app and turns the phone off
@@ -99,3 +123,17 @@ then the owner's egress policy, then connection grants.
 #### Scenario: A non-owner asks for the view
 - **WHEN** a model-door, MCP or other-account caller requests a box view
 - **THEN** no view operation exists for it and nothing is streamed
+
+
+#### Scenario: A disconnected channel reconnects to its session
+- **WHEN** a daemon channel closes while an admitted session has running or queued work
+- **THEN** only that channel's handle is detached and the work continues
+- **AND** a new channel bound to the same admitted session can recover its operation status
+- **AND** detaching the old channel cannot revoke the new channel's handle
+
+#### Scenario: Restoring files cannot turn an operation into a replay
+- **WHEN** a quiesced paired owner-box snapshot is restored
+- **THEN** its root-private receipt journal is restored with the data member
+- **AND** epochs and generations advance beyond both the live and archived copies
+- **AND** every operation ID seen in either copy is retained as unknown, never replayed
+- **AND** differing identity, admission or deletion frontiers refuse the swap until reviewed forward recovery is available

@@ -19,6 +19,7 @@ def test_pre_round_activity_refusal_settles_without_writer_cleanup(agent, monkey
     turn = make_interactive_agent_turn(
         prompt="background job", system="system",
         config=agent.config, universe_context=agent.served.context)
+    turn.adapter = agent.adapter
     with pytest.raises(ProviderAuthorityHeldError, match="native yield"):
         asyncio.run(turn.run())
     row = agent.latest()
@@ -70,6 +71,7 @@ def test_cleanup_error_preserves_refusal_and_releases_runner_for_recovery(agent,
         turn = make_interactive_agent_turn(
             prompt="background job", system="system", config=agent.config,
             universe_context=agent.served.context)
+        turn.adapter = agent.adapter
         with pytest.raises(ProviderAuthorityHeldError) as raised:
             asyncio.run(turn.run())
         assert raised.value is refusal

@@ -81,9 +81,9 @@ beside `cloudflared` and a log shipper.
 | `tinyassets/graph_compiler.py` | Compiles a `BranchDefinition` into a LangGraph `StateGraph`. |
 | `tinyassets/runs.py`, `tinyassets/run_*` | Run storage, events, run files and inputs. |
 | `tinyassets/node_sandbox.py`, `tinyassets/sandbox/` | The sandboxed code node and sandbox detection. |
-| `tinyassets/scheduler.py`, `tinyassets/automations.py` | Event subscriptions, cron, user-owned automations. |
-| `tinyassets/agent_wakes.py`, `tinyassets/wake_conditions.py` | Saved agent follow-ups through `ta`, checked by the protected request continuation worker. |
-| `tinyassets/branch_tasks.py`, `tinyassets/branch_tasks_v2.py` | The file-locked branch task queue and its transactional successor. |
+| `tinyassets/control_plane/tick.py`, `tinyassets/control_plane/events.py`, `tinyassets/automations.py` | One owner tick, event subscriptions, cron and user-owned automations. |
+| `tinyassets/control_plane/agent_wakes.py`, `tinyassets/control_plane/continuations.py` | Saved agent follow-ups and protected request continuations on the owner tick. |
+| `tinyassets/branch_tasks_v2.py` | The transactional v2 request queue adapter. |
 | `tinyassets/workspace_*.py` | Workspace pool, provisioning, staging and git for workspace jobs. |
 | `tinyassets/effectors/`, `tinyassets/delivery_runtime.py` | External effects and their delivery. |
 
@@ -113,15 +113,14 @@ beside `cloudflared` and a log shipper.
 | `tinyassets/memory/`, `tinyassets/retrieval/`, `tinyassets/knowledge/` | Memory, retrieval and the knowledge graph. |
 | `tinyassets/wiki/`, `tinyassets/daemon_wiki.py` | Wiki pages and the curated OKF export. |
 | `tinyassets/auth/`, `tinyassets/principals.py` | WorkOS AuthKit sessions and principals. |
-| `tinyassets/payments/`, `tinyassets/bid/`, `tinyassets/treasury/` | Paid-market primitives, test currency only. |
+| `tinyassets/payments/`, `tinyassets/treasury/` | Paid-market primitives, test currency only. |
 
 ### Domains
 
-`domains/<name>/` registers through the `tinyassets.domains` entry-point group
-in `pyproject.toml`; `tinyassets/discovery.py` finds them. Two exist:
-`fantasy_daemon` (a LangGraph authoring domain) and `research_probe`.
-`fantasy_daemon/` at the root is its runner. `tinyassets/constraints/` is an
-ASP engine over `data/world_rules.lp`.
+`domains/<name>/` contains optional authoring packages discovered from files
+by `tinyassets/discovery.py`. The packaged `fantasy_daemon` and
+`research_probe` examples have no CLI entry points. `tinyassets/constraints/`
+is an ASP engine over `data/world_rules.lp`.
 
 ### Operations
 
@@ -152,22 +151,22 @@ of #4624 (broker credentials and browser sign-in) is S28.
 | B2 | The harness is pi.dev-modelled primitives (Dir 1-3) | four tools + `ta`, one model call (S1), one way to start an agent (S2), one loop (S3), one extension unit (S6), packages, a customizable interface | everything in the drifted rows below | drifted | the guards below | C1-C11 |
 | S1 | One model call (Dir 2, ADR-006/007, D6) | `model_call.call(model_ref, context, parent)` -> broker; receipt per hosted call; ADR-018 export-only stdlib runner under `tinyassets/okf/assets/agent.py.txt` has no hosted callers | MCP-sampling reviewer and one-provider authority remain; caller budget roots and the in-memory allocation path are removed | drifted | `check_shapes.py` S1, `test_broker_usage_ipc` | C3 |
 | S2 | One way to start an agent (Dir 2, ADR-014) | `control_plane/session.py` `start(agent_ref, input, parent)`: chat (and the wakes and owner answers that are chat), agent nodes, queued runs and `ta agent run` call it; it resolves the agent from its files once (C8) | the executors it drives are still two (`universe_intelligence._call_writer` for the served writer turn, `WorkflowAgentTurn` for run steps) with their own admission gates; the background served and cloud continuation authority paths remain live, and the shipped domain CLI (`fantasy_daemon` runner) still starts separately (C5 kept them for their live callers) | drifted | `test_spawn_entry` (spawn-entry = 1), `check_shapes.py` S2 | C3, C5, C7, C9 |
-| S3 | One loop (D6, ADR-012) | `agent_loop/` thin loop (1.5k) | native CLI loop `claude_provider` 1335; thin loop dark behind `TINYASSETS_AGENT_LOOP` | drifted | S3 old-path and line ceilings in `check_shapes.py` | C9 |
+| S3 | One loop (D6, ADR-012) | `agent_loop/` thin loop (1.5k), selected by admitted box binding | native CLI loop `claude_provider` 1335; owner-split still uses the engine-tool adapter | drifted | S3 old-path and line ceilings in `check_shapes.py` | C9 |
 | S4 | No provider-specific code (Dir 2, ADR-007) | connection primitives; vendors are data | 145 files name a vendor; three counted legacy cells remain: Claude provider, `FALLBACK_CHAINS`, `openai_device.py`; CLI installs in `Dockerfile` | drifted | `vendor-names` file ceiling in `check_shapes.py` | C3, C9 |
 | S5 | One agent definition (Dir 2, ADR-014) | `agents/<name>/` files, read by `agent_definition.py` (instructions, settings, identity) | none: the SQL agent store, interchange, templates, platform review, `harness_settings.py` and the `agent_runtime_manifest` kind were deleted by C8; `commons_catalog.py` keeps the published-system catalogue and the binding rows (serving provider, conversation design), neither an agent | converged | `check_shapes.py` S5, `test_one_agent_definition`, `test_agent_files` | C8 (done) |
 | S6 | One extension unit (Dir 2) | v2 activated revisions (`extension_manifest.py`) | v1 workspace executables (`ta_cli.py:54-105`); `api/extensions.py` 1108; 6 changes it superseded still open | drifted | `test_one_extension_unit` (move in) | C10 |
 | S7 | Four tools + `ta` (Dir 2) | `universe_tools.py`, `ta_cli.py` | second handle server `engine_mcp_server.py` 5031 (15 tools) | converged for the model; drifted behind it | `test_served_tool_guidance`, `test_converse_turn_cost` | C10 |
-| S8 | One box per owner (ADR-019, Dir 5) | `BoxProvider` (`boxes/`, 1.8k), attached once at admission | 33 `role_*` cells (7.9k), all added after ADR-012; `BoxProvider` has no production caller; `target-architecture` 0/12; 17 cell fixes, six (#4576-#4581) the day after the cutover | drifted | `test_universe_path_io_guard`; `role-cells` (planned) | C6 |
-| S9 | Control plane is the only always-on layer (ADR-012) | `control_plane/` (1.4k) | `scheduler.py` thread started unconditionally; `automations` 2651, `cloud_automation_continuation` 3027 (retired, still shipped), `dispatcher`, `producers/`, `branch_tasks.py` beside `branch_tasks_v2.py`; no wake handler registered; three wake/notify mechanisms (`agent_wakes`, `request_continuations`, control-plane wake); scheduler retired #4097, re-added #4276, #4590 | drifted | `test_control_plane_inventory` | C7 |
+| S8 | One box per owner (ADR-019, Dir 5) | `BoxProvider` (`boxes/`, 1.8k), attached once at admission | 33 `role_*` cells (7.9k), all added after ADR-012; `BoxProvider` has no production caller; `target-architecture` 0/12; 17 cell fixes, six (#4576-#4581) the day after the cutover | converged | `test_universe_path_io_guard`; `role-cells` (planned) | C6 |
+| S9 | Control plane is the only always-on layer (ADR-012) | `control_plane/` | One leased owner tick handles schedules, source events, automations, activities and protected wakes; the v1 scheduler, dispatcher, producers and continuation loops are removed | converged | `test_control_plane_inventory` | C7 |
 | S10 | Platform state outside boxes (ADR-012) | `storage/` stores | `daemon_server.py` 5261, 27 `CREATE TABLE` | drifted | `test_storage_registry(_complete)`, `test_owner_stores` | C6 |
 | S11 | Owner door complete, model door bounded (ADR-011) | `owner_door/`, `/app/api/*` | none | converged | `test_owner_door_import_boundary`, `test_app_reads_use_owner_door` | — |
 | S12 | Canonical public handles (ADR-013) | 7 handles in `universe_server.py` | none | converged | `mcp_public_canary.py --assert-handles`, `test_mcp_instruction_surfaces`, `host-paths` | C5 |
 | S13 | No platform LLM (ADR-006) | owner-bound calls only | platform helpers (`reflexion`, `raptor`, `agentic_search`, `extract_learning`) on `call_provider`; whether each carries owner authority is not checked | unverified | `test_platform_has_no_llm` (move in) | C3 |
 | S14 | Identity follows the account; private by default (ADR-016, ADR-010) | `_current_actor` raises without a subject; every creation path writes `private` | none | converged | `test_private_by_default` (move in) | — |
-| S15 | Cloud only, zero hosts (ADR-008, Dir 8) | the hosted cell | `fantasy_daemon/` runner and its `tinyassets/desktop/{dashboard,notifications,tray}.py` imports remain reachable through the shipped `tinyassets-cli` | drifted | `host-paths` | C5 |
+| S15 | Cloud only, zero hosts (ADR-008, Dir 8) | the hosted cell | The root fantasy runner and its CLI entry are removed; the served owner process is the start surface | converged | `host-paths` | C5 |
 | S16 | One app, thin shells (Dir 1, 7) | `onboarding/` at `/app`; `mobile/`, `desktop-app/` load it | none for chat; the tray host is S15 | converged | `test_onboarding_app` routes | — |
 | S17 | Knowledge is files (ADR-017); export (ADR-018) | OKF bundle canonical, indexes derived; one export action | `memory/`, `retrieval/`, `knowledge/`, `daemon_brain.py` (10.7k) canonical; bundle is seed-only; `okf_export.py` unwired | unbuilt | none yet | C12 |
-| S18 | Abilities are files, no pre-built features (Dir 3) | starter package, skills | fantasy and research_probe domains remain installed entry points; `api/market.py` goals/escrow, `bid/`, `treasury/` | drifted | `domain-entry-points` | C5, C10 |
+| S18 | Abilities are files, no pre-built features (Dir 3) | starter package, skills | fantasy and research_probe domains remain installed entry points; `api/market.py` goals/escrow, `treasury/` | drifted | `domain-entry-points` | C5, C10 |
 | S19 | Built artifacts are not committed | Hosted Claude Code plugin uses the repository folder; `.mcpb` stages its own runtime at pack time | none | converged | `check_mirror_parity.py` rejects tracked plugin runtime files | C4 |
 | S20 | One home per fact (ADR-005, Dir 6) | README Direction, AGENTS.md, this file, ADRs, `openspec/specs`, `openspec/changes`, `docs/concerns`, `docs/reference` | none; C1 removed retired document trees and root clutter, retaining cited incident repros | converged | `doc-homes`: no new file outside a home | C1 |
 | S21 | One queue (AGENTS.md) | `openspec/changes/`, reconciled into one tracking issue | none; C2 archived completed changes and folded superseded lanes | converged | `superseded-open`; `shape-reconcile.yml` | C2 |

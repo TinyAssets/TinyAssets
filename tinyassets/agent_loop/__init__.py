@@ -5,10 +5,9 @@ slice S7; change ``control-plane-agent-loop``.
 
 A turn that speaks a standard HTTP model protocol is a coroutine in the
 platform process (today the daemon; the execution owner of D11 once S8 lands),
-not a subprocess. Each turn still has its own event loop: one shared loop
-waits on a task-aware provider-assignment admission (that lock is keyed by
-thread and held across the model call) and journal writes off the loop; see
-the change's ``design.md``. The model call goes through the existing
+not a subprocess. Chat and workflow turns share the execution owner's loop,
+with task-aware provider-assignment admission and journal writes off-loop;
+see the change's ``design.md`` for remaining cutover gates. The model call goes through the existing
 credential broker (``ApiKeyHttpProvider`` -> ``resolve_exact_scoped_proxy``),
 so no model credential is ever in the loop. The loop never executes model output: it
 parses tool-call JSON and routes each call by NAME to exactly one place
@@ -22,7 +21,8 @@ parses tool-call JSON and routes each call by NAME to exactly one place
 * every other served tool keeps its existing engine route, where its own gates
   (owner rules, auto-review, effect consent) already sit.
 
-The per-round journal is the existing :class:`AgentTurnJournal`, unchanged.
+The per-round journal is the existing :class:`AgentTurnJournal`, with owner-lease
+generation fencing.
 An operation whose outcome is unknown is recorded as unknown and the turn
 HOLDS; nothing replays.
 """

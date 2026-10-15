@@ -1,10 +1,10 @@
 """Shape invariants for .github/workflows/linux-jail-proof.yml.
 
-The job exists because `required-tests` records every bwrap-gated jail proof
+The job exists because `required-tests` records every Linux-only box proof
 (`tests/test_delivery_node_rpc.py::test_real_linux_jail_transports_delivery_rpc`
-and the owner-cell seccomp profiles in `tests/test_jail_seccomp_profiles.py`) as
-SKIPPED (no bubblewrap on the hosted image), and a skip is invisible in a green
-run. Each assertion here pins a property whose loss would turn the job
+and the remote ``ta`` and extension proofs in `tests/test_remote_box_*.py`) as
+SKIPPED on the hosted image, and a skip is invisible in a green run. Each
+assertion here pins a property whose loss would turn the job
 back into decoration or widen it past "cloud-only test infrastructure":
 
   - it fires on PRs touching the jail/delivery slice and on manual dispatch,
@@ -138,20 +138,17 @@ def test_triggers_are_pull_request_paths_plus_dispatch_only():
     for required in (
         ".github/workflows/linux-jail-proof.yml",
         "scripts/ci_assert_junit_case.py",
-        "tinyassets/node_sandbox.py",
+        "tinyassets/boxes/**",
         "tests/test_delivery_node_rpc.py",
         "tinyassets/external_agents/runner.py",
-        "tests/test_jail_seccomp_profiles.py",
-        "tinyassets/providers/provider_jail.py",
         "tinyassets/providers/owned_process.py",
         "tinyassets/providers/router.py",
         "tinyassets/providers/claude_provider.py",
-        "tests/test_universe_tools_jail.py",
+        "tests/test_remote_box_ta.py",
+        "tests/test_remote_box_extensions.py",
         "tinyassets/universe_tools.py",
         "tinyassets/engine_mcp_server.py",
-        "tinyassets/jail_disk.py",
         "tinyassets/storage_accounting.py",
-        "tests/test_jail_disk.py",
         "tests/test_storage_accounting.py",
     ):
         assert required in paths, f"{required} must retrigger the proof"
@@ -236,8 +233,8 @@ def test_the_marker_is_registered_and_guards_every_jail_module():
     # whole file's marker would drop its cases without any red.
     assert files >= {
         "tests/test_delivery_node_rpc.py",
-        "tests/test_jail_seccomp_profiles.py",
-        "tests/test_universe_tools_jail.py",
+        "tests/test_remote_box_ta.py",
+        "tests/test_remote_box_extensions.py",
     }, files
 
 
@@ -323,22 +320,14 @@ def test_an_explicit_nodeid_still_matches_exactly(tmp_path):
     assert _assert.check(_junit(tmp_path, case), _NODEID)[0] == 1
 
 
-def test_every_marked_case_is_a_bwrap_gated_test():
+def test_every_marked_case_names_a_real_test():
+    """A marked case the file no longer defines would hide as "absent" noise."""
     for nodeid in _marked():
-        _assert_bwrap_gated(nodeid)
-
-
-def _assert_bwrap_gated(nodeid: str) -> None:
-    path, name = nodeid.split("::")[0], nodeid.split("::")[-1].split("[")[0]
-    src = (_REPO / path).read_text(encoding="utf-8")
-    assert re.search(rf"^\s*(async\s+)?def {re.escape(name)}\(", src, re.M), (
-        f"{name} must exist"
-    )
-    # The gate takes several forms (a decorator, a module pytestmark, a named
-    # skipif marker, a fixture that skips); what they share is the condition.
-    # A real_jail test in a file with no bwrap condition at all would run, and
-    # fail, everywhere without bwrap instead of skipping.
-    assert re.search(r'which\("bwrap"\)', src), f"{path} must skip {name} without bwrap"
+        path, name = nodeid.split("::")[0], nodeid.split("::")[-1].split("[")[0]
+        src = (_REPO / path).read_text(encoding="utf-8")
+        assert re.search(rf"^\s*(async\s+)?def {re.escape(name)}\(", src, re.M), (
+            f"{name} must exist"
+        )
 
 
 def test_the_jail_runs_through_the_shared_oracle_as_uid_1001():

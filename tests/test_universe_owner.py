@@ -83,7 +83,7 @@ class TestCreationRecordsTheOwner:
     def test_failed_create_retains_ownership_only_after_root_publication(
         self, base, signed_in, monkeypatch, published,
     ):
-        from tinyassets import role_center_admission
+        from tinyassets.boxes import lifecycle
 
         signed_in(A)
 
@@ -94,7 +94,7 @@ class TestCreationRecordsTheOwner:
             if published:
                 fault.setattr(us, "_normalize_escaped_text", _boom)
             else:
-                fault.setattr(role_center_admission, "admit_center", _boom)
+                fault.setattr(lifecycle, "admit_center", _boom)
             out = json.loads(us._action_create_universe(universe_id="u-doomed", text="x"))
 
         assert "error" in out, out

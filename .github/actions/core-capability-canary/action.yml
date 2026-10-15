@@ -1,8 +1,20 @@
 name: Core capability canary
-description: Observe production capabilities; alert without authorizing rollback.
+description: Observe production capabilities. Not-provisioned warns and does not roll back; deploy_fail_safe refuses a data-moving deploy when the canary is not provisioned. A failed platform row or a crashed probe fails the step, so deploy-prod rolls back; model-dependent rows stay advisory.
 inputs:
-  config:
-    description: Dedicated owner configuration
+  email:
+    description: Canary owner sign-in email
+    required: false
+  password:
+    description: Canary owner password
+    required: false
+  hmac-key:
+    description: Key of the canary signing service, to check its replies
+    required: false
+  service-url:
+    description: Canary signing service base URL (repo variable; not a secret)
+    required: false
+  home:
+    description: Dedicated canary home id (repo variable; sign-in refuses any other account)
     required: false
   health-token:
     description: Protected pulse token
@@ -25,14 +37,18 @@ runs:
     # Until the dedicated owner is provisioned the probe only reports
     # canary_not_provisioned, so skip the browser install (~1.5 runner-minutes a run).
     - name: Install browser
-      if: inputs.config != ''
+      if: inputs.email != ''
       shell: bash
       run: python -m playwright install --with-deps chromium
     - name: Probe all capabilities and daemon failure rates
       id: probe
       shell: bash
       env:
-        TINYASSETS_CORE_CANARY_CONFIG: ${{ inputs.config }}
+        TINYASSETS_CANARY_EMAIL: ${{ inputs.email }}
+        TINYASSETS_CANARY_PASSWORD: ${{ inputs.password }}
+        TINYASSETS_CANARY_HMAC_KEY: ${{ inputs.hmac-key }}
+        TINYASSETS_CANARY_SERVICE_URL: ${{ inputs.service-url }}
+        TINYASSETS_CANARY_UNIVERSE_ID: ${{ inputs.home }}
         TINYASSETS_WIKI_CANARY_TOKEN: ${{ inputs.health-token }}
       run: python scripts/core_capability_live.py --report core-capabilities-live.json
     - name: Reconcile incident and notification

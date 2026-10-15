@@ -49,6 +49,10 @@ from tinyassets.storage import platform_state_move as psm
 LAYOUT = 2
 #: Layouts this code understands. A newer one means "migrated past me".
 KNOWN_LAYOUTS = frozenset({1, 2})
+# This image serves only the owner-box layout (ADR-022). On owner-split data it
+# is a cutover candidate for deploy_fail_safe.sh's one-shot move and never serves.
+SUPPORTED_BOX_LAYOUTS = frozenset({"owner-box"})
+ACTIVE_BOX_LAYOUT = "owner-box"
 STABLE = "stable"
 MARKER = ".layout.json"
 LOCK = ".layout.lock"
@@ -173,6 +177,12 @@ def _validated(base: Path, document: dict[str, Any]) -> dict[str, Any]:
             f"{sorted(KNOWN_LAYOUTS)}. Nothing was opened; run the image built for "
             "that layout."
         )
+    box_layout = document.get("box_layout", "owner-split")
+    if box_layout != ACTIVE_BOX_LAYOUT:
+        raise LayoutRefused(
+            f"{marker_path(base)} says box_layout={box_layout!r}; this image serves "
+            f"only {ACTIVE_BOX_LAYOUT!r}. Nothing was opened; use the image for that box layout."
+        )
     return document
 
 
@@ -180,7 +190,10 @@ def _mark_move(base: Path, state: str) -> None:
     """Record a one-way move's state in the marker, durably, before it changes
     anything. A crash between the two writes leaves ``migrating``, which the
     next admission sees and resumes from."""
-    document = read_marker(base) or {"layout": LAYOUT, "state": STABLE}
+    # A root this image initialises is an owner-box root: the image serves no
+    # other. Existing data keeps its own box layout (absent means owner-split).
+    document = read_marker(base) or {"layout": LAYOUT, "state": STABLE,
+                                     "box_layout": ACTIVE_BOX_LAYOUT}
     moves = dict(document.get(psm.MOVES) or {})
     moves[psm.CONSENTS] = state
     _write_atomically(marker_path(base), {

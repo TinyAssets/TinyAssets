@@ -78,9 +78,9 @@ def test_only_printenv_takes_an_operand_and_it_is_a_validated_name():
     assert 'isupper((unsigned char)s[0]) || s[0] == \'_\'' in text
 
 
-def test_env_summary_is_in_wrapper_and_matches_only_the_four_flag_families():
+def test_env_summary_is_in_wrapper_and_matches_only_the_flag_families():
     text = TA_OP_C.read_text(encoding="utf-8")
-    assert 'SUMMARY_PATTERNS[] = {"AUTO_SHIP", "OLLAMA", "PIN_WRITER", "GOAL_POOL"}' in text
+    assert 'SUMMARY_PATTERNS[] = {"AUTO_SHIP", "OLLAMA", "PIN_WRITER"}' in text
     assert load_modes()["env-summary"]["kind"] == "builtin", (
         "env-summary must be an in-wrapper post-drop print, never an exec of a "
         "`printenv | grep | sort` pipeline"

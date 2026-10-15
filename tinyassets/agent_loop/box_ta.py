@@ -144,10 +144,10 @@ class TurnBridge:
     """One live turn. Receipts survive this object and the platform process."""
 
     def __init__(self, *, owner, center, turn, handle, database: Path, dispatch,
-                 deliver=None):
+                 deliver=None, session_id=None):
         if not all(isinstance(x, str) and x for x in (owner, center, turn)):
             raise ValueError("ta requires owner, center and turn")
-        expected = (owner, center, turn)
+        expected = (owner, center, turn if session_id is None else session_id)
         actual = (getattr(handle, "account_id", None),
                   getattr(handle, "command_center_id", None),
                   getattr(handle, "turn_id", None))

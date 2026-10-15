@@ -24,7 +24,7 @@ whose next step is *"the founder logs into Cloudflare."*
 
 | One-time core-canary setup (2026-10-10) | Founder-only action |
 |---|---|
-| Dedicated synthetic owner | Create a separate owner with normal password sign-in, a connected model, and a bounded HTTP connection whose POST endpoint returns `hmac`: lowercase hex HMAC-SHA256 of the submitted UTF-8 `nonce`, using a dedicated random key the model never receives. Install a private code branch taking `nonce` and returning it as `echo`. Route this owner's synthetic patch requests to an intake that records them without creating production issues. Set GitHub secret `TINYASSETS_CORE_CANARY_CONFIG` to JSON containing `email`, `password`, `universe_id`, `connection_id`, `service_path`, `service_hmac_key`, `intake_receiver_id`, and `branch_id`. Reuse the existing health-canary and Pushover secrets. No founder/user data belongs in this account. Missing setup opens a canary-not-provisioned warning/issue; it never blocks or rolls back a deploy. |
+| Dedicated synthetic owner | Done by the founder: a separate owner with normal password sign-in and a connected model source offering free (`:free`) models, plus GitHub secrets `TINYASSETS_CANARY_EMAIL`, `TINYASSETS_CANARY_PASSWORD` and `TINYASSETS_CANARY_HMAC_KEY` (the key of the canary signing service, POST `/sign` `{nonce}` -> `{hmac}`). Remaining: (1) move the three canary secrets into the main-only `production` environment (`copy-secrets-to-production.yml` lists them) and delete the repo-level copies, so no branch run can read them; (2) set repo variable `TINYASSETS_CANARY_UNIVERSE_ID` to the canary's home id (sign-in refuses any other account, so wrong credentials never repair a real owner); (3) set repo variable `TINYASSETS_CANARY_SERVICE_URL` to that service's https base URL (needed only until the canary has created its `canary-hmac` connection). Everything else self-provisions (`scripts/core_canary_provision.py`): `deploy-prod` signs in before any host change and creates or repairs the free default model, the `canary-hmac` connection and the private `canary-echo` branch. The canary never touches the real patch intake: its approval row grants nothing, and the patch row is advisory until a record-only door exists. A canary that cannot sign in or repair itself is a loud warning and never a rollback: a deploy that does not move data continues, and a deploy that would move data refuses before the move. Only a canary that was ready before the deploy can roll it back. No founder/user data belongs in this account. |
 
 ## Isolation production refusal acceptance (2026-10-10)
 
@@ -938,12 +938,6 @@ Round-3 credential-snapshot filesystem fixes verified; **no merge, no deploy** w
 *Depends on:* exact-head dual-family review; POSIX/production Codex integration.
 *Owner artifacts:* `openspec/changes/archive/2026-10-06-byo-llm-connect-flow/`,
 `openspec/changes/archive/2026-08-26-constrain-set-engine-provider-authority/`.
-
-### Activate hosted-preview publication
-
-`activate-hosted-preview-publication` — a no-prod account plus a fixed Worker; inert host
-alias/version; Access anon-deny and reviewer-load proof; then a restricted GitHub environment.
-*Where:* Cloudflare + GitHub environment.
 
 ---
 

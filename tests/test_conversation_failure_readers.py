@@ -141,10 +141,12 @@ def test_shared_context_keeps_platform_in_untrusted_memory_not_system_prompt(tmp
     assert "original request" not in system and "sign-in problem" not in system
 
 
-def test_account_deletion_removes_failure_bytes_and_preserves_other_user(tmp_path):
+def test_account_deletion_removes_failure_bytes_and_preserves_other_user(tmp_path, monkeypatch):
     from tests.test_account_deletion import HOME_A, HOME_B, A, B, _seed_user
     from tinyassets.account_deletion import delete_account
 
+    # The owner box that deletion destroys is admitted on the data root.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     a = _seed_user(tmp_path, A, HOME_A)
     b = _seed_user(tmp_path, B, HOME_B)
     assert store.record_failure(a, f"principal:{A}", "A failed request", "unknown")

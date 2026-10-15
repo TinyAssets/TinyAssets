@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Thin-loop turns call the model only through the broker
-When the thin loop is selected, a served turn on an HTTP model protocol SHALL
+A served turn on an HTTP model protocol SHALL
 call the model only through the credential broker
 (`resolve_exact_scoped_proxy`). No model credential SHALL be held by the loop
 or passed to the box, and the loop SHALL NOT execute model output: it SHALL
@@ -15,20 +15,20 @@ only route parsed tool calls by name.
 
 ### Requirement: Box tools are forwarded to the turn's bound box by op_id
 The tools `read`, `write`, `edit` and `bash` SHALL execute in the turn's
-command-center box through the `BoxProvider` contract, on a handle bound once
-at turn start for the turn's owner, command center and turn, and never looked
+command-center box through the `BoxProvider` contract, on the handle bound once
+at session admission for the owner and command center, and never looked
 up per call. Each call SHALL carry an `op_id` derived from its journal
-position. A lost reply SHALL be resolved only by asking again with the same
-`op_id`; an outcome still unresolved, including a timed-out execution whose
-end the box does not confirm, SHALL be recorded as unknown, the turn SHALL
-hold, and the operation SHALL NOT be re-issued. Writes through the box tools
-SHALL be ordered, so that an `edit` refuses rather than overwrites when another
-write through the box tools changed the file after the edit read it.
+position. A lost reply SHALL be resolved only with the same `op_id`.
 
 #### Scenario: a lost reply runs once
 - **WHEN** the reply to a box tool's `start_exec` is lost
 - **THEN** the loop asks again with the same `op_id` and the box runs the
   command once
+
+### Requirement: Unresolved box operations hold the turn
+An unresolved outcome, including a timed-out execution whose end the box does
+not confirm, SHALL be recorded as unknown. The turn SHALL hold and SHALL NOT
+re-issue that operation.
 
 #### Scenario: an unknown outcome holds the turn
 - **WHEN** a box tool's outcome cannot be resolved
@@ -36,7 +36,7 @@ write through the box tools changed the file after the edit read it.
   `held_tool_unknown`, and no further inference or tool call is made
 
 #### Scenario: a granted box tool with no box is refused
-- **WHEN** the thin loop is selected, a turn is granted a box tool and no box
+- **WHEN** a turn is granted a box tool and no admitted session box
   provider is configured
 - **THEN** the turn is refused before its first inference and no tool runs
   anywhere else
@@ -61,15 +61,45 @@ and SHALL take no parameter naming an owner or command center.
 ### Requirement: Other served tools keep their engine route and gates
 Every served tool other than the box tools and the owner reads SHALL keep its
 existing engine route, so the owner's rules and the auto-review continue to
-gate consequential actions where they are enforced today. With the thin loop
-not selected, every turn SHALL behave exactly as before this change.
+gate consequential actions where they are enforced today.
 
-#### Scenario: switch off is today's path
-- **WHEN** `TINYASSETS_AGENT_LOOP` is unset
-- **THEN** the four tools are served by the engine route and no box is bound
+#### Scenario: an engine tool retains its effect gate
+- **WHEN** a turn calls a consequential engine tool
+- **THEN** its existing owner rules and auto-review gates still apply
+
+### Requirement: Session authority precedes owner file access
+The admitted session SHALL bind its owner, center and stable execution identity
+before reading agent files, refuse mixed generations, and pass that binding to
+child work. A client disconnect SHALL NOT end the admitted box session.
+
+#### Scenario: a session is admitted before owner files are loaded
+- **WHEN** an authenticated owner turn or run starts an agent
+- **THEN** the session binds its owner, center and stable send/run identity before
+  reading agent files through that provider, refuses mixed file generations, and
+  carries the same binding into tools and child executor contexts
+
+#### Scenario: disconnect is not terminal cancellation
+- **WHEN** a client disconnects while its admitted session is running
+- **THEN** its work remains owned by the control plane and reconnect uses the same
+  admitted identity; only explicit terminal cancellation ends the box session
+
+### Requirement: Box tool writes are ordered
+Writes through box tools SHALL be ordered. An edit SHALL refuse if another box
+tool write changed the file after the edit read it.
 
 #### Scenario: two edits never silently lose one
 - **WHEN** several edits of one file run concurrently, each having read the
   same bytes
 - **THEN** every edit that reports success is present in the final file, and
   every other edit reports that the file changed
+
+### Requirement: Adopted orphan turns remain recovery-only
+The journal SHALL fence an orphan turn into the successor owner generation
+before settlement and persist its prior generation as recovery evidence. Only
+startup reconciliation SHALL mutate an adopted row, including after a crash
+between adoption and settlement. A normal caller SHALL be refused even if it
+holds the successor lease or repeats a terminal transition.
+
+#### Scenario: a successor cannot reuse a settled turn
+- **WHEN** startup reconciliation adopts and settles an earlier generation's turn
+- **THEN** a later ordinary mutation of that turn is refused by the journal

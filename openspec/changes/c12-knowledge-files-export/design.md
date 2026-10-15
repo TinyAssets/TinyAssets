@@ -300,11 +300,15 @@ placement fencing and authenticated box destruction handle in-flight writes.
 ## Current migration ownership input
 
 Project IDs are opaque caller inputs; project_memory.updated_by is the writing
-actor, not an ownership relation. A cutover needs a verified project-to-owner
-and command-center mapping. NULL legacy knowledge scopes likewise need explicit
-resolution under the backup snapshot. Neither is inferred from the last editor,
-current session, or an arbitrary first owner. Preparing adapters and restore
-verification does not authorize a production migration with unresolved scopes.
+actor, not an ownership relation. The one-pass C6 box move proves an admitted
+center's physical source tree belongs to one owner before C12 snapshots its
+SQLite and vector stores. That tree is the migration's center-to-owner evidence
+for opaque project IDs and NULL knowledge scopes. A host-wide source without
+that physical binding is refused and reported, never assigned to the first
+owner. A scoped universe that contradicts its center tree is also refused.
+Each center commits its complete records before C6 publishes the one shared
+owner-box layout marker; a failed move keeps the marker unstable and requires
+the paired pre-migration backup restore.
 
 ## Canonical source adapters and offline restore
 

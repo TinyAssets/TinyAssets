@@ -231,13 +231,14 @@ def render_app_html(build: str | None = None) -> tuple[str, str]:
         credential_requests_source,
         module_url,
         recovery_source,
+        shell_source,
     )
 
     nonce = secrets.token_urlsafe(16)
     cfg = app_config() if build is None else app_config(build=build)
     blob = json.dumps(cfg).replace("<", "\\u003c").replace("\u2028", "").replace("\u2029", "")
     html = (
-        _HTML_PATH.read_text("utf-8")
+        shell_source(_HTML_PATH)
         .replace("__TA_APP_RECOVERY__", recovery_source())
         .replace("__TA_CHAT_RENDER__", chat_renderer_source())
         .replace("__TA_MERMAID_URL__", module_url("mermaid_vendor.js"))
@@ -2083,91 +2084,62 @@ async def _handle_account_delete(request: Any) -> Any:
     return response
 
 
+def _billing_surface(request: Any):
+    """The surface the /app wrapper declares. Missing means web.
+
+    Android (and the iOS shell, which shares its purchase rule) sends
+    ``surface=android``. A name this action does not know is refused rather
+    than treated as web, so a typo cannot open a purchase the policy forbids.
+    """
+    from tinyassets.billing.plan_action import UnknownSurface, parse_surface
+
+    params = getattr(request, "query_params", None)
+    raw = ""
+    if params is not None:
+        try:
+            raw = str(params.get("surface") or "")
+        except Exception:  # noqa: BLE001 — a broken query map is "no surface"
+            raw = ""
+    try:
+        return parse_surface(raw)
+    except UnknownSurface:
+        return None
+
+
 async def _handle_billing_status(request: Any) -> Any:
-    """Current tier + usage for the signed-in user's home universe."""
+    """Current plan for the signed-in user, via the shared plan action."""
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import JSONResponse, PlainTextResponse
 
-    from tinyassets.auth.middleware import current_identity, identity_context
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.billing.plan_action import account_plan
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
     denied = _app_identity_required()
     if denied is not None:
         return denied
+    surface = _billing_surface(request)
+    if surface is None:
+        return JSONResponse({"error": "unknown_surface"}, status_code=400)
     identity = current_identity()
 
     def _read() -> dict[str, Any]:
-        from tinyassets.api.helpers import _universe_dir
-        from tinyassets.billing import billing_enabled
-        from tinyassets.storage.subscription_state import TIER_FREE, get_plan
-
-        with identity_context(identity):
-            home = _read_home(identity)
-            if not home:
-                return {"tier": TIER_FREE, "ends_at": None,
-                        "reason": "no_home_universe"}
-            # Tier and, if it is ending, when. No Stripe round-trip: `ends_at` is
-            # persisted by the webhook, so this stays a local read even though it is
-            # polled. Seats are enforced (`universe_seats`); storage is not yet, so
-            # it is not reported as a limit. `upgrade_url` is None on the top tier,
-            # which is what the app's `?upgrade=1` entry reads.
-            plan = get_plan(_universe_dir(home))
-            from tinyassets.usage_policy import limits_for, upgrade_url
-
-            limits = limits_for(plan["tier"])
-            return {
-                "tier": plan["tier"],
-                "ends_at": plan["ends_at"],
-                "billing_enabled": billing_enabled(),
-                "enforced": ["seats"],
-                "seats": limits.seats,
-                "interactive_reserve": limits.interactive_reserve,
-                "upgrade_url": upgrade_url(plan["tier"]),
-            }
+        return account_plan(identity, surface).as_dict()
 
     return JSONResponse(
         await run_in_threadpool(_read), headers={"Cache-Control": "no-store"}
     )
 
 
-#: Where a checkout is allowed to send the user back to. Hard Rule 11 names
-#: ``https://tinyassets.io`` as the only canonical public endpoint.
-_CANONICAL_ORIGIN = "https://tinyassets.io"
-
-
 def _checkout_return_origin(request: Any) -> str:
-    """The origin to build Stripe's success/cancel URLs from.
+    """Web checkout return origin. The allowlist lives on the plan action."""
+    from tinyassets.billing.plan_action import allowed_return_origin
 
-    Only the canonical public origin or the configured public resource is honoured.
-    Everything else gets the canonical origin, because these URLs leave our control
-    the moment Stripe has them.
-
-    The request's own ``Host`` is deliberately NOT trusted. Nothing in this app
-    enforces an allowed-hosts list, so a caller can send ``Host: attacker.example``
-    with a matching ``Origin`` and have it echoed straight back -- an allowlist that
-    accepts whatever the client claims to be is not an allowlist (Codex, 2026-08-28).
-    A deployment on another hostname configures ``resource`` rather than relying on
-    the header.
-
-    Scheme is compared too. Matching on host alone accepted ``http://tinyassets.io``
-    for an origin that is only ever served over HTTPS.
-    """
-    origin = str(request.headers.get("origin", "")).strip().rstrip("/").lower()
-    if not origin:
-        return _CANONICAL_ORIGIN
-    allowed = {_CANONICAL_ORIGIN}
-    resource = str(app_config().get("resource") or "").strip().lower()
-    if resource:
-        # urlsplit raises on a malformed authority (`https://[` -> Invalid IPv6 URL),
-        # and an unhandled ValueError here is a 500 on a billing route.
-        try:
-            parts = urlsplit(resource)
-            if parts.scheme in ("https", "http") and parts.netloc:
-                allowed.add(f"{parts.scheme}://{parts.netloc}")
-        except ValueError:
-            pass
-    return origin if origin in allowed else _CANONICAL_ORIGIN
+    return allowed_return_origin(
+        str(request.headers.get("origin", "")),
+        configured_resource=str(app_config().get("resource") or ""),
+    )
 
 
 #: HTTP status for each checkout outcome. Explicit, because the previous rule --
@@ -2187,6 +2159,8 @@ _CHECKOUT_STATUS = {
     "already_subscribed": 409,
     "checkout_already_in_progress": 409,
     "no_home_universe": 409,
+    # This surface's purchase policy is off (Android). Not an outage.
+    "unavailable_in_app": 403,
     # Genuinely us: billing is unconfigured or the processor is unreachable.
     "billing_unavailable": 503,
 }
@@ -2202,142 +2176,39 @@ def _checkout_status(out: dict[str, Any]) -> int:
 
 
 async def _handle_billing_checkout(request: Any) -> Any:
-    """Start a subscription; returns the hosted Stripe checkout URL."""
+    """Start a subscription via the shared plan action.
+
+    Auth stays here. The action owns the lease, the return URL, and the
+    Android refusal. The JSON shape is unchanged: a URL, or a classified error.
+    """
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import JSONResponse, PlainTextResponse
 
-    from tinyassets.auth.middleware import current_identity, identity_context
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.billing.plan_action import account_plan
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
     denied = _app_identity_required()
     if denied is not None:
         return denied
+    surface = _billing_surface(request)
+    if surface is None:
+        return JSONResponse({"error": "unknown_surface"}, status_code=400)
     identity = current_identity()
-    # The return URLs are built from this, so it is not free-form input. An
-    # unvalidated Origin header meant a non-browser caller could point its own
-    # checkout's success and cancel redirects at any host it liked (Codex,
-    # 2026-08-28). Accept only an origin this app actually serves; anything else
-    # falls back to the canonical public URL rather than being echoed.
-    origin = _checkout_return_origin(request)
+    # Raw Origin. The action allowlists it for web and ignores it otherwise,
+    # so an API or agent caller cannot aim Stripe's return URLs at another host.
+    requested_origin = str(request.headers.get("origin", ""))
+    configured_resource = str(app_config().get("resource") or "")
 
     def _start() -> dict[str, Any]:
-        import time as _t
-        import uuid as _uuid
-
-        from tinyassets.api.helpers import _universe_dir
-        from tinyassets.billing import BillingUnavailable, create_checkout_session
-        from tinyassets.billing.stripe_adapter import (
-            AlreadySubscribed,
-            BillingAmbiguous,
-            checkout_params,
-            key_is_live,
-        )
-        from tinyassets.storage.subscription_state import (
-            CHECKOUT_SESSION_SECONDS,
-            CHECKOUT_WINDOW_SECONDS,
-            begin_checkout_attempt,
-            current_checkout_attempt,
-            record_checkout_session,
-            settle_checkout_attempt,
-        )
-
-        with identity_context(identity):
-            home = _read_home(identity)
-            if not home:
-                return {"error": "no_home_universe"}
-            universe_dir = _universe_dir(home)
-            now = _t.time()
-            mode = "live" if key_is_live() else "test"
-
-            existing = current_checkout_attempt(universe_dir, now=now)
-            if existing is not None and existing.get("__corrupt__"):
-                # Unreadable, and whatever it was may still be payable. Refusing is
-                # the only safe answer; the lease expires on its own.
-                return {"error": "checkout_already_in_progress"}
-
-            if existing is not None and existing.get("mode") != mode:
-                # A test-mode attempt must never be resumed against a live key, and
-                # vice versa. Settle it and start clean rather than hand back a URL
-                # from the wrong Stripe account.
-                settle_checkout_attempt(
-                    universe_dir, attempt_id=str(existing.get("attempt_id") or "")
-                )
-                existing = None
-
-            if existing is not None and existing.get("url"):
-                # A session is already open for this universe. Send the user BACK to
-                # it rather than refusing: the URL stays valid while the session is
-                # active, so a second click is just the same checkout again. Refusing
-                # here is what locked an abandoned checkout out for the whole lease.
-                from tinyassets.observability import emit_checkout_attempt
-
-                emit_checkout_attempt(str(existing.get("attempt_id") or ""))
-                return {"url": str(existing["url"]), "resumed": True}
-
-            if existing is not None:
-                # A previous call died between taking the lease and recording Stripe's
-                # answer. RESUME it: same attempt id, same frozen params, therefore the
-                # same idempotency key, so Stripe replays the session it already made
-                # instead of creating a second one.
-                attempt = existing
-            else:
-                try:
-                    params = checkout_params(
-                        universe_id=home,
-                        success_url=origin + "/app?subscribed=1",
-                        cancel_url=origin + "/app?subscribed=0",
-                        expires_at=int(now + CHECKOUT_SESSION_SECONDS),
-                    )
-                except AlreadySubscribed:
-                    return {"error": "already_subscribed"}
-                except BillingUnavailable as exc:
-                    return {"error": "billing_unavailable", "detail": str(exc)}
-                attempt = begin_checkout_attempt(
-                    universe_dir,
-                    now=now,
-                    attempt_id=_uuid.uuid4().hex,
-                    mode=mode,
-                    params=params,
-                    lease_seconds=CHECKOUT_WINDOW_SECONDS,
-                )
-                if attempt is None:
-                    # Either a concurrent click won, or a pre-lease claim is still
-                    # inside its original window.
-                    return {"error": "checkout_already_in_progress"}
-
-            attempt_id = str(attempt["attempt_id"])
-            from tinyassets.observability import emit_checkout_attempt
-
-            emit_checkout_attempt(attempt_id)
-            try:
-                out = create_checkout_session(
-                    universe_id=home,
-                    attempt_id=attempt_id,
-                    params=attempt["params"],
-                )
-            except AlreadySubscribed:
-                settle_checkout_attempt(universe_dir, attempt_id=attempt_id)
-                # Not an error state for the user - they are already paying.
-                return {"error": "already_subscribed"}
-            except BillingAmbiguous as exc:
-                # We do not know whether Stripe made a session. KEEP the lease: a
-                # retry reuses this attempt and its idempotency key, so Stripe replays
-                # rather than creating a second payable session. Releasing here is the
-                # lost-response path that produced two subscriptions.
-                return {"error": "billing_unavailable", "detail": str(exc)}
-            except BillingUnavailable as exc:
-                # Stripe answered, so no session exists. Safe to release, and a
-                # misconfiguration must not lock the universe out for the lease.
-                settle_checkout_attempt(universe_dir, attempt_id=attempt_id)
-                return {"error": "billing_unavailable", "detail": str(exc)}
-            record_checkout_session(
-                universe_dir,
-                attempt_id=attempt_id,
-                session_id=out["id"],
-                url=out["url"],
-            )
-            return out
+        return account_plan(
+            identity,
+            surface,
+            intent="checkout",
+            requested_origin=requested_origin,
+            configured_resource=configured_resource,
+        ).checkout_body()
 
     out = await run_in_threadpool(_start)
     return JSONResponse(
@@ -2541,7 +2412,6 @@ def onboarding_routes() -> list[Any]:
     from tinyassets.onboarding import approval_handoff, native_sign_in
     from tinyassets.onboarding.api_keys import handle as handle_api_keys
     from tinyassets.onboarding.app_modules import handle_app_module
-    from tinyassets.onboarding.browser_login import handle as handle_browser_login
     from tinyassets.onboarding.connections import handle_connections
     from tinyassets.onboarding.file_upload import handle_file_upload
     from tinyassets.onboarding.inline_requests import handle_approval
@@ -2576,7 +2446,6 @@ def onboarding_routes() -> list[Any]:
         Route("/app/owner-sign-in", owner_sign_in, methods=["GET"]),
         Route("/app/owner-sign-in/complete", owner_sign_in_complete, methods=["POST"]),
         Route("/app/approvals/{operation}", handle_approval, methods=["POST"]),
-        Route("/app/browser-login", handle_browser_login, methods=["POST"]),
         Route("/app/approval-handoff", approval_handoff.handle, methods=["POST"]),
         Route("/app/approval-handoff/{ref}", approval_handoff.launch, methods=["GET"]),
         Route("/app/outside-clients", handle_outside_clients, methods=["POST"]),

@@ -54,7 +54,9 @@ def test_the_app_greets_a_new_commander_and_switches_command_centers():
 
 def test_the_app_script_copy_says_command_center():
     """Strings the app's script renders (status lines, errors, labels)."""
-    page = APP.read_text(encoding="utf-8")
+    from tinyassets.onboarding.app_modules import shell_source
+
+    page = shell_source(APP)
     scripts = " ".join(re.findall(r"<script\b[^>]*>(.*?)</script>", page, flags=re.S))
     literals = re.findall(r'"((?:[^"\\\n]|\\.)*\s(?:[^"\\\n]|\\.)*)"', scripts)
     # A span with code punctuation is the gap BETWEEN two literals, not one.

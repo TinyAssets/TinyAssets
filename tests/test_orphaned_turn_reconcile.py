@@ -172,10 +172,56 @@ def test_the_successor_takes_a_higher_generation_and_settles_only_older_rows(jou
     old = _killed_native_turn(journal)
     _restart(journal)
     assert [r["turn_id"] for r in _reconcile(journal)] == [old.turn_id]
-    mine = begin_native(journal, new(journal)).snapshot
+    from tinyassets.storage.agent_turn_journal import AgentTurnJournal
+
+    successor = AgentTurnJournal(journal._ledger.base_path)
+    with pytest.raises(owner_lease.LeaseLost):
+        successor.finish_native(
+            "owner", "home", old.turn_id, expected_generation=old.generation,
+            ordinal=len(old.rounds), terminal=NativeTerminal("indeterminate"),
+        )
+    mine = begin_native(successor, new(successor)).snapshot
     assert _reconcile(journal) == []
     assert journal.get("owner", "home", mine.turn_id).state == "native_started"
     assert _working(journal)["turn_id"] == mine.turn_id
+
+
+def test_recovery_rejects_changed_evidence_and_resumes_after_adoption(journal):
+    """A crash between fencing and settlement still leaves a settleable row."""
+    from tinyassets.storage import agent_turn_runner
+    from tinyassets.storage.agent_turn_journal import AgentTurnJournal
+
+    turn = _killed_native_turn(journal)
+    with journal._ledger.connection() as conn:
+        generation, token = conn.execute(
+            "SELECT owner_generation, runner_token FROM agent_turns WHERE turn_id = ?",
+            (turn.turn_id,),
+        ).fetchone()
+    _restart(journal)
+    successor = AgentTurnJournal(journal._ledger.base_path)
+
+    for wrong_generation, wrong_token in ((generation + 1, token), (generation, "wrong")):
+        with pytest.raises(owner_lease.LeaseLost):
+            successor.adopt_orphan(
+                "owner", "home", turn.turn_id,
+                owner_generation=wrong_generation, runner_token=wrong_token,
+            )
+        assert journal.get("owner", "home", turn.turn_id).state == "native_started"
+
+    successor.adopt_orphan(
+        "owner", "home", turn.turn_id,
+        owner_generation=generation, runner_token=token,
+    )
+    # This is the interruption point: adoption committed, terminal transition did not.
+    assert journal.get("owner", "home", turn.turn_id).state == "native_started"
+    with pytest.raises(owner_lease.LeaseLost, match="recovery-only"):
+        successor.finish_native(
+            "owner", "home", turn.turn_id, expected_generation=turn.generation,
+            ordinal=len(turn.rounds), terminal=NativeTerminal("indeterminate"),
+        )
+    agent_turn_runner.release(journal._ledger.base_path, turn.turn_id)
+    assert _reconcile(journal)[0]["settled"] == "held_native_unknown"
+    assert len(_thread(journal)) == 1
 
 
 def test_the_projection_refuses_an_unowned_row_reconciliation_never_settled(journal):
@@ -414,8 +460,13 @@ def test_exactly_one_process_may_write_the_turn_journal(journal):
         for volume in (service.get("volumes") or [])
         if "tinyassets-data" in str(volume) and not str(volume).endswith(":ro")
     }
-    assert writable == {"daemon"}, (
-        f"{sorted(writable)} can write the data volume; only the daemon may")
+    # The credential broker shares the volume for its own state under its own
+    # uid; it never runs the server, so the daemon stays the journal's one writer.
+    assert writable == {"daemon", "broker"}, (
+        f"{sorted(writable)} can write the data volume; only the daemon and broker may")
+    services = compose["services"]
+    assert services["broker"]["user"] != services["daemon"]["user"]
+    assert services["broker"]["entrypoint"][-1] == "/app/broker_main.py"
 
 
 def test_a_missing_database_is_no_work_and_creates_nothing(tmp_path):

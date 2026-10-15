@@ -71,15 +71,21 @@ def _redeposit_stale(base_path) -> None:
 
 def _rotating_package(monkeypatch) -> tuple[list[str], object]:
     """Stand in for a CLI job that rotates auth and returns it through CAS."""
-    from tinyassets.external_agents.home import Custody, compare_and_swap, materialize
+    from tinyassets.agent_loop.served_chat import configured_box_provider
+    from tinyassets.control_plane.binding import bind_session
+    from tinyassets.external_agents.home import box_custody, compare_and_swap, materialize
     from tinyassets.external_agents.registry import resolve
-    from tinyassets.providers.native_discovery import _custody
 
     spent: list[str] = []
 
     def rotate(universe_dir):
-        reference = _custody(universe_dir.parent, universe_dir, OWNER, "codex")
-        custody = Custody(universe_dir, OWNER, reference)
+        # A CLI job holds the platform custody pin through the owner's admitted
+        # box session, never a bare host path.
+        provider, limits = configured_box_provider()
+        binding = bind_session(provider=provider, limits=limits, universe_dir=universe_dir,
+                               owner=OWNER, execution_id=f"rotate:{universe_dir}")
+        custody = box_custody(universe_dir, OWNER, "codex", binding)
+        assert custody is not None, "the owner's codex sign-in has no current custody"
         auth = resolve("codex").row["auth"]
         document = json.loads(materialize(custody, auth)["auth.json"])
         token = document["tokens"]["refresh_token"]

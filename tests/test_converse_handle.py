@@ -91,16 +91,15 @@ def test_mcp_current_model_choice_preserves_both_response_channels(monkeypatch, 
 
 
 def test_missing_admission_is_not_reported_as_a_missing_scope(monkeypatch, tmp_path):
-    """A launcher that has not installed the mapper is not an OAuth failure."""
-    import tinyassets.role_center_admission as admission
-    from tinyassets.role_center_admission import AdmissionRefused
+    """A frontend that has not installed the box provider is not an OAuth failure."""
+    from tinyassets.boxes import lifecycle
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
     def refuse(*_args, **_kwargs):
-        raise AdmissionRefused("runtime admission requires the bounded mapper client")
+        raise RuntimeError("committed owner-box layout has no admitted provider")
 
-    monkeypatch.setattr(admission, "admit_center", refuse)
+    monkeypatch.setattr(lifecycle, "admit_center", refuse)
     out = json.loads(us.converse(message="Hello"))
     assert out.get("auth_scope_required") is not True
     assert out.get("home_unavailable") is True

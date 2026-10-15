@@ -132,9 +132,15 @@ def test_git_bridge_commit_resolves_default_author(monkeypatch, tmp_path):
         pytest.skip("git not available")
 
     from tinyassets import git_bridge
+    from tinyassets.control_plane import binding as binding_module
 
     git_bridge.invalidate_cache()
-    repo = tmp_path / "repo"
+    # Owner git runs only in an admitted owner box: the repository sits in a
+    # command center under the data root, and the call carries its binding.
+    center = tmp_path / "data" / "cc-author"
+    center.mkdir(parents=True)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(center.parent))
+    repo = center / "repo"
     repo.mkdir()
     subprocess.run(
         ["git", "init", "--initial-branch=main"], cwd=str(repo),
@@ -163,7 +169,8 @@ def test_git_bridge_commit_resolves_default_author(monkeypatch, tmp_path):
     monkeypatch.delenv("TINYASSETS_GIT_AUTHOR", raising=False)
 
     # No author argument — default identity should be used
-    result = git_bridge.commit("seed commit", repo_path=repo)
+    with binding_module.use_binding(binding_module.file_binding(center)):
+        result = git_bridge.commit("seed commit", repo_path=repo)
     assert result.ok, result.error
 
     logged = subprocess.run(

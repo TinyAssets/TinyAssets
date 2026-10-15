@@ -72,20 +72,28 @@ class TestFittedWorkspace:
         )
         assert bound == 10 * KIB + 80 * KIB
 
-    def test_a_generation_that_outgrew_its_bound_is_refused(self, tmp_path):
+    def test_a_generation_that_outgrew_its_bound_is_refused(self, tmp_path, monkeypatch):
+        from tinyassets.boxes.provider import BOX_ROOT
+        from tinyassets.control_plane import binding as binding_module
         from tinyassets.effectors import workspace as wse
 
-        lease_dir = tmp_path / "gen"
-        lease_dir.mkdir()
+        # The generation is measured in its owner's admitted box: the lease
+        # names the guest path of a checkout inside the bound command center.
+        data_root = tmp_path / "data"
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
+        center = data_root / "u-gen"
+        lease_dir = center / "gen"
+        lease_dir.mkdir(parents=True)
         (lease_dir / "provisioned.bin").write_bytes(b"p" * (50 * KIB))
 
         class _Lease:
-            path = str(lease_dir)
+            path = f"{BOX_ROOT}/{center.name}/gen"
 
-        with pytest.raises(wse._Refused) as refused:
-            wse._require_generation_fits(_Lease(), 40 * KIB)
-        assert refused.value.kind == "storage_quota_exceeded"
-        assert wse._require_generation_fits(_Lease(), 60 * KIB) == 50 * KIB
+        with binding_module.use_binding(binding_module.file_binding(center)):
+            with pytest.raises(wse._Refused) as refused:
+                wse._require_generation_fits(_Lease(), 40 * KIB)
+            assert refused.value.kind == "storage_quota_exceeded"
+            assert wse._require_generation_fits(_Lease(), 60 * KIB) == 50 * KIB
 
     def test_the_effector_fits_the_bound_to_the_owning_account(self, base, monkeypatch):
         """A real-sized free quota (1 GiB here): an empty account's permanent

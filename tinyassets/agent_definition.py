@@ -44,14 +44,17 @@ import hashlib
 import json
 import math
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from tinyassets.boxes.provider import BoxError, BoxPathError
 from tinyassets.universe_files import (
     list_universe_dir,
+    list_universe_entries,
     load_untrusted_yaml,
     read_universe_file,
     read_universe_text,
@@ -384,13 +387,46 @@ def _instructions(universe_dir: Path, directory: str) -> str:
 
 
 def _agent_file(universe_dir: Path, slug: str) -> AgentFile:
-    settings = read_settings(universe_dir, agent_slug=slug)
+    directory = agent_directory(slug)
+    settings, instructions = _agent_parts(universe_dir, directory)
     identity = settings.agent
     return AgentFile(
         slug=slug, agent_id=identity.id or slug, name=identity.name or slug,
-        instructions=_instructions(universe_dir, agent_directory(slug)),
+        instructions=instructions,
         settings=settings, retired=identity.retired, owner=identity.owner,
     )
+
+
+def _agent_parts(universe_dir: Path, directory: str) -> tuple[SettingsSnapshot, str]:
+    """Parse the canonical agent files from one admitted box generation."""
+    from tinyassets.control_plane.binding import file_binding
+
+    binding = file_binding(universe_dir)
+    if binding is None:
+        slug = directory.rsplit("/", 1)[-1] if directory else None
+        return read_settings(universe_dir, agent_slug=slug), _instructions(universe_dir, directory)
+    prefix = f"{directory}/" if directory else ""
+    settings_path, instructions_path = prefix + SETTINGS_FILE, prefix + INSTRUCTIONS_FILE
+    snapshot = binding.provider.read_many(
+        binding.handle, (settings_path, instructions_path),
+        max_total=MAX_SETTINGS_BYTES + MAX_INSTRUCTIONS_BYTES,
+    )
+    binding.check_read(snapshot.generation)
+    if set(snapshot.files) | set(snapshot.missing) != {settings_path, instructions_path}:
+        raise SettingsError("incomplete agent file snapshot")
+    if set(snapshot.files) & set(snapshot.missing):
+        raise SettingsError("ambiguous agent file snapshot")
+    raw_settings = snapshot.files.get(settings_path)
+    raw_instructions = snapshot.files.get(instructions_path)
+    if ((raw_settings is not None and
+         (not isinstance(raw_settings, bytes) or len(raw_settings) > MAX_SETTINGS_BYTES))
+            or (raw_instructions is not None and
+                (not isinstance(raw_instructions, bytes) or
+                 len(raw_instructions) > MAX_INSTRUCTIONS_BYTES))):
+        raise SettingsError("agent files exceed their byte bounds")
+    settings = parse_settings(raw_settings)
+    instructions = "" if raw_instructions is None else raw_instructions.decode("utf-8")
+    return settings, instructions.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def list_agent_files(universe_dir: Path, *, owner: str,
@@ -405,18 +441,23 @@ def list_agent_files(universe_dir: Path, *, owner: str,
     """
     universe_dir = Path(universe_dir)
     try:
-        names = list_universe_dir(universe_dir, AGENTS_DIR)
+        entries = list_universe_entries(universe_dir, AGENTS_DIR)
     except FileNotFoundError:
         return []
     found = []
-    for slug in sorted(names):
-        if not AGENT_NAME.fullmatch(slug) or slug == MAIN_AGENT:
+    for slug, info in entries:
+        if (not stat.S_ISDIR(info.st_mode) or not AGENT_NAME.fullmatch(slug)
+                or slug == MAIN_AGENT):
             continue
         directory = agent_directory(slug)
         try:
             entries = set(list_universe_dir(universe_dir, directory))
-        except OSError:
+        except BoxPathError:
             continue  # A file or a link named like an agent is not one.
+        except BoxError:
+            raise
+        except OSError:
+            continue
         if not entries & {INSTRUCTIONS_FILE, SETTINGS_FILE}:
             continue
         agent = _agent_file(universe_dir, slug)
@@ -440,8 +481,9 @@ def load_agent(universe_dir: Path, agent_ref: str, *, owner: str,
     universe_dir = Path(universe_dir)
     ref = str(agent_ref or "").strip() or MAIN_AGENT
     if ref == MAIN_AGENT:
+        settings, instructions = _agent_parts(universe_dir, "")
         return AgentFile(MAIN_AGENT, MAIN_AGENT, MAIN_AGENT,
-                         _instructions(universe_dir, ""), read_settings(universe_dir))
+                         instructions, settings)
     matches = [agent for agent in list_agent_files(universe_dir, owner=owner,
                                                    include_retired=include_retired)
                if ref in (agent.slug, agent.agent_id)]

@@ -17,6 +17,8 @@ import json
 import logging
 import os
 import re
+import sqlite3
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
@@ -271,14 +273,18 @@ UNBOUNDED_TURN_SECONDS = 30 * 24 * 3600.0
 def _served_knob(config, name: str, default):
     """A positive per-universe override for a watchdog knob, else ``default``.
 
-    Nonsense (a string, zero, negative) falls back to the default rather than
-    disabling a bound - the same hardening the profile resolver applies.
+    Invalid, boolean, nonfinite or nonpositive values use the default.
     """
+    import math
+
     try:
-        value = float(getattr(config, name, None) or 0)
-    except (TypeError, ValueError):
+        raw = getattr(config, name, None)
+        if isinstance(raw, bool):
+            return default
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
         return default
-    return value if value > 0 else default
+    return value if math.isfinite(value) and value > 0 else default
 
 
 def served_absolute_cap_s(config) -> float | None:
@@ -288,11 +294,13 @@ def served_absolute_cap_s(config) -> float | None:
     coordinator about how long a turn may take. Codex on #4020: a bound derived
     from the library's 600s default called a healthy founder turn dead after ten
     and a half minutes, which hid the indicator for exactly the long turns it was
-    added for. The granted turn's cap is 3600s (founder rule 2026-08-29, "a
-    granted turn runs until it is finished") with a positive per-universe
-    override, and this returns that same number.
+    added for. Granted turns now default to no cap; a positive finite owner
+    override loaded from config.yaml supplies the same bound to runtime and
+    activity readers, at most the platform-safe unbounded horizon above.
+    Ordinary node timeouts are not this served-turn policy.
     """
-    return _served_knob(config, "absolute_cap_s", None)
+    value = _served_knob(config, "absolute_cap_s", None)
+    return None if value is None else min(value, UNBOUNDED_TURN_SECONDS)
 
 
 def _sandboxed_config(
@@ -1299,6 +1307,25 @@ def _ordinary_chat(message: str) -> bool:
     ))
 
 
+@contextmanager
+def _surface_chat_allocation_failure(account_id: str, universe_id: str, db: Path):
+    """Record a provider-allocation refusal on the seat status, then re-raise it."""
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+
+    try:
+        yield
+    except ProviderAuthorityHeldError as exc:
+        from tinyassets import universe_seats
+
+        try:
+            universe_seats.note_chat_allocation_failure(
+                account_id, universe_id, str(exc), db=db,
+            )
+        except (universe_seats.SeatLedgerUnusable, sqlite3.Error, OSError):
+            logger.warning("chat allocation failure could not be recorded")
+        raise
+
+
 @observed('chat_stream', inspect_result=False)
 def converse(
     universe_id: str,
@@ -1538,7 +1565,9 @@ def converse(
     # Over the seat count it waits with no deadline -- never refused -- and its
     # queue row, tagged with this universe, is what `get_status` reports as
     # `seats.chat_waiting` with the waiting line and upgrade link. The interactive
-    # reserve means a chat only ever waits behind another chat.
+    # reserve means a chat only ever waits behind another chat. A provider
+    # allocation failure is recorded on that same status as an error with a
+    # message, then re-raised for the caller's failure notice.
     from contextlib import closing, nullcontext
 
     from tinyassets import universe_seats
@@ -1558,12 +1587,15 @@ def converse(
         )
     turn_config = replace(turn_config, request_budget=budget)
     scope = closing(budget) if owns_budget and budget is not None else nullcontext()
+    account = universe_seats.account_key(uid, root=udir.parent)
+    ledger = universe_seats.ledger_path(udir.parent)
     with scope, universe_seats.hold(
-        universe_seats.account_key(uid, root=udir.parent),
+        account,
         seat_class=universe_seats.CLASS_INTERACTIVE,
         kind=universe_seats.KIND_CHAT_TURN, universe_id=uid,
-        db=universe_seats.ledger_path(udir.parent),
-    ):
+        db=ledger,
+    ), _surface_chat_allocation_failure(account, uid, ledger):
+        universe_seats.clear_chat_allocation_failure(account, uid, db=ledger)
         recorded: set = set()
         responses = []
         reply = _call_writer(

@@ -29,8 +29,8 @@ the order. Measured on `origin/main` `13f4ff4459f`, 2026-10-11.
   The owner app writes them, and nothing proves that only the owner can.
 - **`BoxProvider`** (`boxes/provider.py`, `state.py`, `local.py`) has a
   contract suite and a local driver with no kernel boundary. Its callers are
-  `agent_loop/box_tools.py` and `served_chat.py`, which sit behind the dark
-  `TINYASSETS_AGENT_LOOP`.
+  `agent_loop/box_tools.py` and `served_chat.py`; the thin route is selected
+  when session admission has bound a box.
 
 ## 2. The boundary
 
@@ -446,26 +446,33 @@ Each PR ships alone and deletes in the same PR (ADR-022).
 - `boxhostd` and gVisor are installed and every P2a gate has passed; they
   serve nothing.
 
-**The window (P2b, short).** One forward-only one-shot runs with every writer
-stopped:
+**The window (P2b, short).** `deploy/deploy_fail_safe.sh` runs exactly one
+forward-only migration container with every writer stopped, after its verified
+full snapshot. The migration is not a startup hook and has no retry ledger or
+fallback path:
 
 1. It refuses unless the volume carries the `owner-split` marker, a backup
    id is given and the digest verifies.
 2. For each owner, it creates the box record in the broker log, rsyncs
    the tree into `/var/lib/boxhostd/owners/<uid>` under the same UID/GID,
    sets the project id and `bhard`, and verifies with `rsync --checksum`.
-   A post-cutover verified backup that includes the box store is taken and
-   restore-tested on the production copy; only then are the old trees
-   removed (ADR-022 amendment).
 3. It does not touch policy: legacy `rules.db` and `approval_grants` are
    not imported (owners re-grant; P1 decision).
 4. It writes the `owner-box` layout marker last.
-5. It is re-runnable after a crash. A second run changes nothing, and
-   `--check` reports zero diffs.
+5. After the candidate serves successfully, a post-cutover verified backup
+   including the box store is taken and restore-tested on the production
+   copy. Only then are the old trees removed (ADR-022 amendment).
+
+Any apply failure after mutation requires restoring the verified snapshot;
+the deploy cannot retry the migration or restart the previous image after
+`MIGRATION_COMMITTED`. It prints the exact `backup-restore.sh` command. A
+read-only preflight check may report that an already committed `owner-box`
+layout needs no move, but it cannot apply again.
 
 The new image serves only from boxes. There is no flag back to cells.
 
-**Rollback.**
+**Rollback.** The deploy script never starts the previous image after
+`MIGRATION_COMMITTED`; restoration is a separate, explicit recovery action.
 
 - Restore the previous image and its pinned runtime bundle.
 - Before the old trees are removed they are intact, and the old image
@@ -484,6 +491,102 @@ The new image serves only from boxes. There is no flag back to cells.
   fence.
 
 ## 12. Acceptance
+
+### Host-owned file generations (P2b runtime continuation)
+
+The production file adapter must not treat the in-box `BoxdCore` journal as
+authority: the owner can edit every writable byte in that sandbox. `boxhostd`
+owns epochs, operation digests, outcomes and generations in its private state.
+The root-owned receipt database lives at `<data>/.boxhost/boxhost.db`, mode
+0700 on its directory, outside every owner mount and inaccessible to daemon
+and broker UIDs. Thus paired data/store restoration restores receipts and
+owner bytes together. Runtime bundles and runsc state remain disposable host
+state; a legacy host-path receipt database refuses startup rather than being
+ignored. Owner-box snapshots require an exclusive layout lock, stopped volume
+consumers, and an empty runsc census. Online nightly owner-box backup refuses
+until coordinated online quiescence exists; that remains a cutover gate.
+Restoration validates the root-private journal and locks both old and staged
+layouts before replacing owner trees and the data volume. Restored epochs and generations advance beyond both copies, and the union of
+seen operation IDs becomes unknown (never replayed). A differing immutable
+identity/admission frontier, deletion tombstone set or destruction receipt set
+refuses restore pending a reviewed forward-retention contract from integration
+and C12. Both old members remain available until verification.
+
+The production receipt database has a 16 MiB ceiling and bounded WAL retention;
+exhaustion refuses further writes rather than expiring receipts into replay permission.
+All centers of an owner share that state and one lock. A center is a path
+projection within the owner's box, never a second sandbox. The host receives
+an `OwnerGrant` from authenticated admission; neither an account string nor a
+serialized handle is a grant. Admission is rechecked before every operation.
+
+File operations are bounded messages to immutable harness code in gVisor.
+That code reuses `OwnerBoxd` descriptor traversal; it is never instantiated on
+the host. Host CAS is checked before dispatch, and every dispatched mutation
+advances the host generation even if its response is lost. A retry returns
+the host receipt or holds an unknown outcome, never dispatches twice.
+Recovered/uncertain or externally running work keeps file snapshots and CAS
+closed until the sandbox is proven stopped. A host restart must stop surviving
+sandboxes before exposing recovered state. These are preparation for the final
+cutover, not authorization to select `owner-box` or to retain legacy execution
+beside the new adapter.
+
+The retired daemon (UID 1001) connects to a root-owned bootstrap socket. The
+separately retired broker (UID 1002) registers its ephemeral lease over a
+different UID-authenticated socket; no proof is persisted or placed in an
+environment variable. The host asks the broker for the admitted center,
+permanent UID and broker-owned quota. New center admission durably reserves a
+box record using the existing permanent UID and canonical account storage tier;
+request fields cannot choose either value. The root service initializes an
+empty owner tree with its inheriting XFS project and hard limit before exposing
+it, then creates only validated empty center/home directories. Existing owner
+trees are verified rather than recursively retagged. Restore derives quotas
+from the paired broker identity database, including reservations that have not
+yet materialized an owner tree. Unix credentials are checked on every
+control-frame fragment, with a pinned peer lifetime on the host. A box's
+egress socket is mounted only in that owner's sandbox; the broker derives
+its owner and center from host admission and exposes no owner policy writes.
+Public HTTP/CONNECT uses that same owner socket and a root-authenticated broker
+handoff. The existing public-address/mail-port floor is reused, DNS results are
+pinned, and headers, buffers, deadlines and owner/global connection counts are
+bounded. The guest loopback proxy carries no platform credential. Connector
+streams use the existing broker scanner/grant path; authenticated git and CLI
+credential lease/refresh wiring remain cutover dependencies.
+
+The backend also caps awake sandboxes at two, including file-only wakes;
+idle boxes yield their slot and unquiesced boxes retain it. New wakes wait
+in FIFO order within the request deadline. The root service bounds admitted
+control connections at 32.
+
+Execution uses a bounded FIFO per owner, with two host execution slots and
+sixteen admitted jobs across all owners. Queued work holds the owner generation
+closed, can be cancelled without waking a sandbox, and yields a slot to other
+owners after each command. Operation IDs include the admitted session. Explicitly ending
+a session cancels its work; transport loss only detaches its token. Failed
+quiescence prevents queued successors from launching. Commands within one owner remain serialized until per-process guest
+descendant quiescence is proven; this does not satisfy parallel-child G1 yet.
+Limits, buffered output, input reply deduplication and operation outcomes belong
+to the host. The host stops the entire sandbox
+before recording a terminal execution and publishing a coherent generation.
+A failed stop keeps snapshots closed; an interrupted operation is unknown and
+cannot be replayed. This is not the P6 checkpoint/resident-process lifecycle.
+
+Account deletion must first persist the existing owner tombstone and retain
+the broker identity/center binding. `bind_for_destroy(center, account_id=owner,
+turn_id=...)` then permits `destroy(handle, stable_op_id)` while ordinary
+admission is refused. The host durably fences every center of that owner and
+advances the placement epoch before stopping its sandbox. Descriptor erasure
+never follows symlinks or crosses mount identities. The durable original
+census and final receipt survive retries; the same stable operation ID is
+required after failure. C12 may retire bindings and erase identity-adjacent
+state only after receiving the destroy receipt; broker account cleanup remains
+part of that integration. A failed erase leaves the permanent fence intact.
+
+`deploy/compose.owner-box.yml` is a composition input for the coordinated final
+bundle, not an independently selectable production mode. The final bundle must
+render it into its one `compose.yml`, adopt the owner-box layout, route all
+owner execution and remove the old cells in the same cutover. The current
+`ACTIVE_BOX_LAYOUT` and production compose remain owner-split pending that
+integration, cross-family review and production-copy migration/restore proof.
 
 **G1 done check** (baseline #4624):
 
@@ -553,3 +656,95 @@ not a pass.
 None for the founder beyond the P8 spend (an off-region bucket of about
 $0-5 a month), which is raised as a `docs/host-actions.md` row when P8
 starts.
+
+### C7 and C12 integration contracts still required
+
+CLI execution uses the existing exclusive refresh lease and compare-and-swap
+custody owner. Its immutable guest worker materializes only declared auth files
+under guest tmpfs. A framed worker transport separates CLI output from private
+writeback; root never puts writeback bytes in the output stream or receipt DB.
+The host holds at most sixteen unacknowledged private results in memory, bound
+to owner, center, session and operation. It releases a result only after whole
+box quiescence, and discards it after explicit acknowledgement. A lost host or
+acknowledged result refuses refresh recovery; an execution is never replayed to
+reconstruct credentials. This transport does not grant custody: the integration
+must retain the broker lease through writeback CAS and acknowledge afterwards.
+A durable custody-pin lease blocks a fresh operation ID while writeback remains
+unsettled, including after host restart. A newer owner deposit has a new pin.
+Restore resets CLI acknowledgements because the credential store may predate a
+completed refresh. Explicit session cancellation erases in-memory writeback but
+does not authorize reuse of that custody pin.
+
+The in-box git bridge projects selected grant IDs, connection incarnations,
+repository scopes and the agent into invocation-local URL rewrites. Its socket
+handshake uses `BOX_CONNECT` and the existing `broker/git_http` smart-HTTP path.
+The broker derives owner/center/fence from root admission, rechecks grants and
+injects credentials itself. The host overwrites the guest owner environment;
+the guest never receives a broker fence token or git credential. The existing
+URL registry/parser remains the single implementation and expires when that
+invocation's box is quiesced. Integration must pass the already selected grants
+with `boxes.git_bridge.environment(connections, agent)`; no new catalogue reader
+or unscoped grant discovery is introduced.
+
+C7 PR #4845 (`conv/c7-control-plane-only`, inspected head
+`c1eb3d446909b5cdc534053d8d784701c0eaed70`) owns
+`control_plane/session.py`, `control_plane/tick.py` and `universe_server.py`.
+Its `start()` still resolves `load_agent(_universe_dir(parent), ...)` on the
+host before dispatch. C6 does not overwrite those files. Integration needs:
+
+- `OwnerTurn`, `RunStep` and `ChildOf` must carry the already authenticated
+  owner, admitted center and stable session/turn ID into the one session entry.
+  Bind `ProductionFileProvider.bind(center, account_id=owner, turn_id=session)`
+  before owner-file loading. Never infer an owner grant from a filesystem path.
+- Resolve agent files inside the owner runtime (or through its bound provider),
+  and carry that binding explicitly into child/executor threads. A Python host
+  `Path` or ambient context alone is not a cross-thread authority contract.
+- Keep the binding alive until all child work is drained. Call
+  `provider.end_session(handle)` only for explicit terminal cancellation.
+  Channel loss detaches only its token and never cancels running or queued
+  work. Reconnect with the same admitted session ID to recover status/output.
+  Tool op IDs remain stable across retries; an unknown outcome holds.
+- CLI dispatch must pass broker custody references plus the admitted binding to
+  the existing exclusive-refresh/CAS owner. Leased auth files belong in guest
+  memory, and writeback needs a separate private channel; ordinary execution
+  stdout is durable and must never carry credential writeback. The integration
+  constructs `BoxLauncher(provider, handle, custody, operation_id=stable_id)`
+  and passes it to the existing `run_job`/`run_catalogue` runner. The runner now
+  acknowledges its private result after successful CAS, or after refusing a
+  stale result whose admitted custody was superseded. The broker persists the
+  invocation ID and admitted custody digest before dispatch, reuses the ID on
+  retry, and derives the same box session from it. Existing provider
+  factory callsites remain unchanged until C7 supplies this binding.
+
+One additional inventory row is required in C7-owned
+`scripts/check_background_authority_inventory.py`: the `CallSite` for
+`tinyassets/boxes/cli_launcher.py`, `Process._output`, `self.stream`. It only
+reads bounded output of an already admitted execution, like `BoxExecutor._collect`.
+C6 does not rename the method to evade the guard or claim cross-family review.
+
+Parallel child completion needs a proven per-execution descendant boundary.
+`runsc exec` waits on the invoked PID; a process-group kill does not contain a
+child that changes its group. Whole-box stop is the current conservative proof
+and cannot be used while another child must survive. Before enabling concurrency,
+the pinned runtime must prove a nested PID-namespace init/parent-death design (or
+an equivalent kernel boundary) with detached grandchildren and concurrent siblings.
+This execution environment has no pinned runtime/kernel proof and cannot provide
+the required G1/G2 evidence. Do not replace whole-box stop with a guessed PID kill.
+
+Online paired backup also needs the C7 integration boundary: stop admission of
+new platform/owner writes, drain or explicitly interrupt every current writer,
+and acknowledge one barrier covering broker DBs, frontend platform stores and
+root receipts before owner-store freezing/staging. Release only after both
+members and their manifest are durable. The lifetime shared layout lock protects
+migrations but is not that barrier; independently backing up SQLite files while
+owner writes continue would not prove one logical generation. C7's session/tick
+owner must provide this writer barrier before C6 can replace the offline refusal.
+
+C12 retains sole ownership of `account_deletion.py` and its integration. In
+addition to the stable-ID destroy receipt contract above, forward restore must
+retain its newer tombstones and host destruction fences without exposing a
+restored deleted owner's tree. The current restore explicitly refuses differing
+frontiers. Integration also must retain permanent UID/admission reservations
+across older backups. No current synthetic test claims that these pending
+contracts, parallel-child G1, production-copy restore or real deletion gates
+have passed.

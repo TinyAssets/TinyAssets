@@ -334,6 +334,51 @@ def open_dir_nofollow(path: str | Path) -> int:
     return current
 
 
+def open_assignment_lock(base_path: str | Path, command_center: str):
+    """Open one platform admission lock; never enter an owner's file tree.
+
+    The fixed .provider-assignment-locks namespace is outside all owner mounts.
+    Pin every directory and refuse links, foreign ownership, writable aliases and
+    special files before returning a descriptor suitable for flock. Like the other
+    descriptor helpers, unsupported hosts refuse instead of weakening custody.
+    """
+    _require_posix("open_assignment_lock")
+    _require_component(command_center)
+    current = open_dir_nofollow(base_path)
+    lock_fd = None
+    try:
+        info = os.fstat(current)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o022:
+            raise UnsafePoolPath("platform admission base is mutable by another uid")
+        for component in (".provider-assignment-locks", command_center):
+            try:
+                os.mkdir(component, 0o700, dir_fd=current)
+            except FileExistsError:
+                pass
+            child = _open_child_dir(current, component)
+            os.close(current)
+            current = child
+            info = os.fstat(current)
+            if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o022:
+                raise UnsafePoolPath("platform admission directory is mutable by another uid")
+        lock_fd = os.open(
+            ".provider-assignment-admission.lock",
+            os.O_RDWR | os.O_CREAT | _O_NOFOLLOW | _O_NONBLOCK,
+            0o600, dir_fd=current,
+        )
+        info = os.fstat(lock_fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o022):
+            raise UnsafePoolPath("platform admission lock is not an exclusive platform inode")
+        handle = os.fdopen(lock_fd, "r+b")
+        lock_fd = None
+        return handle
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
+        os.close(current)
+
+
 def open_subdir_nofollow(parent_fd: int, name: str) -> int:
     """Open ONE existing child directory through a handle the caller holds.
 
@@ -988,6 +1033,63 @@ def _remove_tree_windows(
             continue
 
 
+class BoxPoolFilesystem:
+    """Reclaim lease paths through the authenticated owner box provider."""
+
+    def __init__(self, data_root: Path) -> None:
+        self.data_root = Path(data_root)
+
+    def _scope(self, path: Path):
+        from tinyassets.agent_loop.served_chat import configured_box_provider
+        from tinyassets.boxes.provider import BOX_ROOT, BoxPathError, box_relpath
+        from tinyassets.universe_owner import owner_of
+
+        try:
+            relative = box_relpath(str(path))
+        except BoxPathError:
+            raise UnsafePoolPath("workspace lease is outside an owner box") from None
+        parts = relative.split("/")
+        if (len(parts) < 3 or parts[0].startswith(".")
+                or str(path) != BOX_ROOT + "/" + relative):
+            raise UnsafePoolPath("workspace lease is outside an owner box")
+        center = parts[0]
+        owner = owner_of(self.data_root, center)
+        if not owner:
+            raise UnsafePoolPath("workspace lease has no owner")
+        provider, _ = configured_box_provider()
+        if provider is None:
+            raise UnsafePoolPath("owner box provider is unavailable")
+        import hashlib
+
+        turn_id = hashlib.sha256(("workspace-sweep:" + center).encode()).hexdigest()
+        handle = provider.bind(center, account_id=owner, turn_id=turn_id)
+        return provider, handle, BOX_ROOT + "/" + "/".join(parts[1:])
+
+    def exists(self, path: Path) -> bool:
+        provider, handle, file_path = self._scope(path)
+        return provider.stat(handle, file_path) is not None
+
+    def owner_scoped(self, path: Path) -> bool:
+        self._scope(path)
+        return True
+
+    def remove_tree_no_follow(self, path: Path) -> None:
+        from tinyassets.boxes.provider import BoxNotFound
+
+        provider, handle, file_path = self._scope(path)
+        if provider.stat(handle, file_path) is None:
+            return
+        import uuid
+
+        try:
+            provider.remove(handle, "workspace-sweep:" + uuid.uuid4().hex, file_path)
+        except BoxNotFound:
+            return
+
+    def rename(self, src: Path, dst: Path) -> None:
+        raise UnsafePoolPath("owner box workspaces are removed in place")
+
+
 class RealPoolFilesystem:
     """``exists``/``rename``/``remove_tree_no_follow`` against the real disk.
 
@@ -1092,15 +1194,7 @@ class RealPoolFilesystem:
         """
         target = Path(path)
         if self.owner_scoped(target):
-            from tinyassets.role_owner_delete import remove_subtree
-            from tinyassets.universe_owner import owner_of
-
-            center = Path(os.path.abspath(target)).relative_to(self._data_root).parts[0]
-            owner = owner_of(self._data_root, center)
-            if not owner:
-                raise UnsafePoolPath("an unowned command center admits no deletion")
-            remove_subtree(target, principal=owner)
-            return
+            raise UnsafePoolPath("owner trees are removed only through the owner box")
         if not self._posix:
             _remove_tree_windows(
                 str(target),

@@ -169,6 +169,8 @@ def _converse(base, monkeypatch, message):
 
     from tinyassets import engine_mcp_http, engine_tool_client, universe_intelligence
     from tinyassets.auth import middleware as auth
+    from tinyassets.interactive_http_agent import InteractiveHttpAgentTurn, ServedChatAgentAdapter
+    from tinyassets.providers import call as provider_calls
     from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 
     engine_mcp_http._write_routes(base, [SimpleNamespace(
@@ -190,6 +192,13 @@ def _converse(base, monkeypatch, message):
                                          for n in SERVED_ENGINE_MCP_TOOLS])
 
     monkeypatch.setattr(engine_tool_client, "_make_client", lambda *_: Client())
+    def make_turn(**kwargs):
+        provider_calls.register_open_providers_for(kwargs["universe_context"])
+        return InteractiveHttpAgentTurn(
+            router=provider_calls._router, adapter=ServedChatAgentAdapter(), **kwargs,
+        )
+
+    monkeypatch.setattr(provider_calls, "make_interactive_agent_turn", make_turn)
     reserve = auth.reserve_provider_request(principal_id=parity.A_OWNER, session_id="dc",
                                              request_id="dc", tool_name="converse")
     capability = auth.claim_provider_request(reserve, tool_name="converse")

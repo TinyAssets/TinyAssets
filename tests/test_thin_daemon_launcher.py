@@ -49,20 +49,17 @@ def test_the_old_entry_point_is_what_cost_every_child_the_server():
     assert _child_imports_server("tinyassets.universe_server") is True
 
 
-def test_a_spawn_child_of_the_pid1_launcher_imports_no_server():
-    result = subprocess.run(
-        [sys.executable, "-c", _AS_SCRIPT_SPAWN_CHILD.format(
-            path=str(ROOT / "deploy" / "role_launcher.py"))],
-        cwd=ROOT, capture_output=True, text=True, timeout=300, check=True,
-    )
-    assert result.stdout.strip().splitlines()[-1] == "False"
-
-
 def test_the_image_runs_the_pid1_launcher():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     commands = re.findall(r"^CMD\s+(.+)$", dockerfile, flags=re.MULTILINE)
     assert commands == ['["/opt/venv/bin/python", "-I", "-B", '
-                        '"/usr/local/libexec/ta-launch.py"]']
+                        '"/usr/local/libexec/ta-box-entry.py"]']
+    result = subprocess.run(
+        [sys.executable, "-c", _AS_SCRIPT_SPAWN_CHILD.format(
+            path=str(ROOT / "deploy" / "box_daemon_entry.py"))],
+        cwd=ROOT, capture_output=True, text=True, timeout=300, check=True,
+    )
+    assert result.stdout.strip().splitlines()[-1] == "False"
 
 
 def test_the_launcher_starts_the_same_server():

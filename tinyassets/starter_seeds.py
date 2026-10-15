@@ -110,7 +110,7 @@ def open_seed_boundary(center_root: Path, *, exclusive: bool = False, timeout: f
     Native jails pass this fd to bubblewrap's --sync-fd. Explicit LOCK_UN would
     release its inherited copy too, allowing migration beside a native writer.
     """
-    from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
+    from tinyassets.boxes.layout import UNIVERSE_SIDECARS_DIR
 
     root = Path(center_root).absolute()
     _safe_directory(root)
@@ -196,7 +196,7 @@ def _open_store(root, sidecar, owner_id, center_id):
 @contextlib.contextmanager
 def seed_snapshot(center_root: Path, *, owner_id: str, center_id: str):
     """Read a committed owner snapshot without provisioning or waiting on tools."""
-    from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
+    from tinyassets.boxes.layout import UNIVERSE_SIDECARS_DIR
 
     root = Path(center_root).absolute()
     sidecar = root.parent / UNIVERSE_SIDECARS_DIR / root.name

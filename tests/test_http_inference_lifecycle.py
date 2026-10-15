@@ -10,7 +10,7 @@ import pytest
 
 from tests import test_api_key_http_provider as http_tests
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
-from tests.inference_usage_helpers import accounting_resolver
+from tests.inference_usage_helpers import accounting_resolver, synthetic_stream
 from tinyassets.exceptions import ProviderProtocolError, ProviderRateLimitedError
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 
@@ -42,6 +42,9 @@ class Proxy:
         if self.failure:
             raise self.failure
         return self.result
+
+    def stream(self, *args, **kwargs):
+        return synthetic_stream(self, *args, **kwargs)
 
     def close(self):
         self.closed += 1
@@ -216,7 +219,7 @@ def test_reported_latency_excludes_worker_cleanup(base, monkeypatch):
 
 
 def test_asyncio_run_shutdown_does_not_release_while_executor_still_runs(base, monkeypatch):
-    from tinyassets.providers import api_key_http_provider as module
+    from tinyassets.agent_loop import execution as module
 
     entered, release = threading.Event(), threading.Event()
     cancelled, checked, slot_released = threading.Event(), threading.Event(), threading.Event()

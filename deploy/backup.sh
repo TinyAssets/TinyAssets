@@ -148,7 +148,89 @@ then
     exit 2
 fi
 
+# Root host receipts are part of the data member. The nightly owner-box backup
+# is live (backup-owner-box.sh); BACKUP_MODE=snapshot is the offline variant.
+OWNER_BOX=0
+if [[ -f "${VOLUME_DIR}/.layout.json" ]] && python3 - "${VOLUME_DIR}/.layout.json" <<'BOX_LAYOUT_PY'
+import json
+import sys
+sys.exit(0 if json.load(open(sys.argv[1])).get("box_layout") == "owner-box" else 1)
+BOX_LAYOUT_PY
+then
+    OWNER_BOX=1
+    if [[ ! -d "${BOX_STORE_DIR}" || -L "${BOX_STORE_DIR}" ]]; then
+        log "ERROR: committed owner-box layout requires its mounted box store"
+        exit 2
+    fi
+    if [[ "${BACKUP_MODE:-}" != snapshot ]]; then
+        # Live backup: the shared layout lock on fd 9 is inherited and held
+        # through the copy; no service is stopped.
+        exec "$(dirname "$(realpath "$0")")/backup-owner-box.sh" \
+            "${VOLUME_DIR}" "${BOX_STORE_DIR}" "${BACKUP_DEST}"
+    fi
+    if ! flock -n -x 9 || ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
+            --snapshot-data "${VOLUME_DIR}" --quiescent; then
+        log "ERROR: owner-box offline snapshot needs stopped writers and an empty guest census"
+        exit 2
+    fi
+fi
+
 TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+
+box_archive() {  # $1 = archive path; $2 = remote name
+    local path="$1" name="$2" box_root tree member box_tar_rc
+    if [[ ! -e "${BOX_STORE_DIR}" ]]; then
+        if [[ "${BACKUP_REQUIRE_BOX_STORE:-0}" == 1 ]]; then
+            log "ERROR: required box store is absent"
+            return 2
+        fi
+        return 0
+    fi
+    if ! "$(dirname "$(realpath "$0")")/box-store-check.sh" "${BOX_STORE_DIR}"; then
+        log "ERROR: box store exists but is not mounted with XFS project quota"
+        return 2
+    fi
+    box_root="$(basename "${BOX_STORE_DIR}")"
+    local box_members=()
+    for tree in "${BOX_STORE_DIR}"/[0-9]*; do
+        [[ -d "$tree" && ! -L "$tree" ]] || continue
+        member="$(basename "$tree")"
+        [[ "$member" =~ ^[0-9]+$ ]] && box_members+=("${box_root}/${member}")
+    done
+    # Freeze and thaw in a subshell so every error and signal thaws the store.
+    if ! (
+        frozen=0
+        thaw_box() {
+            if [[ "$frozen" == 1 ]]; then
+                xfs_freeze -u "${BOX_STORE_DIR}"
+            fi
+        }
+        trap thaw_box EXIT
+        trap 'exit 129' HUP
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        xfs_freeze -f "${BOX_STORE_DIR}"
+        frozen=1
+        tar -czf "$path" --numeric-owner --acls --xattrs \
+            -C "$(dirname "${BOX_STORE_DIR}")" \
+            --no-recursion "$box_root" --recursion "${box_members[@]}"
+        xfs_freeze -u "${BOX_STORE_DIR}"
+        frozen=0
+    ); then
+        log "ERROR: box-store archive failed"
+        return 2
+    fi
+    if ! python3 "$(dirname "$(realpath "$0")")/box-store-archive.py" "$path"; then
+        log "ERROR: box-store archive validation failed"
+        return 2
+    fi
+    if ! rclone copyto --contimeout 60s --timeout 900s \
+            "$path" "${BACKUP_DEST}/${name}"; then
+        log "ERROR: box-store upload failed"
+        return 3
+    fi
+    log "  box-store upload OK: ${name}"
+}
 
 # ----- 2b. cutover snapshot (BACKUP_MODE=snapshot) ----------------------
 # The owner-split window's rollback point (docs/ops/owner-split-cutover-runbook.md):
@@ -174,7 +256,8 @@ if [[ "${BACKUP_MODE:-}" == "snapshot" ]]; then
     chmod 0700 "${SNAPSHOT_DIR}"
     log "creating cutover snapshot ${SNAPSHOT_PATH}..."
     if ! tar -czf "${SNAPSHOT_PATH}" --numeric-owner --acls --xattrs \
-            --exclude='./.broker/browser-vault' -C "${VOLUME_DIR}" .; then
+            --exclude='_data/.broker/browser-vault' \
+            -C "$(dirname "${VOLUME_DIR}")" "$(basename "${VOLUME_DIR}")"; then
         log "ERROR: snapshot tar failed"
         rm -f "${SNAPSHOT_PATH}"
         exit 2
@@ -209,8 +292,8 @@ for parent, directories, files in os.walk(root, onerror=fail_walk):
             raise SystemExit('unrecognized socket in snapshot inventory: ' + ascii(relative))
         expected.append(relative)
 with tarfile.open(archive, 'r:gz') as handle:
-    actual = [member.name.removeprefix('./').rstrip('/') for member in handle
-              if member.name not in ('.', './')]
+    actual = [member.name.removeprefix('_data/').rstrip('/') for member in handle
+              if member.name.rstrip('/') != '_data']
 missing = Counter(expected) - Counter(actual)
 extra = Counter(actual) - Counter(expected)
 if missing or extra:
@@ -223,17 +306,41 @@ if missing or extra:
     raise SystemExit(1)
 print(len(expected))
 INVENTORY_PY
-)"; then
+    )"; then
         log "ERROR: snapshot does not match the restorable inventory"
+        rm -f -- "${SNAPSHOT_PATH}" "${SNAPSHOT_PATH}.sha256"
         exit 2
     fi
     sha="$(sha256sum "${SNAPSHOT_PATH}" | cut -d' ' -f1)"
     bytes="$(stat -c %s "${SNAPSHOT_PATH}")"
     printf '%s  %s\n' "${sha}" "${SNAPSHOT_NAME}" > "${SNAPSHOT_PATH}.sha256"
+    BOX_SNAPSHOT_NAME="tinyassets-box-store-${TS}.tar.gz"
+    BOX_SNAPSHOT_PATH="${SNAPSHOT_DIR}/${BOX_SNAPSHOT_NAME}"
+    if box_archive "${BOX_SNAPSHOT_PATH}" "${BOX_SNAPSHOT_NAME}"; then
+        if [[ -f "${BOX_SNAPSHOT_PATH}" ]]; then
+            box_sha="$(sha256sum "${BOX_SNAPSHOT_PATH}" | cut -d' ' -f1)"
+            printf '%s  %s\n' "$box_sha" "$BOX_SNAPSHOT_NAME" > "${BOX_SNAPSHOT_PATH}.sha256"
+        fi
+    else
+        box_rc=$?
+        rm -f -- "${SNAPSHOT_PATH}" "${SNAPSHOT_PATH}.sha256" \
+            "${BOX_SNAPSHOT_PATH}" "${BOX_SNAPSHOT_PATH}.sha256"
+        exit "$box_rc"
+    fi
     if ! rclone copyto --contimeout 60s --timeout 3600s \
             "${SNAPSHOT_PATH}" "${BACKUP_DEST}/${SNAPSHOT_NAME}"; then
         log "ERROR: snapshot upload failed (local copy kept)"
         exit 3
+    fi
+    if [[ "$OWNER_BOX" == 1 ]]; then
+        PAIR_MANIFEST="${SNAPSHOT_DIR}/tinyassets-pair-${TS}.json"
+        if ! python3 "$(dirname "$(realpath "$0")")/backup-pair.py" create \
+                "$SNAPSHOT_PATH" "$BOX_SNAPSHOT_PATH" "$PAIR_MANIFEST" \
+                || ! rclone copyto --contimeout 60s --timeout 60s \
+                    "$PAIR_MANIFEST" "${BACKUP_DEST}/$(basename "$PAIR_MANIFEST")"; then
+            log "ERROR: owner-box snapshot manifest failed"
+            exit 3
+        fi
     fi
     log "SNAPSHOT id=${SNAPSHOT_NAME} sha256=${sha} bytes=${bytes} names=${names}"
     exit 0
@@ -381,59 +488,16 @@ fi
 log "  upload OK"
 
 # ----- 4b. box-store member, paired by timestamp with the data archive ---
-# On an installed host this member is mandatory. Thaw before validation/upload.
 if [[ -e "${BOX_STORE_DIR}" ]]; then
-    if ! "$(dirname "$(realpath "$0")")/box-store-check.sh" "${BOX_STORE_DIR}"; then
-        log "ERROR: box store exists but is not mounted with XFS project quota"
-        exit 2
-    fi
     BOX_NAME="tinyassets-box-store-${TS}.tar.gz"
     BOX_TAR_PATH="$(mktemp "${TMPDIR:-/tmp}/tinyassets-box-store-${TS}.XXXXXX")"
-    box_root="$(basename "${BOX_STORE_DIR}")"
-    box_members=()
-    for tree in "${BOX_STORE_DIR}"/[0-9]*; do
-        [[ -d "$tree" && ! -L "$tree" ]] || continue
-        name="$(basename "$tree")"
-        [[ "$name" =~ ^[0-9]+$ ]] && box_members+=("${box_root}/${name}")
-    done
-    box_frozen=0
-    thaw_box() {
-        if [[ "$box_frozen" -eq 1 ]]; then
-            xfs_freeze -u "${BOX_STORE_DIR}"
-            box_frozen=0
-        fi
-    }
-    trap 'thaw_box; rm -rf -- "${BRAIN_STAGE}"; rm -f -- "${BOX_TAR_PATH:-}"' EXIT
-    trap 'exit 129' HUP
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
-    xfs_freeze -f "${BOX_STORE_DIR}"
-    box_frozen=1
-    set +e
-    tar -czf "${BOX_TAR_PATH}" --numeric-owner --acls --xattrs \
-        -C "$(dirname "${BOX_STORE_DIR}")" \
-        --no-recursion "$box_root" --recursion "${box_members[@]}"
-    box_tar_rc=$?
-    set -e
-    thaw_box
-    if [[ "$box_tar_rc" -ne 0 ]]; then
-        log "ERROR: box-store archive failed (rc=${box_tar_rc})"
-        exit 2
+    if box_archive "${BOX_TAR_PATH}" "${BOX_NAME}"; then
+        rm -f -- "${BOX_TAR_PATH}"
+    else
+        box_rc=$?
+        rm -f -- "${BOX_TAR_PATH}"
+        exit "$box_rc"
     fi
-    if ! python3 "$(dirname "$(realpath "$0")")/box-store-archive.py" "${BOX_TAR_PATH}"; then
-        log "ERROR: box-store archive validation failed"
-        exit 2
-    fi
-    if ! rclone copyto --contimeout 60s --timeout 900s \
-            "${BOX_TAR_PATH}" "${BACKUP_DEST}/${BOX_NAME}"; then
-        log "ERROR: box-store upload failed"
-        exit 3
-    fi
-    rm -f -- "${BOX_TAR_PATH}"
-    BOX_TAR_PATH=''
-    trap 'rm -rf -- "${BRAIN_STAGE}"' EXIT
-    trap - HUP INT TERM
-    log "  box-store upload OK: ${BOX_NAME}"
 fi
 
 # ----- 5. offsite upload (GH release assets) ----------------------------

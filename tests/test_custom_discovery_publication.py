@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests import test_model_discovery_capability as profiles
+from tests.inference_usage_helpers import synthetic_stream
 from tests.test_discovery_catalogue_shapes import BENCHMARK, NOW, payload
 from tests.test_discovery_contract import descriptor
 from tinyassets.providers import discovery_snapshot as snapshots
@@ -86,6 +87,9 @@ def source(rig, monkeypatch):
                     "operation_id": inference_usage.operation_id}
                    if inference_usage is not None else {}),
             )
+
+        def stream(self, *args, **kwargs):
+            return synthetic_stream(self, *args, **kwargs)
 
         def close(self):
             state.closes += 1

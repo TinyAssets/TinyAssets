@@ -85,7 +85,7 @@ rollback_box() {
     done
     if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
             "${BOX_STORE_DIR}" "${BOX_STORE_DIR}" \
-            "${VOLUME_DIR}/.broker/box-registry.json"; then
+            "${VOLUME_DIR}/.broker/state/owner-identities.db"; then
         log "CRITICAL: failed to restore original box quota limits"
     fi
     rmdir -- "$BOX_OLD" 2>/dev/null || true
@@ -129,7 +129,7 @@ if [[ ! "${BACKUP_VOLUME}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
 fi
 
 is_full_archive_name() {
-    [[ "$1" =~ ^tinyassets-data-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z[.]tar[.]gz$ ]]
+    [[ "$1" =~ ^tinyassets-(data|snapshot)-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z[.]tar[.]gz$ ]]
 }
 
 # ----- 1. select local or remote source --------------------------------
@@ -225,6 +225,7 @@ if [[ -e "${BOX_STORE_DIR}" ]]; then
         exit 2
     fi
     BOX_NAME="${TAR_NAME/tinyassets-data-/tinyassets-box-store-}"
+    BOX_NAME="${BOX_NAME/tinyassets-snapshot-/tinyassets-box-store-}"
     if [[ -n "${BACKUP_FILE}" ]]; then
         BOX_TAR_PATH="${BOX_BACKUP_FILE:-$(dirname "${BACKUP_FILE}")/${BOX_NAME}}"
         if [[ "${BOX_TAR_PATH}" != /* || -L "${BOX_TAR_PATH}" || ! -f "${BOX_TAR_PATH}" ]]; then
@@ -303,6 +304,7 @@ if not members:
     print("archive is empty", file=sys.stderr)
     raise SystemExit(1)
 
+symlinks = {member.name.rstrip("/") for member in members if member.issym()}
 for member in members:
     path = pathlib.PurePosixPath(member.name)
     parts = path.parts
@@ -315,12 +317,16 @@ for member in members:
     if len(parts) == 1 and not member.isdir():
         print(f"archive root is not a directory: {member.name!r}", file=sys.stderr)
         raise SystemExit(1)
-    # Stripping the `_data` root changes link coordinates, so reject links
-    # entirely rather than trying to prove their post-strip target safe.
-    if member.issym() or member.islnk():
-        print(f"archive links are not restorable safely: {member.name!r}", file=sys.stderr)
+    if any(str(parent) in symlinks for parent in path.parents):
+        print(f"archive descends through a symlink: {member.name!r}", file=sys.stderr)
         raise SystemExit(1)
-    if not (member.isfile() or member.isdir()):
+    if member.islnk():
+        target = pathlib.PurePosixPath(member.linkname)
+        if (target.is_absolute() or not target.parts or target.parts[0] != "_data"
+                or ".." in target.parts or str(target) in symlinks):
+            print(f"unsafe archive hardlink: {member.name!r}", file=sys.stderr)
+            raise SystemExit(1)
+    elif not (member.isfile() or member.isdir() or member.issym()):
         print(f"unsupported archive member type: {member.name!r}", file=sys.stderr)
         raise SystemExit(1)
 PY
@@ -346,6 +352,78 @@ if ! chown --reference="${VOLUME_DIR}" "${STAGE_DIR}" \
 fi
 log "  archive validated and staged at ${STAGE_DIR}"
 
+# A committed owner-box backup is one generation only when its manifest binds
+# the exact data and box bytes. Remote members are downloaded before hashing;
+# a missing manifest is an incomplete backup, never a legacy fallback.
+if ! staged_layout="$(python3 - "${STAGE_DIR}/.layout.json" <<'PY'
+import json
+import pathlib
+import sys
+
+marker = pathlib.Path(sys.argv[1])
+document = json.loads(marker.read_text()) if marker.exists() else {}
+layout = document.get("box_layout", "owner-split")
+if layout not in ("owner-split", "owner-box"):
+    raise SystemExit("unknown staged box layout")
+print(layout)
+PY
+)"; then
+    log "ERROR: staged layout marker is invalid"
+    exit 4
+fi
+if [[ "$staged_layout" == owner-box ]]; then
+    if [[ -z "${BOX_NAME:-}" ]]; then
+        log "ERROR: owner-box generation has no box member"
+        exit 4
+    fi
+    pair_ts="${TAR_NAME#tinyassets-data-}"
+    pair_ts="${pair_ts#tinyassets-snapshot-}"
+    pair_ts="${pair_ts%.tar.gz}"
+    pair_name="tinyassets-pair-${pair_ts}.json"
+    if [[ -n "${BOX_REMOTE}" ]]; then
+        pair_path="${DOWNLOAD_DIR}/${pair_name}"
+        BOX_TAR_PATH="${DOWNLOAD_DIR}/${BOX_NAME}"
+        if ! rclone copyto "${BACKUP_DEST}/${pair_name}" "$pair_path" \
+                || ! rclone copyto "$BOX_REMOTE" "$BOX_TAR_PATH"; then
+            log "ERROR: paired owner-box manifest or member download failed"
+            exit 4
+        fi
+        BOX_REMOTE=""
+    else
+        pair_path="${PAIR_MANIFEST_FILE:-$(dirname "$TAR_PATH")/$pair_name}"
+    fi
+    if [[ -L "$pair_path" || ! -f "$pair_path" ]] \
+            || ! python3 "$(dirname "$(realpath "$0")")/backup-pair.py" verify \
+                "$TAR_PATH" "$BOX_TAR_PATH" "$pair_path"; then
+        log "ERROR: owner-box generation manifest refused the archive pair"
+        exit 4
+    fi
+fi
+
+if [[ -e "${BOX_STORE_DIR}" && -z "${BOX_NAME:-}" && "$ALLOW_PRE_STORE_BACKUP" == 1 ]]; then
+    if ! python3 - "${STAGE_DIR}/.layout.json" "${VOLUME_DIR}/.layout.json" <<'PY'
+import json
+import pathlib
+import sys
+
+for name in sys.argv[1:]:
+    marker = pathlib.Path(name)
+    if marker.exists():
+        try:
+            layout = json.loads(marker.read_text()).get("box_layout")
+        except (OSError, ValueError, AttributeError) as exc:
+            print(f"invalid layout marker {name}: {exc}", file=sys.stderr)
+            raise SystemExit(1)
+        if layout == "owner-box":
+            print(f"owner-box layout requires a paired box-store archive: {name}", file=sys.stderr)
+            raise SystemExit(1)
+PY
+    then
+        log "ERROR: pre-store data restore refused by staged or live layout marker"
+        exit 4
+    fi
+fi
+
 if [[ -n "${BOX_NAME:-}" ]]; then
     archive_check="$(dirname "$(realpath "$0")")/box-store-archive.py"
     if [[ -n "${BOX_REMOTE}" ]]; then
@@ -369,7 +447,12 @@ if [[ -n "${BOX_NAME:-}" ]]; then
             exit 4
         fi
     fi
-    REGISTRY="${BOX_REGISTRY_FILE:-${STAGE_DIR}/.broker/box-registry.json}"
+    REGISTRY="${STAGE_DIR}/.broker/state/owner-identities.db"
+    if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
+            --snapshot-data "${STAGE_DIR}"; then
+        log "ERROR: staged owner-box receipt journal is missing or invalid"
+        exit 4
+    fi
 fi
 
 # ----- 4. stop every consumer, then swap with automatic rollback -------
@@ -407,6 +490,24 @@ if [[ -n "${BOX_STAGE}" ]]; then
         log "ERROR: failed to stop boxhostd before box-store swap"
         exit 4
     fi
+    # Exclude service restarts on both sides of the volume rename. The staged
+    # lock becomes the live lock; keep both descriptors until restore exits.
+    exec 8<>"${VOLUME_DIR}/.layout.lock"
+    exec 7<>"${STAGE_DIR}/.layout.lock"
+    if ! flock -n -x 8 || ! flock -n -x 7; then
+        log "ERROR: a storage writer still owns the live or staged layout"
+        exit 4
+    fi
+    if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
+            --snapshot-data "${VOLUME_DIR}" --quiescent; then
+        log "ERROR: current owner-box receipt/survivor census refused restore"
+        exit 4
+    fi
+    if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
+            --snapshot-data "${STAGE_DIR}" --restore-from "${VOLUME_DIR}"; then
+        log "ERROR: restore would roll back authority or replay an operation"
+        exit 4
+    fi
     BOX_OLD="$(mktemp -d "${BOX_STORE_DIR}/.tinyassets-box-restore-old.XXXXXX")"
     BOX_SWAP_ACTIVE=1
     for tree in "${BOX_STORE_DIR}"/[0-9]*; do
@@ -418,7 +519,7 @@ if [[ -n "${BOX_STAGE}" ]]; then
     done
     quota_script="$(dirname "$(realpath "$0")")/box-store-quotas.py"
     if ! python3 "$quota_script" "${BOX_STORE_DIR}" "${BOX_OLD}" \
-            "${VOLUME_DIR}/.broker/box-registry.json" --clear; then
+            "${VOLUME_DIR}/.broker/state/owner-identities.db" --clear; then
         log "ERROR: failed to clear retained box project IDs"
         exit 4
     fi

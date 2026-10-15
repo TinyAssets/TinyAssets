@@ -112,6 +112,24 @@ def _read_nofollow_windows(root: Path, relpath: str, max_bytes: int) -> bytes:
     return data
 
 
+def _center_relative(root: Path, relpath: str) -> tuple[Path, str]:
+    """A path given against the data root names a center: use that center's box.
+
+    ``write_data_path`` and friends pass ``(<data root>, "<center>/<file>")``.
+    Binding on the data root itself matches no session and would fall back to
+    a host path, so the first component selects the center.
+    """
+    from tinyassets.storage import data_dir
+
+    if str(relpath) in ("", "."):
+        return root, relpath  # the root itself: no component selects a center
+    parts = _split(relpath)
+    if (len(parts) > 1 and not parts[0].startswith(".")
+            and os.path.abspath(root) == os.path.abspath(data_dir())):
+        return root / parts[0], "/".join(parts[1:])
+    return root, relpath
+
+
 def read_universe_file(
     universe_dir: Path | str,
     relpath: str,
@@ -124,7 +142,16 @@ def read_universe_file(
     the file is or sits behind a link, is not a regular file, or is over
     ``max_bytes``.
     """
-    root = Path(universe_dir)
+    root, relpath = _center_relative(Path(universe_dir), relpath)
+    from tinyassets.control_plane.binding import file_binding
+
+    binding = file_binding(root)
+    if binding is not None:
+        read = binding.provider.read(binding.handle, relpath, max_bytes=max_bytes)
+        binding.check_read(read.generation)
+        if read.size > max_bytes or len(read.data) != read.size:
+            raise UniverseFileError(f"over the {max_bytes}-byte bound or incomplete owner file")
+        return read.data
     if getattr(fs, "_POSIX", False):
         # A symlinked root is refused rather than resolved (D60).
         root_fd = fs.open_dir_nofollow(root.absolute())
@@ -166,7 +193,28 @@ def list_universe_entries(
     universe_dir: Path | str, relpath: str, *, limit: int | None = None,
 ) -> list[tuple[str, os.stat_result]]:
     """Sorted no-follow metadata, optionally scanning only the first limit entries."""
-    root = Path(universe_dir)
+    root, relpath = _center_relative(Path(universe_dir), relpath)
+    from tinyassets.control_plane.binding import file_binding
+
+    binding = file_binding(root)
+    if binding is not None:
+        result, cursor = [], None
+        while limit is None or len(result) < limit:
+            page_limit = 200 if limit is None else min(200, limit - len(result))
+            page = binding.provider.list(binding.handle, relpath, cursor=cursor,
+                                         limit=page_limit)
+            binding.check_roster()
+            for entry in page.entries:
+                kind = {"file": stat.S_IFREG, "dir": stat.S_IFDIR,
+                        "link": stat.S_IFLNK}.get(entry.kind, 0)
+                result.append((entry.name, os.stat_result(
+                    (kind, 0, 0, 0, 0, 0, entry.size, 0, 0, 0))))
+            if page.next_cursor is None:
+                break
+            if page.next_cursor == cursor:
+                raise UniverseFileError("owner directory cursor did not advance")
+            cursor = page.next_cursor
+        return sorted(result)
     if getattr(fs, "_POSIX", False):
         root_fd = fs.open_dir_nofollow(root.resolve(strict=False))
         try:
@@ -316,16 +364,38 @@ def write_universe_file(
     """
     if mode not in ("replace", "exclusive", "append"):
         raise ValueError(f"unknown write mode {mode!r}")
-    root = Path(universe_dir)
+    root, relpath = _center_relative(Path(universe_dir), relpath)
     parts = _split(relpath)
     name = parts[-1]
-    if getattr(fs, "_POSIX", False):
-        from tinyassets import role_content
+    from tinyassets.boxes.provider import WriteConflict, WriteMode
+    from tinyassets.control_plane.binding import file_binding
 
-        selected = role_content.locate(root, parts)
-        if selected is not None:
-            role_content.write(*selected, data, make_parents=make_parents, mode=mode)
-            return
+    binding = file_binding(root)
+    if binding is not None:
+        if not make_parents and len(parts) > 1:
+            parent = binding.provider.stat(binding.handle, "/".join(parts[:-1]))
+            if parent is None or parent.kind != "dir":
+                raise FileNotFoundError("owner parent directory does not exist")
+        generation = None
+        write_mode = WriteMode.CREATE if mode == "exclusive" else WriteMode.REPLACE
+        if mode == "append":
+            try:
+                previous = binding.provider.read(binding.handle, relpath,
+                                                 max_bytes=MAX_UNIVERSE_FILE_BYTES)
+            except FileNotFoundError:
+                write_mode = WriteMode.CREATE
+            else:
+                data = previous.data + data
+                generation, write_mode = previous.generation, WriteMode.CAS
+        try:
+            binding.provider.write(binding.handle, binding.operation_id("write"), relpath,
+                                   data, max_bytes=len(data), mode=write_mode,
+                                   expect_generation=generation)
+        except WriteConflict as exc:
+            if mode == "exclusive":
+                raise FileExistsError(relpath) from exc
+            raise
+        return
     nofollow = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     if not getattr(fs, "_POSIX", False):
         parent = _windows_parent(root, parts, create=make_parents)
@@ -403,12 +473,6 @@ def publish_staged_universe_file(
     source_root, target_root = Path(staging_root), Path(universe_dir)
     source_parts, target_parts = _split(staged_relpath), _split(relpath)
     if getattr(fs, "_POSIX", False):
-        from tinyassets import role_content
-
-        selected = role_content.locate(target_root, target_parts)
-        if selected is not None:
-            role_content.write(*selected, read_universe_file(source_root, staged_relpath))
-            return
         source_fd = _parent_dir_fd(source_root, source_parts, create=False)
         try:
             target_fd = _parent_dir_fd(target_root, target_parts, create=True)
@@ -473,7 +537,7 @@ def open_broker_liveness_lock(root: Path | str, name: str) -> int:
     """
     from contextlib import ExitStack
 
-    from tinyassets import role_modes
+    from tinyassets.boxes import layout as platform
 
     _check_component(name)
     with ExitStack() as stack:
@@ -502,10 +566,10 @@ def open_broker_liveness_lock(root: Path | str, name: str) -> int:
                     or not os.path.samestat(parent_info, os.stat(
                         directory, dir_fd=root_fd, follow_symlinks=False))):
                 raise UniverseFileError("daemon liveness proof changed")
-            os.fchown(parent, -1, role_modes.BROKER_READ_GID)
-            os.fchmod(parent, role_modes.LIVENESS_DIRECTORY_MODE)
-            os.fchown(fd, -1, role_modes.BROKER_READ_GID)
-            os.fchmod(fd, role_modes.LIVENESS_FILE_MODE)
+            os.fchown(parent, -1, platform.BROKER_READ_GID)
+            os.fchmod(parent, platform.LIVENESS_DIRECTORY_MODE)
+            os.fchown(fd, -1, platform.BROKER_READ_GID)
+            os.fchmod(fd, platform.LIVENESS_FILE_MODE)
             return fd
         except BaseException:
             os.close(fd)
@@ -548,6 +612,12 @@ def unlink_universe_file(universe_dir: Path | str, relpath: str) -> None:
     through a linked directory. ``FileNotFoundError`` when absent."""
     root = Path(universe_dir)
     parts = _split(relpath)
+    from tinyassets.control_plane.binding import file_binding
+
+    binding = file_binding(root)
+    if binding is not None:
+        binding.provider.remove(binding.handle, binding.operation_id("remove"), relpath)
+        return
     if not getattr(fs, "_POSIX", False):
         (_windows_parent(root, parts, create=False) / parts[-1]).unlink()
         return
@@ -620,27 +690,13 @@ def ensure_data_directory(path: Path | str) -> None:
         return
     root, relative = located
     parts = _split(relative)
-    from tinyassets import role_content
+    if parts and not parts[0].startswith('.'):
+        from tinyassets.control_plane.binding import file_binding
 
-    content = role_content.locate(root, parts)
-    if content is not None:
-        center, content_parts = content
-        descriptor = fs.open_dir_nofollow(center)
-        try:
-            machine = os.fstat(descriptor).st_gid
-        finally:
-            os.close(descriptor)
-        try:
-            existing = fs.open_dir_nofollow(target)
-        except FileNotFoundError:
-            pass
-        else:
-            try:
-                role_content._check_owner_directory(existing, machine)
-            finally:
-                os.close(existing)
-            return
-        role_content.ensure_directories(center, content_parts, machine=machine)
+        # A command center's directories live in its owner's box; a write
+        # through the admitted handle makes its parents. Nothing is created on
+        # a host path for a center, admitted or not.
+        file_binding(root / parts[0])
         return
     descriptor = _parent_dir_fd(root, [*parts, 'unused'], create=True)
     os.close(descriptor)

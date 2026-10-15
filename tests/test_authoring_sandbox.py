@@ -43,6 +43,19 @@ def env(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def alice_home(env):
+    """Alice's command center: a draft code node runs only in its owner's box."""
+    from tinyassets.daemon_server import claim_founder_home, ensure_universe_registered
+
+    home = env / "alice-home"
+    home.mkdir()
+    ensure_universe_registered(env, universe_id=home.name, universe_path=home,
+                               display_name=home.name)
+    claim_founder_home(env, "alice", home.name)
+    return home
+
+
+@pytest.fixture
 def store(env):
     from tinyassets.authoring.store import AuthoringStore
 
@@ -244,12 +257,12 @@ def test_isolation_report_never_claims_os_isolation_without_a_probe(monkeypatch)
     from tinyassets.authoring import sandbox
 
     monkeypatch.setattr(
-        sandbox, "_probe_sandbox", lambda: {"bwrap_available": False, "reason": "no bwrap"}
+        sandbox, "_probe_sandbox", lambda: {"box_available": False, "reason": "no owner box"}
     )
     report = sandbox.isolation_report()
     assert report["level"] == "in_process_confined"
     assert report["os_isolated"] is False
-    assert report["reason"] == "no bwrap"
+    assert report["reason"] == "no owner box"
 
 
 def test_positive_host_probe_cannot_admit_authoring_os_isolation(monkeypatch):
@@ -257,7 +270,7 @@ def test_positive_host_probe_cannot_admit_authoring_os_isolation(monkeypatch):
     from tinyassets.authoring.models import SandboxDenied
 
     monkeypatch.setattr(
-        sandbox, "_probe_sandbox", lambda: {"bwrap_available": True, "reason": ""}
+        sandbox, "_probe_sandbox", lambda: {"box_available": True, "reason": ""}
     )
     report = sandbox.isolation_report()
     assert report["level"] == "in_process_confined"
@@ -273,7 +286,7 @@ def test_policy_demanding_os_isolation_fails_closed(monkeypatch):
     from tinyassets.authoring.models import SandboxDenied
 
     monkeypatch.setattr(
-        sandbox, "_probe_sandbox", lambda: {"bwrap_available": False, "reason": "no bwrap"}
+        sandbox, "_probe_sandbox", lambda: {"box_available": False, "reason": "no owner box"}
     )
     policy, _ = sandbox.policy_from_declaration({"requires_os_isolation": True})
     with pytest.raises(SandboxDenied) as exc:
@@ -522,7 +535,7 @@ def test_positive_host_probe_denies_os_isolation_before_draft_execution(
         ],
     )
     monkeypatch.setattr(
-        sandbox, "_probe_sandbox", lambda: {"bwrap_available": True, "reason": ""}
+        sandbox, "_probe_sandbox", lambda: {"box_available": True, "reason": ""}
     )
     draft_executed = False
 
@@ -715,7 +728,7 @@ def _code_session(store, source, **overrides):
     return started["session_id"]
 
 
-def test_working_code_node_executes_and_reports_measured_budget(store):
+def test_working_code_node_executes_and_reports_measured_budget(store, alice_home):
     from tinyassets.authoring import service
 
     session_id = _code_session(
@@ -737,7 +750,7 @@ def test_working_code_node_executes_and_reports_measured_budget(store):
     assert result["published"] is False
 
 
-def test_raising_code_node_fails_the_test_and_blocks_publication(store):
+def test_raising_code_node_fails_the_test_and_blocks_publication(store, alice_home):
     from tinyassets.authoring import service
     from tinyassets.authoring.models import AuthoringValidationError
 
@@ -921,23 +934,17 @@ def test_destination_display_never_echoes_userinfo_or_query(store):
 
 
 def test_a_host_without_the_os_sandbox_refuses_instead_of_raising(store, monkeypatch):
-    """No OS sandbox -> a `sandbox.unavailable` record, not an exception.
+    """No owner box -> a `sandbox.unavailable` record, not an exception.
 
-    Design D2: a code node refuses rather than running unsandboxed, so the
-    launcher factory raises `SandboxUnavailableError` on a host with no
-    bwrap. The authoring preview has to surface that as a refused execution
-    the author can read. `tests/conftest.py` injects the tests-only launcher
-    for the whole suite, so this restores the production path deliberately.
+    Design D2: a code node refuses rather than running unsandboxed, so the box
+    runner raises `SandboxUnavailableError` with no admitted owner box. The
+    authoring preview has to surface that as a refused execution the author
+    can read. The box double admits every directory, so this withdraws it.
     """
-    from tinyassets import node_sandbox
     from tinyassets.authoring import service
+    from tinyassets.control_plane import binding
 
-    def _no_sandbox():
-        raise node_sandbox.SandboxUnavailableError(
-            "code nodes need the OS sandbox: bwrap not found on PATH"
-        )
-
-    monkeypatch.setattr(node_sandbox, "DEFAULT_LAUNCHER_FACTORY", _no_sandbox)
+    monkeypatch.setattr(binding, "file_binding", lambda root: None)
 
     session_id = _code_session(store, "def run(state):\n    return {'b': 1}\n")
 
@@ -946,5 +953,5 @@ def test_a_host_without_the_os_sandbox_refuses_instead_of_raising(store, monkeyp
     execution = result["executions"][0]
     assert execution["status"] == "refused"
     assert execution["reason"].startswith("sandbox.unavailable:")
-    assert "bwrap not found on PATH" in execution["reason"]
+    assert "admitted owner box" in execution["reason"]
     assert result["clean"] is False

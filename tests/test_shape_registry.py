@@ -67,7 +67,9 @@ def test_c5_host_domain_and_spawn_guards(tmp_path: Path):
     assert check_shapes.dead_entry_problems(tmp_path) == []
     host = tmp_path / "tinyassets" / "host_pool"
     host.mkdir(parents=True)
+    (host / "__init__.py").write_text("", encoding="utf-8")
     assert "host-paths: tinyassets/host_pool" in check_shapes.dead_entry_problems(tmp_path)
+    (host / "__init__.py").unlink()
     host.rmdir()
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
@@ -114,8 +116,8 @@ def test_c5_retired_prototype_compose_and_local_mcp_guards(tmp_path: Path):
 
     runner = tmp_path / "fantasy_daemon/__main__.py"
     runner.parent.mkdir()
-    runner.write_text('if "--mcp" in argv:\n    pass\n', encoding="utf-8")
-    assert "spawn-entry: local MCP runner returned" in check_shapes.dead_entry_problems(tmp_path)
+    runner.write_text("pass\n", encoding="utf-8")
+    assert "host-paths: fantasy_daemon" in check_shapes.dead_entry_problems(tmp_path)
 
 
 def test_public_route_and_opt_in_flag_on_existing_file():
@@ -155,6 +157,28 @@ def test_new_model_call_entry_symbol_is_detected_outside_registered_path():
     assert check_shapes.registered_path(
         "tinyassets/control_plane/sub/worker.py", "tinyassets/control_plane/**"
     )
+
+
+def test_owner_tick_and_account_limit_guards(tmp_path: Path):
+    code = tmp_path / "tinyassets" / "legacy.py"
+    code.parent.mkdir()
+    code.write_text(
+        'TINYASSETS_ASSIGNED_QUEUE_CONSUMER = "on"\nRUN_WRITE_LIMIT = 10\n',
+        encoding="utf-8",
+    )
+    assert check_shapes.control_plane_policy_problems(tmp_path) == [
+        "opt-in-flags: tinyassets/legacy.py gates the owner tick",
+        "limit-names: tinyassets/legacy.py contains a retired account meter",
+    ]
+    for rel in check_shapes.CONSUMER_DISABLE_SITES:
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('TINYASSETS_ASSIGNED_QUEUE_CONSUMER = "off"\n', encoding="utf-8")
+        assert check_shapes.added_line_problems({rel: path.read_text()}) == []
+    assert check_shapes.control_plane_policy_problems(tmp_path) == [
+        "opt-in-flags: tinyassets/legacy.py gates the owner tick",
+        "limit-names: tinyassets/legacy.py contains a retired account meter",
+    ]
 
 
 def test_base_pin_parser_records_ceiling_and_probes():

@@ -228,7 +228,7 @@ def test_agent_bindings_is_the_shape_main_has(tmp_path) -> None:
 
 
 def test_account_deletion_removes_the_persons_rows_everywhere_and_only_theirs(
-    tmp_path,
+    tmp_path, monkeypatch,
 ) -> None:
     from tests.test_account_deletion import (
         HOME_A,
@@ -243,6 +243,8 @@ def test_account_deletion_removes_the_persons_rows_everywhere_and_only_theirs(
 
     base = tmp_path / "data"
     base.mkdir()
+    # The owner box is destroyed on the one data root the daemon serves.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     _seed_user(base, A, HOME_A)
     _seed_user(base, B, HOME_B)
     _seed_outbound(base)
@@ -324,18 +326,24 @@ def _read(universe: str) -> dict:
 
 
 def test_the_handle_saves_and_reads_the_callers_own_row(homes) -> None:
+    from tinyassets.api.graph_reads import read_graph as domain_read
+
     with _as(ALICE):
         assert _read("u-alice")["app_ui"]["revision"] == 0
+        assert "ui_library" not in _read("u-alice")["app_ui"]
         saved = _write("u-alice", 0, {"ui_library": [_bundle()]})
         assert saved["status"] == "saved", saved
         assert saved["app_ui"]["revision"] == 1
-        # The whole-row read carries the platform's blank command center
-        # alongside the stored row (read_app_ui), so it is a superset of what
-        # was written rather than equal to it. The STORED fields must still
+        # The connector's no-query read is the index: ids and sizes, no bodies.
+        # The whole row, including the platform's blank command center, is the
+        # domain read the owner door uses. The STORED fields must still
         # round-trip exactly, and the addition must be read-only.
         read = _read("u-alice")["app_ui"]
-        assert {k: v for k, v in read.items() if k != "platform_default"} == saved["app_ui"]
-        assert read["platform_default"]["ui_id"] == "platform:blank"
+        assert [u["ui_id"] for u in read["uis"]] == ["office"]
+        assert "markup" not in read["uis"][0]
+        whole = json.loads(domain_read(target="app_ui", graph_id="u-alice"))["app_ui"]
+        assert {k: v for k, v in whole.items() if k != "platform_default"} == saved["app_ui"]
+        assert whole["platform_default"]["ui_id"] == "platform:blank"
         assert "platform_default" not in saved["app_ui"], "never stored, only served"
         assert _write("u-alice", 0, {"ui_library": []})["error"] == "app_ui_conflict"
         assert _write("u-alice", 1, {"nope": 1})["error"] == "app_ui_validation_error"
@@ -352,7 +360,11 @@ def test_another_person_can_neither_read_nor_write_into_a_universe_they_lack(hom
         written = _write("u-alice", 0, {"ui_library": [_bundle("den")]})
         assert "app_ui" not in written and written.get("error"), written
     with _as(ALICE):
-        assert _read("u-alice")["app_ui"]["ui_library"] == [_bundle()]
+        from tinyassets.api.graph_reads import read_graph as domain_read
+
+        assert [u["ui_id"] for u in _read("u-alice")["app_ui"]["uis"]] == ["office"]
+        whole = json.loads(domain_read(target="app_ui", graph_id="u-alice"))
+        assert whole["app_ui"]["ui_library"] == [_bundle()]
     assert len(_rows(homes)) == 1
 
 
@@ -388,8 +400,8 @@ def test_the_route_the_handbook_names_works_on_the_engine_surface(tmp_path, monk
         payload_json=json.dumps({"ui_library": [_bundle()]}),
     ))
     assert saved["status"] == "saved", saved
-    # The engine reads an index, never the whole library (a model's result is
-    # bounded); the full row is the connector's no-query read.
+    # Both model doors read an index, never the whole library. The full row
+    # is the owner door's no-query read.
     index = json.loads(engine.read_graph(target="app_ui"))["app_ui"]
     assert index["revision"] == saved["app_ui"]["revision"]
     assert [u["ui_id"] for u in index["uis"]] == ["office"]

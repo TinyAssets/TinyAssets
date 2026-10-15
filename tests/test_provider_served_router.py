@@ -224,13 +224,17 @@ def _served_context(
         "auth_json_b64": "e30=",
     }
     if path_backed:
-        auth_home = universe_dir / "codex-auth"
+        from tinyassets.credential_vault import _prepare_credential_root
+
+        # Path-backed material lives in the platform custody root outside the
+        # owner's box; the record names it by its center-relative path.
+        auth_home = _prepare_credential_root(universe_dir) / "codex-auth"
         auth_home.mkdir()
         (auth_home / "auth.json").write_bytes(b'{"tokens":{"access_token":"first"}}')
         credential = {
             "credential_type": "llm_subscription",
             "service": "codex",
-            "codex_home": str(auth_home),
+            "codex_home": str(universe_dir / "codex-auth"),
         }
     write_credential_vault(
         universe_dir,
@@ -890,7 +894,9 @@ def test_path_backed_credential_snapshot_seals_inflight_cross_process_rotation(
             started.cancel()
             task.result()
             raise AssertionError("the served call returned before the provider started")
-        auth_file = universe_dir / "codex-auth" / "auth.json"
+        from tinyassets.credential_vault import _credential_root
+
+        auth_file = _credential_root(universe_dir) / "codex-auth" / "auth.json"
         subprocess.run(
             [
                 sys.executable,

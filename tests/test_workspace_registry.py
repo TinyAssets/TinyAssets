@@ -196,59 +196,6 @@ class RegistryTransportTests(unittest.TestCase):
             result = self.finish(runner, transfer, "transport_failed")
             self.assertEqual(result.bytes_transferred, 22)
 
-    def close_registry_relay(self, runner, transfer):
-        from tinyassets.workspace_registry_relay import RegistryRelay
-
-        # Transport is real; only the unrelated sidecar-path cleanup is absent.
-        relay = object.__new__(RegistryRelay)
-        relay.budget, relay._closed = transfer, False
-        relay._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        relay._thread = threading.Thread(target=lambda: None)
-        relay._thread.start()
-        relay._workers, relay._lock = [runner], threading.Lock()
-        relay.path, relay._identity = None, None
-        with patch('tinyassets.workspace_registry_relay.role_relays.remove'):
-            relay.close()
-        return relay
-
-    def test_retirement_charges_maximum_when_a_tunnel_has_not_drained(self):
-        client, relay = self.pair()
-        upstream, _server = self.pair()
-        transfer = budget(timeout_s=10)
-        with patch.object(registry, "_connect_pinned", return_value=upstream):
-            runner = self.start(relay, transfer, resolver=lambda *_: ["93.184.216.34"],
-                                classifier=public_only)
-            client.sendall(request())
-            self.assertEqual(client.recv(1024), registry._CONNECTED)
-            closed = self.close_registry_relay(runner, transfer)
-        self.assertEqual(closed.failure, 'transport_failed')
-        self.assertEqual(closed.charge, transfer.max_bytes)
-        self.assertFalse(runner.is_alive())
-        self.assertEqual(closed.snapshot.active, 0)
-
-    def test_retirement_waits_for_clean_tail_and_charges_actual_bytes(self):
-        client, relay = self.pair()
-        upstream, server = self.pair()
-        transfer = budget()
-        with patch.object(registry, "_connect_pinned", return_value=upstream):
-            runner = self.start(relay, transfer, resolver=lambda *_: ["93.184.216.34"],
-                                classifier=public_only)
-            client.sendall(request())
-            self.assertEqual(client.recv(1024), registry._CONNECTED)
-            client.close()
-            self.assertEqual(server.recv(1024), b"")
-            server.sendall(b'charged tail')
-            finish = threading.Timer(0.05, server.shutdown, args=(socket.SHUT_WR,))
-            finish.start()
-            try:
-                closed = self.close_registry_relay(runner, transfer)
-            finally:
-                finish.join()
-        self.assertIsNone(closed.failure)
-        self.assertEqual(closed.charge, len(b'charged tail'))
-        self.assertFalse(runner.is_alive())
-        self.assertEqual(closed.snapshot.active, 0)
-
     def test_byte_limit_stops_transport_without_overreading(self):
         client, relay = self.pair()
         upstream, server = self.pair()
