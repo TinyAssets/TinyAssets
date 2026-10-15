@@ -152,7 +152,46 @@ _SUBSCRIPTION_ALIAS_SLOTS_BY_SERVICE: dict[
 
 def credential_vault_path(universe_dir: str | Path) -> Path:
     """Return the vault file path for *universe_dir*."""
-    return Path(universe_dir) / VAULT_FILENAME
+    return _credential_root(Path(universe_dir)) / VAULT_FILENAME
+
+
+def _credential_root(universe: Path) -> Path:
+    from tinyassets.storage_layout import ACTIVE_BOX_LAYOUT
+
+    if ACTIVE_BOX_LAYOUT == "owner-box":
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", universe.name):
+            raise ValueError("invalid credential command center")
+        return universe.parent / ".platform" / "credential-vaults" / universe.name
+    return universe
+
+
+def _prepare_credential_root(universe: Path) -> Path:
+    root = _credential_root(universe)
+    if root == universe:
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+    from tinyassets.role_modes import BROKER_READ_GID
+
+    # The guest's XFS tree is never used as a parent for a credential write.
+    # All components here are daemon owned; the broker group can traverse.
+    platform = root.parent.parent
+    if not platform.exists():
+        platform.mkdir(mode=0o711)
+    if platform.is_symlink() or not platform.is_dir():
+        raise PermissionError("credential platform parent is invalid")
+    for directory in (root.parent, root):
+        if directory.is_symlink():
+            raise PermissionError("credential custody parent is a link")
+        if not directory.exists():
+            directory.mkdir(mode=0o710)
+            if os.name != "nt":
+                os.chown(directory, -1, BROKER_READ_GID)
+        info = directory.stat()
+        if (not stat.S_ISDIR(info.st_mode) or
+                (os.name != "nt" and info.st_uid != os.geteuid()) or
+                stat.S_IMODE(info.st_mode) & 0o007):
+            raise PermissionError("credential custody parent is not private")
+    return root
 
 
 def vault_exists(universe_dir: str | Path | None) -> bool:
@@ -173,6 +212,12 @@ def _as_path(value: Any, universe_dir: Path) -> Path | None:
     candidate = Path(value.strip()).expanduser()
     if not candidate.is_absolute():
         candidate = universe_dir / candidate
+    root = _credential_root(universe_dir)
+    if root != universe_dir:
+        try:
+            candidate = root / candidate.relative_to(universe_dir)
+        except ValueError:
+            pass
     return candidate
 
 
@@ -181,7 +226,7 @@ def _secret_artifact_dir(universe_dir: Path, service: str) -> Path:
         ch if ch.isalnum() or ch in {"-", "_"} else "-"
         for ch in service.strip().lower()
     ) or "credential"
-    target = universe_dir / CREDENTIAL_ARTIFACT_DIR / service_part
+    target = _prepare_credential_root(universe_dir) / CREDENTIAL_ARTIFACT_DIR / service_part
     target.mkdir(parents=True, exist_ok=True)
     _chmod_best_effort(target.parent, 0o700)
     _chmod_best_effort(target, 0o700)
@@ -596,7 +641,7 @@ def _persist_credential_vault_file(
     prior file intact so the caller compensates the owner rows.
     """
     universe = Path(universe_dir)
-    universe.mkdir(parents=True, exist_ok=True)
+    _prepare_credential_root(universe)
     path = credential_vault_path(universe)
     data = (
         json.dumps({"schema_version": 1, "credentials": records}, indent=2, sort_keys=True)
@@ -1145,7 +1190,7 @@ def _subscription_material(
             record, universe_dir, ("codex_home", "home", "auth_home", "path"),
             "auth_json_path")
         if home is None:
-            home = universe_dir / CREDENTIAL_ARTIFACT_DIR / "codex"
+            home = _credential_root(universe_dir) / CREDENTIAL_ARTIFACT_DIR / "codex"
         auth_file = _contained_path(universe_dir, str(home / "auth.json"))
         if auth_file is None:
             raise PermissionError("exactly one usable subscription credential is required")
@@ -1189,10 +1234,15 @@ def _subscription_record_digest(
 def _contained_path(universe_dir: Path, raw: object) -> Path | None:
     if not isinstance(raw, str) or not raw.strip():
         return None
-    root = universe_dir.resolve(strict=True)
+    root = _credential_root(universe_dir).resolve(strict=True)
     candidate = Path(raw.strip())
     if not candidate.is_absolute():
         candidate = root / candidate
+    elif root != universe_dir:
+        try:
+            candidate = root / candidate.relative_to(universe_dir)
+        except ValueError:
+            pass
     lexical = Path(os.path.abspath(candidate))
     try:
         relative = lexical.relative_to(root)
@@ -1252,7 +1302,7 @@ def _usable_subscription_record(
             record, universe_dir, ("codex_home", "home", "auth_home", "path"),
             "auth_json_path")
         if home is None:
-            home = universe_dir / CREDENTIAL_ARTIFACT_DIR / "codex"
+            home = _credential_root(universe_dir) / CREDENTIAL_ARTIFACT_DIR / "codex"
         contained_home = _contained_path(universe_dir, str(home))
         if contained_home is None or not (contained_home / "auth.json").is_file():
             raise PermissionError("exactly one usable subscription credential is required")
@@ -2305,7 +2355,7 @@ def resolve_claude_config_dir(universe_dir: str | Path | None) -> Path | None:
         config_dir = _claude_config_dir_from_record(record, universe)
         if config_dir is not None:
             return config_dir
-    materialized = universe / CREDENTIAL_ARTIFACT_DIR / "claude"
+    materialized = _credential_root(universe) / CREDENTIAL_ARTIFACT_DIR / "claude"
     if materialized.is_dir():
         return materialized
     return None

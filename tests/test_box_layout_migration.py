@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -76,7 +77,7 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
     )
     monkeypatch.setattr(
         migration.subprocess, "run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0),
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
     )
 
     def copy(source, target, uid):
@@ -121,3 +122,42 @@ def test_xfs_mount_accepts_real_prjquota_output(monkeypatch, tmp_path):
     monkeypatch.setattr(migration.subprocess, "run", discard)
     with pytest.raises(RuntimeError, match="no discard"):
         migration._mounted(tmp_path)
+
+
+def test_guest_copy_omits_persistent_credential_sources(tmp_path):
+    source, guest = tmp_path / "center", tmp_path / "guest"
+    source.mkdir()
+    guest.mkdir()
+    (source / "note.txt").write_text("owner content")
+    (source / ".credential-vault.json").write_text("long-lived-token")
+    (source / ".credentials" / "codex").mkdir(parents=True)
+    (source / ".credentials" / "codex" / "auth.json").write_text("refresh-token")
+    (source / ".credentials.json").write_text("other-token")
+    (source / ".oauth-refresh").write_text("refresh-token")
+
+    migration._copy(source, guest, os.getuid())
+
+    assert (guest / "note.txt").read_text() == "owner content"
+    assert all(not (guest / name).exists() for name in migration._CREDENTIAL_ENTRIES)
+
+
+def test_private_copy_selects_only_credential_sources(tmp_path, monkeypatch):
+    source, private = tmp_path / "center", tmp_path / "private"
+    source.mkdir()
+    (source / "note.txt").write_text("owner content")
+    (source / ".credential-vault.json").write_text("token")
+    commands = []
+
+    def run(argv, **kwargs):
+        commands.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(migration.subprocess, "run", run)
+    monkeypatch.setattr(migration.os, "chown", lambda *args: None)
+    migration._copy_credentials(source, private)
+
+    assert len(commands) == 2
+    assert "--exclude=*" in commands[0]
+    assert "--include=/.credential-vault.json" in commands[0]
+    assert "--include=/.credentials/***" in commands[0]
+    assert all("note.txt" not in word for word in commands[0])

@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
-import json
 import os
 import stat
 import time
@@ -55,65 +54,34 @@ class Custody:
 
 @dataclass(frozen=True, slots=True)
 class BoxCustody(Custody):
-    """CLI credential custody in the admitted box, with its pin in platform state."""
+    """Platform-held CLI credential custody for an admitted owner box."""
 
     binding: object
 
     def _vault(self):
-        from tinyassets.boxes.file_wire import MAX_DATA
         from tinyassets.credential_vault import (
             _canonical_digest,
-            _decode_codex_auth_json,
-            _records_from_payload,
+            _subscription_material,
+            _usable_subscription_record,
+            load_credential_vault,
         )
 
         self.binding.validate(self.owner_user_id, self.universe_dir)
-        provider, handle = self.binding.provider, self.binding.handle
-        snapshot = provider.read_many(handle, ["/cc/.credential-vault.json"],
-                                      max_total=MAX_DATA)
-        raw = snapshot.files.get("/cc/.credential-vault.json")
-        if raw is None:
-            raise PermissionError("subscription credential is unavailable in owner box")
-        try:
-            records = _records_from_payload(json.loads(raw))
-            matching = [row for row in records if row.get("credential_type") == "llm_subscription"
-                        and row.get("service") == self.reference.service]
-            if len(matching) != 1:
-                raise ValueError
-            record = matching[0]
-            if self.reference.service != "codex":
-                raise ValueError
-            encoded = record.get("auth_json_b64")
-            if isinstance(encoded, str) and encoded.strip():
-                material = _decode_codex_auth_json(encoded)
-            else:
-                # Only the canonical relative artifact is accepted. A path
-                # embedded in an old record is never a host-path authority.
-                if any(record.get(key) for key in (
-                        "codex_home", "home", "auth_home", "path", "auth_json_path")):
-                    raise ValueError
-                artifact = provider.read_many(
-                    handle, ["/cc/.credentials/codex/auth.json"], max_total=MAX_DATA,
-                )
-                material = artifact.files.get("/cc/.credentials/codex/auth.json")
-                if material is None or artifact.generation != snapshot.generation:
-                    raise ValueError
-        except (KeyError, TypeError, ValueError):
-            raise PermissionError("subscription credential is invalid in owner box") from None
-        if provider.committed_generation(handle) != snapshot.generation:
-            raise PermissionError("subscription credential changed during box read")
+        records = load_credential_vault(self.universe_dir)
+        record = _usable_subscription_record(self.universe_dir, self.reference.service)
+        material = _subscription_material(self.universe_dir, self.reference.service, record)
         digest = _canonical_digest({
             "material_digest": "sha256:" + hashlib.sha256(material).hexdigest(),
             "record": record,
         })
-        return records, record, material, digest, snapshot.generation
+        return records, record, material, digest
 
     def reload(self) -> LLMCredentialCustodyReference | None:
         from tinyassets.credential_vault import _subscription_reference_matches
 
         try:
-            _, _, _, digest, _ = self._vault()
-        except PermissionError:
+            _, _, _, digest = self._vault()
+        except (PermissionError, ValueError, OSError):
             return None
         with SQLiteProviderWorkAuthorityStore(self.universe_dir.parent).connection() as conn:
             owner = conn.execute(
@@ -143,19 +111,15 @@ class BoxCustody(Custody):
     def materialize(self, auth: dict) -> dict[str, bytes]:
         if auth["service"] != self.reference.service or not self.current():
             raise PermissionError("external-agent custody changed before launch")
-        _, _, material, _, _ = self._vault()
+        _, _, material, _ = self._vault()
         if len(material) > MAX_AUTH_BYTES or not self.current():
             raise PermissionError("external-agent custody changed during materialization")
         return {"auth.json": material}
 
     def compare_and_swap(self, auth: dict, files: dict[str, bytes]) -> bool:
-        from tinyassets.boxes.file_wire import MAX_DATA
-        from tinyassets.boxes.provider import WriteConflict, WriteMode
         from tinyassets.credential_vault import (
-            _canonical_digest,
             _decode_codex_auth_json,
             _subscription_reference_digest,
-            llm_subscription_credential_record,
         )
 
         if self.reference.reference_digest != _subscription_reference_digest(
@@ -165,51 +129,33 @@ class BoxCustody(Custody):
             raise PermissionError("CLI refresh requires current custody pin format")
         if not self.current():
             return False
-        records, old, _, digest, generation = self._vault()
-        if digest != self.reference._record_digest:
-            return False
         data = files["auth.json"]
         encoded = base64.b64encode(data).decode("ascii")
         _decode_codex_auth_json(encoded)
-        replacement = llm_subscription_credential_record(
-            service=auth["service"], auth_json_b64=encoded,
-        )
-        new_record = {**old, **replacement}
-        records[records.index(old)] = new_record
-        body = (json.dumps({"schema_version": 1, "credentials": records},
-                           indent=2, sort_keys=True) + "\n").encode()
-        if len(body) > MAX_DATA:
-            raise ValueError("external-agent credential vault exceeds box bound")
-        op_id = "cli-refresh:" + hashlib.sha256(
-            (self.reference.reference_id + "\0").encode() + body).hexdigest()
-        try:
-            self.binding.provider.write(
-                self.binding.handle, op_id, "/cc/.credential-vault.json", body,
-                max_bytes=MAX_DATA, mode=WriteMode.CAS, expect_generation=generation,
+        # The token-spending lease spans this write and its custody-row carry.
+        # The vault is in platform storage and no guest file RPC sees its bytes.
+        with exclusive_credential_vault(self.universe_dir) as write:
+            if not self.current():
+                return False
+            record = llm_subscription_credential_record(
+                service=auth["service"], auth_json_b64=encoded,
             )
-        except WriteConflict:
-            return False
-        new_digest = _canonical_digest({
-            "material_digest": "sha256:" + hashlib.sha256(data).hexdigest(),
-            "record": new_record,
-        })
+            write([record], owner_user_id=self.owner_user_id,
+                  universe_id=self.universe_dir.name)
+            return self._carry_after_write(auth)
+
+    def _carry_after_write(self, auth: dict) -> bool:
         with SQLiteProviderWorkAuthorityStore(self.universe_dir.parent).connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            changed = conn.execute(
-                "UPDATE llm_credential_custody SET record_digest = ? "
-                "WHERE reference_id = ? AND owner_user_id = ? AND universe_id = ? "
-                "AND service = ? AND generation = ? AND reference_digest = ? "
-                "AND record_digest = ? AND EXISTS ("
-                "SELECT 1 FROM llm_credential_deposit_owners WHERE universe_id = ? "
-                "AND service = ? AND owner_user_id = ?)",
-                (new_digest, self.reference.reference_id, self.owner_user_id,
-                 self.universe_dir.name, self.reference.service, self.reference.generation,
-                 self.reference.reference_digest, digest, self.universe_dir.name,
-                 self.reference.service, self.owner_user_id),
+            carried = carry_llm_subscription_custody(
+                conn, universe_dir=self.universe_dir,
+                owner_user_id=self.owner_user_id,
+                universe_id=self.universe_dir.name, service=auth["service"],
+                expected_record_digest=self.reference._record_digest,
             )
-            if changed.rowcount != 1:
+            if not carried:
                 conn.rollback()
-                raise RuntimeError("external-agent custody carry failed after box write")
+                raise RuntimeError("external-agent custody carry failed after credential write")
             conn.commit()
         return True
 
