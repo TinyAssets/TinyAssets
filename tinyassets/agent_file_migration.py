@@ -331,20 +331,35 @@ def _keep_sidecars_readable(base: Path) -> None:
             os.chown(side, owner.st_uid, owner.st_gid)
 
 
-def pending(base_path: str | Path) -> int:
-    """How many bindings ``apply`` would move. Read-only; opens no schema."""
+def inspect_bindings(base_path: str | Path) -> dict[str, object]:
+    """What ``check`` looked at. ``pending`` is the addressable count ``apply`` moves.
+
+    A catalogue that was never created is a real zero. An unreadable catalogue
+    raises, so a caller cannot confuse "could not look" with "nothing to move".
+    """
     from tinyassets.commons_catalog import _binding_from_row
 
     base = Path(base_path)
     if not _catalogue_exists(base):
-        return 0
+        return {"pending": 0, "catalogue": False, "bindings": 0, "addressable": 0}
     conn = sqlite3.connect(db_path(base), timeout=30.0)
     try:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT * FROM agent_bindings").fetchall()
     finally:
         conn.close()
-    return sum(1 for row in rows if _is_agent(_binding_from_row(row)))
+    addressable = sum(1 for row in rows if _is_agent(_binding_from_row(row)))
+    return {
+        "pending": addressable,
+        "catalogue": True,
+        "bindings": len(rows),
+        "addressable": addressable,
+    }
+
+
+def pending(base_path: str | Path) -> int:
+    """How many bindings ``apply`` would move. Read-only; opens no schema."""
+    return int(inspect_bindings(base_path)["pending"])
 
 
 def _post_commit_warning(step: str, error: Exception) -> None:
@@ -434,9 +449,9 @@ def main(argv: list[str] | None = None) -> int:
                      help="the fresh full-volume snapshot this run restores to")
     args = parser.parse_args(argv)
     if args.command == "check":
-        count = pending(args.base)
-        print(json.dumps({"pending": count}))
-        return PENDING if count else 0
+        report = inspect_bindings(args.base)
+        print(json.dumps(report, sort_keys=True))
+        return PENDING if report["pending"] else 0
     print(json.dumps(apply(args.base, backup=args.backup), sort_keys=True))
     return 0
 

@@ -96,6 +96,11 @@ on:
       # Run inside the live container before every swap (deploy-prod.yml
       # "Wait for in-flight turns").
       - 'scripts/turns_in_flight.py'
+      # deploy-prod.yml runs the provision check on the runner before any host
+      # change, and copies the backup verifier onto the droplet for the fresh
+      # snapshot gate. A change to either has to reach a deploy.
+      - 'scripts/verify_core_canary_provision.py'
+      - 'scripts/verify_deploy_backup.py'
       - 'scripts/runtime_paths.py'
       - 'scripts/pushover_page.py'
       - 'scripts/triage_classify.py'
