@@ -235,7 +235,7 @@ def test_require_sandbox_accepts_box_available():
     assert result["sandbox_status"]["box_available"] is True
 
 
-def test_require_sandbox_rejects_missing_bwrap():
+def test_require_sandbox_rejects_missing_owner_box():
     post_fn = _make_post_fn(
         (_INIT_OK, "sid1"),
         (_NOTIF_NONE, "sid1"),
@@ -246,7 +246,7 @@ def test_require_sandbox_rejects_missing_bwrap():
             "http://fake/mcp", 10.0, require_sandbox=True, post_fn=post_fn
         )
     assert exc_info.value.code == 5
-    assert "bwrap not found" in exc_info.value.msg
+    assert "owner box runtime is unavailable: no owner box" in exc_info.value.msg
 
 
 # ---------------------------------------------------------------------------

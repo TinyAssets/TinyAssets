@@ -434,12 +434,17 @@ def test_an_UNOWNED_directory_carrying_the_soul_is_not_a_dependent(
 
     us, _actor = universe_surface
     bid = _create(us, "the-loop")
-    archived = _base_path() / "_removed_universes_20260829"
-    archived.mkdir()
+    # Owner files are written only through an admitted box; an archive has no
+    # owner to admit it, so its soul is written aside and the directory moved in.
+    staged = tmp_path / "archive-staging" / "removed-universe"
+    staged.mkdir(parents=True)
     write_universe_soul(
-        archived, name="Archived", purpose="used to run the loop",
+        staged, name="Archived", purpose="used to run the loop",
         loop_branch_def_id=bid,
     )
+    archived = _base_path() / "_removed_universes_20260829"
+    staged.rename(archived)
+    assert (archived / "soul.md").is_file()
 
     assert _delete(us, bid)["status"] == "deleted"
 

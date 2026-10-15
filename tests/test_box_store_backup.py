@@ -220,7 +220,9 @@ else:
         capture_output=True, text=True,
     )
     assert staged_owner_box.returncode == 4, staged_owner_box.stdout + staged_owner_box.stderr
-    assert "layout marker" in staged_owner_box.stdout
+    # A staged owner-box generation is refused before the pre-store fallback is
+    # considered: it is never restorable without its paired box member.
+    assert "owner-box generation has no box member" in staged_owner_box.stdout
     assert log.read_text().count("stop boxhostd.service") == stopped_before
     assert (volume / "record.txt").read_text() == "current"
 

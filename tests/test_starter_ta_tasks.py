@@ -107,7 +107,8 @@ def test_bash_ta_records_memory_and_generates_document_without_forged_receipts(
     assert isinstance(forged, str) and "completed_capabilities" in forged
     document = asyncio.run(engine.write_file(path="exports/forecast.md",
                            content="# Orchard forecast\n\n| Crop | Status |\n| Apple | Ready |\n"))
-    assert "wrote 56 bytes to /u/exports/forecast.md" == document
+    # Relative paths resolve under the owner box root, which the result names.
+    assert "wrote 56 bytes to /cc/exports/forecast.md" == document
     reread = asyncio.run(engine.read_file(path="exports/forecast.md"))
     assert "Orchard forecast" in reread and "Apple" in reread
 
