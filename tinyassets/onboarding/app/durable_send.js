@@ -180,4 +180,3 @@
       throw new Error("voice_turn_busy");
     return sendTurn(message,message,{inputMethod:"spoken",keepComposer:true,returnReply:true});
   }
-
