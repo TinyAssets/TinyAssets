@@ -144,11 +144,22 @@ class FakeDocker:
     def __init__(self, inventory, root):
         self.data = inventory
         self.calls = []
+        self.calls_all = []
+        self.layer_prunes = []
+        self.builder_prunes = []
+        self.image_ids = {}
         self.deadline = float("inf")
         self.before_inventory = lambda: None
         self.root = root
 
     def json(self, *args):
+        if args[:2] == ("image", "inspect"):
+            identity = self.image_ids.get(args[2] if len(args) > 2 else "")
+            if not identity:
+                raise retention.Refusal("docker_refused_or_invalid_output")
+            return [{"Id": identity}]
+        if args[:2] == ("system", "df"):
+            return ""
         return dict(
             Driver="overlay2", DockerRootDir=str(self.root), OSType="linux", Architecture="x86_64"
         )
@@ -157,11 +168,23 @@ class FakeDocker:
         self.before_inventory()
         return deepcopy(self.data[:2])
 
-    def command(self, *args):
+    def command(self, *args, timeout_cap=10):
+        self.calls_all.append(args)
+        if args[:2] == ("system", "df"):
+            return '{"Type":"Images","TotalCount":"0","Size":"0B","Reclaimable":"0B"}\n'
+        if args[:3] == ("image", "prune", "-f"):
+            assert "--volumes" not in args and "-a" not in args
+            self.layer_prunes.append(args)
+            return ""
+        if args[:3] == ("builder", "prune", "-af"):
+            assert "--volumes" not in args and "volume" not in args
+            self.builder_prunes.append(args)
+            return ""
         assert args[:2] == ("image", "rm")
         assert len(args) == 3 and retention.DIGEST.fullmatch(args[2])
         self.calls.append(args)
         self.data[0][:] = [row for row in self.data[0] if args[2] != row["Id"]]
+        return ""
 
 
 def runner(inventory, tmp_path, **kwargs):
@@ -815,3 +838,157 @@ def test_cached_prefetch_needs_no_second_reserve_but_missing_image_does(inventor
     retention.check_pull_headroom(docker, disk_fn=lambda _: usage, image_ref=reference(10))
     with pytest.raises(retention.Refusal, match="headroom"):
         retention.check_pull_headroom(docker, disk_fn=lambda _: usage, image_ref=reference(11))
+
+
+BOX = "ghcr.io/tinyassets/tinyassets-box"
+
+
+def box_ref(number):
+    return BOX + "@" + identity(number)
+
+
+def harness_name(number):
+    return "harness-" + f"{number:064x}"
+
+
+def test_count_mode_keeps_current_and_one_rollback_per_owned_repository(inventory, tmp_path):
+    for number, day in ((21, 1), (22, 2), (23, 3), (24, 4)):
+        inventory[0].append(dict(
+            Id=identity(number),
+            Created=f"2026-08-{day:02}T00:00:00Z",
+            RepoDigests=[box_ref(number)],
+            RepoTags=[],
+        ))
+    inventory[0].append(dict(
+        Id=identity(40),
+        Created="2026-01-01T00:00:00Z",
+        RepoDigests=["cloudflare/cloudflared@sha256:" + f"{40:064x}"],
+        RepoTags=[],
+    ))
+    docker, _, options = runner(inventory, tmp_path, measure=lambda _p: 50)
+    options["configured_images_reader"] = lambda: [reference(9), box_ref(23)]
+    report = retention.retain(**options)
+    removed = set(report["removed"])
+    assert box_ref(21) in removed and box_ref(24) in removed
+    assert box_ref(22) not in removed and box_ref(23) not in removed
+    assert reference(8) not in removed and reference(9) not in removed
+    assert "cloudflare/cloudflared@sha256:" + f"{40:064x}" not in removed
+    assert {row["Id"] for row in inventory[0]} >= {identity(n) for n in (8, 9, 22, 23, 40)}
+
+
+def test_harness_store_keeps_configured_current_and_one_rollback(inventory, tmp_path):
+    root = tmp_path / "boxhostd"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.write_text("keep")
+    for number, when in ((1, 1), (8, 2), (9, 3)):
+        directory = root / harness_name(number)
+        directory.mkdir()
+    (root / harness_name(1) / "link").symlink_to(outside)
+    for number, when in ((1, 1), (8, 2), (9, 3)):
+        os.utime(root / harness_name(number), (when, when))
+    docker, _, options = runner(
+        inventory, tmp_path, measure=lambda _p: 50,
+        environ={"BOX_HARNESS_ROOT": str(root)},
+    )
+    docker.image_ids[reference(9)] = identity(9)
+    report = retention.retain(**options)
+    assert report["harness_kept"] == [harness_name(8), harness_name(9)]
+    assert report["harness_removed"] == [harness_name(1)]
+    assert outside.read_text() == "keep"
+    assert (root / harness_name(9)).is_dir()
+    assert not (root / harness_name(1)).exists()
+
+
+def test_apply_prunes_dangling_layers_and_builder_cache_never_volumes(inventory, tmp_path):
+    docker, _, options = runner(inventory, tmp_path, measure=lambda _p: 50)
+    retention.retain(**options)
+    assert docker.layer_prunes == [("image", "prune", "-f")]
+    assert docker.builder_prunes == [("builder", "prune", "-af")]
+    flat = " ".join(" ".join(call) for call in docker.calls_all)
+    assert "volume" not in flat
+
+
+def test_every_refusal_prints_disk_docker_df_kept_and_removed(monkeypatch, capsys):
+    class DF:
+        def command(self, *args, timeout_cap=10):
+            assert args[:2] == ("system", "df")
+            return (
+                '{"Type":"Images","TotalCount":"4","Size":"8GB","Reclaimable":"3GB"}\n'
+                '{"Type":"Local Volumes","TotalCount":"1","Size":"20GB","Reclaimable":"0B"}\n'
+            )
+
+    usage = {
+        "/": SimpleNamespace(total=50 * 1024**3, free=8 * 1024**3),
+        "/var/lib/docker": SimpleNamespace(total=50 * 1024**3, free=7 * 1024**3),
+    }
+
+    def boom(**kwargs):
+        context = kwargs["context"]
+        context.kept.append("kept-ref")
+        context.removed.append("removed-ref")
+        context.paths = ["/", "/var/lib/docker"]
+        context.disk_fn = lambda path: usage[path]
+        context.docker = DF()
+        raise retention.Refusal("deploy_disk_headroom_insufficient")
+
+    monkeypatch.setattr(retention, "retain", boom)
+    monkeypatch.setenv("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", "1")
+    monkeypatch.delenv("DRY_RUN", raising=False)
+    assert retention.main(["--apply", "--prepare-pull", "--image-ref", reference(9)]) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reason"] == "deploy_disk_headroom_insufficient"
+    assert payload["kept"] == ["kept-ref"]
+    assert payload["removed"] == ["removed-ref"]
+    by_path = {row["path"]: row for row in payload["disk"]}
+    assert by_path["/"]["free"] == 8 * 1024**3
+    assert by_path["/"]["total"] == 50 * 1024**3
+    assert by_path["/"]["percent"] == pytest.approx(84)
+    assert by_path["/var/lib/docker"]["free"] == 7 * 1024**3
+    types = {row["type"]: row for row in payload["docker_df"]}
+    assert types["Images"]["total"] == "4"
+    assert types["Images"]["size"] == "8GB"
+    assert types["Local Volumes"]["size"] == "20GB"
+    assert retention.PULL_FREE_BYTES == 10 * 1024**3
+
+
+def test_log_cap_merges_without_dropping_other_keys_or_raising_a_tighter_cap(tmp_path):
+    path = tmp_path / "daemon.json"
+    path.write_text(json.dumps({
+        "live-restore": True,
+        "log-opts": {"max-buffer-size": "1m"},
+    }))
+    assert retention.ensure_docker_log_cap(path)["changed"] is True
+    data = json.loads(path.read_text())
+    assert data["live-restore"] is True
+    assert data["log-driver"] == "json-file"
+    assert data["log-opts"]["max-size"] == "10m"
+    assert data["log-opts"]["max-file"] == "3"
+    assert data["log-opts"]["max-buffer-size"] == "1m"
+    assert retention.ensure_docker_log_cap(path)["changed"] is False
+    path.write_text(json.dumps({
+        "log-driver": "json-file",
+        "log-opts": {"max-size": "5m", "max-file": 2},
+    }))
+    assert retention.ensure_docker_log_cap(path)["changed"] is False
+    assert json.loads(path.read_text())["log-opts"]["max-size"] == "5m"
+
+
+def test_log_cap_refuses_a_symlink(tmp_path):
+    target = tmp_path / "real.json"
+    target.write_text("{}")
+    link = tmp_path / "daemon.json"
+    link.symlink_to(target)
+    with pytest.raises(retention.Refusal, match="symlink"):
+        retention.ensure_docker_log_cap(link)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="production nofollow file reads require Linux")
+def test_configured_images_include_every_owned_image_key(tmp_path):
+    path = tmp_path / "env"
+    path.write_text(
+        "TINYASSETS_IMAGE=" + reference(9) + "\n"
+        "TINYASSETS_BOX_IMAGE=" + box_ref(3) + "\n"
+        "UNRELATED=1\n"
+    )
+    assert retention.read_configured_images(path) == [reference(9), box_ref(3)]

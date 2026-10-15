@@ -186,6 +186,8 @@ def test_pre_pull_cleanup_and_headroom_cover_prefetch_and_final_pull():
     assert before < wait < recheck < deploy
     assert "scripts/daemon_image_retention.py" in steps[before]["run"]
     assert "--apply --prepare-pull" in steps[before]["run"]
+    assert "--image-ref" in steps[before]["run"]
+    assert "steps.tag.outputs.image_ref" in str(steps[before].get("env"))
     assert "--check-headroom" in steps[recheck]["run"]
     assert all(not steps[index].get("continue-on-error") for index in (before, recheck))
 
