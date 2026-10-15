@@ -23,13 +23,13 @@ run = base.run
 
 @pytest.fixture
 def agent(base_agent, monkeypatch):
-    monkeypatch.setenv(served_chat.ENV_SWITCH, served_chat.THIN)
     box = FakeBox(lambda argv, stdin: (
         b'\x1eTA1 {"ready":true}\n\x1eTA1 '
         + json.dumps({"output": base64.b64encode(b"box says hi").decode()})
         .encode() + b'\n', 0))
     monkeypatch.setattr(served_chat, "_box_provider", box)
     monkeypatch.setattr(served_chat, "_box_limits", ExecLimits())
+    base_agent.adapter = served_chat.ThinLoopChatAdapter()
     base_agent.box = box
     return base_agent
 
@@ -148,7 +148,30 @@ def test_no_box_provider_refuses_before_any_tool_runs(agent, monkeypatch):
 
 
 def test_switch_off_keeps_todays_path(agent, monkeypatch):
-    monkeypatch.delenv(served_chat.ENV_SWITCH)
+    monkeypatch.delenv(served_chat.ENV_SWITCH, raising=False)
+    agent.adapter = served_chat.ServedChatAgentAdapter()
     agent.tool_call = ("bash", '{"command": "true"}')
     assert run(agent) == "finished exact answer"
     assert agent.box.starts == [] and agent.tools == [("bash", {"command": "true"})]
+
+
+def test_the_served_chat_factory_keeps_todays_adapter_unless_selected(monkeypatch):
+    from tinyassets.providers import call
+
+    built = []
+    monkeypatch.setattr(call, "_router", object())
+    monkeypatch.setattr(call, "register_open_providers_for", lambda _context: None)
+    monkeypatch.setattr(
+        "tinyassets.interactive_http_agent.InteractiveHttpAgentTurn",
+        lambda **kwargs: built.append(kwargs),
+    )
+
+    def factory_adapter():
+        call.make_interactive_agent_turn(
+            prompt="hi", system="", universe_context=object(), config={})
+        return built.pop().get("adapter")
+
+    monkeypatch.delenv(served_chat.ENV_SWITCH, raising=False)
+    assert factory_adapter() is None  # the turn's default engine-tool adapter
+    monkeypatch.setenv(served_chat.ENV_SWITCH, served_chat.THIN)
+    assert isinstance(factory_adapter(), served_chat.ThinLoopChatAdapter)

@@ -101,7 +101,19 @@ def test_workflow_daily_quota_skips_sibling_and_uses_next_owned_source(pool, mon
 def test_chat_daily_quota_skips_sibling_and_uses_next_owned_source(pool, monkeypatch):
     from tinyassets import engine_mcp_http, engine_tool_client, universe_intelligence
     from tinyassets.auth import middleware as auth
+    from tinyassets.interactive_http_agent import InteractiveHttpAgentTurn, ServedChatAgentAdapter
+    from tinyassets.providers import call as provider_calls
     from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+
+    # This source-pooling contract fixture supplies its synthetic engine adapter
+    # explicitly; production construction requires the bound thin-loop adapter.
+    def make_turn(**kwargs):
+        provider_calls.register_open_providers_for(kwargs["universe_context"])
+        return InteractiveHttpAgentTurn(
+            router=provider_calls._router, adapter=ServedChatAgentAdapter(), **kwargs,
+        )
+
+    monkeypatch.setattr(provider_calls, "make_interactive_agent_turn", make_turn)
 
     engine_mcp_http._write_routes(pool.base, [SimpleNamespace(
         universe_id=parity.A_HOME, owner=parity.A_OWNER, port=8790, secret="s" * 43,

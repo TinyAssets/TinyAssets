@@ -338,7 +338,7 @@ def test_the_owner_threaded_into_the_catalog_is_the_same_identity_the_journal_us
     # The journal is scoped by the same attribute, so the two cannot drift apart
     # without this test noticing.
     run = inspect.getsource(AgentTurnCoordinator._run)
-    assert "self.owner = self._check_scope()" in run
+    assert "self.owner = await off_loop(self._check_scope)" in run
     assert "owner_user_id" in PRINCIPAL_KEYS
 
 

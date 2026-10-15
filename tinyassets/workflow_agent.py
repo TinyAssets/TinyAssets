@@ -9,6 +9,7 @@ import logging
 from dataclasses import replace
 
 from tinyassets.activity_runner import ActivityYielded
+from tinyassets.agent_loop.execution import execution_owner, off_loop, off_loop_context
 from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
 from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
 from tinyassets.providers.agent_capacity_boundary import capacity_boundary
@@ -154,14 +155,14 @@ class WorkAgentAdapter:
         if changing:
             if self._staged_next is None or self.initial_pending:
                 raise ProviderAuthorityHeldError("workflow candidate was not staged")
-            self._identity(context, config, self._staged_next)
-            if self.candidates.next_candidate(
+            await off_loop(self._identity, context, config, self._staged_next)
+            if await off_loop(self.candidates.next_candidate,
                 self.source_policy, min_context=self.min_context,
                 local_exclusions=self._budget_exclusions,
             ) != self._staged_next:
                 raise ProviderAuthorityHeldError("workflow candidate was exhausted")
         else:
-            self.check(context, config)
+            await off_loop(self.check, context, config)
         if self.initial_pending:
             self.initial_pending = False
             return await self._infer_launch(
@@ -171,9 +172,9 @@ class WorkAgentAdapter:
         if changing:
             policy["preferred"] = {"provider": self._staged_next.connection_id,
                                    "model_id": self._staged_next.model_id}
-        with self.session._authorize_attempt(
+        async with off_loop_context(self.session._authorize_attempt(
             role="writer", prompt=prompt, system=system, policy=policy,
-        ) as launch:
+        )) as launch:
             if changing:
                 self.selection = self._staged_next
                 self.policy = policy
@@ -185,7 +186,7 @@ class WorkAgentAdapter:
         self.carrier, snapshot_dir, provider = launch
         if provider != self.selection.connection_id:
             raise ProviderAuthorityHeldError("workflow agent source changed")
-        self.check(context, config)
+        await off_loop(self.check, context, config)
         from tinyassets.providers.model_call import ModelCall, ModelContext, Parent
         from tinyassets.providers.model_call import call as model_call
 
@@ -289,17 +290,17 @@ class WorkflowAgentTurn(AgentTurnCoordinator):
                 for call_ordinal, tool in enumerate(self.turn.rounds[-1].tools, 1):
                     if tool.state == "planned":
                         uid = self.context.universe_dir.name
-                        self._accept(self.journal.start_tool(
+                        await self._journal_write("start_tool",
                             self.owner, uid, self.turn.turn_id,
                             expected_generation=self.turn.generation,
                             ordinal=len(self.turn.rounds), call_ordinal=call_ordinal,
-                        ))
-                        self._accept(self.journal.finish_tool(
+                        )
+                        await self._journal_write("finish_tool",
                             self.owner, uid, self.turn.turn_id,
                             expected_generation=self.turn.generation,
                             ordinal=len(self.turn.rounds), call_ordinal=call_ordinal,
                             request=tool.request, failure="not_sent",
-                        ))
+                        )
                         break
             raise
         except AllProvidersExhaustedError as exc:
@@ -414,7 +415,7 @@ def _call_work_agent(session, *, prompt, system, config, policy, principal_id, u
                     workflow_id=str(getattr(session, "_branch_def_id", "") or
                                     adapter.receipt.branch_def_id or ""),
                 ):
-                    response = asyncio.run(turn.run())
+                    response = execution_owner().run(turn.run())
             except ActivityYielded:
                 # Platform lifecycle output, not a fabricated provider answer.
                 # The committed inference/tool evidence remains in the journal.

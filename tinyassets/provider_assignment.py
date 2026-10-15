@@ -7,6 +7,7 @@ admission lock before any credential or provider access.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -16,7 +17,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Iterator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -741,9 +742,9 @@ class _AdmissionState:
     def __init__(self) -> None:
         self.condition = threading.Condition()
         self.readers = 0
-        self.writer: int | None = None
+        self.writer: object | None = None
         self.waiting_writers = 0
-        self.reader_threads: set[int] = set()
+        self.reader_threads: set[object] = set()
 
 
 def _acquire_windows_file_lock(
@@ -800,11 +801,16 @@ class ProviderAssignmentAdmission:
             return self._states.setdefault(key, _AdmissionState())
 
     @staticmethod
+    def _open_lock_file(universe_dir):
+        from tinyassets.workspace_fs import open_assignment_lock
+
+        universe = Path(universe_dir).absolute()
+        return open_assignment_lock(universe.parent, universe.name)
+
+    @staticmethod
     @contextmanager
     def _file_lock(universe_dir: str | Path, *, exclusive: bool) -> Iterator[None]:
-        universe = Path(universe_dir).resolve(strict=False)
-        universe.mkdir(parents=True, exist_ok=True)
-        handle = (universe / ".provider-assignment-admission.lock").open("a+b")
+        handle = ProviderAssignmentAdmission._open_lock_file(universe_dir)
         try:
             if os.name == "nt":
                 import msvcrt
@@ -833,6 +839,85 @@ class ProviderAssignmentAdmission:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         finally:
             handle.close()
+
+    @asynccontextmanager
+    async def _async_admission(self, universe_dir, *, exclusive):
+        """Task identity and writer priority shared with synchronous callers.
+
+        Neither an in-process wait nor a cross-process flock can block the loop.
+        Cancelling a waiting writer removes its priority before waking readers.
+        """
+        from tinyassets.agent_loop.execution import off_loop
+
+        state = self._state(universe_dir)
+        identity = asyncio.current_task()
+        admitted = False
+        handle = None
+        with state.condition:
+            if state.writer == identity or identity in state.reader_threads:
+                raise RuntimeError("provider assignment admission is not reentrant")
+            if exclusive:
+                state.waiting_writers += 1
+        try:
+            while not admitted:
+                with state.condition:
+                    if state.writer is None and (not state.readers if exclusive
+                                                 else not state.waiting_writers):
+                        if exclusive:
+                            state.writer = identity
+                        else:
+                            state.readers += 1
+                            state.reader_threads.add(identity)
+                        admitted = True
+                if not admitted:
+                    await asyncio.sleep(0.01)
+
+            # Opening a local file can block too; retain the handle in this
+            # scope even when cancellation arrives during its creation.
+            def open_lock():
+                nonlocal handle
+                handle = self._open_lock_file(universe_dir)
+                if os.name == "nt":
+                    handle.seek(0, os.SEEK_END)
+                    if not handle.tell():
+                        handle.write(b"\0")
+                        handle.flush()
+
+            await off_loop(open_lock)
+            while True:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+                        fcntl.flock(handle.fileno(), mode | fcntl.LOCK_NB)
+                    break
+                except (BlockingIOError, PermissionError):
+                    await asyncio.sleep(0.01)
+            yield
+        finally:
+            if handle is not None:
+                handle.close()
+            with state.condition:
+                if exclusive:
+                    state.waiting_writers -= 1
+                    if admitted:
+                        state.writer = None
+                elif admitted:
+                    state.readers -= 1
+                    state.reader_threads.remove(identity)
+                state.condition.notify_all()
+
+    def shared_async(self, universe_dir):
+        return self._async_admission(universe_dir, exclusive=False)
+
+    def exclusive_async(self, universe_dir):
+        return self._async_admission(universe_dir, exclusive=True)
 
     @contextmanager
     def shared(self, universe_dir: str | Path) -> Iterator[None]:
@@ -1243,8 +1328,8 @@ async def authorize_served_provider_call_async(
 ):
     """Release admission for discovery; revalidate the exact chain before launch.
 
-    Thread-owned admission contexts enter and exit on the event-loop thread.
-    Only discovery IO runs in a worker. Neither callers nor configuration may
+    Task-owned admission never blocks the event-loop thread.
+    Synchronous authority and credential IO runs in a worker. Neither callers nor configuration may
     supply the prepared result, and the final fence rechecks request + custody.
     """
     from tinyassets.exceptions import ProviderAuthorityHeldError
@@ -1282,38 +1367,39 @@ async def authorize_served_provider_call_async(
     # bare object precisely to pin the ordering) -- and more importantly, the
     # selection decides WHICH source is refreshed and which one may fail the
     # launch, so an unrecognized one must steer neither.
+    from tinyassets.agent_loop.execution import off_loop
     from tinyassets.providers.model_policy import ModelRef
 
+    admission = provider_assignment_admission()
     if isinstance(model_selection, ModelRef):
         try:
-            with provider_assignment_admission().shared(universe):
-                owner = _served_request_agent(
-                    base_path, universe, request_carrier, role, operation
-                )[0].principal_id
+            async with admission.shared_async(universe):
+                facts = await off_loop(
+                    _served_request_agent, base_path, universe, request_carrier, role, operation,
+                )
+                owner = facts[0].principal_id
         except Exception:  # noqa: BLE001 - refused with its own words below
             owner = ""
         if owner:
-            refresh_deposited_subscriptions(
-                base_path=base_path,
-                universe_dir=universe,
-                owner_user_id=owner,
+            await off_loop(
+                refresh_deposited_subscriptions,
+                base_path=base_path, universe_dir=universe, owner_user_id=owner,
                 universe_id=universe.name,
                 launching=_SERVED_PROVIDER_SERVICE.get(model_selection.connection_id, ""),
             )
     try:
-        with provider_assignment_admission().shared(universe):
-            capability, agent = _served_request_agent(
-                base_path, universe, request_carrier, role, operation
+        async with admission.shared_async(universe):
+            capability, agent = await off_loop(
+                _served_request_agent, base_path, universe, request_carrier, role, operation,
             )
-            chain = _selected_chain(
-                SQLiteProviderWorkAuthorityStore(base_path), base_path, universe,
+            chain = await off_loop(
+                _selected_chain, SQLiteProviderWorkAuthorityStore(base_path), base_path, universe,
                 capability, agent, model_selection,
             )
-        # No assignment fence or SQL transaction spans the remote request.
         from tinyassets.providers.model_selection import saved_effort_level
 
-        effort = saved_effort_level(
-            base_path, capability.principal_id, universe.name, model_selection,
+        effort = await off_loop(
+            saved_effort_level, base_path, capability.principal_id, universe.name, model_selection,
         )
         selected, recheck = await prepare_selected_model_async(
             base_path=Path(base_path), owner_user_id=capability.principal_id,
@@ -1325,13 +1411,23 @@ async def authorize_served_provider_call_async(
         raise
     except Exception as exc:
         raise ProviderAuthorityHeldError(_SERVED_AUTHORITY_HELD) from exc
-    with _authorize_served_provider_call(
+    from tinyassets.agent_loop.execution import off_loop_context
+
+    # Final validation runs under task admission; it releases before inference.
+    manager = _authorize_served_provider_call(
         base_path, universe_dir=universe, request_carrier=request_carrier,
         role=role, operation=operation, model_selection=model_selection,
         _prepared_selection=(agent, chain, selected, recheck),
-        agent_turn=agent_turn,
-    ) as authority:
+        agent_turn=agent_turn, _admitted=True,
+    )
+    async with admission.shared_async(universe):
+        # Keep resource cleanup outside the assignment lock, as for sync calls.
+        context = off_loop_context(manager)
+        authority = await context.__aenter__()
+    try:
         yield authority
+    finally:
+        await context.__aexit__(None, None, None)
 
 
 #: Which subscription record a served provider launches from. Hoisted out of the
@@ -1348,7 +1444,7 @@ def _authorize_served_provider_call(
     base_path: str | Path, *, universe_dir: str | Path,
     request_carrier: object, role: str, operation: str,
     model_selection: ModelRef | None = None, _prepared_selection=None,
-    agent_turn: bool = False,
+    agent_turn: bool = False, _admitted: bool = False,
 ) -> Iterator[ServedProviderAuthority]:
     """Authorize one model on the request principal's live connected set."""
     from tinyassets.commons_catalog import get_binding
@@ -1368,7 +1464,7 @@ def _authorize_served_provider_call(
     authority = None
     snapshot = None
     try:
-        with provider_assignment_admission().shared(universe):
+        with (nullcontext() if _admitted else provider_assignment_admission().shared(universe)):
             capability, agent = _served_request_agent(
                 base, universe, request_carrier, role, operation,
             )
