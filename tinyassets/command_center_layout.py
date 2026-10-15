@@ -57,7 +57,7 @@ PLATFORM_NAMES = frozenset({
     "activity.log", "status.json", "universe.json", "work_targets.json",
     "ledger.json", "provider_definitions.json", "hard_priorities.json",
     "requests.json", "branch_tasks.json",
-    "branch_tasks_archive.json", "auto_ship_attempts.jsonl", "bid_ledger.json",
+    "branch_tasks_archive.json", "auto_ship_attempts.jsonl",
     "bid_execution_log.json", "enrichment_signals.json", "worldbuild_signals.json",
     "platform-expected-instance.json", "uptime-probe", "executions", "runs",
     "reviews", "settlements", "discarded_targets", "archived",
@@ -85,9 +85,9 @@ PLATFORM_DB_NAMES: frozenset[str] = frozenset({
     ".idempotency.db", "rules.db", "steering.db",
 })
 
-#: Locks written as entries OF a home: current admission, soul, auto-ship and
-#: bid locks, plus historical v1 queue and goal-subscription lock names. The
-#: retired names remain classified so existing owner data stays intelligible.
+#: Locks written as entries OF a home: admission, soul, and auto-ship. Retired
+#: lock names stay classified through retired_home_entries so existing owner
+#: data stays intelligible.
 #: Bare lock is NOT here: its creator puts it
 #: inside a credential snapshot directory beside auth.json (credential_vault.py),
 #: so a home holding one at the top level is something nobody writes, and stays
@@ -96,7 +96,7 @@ PLATFORM_DB_NAMES: frozenset[str] = frozenset({
 #: would read the example as a real on-disk name nobody accounts for.)
 PLATFORM_LOCK_NAMES: frozenset[str] = frozenset({
     ".provider-assignment-admission.lock", ".soul.lock",
-    ".auto_ship_attempts.jsonl.lock", ".bid_execution_log.json.lock",
+    ".auto_ship_attempts.jsonl.lock",
 }) | RETIRED_PLATFORM_LOCK_NAMES
 
 VERBATIM_EXEMPT_NAMES: frozenset[str] = frozenset({

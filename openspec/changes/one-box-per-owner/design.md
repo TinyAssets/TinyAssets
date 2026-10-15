@@ -29,8 +29,8 @@ the order. Measured on `origin/main` `13f4ff4459f`, 2026-10-11.
   The owner app writes them, and nothing proves that only the owner can.
 - **`BoxProvider`** (`boxes/provider.py`, `state.py`, `local.py`) has a
   contract suite and a local driver with no kernel boundary. Its callers are
-  `agent_loop/box_tools.py` and `served_chat.py`, which sit behind the dark
-  `TINYASSETS_AGENT_LOOP`.
+  `agent_loop/box_tools.py` and `served_chat.py`; the thin route is selected
+  when session admission has bound a box.
 
 ## 2. The boundary
 

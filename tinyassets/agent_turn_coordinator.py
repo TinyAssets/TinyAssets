@@ -518,7 +518,7 @@ class AgentTurnCoordinator:
         )
 
     async def _run(self):
-        self.owner = self._check_scope()
+        self.owner = await off_loop(self._check_scope)
         # Lifecycle hooks belong to the initialized execution, not the release
         # wrapper that must also settle interrupted or recovered turn bodies.
         result = await self._run_turn()

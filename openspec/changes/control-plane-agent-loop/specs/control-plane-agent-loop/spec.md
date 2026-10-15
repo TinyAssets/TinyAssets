@@ -15,8 +15,8 @@ only route parsed tool calls by name.
 
 ### Requirement: Box tools are forwarded to the turn's bound box by op_id
 The tools `read`, `write`, `edit` and `bash` SHALL execute in the turn's
-command-center box through the `BoxProvider` contract, on a handle bound once
-at turn start for the turn's owner, command center and turn, and never looked
+command-center box through the `BoxProvider` contract, on the handle bound once
+at session admission for the owner and command center, and never looked
 up per call. Each call SHALL carry an `op_id` derived from its journal
 position. A lost reply SHALL be resolved only with the same `op_id`.
 
@@ -92,3 +92,14 @@ tool write changed the file after the edit read it.
   same bytes
 - **THEN** every edit that reports success is present in the final file, and
   every other edit reports that the file changed
+
+### Requirement: Adopted orphan turns remain recovery-only
+The journal SHALL fence an orphan turn into the successor owner generation
+before settlement and persist its prior generation as recovery evidence. Only
+startup reconciliation SHALL mutate an adopted row, including after a crash
+between adoption and settlement. A normal caller SHALL be refused even if it
+holds the successor lease or repeats a terminal transition.
+
+#### Scenario: a successor cannot reuse a settled turn
+- **WHEN** startup reconciliation adopts and settles an earlier generation's turn
+- **THEN** a later ordinary mutation of that turn is refused by the journal

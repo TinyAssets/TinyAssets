@@ -191,6 +191,7 @@ def agent(served, monkeypatch):
         provider_calls.register_open_providers_for(kwargs["universe_context"])
         return InteractiveHttpAgentTurn(router=served.router, adapter=state.adapter, **kwargs)
 
+    state.factory = provider_calls.make_interactive_agent_turn
     monkeypatch.setattr(provider_calls, "make_interactive_agent_turn", make_turn)
     return state
 

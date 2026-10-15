@@ -357,36 +357,6 @@ def test_dashboard_adds_exactly_two_actions_to_universe():
 
 
 # ───────────────────────────────────────────────────────────────────────
-# Bid execution log rename (G.2 #4, R11)
-# ───────────────────────────────────────────────────────────────────────
-
-
-def test_bid_execution_log_import_works():
-    from tinyassets.bid.execution_log import (  # noqa: F401
-        append_execution_log_entry,
-        read_execution_log,
-    )
-
-
-def test_bid_ledger_shim_still_works():
-    """Deprecated alias continues to re-export during transition."""
-    from tinyassets.bid.execution_log import (  # noqa: F401
-        append_ledger_entry,
-        read_ledger,
-    )
-
-
-def test_bid_execution_log_reads_legacy_filename(tmp_path):
-    """Transition: if only bid_ledger.json exists, read from it."""
-    from tinyassets.bid.execution_log import read_execution_log
-    (tmp_path / "bid_ledger.json").write_text(
-        json.dumps([{"k": "v"}]), encoding="utf-8",
-    )
-    entries = read_execution_log(tmp_path)
-    assert entries == [{"k": "v"}]
-
-
-# ───────────────────────────────────────────────────────────────────────
 # R14 byte cap (DAEMON_OVERVIEW_MAX_BYTES)
 # ───────────────────────────────────────────────────────────────────────
 

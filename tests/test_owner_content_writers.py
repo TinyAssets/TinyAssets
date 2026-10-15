@@ -15,7 +15,6 @@ CONTENT_MODULES = (
     'tinyassets/universe_bundle.py',
     'tinyassets/ingestion/core.py',
     'tinyassets/ingestion/canon_io.py',
-    'tinyassets/executors/node_bid.py',
     'domains/fantasy_daemon/phases/_activity.py',
     'domains/fantasy_daemon/phases/commit.py',
     'domains/fantasy_daemon/phases/reflect.py',
@@ -69,7 +68,6 @@ def test_content_writers_delegate_all_entry_creation(filename):
 
 @pytest.mark.parametrize('filename,function_name', [
     ('tinyassets/config.py', 'write_universe_config_fields'),
-    ('tinyassets/bid/execution_log.py', 'append_execution_log_entry'),
     ('tinyassets/auto_ship_ledger.py', '_write_raw'),
     ('tinyassets/auto_ship_ledger.py', 'record_attempt'),
 ])

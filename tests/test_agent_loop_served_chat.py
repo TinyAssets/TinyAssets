@@ -179,3 +179,36 @@ def test_session_handle_is_not_rebound_for_tools(agent, monkeypatch):
     agent.tool_call = ("bash", '{"command": "true"}')
     assert run(agent) == "finished exact answer"
     assert agent.box.starts and agent.tools == []
+
+
+def test_no_binding_keeps_the_engine_tool_adapter(agent):
+    agent.adapter = served_chat.ServedChatAgentAdapter()
+    agent.tool_call = ("bash", '{"command": "true"}')
+    with use_binding(None):
+        assert run(agent) == "finished exact answer"
+    assert agent.box.starts == [] and agent.tools == [("bash", {"command": "true"})]
+
+
+def test_the_served_chat_factory_selects_the_thin_loop_only_with_binding(agent, monkeypatch):
+    from tinyassets.providers import call
+
+    built = []
+    monkeypatch.setattr(call, "_router", object())
+    monkeypatch.setattr(call, "register_open_providers_for", lambda _context: None)
+    monkeypatch.setattr(
+        "tinyassets.interactive_http_agent.InteractiveHttpAgentTurn",
+        lambda **kwargs: built.append(kwargs),
+    )
+
+    def factory_adapter():
+        agent.factory(
+            prompt="hi", system="", universe_context=object(), config={})
+        return built.pop().get("adapter")
+
+    monkeypatch.setenv("TINYASSETS_AGENT_LOOP", "thin")
+    with use_binding(None):
+        adapter = factory_adapter()
+    assert isinstance(adapter, served_chat.ServedChatAgentAdapter)
+    assert not isinstance(adapter, served_chat.ThinLoopChatAdapter)
+    monkeypatch.delenv("TINYASSETS_AGENT_LOOP")
+    assert isinstance(factory_adapter(), served_chat.ThinLoopChatAdapter)

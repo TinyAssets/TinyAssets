@@ -21,12 +21,15 @@ Provider-assignment admission identifies asynchronous holders by task, preserves
 writer priority with synchronous callers, and waits without blocking the loop.
 Journal writes and usage reservation/finalization run off-loop; cancellation
 drains an in-flight commit before releasing its authority. Journal mutations
-retain the existing owner lease and reject stale generations.
+retain the existing owner lease and reject stale generations. Startup orphan
+adoption records the prior generation beside the successor fence; that marker
+keeps the row recovery-only after adoption, including across another crash.
 
 This checkpoint does not complete the cutover: the provider-admission lock's
 move to platform state requires a protected migration with no mixed old/new
-workers. Broker streaming, the native package launch path, and the remaining
-owner-journal storage migration still require coordinated integration and proof.
+workers. The shared broker stream is present. The native package launch path
+and the remaining owner-journal storage migration still require coordinated
+integration and proof.
 
 ### 2. Tools are routed by name, once, never by the model
 
@@ -92,7 +95,8 @@ POSIX shell.
 
 ### 5. Session binding and the mandatory thin route
 
-`make_interactive_agent_turn` selects `ThinLoopChatAdapter` without an opt-in.
+`make_interactive_agent_turn` selects `ThinLoopChatAdapter` exactly when an
+admitted box binding is present. Owner-split keeps the engine-tool adapter.
 `control_plane/session.start` binds the authenticated owner/center and stable
 durable send or run identity before `load_agent`. File reads use the bound
 provider and refuse a changed generation across definition loading. Explicit
@@ -100,8 +104,8 @@ parent objects carry the binding across executor boundaries; tools reuse it
 instead of rebinding under the later journal turn ID. The ta bridge separately
 checks the admitted session identity and retains journal-position operation IDs.
 
-No binding means `box_unavailable` before inference. A client disconnect does
-not cancel the box. Only an explicit owner stop or durable run cancellation
+An invalid binding means `box_unavailable` before inference. A client disconnect
+does not cancel the box. Only an explicit owner stop or durable run cancellation
 calls `end_session`; ordinary completion releases references after dependent
 work drains. Same-session reconnect retains operation identity.
 
@@ -151,9 +155,9 @@ share is two to three orders of magnitude smaller, inside the ~1 MB D6 estimated
   its thread and its slot. The S4 driver must give `stream` an I/O deadline
   (or end it on `cancel`), so a dead box host surfaces as an unknown outcome
   instead of a slot leak.
-- **Two tool routes during the cutover.** While the switch is off the engine
-  route serves the four tools; while it is on, the box does. No turn ever has
-  both.
+- **Two tool routes during the cutover.** Owner-split admission uses the engine
+  adapter; an admitted box binding selects the thin loop and its box tools. No
+  turn ever has both.
 
 ## Appendix R. Cross-family refute (gpt-6-astra), three rounds, cap reached
 

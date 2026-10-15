@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.inference_usage_helpers import synthetic_stream
 from tests.support.broker_double import seed_owner_admission
 from tests.test_authenticated_external_call_effector import (  # noqa: F401
     _install_loopback_driver,
@@ -120,6 +121,9 @@ def _broker_proxy(base, grant_id, destination, runtime):
 
     class _Proxy:
         closed = False
+
+        def stream(self, *args, **kwargs):
+            return synthetic_stream(self, *args, **kwargs)
 
         def request(self, verb, request, *, inference_usage=None,
                     policy_approval=None, policy_grant_ref=None, policy_agent=None,

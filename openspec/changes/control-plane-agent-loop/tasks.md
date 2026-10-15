@@ -8,7 +8,8 @@
 - [x] 1.3 Owner reads `history`/`activity` in the loop, read-only, never
       forwarded to the box.
 - [x] 1.4 Tool router + coordinator hook (`open_tools`, `op_id`); journal
-      unchanged; switch `TINYASSETS_AGENT_LOOP=thin`.
+      unchanged; the temporary `TINYASSETS_AGENT_LOOP=thin` switch was replaced
+      by admitted box binding selection.
 - [x] 1.5 Memory per waiting turn: 500 concurrent against a mock SSE server
       (`design.md` § Measurement).
 
@@ -30,13 +31,13 @@ resume the remaining cutover only under parent coordination.
 - [ ] 2.2 Configure the `BoxProvider` (S4 local driver) in the daemon; adopt
       its module types in place of `BoxExec`; its `stream` honours an I/O
       deadline and its image ships `flock` (design Risks).
-- [ ] 2.3 Model stream to the app: broker streaming (S6) -> loop -> the
+- [ ] 2.3 Model stream to the app: shared broker streaming (C9) -> loop -> the
       frontend's SSE response, cancellation propagated both ways.
 - [ ] 2.4 Owner generation on journal writes through S8a's lease interface.
 - [ ] 2.5 Retire the per-turn provider jail and the engine route's four tools
       for HTTP turns on the thin loop; keep both for CLI paths.
 - [ ] 2.6 CLI-in-box only for command adapters and file-OAuth CLIs; Claude
       subscription serving stays owner-only (D6).
-- [ ] 2.7 Live proof: a rendered conversation through the live app with the
-      switch on, plus `mcp_public_canary.py`.
+- [ ] 2.7 Live proof: a rendered conversation through the live app with an
+      admitted box binding, plus `mcp_public_canary.py`.
 - [ ] 2.8 Spec sync to `openspec/specs/control-plane-agent-loop/` and archive.

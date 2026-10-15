@@ -11,6 +11,7 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 
@@ -132,6 +133,22 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             except BaseException:
                 conn.rollback()
                 raise
+
+    if "recovered_owner_generation" not in {
+        row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")
+    }:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if "recovered_owner_generation" not in {
+                row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")
+            }:
+                conn.execute(
+                    "ALTER TABLE agent_turns ADD COLUMN recovered_owner_generation INTEGER"
+                )
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
 
 
 def _scope(owner: str, universe: str, turn: str) -> tuple[str, str, str]:
@@ -416,6 +433,15 @@ class AgentTurnJournal:
         self._ledger = SQLiteProviderWorkAuthorityStore(base_path)
         self._leases = {}
         self._lease_lock = threading.Lock()
+        self._recovering_turn = ContextVar("recovering_agent_turn", default=None)
+
+    @contextmanager
+    def _recovering_orphan(self, turn_id: str):
+        token = self._recovering_turn.set(turn_id)
+        try:
+            yield
+        finally:
+            self._recovering_turn.reset(token)
 
     @contextmanager
     def _transaction(self, universe: str, *, new_turn: bool = False):
@@ -463,7 +489,8 @@ class AgentTurnJournal:
         with self._transaction(universe) as (conn, lease):
             check_current_home(conn, owner, universe)
             row = conn.execute(
-                f"SELECT owner_generation, runner_token, state FROM agent_turns WHERE {_SCOPE}",
+                "SELECT owner_generation, runner_token, recovered_owner_generation, state "
+                f"FROM agent_turns WHERE {_SCOPE}",
                 scope,
             ).fetchone()
             if row is None or row["state"] not in WORKING_STATES:
@@ -474,10 +501,15 @@ class AgentTurnJournal:
                     or (owner_generation == lease.generation
                         and not runner.orphan(self._ledger.base_path, runner_token))):
                 raise owner_lease.LeaseLost("agent turn is not an orphaned row")
-            if owner_generation < lease.generation:
+            if (owner_generation < lease.generation
+                    or row["recovered_owner_generation"] is None):
                 conn.execute(
-                    f"UPDATE agent_turns SET owner_generation = ? WHERE {_SCOPE}",
-                    (lease.generation, *scope),
+                    "UPDATE agent_turns SET owner_generation = ?, "
+                    f"recovered_owner_generation = ? WHERE {_SCOPE}",
+                    (lease.generation,
+                     row["recovered_owner_generation"]
+                     if row["recovered_owner_generation"] is not None
+                     else owner_generation, *scope),
                 )
 
     def create(
@@ -656,10 +688,15 @@ class AgentTurnJournal:
         with self._transaction(universe) as (conn, lease):
             check_current_home(conn, owner, universe)
             row = conn.execute(
-                f"SELECT owner_generation FROM agent_turns WHERE {_SCOPE}", scope,
+                "SELECT owner_generation, recovered_owner_generation "
+                f"FROM agent_turns WHERE {_SCOPE}",
+                scope,
             ).fetchone()
-            if row is not None and row[0] != lease.generation:
+            if row is not None and row["owner_generation"] != lease.generation:
                 raise owner_lease.LeaseLost("agent turn belongs to an earlier owner generation")
+            if (row is not None and row["recovered_owner_generation"] is not None
+                    and self._recovering_turn.get() != turn_id):
+                raise owner_lease.LeaseLost("adopted agent turn is recovery-only")
             current = _read(conn, scope)
             if current is None:
                 raise JournalUnavailable("agent turn unavailable")

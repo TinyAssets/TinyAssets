@@ -1,4 +1,9 @@
-"""Served turns use the thin loop and the session's admitted box handle."""
+"""Serve HTTP chat on the shared loop with tools bound to the turn's box.
+
+The coordinator keeps the journal; :func:`~.tool_session.open_loop_tools`
+opens box tools and reaches backend capabilities through ta. A granted box
+tool refuses before launch if no box provider is configured.
+"""
 
 from __future__ import annotations
 
