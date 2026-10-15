@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 
-from tinyassets.role_video import MAX_FRAME_BYTES, MAX_FRAMES, MAX_SOURCE_BYTES
+from tinyassets.boxes.media import MAX_FRAME_BYTES, MAX_FRAMES, MAX_SOURCE_BYTES
 
 
 def cell_main():

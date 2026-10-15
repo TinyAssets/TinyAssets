@@ -57,7 +57,28 @@ def test_image_and_video_use_the_admitted_box(tmp_path):
     with use_binding(binding):
         duration, frames = decode_video(b"video", binding.universe_dir)
     assert duration == 1 and len(frames) == 1
-    assert "tinyassets.role_video_codec" in binding.provider.calls[1][2]
+    assert "tinyassets.boxes.video_codec" in binding.provider.calls[1][2]
+
+
+def test_image_and_video_callers_select_box_media_on_committed_layout(tmp_path, monkeypatch):
+    from tinyassets import role_decoder, role_video, storage_layout, tool_images
+    from tinyassets.ingestion import video_extractor
+
+    binding = _binding(tmp_path, b'{"mime_type":"image/png","bytes":3}\npng')
+    monkeypatch.setattr(storage_layout, "ACTIVE_BOX_LAYOUT", "owner-box")
+    monkeypatch.setattr(role_decoder, "decode", lambda *args: pytest.fail("old decoder"))
+    monkeypatch.setattr(role_video, "frames", lambda *args: pytest.fail("old video cell"))
+    with use_binding(binding):
+        assert tool_images._decode_in_child(b"source", "image/png",
+                                            universe_dir=binding.universe_dir) == (
+            {"mime_type": "image/png", "bytes": 3}, b"png")
+        binding.provider.output = b'{"duration":1,"sizes":[8]}\n\x89PNG\r\n\x1a\n'
+        description = video_extractor.extract_video_description(
+            "clip.mp4", b"video", universe_dir=binding.universe_dir,
+            describe_frame=lambda *args, **kwargs: "frame description",
+        )
+    assert "frame description" in description
+    assert "tinyassets.boxes.video_codec" in binding.provider.calls[-1][2]
 
 
 def test_preview_renderer_uses_box_process(tmp_path, monkeypatch):

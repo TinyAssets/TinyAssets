@@ -1,14 +1,13 @@
 """Data-only video parser admission; no provider credential enters the cell."""
 from __future__ import annotations
 
-import json
-import math
 from pathlib import Path
 
-MAX_SOURCE_BYTES = 64 * 1024 * 1024
-MAX_FRAME_BYTES = 3 * 1024 * 1024
-MAX_FRAMES = 10
-MAX_RESULT_BYTES = MAX_FRAME_BYTES * MAX_FRAMES + 16384
+from tinyassets.boxes.media import (
+    MAX_RESULT_BYTES,
+    MAX_SOURCE_BYTES,
+    parse_result,
+)
 
 
 def frames(data, universe_dir):
@@ -18,16 +17,9 @@ def frames(data, universe_dir):
         raise RuntimeError('video requires an admitted command center')
     binding = file_binding(Path(universe_dir))
     if binding is not None:
-        if type(data) is not bytes or not 0 < len(data) <= MAX_SOURCE_BYTES:
-            raise ValueError('video input exceeds its bound or is empty')
-        from tinyassets.box_process import run_bound
+        from tinyassets.boxes.media import frames as box_frames
 
-        done = run_bound(binding, 'video-frames',
-                         ['python', '-m', 'tinyassets.role_video_codec'], stdin=data,
-                         wall_seconds=160, output_bytes=MAX_RESULT_BYTES)
-        if done.returncode:
-            raise RuntimeError('video box execution did not complete')
-        return parse_result(done.stdout)
+        return box_frames(data, universe_dir)
 
     from tinyassets import role_decoder
     from tinyassets.broker.owner_identities import owner_identity
@@ -49,24 +41,3 @@ def frames(data, universe_dir):
     if done.returncode != 0:
         raise RuntimeError('video cell did not complete')
     return parse_result(done.stdout)
-
-
-def parse_result(payload):
-    header, separator, content = payload.partition(b'\n')
-    if not separator or len(header) > 4096 or len(payload) > MAX_RESULT_BYTES:
-        raise ValueError('invalid video result')
-    meta = json.loads(header)
-    if (type(meta) is not dict or set(meta) != {'duration', 'sizes'}
-            or type(meta['duration']) not in (int, float)
-            or not math.isfinite(meta['duration']) or meta['duration'] < 0
-            or type(meta['sizes']) is not list or not 0 < len(meta['sizes']) <= MAX_FRAMES
-            or any(type(size) is not int or not 0 < size <= MAX_FRAME_BYTES
-                   for size in meta['sizes']) or sum(meta['sizes']) != len(content)):
-        raise ValueError('invalid video result')
-    output = []
-    for size in meta['sizes']:
-        frame, content = content[:size], content[size:]
-        if not frame.startswith(b'\x89PNG\r\n\x1a\n'):
-            raise ValueError('invalid video frame encoding')
-        output.append(frame)
-    return meta['duration'], output

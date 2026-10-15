@@ -59,7 +59,12 @@ def extract_video_description(
     str
         Text description of the video, one section per keyframe.
     """
-    from tinyassets.role_video import frames
+    from tinyassets.storage_layout import ACTIVE_BOX_LAYOUT
+
+    if ACTIVE_BOX_LAYOUT == "owner-box":
+        from tinyassets.boxes.media import frames
+    else:
+        from tinyassets.role_video import frames
 
     if not callable(describe_frame):
         raise RuntimeError(

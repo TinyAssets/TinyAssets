@@ -457,7 +457,7 @@ if __name__ == "__main__":
         sys.stdout.buffer.write(json.dumps({'cell': proof}).encode() + b'\n')
         sys.stdout.buffer.flush()
         sys.path.insert(0, '/app')
-        from tinyassets.role_video_codec import cell_main
+        from tinyassets.boxes.video_codec import cell_main
 
         raise SystemExit(cell_main())
     elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-package'
