@@ -189,10 +189,20 @@ def _run_box(instance, binding, *, invoke, workspace, **request):
     if (type(timeout) not in (int, float)
             or not 0 < timeout <= sandbox.MAX_WORKSPACE_TIMEOUT_SECONDS):
         raise ValueError('invalid node box timeout')
+    guest_workspace = None
+    profile = ''
     if workspace is not None:
-        # Workspace mounts still name host descriptors in the old pool. They
-        # cannot be projected into a box by spelling their host path anew.
-        raise ValueError('node workspace requires a box-backed lease')
+        # A host descriptor or host path cannot cross this boundary. The pool
+        # must provide the lease's path in this exact admitted guest tree.
+        guest_root = getattr(binding.handle, 'root', None)
+        source = workspace.bind_source
+        if (not isinstance(guest_root, str) or not isinstance(source, str)
+                or workspace.pass_fds or not source.startswith(guest_root + '/')
+                or any(part in ('', '.', '..')
+                       for part in source[len(guest_root) + 1:].split('/'))):
+            raise ValueError('node workspace requires a box-backed lease')
+        guest_workspace = {'root': source, 'limits': workspace.limits.as_message()}
+        profile = json.dumps(workspace.limits.rlimit_profile())
     errors = instance.validate_source(request['source_code'])
     if errors:
         return sandbox.SandboxResult(node_id=request['node_id'], success=False,
@@ -203,6 +213,8 @@ def _run_box(instance, binding, *, invoke, workspace, **request):
                    effects=request.get('effects') or {},
                    output_keys=request['output_keys'],
                    allowed_imports=sorted(sandbox.ALLOWED_IMPORTS))
+    if guest_workspace is not None:
+        payload['workspace'] = guest_workspace
     message = json.dumps(payload, default=str).encode()
     if len(message) > sandbox.MAX_INPUT_BYTES:
         return sandbox.SandboxResult(node_id=request['node_id'], success=False,
@@ -225,7 +237,7 @@ def _run_box(instance, binding, *, invoke, workspace, **request):
 
     started = time.monotonic()
     done = run_bound(binding, 'code-node', ['python', '-I', '-c', sandbox._RUNNER_SCRIPT,
-                                             str(timeout), '1', ''],
+                                             str(timeout), '1', profile],
                      stdin=message + b'\n', wall_seconds=timeout + 5,
                      output_bytes=instance.max_output_bytes,
                      line_handler=answer)

@@ -107,6 +107,31 @@ def test_code_node_uses_box_runner(tmp_path):
     assert binding.provider.calls[0][3]["interactive_stdin"] is True
 
 
+def test_code_node_accepts_only_guest_workspace_path(tmp_path):
+    from tinyassets.node_sandbox import WorkspaceLimits, WorkspaceMount
+    from tinyassets.role_node import _run_box
+
+    class GuestHandle(BoxHandle):
+        @property
+        def root(self):
+            return "/home/owner/center"
+
+    binding = _binding(tmp_path, b'{"success":true,"output_state":{}}\n')
+    binding.handle = GuestHandle("center", "owner", 1, "turn")
+    instance = SimpleNamespace(validate_source=lambda _: [], max_output_bytes=4096)
+    request = dict(node_id="node", source_code="def run(state): return {}",
+                   input_state={}, input_keys=[], output_keys=[], timeout=5)
+    guest = WorkspaceMount("/home/owner/center/workspaces/repo",
+                           limits=WorkspaceLimits())
+    _run_box(instance, binding, invoke=None, workspace=guest, **request)
+    payload = json.loads(binding.provider.calls[0][3]["stdin"])
+    assert payload["workspace"]["root"] == guest.bind_source
+    host = WorkspaceMount("/proc/self/fd/17", pass_fds=(17,))
+    with pytest.raises(ValueError, match="box-backed lease"):
+        _run_box(instance, binding, invoke=None, workspace=host, **request)
+    assert len(binding.provider.calls) == 1
+
+
 def test_workspace_git_refuses_the_cell_on_committed_box_layout(tmp_path, monkeypatch):
     from tinyassets import storage_layout, workspace_git
 
