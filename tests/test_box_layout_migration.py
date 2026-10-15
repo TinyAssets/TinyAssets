@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import stat
 import subprocess
 from pathlib import Path
 
@@ -161,6 +162,29 @@ def test_guest_agent_home_omits_package_auth_files(tmp_path):
 
     assert not (guest / "codex" / "auth.json").exists()
     assert (guest / "codex" / "sessions.json").read_text() == "session state"
+
+
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() != 0,
+                    reason="private ownership proof requires Linux root")
+def test_real_copy_places_vault_only_in_platform_custody(tmp_path):
+    source, guest, private = (tmp_path / name for name in ("center", "guest", "private"))
+    source.mkdir()
+    guest.mkdir()
+    (source / ".credential-vault.json").write_text("long-lived-refresh-token")
+    (source / ".credentials" / "codex").mkdir(parents=True)
+    (source / ".credentials" / "codex" / "auth.json").write_text("old-token")
+    (source / "note.txt").write_text("owner content")
+
+    migration._copy_credentials(source, private)
+    migration._copy(source, guest, 300001)
+
+    assert (private / ".credential-vault.json").read_text() == "long-lived-refresh-token"
+    assert (private / ".credentials" / "codex" / "auth.json").read_text() == "old-token"
+    assert stat.S_IMODE(private.stat().st_mode) == 0o710
+    assert stat.S_IMODE((private / ".credential-vault.json").stat().st_mode) == 0o640
+    assert not (guest / ".credential-vault.json").exists()
+    assert not (guest / ".credentials").exists()
+    assert (guest / "note.txt").read_text() == "owner content"
 
 
 def test_private_copy_selects_only_credential_sources(tmp_path, monkeypatch):
