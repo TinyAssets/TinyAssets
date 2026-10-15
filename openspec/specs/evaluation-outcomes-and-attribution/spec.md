@@ -182,4 +182,3 @@ The attribution system SHALL preserve each public agent remix as append-only chi
 - **WHEN** an imported portable definition declares a parent component that is not resolvable in the local commons
 - **THEN** the platform may preserve that declaration as informational origin metadata
 - **AND** it does not write a verified attribution edge or assign local credit for that declaration
-
