@@ -145,7 +145,7 @@ def test_recovery_override_fences_writers_and_fixed_name_sidecars():
     assert set(services) == default_profile, (
         "recovery override must fence exactly the default-profile services"
     )
-    assert set(services) == {"daemon", "cloudflared", "logs"}
+    assert set(services) == {"daemon", "broker", "cloudflared", "logs"}
     assert all(service.get("restart") == "no" for service in services.values())
 
 
@@ -277,9 +277,8 @@ def test_canary_step_only_probes_canonical():
     assert not next(s for s in steps if s.get("id") == "app_probe").get("continue-on-error")
     assert not any(s.get("id") == "core_regression" for s in steps)
     deploy = next(i for i, s in enumerate(steps) if s.get("id") == "deploy")
-    repair = next(i for i, s in enumerate(steps) if s.get("id") == "content_repair")
-    # The canary observes the deployed, repaired tree, before the blocking probes.
-    assert deploy < repair < steps.index(core) < steps.index(public)
+    # The canary observes the deployed tree, before the blocking probes.
+    assert deploy < steps.index(core) < steps.index(public)
 
 
 def test_access_gate_step_present():
