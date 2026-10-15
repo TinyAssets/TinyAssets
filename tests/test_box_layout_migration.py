@@ -44,6 +44,25 @@ def _cutover_root(tmp_path: Path) -> tuple[Path, Path]:
     return data, store
 
 
+def test_cross_owner_inode_refuses_before_marker_or_destination_write(tmp_path, monkeypatch):
+    import os
+
+    data, store = _cutover_root(tmp_path)
+    (data / "c2").mkdir()
+    os.link(data / "c1/note.txt", data / "c2/borrowed.txt")
+    original = (data / ".layout.json").read_bytes()
+    monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(migration, "_verified_pair", lambda *args: None)
+    monkeypatch.setattr(migration, "_mounted", lambda *args: None)
+    monkeypatch.setattr(migration, "_owner_plan", lambda *args: [
+        migration.OwnerMove("alice", 300001, ("c1",), 1024**3),
+        migration.OwnerMove("bob", 300002, ("c2",), 1024**3)])
+    with pytest.raises(RuntimeError, match=r"cross-owner inode: .*note.txt.*borrowed.txt"):
+        migration.apply(data, store, tmp_path / "snapshot", tmp_path / "boxes")
+    assert (data / ".layout.json").read_bytes() == original
+    assert not list(store.iterdir())
+
+
 @pytest.mark.parametrize("copy_fails", [False, True])
 def test_apply_commits_only_after_copy_or_leaves_restore_marker(
     tmp_path, monkeypatch, copy_fails,
@@ -199,6 +218,10 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
 
     def stat(path, *args, **kwargs):
         info = real_stat(path, *args, **kwargs)
+        # fwalk and the inode preflight stat names through dir_fd, so path is
+        # an int. Only the center directory's path stat needs the owner ids.
+        if isinstance(path, int) or not isinstance(path, (str, os.PathLike)):
+            return info
         target = Path(path)
         if target.name == "home" and target.parent == data:
             return os.stat_result((

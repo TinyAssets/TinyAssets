@@ -735,10 +735,9 @@ def test_every_checkout_error_the_route_can_return_is_classified():
 def test_the_user_facing_copy_covers_every_refusal_the_route_classifies():
     """A classified refusal with no message falls back to 'Billing unavailable'."""
     from tinyassets.onboarding import _CHECKOUT_STATUS
+    from tinyassets.onboarding.app_modules import shell_source
 
-    page = (REPO / "tinyassets" / "onboarding" / "app.html").read_text(
-        encoding="utf-8"
-    )
+    page = shell_source(REPO / "tinyassets" / "onboarding" / "app.html")
     block = page.split("const CHECKOUT_REFUSALS = {")[1].split("};")[0]
     named = set(re.findall(r"^\s*([a-z_]+):", block, re.M))
     refusals = {k for k, v in _CHECKOUT_STATUS.items() if v < 500}
@@ -1057,9 +1056,9 @@ def test_the_webhook_persists_the_end_date_through_the_route(tmp_path, monkeypat
 
 def test_the_page_shows_the_end_date_and_stops_offering_a_second_cancel():
     """The UI half. A stored date nobody renders fixes nothing."""
-    page = (REPO / "tinyassets" / "onboarding" / "app.html").read_text(
-        encoding="utf-8"
-    )
+    from tinyassets.onboarding.app_modules import shell_source
+
+    page = shell_source(REPO / "tinyassets" / "onboarding" / "app.html")
     assert "planEndsOn" in page
     render = page.split("function renderPlan()")[1].split("\n  }")[0]
     assert "ends " in render, "the chip must name the date"

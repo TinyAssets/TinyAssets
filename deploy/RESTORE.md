@@ -171,7 +171,7 @@ the archive, then uploads it. The box member is not shipped to GitHub releases. 
 the exact timestamp pair and
 extracts the box member to a temporary directory on the XFS store. Numeric
 owners, ACLs, xattrs and safe in-tree links are preserved. The broker's
-`.broker/box-registry.json` export in the data archive must contain `boxes`
+`.broker/state/owner-identities.db` export in the data archive must contain `boxes`
 rows with `uid`, `gid`, `project_id` and `bhard_bytes` for every owner tree;
 restore clears project IDs from retained old trees, re-applies each XFS project
 and `bhard` to installed trees, then runs `xfs_quota report`.
@@ -181,7 +181,9 @@ matching archive through `BOX_BACKUP_FILE` and a registry export through
 temporary XFS store.
 For a data backup from before box-store pairing, set
 `ALLOW_PRE_STORE_BACKUP=1` when the box member is absent. The restore logs this
-allowance and retains the current box trees.
+allowance and retains the current box trees only when neither the staged archive
+nor the live volume has an owner-box layout marker. An owner-box layout requires
+its paired box-store archive.
 
 The restore script stops boxhostd and retains old owner trees in
 `.tinyassets-box-restore-old.*` on the store. After checking both restored
@@ -190,14 +192,26 @@ after the post-restore verification. To roll back before removing them, stop
 boxhostd, move the restored numeric owner trees aside, move the retained old
 trees back, restore the retained old data volume, and re-apply the old project
 IDs and `bhard` limits from the retained data volume's
-`.broker/box-registry.json` with `box-store-quotas.py`:
+`.broker/state/owner-identities.db` with `box-store-quotas.py`:
 
 ```bash
 sudo python3 deploy/box-store-quotas.py \
   /var/lib/boxhostd/owners /var/lib/boxhostd/owners \
-  /var/lib/docker/volumes/tinyassets-data/_data/.broker/box-registry.json
+  /var/lib/docker/volumes/tinyassets-data/_data/.broker/state/owner-identities.db
 ```
 
 Then start services and
 verify the public canary. Keep both archive members and the old directories
 until verification completes.
+
+
+Owner-box snapshots include the root-private `.boxhost/boxhost.db` receipt
+journal in the data member. Stop all volume consumers and boxhostd before
+`BACKUP_MODE=snapshot`; the exclusive layout lock and empty runsc census must
+pass. Online owner-box backup is currently refused and remains a cutover gate.
+Restore refuses an owner-box archive without its matching journal, keeps both
+live and staged layout locks through the swap, and retains the original data
+and owner trees. Verify receipt replay/unknown states, generations, quota
+assignments, cross-owner refusals and retained deletion fences on a production
+copy before authorizing the production cutover. A synthetic fixture pass is
+not production-copy migration or restore evidence.

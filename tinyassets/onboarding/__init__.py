@@ -231,13 +231,14 @@ def render_app_html(build: str | None = None) -> tuple[str, str]:
         credential_requests_source,
         module_url,
         recovery_source,
+        shell_source,
     )
 
     nonce = secrets.token_urlsafe(16)
     cfg = app_config() if build is None else app_config(build=build)
     blob = json.dumps(cfg).replace("<", "\\u003c").replace("\u2028", "").replace("\u2029", "")
     html = (
-        _HTML_PATH.read_text("utf-8")
+        shell_source(_HTML_PATH)
         .replace("__TA_APP_RECOVERY__", recovery_source())
         .replace("__TA_CHAT_RENDER__", chat_renderer_source())
         .replace("__TA_MERMAID_URL__", module_url("mermaid_vendor.js"))

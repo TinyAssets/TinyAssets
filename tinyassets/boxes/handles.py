@@ -75,3 +75,10 @@ class HostHandles:
             for token, handle in list(self._by_token.items()):
                 if handle.owner_id == owner_id and handle.session_id == session_id:
                     del self._by_token[token]
+
+    def detach(self, token: str, owner_id: str, session_id: str) -> None:
+        with self._lock:
+            handle = self._by_token.get(token)
+            if (handle is not None
+                    and (handle.owner_id, handle.session_id) == (owner_id, session_id)):
+                del self._by_token[token]

@@ -22,6 +22,7 @@ from tinyassets.storage import webhook_hooks
 def _inbound_on(monkeypatch):
     """Most pipeline tests need the master flag ON; individual tests can override."""
     monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "1")
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
     webhook_hooks._initialized.clear()
 
 

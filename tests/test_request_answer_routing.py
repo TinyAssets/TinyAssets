@@ -7,10 +7,11 @@ import pytest
 
 from tests.owner_answer import answer_request, connect_owner_provider
 from tests.test_owner_notifications import _home
-from tinyassets import request_answers, request_continuations, turn_interrupt
+from tinyassets import request_answers, turn_interrupt
 from tinyassets.api.pending_requests import request_from_user
 from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity
+from tinyassets.control_plane import continuations as request_continuations
 from tinyassets.storage import pending_requests as store
 
 OWNER = "answer-owner"

@@ -11,10 +11,11 @@ import json
 import pytest
 
 from tests.engine_authority_helpers import mock_engine_admission
-from tinyassets import activity_dispatcher, activity_runner
+from tinyassets import activity_runner
 from tinyassets import agent_activities as acts
 from tinyassets import engine_mcp_server as engine
 from tinyassets.api import activities as api
+from tinyassets.control_plane import activities as activity_dispatcher
 
 
 @pytest.fixture
@@ -129,7 +130,7 @@ def test_an_owner_request_inside_an_activity_is_its_yield(pinned, monkeypatch):
 
 
 def test_answering_the_request_requeues_the_activity(tmp_path, monkeypatch):
-    from tinyassets import activity_dispatcher
+    from tinyassets.control_plane import activities as activity_dispatcher
     from tinyassets.storage import pending_requests as pr
 
     universe = tmp_path / "u-alpha"

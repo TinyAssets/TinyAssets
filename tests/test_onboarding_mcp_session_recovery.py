@@ -32,13 +32,14 @@ from pathlib import Path
 import pytest
 
 import tinyassets.onboarding as onboarding
+from tinyassets.onboarding.app_modules import shell_source
 
 _APP_HTML = Path(onboarding.__file__).parent / "app.html"
 
 
 def _transport_source() -> str:
     """The real MCP client source, lifted from the page it ships in."""
-    html = _APP_HTML.read_text(encoding="utf-8")
+    html = shell_source(_APP_HTML)
     head = "// ---- MCP client"
     tail = "// ---- UI ----"
     assert head in html and tail in html, "MCP client block markers moved"
@@ -766,7 +767,7 @@ def test_the_real_refresh_bumps_the_generation_not_just_the_id():
     actually do that, rather than assigning null and silently skipping the
     generation bump - which is the bug Codex found.
     """
-    html = _APP_HTML.read_text(encoding="utf-8")
+    html = shell_source(_APP_HTML)
     assert "MCP.invalidateSession();   // the MCP session was bound to the old bearer" in html
     assert "MCP.sessionId = null;   // the MCP session was bound to the old bearer" not in html
 
@@ -846,14 +847,15 @@ def test_a_failed_turn_offers_to_send_again():
     this checks the wiring exists rather than that clicking it works. The
     behavioural proof is the live surface.
     """
-    html = _APP_HTML.read_text(encoding="utf-8")
+    html = shell_source(_APP_HTML)
     # The failure path hands back a working button rather than a dead sentence.
     assert "Send it again" in html
     # ...and a resend reuses the bubble already on screen instead of drawing the
     # same message twice, which would read as two sends.
     # the retry is the same send with the same options (a side send stays a
     # side send), echoed because the bubble is already on screen
-    assert "sendTurn(message, display, Object.assign({}, opts||{}, {echoed:true}))" in html
+    assert ("sendTurn(message, display, Object.assign({}, opts||{}, "
+            "{echoed:true,returnReply:false}))") in html
 
 
 @pytest.mark.parametrize("status,body_delay", [(401, False), (404, False), (404, True)])

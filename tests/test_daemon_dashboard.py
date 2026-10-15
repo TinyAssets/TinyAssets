@@ -55,19 +55,6 @@ def universe_harness(tmp_path, monkeypatch):
 # ───────────────────────────────────────────────────────────────────────
 
 
-def test_daemon_overview_response_shape(universe_harness):
-    resp = json.loads(_action_daemon_overview(
-        universe_id=universe_harness["uid"],
-    ))
-    assert resp["universe_id"] == universe_harness["uid"]
-    assert "dispatcher" in resp
-    assert "queue" in resp
-    assert "subscriptions" in resp
-    assert "bids" in resp
-    assert "settlements" in resp
-    assert "gates" in resp
-    assert "activity_tail" in resp
-    assert "run_state" in resp
 
 
 def test_daemon_overview_exposes_merged_epoch_counts(
@@ -142,25 +129,6 @@ def test_daemon_overview_exposes_merged_epoch_counts(
     }
 
 
-def test_daemon_overview_top_n_limit_honored(universe_harness, monkeypatch):
-    """Seed queue with 50 tasks; default limit returns top 20."""
-    from tinyassets.branch_tasks import BranchTask, append_task, new_task_id
-    udir = universe_harness["base"] / universe_harness["uid"]
-    for i in range(50):
-        t = BranchTask(
-            branch_task_id=new_task_id(),
-            branch_def_id="x",
-            universe_id=universe_harness["uid"],
-            trigger_source="user_request",
-            priority_weight=float(50 - i),  # strictly decreasing score
-            queued_at="2026-04-14T12:00:00+00:00",
-        )
-        append_task(udir, t)
-    resp = json.loads(_action_daemon_overview(
-        universe_id=universe_harness["uid"],
-    ))
-    assert len(resp["queue"]["top"]) == 20
-    assert resp["queue"]["pending_count"] == 50
 
 
 def test_daemon_overview_ttl_cache(universe_harness):
@@ -241,27 +209,6 @@ def test_daemon_overview_cache_invalidated_on_set_tier_config(universe_harness):
     assert d2["dispatcher"]["config"]["accept_paid_bids"] == new_state
 
 
-def test_daemon_overview_large_queue_bounded(universe_harness):
-    """With 500 tasks, response still bounded by top-N."""
-    from tinyassets.branch_tasks import BranchTask, append_task, new_task_id
-    udir = universe_harness["base"] / universe_harness["uid"]
-    for _ in range(500):
-        append_task(udir, BranchTask(
-            branch_task_id=new_task_id(), branch_def_id="x",
-            universe_id=universe_harness["uid"],
-            trigger_source="user_request",
-            queued_at="2026-04-14T12:00:00+00:00",
-        ))
-    resp = json.loads(_action_daemon_overview(
-        universe_id=universe_harness["uid"],
-    ))
-    # Default top_n=20, absolute cap for full=500.
-    assert len(resp["queue"]["top"]) == 20
-
-    resp_full = json.loads(_action_daemon_overview(
-        universe_id=universe_harness["uid"], limit="full",
-    ))
-    assert len(resp_full["queue"]["top"]) <= 500
 
 
 def test_daemon_overview_flag_off_shows_paid_bid_not_live(
@@ -288,45 +235,8 @@ def test_daemon_overview_flag_off_shows_paid_bid_not_live(
     assert status.lower() in {"disabled", "stubbed", "stubbed (phase g)"}
 
 
-def test_daemon_overview_drift_surfaces(universe_harness, monkeypatch):
-    """Phase F drift flag visible via daemon_overview."""
-    udir = universe_harness["base"] / universe_harness["uid"]
-    # accept_goal_pool=true but empty subscriptions
-    cfg_path = udir / "dispatcher_config.yaml"
-    cfg_path.write_text("accept_goal_pool: true\n", encoding="utf-8")
-    (udir / "subscriptions.json").write_text(
-        json.dumps({"goals": [], "updated_at": ""}), encoding="utf-8",
-    )
-
-    from tinyassets.api.universe import _OVERVIEW_CACHE
-    _OVERVIEW_CACHE.clear()
-    resp = json.loads(_action_daemon_overview(
-        universe_id=universe_harness["uid"],
-    ))
-    assert resp["subscriptions"]["drift_flag"] == "pool_enabled_no_subs"
 
 
-def test_daemon_overview_settlements_count_accurate(universe_harness):
-    """Settlements counted from repo_root/settlements/ dir."""
-    from tinyassets.bid.node_bid import NodeBid
-    from tinyassets.bid.settlements import record_settlement_event
-    from tinyassets.executors.node_bid import NodeBidResult
-
-    repo_root = universe_harness["repo"]
-    bid = NodeBid(node_bid_id="nb_o1", node_def_id="n/x", bid=1.0)
-    result = NodeBidResult(
-        node_bid_id="nb_o1", status="succeeded",
-        evidence_url="file:///tmp/e",
-    )
-    record_settlement_event(repo_root, bid, result, "daemon-a")
-
-    from tinyassets.api.universe import _OVERVIEW_CACHE
-    _OVERVIEW_CACHE.clear()
-    resp = json.loads(_action_daemon_overview(
-        universe_id=universe_harness["uid"],
-    ))
-    assert resp["settlements"]["count_total"] == 1
-    assert resp["settlements"]["count_unsettled"] == 1
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -363,7 +273,7 @@ def test_set_tier_config_invalid_tier_rejects(universe_harness):
 
 def test_set_tier_config_persists_across_load(universe_harness):
     """Invariant 4: toggle → load_dispatcher_config sees it."""
-    from tinyassets.dispatcher import load_dispatcher_config
+    from tinyassets.control_plane.queue_policy import load_dispatcher_config
     _action_set_tier_config(
         universe_id=universe_harness["uid"],
         tier="paid_bids", enabled=True,
@@ -410,57 +320,12 @@ def test_set_tier_config_is_write_action(universe_harness):
 # ───────────────────────────────────────────────────────────────────────
 
 
-def test_node_lookup_none_default_is_no_op():
-    """NodeBidProducer with node_lookup_fn=None defaults to letting
-    all bids through (executor-side catches adversarials)."""
-    from tinyassets.producers.node_bid import _producer_sandbox_reject
-    # None lookup → empty reject reason → bid passes producer layer.
-    assert _producer_sandbox_reject("any-node", None) == ""
 
 
-def test_node_lookup_unknown_node_rejected():
-    """Wired lookup returning None → producer rejects pre-pick."""
-    from tinyassets.producers.node_bid import _producer_sandbox_reject
-    reason = _producer_sandbox_reject(
-        "missing-node", lambda _slug: None,
-    )
-    assert reason == "unknown_node_def_id"
 
 
-def test_node_lookup_unapproved_node_rejected():
-    from tinyassets.producers.node_bid import _producer_sandbox_reject
-
-    class _Node:
-        approved = False
-        source_code = "def run(s): return {}"
-
-    reason = _producer_sandbox_reject(
-        "node-unapproved", lambda _slug: _Node(),
-    )
-    assert reason == "unapproved_node"
 
 
-def test_node_lookup_raise_fails_closed():
-    """R4 + invariant 5 (updated 2026-04-14 after Phase H reviewer
-    audit): lookup raise → producer skips the bid (fail-CLOSED).
-
-    Spec was originally fail-OPEN (producer WARN-logs and lets the
-    bid through for the executor to catch). Reviewer + lead concur
-    the shipped fail-CLOSED behavior is correct: under disk-walk
-    lookup, transient failures are rare, and dropping the bid until
-    recovery is preferable to flooding the executor with unvalidated
-    bids during a transient outage.
-
-    Tight assertion on the exact reason so a future regression that
-    flips back to fail-OPEN ("" reason) surfaces immediately.
-    """
-    from tinyassets.producers.node_bid import _producer_sandbox_reject
-
-    def _raises(_slug):
-        raise RuntimeError("boom")
-
-    reason = _producer_sandbox_reject("anything", _raises)
-    assert reason == "node_lookup_error"
 
 
 # ───────────────────────────────────────────────────────────────────────

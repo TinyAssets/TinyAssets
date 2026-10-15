@@ -47,6 +47,9 @@ UNIT_FILES=(
 RUNTIME_FILES=(
     deploy/daemon-watchdog.sh
     deploy/backup.sh
+    deploy/box-store-check.sh
+    deploy/box-store-archive.py
+    deploy/box-store-quotas.py
     deploy/ship-logs.sh
     scripts/__init__.py
     scripts/_canary_common.py
@@ -55,6 +58,7 @@ RUNTIME_FILES=(
     scripts/disk_watch.py
     scripts/disk_autoprune.py
     scripts/daemon_image_retention.py
+    scripts/backup_snapshot_retention.py
     scripts/rotate_run_transcripts.py
     scripts/backup_ship_gh.py
     scripts/backup_prune.py

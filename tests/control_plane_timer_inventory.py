@@ -37,6 +37,9 @@ CLASSES = frozenset({CONTROL_PLANE, CALL_SCOPED, DELETE, CLIENT, BOX})
 #: ``"<path>::<qualname>"`` -> (class, note). ``[Timer]``/``[call_later]`` mark a
 #: callback-scheduling site; ``#n`` is the n-th clock-driven site in one function.
 CLASSIFICATION: dict[str, tuple[str, str]] = {
+    "tinyassets/boxes/gvisor_files.py::GvisorFileBackend._wake": (
+        CALL_SCOPED, "host capacity FIFO waits only until this admitted request's deadline",
+    ),
     'tinyassets/browser_sessions.py::owner_action [Timer]': (
         CALL_SCOPED, 'One protected login capture expires and destroys its owner browser cell.'),
     "tinyassets/role_preview_cell.py::supervised": (
@@ -53,16 +56,11 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CONTROL_PLANE,
         "deliver durable owner-authorized webhook receipts; no model or agent execution",
     ),
-    "tinyassets/runtime/assigned_queue_consumer.py::AssignedQueueConsumer._run": (
+    "tinyassets/control_plane/tick.py::AssignedQueueConsumer._run": (
         CONTROL_PLANE,
         "the owner tick: pumps due automations and control-plane triggers, under "
         "the owner lease; per-universe heartbeat/.pause still touch the universe "
         "directory until the cutover (#4262) moves them to .platform/",
-    ),
-    "tinyassets/universe_server.py::main._resume_request_loop": (
-        CONTROL_PLANE,
-        "server-owned protected request recovery and due owner-bound continuations; "
-        "per-home control/attempt locks serialize work, not a box timer",
     ),
     "tinyassets/universe_server.py::main._served_budget_lease_loop": (
         CONTROL_PLANE,
@@ -118,7 +116,7 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         "bad-reply backoff bounded by the remaining turn deadline; polls Stop "
         "at most every 0.25 seconds and ends with this turn",
     ),
-    "tinyassets/runtime/assigned_queue_consumer.py::AssignedQueueConsumer._refresh_lease": (
+    "tinyassets/control_plane/tick.py::AssignedQueueConsumer._refresh_lease": (
         CALL_SCOPED, "agent lease refresh for one running automation batch",
     ),
     "tinyassets/auto_ship_ledger.py::_file_lock": (CALL_SCOPED, "lock acquisition"),
@@ -143,6 +141,15 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     ),
     "tinyassets/bid/execution_log.py::_exec_log_lock": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/bid/node_bid.py::_bid_file_lock": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/boxes/host_service.py::_serve": (
+        CONTROL_PLANE,
+        "root box host reaps idle sandboxes; no owner task or inference scheduling",
+    ),
+    "tinyassets/boxes/production_files.py::ProductionFileProvider.stream": (
+        CALL_SCOPED,
+        "caller consumes one bounded host execution; ends at terminal receipt, "
+        "unknown outcome or caller deadline",
+    ),
     "tinyassets/boxes/boxd.py::BoxdCore._supervise": (
         CALL_SCOPED,
         "host-side thread for one exec; stops at leader exit, cancel, wall or "
@@ -164,7 +171,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         "caller-consumed iterator for one bounded exec; ends on terminal or "
         "restore state, optional caller timeout, or iterator close",
     ),
-    "tinyassets/branch_tasks.py::_file_lock": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/broker/fence.py::Fence.barrier": (
         CALL_SCOPED,
         "one verified fence barrier cancels older streams then waits for active "
@@ -235,7 +241,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         "migration marker; returns on stable layout or raises on refusal, "
         "without scheduling background work",
     ),
-    "tinyassets/subscriptions.py::_file_lock": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/ttl_memo.py::TTLMemo.get": (CALL_SCOPED, "single-flight wait"),
     "tinyassets/universe_seats.py::_wait_for_seat": (CALL_SCOPED, "seat wait"),
     "tinyassets/universe_tools.py::_remove_cgroup": (CALL_SCOPED, "cgroup teardown retry"),

@@ -27,7 +27,7 @@ import pytest
 
 import tinyassets.provider_serving_binding  # noqa: F401 - bind its real imports BEFORE any patch below
 from tinyassets.consumer_reason_actions import consumer_next_action
-from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
+from tinyassets.control_plane.tick import AssignedQueueConsumer
 
 
 def _consumer(tmp_path):

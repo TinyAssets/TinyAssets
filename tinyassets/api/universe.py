@@ -413,56 +413,12 @@ def _extract_queue_cancel(
     )
 
 
-def _extract_subscribe_goal(
-    kwargs: dict[str, Any], result: dict[str, Any],
-) -> tuple[str, str, dict[str, Any]]:
-    from tinyassets.api.engine_helpers import _truncate
-    g = str(kwargs.get("goal_id", ""))
-    return (g, _truncate(f"subscribe {g}"), {"status": result.get("status", "")})
 
 
-def _extract_unsubscribe_goal(
-    kwargs: dict[str, Any], result: dict[str, Any],
-) -> tuple[str, str, dict[str, Any]]:
-    from tinyassets.api.engine_helpers import _truncate
-    g = str(kwargs.get("goal_id", ""))
-    return (g, _truncate(f"unsubscribe {g}"), {"status": result.get("status", "")})
 
 
-def _extract_post_to_goal_pool(
-    kwargs: dict[str, Any], result: dict[str, Any],
-) -> tuple[str, str, dict[str, Any]]:
-    from tinyassets.api.engine_helpers import _truncate
-    g = str(kwargs.get("goal_id", ""))
-    bd = str(kwargs.get("branch_def_id", ""))
-    return (
-        str(result.get("path", f"goal_pool/{g}")),
-        _truncate(f"post {bd} to {g}"),
-        {
-            "goal_id": g,
-            "branch_def_id": bd,
-            "status": result.get("status", ""),
-        },
-    )
 
 
-def _extract_submit_node_bid(
-    kwargs: dict[str, Any], result: dict[str, Any],
-) -> tuple[str, str, dict[str, Any]]:
-    from tinyassets.api.engine_helpers import _truncate
-    nb = str(result.get("node_bid_id", ""))
-    nd = str(kwargs.get("node_def_id", ""))
-    bid = kwargs.get("bid", 0.0)
-    return (
-        str(result.get("path", f"bids/{nb}.yaml")),
-        _truncate(f"bid {bid} for node {nd}"),
-        {
-            "node_bid_id": nb,
-            "node_def_id": nd,
-            "bid": bid,
-            "status": result.get("status", ""),
-        },
-    )
 
 
 def _extract_set_tier_config(
@@ -690,10 +646,6 @@ WRITE_ACTIONS: dict[str, Any] = {
     "switch_universe": (_extract_switch_universe, None),
     "create_universe": (_extract_create_universe, None),
     "queue_cancel": (_extract_queue_cancel, None),
-    "subscribe_goal": (_extract_subscribe_goal, None),
-    "unsubscribe_goal": (_extract_unsubscribe_goal, None),
-    "post_to_goal_pool": (_extract_post_to_goal_pool, None),
-    "submit_node_bid": (_extract_submit_node_bid, None),
     "set_tier_config": (_extract_set_tier_config, None),
     "daemon_create": (_extract_daemon_create, None),
     "daemon_summon": (_extract_daemon_summon, None),
@@ -842,8 +794,8 @@ def _dispatch_with_ledger(
 # The fleet daemon loop that wrote those three files was retired on
 # 2026-08-29 (`user-owned-automations`); real activity since then comes
 # from automation runs (`tinyassets.automations` /
-# `tinyassets.runtime.assigned_queue_consumer`) and schedule runs
-# (`tinyassets.scheduler`), both recorded in the runs ledger
+# `tinyassets.control_plane.tick`) and schedule runs
+# (`tinyassets.control_plane.events`), both recorded in the runs ledger
 # (`tinyassets.runs`) as rows scoped to this universe via
 # ``queue_universe_id``. `_last_activity_at` takes the newest across the
 # file-based signals AND actually-started runs in the ledger so a universe
@@ -1620,7 +1572,7 @@ def _epoch2_operational_read(
         Epoch2BranchTaskAdapter,
         Epoch2OperationalRead,
     )
-    from tinyassets.dispatcher import (
+    from tinyassets.control_plane.queue_policy import (
         load_dispatcher_config,
         prefers_request_type,
     )
@@ -1666,7 +1618,7 @@ def _epoch2_operational_read(
         return bool(workers)
 
     try:
-        from tinyassets.runtime.assigned_queue_consumer import (
+        from tinyassets.control_plane.tick import (
             assigned_queue_refusal_freshness_seconds,
         )
         from tinyassets.storage.assigned_queue_refusals import (
@@ -2097,261 +2049,12 @@ def _action_read_output(universe_id: str = "", path: str = "", **_kwargs: Any) -
     })
 
 
-def _lookup_operator_request_replay(
-    store: Any,
-    *,
-    universe_id: str,
-    idempotency_key_hash: str,
-    body_digest: str,
-    body_digest_version: str,
-) -> dict[str, Any] | None:
-    """Reauthorize ordinary access before consulting idempotency state."""
-
-    verdict = permissions.operator_request_replay_verdict(universe_id)
-    if not verdict.allowed:
-        # Reveal no stored identifier, digest, receipt, replay status, or
-        # key-existence evidence.
-        return {"error": "universe_access_denied"}
-    access_check, _priority_check = (
-        permissions.operator_request_transaction_checks(verdict)
-    )
-    return store.lookup_replay(
-        tenant_id=verdict.tenant_id,
-        actor_id=verdict.actor_id,
-        universe_id=verdict.universe_id,
-        idempotency_key_hash=idempotency_key_hash,
-        body_digest=body_digest,
-        body_digest_version=body_digest_version,
-        access_check=access_check,
-    )
-
-
-_REQUEST_IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{16,128}$")
-_REQUEST_BODY_DIGEST_VERSION = "rfc8785-v1"
-_REQUEST_BODY_SCHEMA_VERSION = "request-admission-v2"
-_REQUEST_HMAC_ENV = "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
-_REQUEST_TYPES = frozenset({
-    "scene_direction",
-    "revision",
-    "canon_change",
-    "branch_proposal",
-    "general",
-})
-
-
-def _request_validation_error() -> str:
-    return json.dumps({"error": "request_validation_error"})
-
-
-def _request_idempotency_key_hash(raw_key: str) -> str:
-    # `_REQUEST_IDEMPOTENCY_KEY_RE` already restricts the key to ASCII, so
-    # delegating to the shared minter is byte-identical to the old
-    # ascii-encoded HMAC.
-    from tinyassets.storage.request_admissions import (
-        mint_idempotency_key_hash,
-    )
-
-    return mint_idempotency_key_hash(raw_key)
-
-
-def _request_body_digest(
-    *,
-    universe_id: str,
-    text: str,
-    request_type: str,
-    branch_id: str,
-    pickup_incentive: str,
-    directed_daemon_id: str,
-    directed_daemon_instruction: str,
-    priority_weight: int | float,
-) -> str:
-    import rfc8785
-
-    canonical = rfc8785.dumps({
-        "branch_id": branch_id,
-        "directed_daemon_id": directed_daemon_id,
-        "directed_daemon_instruction": directed_daemon_instruction,
-        "pickup_incentive": pickup_incentive,
-        "priority_weight": priority_weight,
-        "request_type": request_type,
-        "schema_version": _REQUEST_BODY_SCHEMA_VERSION,
-        "text": text,
-        "universe_id": universe_id,
+def _action_refuse_request(**_kwargs: Any) -> str:
+    """Refuse requests while no worker claims the persisted v2 queue."""
+    return json.dumps({
+        "error": "request_execution_unavailable",
+        "message": "Request submission is unavailable: no worker starts admitted requests.",
     })
-    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
-
-
-def _action_admit_request_v2(
-    *,
-    idempotency_key: str,
-    graph_id: str = "",
-    text: str = "",
-    request_type: str = "general",
-    branch_id: str = "",
-    pickup_incentive: str = "",
-    directed_daemon_id: str = "",
-    directed_daemon_instruction: str = "",
-    priority_weight: int | float = 0.0,
-) -> str:
-    """Validate and atomically admit one canonical protocol-v2 request."""
-
-    string_fields = (
-        idempotency_key,
-        graph_id,
-        text,
-        request_type,
-        branch_id,
-        pickup_incentive,
-        directed_daemon_id,
-        directed_daemon_instruction,
-    )
-    if (
-        not all(isinstance(value, str) for value in string_fields)
-        or _REQUEST_IDEMPOTENCY_KEY_RE.fullmatch(idempotency_key) is None
-        or isinstance(priority_weight, bool)
-        or not isinstance(priority_weight, (int, float))
-        or not 0 <= priority_weight <= 100
-        or request_type not in _REQUEST_TYPES
-    ):
-        return _request_validation_error()
-    try:
-        encoded_fields = tuple(value.encode("utf-8") for value in string_fields)
-    except UnicodeEncodeError:
-        return _request_validation_error()
-    if len(encoded_fields[2]) > _SUBMIT_REQUEST_MAX_BYTES:
-        return _request_validation_error()
-
-    uid = _request_universe(graph_id)
-    try:
-        idempotency_key_hash = _request_idempotency_key_hash(
-            idempotency_key
-        )
-    except RuntimeError:
-        logger.error("request admission HMAC key is not configured")
-        return json.dumps({"error": "request_admission_unavailable"})
-    body_digest = _request_body_digest(
-        universe_id=uid,
-        text=text,
-        request_type=request_type,
-        branch_id=branch_id,
-        pickup_incentive=pickup_incentive,
-        directed_daemon_id=directed_daemon_id,
-        directed_daemon_instruction=directed_daemon_instruction,
-        priority_weight=priority_weight,
-    )
-
-    from tinyassets.storage.request_admissions import (
-        IdempotencyKeyBodyConflict,
-        RequestAdmissionStore,
-    )
-
-    store = RequestAdmissionStore(_base_path())
-    try:
-        replay = _lookup_operator_request_replay(
-            store,
-            universe_id=uid,
-            idempotency_key_hash=idempotency_key_hash,
-            body_digest=body_digest,
-            body_digest_version=_REQUEST_BODY_DIGEST_VERSION,
-        )
-    except IdempotencyKeyBodyConflict:
-        return json.dumps({"error": "idempotency_key_body_conflict"})
-    except PermissionError:
-        return json.dumps({"error": "universe_access_denied"})
-    if replay is not None:
-        return json.dumps(replay, default=str)
-
-    udir = _universe_dir(uid)
-    if not udir.is_dir():
-        return json.dumps({"error": "universe_not_found"})
-    loop_branch_def_id, _loop_dispatch = _universe_loop_dispatch(udir)
-    if not loop_branch_def_id:
-        return json.dumps({
-            "error": "universe_loop_not_declared",
-            "universe_id": uid,
-        })
-
-    verdict = permissions.operator_request_admission_verdict(
-        uid,
-        requested_priority_weight=float(priority_weight),
-        directed=bool(directed_daemon_id),
-    )
-    if not verdict.allowed:
-        return json.dumps({"error": verdict.error_code})
-
-    directed_receipt: dict[str, Any] = {}
-    if directed_daemon_id:
-        from tinyassets.daemon_registry import (
-            build_requester_directed_daemon_assignment,
-        )
-
-        assignment = build_requester_directed_daemon_assignment(
-            _base_path(),
-            daemon_id=directed_daemon_id,
-            requester_id=verdict.actor_id,
-            patch_request_id="pending-request-admission",
-            instruction=directed_daemon_instruction,
-        )
-        if assignment.get("effect") == "refused":
-            return json.dumps({"error": "directed_daemon_not_authorized"})
-        directed_receipt = {
-            "daemon_id": str(assignment.get("daemon_id") or ""),
-            "daemon_soul_hash": str(
-                assignment.get("daemon_soul_hash") or ""
-            ),
-            "authority_scope": str(
-                assignment.get("authority_scope") or ""
-            ),
-        }
-
-    access_check, priority_check = (
-        permissions.operator_request_transaction_checks(verdict)
-    )
-    receipt = {
-        "authority": "request-local",
-        "grant_generation": int(verdict.grant_generation or 0),
-        "priority_policy_version": verdict.priority_policy_version,
-        "directed_assignment": directed_receipt,
-    }
-    try:
-        result = store.commit_admission(
-            tenant_id=verdict.tenant_id,
-            actor_id=verdict.actor_id,
-            universe_id=uid,
-            idempotency_key_hash=idempotency_key_hash,
-            body_digest=body_digest,
-            body_digest_version=_REQUEST_BODY_DIGEST_VERSION,
-            request_type=request_type,
-            text=text,
-            branch_id=branch_id,
-            branch_def_id=loop_branch_def_id,
-            trigger_source=verdict.trigger_source,
-            accepted_priority_weight=verdict.accepted_priority_weight,
-            policy_version=verdict.priority_policy_version,
-            grant_generation=int(verdict.grant_generation or 0),
-            receipt=receipt,
-            directed_daemon_id=directed_daemon_id,
-            created_at=datetime.now(timezone.utc).isoformat(),
-            pickup_incentive=pickup_incentive,
-            directed_daemon_instruction=directed_daemon_instruction,
-            access_check=access_check,
-            authority_check=priority_check,
-        )
-    except IdempotencyKeyBodyConflict:
-        return json.dumps({"error": "idempotency_key_body_conflict"})
-    except PermissionError:
-        return json.dumps({"error": "universe_access_denied"})
-    except Exception as exc:
-        from tinyassets.storage.accounts import (
-            CapabilityGrantAuthorizationError,
-        )
-
-        if isinstance(exc, CapabilityGrantAuthorizationError):
-            return json.dumps({"error": "priority_authorization_required"})
-        logger.exception("request admission transaction failed")
-        return json.dumps({"error": "request_admission_failed"})
-    return json.dumps(result, default=str)
-
 
 def admit_request_v2(
     *,
@@ -2365,7 +2068,7 @@ def admit_request_v2(
     directed_daemon_instruction: str = "",
     priority_weight: int | float = 0.0,
 ) -> str:
-    """Public request writer with one mutation-ledger entry per commit."""
+    """Refuse a request until an execution path can claim it."""
 
     kwargs = {
         "idempotency_key": idempotency_key,
@@ -2380,229 +2083,10 @@ def admit_request_v2(
     }
     return _dispatch_with_ledger(
         "submit_request",
-        _action_admit_request_v2,
+        _action_refuse_request,
         kwargs,
         scope_response=False,
     )
-
-
-_SUBMIT_REQUEST_MAX_BYTES = 8192
-
-
-def _action_submit_request(
-    universe_id: str = "",
-    text: str = "",
-    request_type: str = "scene_direction",
-    branch_id: str = "",
-    priority_weight: float = 0.0,
-    pickup_incentive: str = "",
-    directed_daemon_id: str = "",
-    directed_daemon_instruction: str = "",
-    **_kwargs: Any,
-) -> str:
-    from tinyassets.api.market import (
-        PATCH_REQUEST_AUTHORITY_BOUNDARY,
-        classify_patch_request,
-        normalize_patch_request_incentive,
-    )
-    from tinyassets.branch_tasks import BranchTask, append_task, new_task_id
-    from tinyassets.work_targets import REQUESTS_FILENAME
-
-    uid = _request_universe(universe_id)
-    udir = _universe_dir(uid)
-    if not udir.is_dir():
-        return json.dumps({"error": f"Command center '{uid}' not found."})
-
-    loop_branch_def_id, loop_dispatch = _universe_loop_dispatch(udir)
-    if not loop_branch_def_id:
-        return json.dumps({
-            "error": "universe_loop_not_declared",
-            "universe_id": uid,
-            "loop_dispatch": loop_dispatch,
-        })
-
-    # 8 KiB cap keeps requests.json bounded and discourages pasting
-    # entire drafts into the request channel (add_canon is the right
-    # tool for that). UTF-8 byte length, not char count.
-    text_bytes = len(text.encode("utf-8"))
-    if text_bytes > _SUBMIT_REQUEST_MAX_BYTES:
-        return json.dumps({
-            "error": (
-                f"Request text exceeds {_SUBMIT_REQUEST_MAX_BYTES} bytes "
-                f"({text_bytes} submitted). Summarize or split into "
-                "multiple requests. For private long-form material, relay it "
-                "to the command center through converse instead."
-            ),
-        })
-
-    valid_types = {
-        "scene_direction", "revision", "canon_change",
-        "branch_proposal", "general",
-    }
-    if request_type not in valid_types:
-        request_type = "general"
-
-    # The canonical public surface adds exact JSON-number and [0, 100]
-    # validation in its own lane. This legacy writer still rejects negatives,
-    # then delegates all identity/ACL/elevation decisions to one request-local
-    # verdict. It must never silently demote positive priority.
-    try:
-        pw = float(priority_weight)
-    except (TypeError, ValueError):
-        pw = 0.0
-    if pw < 0:
-        return json.dumps({
-            "error": "priority_weight must be >= 0.",
-        })
-    admission_verdict = permissions.operator_request_admission_verdict(
-        uid,
-        requested_priority_weight=pw,
-        directed=bool(directed_daemon_id.strip()),
-    )
-    if not admission_verdict.allowed:
-        return json.dumps({
-            "error": admission_verdict.error_code,
-            "universe_id": uid,
-        })
-    if pw > 0:
-        # Positive priority is valid only through the not-yet-enabled epoch-2
-        # transactional writer. The legacy split writer cannot safely persist
-        # it, so fail without mutation instead of stranding or demoting work.
-        return json.dumps({
-            "error": "operator_priority_unavailable",
-            "universe_id": uid,
-        })
-    source = admission_verdict.actor_id
-
-    request_id = f"req_{int(time.time())}_{os.urandom(4).hex()}"
-    incentive = normalize_patch_request_incentive(
-        str(pickup_incentive or ""),
-        requester_id=source,
-    )
-    authority_boundary = dict(PATCH_REQUEST_AUTHORITY_BOUNDARY)
-    requester_directed_daemon: dict[str, Any] | None = None
-    if directed_daemon_id.strip():
-        from tinyassets.daemon_registry import (
-            build_requester_directed_daemon_assignment,
-        )
-
-        requester_directed_daemon = build_requester_directed_daemon_assignment(
-            _base_path(),
-            daemon_id=directed_daemon_id.strip(),
-            requester_id=source,
-            patch_request_id=request_id,
-            instruction=directed_daemon_instruction or text,
-        )
-        if requester_directed_daemon.get("effect") == "refused":
-            return json.dumps({
-                "error": "directed_daemon_not_authorized",
-                "requester_directed_daemon": requester_directed_daemon,
-            })
-    request_classification = classify_patch_request(
-        text=text,
-        request_type=request_type,
-        requester_id=source,
-        priority_authorized=False,
-        directed_daemon=requester_directed_daemon is not None,
-    )
-    request_obj = {
-        "id": request_id,
-        "type": request_type,
-        "text": text,
-        "branch_id": branch_id or None,
-        "status": "pending",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "source": source,
-        "pickup_incentive": incentive,
-        "authority_boundary": authority_boundary,
-        "request_classification": request_classification,
-        "loop_dispatch": loop_dispatch,
-    }
-    if requester_directed_daemon is not None:
-        request_obj["requester_directed_daemon"] = requester_directed_daemon
-
-    requests_path = udir / REQUESTS_FILENAME
-    existing = _read_json(requests_path)
-    if not isinstance(existing, list):
-        existing = []
-    existing.append(request_obj)
-
-    try:
-        _ensure_center_dir(udir)
-        write_data_path(requests_path, json.dumps(existing, indent=2, default=str))
-    except OSError as exc:
-        return json.dumps({"error": f"Failed to write request: {exc}"})
-
-    # Phase E: also queue a BranchTask so the dispatcher can score +
-    # schedule. host submissions land as host_request tier; anyone
-    # else lands as user_request. The WorkTarget still gets
-    # materialized by UserRequestProducer from requests.json on the
-    # next producer cycle — BranchTask wraps the execution intent.
-    branch_task_id = ""
-    try:
-        task = BranchTask(
-            branch_task_id=new_task_id(),
-            branch_def_id=loop_branch_def_id,
-            universe_id=uid,
-            inputs={
-                "work_target_ref": None,
-                "request_id": request_id,
-                "request_type": request_type,
-                "branch_id": branch_id or "",
-                "pickup_incentive": incentive,
-                "authority_boundary": authority_boundary,
-                "request_classification": request_classification,
-                "requester_directed_daemon": requester_directed_daemon,
-                "loop_dispatch": loop_dispatch,
-            },
-            trigger_source=(
-                "owner_queued"
-                if requester_directed_daemon is not None
-                else admission_verdict.trigger_source
-            ),
-            priority_weight=admission_verdict.accepted_priority_weight,
-            pickup_signal_weight=float(incentive.get("pickup_signal_weight") or 0.0),
-            directed_daemon_id=(
-                str(requester_directed_daemon.get("daemon_id", ""))
-                if requester_directed_daemon is not None else ""
-            ),
-        )
-        append_task(udir, task)
-        branch_task_id = task.branch_task_id
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to queue BranchTask for %s: %s", request_id, exc)
-
-    pending_count = sum(
-        1 for r in existing
-        if isinstance(r, dict) and r.get("status") == "pending"
-    )
-    ahead = max(0, pending_count - 1)
-    if ahead == 0:
-        position_note = "yours is next in the daemon's queue"
-    elif ahead == 1:
-        position_note = "1 other request is ahead of yours"
-    else:
-        position_note = f"{ahead} other requests are ahead of yours"
-
-    return json.dumps({
-        "universe_id": uid,
-        "request_id": request_id,
-        "branch_task_id": branch_task_id,
-        "status": "pending",
-        "priority_weight": pw,
-        "pickup_incentive": incentive,
-        "authority_boundary": authority_boundary,
-        "request_classification": request_classification,
-        "requester_directed_daemon": requester_directed_daemon,
-        "loop_dispatch": loop_dispatch,
-        "queue_position": pending_count,
-        "ahead_of_yours": ahead,
-        "what_happens_next": (
-            f"The daemon will see your request on its next review cycle; "
-            f'{position_note}. Use `read_graph target="graph" graph_id="{uid}"` '
-            "to watch the queue or check whether your request is now active work."
-        ),
-    })
 
 
 def _safe_epoch2_queue_row(
@@ -2626,51 +2110,21 @@ def _safe_epoch2_queue_row(
     }
 
 
-def _action_queue_list(
-    universe_id: str = "",
-    **_kwargs: Any,
-) -> str:
-    """Read ``branch_tasks.json`` fresh (no in-memory cache) and
-    return sorted+scored queue. Includes ``tier_status`` per R11.
-    """
-    from tinyassets.branch_tasks import read_queue
-    from tinyassets.dispatcher import (
-        load_dispatcher_config,
-        score_task,
-    )
+def _action_queue_list(universe_id: str = "", **_kwargs: Any) -> str:
+    """Read the transactional queue with one bounded operational snapshot."""
+    from tinyassets.control_plane.queue_policy import load_dispatcher_config, score_task
 
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         return json.dumps({"error": f"Command center '{uid}' not found."})
 
-    v1_error = ""
-    try:
-        queue = read_queue(udir)
-    except Exception as exc:  # noqa: BLE001
-        queue = []
-        v1_error = str(exc)
-    non_public_goal_ids = _non_public_goal_ids()
-    queue = [
-        task for task in queue
-        if not task.goal_id or task.goal_id not in non_public_goal_ids
-    ]
-
     cfg = load_dispatcher_config(udir)
     now_iso = datetime.now(timezone.utc).isoformat()
+    read = _epoch2_operational_read(udir, dispatcher_config=cfg)
+    epoch2 = read.summary
     rows: list[dict[str, Any]] = []
-    epoch2_read = _epoch2_operational_read(
-        udir,
-        dispatcher_config=cfg,
-    )
-    epoch2 = epoch2_read.summary
-    for task in queue:
-        row = task.to_dict()
-        row.setdefault("queue_epoch", 1)
-        row["score"] = score_task(task, now_iso=now_iso, config=cfg)
-        row["tier_enabled"] = cfg.tier_enabled(task.trigger_source)
-        rows.append(row)
-    for task in epoch2_read.candidates:
+    for task in read.candidates:
         score = score_task(task, now_iso=now_iso, config=cfg)
         rows.append(_safe_epoch2_queue_row(
             task,
@@ -2687,28 +2141,7 @@ def _action_queue_list(
         ),
     )
 
-    epoch1_lifecycle = {
-        "depth": len(queue),
-        "lifecycle": {
-            status: sum(
-                1 for task in queue if task.status == status
-            )
-            for status in (
-                "pending",
-                "running",
-                "cancel_requested",
-                "cancelled",
-                "succeeded",
-                "failed",
-            )
-        },
-    }
     epoch_counts: dict[str, Any] = {
-        "1": (
-            {"available": False, "error": v1_error}
-            if v1_error
-            else {"available": True, **epoch1_lifecycle}
-        ),
         "2": (
             {
                 "available": True,
@@ -2723,8 +2156,6 @@ def _action_queue_list(
             }
         ),
     }
-    v1_pending = epoch1_lifecycle["lifecycle"]["pending"]
-    v1_running = epoch1_lifecycle["lifecycle"]["running"]
     v2_lifecycle = epoch2.get("lifecycle_counts") or {}
     operational_counts_authoritative = bool(
         epoch2.get("operational_counts_authoritative", False)
@@ -2732,11 +2163,10 @@ def _action_queue_list(
     return json.dumps({
         "universe_id": uid,
         "queue": rows,
-        "pending_count": v1_pending + int(v2_lifecycle.get("pending", 0)),
-        "running_count": v1_running + int(v2_lifecycle.get("running", 0)),
+        "pending_count": int(v2_lifecycle.get("pending", 0)),
+        "running_count": int(v2_lifecycle.get("running", 0)),
         "counts_complete": (
-            not v1_error
-            and epoch2["available"]
+            epoch2["available"]
             and operational_counts_authoritative
         ),
         "epoch_counts": epoch_counts,
@@ -3470,21 +2900,6 @@ def _non_public_goal_ids() -> set[str]:
     return non_public_goal_ids(_base_path())
 
 
-def _public_subscription_refs(
-    goal_refs: list[str],
-    *,
-    non_public_goal_ids: set[str] | None = None,
-) -> list[str]:
-    """Hide known non-public Goals while retaining legacy pool topic names."""
-    blocked = (
-        _non_public_goal_ids()
-        if non_public_goal_ids is None
-        else non_public_goal_ids
-    )
-    # Goal-pool subscriptions predate Shared Goals and may be topic slugs such
-    # as ``maintenance`` rather than Goal record IDs. Unknown refs remain
-    # visible; only known non-public Goal records are filtered.
-    return [goal_ref for goal_ref in goal_refs if goal_ref not in blocked]
 
 
 # Per-caller reasonable limits (R14 response-size). Overridable via `limit`.
@@ -3642,7 +3057,7 @@ def _action_daemon_overview(
 
     # Dispatcher config + tier_status_map.
     try:
-        from tinyassets.dispatcher import load_dispatcher_config
+        from tinyassets.control_plane.queue_policy import load_dispatcher_config
         cfg = load_dispatcher_config(udir)
         response["dispatcher"] = {
             "tier_status_map": cfg.tier_status_map(),
@@ -3716,116 +3131,6 @@ def _action_daemon_overview(
                 "2": {"available": False, "error": str(exc)},
             },
             "error": str(exc),
-        }
-
-    # Subscriptions + drift.
-    try:
-        from tinyassets.producers.goal_pool import (
-            POOL_DIRNAME,
-            goal_pool_enabled,
-            repo_root_path,
-        )
-        from tinyassets.subscriptions import list_subscriptions
-        goals = _public_subscription_refs(list_subscriptions(udir))
-        counts: dict[str, int] = {g: 0 for g in goals}
-        try:
-            repo_root = repo_root_path(udir)
-            pool_root = repo_root / POOL_DIRNAME
-            for g in goals:
-                gdir = pool_root / g
-                if gdir.is_dir():
-                    counts[g] = sum(1 for _ in gdir.glob("*.yaml"))
-        except RuntimeError:
-            pass
-        if cfg.accept_goal_pool and not goals:
-            drift = "pool_enabled_no_subs"
-        elif goals and not cfg.accept_goal_pool:
-            drift = "subs_but_pool_disabled"
-        else:
-            drift = "ok"
-        response["subscriptions"] = {
-            "goals": goals,
-            "drift_flag": drift,
-            "pool_status_per_goal": counts,
-            "pool_flag_enabled": goal_pool_enabled(),
-        }
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("daemon_overview: subscriptions read failed: %s", exc)
-        response["subscriptions"] = {"goals": [], "drift_flag": "ok",
-                                     "pool_status_per_goal": {}}
-
-    # Bids + daemon capabilities.
-    try:
-        from tinyassets.bid.node_bid import read_node_bids
-        from tinyassets.producers.goal_pool import repo_root_path
-        from tinyassets.producers.node_bid import paid_market_enabled
-        try:
-            bid_repo_root = repo_root_path(udir)
-            bids = read_node_bids(bid_repo_root)
-        except RuntimeError:
-            bids = []
-        open_bids = [b.to_dict() for b in bids if b.status == "open"]
-        claimed = sum(1 for b in bids if b.status.startswith("claimed:"))
-        response["bids"] = {
-            "open_count": len(open_bids),
-            "claimed_count": claimed,
-            "top_open": open_bids[: limits["bids_top"]],
-            "daemon_capabilities": {
-                "serves_llm_types": sorted(
-                    os.environ.get("FANTASY_DAEMON_LLM_TYPES", "").split(",")
-                    if os.environ.get("FANTASY_DAEMON_LLM_TYPES")
-                    else [],
-                ),
-                "paid_market_enabled": paid_market_enabled(),
-                "bid_coefficient": cfg.bid_coefficient,
-            },
-        }
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("daemon_overview: bids read failed: %s", exc)
-        response["bids"] = {"open_count": 0, "claimed_count": 0,
-                            "top_open": []}
-
-    # Settlements.
-    try:
-        import yaml as _yaml  # noqa: F401 - soul settlements need PyYAML
-
-        from tinyassets.bid.settlements import settlements_dir
-        from tinyassets.producers.goal_pool import repo_root_path
-        try:
-            sroot = settlements_dir(repo_root_path(udir))
-        except RuntimeError:
-            sroot = None
-        s_entries: list[dict] = []
-        s_total = 0
-        s_unsettled = 0
-        if sroot and sroot.is_dir():
-            for p in sorted(sroot.glob("*.yaml")):
-                s_total += 1
-                try:
-                    raw = load_untrusted_yaml(
-                        (read_data_path(p, max_bytes=MAX_CONFIG_BYTES) or b"").decode("utf-8")
-                    ) or {}
-                except Exception:  # noqa: BLE001
-                    continue
-                if not isinstance(raw, dict):
-                    continue
-                if not raw.get("settled"):
-                    s_unsettled += 1
-                s_entries.append(raw)
-        s_entries.sort(
-            key=lambda r: str(r.get("completed_at", "")), reverse=True,
-        )
-        response["settlements"] = {
-            "count_total": s_total,
-            "count_unsettled": s_unsettled,
-            "recent": s_entries[: limits["settlements_recent"]],
-        }
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "daemon_overview: settlements read failed: %s", exc,
-        )
-        response["settlements"] = {
-            "count_total": 0, "count_unsettled": 0, "recent": [],
         }
 
     # Unscoped gate-claim enumeration is unsupported; scoped claims remain
@@ -3954,20 +3259,8 @@ def _action_queue_cancel(
     branch_task_id: str = "",
     **_kwargs: Any,
 ) -> str:
-    """Cancel a BranchTask.
-
-    Pending: hard-marks ``cancelled`` via ``mark_status``.
-    Running: cooperative cancel — sets ``cancel_requested=True`` so
-    the daemon's stream loop observes the flag at the next
-    inter-node event and finalizes as ``cancelled``. Authorization:
-    the task's ``claimed_by`` daemon (self-cancel) OR host identity.
-    Other actors get ``cancel_not_authorized``.
-    """
-    from tinyassets.branch_tasks import (
-        mark_status,
-        read_queue,
-        request_task_cancel,
-    )
+    """Cancel one transactional queue task within the caller's command center."""
+    from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
 
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
@@ -3975,308 +3268,36 @@ def _action_queue_cancel(
         return json.dumps({"error": f"Command center '{uid}' not found."})
     if not branch_task_id:
         return json.dumps({"error": "branch_task_id required."})
-
-    try:
-        queue = read_queue(udir)
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"Failed to read queue: {exc}"})
-
-    target = next(
-        (t for t in queue if t.branch_task_id == branch_task_id),
-        None,
-    )
-    if target is None:
-        return json.dumps({
-            "universe_id": uid,
-            "status": "not_found",
-            "branch_task_id": branch_task_id,
-        })
-    if target.status == "running":
+    adapter = Epoch2BranchTaskAdapter(udir.parent)
+    task = adapter.get(branch_task_id)
+    if task is None or task.universe_id != uid:
+        return json.dumps({"universe_id": uid, "status": "not_found",
+                           "branch_task_id": branch_task_id})
+    if task.status in {"running", "cancel_requested"}:
         from tinyassets.api.engine_helpers import _current_actor
 
-        source = _current_actor()
-        is_owner = bool(target.claimed_by) and source == target.claimed_by
-        can_cancel = _env_actor_can(
-            ACTION_CANCEL_BRANCH_TASK,
-            universe_id=uid,
-        )
-        if not (can_cancel or is_owner):
-            return json.dumps({
-                "universe_id": uid,
-                "status": "rejected",
-                "error": "cancel_not_authorized",
-                "branch_task_id": branch_task_id,
-                "hint": (
-                    "Running-task cancel requires the claiming daemon "
-                    f"or the {ACTION_CANCEL_BRANCH_TASK!r} capability "
-                    f"in {ENV_CAPABILITIES_VAR}."
-                ),
-            })
-        try:
-            ok = request_task_cancel(udir, branch_task_id)
-        except Exception as exc:  # noqa: BLE001
-            return json.dumps({"error": f"Failed to request cancel: {exc}"})
-        if not ok:
-            # Race: task reached terminal between read_queue and now.
-            return json.dumps({
-                "universe_id": uid,
-                "status": "rejected",
-                "error": "task_already_terminal",
-                "branch_task_id": branch_task_id,
-            })
-        return json.dumps({
-            "universe_id": uid,
-            "status": "cancel_requested",
-            "branch_task_id": branch_task_id,
-            "note": (
-                "cooperative cancel — observed at next inter-node "
-                "event; daemon finalizes as cancelled"
-            ),
-        })
-    if target.status != "pending":
-        return json.dumps({
-            "universe_id": uid,
-            "status": target.status,
-            "branch_task_id": branch_task_id,
-            "note": "task is already in a terminal state",
-        })
-
+        claimant = bool(task.claimed_by) and _current_actor() == task.claimed_by
+        if not (claimant or _env_actor_can(ACTION_CANCEL_BRANCH_TASK, universe_id=uid)):
+            return json.dumps({"universe_id": uid, "status": "rejected",
+                               "error": "cancel_not_authorized",
+                               "branch_task_id": branch_task_id})
     try:
-        mark_status(udir, branch_task_id, status="cancelled")
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"Failed to cancel: {exc}"})
-
-    return json.dumps({
-        "universe_id": uid,
-        "status": "cancelled",
-        "branch_task_id": branch_task_id,
-    })
+        updated = adapter.request_cancel(branch_task_id)
+    except KeyError:
+        return json.dumps({"universe_id": uid, "status": "not_found",
+                           "branch_task_id": branch_task_id})
+    return json.dumps({"universe_id": uid, "status": updated.status,
+                       "branch_task_id": branch_task_id})
 
 
-def _goal_pool_not_available() -> str:
-    return json.dumps({
-        "status": "not_available",
-        "hint": "TINYASSETS_GOAL_POOL=on required",
-    })
 
 
-def _action_subscribe_goal(
-    universe_id: str = "",
-    goal_id: str = "",
-    **_kwargs: Any,
-) -> str:
-    from tinyassets.producers.goal_pool import goal_pool_enabled
-    from tinyassets.subscriptions import subscribe
-
-    if not goal_pool_enabled():
-        return _goal_pool_not_available()
-    uid = _request_universe(universe_id)
-    udir = _universe_dir(uid)
-    if not udir.is_dir():
-        return json.dumps({"error": f"Command center '{uid}' not found."})
-    if not goal_id:
-        return json.dumps({"error": "goal_id required."})
-    try:
-        goals = subscribe(udir, goal_id)
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"subscribe failed: {exc}"})
-    return json.dumps({
-        "universe_id": uid,
-        "goal_id": goal_id,
-        "status": "subscribed",
-        "goals": goals,
-    })
 
 
-def _action_unsubscribe_goal(
-    universe_id: str = "",
-    goal_id: str = "",
-    **_kwargs: Any,
-) -> str:
-    from tinyassets.producers.goal_pool import goal_pool_enabled
-    from tinyassets.subscriptions import unsubscribe
-
-    if not goal_pool_enabled():
-        return _goal_pool_not_available()
-    uid = _request_universe(universe_id)
-    udir = _universe_dir(uid)
-    if not udir.is_dir():
-        return json.dumps({"error": f"Command center '{uid}' not found."})
-    if not goal_id:
-        return json.dumps({"error": "goal_id required."})
-    try:
-        goals = unsubscribe(udir, goal_id)
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"unsubscribe failed: {exc}"})
-    return json.dumps({
-        "universe_id": uid,
-        "goal_id": goal_id,
-        "status": "unsubscribed",
-        "goals": goals,
-    })
 
 
-def _action_list_subscriptions(
-    universe_id: str = "",
-    **_kwargs: Any,
-) -> str:
-    """List subscriptions + drift detection + per-goal pool counts.
-
-    Preflight §4.1 #4 drift flag values:
-      - "ok"
-      - "pool_enabled_no_subs"  (F on + accept_goal_pool=true + zero subs)
-      - "subs_but_pool_disabled" (subs exist + accept_goal_pool=false)
-    """
-    from tinyassets.dispatcher import load_dispatcher_config
-    from tinyassets.producers.goal_pool import (
-        POOL_DIRNAME,
-        goal_pool_enabled,
-        repo_root_path,
-    )
-    from tinyassets.subscriptions import list_subscriptions as _list
-
-    if not goal_pool_enabled():
-        return _goal_pool_not_available()
-    uid = _request_universe(universe_id)
-    udir = _universe_dir(uid)
-    if not udir.is_dir():
-        return json.dumps({"error": f"Command center '{uid}' not found."})
-
-    try:
-        goals = _public_subscription_refs(_list(udir))
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"list_subscriptions failed: {exc}"})
-
-    # Per-goal pool counts.
-    counts: dict[str, int] = {g: 0 for g in goals}
-    try:
-        repo_root = repo_root_path(udir)
-        pool_root = repo_root / POOL_DIRNAME
-        for g in goals:
-            gdir = pool_root / g
-            if gdir.is_dir():
-                counts[g] = sum(1 for _ in gdir.glob("*.yaml"))
-    except RuntimeError:
-        # repo_root unresolvable — counts stay zero
-        pass
-
-    cfg = load_dispatcher_config(udir)
-    if cfg.accept_goal_pool and not goals:
-        drift = "pool_enabled_no_subs"
-    elif goals and not cfg.accept_goal_pool:
-        drift = "subs_but_pool_disabled"
-    else:
-        drift = "ok"
-
-    return json.dumps({
-        "universe_id": uid,
-        "goals": goals,
-        "pool_status_per_goal": counts,
-        "config_vs_subscriptions_drift": drift,
-    })
 
 
-def _action_post_to_goal_pool(
-    universe_id: str = "",
-    goal_id: str = "",
-    branch_def_id: str = "",
-    inputs_json: str = "",
-    priority_weight: float = 0.0,
-    **_kwargs: Any,
-) -> str:
-    """Write a pool YAML to ``<repo_root>/goal_pool/<goal_id>/<id>.yaml``.
-
-    Response includes a ``next_step`` hint for cross-host visibility
-    (git add/commit/push).
-    """
-    from tinyassets.producers.goal_pool import (
-        goal_pool_enabled,
-        repo_root_path,
-        validate_pool_task_inputs,
-        write_pool_post,
-    )
-
-    if not goal_pool_enabled():
-        return _goal_pool_not_available()
-    uid = _request_universe(universe_id)
-    udir = _universe_dir(uid)
-    if not udir.is_dir():
-        return json.dumps({"error": f"Command center '{uid}' not found."})
-    if not goal_id:
-        return json.dumps({"error": "goal_id required."})
-    if not branch_def_id:
-        return json.dumps({"error": "branch_def_id required."})
-
-    # Parse inputs_json. Empty string → {}.
-    if inputs_json.strip():
-        try:
-            inputs = json.loads(inputs_json)
-        except json.JSONDecodeError as exc:
-            return json.dumps({"error": f"inputs_json invalid JSON: {exc}"})
-    else:
-        inputs = {}
-    ok, reason = validate_pool_task_inputs(inputs)
-    if not ok:
-        return json.dumps({
-            "status": "rejected",
-            "error": f"invalid_inputs: {reason}",
-        })
-
-    # priority_weight clamp per Phase E invariant 9 (extended to pool posts).
-    try:
-        pw = float(priority_weight)
-    except (TypeError, ValueError):
-        pw = 0.0
-    if pw < 0:
-        return json.dumps({
-            "status": "rejected",
-            "error": "priority_weight must be >= 0.",
-        })
-    from tinyassets.api.engine_helpers import _current_actor
-
-    source = _current_actor()
-    if not _env_actor_can(ACTION_POST_PRIORITY_GOAL_POOL, universe_id=uid):
-        pw = 0.0
-
-    try:
-        repo_root = repo_root_path(udir)
-    except RuntimeError as exc:
-        return json.dumps({
-            "status": "rejected",
-            "error": "repo_root_not_resolvable",
-            "hint": (
-                "Set TINYASSETS_REPO_ROOT or run the daemon from inside "
-                "a git checkout. Detail: " + str(exc)
-            ),
-        })
-
-    try:
-        out_path = write_pool_post(
-            repo_root,
-            goal_id,
-            branch_def_id=branch_def_id,
-            inputs=inputs,
-            priority_weight=pw,
-            posted_by=source,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"post failed: {exc}"})
-
-    rel_path = out_path.relative_to(repo_root) if out_path.is_relative_to(
-        repo_root,
-    ) else out_path
-    return json.dumps({
-        "universe_id": uid,
-        "status": "posted",
-        "goal_id": goal_id,
-        "branch_def_id": branch_def_id,
-        "path": str(out_path),
-        "priority_weight": pw,
-        "next_step": (
-            f"To make this post visible to cross-host subscribers, run: "
-            f"git add {rel_path} && git commit && git push"
-        ),
-    })
 
 
 def _paid_market_not_available() -> str:
@@ -4286,114 +3307,6 @@ def _paid_market_not_available() -> str:
     })
 
 
-def _action_submit_node_bid(
-    universe_id: str = "",
-    node_def_id: str = "",
-    required_llm_type: str = "",
-    inputs_json: str = "",
-    bid: float = 0.0,
-    **_kwargs: Any,
-) -> str:
-    """Phase G: write a NodeBid YAML to ``<repo_root>/bids/<id>.yaml``.
-
-    Flag-gated on ``TINYASSETS_PAID_MARKET=on``. Flat-dict inputs only.
-    Response includes a ``next_step`` git push hint, mirroring
-    ``post_to_goal_pool``.
-    """
-    from tinyassets.bid.node_bid import (
-        new_node_bid_id,
-        validate_node_bid_inputs,
-        write_node_bid_post,
-    )
-    from tinyassets.producers.goal_pool import repo_root_path
-    from tinyassets.producers.node_bid import paid_market_enabled
-
-    if not paid_market_enabled():
-        return _paid_market_not_available()
-    uid = _request_universe(universe_id)
-    udir = _universe_dir(uid)
-    if not udir.is_dir():
-        return json.dumps({"error": f"Command center '{uid}' not found."})
-    if not node_def_id:
-        return json.dumps({"error": "node_def_id required."})
-
-    if inputs_json.strip():
-        try:
-            inputs = json.loads(inputs_json)
-        except json.JSONDecodeError as exc:
-            return json.dumps({"error": f"inputs_json invalid JSON: {exc}"})
-    else:
-        inputs = {}
-    ok, reason = validate_node_bid_inputs(inputs)
-    if not ok:
-        return json.dumps({
-            "status": "rejected",
-            "error": f"invalid_inputs: {reason}",
-        })
-
-    try:
-        bid_value = float(bid)
-    except (TypeError, ValueError):
-        return json.dumps({
-            "status": "rejected",
-            "error": "bid must be numeric",
-        })
-    if bid_value < 0:
-        return json.dumps({
-            "status": "rejected",
-            "error": "bid must be >= 0",
-        })
-
-    try:
-        repo_root = repo_root_path(udir)
-    except RuntimeError as exc:
-        return json.dumps({
-            "status": "rejected",
-            "error": "repo_root_not_resolvable",
-            "hint": (
-                "Set TINYASSETS_REPO_ROOT or run the daemon from inside "
-                "a git checkout. Detail: " + str(exc)
-            ),
-        })
-
-    from tinyassets.api.engine_helpers import _current_actor
-
-    source = _current_actor()
-    node_bid_id = new_node_bid_id()
-    payload = {
-        "node_bid_id": node_bid_id,
-        "node_def_id": node_def_id,
-        "required_llm_type": required_llm_type or "",
-        "inputs": dict(inputs),
-        "bid": bid_value,
-        "submitted_by": source,
-        "status": "open",
-        "evidence_url": "",
-        "submitted_at": datetime.now(timezone.utc).isoformat(),
-    }
-    try:
-        out_path = write_node_bid_post(repo_root, payload)
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"post failed: {exc}"})
-
-    rel_path = (
-        out_path.relative_to(repo_root)
-        if out_path.is_relative_to(repo_root)
-        else out_path
-    )
-    return json.dumps({
-        "universe_id": uid,
-        "status": "posted",
-        "node_bid_id": node_bid_id,
-        "node_def_id": node_def_id,
-        "path": str(out_path),
-        "bid": bid_value,
-        "required_llm_type": required_llm_type or "",
-        "next_step": (
-            f"To make this bid visible to cross-host daemons, run: "
-            f"git add {rel_path} && git commit && git push"
-        ),
-    })
 
 
 def _action_give_direction(
@@ -6408,7 +5321,7 @@ UNIVERSE_ACTIONS: dict[str, Any] = {
     "get_activity": _action_get_activity,
     "get_recent_events": _action_get_recent_events,
     "get_ledger": _action_get_ledger,
-    "submit_request": _action_submit_request,
+    "submit_request": _action_refuse_request,
     "give_direction": _action_give_direction,
     "read_premise": _action_read_premise,
     "set_premise": _action_set_premise,
@@ -6426,11 +5339,6 @@ UNIVERSE_ACTIONS: dict[str, Any] = {
     "declare_universe_loop": _action_declare_universe_loop,
     "queue_list": _action_queue_list,
     "queue_cancel": _action_queue_cancel,
-    "subscribe_goal": _action_subscribe_goal,
-    "unsubscribe_goal": _action_unsubscribe_goal,
-    "list_subscriptions": _action_list_subscriptions,
-    "post_to_goal_pool": _action_post_to_goal_pool,
-    "submit_node_bid": _action_submit_node_bid,
     "daemon_overview": _action_daemon_overview,
     "daemon_list": _action_daemon_list,
     "daemon_get": _action_daemon_get,

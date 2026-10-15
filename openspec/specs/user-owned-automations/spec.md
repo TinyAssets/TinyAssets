@@ -40,8 +40,8 @@ foreground admission refuses: a row admission would reject is a row that fails e
 forever. Each reason SHALL reach the owner as a sentence they can act on, not a bare token.
 
 #### Scenario: Consumer flag off
-- **WHEN** the assigned-queue consumer is disabled and an owner registers an automation
-- **THEN** the daemon returns `automation_unavailable` with reason `consumer_disabled`
+- **WHEN** the assigned-queue consumer is disabled and an owner registers an automation that admission would accept
+- **THEN** the daemon stores the automation, and the owner tick fires it when it is due
 
 #### Scenario: A workflow the owner did not author
 - **WHEN** an owner registers a readable but foreign-authored branch, which foreground admission

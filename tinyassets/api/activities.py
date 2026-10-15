@@ -28,7 +28,7 @@ def _universe_dir(base_path: Path, universe_id: str) -> Path:
 
 def _wake(base_path: Path, universe_id: str) -> None:
     """Dispatch now rather than at the next tick; a failure waits for the tick."""
-    from tinyassets.activity_dispatcher import dispatch_universe
+    from tinyassets.control_plane.activities import dispatch_universe
 
     try:
         dispatch_universe(base_path, universe_id)

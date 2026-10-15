@@ -57,6 +57,7 @@ class SchedulerLikeWriter:
 def fresh_data_dir(tmp_path, monkeypatch):
     """A data dir with no `.runs.db` yet -- the only state the race needs."""
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
     from tinyassets.runs import runs_db_path
 
     db = runs_db_path(tmp_path)
@@ -187,7 +188,7 @@ def test_startup_initializes_before_the_assigned_consumer_starts(
     """
     from tinyassets import consumer_runtime
     from tinyassets import universe_server as us
-    from tinyassets.runtime import assigned_queue_consumer as aqc
+    from tinyassets.control_plane import tick as aqc
 
     order: list[str] = []
     real_initialize = consumer_runtime.initialize
@@ -212,7 +213,6 @@ def test_startup_initializes_before_the_assigned_consumer_starts(
             order.append("assigned_consumer_stop")
 
     monkeypatch.setattr(consumer_runtime, "initialize", _record_initialize)
-    monkeypatch.setattr(aqc, "assigned_queue_consumer_enabled", lambda: True)
     monkeypatch.setattr(aqc, "AssignedQueueConsumer", _RecordingConsumer)
     monkeypatch.setattr(us.mcp, "run", lambda *a, **k: order.append("serve"))
     monkeypatch.setattr(us.uvicorn, "run", lambda *a, **k: order.append("serve"))
@@ -281,7 +281,7 @@ def test_main_initialization_failure_does_not_start_worker_or_serve(
 ):
     from tinyassets import consumer_runtime, engine_mcp_http, scoped_reset
     from tinyassets import universe_server as us
-    from tinyassets.runtime import assigned_queue_consumer as aqc
+    from tinyassets.control_plane import tick as aqc
 
     events = []
 
@@ -295,7 +295,6 @@ def test_main_initialization_failure_does_not_start_worker_or_serve(
 
     monkeypatch.setattr(scoped_reset, "prepare_service_writer_barrier", lambda base: _Barrier())
     monkeypatch.setattr(consumer_runtime, "initialize", _fail_initialize)
-    monkeypatch.setattr(aqc, "assigned_queue_consumer_enabled", lambda: True)
     monkeypatch.setattr(
         aqc,
         "AssignedQueueConsumer",

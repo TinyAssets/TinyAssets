@@ -81,14 +81,9 @@ def exercise(base, center, principal):
 
         from tinyassets.auto_ship_ledger import _file_lock
         from tinyassets.bid.execution_log import append_execution_log_entry
-        from tinyassets.branch_tasks import BranchTask, append_task
         from tinyassets.config import write_universe_config_fields
-        from tinyassets.subscriptions import subscribe
 
         check('config', lambda: write_universe_config_fields(root, oracle=True))
-        check('branch-tasks', lambda: append_task(root, BranchTask(
-            branch_task_id='oracle', branch_def_id='oracle', universe_id=center,
-            goal_id='oracle')))
 
         def auto_ship():
             with _file_lock(root):
@@ -131,9 +126,9 @@ def exercise(base, center, principal):
     # The actual periodic maintenance bodies, synchronously, with empty queues
     # and the request/queue records above. A swallowed blocked result is a fail.
     from tinyassets.command_center_update_maintenance import tick as update_centers
+    from tinyassets.control_plane.continuations import tick as resume_requests
     from tinyassets.delivery_runtime import reconcile_deliveries
     from tinyassets.provider_assignment import reconcile_served_budget_leases
-    from tinyassets.request_continuations import tick as resume_requests
     from tinyassets.run_file_retention import reconcile_run_files
     from tinyassets.run_input_origins import reconcile_admitted_runs
     from tinyassets.workspace_staging import sweep_data_root
@@ -148,13 +143,9 @@ def exercise(base, center, principal):
         ('workspace-sweep', sweep_data_root),
     ):
         check(name, lambda operation=operation: operation(base))
-    check('subscriptions', lambda: subscribe(root, 'oracle'),
-          produces=('subscriptions.json',))
     check('execution-log', lambda: append_execution_log_entry(root, {'oracle': True}),
           produces=('bid_execution_log.json',))
     check('execution-log-append', lambda: append_execution_log_entry(root, {'second': True}))
-    from tinyassets.subscriptions import unsubscribe
-    check('subscriptions-remove', lambda: unsubscribe(root, 'oracle'))
     from tinyassets.auto_ship_ledger import ShipAttempt, record_attempt, update_attempt
     check('auto-ship-content', lambda: record_attempt(root, ShipAttempt(
         ship_attempt_id='oracle', created_at='', updated_at='', ship_status='skipped')),

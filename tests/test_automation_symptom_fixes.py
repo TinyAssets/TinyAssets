@@ -124,7 +124,7 @@ def test_shutdown_does_not_cancel_in_flight_automation_runs(tmp_path: Path) -> N
     import sys
     import types
 
-    from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
+    from tinyassets.control_plane.tick import AssignedQueueConsumer
 
     cancelled: list[str] = []
     fake = types.ModuleType("tinyassets.runs")
@@ -151,7 +151,7 @@ def test_shutdown_does_not_cancel_in_flight_automation_runs(tmp_path: Path) -> N
 def test_automation_workers_die_with_the_process() -> None:
     import threading
 
-    from tinyassets.runtime.assigned_queue_consumer import _ReleaseOnExitPool
+    from tinyassets.control_plane.tick import _ReleaseOnExitPool
 
     started = threading.Event()
     pool = _ReleaseOnExitPool(max_workers=1, thread_name_prefix="symptom")

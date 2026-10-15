@@ -179,7 +179,9 @@ def test_app_account_switch_revokes_previous_protected_session(login, monkeypatc
 
 @pytest.mark.parametrize("pending", ["none", "completed", "failed"])
 def test_web_login_and_callback_use_protected_navigation_and_cookie_renewal(tmp_path, pending):
-    html = Path("tinyassets/onboarding/app.html").read_text(encoding="utf-8")
+    from tinyassets.onboarding.app_modules import shell_source
+
+    html = shell_source(Path("tinyassets/onboarding/app.html"))
     start = html.split("  async function beginSignIn(){", 1)[1].split(
         "  // The AuthKit callback", 1)[0]
     finish = html.split("  async function completeSignInIfCallback(){", 1)[1].split(

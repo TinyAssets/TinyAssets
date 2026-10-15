@@ -35,6 +35,12 @@ def test_actual_main_nominates_saved_consumer_on_boot_and_periodic_tick(
         def start(self):
             loops.append(self.target)
 
+        def join(self, timeout=None):
+            return None
+
+        def is_alive(self):
+            return False
+
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(store))
     in_process_broker.supervisor_for(store)
     monkeypatch.delenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", raising=False)

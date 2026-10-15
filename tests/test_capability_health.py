@@ -162,7 +162,7 @@ def test_one_broken_owner_and_low_volume_never_alarm():
     assert "broken-key" not in json.dumps(rates.snapshot())
 
 
-def test_live_missing_config_warns_and_restarts_stay_unknown(monkeypatch, tmp_path, capsys):
+def test_live_missing_config_and_restarts_are_unknown_not_failed(monkeypatch, tmp_path, capsys):
     from scripts import core_capability_live as live
 
     monkeypatch.delenv("TINYASSETS_CORE_CANARY_CONFIG", raising=False)

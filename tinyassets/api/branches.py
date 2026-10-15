@@ -1016,8 +1016,9 @@ def _branch_dependents(
     """
     import sqlite3
 
-    from tinyassets import branch_versions, scheduler
+    from tinyassets import branch_versions
     from tinyassets.automations import AutomationStore
+    from tinyassets.control_plane import events as scheduler
     from tinyassets.daemon_server import list_branch_definitions
     from tinyassets.storage import db_path, webhook_hooks
 

@@ -273,7 +273,7 @@ def test_an_ACTIVE_subscription_is_named_and_a_retired_schedule_is_not(
 ):
     """Schedules are retired: a leftover row that was active is stamped retired
     by the scheduler migration, so it no longer holds the branch."""
-    from tinyassets import scheduler
+    from tinyassets.control_plane import events as scheduler
 
     us, _actor = universe_surface
     bid = _create(us, "scheduled")
@@ -297,11 +297,15 @@ def test_an_ACTIVE_subscription_is_named_and_a_retired_schedule_is_not(
     assert out["dependents"]["subscriptions"] == [sub]
 
     # Deactivation authority is the scheduler's own concern, not this test's.
-    assert scheduler.unregister_subscription(tmp_path, sub, requesting_actor="alice", admin=True) is True
+    assert scheduler.unregister_subscription(
+        tmp_path, sub, requesting_actor="alice", admin=True,
+    ) is True
     assert _delete(us, bid)["status"] == "deleted"
 
 
-def test_a_default_canonical_recorded_ONLY_in_canonical_bindings_is_named(universe_surface, tmp_path):
+def test_a_default_canonical_recorded_ONLY_in_canonical_bindings_is_named(
+    universe_surface, tmp_path,
+):
     """A live database can hold a default canonical in `canonical_bindings`
     alone (the personal table and the legacy column both empty). The
     set_canonical path today writes all three, which is why a test through it
@@ -353,7 +357,9 @@ def test_a_PERSONAL_canonical_is_named_too(universe_surface, tmp_path):
     assert goal_id in out["dependents"]["goals"]
 
 
-def test_an_invocation_inside_another_branchs_PUBLISHED_SNAPSHOT_is_named(universe_surface, tmp_path):
+def test_an_invocation_inside_another_branchs_PUBLISHED_SNAPSHOT_is_named(
+    universe_surface, tmp_path,
+):
     """Codex round 2: a published snapshot is executable on its own and its
     invoke node reloads the child live -- even after the parent's CURRENT
     definition stopped naming the child (here: the parent's definition is

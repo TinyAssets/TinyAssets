@@ -198,7 +198,7 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/desktop/dashboard.py": [
         "_seed_from_output_dir: .read_text()",
     ],
-    "tinyassets/dispatcher.py": [
+    "tinyassets/control_plane/queue_policy.py": [
         "load_dispatcher_config: .read_text()",
     ],
     "tinyassets/engine_mcp_http.py": [
@@ -214,12 +214,6 @@ PINNED: dict[str, list[str]] = {
         "exclusive_refresh: os.open()",
         "materialize: os.open()",
     ],
-    "tinyassets/idle_cycle.py": [
-        "_read_stamp: .read_text()",
-        "_try_lock_nonblocking: os.open()",
-        "try_acquire_idle_cycle_slot: .write_text()",
-        "try_acquire_idle_cycle_slot: os.replace()",
-    ],
     "tinyassets/ingestion/extractors.py": [
         "synthesize_source: .read_text()",
     ],
@@ -230,7 +224,6 @@ PINNED: dict[str, list[str]] = {
         "_split_into_sections: .read_text()",
     ],
     "tinyassets/onboarding/__init__.py": [
-        "render_app_html: .read_text()",
         "render_app_html: .read_text()",
         "request_theme: .read_text()",
     ],
@@ -268,10 +261,6 @@ PINNED: dict[str, list[str]] = {
         "remove_if_dead: .unlink()",
         "remove_if_dead: .unlink()",
         "remove_if_dead: os.open()",
-    ],
-    "tinyassets/producers/goal_pool.py": [
-        "_scan_goal_dir: .read_text()",
-        "write_pool_post: .write_text()",
     ],
     "tinyassets/provider_assignment.py": [
         "_file_lock: .open()",
@@ -320,7 +309,7 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/rollback.py": [
         "_append_rollback_log: .open()",
     ],
-    "tinyassets/runtime/assigned_queue_consumer.py": [
+    "tinyassets/control_plane/tick.py": [
         "_hold_liveness: .unlink()",
         "_publish_heartbeat: .write_text()",
     ],
@@ -377,9 +366,6 @@ PINNED: dict[str, list[str]] = {
         "_publish_marker: os.open()",
         "_publish_marker: os.replace()",
         "apply: .unlink()",
-    ],
-    "tinyassets/subscriptions.py": [
-        "_read_raw: .read_text()",
     ],
     # Fixed owner-cell supervisor reads only kernel /proc/<pid>/stat records.
     "tinyassets/role_preview_cell.py": ["_proc_snapshot: open()"],

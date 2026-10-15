@@ -597,6 +597,10 @@ STORES: dict[str, Store] = {
 #: code creates at the data root must appear here -- the completeness test reads
 #: the source for them.
 ROOT_ENTRIES: dict[str, str] = {
+    ".boxhost": "platform: root-private owner generations and idempotency receipts",
+    ".platform": "platform: platform stores; legacy agent homes move to quota-charged owner boxes",
+    ".layout.json": "platform: committed storage layout admission marker",
+    ".layout.lock": "platform: shared service lifetime and exclusive migration lock",
     ".runs.db": "run_records, uploads, branches (rows attributed per table)",
     ".langgraph_runs.db": "checkpoints",
     ".run-file-custody": "uploads (blobs; sized from run_file_objects)",
@@ -665,7 +669,6 @@ ROOT_ENTRIES: dict[str, str] = {
     ".effector_consents.db": "platform: consent records",
     ".outbound-proxy": "platform: egress proxy state",
     ".broker": "platform: credential broker socket, owner fence and operation bookkeeping",
-    ".platform": "platform: platform stores; legacy agent homes move to quota-charged owner boxes",
     "ops.db": "platform: bounded broker idempotency records under .broker/state",
     "owner-identities.db": "platform: broker owner-identity bindings under .broker/state",
     ".run-execution-locks": "platform: locks",

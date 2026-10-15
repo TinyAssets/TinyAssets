@@ -19,8 +19,6 @@
 #
 # Measured: every file whose tests totalled >3.0s in CI run 30780762657
 # (12991 tests / 34.0 min). Regenerate after a big suite change.
-tests/test_api.py
-tests/test_api_edge_cases.py
 tests/test_branch_authoring_actions.py
 tests/test_branch_evaluation_iteration.py
 tests/test_branch_runner.py
@@ -39,7 +37,6 @@ tests/test_integration.py
 tests/test_interlocutor_tier.py
 tests/test_llm_policy_override.py
 tests/test_mcp_instruction_surfaces.py
-tests/test_node_enqueue_concurrency.py
 tests/test_node_ref_reuse.py
 tests/test_node_reuse_discovery.py
 tests/test_nodes_real.py
