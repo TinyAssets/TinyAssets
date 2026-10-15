@@ -10,7 +10,6 @@ import hashlib
 import hmac
 import json
 import time
-import urllib.error
 from pathlib import Path
 
 import pytest
@@ -28,7 +27,6 @@ from tinyassets.core_canary import (
     _read_founder_secret,
     install,
     load_record,
-    lookup_workos_user,
     main,
     offered_intake,
     probe_config,
@@ -508,8 +506,8 @@ def _founder_json(password="pw-not-stored-7f3a", email="canary@example.invalid")
 
 def test_cli_stores_the_derived_key_and_prints_no_secret(root, monkeypatch, capsys):
     monkeypatch.setattr(
-        "tinyassets.core_canary.lookup_workos_user",
-        lambda email, **kwargs: "user_01TESTCANARY",
+        "tinyassets.core_canary._signed_in_owner",
+        lambda email, password: "user_01TESTCANARY",
     )
     monkeypatch.setenv("TINYASSETS_CORE_CANARY_CONFIG", _founder_json())
     assert main([]) == 0
@@ -532,8 +530,8 @@ def test_cli_stores_the_derived_key_and_prints_no_secret(root, monkeypatch, caps
 
 def test_password_change_rotates_only_the_derived_key(root, monkeypatch):
     monkeypatch.setattr(
-        "tinyassets.core_canary.lookup_workos_user",
-        lambda email, **kwargs: "user_01TESTCANARY",
+        "tinyassets.core_canary._signed_in_owner",
+        lambda email, password: "user_01TESTCANARY",
     )
     first = _install(root, password="pw-one")
     second = _install(root, password="pw-two")
@@ -547,12 +545,12 @@ def test_password_change_rotates_only_the_derived_key(root, monkeypatch):
 
 
 def test_missing_workos_user_creates_nothing(root, monkeypatch, capsys):
-    def _missing(email, **kwargs):
+    def _missing(email, password):
         raise CoreCanaryProvisionError(
             "no WorkOS user for that email; sign up at https://tinyassets.io first"
         )
 
-    monkeypatch.setattr("tinyassets.core_canary.lookup_workos_user", _missing)
+    monkeypatch.setattr("tinyassets.core_canary._signed_in_owner", _missing)
     monkeypatch.setenv(
         "TINYASSETS_CORE_CANARY_CONFIG",
         _founder_json(email="missing@example.invalid"),
@@ -579,61 +577,92 @@ def test_secret_channels(monkeypatch):
     assert _read_founder_secret() == "from-stdin"
 
 
-def test_workos_lookup_names_no_secret(monkeypatch):
+def test_sign_in_uses_the_web_token_endpoint_and_names_no_secret(monkeypatch):
+    from types import SimpleNamespace
+
+    import httpx
+
+    from tinyassets.auth.provider import Identity
+    from tinyassets.core_canary import _signed_in_owner
+    from tinyassets.onboarding.owner_sessions import OwnerSignInError, sign_in_with_password
+    from tinyassets.platform_secrets import CHILD_FORBIDDEN_ENV, ENGINE_REQUIRED_SECRET_ENV
+
+    source = Path("tinyassets/core_canary.py").read_text(encoding="utf-8")
+    leaked = sorted(
+        name for name in (CHILD_FORBIDDEN_ENV | set(ENGINE_REQUIRED_SECRET_ENV)) if name in source
+    )
+    assert leaked == []
     monkeypatch.setenv("WORKOS_API_KEY", "test-workos-key")
+    cfg = {
+        "configured": True,
+        "client_id": "client_public",
+        "token_endpoint": "https://id.example/oauth2/token",
+        "resource": "https://tinyassets.io/mcp",
+        "scopes": "openid profile email",
+    }
+    monkeypatch.setattr("tinyassets.onboarding.app_config", lambda: cfg)
+    seen: dict = {}
 
-    class _Response:
-        status = 200
+    def _post(url, data=None, headers=None, timeout=0):
+        seen["url"] = url
+        seen["data"] = dict(data or {})
+        seen["headers"] = dict(headers or {})
+        return httpx.Response(
+            200,
+            json={"access_token": "header.payload.sig", "user": {"id": "user_OTHER"}},
+        )
 
-        def __init__(self, payload):
-            self._payload = payload
+    monkeypatch.setattr(httpx, "post", _post)
+    identity = Identity(
+        user_id="user_01TESTCANARY",
+        username="canary@example.invalid",
+        metadata={"email": "canary@example.invalid"},
+    )
+    monkeypatch.setattr(
+        "tinyassets.auth.middleware._get_provider",
+        lambda: SimpleNamespace(
+            resolve_token=lambda token: identity if token == "header.payload.sig" else None
+        ),
+    )
+    assert sign_in_with_password("canary@example.invalid", "pw-not-stored-7f3a").user_id == (
+        "user_01TESTCANARY"
+    )
+    assert seen["url"] == cfg["token_endpoint"]
+    assert seen["data"]["grant_type"] == "password"
+    assert seen["data"]["client_id"] == "client_public"
+    assert seen["data"]["username"] == "canary@example.invalid"
+    assert seen["data"]["resource"] == cfg["resource"]
+    assert "client_secret" not in seen["data"]
+    assert "authorization" not in {name.lower() for name in seen["headers"]}
+    assert "test-workos-key" not in json.dumps(seen["data"])
 
-        def read(self):
-            return json.dumps(self._payload).encode()
+    def _status(code, body=None):
+        def _post_status(url, data=None, headers=None, timeout=0):
+            return httpx.Response(code, json=body if body is not None else {})
 
-        def __enter__(self):
-            return self
+        return _post_status
 
-        def __exit__(self, *_exc):
-            return False
+    monkeypatch.setattr(httpx, "post", _status(401))
+    with pytest.raises(OwnerSignInError, match="no_user") as missing:
+        sign_in_with_password("canary@example.invalid", "pw-not-stored-7f3a")
+    assert "pw-not-stored-7f3a" not in str(missing.value)
+    assert "test-workos-key" not in str(missing.value)
 
-    def _one(req, timeout=0):
-        assert req.get_method() == "GET"
-        assert "/user_management/users?" in req.full_url
-        assert "email=canary%40example.invalid" in req.full_url
-        assert req.get_header("Authorization").startswith("Bearer ")
-        return _Response({"data": [{"id": "user_01TESTCANARY"}]})
+    monkeypatch.setattr(httpx, "post", _status(503, {"error": "test-workos-key"}))
+    with pytest.raises(OwnerSignInError, match="http_503") as failed:
+        sign_in_with_password("canary@example.invalid", "pw-not-stored-7f3a")
+    assert "test-workos-key" not in str(failed.value)
+    assert "pw-not-stored-7f3a" not in str(failed.value)
 
-    assert lookup_workos_user("canary@example.invalid", opener=_one) == "user_01TESTCANARY"
+    monkeypatch.setattr(httpx, "post", _status(200, {"user": {"id": "user_01TESTCANARY"}}))
+    with pytest.raises(OwnerSignInError, match="unexpected"):
+        sign_in_with_password("canary@example.invalid", "pw-not-stored-7f3a")
 
-    def _none(req, timeout=0):
-        return _Response({"data": []})
-
-    with pytest.raises(CoreCanaryProvisionError, match="sign up at https://tinyassets.io"):
-        lookup_workos_user("canary@example.invalid", opener=_none)
-
-    def _many(req, timeout=0):
-        return _Response({"data": [{"id": "user_01A"}, {"id": "user_01B"}]})
-
-    with pytest.raises(CoreCanaryProvisionError, match="more than one"):
-        lookup_workos_user("canary@example.invalid", opener=_many)
-
-    def _bad(req, timeout=0):
-        return _Response({"data": [{"id": "not-a-user"}]})
-
-    with pytest.raises(CoreCanaryProvisionError, match="unexpected data"):
-        lookup_workos_user("canary@example.invalid", opener=_bad)
-
-    def _http(req, timeout=0):
-        raise urllib.error.HTTPError(req.full_url, 503, "nope", hdrs=None, fp=None)
-
-    with pytest.raises(CoreCanaryProvisionError, match="HTTP 503") as raised:
-        lookup_workos_user("canary@example.invalid", opener=_http)
-    assert "test-workos-key" not in str(raised.value)
-
-    monkeypatch.delenv("WORKOS_API_KEY")
-    with pytest.raises(CoreCanaryProvisionError, match="WORKOS_API_KEY is not set"):
-        lookup_workos_user("canary@example.invalid", opener=_one)
+    monkeypatch.setattr("tinyassets.onboarding.app_config", lambda: {"configured": False})
+    with pytest.raises(CoreCanaryProvisionError, match="sign-in is not configured") as bare:
+        _signed_in_owner("canary@example.invalid", "pw-not-stored-7f3a")
+    assert "test-workos-key" not in str(bare.value)
+    assert "WORKOS_API_KEY" not in str(bare.value)
 
 
 def test_empty_password_exits_before_lookup(root, monkeypatch, capsys):
@@ -645,7 +674,7 @@ def test_empty_password_exits_before_lookup(root, monkeypatch, capsys):
     def _boom(*_args, **_kwargs):
         raise AssertionError("lookup")
 
-    monkeypatch.setattr("tinyassets.core_canary.lookup_workos_user", _boom)
+    monkeypatch.setattr("tinyassets.core_canary._signed_in_owner", _boom)
     assert main([]) == 1
     captured = capsys.readouterr()
     assert "missing or empty: password" in captured.err

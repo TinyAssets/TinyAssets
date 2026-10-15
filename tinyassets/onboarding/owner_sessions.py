@@ -27,6 +27,15 @@ COOKIE = "__Host-ta-owner"
 FLOW_COOKIE = "__Host-ta-owner-login"
 OWNER_STATE = re.compile(r"oa_(?:app_)?[A-Za-z0-9_-]{43}")
 HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+_ACCESS_TOKEN_LIMIT = 16384
+
+
+class OwnerSignInError(RuntimeError):
+    """A password sign-in failed. ``reason`` is a short code, never a secret."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 def hashed(value):
@@ -385,3 +394,71 @@ async def callback(request, *, completion=False):
         COOKIE, session_cookie, max_age=28800, secure=True, httponly=True, samesite="lax"
     )
     return response
+
+
+def sign_in_with_password(email: str, password: str):
+    """Sign in on the web app's token endpoint and resolve that access token.
+
+    The public client id, token endpoint, and resource are the onboarding
+    app's. The posted grant carries no WorkOS API key. The owner id is the
+    subject the same provider accepts in the owner-sign-in callback, not an
+    id taken from the token response.
+    """
+    import httpx
+
+    from tinyassets.auth.middleware import _get_provider
+    from tinyassets.onboarding import app_config
+
+    cfg = app_config()
+    client_id = str(cfg.get("client_id") or "").strip()
+    endpoint = str(cfg.get("token_endpoint") or "").strip()
+    resource = str(cfg.get("resource") or "").strip()
+    if not cfg.get("configured") or not client_id or not endpoint or not resource:
+        raise OwnerSignInError("not_configured")
+    form = {
+        "grant_type": "password",
+        "client_id": client_id,
+        "username": email,
+        "password": password,
+        "resource": resource,
+    }
+    scope = str(cfg.get("scopes") or "").strip()
+    if scope:
+        form["scope"] = scope
+    try:
+        response = httpx.post(
+            endpoint,
+            data=form,
+            headers={"Accept": "application/json"},
+            timeout=20.0,
+        )
+    except httpx.HTTPError:
+        raise OwnerSignInError("transport") from None
+    if response.status_code in (400, 401, 403, 404):
+        raise OwnerSignInError("no_user")
+    if response.status_code != 200:
+        raise OwnerSignInError(f"http_{response.status_code}")
+    try:
+        payload = response.json()
+    except ValueError:
+        raise OwnerSignInError("unexpected") from None
+    access = payload.get("access_token") if isinstance(payload, dict) else None
+    if (
+        not isinstance(access, str)
+        or not access.strip()
+        or access != access.strip()
+        or len(access) > _ACCESS_TOKEN_LIMIT
+        or any(char.isspace() for char in access)
+    ):
+        raise OwnerSignInError("unexpected")
+    identity = _get_provider().resolve_token(access)
+    user_id = getattr(identity, "user_id", "") if identity is not None else ""
+    if not isinstance(user_id, str) or not user_id:
+        raise OwnerSignInError("identity_unresolved")
+    metadata = getattr(identity, "metadata", None)
+    claimed = ""
+    if isinstance(metadata, dict):
+        claimed = str(metadata.get("email") or "").strip()
+    if claimed and claimed.casefold() != email.strip().casefold():
+        raise OwnerSignInError("identity_unresolved")
+    return identity

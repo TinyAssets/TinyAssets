@@ -28,9 +28,6 @@ import logging
 import os
 import secrets
 import sys
-import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -571,56 +568,30 @@ async def hmac_endpoint(request):
     )
 
 
-def lookup_workos_user(email: str, *, opener=urllib.request.urlopen) -> str:
-    """The WorkOS user id for ``email``. Does not create an account.
+def _sign_in_failure(reason: str) -> str:
+    """A stderr line for a sign-in code. The code is not a response body."""
+    if reason == "no_user":
+        return "no WorkOS user for that email; sign up at https://tinyassets.io first"
+    if reason == "not_configured":
+        return "sign-in is not configured"
+    if reason == "identity_unresolved":
+        return "sign-in did not resolve an owner"
+    if reason == "unexpected":
+        return "WorkOS sign-in returned unexpected data"
+    if reason.startswith("http_") and reason.removeprefix("http_").isdigit():
+        return f"WorkOS sign-in failed (HTTP {reason.removeprefix('http_')})"
+    return "WorkOS sign-in request failed"
 
-    Failures name a status or a next step, never the API key or the body.
-    """
-    from tinyassets.account_deletion import _WORKOS_BASE_URL, _WORKOS_USER_ID
 
-    api_key = os.environ.get("WORKOS_API_KEY", "").strip()
-    if not api_key:
-        raise CoreCanaryProvisionError(
-            "WORKOS_API_KEY is not set; the host looks the signed-up owner up"
-        )
-    query = urllib.parse.urlencode({"email": email})
-    req = urllib.request.Request(
-        f"{_WORKOS_BASE_URL}/user_management/users?{query}",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Accept": "application/json",
-            "User-Agent": "tinyassets-core-canary/1.0",
-        },
-        method="GET",
-    )
+def _signed_in_owner(email: str, password: str) -> str:
+    """The owner id from the web sign-in path. This module holds no WorkOS secret."""
+    from tinyassets.onboarding.owner_sessions import OwnerSignInError, sign_in_with_password
+
     try:
-        with opener(req, timeout=20) as response:
-            raw = response.read()
-            status = int(getattr(response, "status", 200) or 200)
-    except urllib.error.HTTPError as exc:
-        raise CoreCanaryProvisionError(f"WorkOS user lookup failed (HTTP {exc.code})") from None
-    except (urllib.error.URLError, TimeoutError, OSError):
-        raise CoreCanaryProvisionError("WorkOS user lookup request failed") from None
-    if status != 200:
-        raise CoreCanaryProvisionError(f"WorkOS user lookup returned HTTP {status}")
-    try:
-        document = json.loads(raw)
-    except ValueError:
-        raise CoreCanaryProvisionError("WorkOS user lookup returned unexpected data") from None
-    users = document.get("data") if isinstance(document, dict) else None
-    if not isinstance(users, list):
-        raise CoreCanaryProvisionError("WorkOS user lookup returned unexpected data")
-    if len(users) == 0:
-        raise CoreCanaryProvisionError(
-            "no WorkOS user for that email; sign up at https://tinyassets.io first"
-        )
-    if len(users) > 1:
-        raise CoreCanaryProvisionError("WorkOS user lookup matched more than one user")
-    user = users[0] if isinstance(users[0], dict) else {}
-    user_id = str(user.get("id") or "")
-    if _WORKOS_USER_ID.fullmatch(user_id) is None:
-        raise CoreCanaryProvisionError("WorkOS user lookup returned unexpected data")
-    return user_id
+        identity = sign_in_with_password(email, password)
+    except OwnerSignInError as exc:
+        raise CoreCanaryProvisionError(_sign_in_failure(exc.reason)) from None
+    return identity.user_id
 
 
 def _read_founder_secret() -> str:
@@ -651,7 +622,7 @@ def main(argv: list[str] | None = None) -> int:
         print("core canary email is required", file=sys.stderr)
         return 1
     try:
-        owner_id = lookup_workos_user(email)
+        owner_id = _signed_in_owner(email, password)
     except CoreCanaryProvisionError as exc:
         print(str(exc), file=sys.stderr)
         return 1
