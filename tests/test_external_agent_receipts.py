@@ -54,6 +54,45 @@ def test_job_receipt_distinguishes_resolved_and_unreported_model(tmp_path):
     assert row == ("gpt-6.1-sol", "gpt-6.1-sol", "", "unknown", "cli_reported")
 
 
+def test_native_job_retry_keeps_invocation_id_across_attempt_receipts(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from tinyassets.external_agents import provider as native_provider
+    from tinyassets.providers.base import ModelConfig
+
+    center = tmp_path / "u-owner"
+    center.mkdir()
+    monkeypatch.setattr(native_provider, "resolve", lambda _: SimpleNamespace(row={
+        "family": "openai", "auth": {"service": "codex"},
+    }))
+    monkeypatch.setattr(native_provider, "_custody", lambda *_: SimpleNamespace(
+        service="codex", reference_digest="custody", universe_id=center.name))
+    from tinyassets.control_plane import native_launch
+
+    operation_ids = []
+
+    def launch(_custody, *, operation_id, **_kwargs):
+        operation_ids.append(operation_id)
+        return object()
+
+    async def run_job(*_args, **_kwargs):
+        return "response"
+
+    monkeypatch.setattr(native_launch, "launcher", launch)
+    monkeypatch.setattr("tinyassets.external_agents.runner.run_job", run_job)
+    monkeypatch.setattr("tinyassets.agent_loop.served_chat.configured_box_provider",
+                        lambda: (None, None))
+    budget = SimpleNamespace(usage_id="one-logical-turn", check_scope=lambda *_: None)
+    config = ModelConfig(invocation_owner_user_id="owner", request_budget=budget,
+                         request_attempt=1, native_model_id="gpt-6.1-sol")
+    provider = native_provider.ExternalAgentProvider("codex")
+    for attempt in (1, 2):
+        assert asyncio.run(provider.complete(
+            "same prompt", "same system", replace(config, request_attempt=attempt),
+            universe_dir=center)) == "response"
+    assert len(operation_ids) == 2 and operation_ids[0] == operation_ids[1]
+
+
 def test_package_turn_has_native_receipt_and_no_subscription_call_price(tmp_path, monkeypatch):
     from tinyassets.external_agents import runner
     from tinyassets.external_agents.jsonrpc_job import TurnOutcome
