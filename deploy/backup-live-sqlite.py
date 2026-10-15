@@ -69,7 +69,11 @@ def retake(live_root: Path, live: Path, copy: Path) -> None:
         # no longer holds this database, so neither does the backup.
         _drop(copy)
         return
-    if not _plain(live_root, live):
+    try:
+        plain = _plain(live_root, live)
+    except FileNotFoundError as exc:
+        raise Skip("vanished during the backup") from exc
+    if not plain:
         raise Skip("a parent directory is a symlink")
     try:
         stat = live.stat()

@@ -85,7 +85,11 @@ mkdir -m 0711 "$BOX_COPY"
 for tree in "$BOX_DIR"/[0-9]*; do
     [[ -d "$tree" && ! -L "$tree" ]] || continue
     cp -a --reflink=always -- "$tree" "$BOX_COPY/$(basename "$tree")"
-    python3 "$HERE/backup-live-sqlite.py" --as-owner "$tree" "$BOX_COPY/$(basename "$tree")"
+    # One owner can never fail everyone's night: if its re-take cannot run
+    # (unreachable tree, root-owned while being provisioned), the reflink copy
+    # stays as taken and the run continues.
+    python3 "$HERE/backup-live-sqlite.py" --as-owner "$tree" "$BOX_COPY/$(basename "$tree")" \
+        || log "WARN: owner $(basename "$tree") kept as its reflink copy; SQLite re-take failed"
 done
 cp -a --reflink=auto -- "$DATA_DIR" "$DATA_COPY"
 python3 "$HERE/backup-live-sqlite.py" "$DATA_DIR" "$DATA_COPY"

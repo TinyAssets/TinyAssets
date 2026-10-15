@@ -51,6 +51,7 @@ class OwnerBoxLiveBackupTest(unittest.TestCase):
                 db.execute("CREATE TABLE box_records (machine, project_id, bhard_bytes)")
                 db.execute("INSERT INTO box_records VALUES (300001, 300001, 1048576)")
                 db.execute("INSERT INTO box_records VALUES (300002, 300002, 1048576)")
+                db.execute("INSERT INTO box_records VALUES (300003, 300003, 1048576)")
             # Owner 300002's destruction began: its tree must not come back.
             (data / ".boxhost").mkdir()
             with sqlite3.connect(data / ".boxhost" / "boxhost.db") as db:
@@ -62,6 +63,10 @@ class OwnerBoxLiveBackupTest(unittest.TestCase):
             (box / "300002" / "file").write_text("erased owner bytes")
             for path in (box / "300002", box / "300002" / "file"):
                 os.chown(path, 300002, 300002)
+            # Owner 300003 is mid-provisioning (still root-owned): its re-take
+            # cannot run, but it never fails everyone else's night.
+            (box / "300003").mkdir()
+            (box / "300003" / "file").write_text("new owner bytes")
             owner = box / "300001"
             owner.mkdir()
             (owner / "file").write_text("owner bytes")
@@ -141,6 +146,7 @@ esac
             with tarfile.open(next(remote.glob("tinyassets-box-store-*.tar.gz"))) as archive:
                 names = archive.getnames()
                 self.assertFalse(any("300002" in name for name in names), names)
+                self.assertIn("owners/300003/file", names)
                 self.assertFalse(any("credential-vault" in name for name in names))
                 self.assertFalse(any(name.endswith(("-wal", "-shm")) for name in names))
                 archive.extractall(restored, filter="tar")
