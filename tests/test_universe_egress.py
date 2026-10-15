@@ -232,7 +232,10 @@ def test_the_jail_binds_its_own_sidecar_and_nothing_else_outside(tmp_path):
 def test_a_trickled_head_is_cut_off_at_one_deadline(tmp_path, monkeypatch):
     import time
 
-    monkeypatch.setattr(egress, "_HEAD_TIMEOUT_S", 0.5)
+    from tinyassets.boxes import network
+
+    # The head deadline is read where the floor now lives.
+    monkeypatch.setattr(network, "_HEAD_TIMEOUT_S", 0.5)
     path = _proxy(tmp_path, monkeypatch)
     client = socket.socket(socket.AF_UNIX)
     client.settimeout(10)
