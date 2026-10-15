@@ -19,6 +19,7 @@ from tinyassets.exceptions import (
 )
 from tinyassets.external_agents import receipts, registry
 from tinyassets.external_agents.home import (
+    BoxCustody,
     Custody,
     RefreshBusyError,
     compare_and_swap,
@@ -87,9 +88,10 @@ async def _run_catalogue_locked(agent, launch, custody):
     package = registry.resolve(agent)
     if package.row["auth"]["service"] != custody.reference.service:
         raise PermissionError("external-agent package service differs from custody")
-    if not package.executable.is_file():
+    if not isinstance(custody, BoxCustody) and not package.executable.is_file():
         raise ProviderError("external-agent unavailable: not_installed")
-    universe = custody.universe_dir.resolve(strict=True)
+    universe = (custody.universe_dir if isinstance(custody, BoxCustody)
+                else custody.universe_dir.resolve(strict=True))
     receipt_id = receipts.admit(
         universe.parent, owner=custody.owner_user_id, universe_id=universe.name,
         agent=agent, package_digest=package.digest,
@@ -240,7 +242,8 @@ async def run_job(agent: str, launch, custody: Custody, *, prompt: str,
 def _record_auth_rejection(custody: Custody) -> None:
     from tinyassets.credential_vault import record_refresh_rejected
 
-    universe = custody.universe_dir.resolve(strict=True)
+    universe = (custody.universe_dir if isinstance(custody, BoxCustody)
+                else custody.universe_dir.resolve(strict=True))
     record_refresh_rejected(universe.parent, universe_id=universe.name,
                             service=custody.reference.service)
 
@@ -248,7 +251,8 @@ def _record_auth_rejection(custody: Custody) -> None:
 def _clear_auth_rejection(custody: Custody) -> None:
     from tinyassets.credential_vault import clear_refresh_rejected
 
-    universe = custody.universe_dir.resolve(strict=True)
+    universe = (custody.universe_dir if isinstance(custody, BoxCustody)
+                else custody.universe_dir.resolve(strict=True))
     clear_refresh_rejected(universe.parent, universe_id=universe.name,
                            service=custody.reference.service)
 
@@ -261,9 +265,10 @@ async def _run_job_locked(agent, launch, custody, *, prompt, system, config):
 
     package = registry.resolve(agent)
     model = config.native_model_id or ""
-    if not package.executable.is_file():
+    if not isinstance(custody, BoxCustody) and not package.executable.is_file():
         raise ExternalAgentUnavailable(agent, model, "not_installed")
-    universe = custody.universe_dir.resolve(strict=True)
+    universe = (custody.universe_dir if isinstance(custody, BoxCustody)
+                else custody.universe_dir.resolve(strict=True))
     if (custody.reference.service != package.row["auth"]["service"]
             or not config.invocation_owner_user_id
             or config.invocation_owner_user_id != custody.owner_user_id):
