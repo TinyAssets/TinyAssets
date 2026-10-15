@@ -4,7 +4,7 @@ Covers phase_h_preflight.md (archived in git) §4.3 invariant 2 (pane isolation)
 and §4.4 test strategy (pane-isolation, 5 tests) plus tray dashboard
 additions (invariant 9, emergency pause).
 
-Pane classes: DispatcherPane, QueuePane, EarningsPane.
+Pane classes: DispatcherPane, QueuePane.
 Handler fan-out: DashboardHandler.refresh_from_overview.
 Tray: update_tier_states, _handle_tier_toggle, _handle_pause_all_tiers,
       _handle_show_dashboard.
@@ -15,7 +15,6 @@ from __future__ import annotations
 from tinyassets.desktop.dashboard import (
     DashboardHandler,
     DispatcherPane,
-    EarningsPane,
     QueuePane,
 )
 from tinyassets.desktop.tray import TrayApp
@@ -52,16 +51,6 @@ _VALID_OVERVIEW: dict = {
         "last_verdict": "accept",
         "total_words": 5000,
         "total_chapters": 2,
-    },
-    "settlements": {
-        "count_total": 7,
-        "count_unsettled": 2,
-        "recent": [{"id": "s1", "amount": 100}],
-    },
-    "bids": {
-        "open_count": 3,
-        "claimed_count": 1,
-        "top_open": [{"bid_id": "b1", "node_def_id": "n1"}],
     },
     "gates": {"ladder_count_on_bound_goal": 5, "claims_on_this_universe": 2},
     "activity_tail": ["2026-04-14T00:00:00 [orient] started", "scene complete"],
@@ -153,48 +142,6 @@ class TestQueuePane:
 
 
 # ---------------------------------------------------------------------------
-# EarningsPane
-# ---------------------------------------------------------------------------
-
-
-class TestEarningsPane:
-    def test_disabled_when_paid_market_off(self, monkeypatch):
-        monkeypatch.delenv("TINYASSETS_PAID_MARKET", raising=False)
-        pane = EarningsPane()
-        assert pane.enabled is False
-        pane.refresh(_VALID_OVERVIEW)
-        s = pane.summary()
-        assert s == {"enabled": False}
-
-    def test_enabled_when_paid_market_on(self, monkeypatch):
-        monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on")
-        pane = EarningsPane()
-        assert pane.enabled is True
-        pane.refresh(_VALID_OVERVIEW)
-        assert pane.settlements_total == 7
-        assert pane.settlements_unsettled == 2
-        assert pane.open_bids_count == 3
-        s = pane.summary()
-        assert s["enabled"] is True
-        assert s["settlements_total"] == 7
-
-    def test_refresh_malformed_payload_isolated(self, monkeypatch):
-        """R3 invariant 2: bad payload in enabled pane captured, not raised."""
-        monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on")
-        pane = EarningsPane()
-        pane.refresh({"settlements": "NOT_A_DICT", "bids": {}})
-        assert pane.last_error is not None
-
-    def test_refresh_no_op_when_disabled(self, monkeypatch):
-        monkeypatch.setenv("TINYASSETS_PAID_MARKET", "off")
-        pane = EarningsPane()
-        pane.refresh({"settlements": {"count_total": 99}})
-        # Enabled=False → values stay at defaults, no error.
-        assert pane.settlements_total == 0
-        assert pane.last_error is None
-
-
-# ---------------------------------------------------------------------------
 # DashboardHandler.refresh_from_overview — fan-out isolation
 # ---------------------------------------------------------------------------
 
@@ -205,8 +152,6 @@ class TestDashboardHandlerOverviewFanOut:
         handler.refresh_from_overview(_VALID_OVERVIEW)
         assert handler.dispatcher_pane.tier_status != {}
         assert handler.queue_pane.pending_count == 3
-        # EarningsPane disabled by default (no env var set in test env)
-        assert handler.earnings_pane.enabled is False
 
     def test_malformed_one_pane_does_not_crash_others(self):
         """R3 invariant 2: if one pane's refresh raises, others still run."""
@@ -231,7 +176,7 @@ class TestDashboardHandlerOverviewFanOut:
         s = handler.summary()
         assert "dispatcher" in s
         assert "queue" in s
-        assert "earnings" in s
+        assert "earnings" not in s
 
     def test_empty_overview_does_not_raise(self):
         """Defensive: totally empty dict must not crash refresh_from_overview."""

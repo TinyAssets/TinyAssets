@@ -17,7 +17,7 @@ from tinyassets.engine_steering import OwnerSteering
 from tinyassets.engine_tool_activity import ToolActivity
 
 
-def register_handle(server: FastMCP, tool: FunctionTool) -> FunctionTool:
+def install_profile_tool(server: FastMCP, tool: FunctionTool) -> FunctionTool:
     """Install a prepared handle; authority belongs to its explicit profile."""
     server.add_tool(tool)
     return tool
@@ -49,7 +49,7 @@ def engine_server(handlers) -> FastMCP:
     for name in BACKEND_ENGINE_CAPABILITIES:
         implementation = aliases.get(name, name)
         options = {"output_schema": None} if name in {"read", "bash"} else {}
-        register_handle(server, FunctionTool.from_function(
+        install_profile_tool(server, FunctionTool.from_function(
             getattr(handlers, implementation), name=name, **options,
         ))
     server.resource("ta-bridge://request/{payload}")(handlers.remote_ta_request)
