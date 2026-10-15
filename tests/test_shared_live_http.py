@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import multiprocessing as mp
 import os
 import shutil
 import socket
@@ -283,12 +284,22 @@ _SO_TIMESTAMPNS = 35
 
 
 def _arrived(ancillary) -> float:
-    """perf_counter-domain time of the packet the kernel just handed up."""
+    """CLOCK_MONOTONIC time of the packet the kernel just handed up.
+
+    Writer clocks in other processes use the same clock, so the two subtract.
+    """
     for _level, kind, raw in ancillary:
         if kind == _SO_TIMESTAMPNS and len(raw) >= 16:
             sec, nsec = struct.unpack_from("qq", raw)
-            return time.perf_counter() - time.time() + sec + nsec / 1e9
-    return time.perf_counter()
+            return time.monotonic() - time.time() + sec + nsec / 1e9
+    return time.monotonic()
+
+
+def _tcp_nodelay(sock: socket.socket) -> None:
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+        return
 
 
 def _watch(port: int, actor: str, universe: str, since: int, gate, stop, seen, order, errors):
@@ -299,6 +310,7 @@ def _watch(port: int, actor: str, universe: str, since: int, gate, stop, seen, o
         sock.settimeout(30)
         try:
             sock.connect(("127.0.0.1", port))
+            _tcp_nodelay(sock)
             sock.setsockopt(socket.SOL_SOCKET, _SO_TIMESTAMPNS, 1)
             path = (
                 f"/app/api/live/stream?universe_id={universe}&since={since}&kinds=ship"
@@ -393,50 +405,124 @@ def _checkpoint(port: int, universe: str) -> None:
         conn.close()
 
 
+def _post_move(conn, universe: str, player: str, etag: int, step: int, record):
+    """One position write. ``record`` is None for the untimed warmup."""
+    along = 0 if step < 0 else step + 1
+    body = json.dumps({
+        "op": "write",
+        "universe_id": universe,
+        "kind": "ship",
+        "key": "ship",
+        "expect_etag": etag,
+        "body": {
+            "where": [along, 0],
+            "heading": 0 if step < 0 else step,
+            "account_id": "owner",
+        },
+    }).encode()
+    started = time.monotonic()
+    conn.request(
+        "POST", "/app/api/live", body=body,
+        headers={
+            "Authorization": f"Bearer acct:{player}",
+            "Content-Type": "application/json",
+        },
+    )
+    resp = conn.getresponse()
+    raw = resp.read()
+    finished = time.monotonic()
+    if resp.status == 409:
+        return etag, "conflict"
+    if resp.status != 200:
+        return etag, f"write {resp.status} {raw[:200]!r}"
+    doc = json.loads(raw)
+    if doc.get("owner") != player:
+        return etag, "owner spoofed"
+    if record is not None:
+        record.append({
+            "seq": int(doc["seq"]),
+            "start": started,
+            "write_ms": (finished - started) * 1000,
+        })
+    return int(doc["etag"]), ""
+
+
 def _move(port: int, universe: str, player: str, etag: int, updates: int, writes, errors):
+    """Warm the connection, then time ``updates`` moves on it.
+
+    Opening hundreds of connections at once makes the first request on each
+    one wait behind the others. A player who is already connected does not
+    pay that on the next move, so the sample starts at the second request.
+    """
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
     try:
+        conn.connect()
+        if conn.sock is not None:
+            _tcp_nodelay(conn.sock)
+        etag, err = _post_move(conn, universe, player, etag, -1, None)
+        if err:
+            errors.append(err)
+            return etag
         for step in range(updates):
-            body = json.dumps({
-                "op": "write",
-                "universe_id": universe,
-                "kind": "ship",
-                "key": "ship",
-                "expect_etag": etag,
-                "body": {"where": [step + 1, 0], "heading": step, "account_id": "owner"},
-            }).encode()
-            started = time.perf_counter()
-            conn.request(
-                "POST", "/app/api/live", body=body,
-                headers={
-                    "Authorization": f"Bearer acct:{player}",
-                    "Content-Type": "application/json",
-                },
-            )
-            resp = conn.getresponse()
-            raw = resp.read()
-            finished = time.perf_counter()
-            if resp.status == 409:
-                errors.append("conflict")
+            etag, err = _post_move(conn, universe, player, etag, step, writes)
+            if err:
+                errors.append(err)
                 return etag
-            if resp.status != 200:
-                errors.append(f"write {resp.status} {raw[:200]!r}")
-                return etag
-            doc = json.loads(raw)
-            if doc.get("owner") != player:
-                errors.append("owner spoofed")
-            writes.append({
-                "seq": int(doc["seq"]),
-                "start": started,
-                "done": finished,
-                "write_ms": (finished - started) * 1000,
-            })
-            etag = int(doc["etag"])
     except OSError as exc:
         errors.append(str(exc))
     finally:
         conn.close()
     return etag
+
+
+def _play_slice(port, universe, players, since, etags, ready, out_path):
+    """One process owns a slice of players: their stream and their moves."""
+    stop = threading.Event()
+    gate = threading.Barrier(len(players) + 1)
+    watch_errors: list[str] = []
+    buckets = [{"seen": {}, "order": []} for _ in players]
+    threads = []
+    for actor, bucket in zip(players, buckets):
+        thread = threading.Thread(
+            target=_watch,
+            args=(port, actor, universe, since, gate, stop, bucket["seen"], bucket["order"],
+                  watch_errors),
+            daemon=True,
+        )
+        thread.start()
+        threads.append(thread)
+    try:
+        gate.wait(timeout=90)
+    except threading.BrokenBarrierError:
+        watch_errors.append("local barrier")
+    ready.wait()
+    writes: list[dict] = []
+    write_errors: list[str] = []
+    final = dict(etags)
+    lock = threading.Lock()
+
+    def one(player: str) -> None:
+        etag = _move(port, universe, player, etags[player], 4, writes, write_errors)
+        with lock:
+            final[player] = etag
+
+    movers = [threading.Thread(target=one, args=(player,), daemon=True) for player in players]
+    for thread in movers:
+        thread.start()
+    for thread in movers:
+        thread.join(timeout=120)
+    time.sleep(1.0)
+    stop.set()
+    for thread in threads:
+        thread.join(timeout=8)
+    with open(out_path, "w", encoding="utf-8") as handle:
+        json.dump({
+            "watch_errors": watch_errors[:8],
+            "write_errors": write_errors[:8],
+            "writes": writes,
+            "etags": final,
+            "buckets": buckets,
+        }, handle)
 
 
 def test_http_movement_ramp(tmp_path: Path, capsys):
@@ -472,64 +558,76 @@ def test_http_movement_ramp(tmp_path: Path, capsys):
         cursor = nxt
     etags = {player: 1 for player in players}
     proc, port, source = _start_server(tmp_path)
+    # One process reading every stream is the measuring client, not a player.
+    # Spread each player's stream and moves across this machine's cores.
+    client_processes = min(4, os.cpu_count() or 1)
     levels = []
     try:
         for count in (16, 64, 128, 256, 512):
             group = players[:count]
-            gate = threading.Barrier(count + 1)
-            stop = threading.Event()
-            seen = [dict() for _ in group]
-            order = [[] for _ in group]
-            watch_errors: list[str] = []
-            write_errors: list[str] = []
-            writes: list[dict] = []
-            watchers = []
-            for index, player in enumerate(group):
-                thread = threading.Thread(
-                    target=_watch,
-                    args=(port, player, universe, cursor, gate, stop, seen[index], order[index],
-                          watch_errors),
-                    daemon=True,
+            procs_n = min(client_processes, count)
+            ctx = mp.get_context("spawn")
+            ready = ctx.Barrier(procs_n)
+            slices = [group[index::procs_n] for index in range(procs_n)]
+            children = []
+            paths = []
+            for index, sl in enumerate(slices):
+                path = tmp_path / f"level-{count}-{index}.json"
+                paths.append(path)
+                if path.exists():
+                    path.unlink()
+                part = {player: etags[player] for player in sl}
+                child = ctx.Process(
+                    target=_play_slice,
+                    args=(port, universe, sl, cursor, part, ready, str(path)),
                 )
-                thread.start()
-                watchers.append(thread)
-            gate.wait(timeout=60)
-            movers = []
-            for player in group:
-                thread = threading.Thread(
-                    target=lambda player=player: etags.__setitem__(
-                        player,
-                        _move(port, universe, player, etags[player], 4, writes, write_errors),
-                    ),
-                    daemon=True,
-                )
-                thread.start()
-                movers.append(thread)
-            for thread in movers:
-                thread.join(timeout=120)
-            deadline = time.time() + 20
-            wanted = {row["seq"] for row in writes}
-            while time.time() < deadline:
-                if wanted and all(wanted <= set(page) for page in seen):
-                    break
-                time.sleep(0.05)
-            stop.set()
-            for thread in watchers:
-                thread.join(timeout=5)
+                child.start()
+                children.append(child)
+            for child in children:
+                child.join(timeout=180)
+                if child.is_alive():
+                    child.kill()
+                    child.join(timeout=5)
+            packed = []
+            for path in paths:
+                if not path.exists():
+                    packed.append({
+                        "watch_errors": [f"missing {path.name}"],
+                        "write_errors": [],
+                        "writes": [],
+                        "etags": {},
+                        "buckets": [],
+                    })
+                    continue
+                packed.append(json.loads(path.read_text(encoding="utf-8")))
+            writes = []
+            write_errors = []
+            watch_errors = []
+            seen = []
+            order = []
+            for item in packed:
+                writes.extend(item["writes"])
+                write_errors.extend(item["write_errors"])
+                watch_errors.extend(item["watch_errors"])
+                etags.update({player: int(etag) for player, etag in item["etags"].items()})
+                for bucket in item["buckets"]:
+                    seen.append({int(seq): float(at) for seq, at in bucket["seen"].items()})
+                    order.append(bucket["order"])
             write_ms = [row["write_ms"] for row in writes]
+            wanted = {row["seq"] for row in writes}
+            by_seq = {row["seq"]: row for row in writes}
             deliver = []
             inversions = 0
             gaps = 0
             for page, seqs in zip(seen, order):
-                missing = wanted - set(page)
-                gaps += len(missing)
+                gaps += len(wanted - set(page))
                 previous = 0
                 for seq in seqs:
                     if seq < previous:
                         inversions += 1
                     previous = seq
-                for row in writes:
-                    arrived = page.get(row["seq"])
+                for seq, row in by_seq.items():
+                    arrived = page.get(seq)
                     if arrived is not None:
                         deliver.append((arrived - row["start"]) * 1000)
             stats = {
@@ -537,6 +635,8 @@ def test_http_movement_ramp(tmp_path: Path, capsys):
                 "container_runtime": runtime or None,
                 "why_not_container": why,
                 "setup": "in_process",
+                "client_processes": procs_n,
+                "connection": "warm",
                 "players": count,
                 "updates": 4,
                 "write_p50_ms": round(_pct(write_ms, 50), 3),
@@ -595,6 +695,7 @@ def test_http_movement_ramp(tmp_path: Path, capsys):
     assert 1 < int(logged) < 20
     row_256 = next(row for row in levels if row["players"] == 256)
     assert row_256["deliver_p50_ms"] < 50, row_256
+    assert row_256["deliver_p99_ms"] < 150, row_256
     assert levels and [row["players"] for row in levels] == [16, 64, 128, 256, 512]
     captured = capsys.readouterr()
     assert "HTTP_MEASURED" in captured.out
