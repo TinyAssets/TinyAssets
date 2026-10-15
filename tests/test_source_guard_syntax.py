@@ -3,9 +3,9 @@ import tokenize
 
 import pytest
 
-from tinyassets.executors.node_bid import _scan_dangerous_patterns
 from tinyassets.graph_compiler import (
     _source_without_literals,
+    dangerous_source_patterns,
     source_code_problems,
 )
 from tinyassets.node_sandbox import NodeSandbox
@@ -41,7 +41,7 @@ def test_mask_preserves_offsets_and_line_endings(source):
 def test_fstring_expression_matches_the_interpreters_token_boundaries():
     source = 'text = f"open(path) {open(path)}"'
     # Python 3.11 must retain the whole STRING, including executable fields.
-    assert _scan_dangerous_patterns(source) == "open("
+    assert dangerous_source_patterns(source, ("open(",)) == ["open("]
     assert NodeSandbox().validate_source(source) == ["Forbidden pattern: 'open('"]
 
 

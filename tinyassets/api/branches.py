@@ -289,10 +289,9 @@ def _source_code_problems(node_defs: Any) -> list[dict[str, Any]]:
     founder its PR-building branch needed an approval flow that does not
     exist).
 
-    Scope: the owner's own branches through ``run_graph``. The bid-market
-    executor (``executors/node_bid.py``) keeps its own approval gate because
-    a bid-referenced node is another universe's code -- that boundary is
-    cross-user and is not what this receipt describes."""
+    Scope: the owner's own branches through ``run_graph``. The node-bid
+    executor was removed with the bidding feature, so this receipt does not
+    describe a second code-exec path."""
     from tinyassets.graph_compiler import source_code_problems
 
     found: list[dict[str, Any]] = []

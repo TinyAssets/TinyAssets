@@ -372,8 +372,6 @@ _EXTENSION_STANDALONE_WRITE_ACTIONS = frozenset({
 })
 _UNIVERSE_COSTLY_ACTIONS = frozenset({
     "create_universe",
-    "post_to_goal_pool",
-    "submit_node_bid",
     "daemon_create",
     "daemon_summon",
     "daemon_memory_promote",

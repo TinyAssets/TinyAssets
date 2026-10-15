@@ -53,7 +53,6 @@ PRIMARY_TARGETS = [
     "tinyassets.storage",
     "tinyassets.daemon_server",
     "tinyassets.universe_server",
-    "tinyassets.bid",
     "tinyassets.catalog",
 ]
 
