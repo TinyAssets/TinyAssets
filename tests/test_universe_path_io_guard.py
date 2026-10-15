@@ -225,7 +225,6 @@ PINNED: dict[str, list[str]] = {
     ],
     "tinyassets/onboarding/__init__.py": [
         "render_app_html: .read_text()",
-        "render_app_html: .read_text()",
         "request_theme: .read_text()",
     ],
     "tinyassets/onboarding/hosted_model_auth.py": [
@@ -262,9 +261,6 @@ PINNED: dict[str, list[str]] = {
         "remove_if_dead: .unlink()",
         "remove_if_dead: .unlink()",
         "remove_if_dead: os.open()",
-    ],
-    "tinyassets/provider_assignment.py": [
-        "_file_lock: .open()",
     ],
     # Inherited main operations, NOT certified link-safe. Parent-path lookup
     # remains ordinary I/O; preserve atomic migration publication when fixing.

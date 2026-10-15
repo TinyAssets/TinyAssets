@@ -334,6 +334,51 @@ def open_dir_nofollow(path: str | Path) -> int:
     return current
 
 
+def open_assignment_lock(base_path: str | Path, command_center: str):
+    """Open one platform admission lock; never enter an owner's file tree.
+
+    The fixed .provider-assignment-locks namespace is outside all owner mounts.
+    Pin every directory and refuse links, foreign ownership, writable aliases and
+    special files before returning a descriptor suitable for flock. Like the other
+    descriptor helpers, unsupported hosts refuse instead of weakening custody.
+    """
+    _require_posix("open_assignment_lock")
+    _require_component(command_center)
+    current = open_dir_nofollow(base_path)
+    lock_fd = None
+    try:
+        info = os.fstat(current)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o022:
+            raise UnsafePoolPath("platform admission base is mutable by another uid")
+        for component in (".provider-assignment-locks", command_center):
+            try:
+                os.mkdir(component, 0o700, dir_fd=current)
+            except FileExistsError:
+                pass
+            child = _open_child_dir(current, component)
+            os.close(current)
+            current = child
+            info = os.fstat(current)
+            if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o022:
+                raise UnsafePoolPath("platform admission directory is mutable by another uid")
+        lock_fd = os.open(
+            ".provider-assignment-admission.lock",
+            os.O_RDWR | os.O_CREAT | _O_NOFOLLOW | _O_NONBLOCK,
+            0o600, dir_fd=current,
+        )
+        info = os.fstat(lock_fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o022):
+            raise UnsafePoolPath("platform admission lock is not an exclusive platform inode")
+        handle = os.fdopen(lock_fd, "r+b")
+        lock_fd = None
+        return handle
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
+        os.close(current)
+
+
 def open_subdir_nofollow(parent_fd: int, name: str) -> int:
     """Open ONE existing child directory through a handle the caller holds.
 

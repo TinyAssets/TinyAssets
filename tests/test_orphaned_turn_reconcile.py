@@ -172,7 +172,15 @@ def test_the_successor_takes_a_higher_generation_and_settles_only_older_rows(jou
     old = _killed_native_turn(journal)
     _restart(journal)
     assert [r["turn_id"] for r in _reconcile(journal)] == [old.turn_id]
-    mine = begin_native(journal, new(journal)).snapshot
+    from tinyassets.storage.agent_turn_journal import AgentTurnJournal
+
+    successor = AgentTurnJournal(journal._ledger.base_path)
+    with pytest.raises(owner_lease.LeaseLost):
+        successor.finish_native(
+            "owner", "home", old.turn_id, expected_generation=old.generation,
+            ordinal=len(old.rounds), terminal=NativeTerminal("indeterminate"),
+        )
+    mine = begin_native(successor, new(successor)).snapshot
     assert _reconcile(journal) == []
     assert journal.get("owner", "home", mine.turn_id).state == "native_started"
     assert _working(journal)["turn_id"] == mine.turn_id

@@ -24,6 +24,10 @@ def compute(case, monkeypatch):  # noqa: F811
     calls, closed = [], []
 
     class Channel:
+        def stream(self, *args, **kwargs):
+            from tests.inference_usage_helpers import synthetic_stream
+            return synthetic_stream(self, *args, **kwargs)
+
         def request(self, verb, request, **kwargs):
             calls.append((verb, request, kwargs))
             return {"status": 200, "body": json.dumps({

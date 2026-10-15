@@ -487,16 +487,20 @@ async def run(report):
             raise DaemonRestart()
 
 
-def main():
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", default="core-capabilities-live.json")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     report = asyncio.run(collect())
     Path(args.report).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    # A missing dedicated owner means the probe never ran. That is a loud
+    # warning, not a rollback: deploy_fail_safe already refused a data-moving
+    # deploy before the swap, and an ordinary deploy continues. Once the canary
+    # is provisioned, a red public canary still fails the deploy and rolls
+    # back. Probed rows stay advisory: model, provider and rate errors do not
+    # say the previous image would fare better.
     for row in report.get("warnings", []) + report.get("failures", []):
         print("::warning::core canary " + row["capability"] + ": " + row["code"])
-    # Observations, model/provider/configuration errors and rate alarms cannot
-    # establish that the previous image would fare better.
     return 0
 
 
@@ -521,6 +525,8 @@ async def collect():
         except Exception as exc:
             report["probe_error"] = type(exc).__name__
         if report.get("configuration_missing"):
+            # Not an observation and not a fabricated capability failure.
+            # deploy_fail_safe refuses the data-moving cases before the swap.
             report["warnings"].append(dict(capability="canary", code="canary_not_provisioned"))
             return report
         for failure in validate_report(report):

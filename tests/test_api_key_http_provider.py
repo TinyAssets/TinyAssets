@@ -38,6 +38,10 @@ _HOST = "api.example.com"
 
 
 class _FakeProxy:
+    def stream(self, *args, **kwargs):
+        from tests.inference_usage_helpers import synthetic_stream
+        return synthetic_stream(self, *args, **kwargs)
+
     def __init__(self, response: Any) -> None:
         self.response = response
         self.calls: list[tuple[str, dict[str, Any]]] = []

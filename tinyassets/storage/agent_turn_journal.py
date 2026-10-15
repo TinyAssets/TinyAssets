@@ -8,8 +8,10 @@ No timer, loader or stale worker can turn an uncertain effect back into a plan.
 from __future__ import annotations
 
 import sqlite3
+import threading
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 
@@ -413,6 +415,17 @@ class AgentTurnJournal:
 
     def __init__(self, base_path: str | Path) -> None:
         self._ledger = SQLiteProviderWorkAuthorityStore(base_path)
+        self._leases = {}
+        self._lease_lock = threading.Lock()
+        self._recovering_turn = ContextVar("recovering_agent_turn", default=None)
+
+    @contextmanager
+    def _recovering_orphan(self, turn_id: str):
+        token = self._recovering_turn.set(turn_id)
+        try:
+            yield
+        finally:
+            self._recovering_turn.reset(token)
 
     @contextmanager
     def _transaction(self, universe: str):
@@ -432,8 +445,18 @@ class AgentTurnJournal:
 
     def _lease(self, universe: str):
         base = self._ledger.base_path
-        owner_lease.register_store(base, db_path(base), "agent_turn_journal")
-        return owner_lease.acquire(base, owner_lease.key_for(records.identity(universe)))
+        key = owner_lease.key_for(records.identity(universe))
+        with self._lease_lock:
+            lease = self._leases.get(key)
+            if lease is None:
+                owner_lease.register_store(base, db_path(base), "agent_turn_journal")
+                lease = owner_lease.acquire(base, key)
+                self._leases[key] = lease
+            # A journal cannot silently adopt a successor's generation. The
+            # transaction fence below also serializes this against takeover.
+            if not lease.held():
+                raise owner_lease.LeaseLost("agent journal owner generation changed")
+            return lease
 
     def create(
         self,
@@ -608,8 +631,18 @@ class AgentTurnJournal:
     def _mutation(self, owner, universe, turn_id, expected_generation):
         scope = _scope(owner, universe, turn_id)
         records.integer(expected_generation, minimum=1)
-        with self._transaction(universe) as (conn, _lease):
+        with self._transaction(universe) as (conn, lease):
             check_current_home(conn, owner, universe)
+            row = conn.execute(
+                f"SELECT owner_generation FROM agent_turns WHERE {_SCOPE}", scope,
+            ).fetchone()
+            if row is not None and row[0] != lease.generation:
+                # Taking a higher generation proves every member of the old
+                # owner tree is gone; only the startup sweep may settle its row.
+                if not (self._recovering_turn.get() == turn_id
+                        and row[0] < lease.generation):
+                    raise owner_lease.LeaseLost(
+                        "agent turn belongs to an earlier owner generation")
             current = _read(conn, scope)
             if current is None:
                 raise JournalUnavailable("agent turn unavailable")

@@ -179,6 +179,18 @@ def agent(served, monkeypatch):
     monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
                         accounting_resolver(lambda *args, **kwargs: Proxy()))
     monkeypatch.setattr(provider_calls, "_router", served.router)
+    # Coordinator contract tests inject the engine adapter explicitly. Production
+    # construction always chooses ThinLoopChatAdapter; thin integration fixtures
+    # replace state.adapter with it and bind a scripted box before calling run().
+    from tinyassets.interactive_http_agent import InteractiveHttpAgentTurn, ServedChatAgentAdapter
+
+    state.adapter = ServedChatAgentAdapter()
+
+    def make_turn(**kwargs):
+        provider_calls.register_open_providers_for(kwargs["universe_context"])
+        return InteractiveHttpAgentTurn(router=served.router, adapter=state.adapter, **kwargs)
+
+    monkeypatch.setattr(provider_calls, "make_interactive_agent_turn", make_turn)
     return state
 
 

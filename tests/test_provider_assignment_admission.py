@@ -103,3 +103,44 @@ def test_windows_file_lock_retry_is_bounded_and_fails_closed():
         )
 
     assert attempts == 3
+
+
+@pytest.mark.parametrize("component", [
+    "namespace", "center", "leaf", "hardlink", "writable", "base_writable", "fifo",
+])
+def test_platform_lock_rejects_mutable_aliases_without_touching_owner_files(tmp_path, component):
+    from tinyassets.provider_assignment import ProviderAssignmentAdmission
+
+    admission = ProviderAssignmentAdmission()
+    universe = tmp_path / "cc"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "target"
+    target.write_bytes(b"keep exact bytes")
+    namespace = tmp_path / ".provider-assignment-locks"
+    center = namespace / "cc"
+    if component == "namespace":
+        namespace.symlink_to(outside, target_is_directory=True)
+    else:
+        namespace.mkdir()
+        if component == "center":
+            center.symlink_to(outside, target_is_directory=True)
+        else:
+            center.mkdir()
+            leaf = center / ".provider-assignment-admission.lock"
+            if component == "leaf":
+                leaf.symlink_to(target)
+            elif component == "hardlink":
+                leaf.hardlink_to(target)
+            elif component == "writable":
+                center.chmod(0o777)
+            elif component == "base_writable":
+                tmp_path.chmod(0o777)
+            else:
+                import os
+                os.mkfifo(leaf)
+    with pytest.raises((OSError, RuntimeError)):
+        with admission.shared(universe):
+            pytest.fail("mutable platform path was admitted")
+    assert target.read_bytes() == b"keep exact bytes"
+    assert not universe.exists()

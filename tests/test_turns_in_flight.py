@@ -10,6 +10,7 @@ stand-in ``ssh``.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import shutil
@@ -359,7 +360,7 @@ case "$cmd" in
   *"docker pull"*) exit 0 ;;
   *--clear-pending*) echo '{"cleared": true}'; exit 0 ;;
 esac
-if [ -n "${FAKE_HANG:-}" ]; then exec python -c "import time; time.sleep(60)"; fi
+if [ -n "${FAKE_HANG:-}" ]; then exec python3 -c "import time; time.sleep(60)"; fi
 n=$(cat "$FAKE_DIR/n" 2>/dev/null || echo 0)
 n=$((n + 1)); echo "$n" > "$FAKE_DIR/n"
 rc=$(sed -n "${n}p" "$FAKE_DIR/script")
@@ -384,6 +385,7 @@ _FAKE_DOCKER = r"""#!/usr/bin/env bash
 printf 'docker %s\n' "$*" >> "$FAKE_DIR/docker_calls"
 case "$1" in
   inspect) echo "${FAKE_STATE:-running/healthy}|2026-10-02T00:00:00.5Z|sha256:fakeimage" ;;
+  volume) echo "${FAKE_VOLUME}" ;;
   run)
     while [ "$#" -gt 0 ] && [ "$1" != "sha256:fakeimage" ]; do shift; done
     shift
@@ -453,12 +455,12 @@ def _run_wait(tmp_path: Path, codes: list[int], *, cap_s: int = 2700,
         wrapper = f'export PATH="{bin_dir}:$PATH"; bash -eo pipefail "{script}"'
     result = subprocess.run([bash, "-c", wrapper], env=env, capture_output=True, text=True,
                             timeout=120, cwd=str(_REPO))
-    assert result.returncode == 0, result.stdout + result.stderr
     outputs = dict(
         line.split("=", 1) for line in out.read_text(encoding="utf-8").splitlines() if "=" in line
     )
     outputs["_calls"] = (fake / "calls").read_text(encoding="utf-8")
-    outputs["_stdout"] = result.stdout
+    outputs["_stdout"] = result.stdout + result.stderr
+    outputs["_rc"] = str(result.returncode)
     return outputs
 
 
@@ -466,6 +468,7 @@ def _run_wait(tmp_path: Path, codes: list[int], *, cap_s: int = 2700,
 def test_wait_holds_while_busy_then_deploys_when_idle(tmp_path):
     """Under Actions' own `bash -e`: a busy answer is data, not a failed step."""
     out = _run_wait(tmp_path, [10, 10, 10, 0])
+    assert out["_rc"] == "0", out["_stdout"]
     assert out["outcome"] == "idle"
     assert out["polls"] == "4"
     calls = out["_calls"].splitlines()
@@ -482,24 +485,40 @@ def test_the_image_is_prefetched_before_the_first_poll(tmp_path):
 
 @pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
 def test_wait_proceeds_at_the_cap(tmp_path):
+    """At the cap the wait fails, so the deploy does not proceed into the swap."""
     out = _run_wait(tmp_path, [10], cap_s=0)
+    assert out["_rc"] == "1", out["_stdout"]
     assert out["outcome"] == "cap_reached"
+    assert "refusing to cut the turn off" in out["_stdout"]
     assert out["polls"] == "1"
+    names = [step.get("name") for step in _steps()]
+    wait = _step("Wait for in-flight turns")
+    deploy = _step("Run fail-safe deploy on the droplet")
+    assert names.index(wait["name"]) < names.index(deploy["name"])
+    assert wait.get("continue-on-error") is not True
+    # No `if:` means the swap runs only after this step succeeds.
+    assert deploy.get("if") is None
+    assert deploy.get("continue-on-error") is not True
 
 
 @pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
 def test_a_daemon_that_is_not_serving_is_deployed_at_once(tmp_path):
     out = _run_wait(tmp_path, [20])
+    assert out["_rc"] == "0", out["_stdout"]
     assert out["outcome"] == "daemon_not_serving"
     assert out["polls"] == "1"
 
 
 @pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
 def test_unknown_is_retried_then_proceeds_loudly(tmp_path):
+    """Unknown is retried, then the wait refuses loudly and the deploy stops."""
     out = _run_wait(tmp_path, [2, 2, 2])
+    assert out["_rc"] == "1", out["_stdout"]
     assert out["outcome"] == "check_unavailable"
     assert out["polls"] == "3"
     assert "could not answer" in out["_stdout"]
+    assert "::error::" in out["_stdout"]
+    assert "refusing to deploy without proof" in out["_stdout"]
 
 
 @pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
@@ -512,6 +531,7 @@ def test_one_unknown_between_busy_answers_does_not_end_the_wait(tmp_path):
 @pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
 def test_a_hung_check_is_bounded_and_counts_as_unknown(tmp_path):
     out = _run_wait(tmp_path, [10], extra_env={"FAKE_HANG": "1"})
+    assert out["_rc"] == "1", out["_stdout"]
     assert out["outcome"] == "check_unavailable"
     assert out["polls"] == "3"
     assert "rc=124" in out["_stdout"]
@@ -519,10 +539,14 @@ def test_a_hung_check_is_bounded_and_counts_as_unknown(tmp_path):
 
 @pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
 def test_a_queued_recovery_workflow_ends_the_wait(tmp_path):
+    """A queued recovery workflow still ends the wait, by failing the deploy."""
     out = _run_wait(tmp_path, [10, 10, 10], extra_env={
         "FAKE_GH_WORKFLOW": "p0-outage-triage.yml", "FAKE_GH_QUEUED": "1",
     })
+    assert out["_rc"] == "1", out["_stdout"]
     assert out["outcome"] == "yield_to_host_mutation"
+    assert "::error::" in out["_stdout"]
+    assert "refusing to cut off in-flight work" in out["_stdout"]
     assert out["polls"] == "1"
 
 
@@ -541,6 +565,7 @@ def test_the_real_remote_command_reads_the_volume_and_reports_idle(tmp_path):
     volume = tmp_path / "volume"
     volume.mkdir()
     out = _run_wait(tmp_path, [], exec_volume=volume)
+    assert out["_rc"] == "0", out["_stdout"]
     assert out["outcome"] == "idle", out["_stdout"]
     assert '"in_flight": 0' in out["_stdout"]
     assert not (volume / tif.MARKER).exists(), "cleared after the wait"
@@ -553,15 +578,16 @@ def test_the_real_remote_command_sees_a_held_seat_and_marks_pending(tmp_path):
     seats.acquire("acct", seat_class=seats.CLASS_INTERACTIVE, kind=seats.KIND_CHAT_TURN,
                   db=volume / tif.SEATS_DB)
     out = _run_wait(tmp_path, [], cap_s=0, exec_volume=volume)
+    assert out["_rc"] == "1", out["_stdout"]
     assert out["outcome"] == "cap_reached", out["_stdout"]
     assert '"in_flight": 1' in out["_stdout"]
-    # A sibling container as the daemon's uid on the daemon's image and volume,
-    # never an exec into the daemon itself.
+    # Root, read-only mount: .broker is not searchable by the daemon uid.
     docker_calls = (tmp_path / "fake" / "docker_calls").read_text(encoding="utf-8")
     run = next(line for line in docker_calls.splitlines() if line.startswith("docker run"))
-    for flag in ("--rm", "-i", "--network none", "--user 1001:1001",
-                 "-v tinyassets-data:/data", "--entrypoint python", "sha256:fakeimage"):
+    for flag in ("--rm", "-i", "--network none", "--user 0:0", "--read-only",
+                 "-v tinyassets-data:/data:ro", "--entrypoint python", "sha256:fakeimage"):
         assert flag in run, flag
+    assert "--user 1001:1001" not in run
     assert "docker exec" not in docker_calls
     # The boot epoch came from the container's StartedAt, through `date -d`.
     assert '"boot_epoch": 1790899200.0' in out["_stdout"]
@@ -575,6 +601,7 @@ def test_a_failed_upload_is_unknown_never_idle(tmp_path):
     volume.mkdir()
     seats.acquire("acct", db=volume / tif.SEATS_DB)
     out = _run_wait(tmp_path, [], exec_volume=volume, scp_fails=True)
+    assert out["_rc"] == "1", out["_stdout"]
     assert out["outcome"] == "check_unavailable", out["_stdout"]
     assert "probe checksum mismatch" in out["_stdout"]
 
@@ -585,4 +612,53 @@ def test_a_container_that_is_not_running_is_deployed_at_once_for_real(tmp_path):
     volume.mkdir()
     out = _run_wait(tmp_path, [], exec_volume=volume,
                     extra_env={"FAKE_STATE": "exited/"})
+    assert out["_rc"] == "0", out["_stdout"]
     assert out["outcome"] == "daemon_not_serving", out["_stdout"]
+
+
+def test_marker_from_report_writes_without_opening_a_database(tmp_path, monkeypatch):
+    report = json.dumps({"observed_at": 1_700_000_000, "in_flight": 1})
+    monkeypatch.setattr("sys.stdin", io.StringIO(report))
+    status = tif.main([
+        "--write-marker-from-report", "--data-dir", str(tmp_path),
+        "--target", "abc", "--waiting-since", "10",
+        "--deadline", "20", "--ttl", "30", "--run-url", "https://example.invalid/run",
+    ])
+    assert status == tif.IDLE
+    marker = json.loads((tmp_path / tif.MARKER).read_text(encoding="utf-8"))
+    assert marker["pending"] is True
+    assert marker["in_flight"] == 1
+    assert marker["target"] == "abc"
+    assert list(tmp_path.glob("*.db")) == []
+
+
+def test_an_unreadable_run_store_is_unknown_not_idle(tmp_path):
+    """Mode 2700 on ``.broker`` makes ``Path.is_file`` raise for the daemon uid.
+
+    That used to abort the whole observation. It must stay unknown, never idle,
+    when the probe still cannot see the child. Production runs the probe as
+    root so this directory is readable.
+    """
+    broker = tmp_path / ".broker"
+    broker.mkdir()
+    broker.chmod(0)
+    try:
+        status, report = tif.observe(tmp_path)
+    finally:
+        broker.chmod(0o700)
+    assert status == tif.UNKNOWN
+    assert report["in_flight"] is None
+
+
+def test_readonly_connect_creates_no_sidecar_beside_the_source(tmp_path):
+    database = tmp_path / "store.db"
+    connection = sqlite3.connect(database)
+    connection.execute("CREATE TABLE t (id INTEGER)")
+    connection.commit()
+    connection.close()
+    opened = tif._connect(database)
+    try:
+        assert opened.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 0
+    finally:
+        opened.close()
+    assert list(tmp_path.iterdir()) == [database]
