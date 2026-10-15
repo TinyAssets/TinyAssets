@@ -401,7 +401,9 @@ def test_the_app_shows_an_activation_after_the_turn(tmp_path) -> None:
 def test_every_finished_turn_asks_the_ui_controller() -> None:
     from pathlib import Path
 
-    app = Path("tinyassets/onboarding/app.html").read_text(encoding="utf-8")
+    from tinyassets.onboarding.app_modules import shell_source
+
+    app = shell_source(Path("tinyassets/onboarding/app.html"))
     delivered = app.index("renderConverse(answer);")
     settled = app.index("}catch(err)", delivered)
     assert "AppUI.turnSettled()" in app[delivered:settled]

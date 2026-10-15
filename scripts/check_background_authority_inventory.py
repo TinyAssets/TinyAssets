@@ -137,6 +137,20 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     # handle bound to the turn's own owner and command center, and runs no
     # branch. The package build copies the canonical module.
     CallSite("tinyassets/agent_loop/box_tools.py", "BoxExecutor._collect", "self.stream"),
+    # Reviewed 2026-10-14 (C6): one admitted CLI process drains the provider
+    # stream already started for that handle. It starts no branch.
+    CallSite("tinyassets/boxes/cli_launcher.py", "Process._output", "self.stream"),
+    # Reviewed C9: the owner-bound model proxy streams broker data after the
+    # grant and usage reference are resolved; these calls create no turn root.
+    CallSite("tinyassets/agent_loop/model_stream.py", "collect_stream", "proxy.stream"),
+    CallSite(
+        "tinyassets/storage/outbound_connections.py",
+        "ScopedConnectionProxy.stream", "self.stream",
+    ),
+    CallSite(
+        "tinyassets/storage/outbound_connections.py",
+        "_BrokerChannel.stream", "client.stream",
+    ),
     # Reviewed 2026-08-25 (run-provider-authority): server-owned trigger
     # enqueue enters the same governed foreground admission as the MCP action.
     # Reviewed 2026-08-29 (user-owned-automations 3.2). A due automation is a

@@ -210,8 +210,9 @@ def test_shell_empty_state_names_and_late_response_are_safe():
     node = shutil.which("node")
     if not node:
         pytest.skip("node unavailable")
-    source = (Path(__file__).parents[1] / "tinyassets/onboarding/app.html").read_text(
-        encoding="utf-8")
+    from tinyassets.onboarding.app_modules import shell_source
+
+    source = shell_source(Path(__file__).parents[1] / "tinyassets/onboarding/app.html")
     code = source[source.index("  async function refreshAgentSwitcher(){"):
                   source.index('  // The ACCOUNT half of')]
     script = r'''

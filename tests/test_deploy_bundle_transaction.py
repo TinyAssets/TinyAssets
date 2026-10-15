@@ -140,6 +140,7 @@ import re
 import sys
 import tarfile
 import io
+import time
 
 
 STATE_PATH = os.environ["FAKE_DOCKER_STATE"]
@@ -357,17 +358,64 @@ def main(argv):
         return 0
 
     if argv[:1] == ["run"]:
+        if any("TURNS_PROBE_KIND" in arg for arg in argv):
+            rc = int(state.get("turns_rc", 0))
+            if rc:
+                sys.stderr.write("fake turns probe rc=%s\n" % rc)
+            else:
+                print('{"in_flight": 0}')
+            return rc
         if "ACTIVE_BOX_LAYOUT" in argv[-1]:
             target = argv[argv.index("--entrypoint") + 2]
             print(state.get("active_box_layout", {}).get(target, "owner-split"))
             return 0
         if "tinyassets.box_layout_migration" in argv:
-            marker = os.path.join(os.environ["FAKE_DOCKER_VOLUME_DIR"], ".layout.json")
+            marker = os.path.join(os.environ.get("FAKE_DOCKER_VOLUME_DIR") or "", ".layout.json")
             command = argv[argv.index("tinyassets.box_layout_migration") + 1]
-            with open(marker, encoding="utf-8") as handle:
-                document = json.load(handle)
+
+            def census(layout, marker_state, pending):
+                print(json.dumps({
+                    "box_layout": layout,
+                    "marker_state": marker_state,
+                    "pending": pending,
+                    "counts": {
+                        "owner-split": {"centers": 1, "admitted_owners": None},
+                        "owner-box": {
+                            "registered_boxes": 1 if layout == "owner-box" else None,
+                            "registry_present": layout == "owner-box",
+                        },
+                    },
+                }, sort_keys=True))
+
+            if command == "check" and state.get("box_census_rc") is not None:
+                forced = int(state["box_census_rc"])
+                census("unreadable" if forced == 3 else "absent", None, None)
+                return forced
+            if command == "check" and not os.path.isfile(marker):
+                census("absent", None, None)
+                return 4
+            try:
+                with open(marker, encoding="utf-8") as handle:
+                    document = json.load(handle)
+            except (OSError, ValueError):
+                if command == "check":
+                    census("unreadable", None, None)
+                    return 3
+                raise
+            if not isinstance(document, dict):
+                document = {}
             if command == "check":
-                return 0 if document.get("box_layout") == "owner-box" else 10
+                layout = document.get("box_layout", "owner-split")
+                marker_state = document.get("state")
+                if marker_state != "stable" or layout not in ("owner-split", "owner-box"):
+                    census(layout, marker_state, None)
+                    return 3
+                census(
+                    layout,
+                    marker_state,
+                    True if layout == "owner-split" else False,
+                )
+                return 0 if layout == "owner-box" else 10
             state["box_migration_apply_attempted"] = True
             outcome = state.get("box_migration_apply", "commit")
             if outcome == "commit":
@@ -447,6 +495,10 @@ def main(argv):
                 % (argv[-1], (container or {}).get("status", "missing"))
             )
             return 1
+        if argv[0] == "stop" and state.get("stop_delay_s"):
+            delay = state.pop("stop_delay_s")
+            save_state(state)
+            time.sleep(delay)
         if container is not None:
             container["status"] = "running" if argv[0] == "start" else "exited"
             save_state(state)
@@ -540,6 +592,8 @@ def main(argv):
             return 0
         if "up" in argv:
             ref = env_values.get("TINYASSETS_IMAGE", "")
+            if ref in (state.get("up_start_delay_s") or {}):
+                time.sleep(state["up_start_delay_s"][ref])
             partial = ref in (state.get("up_partial_images") or [])
             if not partial and (
                 not state.get("up_ok", True)
@@ -650,14 +704,26 @@ exec /bin/rm "$@"
 FAKE_BACKUP = r'''#!/usr/bin/env bash
 set -euo pipefail
 [ "${BACKUP_MODE:-}" = "snapshot" ] || { echo "fake backup: not a snapshot" >&2; exit 1; }
-name="tinyassets-snapshot-2026-10-13T00-00-00Z.tar.gz"
-printf 'tar' > "${BACKUP_SNAPSHOT_DIR}/${name}"
-printf '%064d  %s\n' 0 "$name" > "${BACKUP_SNAPSHOT_DIR}/${name}.sha256"
-if [ "${BACKUP_REQUIRE_BOX_STORE:-0}" = 1 ]; then
-  box="tinyassets-box-store-2026-10-13T00-00-00Z.tar.gz"
-  printf 'box' > "${BACKUP_SNAPSHOT_DIR}/${box}"
-  printf '%064d  %s\n' 0 "$box" > "${BACKUP_SNAPSHOT_DIR}/${box}.sha256"
-fi
+stamp="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+name="tinyassets-snapshot-${stamp}.tar.gz"
+mkdir -p "${BACKUP_SNAPSHOT_DIR}"
+python3 - "${BACKUP_SNAPSHOT_DIR}" "${stamp}" "${BACKUP_REQUIRE_BOX_STORE:-0}" <<'PY'
+import hashlib, io, os, sys, tarfile
+directory, stamp, require_box = sys.argv[1:]
+names = ["tinyassets-snapshot-%s.tar.gz" % stamp]
+if require_box == "1":
+    names.append("tinyassets-box-store-%s.tar.gz" % stamp)
+for name in names:
+    path = os.path.join(directory, name)
+    payload = b"snapshot-member\n"
+    with tarfile.open(path, "w:gz") as archive:
+        info = tarfile.TarInfo("inventory.txt")
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+    digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+    with open(path + ".sha256", "w", encoding="ascii") as handle:
+        handle.write("%s  %s\n" % (digest, name))
+PY
 echo "SNAPSHOT id=${name} sha256=0 bytes=3 names=1"
 '''
 
@@ -911,6 +977,15 @@ class Box:
             "FAKE_INSTALL_FAIL_MATCH": "",
             "FAKE_INSTALL_FAIL_STATE": str(self.root / "install-refused.flag"),
             "FAKE_RM_FAIL_MATCH": "",
+            "BACKUP_SCRIPT": str(self.root / "backup.sh"),
+            "MIGRATION_BACKUP_DIR": str(self.root / "backups"),
+            "TURNS_PROBE": str(self.root / "turns_probe.py"),
+            "VERIFY_BACKUP_PY": str(REPO / "scripts" / "verify_deploy_backup.py"),
+            # A provisioned canary is the ordinary path. Tests of the missing
+            # config set this to 0. The volume marker is stable owner-split so
+            # the census is a real layout, not an absent one.
+            "CORE_CANARY_PROVISIONED": "1",
+            "FAKE_DOCKER_VOLUME_DIR": str(self.root / "default-data-volume"),
         }
         env.update(overrides)
         return env
@@ -971,6 +1046,17 @@ def box(tmp_path: Path) -> Box:
     fake.helper_install_path.parent.mkdir(parents=True)
     fake.env_helper.write_text(FAKE_ENV_HELPER, encoding="utf-8", newline="\n")
     fake.env_helper.chmod(0o755)
+    backup = fake.root / "backup.sh"
+    backup.write_text(FAKE_BACKUP, encoding="utf-8", newline="\n")
+    backup.chmod(0o755)
+    (fake.root / "backups").mkdir()
+    (fake.root / "turns_probe.py").write_text("# in-flight probe stand-in\n", encoding="utf-8")
+    default_volume = fake.root / "default-data-volume"
+    default_volume.mkdir()
+    (default_volume / ".layout.json").write_text(
+        '{"layout": 1, "state": "stable", "box_layout": "owner-split"}\n',
+        encoding="utf-8",
+    )
 
     import hashlib
 
@@ -1552,12 +1638,68 @@ def test_layout_two_still_refuses_rollback_to_an_older_image(box: Box, explicit)
         assert "stop tinyassets-daemon" in box.docker_calls_text()
 
 
+def test_idle_proof_allows_candidate_start_longer_than_drain_bound(box: Box):
+    """Starting the candidate may take longer than the old daemon's drain."""
+    box.set_docker_state(up_start_delay_s={NEW_IMAGE: 21})
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert _result(completed) == "deployed"
+    assert "in-flight proof: idle" in completed.stdout
+    assert "converge took 2" in completed.stdout
+    assert "old daemon drain took" in completed.stdout
+    assert box.env_image() == NEW_IMAGE
+
+
+def test_drain_bound_still_refuses_a_cut_turn(box: Box):
+    box.set_docker_state(stop_delay_s=20.2)
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 2, completed.stdout + completed.stderr
+    assert _result(completed) == "rolled_back"
+    assert "refusing this deploy rather than accepting a cut turn" in completed.stderr
+    assert box.env_image() == OLD_IMAGE
+    assert "up -d --timeout 20" in box.docker_calls_text()
+
+
+def test_rollback_accepts_current_stable_owner_split_marker(box: Box):
+    marker = box.root / "default-data-volume" / ".layout.json"
+    marker.write_text(json.dumps({
+        "layout": 2, "state": "stable", "box_layout": "owner-split",
+        "moves": {"consents_outside_command_centers": "done"},
+    }), encoding="utf-8")
+    box.set_docker_state(
+        known_layouts={
+            NEW_IMAGE: {"layouts": [1, 2], "boxes": ["owner-split"]},
+            OLD_IMAGE: {"layouts": [1, 2], "boxes": ["owner-split"]},
+        },
+        unhealthy_images=[NEW_IMAGE],
+    )
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 2, completed.stdout + completed.stderr
+    assert _result(completed) == "rolled_back"
+    assert box.env_image() == OLD_IMAGE
+    assert "rollback_needs_restore" not in completed.stdout
+
+
 def test_no_image_rollback_onto_data_the_failed_candidate_began_migrating(box: Box):
     """The candidate marks the data ``migrating`` while it boots, then fails: the
     previous image must NOT start on it, and the daemon is left down for the
     restore (design D7.2)."""
     volume = box.root / "data-volume"
     volume.mkdir()
+    # Stable before the swap, so the census is not the refusal. The candidate
+    # then rewrites the marker to migrating as it boots.
+    (volume / ".layout.json").write_text(
+        '{"layout": 1, "state": "stable"}', encoding="utf-8",
+    )
     box.stage_bundle()
     box.set_docker_state(
         unhealthy_images=[NEW_IMAGE],
@@ -2530,9 +2672,14 @@ def test_a_committed_migration_never_restarts_the_previous_image(box: Box, candi
     assert "agent_file_migration apply /data --backup /backup/tinyassets-snapshot-" in calls
     assert "--user 0 --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE" in calls
     assert "stop --time" in calls, "the daemon stops before the snapshot and the move"
+    assert completed.stdout.index("stopping tinyassets-daemon") < completed.stdout.index(
+        "verified backup:"
+    )
+    assert "verified backup:" in completed.stdout
     assert json.loads((volume / ".layout.json").read_text(encoding="utf-8"))["state"] == "stable"
-    snapshot = box.root / "backups" / "tinyassets-snapshot-2026-10-13T00-00-00Z.tar.gz"
-    assert snapshot.is_file()
+    snapshots = list((box.root / "backups").glob("tinyassets-snapshot-*.tar.gz"))
+    assert len(snapshots) == 1
+    snapshot = snapshots[0]
     if candidate == "healthy":
         assert completed.returncode == 0, completed.stderr
         assert _result(completed) == "deployed"
@@ -2732,3 +2879,226 @@ def test_a_probe_refusal_names_the_rc_and_the_probe_output(box: Box):
         "PermissionError errno=13 path=/data/.broker/.runs.db"
     ) in reason
     assert "stop --time" not in box.docker_calls_text()
+    assert "agent_file_migration apply" not in box.docker_calls_text()
+    assert "start tinyassets-daemon" in box.docker_calls_text()
+
+
+def test_every_forward_deploy_proves_idle_and_snapshots_only_for_a_move(box: Box):
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    stdout = completed.stdout
+    assert "in-flight proof: idle" in stdout
+    assert stdout.index("in-flight proof: idle") < stdout.index("migration: asking")
+    assert "stopping tinyassets-daemon" not in stdout
+    assert "migration: nothing to move; inspected" in stdout
+    assert "box layout inspected: candidate=owner-split rc=10" in stdout
+    assert "stable owner-split census" in stdout
+    assert not list((box.root / "backups").glob("tinyassets-snapshot-*.tar.gz"))
+
+
+def test_an_in_flight_turn_refuses_before_any_stop(box: Box):
+    box.stage_bundle()
+    box.set_docker_state(turns_rc=10)
+    completed = box.run(NEW_IMAGE)
+    assert completed.returncode == 1, completed.stderr
+    assert _result(completed) == "migration_refused"
+    assert "check=turns_idle rc=10" in _migration_refusal(completed)
+    assert "stop --time" not in box.docker_calls_text()
+    assert not list((box.root / "backups").glob("*.tar.gz"))
+
+
+def test_a_backup_older_than_this_run_is_refused(box: Box):
+    _refusing_backup(
+        box,
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "name='tinyassets-snapshot-2020-01-01T00-00-00Z.tar.gz'\n"
+        "mkdir -p \"${BACKUP_SNAPSHOT_DIR}\"\n"
+        "python3 - \"${BACKUP_SNAPSHOT_DIR}\" \"$name\" <<'PY'\n"
+        "import hashlib, io, os, sys, tarfile\n"
+        "directory, name = sys.argv[1:]\n"
+        "path = os.path.join(directory, name)\n"
+        "payload = b'stale\\n'\n"
+        "with tarfile.open(path, 'w:gz') as archive:\n"
+        "    info = tarfile.TarInfo('inventory.txt')\n"
+        "    info.size = len(payload)\n"
+        "    archive.addfile(info, io.BytesIO(payload))\n"
+        "digest = hashlib.sha256(open(path, 'rb').read()).hexdigest()\n"
+        "open(path + '.sha256', 'w').write('%s  %s\\n' % (digest, name))\n"
+        "PY\n"
+        "echo \"SNAPSHOT id=${name} sha256=0 bytes=1 names=1\"\n",
+    )
+    box.set_docker_state(migration_pending=True)
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE)
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    reason = _migration_refusal(completed)
+    assert "check=backup_verify" in reason
+    assert "older than this run" in reason
+    stdout = completed.stdout
+    assert stdout.index("stopping tinyassets-daemon") < stdout.index("migration refused:")
+    assert "agent_file_migration apply" not in box.docker_calls_text()
+    assert "start tinyassets-daemon" in box.docker_calls_text()
+
+
+def test_unprovisioned_canary_warns_and_continues_when_the_deploy_does_not_move_data(box: Box):
+    """Missing canary config is a loud warning on a deploy that moves nothing."""
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE, CORE_CANARY_PROVISIONED="0")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert _result(completed) == "deployed"
+    assert "core canary is not provisioned" in completed.stdout
+    assert "::warning::core canary is not provisioned" in completed.stderr
+    calls = box.docker_calls_text()
+    assert "agent_file_migration apply" not in calls
+    assert "box_layout_migration apply" not in calls
+    assert "stable owner-split census" in completed.stdout
+
+
+def test_unprovisioned_canary_refuses_an_owner_box_candidate(box: Box):
+    """An owner-box candidate would move data, so a missing canary stops first."""
+    _volume, env = _cutover(box)
+    box.set_docker_state(
+        migration_pending=False,
+        active_box_layout={NEW_IMAGE: "owner-box"},
+        known_layouts={NEW_IMAGE: {"layouts": [1, 2],
+                                   "boxes": ["owner-split", "owner-box"]}},
+    )
+    env["CORE_CANARY_PROVISIONED"] = "0"
+    env["BOX_STORE_CHECK"] = "/bin/true"
+    before = box.live()
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE, **env)
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    assert _result(completed) == "migration_refused"
+    assert "check=core_canary_not_provisioned move=owner-box_candidate" in (
+        _migration_refusal(completed)
+    )
+    calls = box.docker_calls_text()
+    assert "stop --time" not in calls
+    assert "box_layout_migration apply" not in calls
+    assert "agent_file_migration apply" not in calls
+    assert box.live() == before
+
+
+def test_unprovisioned_canary_refuses_a_pending_migration(box: Box):
+    """Agent-files pending is a data move even when the candidate is owner-split."""
+    _volume, env = _cutover(box)
+    env["CORE_CANARY_PROVISIONED"] = "0"
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE, **env)
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    assert _result(completed) == "migration_refused"
+    assert "check=core_canary_not_provisioned move=agent_files_pending" in (
+        _migration_refusal(completed)
+    )
+    calls = box.docker_calls_text()
+    assert "agent_file_migration apply" not in calls
+    assert "box_layout_migration apply" not in calls
+    assert "start tinyassets-daemon" in calls
+
+
+def test_an_absent_layout_census_refuses_instead_of_skipping(box: Box):
+    """No marker is not 'nothing to move'. The census refuses the deploy."""
+    volume = box.root / "empty-volume"
+    volume.mkdir()
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE, FAKE_DOCKER_VOLUME_DIR=str(volume))
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    assert _result(completed) == "migration_refused"
+    reason = _migration_refusal(completed)
+    assert "check=box_layout_absent" in reason
+    assert "box_layout_migration apply" not in box.docker_calls_text()
+    assert "stable owner-split census" not in completed.stdout
+    assert "start tinyassets-daemon" in box.docker_calls_text()
+
+
+def test_an_ambiguous_layout_census_refuses_instead_of_skipping(box: Box):
+    """An unreadable census is a refusal, not a skip past the move."""
+    box.set_docker_state(box_census_rc=3)
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE)
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    assert _result(completed) == "migration_refused"
+    reason = _migration_refusal(completed)
+    assert "check=box_layout_ambiguous rc=3" in reason
+    assert "box_layout_migration apply" not in box.docker_calls_text()
+    assert "start tinyassets-daemon" in box.docker_calls_text()
+
+
+@pytest.mark.parametrize("gate,reason", [
+    ("canary", "check=core_canary_not_provisioned move=owner-box_candidate"),
+    ("in_flight", "check=turns_idle rc=10"),
+    ("backup", "check=backup_verify"),
+    ("census", "check=box_layout_probe rc=4"),
+])
+def test_flipping_active_box_layout_without_a_gate_refuses(box: Box, gate, reason):
+    """ACTIVE_BOX_LAYOUT=owner-box would move this owner-split volume on the next deploy.
+
+    The constant only selects the move step. That step refuses unless the fresh
+    verified backup, the in-flight probe, the census, and the canary all passed.
+    """
+    box.set_docker_state(active_box_layout={NEW_IMAGE: "owner-box"})
+    harness = box.root / "boxhostd"
+    harness.mkdir()
+    env = {
+        "BOX_HARNESS_ROOT": str(harness),
+        "BOX_STORE_CHECK": "/bin/true",
+    }
+    if gate == "canary":
+        env["CORE_CANARY_PROVISIONED"] = "0"
+    elif gate == "in_flight":
+        box.set_docker_state(turns_rc=10)
+    elif gate == "backup":
+        _refusing_backup(
+            box,
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "name='tinyassets-snapshot-2020-01-01T00-00-00Z.tar.gz'\n"
+            "mkdir -p \"${BACKUP_SNAPSHOT_DIR}\"\n"
+            "python3 - \"${BACKUP_SNAPSHOT_DIR}\" \"$name\" <<'PY'\n"
+            "import hashlib, io, os, sys, tarfile\n"
+            "directory, name = sys.argv[1:]\n"
+            "path = os.path.join(directory, name)\n"
+            "payload = b'stale\\n'\n"
+            "with tarfile.open(path, 'w:gz') as archive:\n"
+            "    info = tarfile.TarInfo('inventory.txt')\n"
+            "    info.size = len(payload)\n"
+            "    archive.addfile(info, io.BytesIO(payload))\n"
+            "digest = hashlib.sha256(open(path, 'rb').read()).hexdigest()\n"
+            "open(path + '.sha256', 'w').write('%s  %s\\n' % (digest, name))\n"
+            "PY\n"
+            "echo \"SNAPSHOT id=${name} sha256=0 bytes=1 names=1\"\n",
+        )
+    elif gate == "census":
+        box.set_docker_state(box_census_rc=4)
+    else:
+        raise AssertionError(gate)
+    before = box.live()
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE, **env)
+
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    assert _result(completed) == "migration_refused"
+    assert "candidate box layout: owner-box" in completed.stdout
+    refusal = _migration_refusal(completed)
+    assert reason in refusal
+    calls = box.docker_calls_text()
+    assert "box_layout_migration apply" not in calls
+    assert "agent_file_migration apply" not in calls
+    marker = json.loads(
+        (box.root / "default-data-volume" / ".layout.json").read_text(encoding="utf-8")
+    )
+    assert marker["box_layout"] == "owner-split"
+    assert marker["state"] == "stable"
+    assert box.live() == before
+    if gate == "backup":
+        assert "older than this run" in refusal
+        assert completed.stdout.index("stopping tinyassets-daemon") < completed.stdout.index(
+            "migration refused:"
+        )
+    else:
+        assert "stop --time" not in calls
+        assert "start tinyassets-daemon" in calls

@@ -148,6 +148,25 @@ then
     exit 2
 fi
 
+# Root host receipts are part of the data member. The pair is coherent only
+# while every owner-box service is excluded and no guest survived its host.
+if [[ -f "${VOLUME_DIR}/.layout.json" ]] && python3 - "${VOLUME_DIR}/.layout.json" <<'BOX_LAYOUT_PY'
+import json
+import sys
+sys.exit(0 if json.load(open(sys.argv[1])).get("box_layout") == "owner-box" else 1)
+BOX_LAYOUT_PY
+then
+    if [[ "${BACKUP_MODE:-}" != snapshot ]] || ! flock -n -x 9; then
+        log "ERROR: owner-box backup requires a quiesced paired snapshot with every writer stopped"
+        exit 2
+    fi
+    if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
+            --snapshot-data "${VOLUME_DIR}" --quiescent; then
+        log "ERROR: owner-box receipt/survivor census refused the snapshot"
+        exit 2
+    fi
+fi
+
 TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
 
 box_archive() {  # $1 = archive path; $2 = remote name
@@ -279,8 +298,9 @@ if missing or extra:
     raise SystemExit(1)
 print(len(expected))
 INVENTORY_PY
-)"; then
+    )"; then
         log "ERROR: snapshot does not match the restorable inventory"
+        rm -f -- "${SNAPSHOT_PATH}" "${SNAPSHOT_PATH}.sha256"
         exit 2
     fi
     sha="$(sha256sum "${SNAPSHOT_PATH}" | cut -d' ' -f1)"

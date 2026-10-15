@@ -406,7 +406,9 @@ def test_the_app_prefers_the_display_name_over_the_routing_identity():
     from pathlib import Path
 
     app = Path(__file__).resolve().parent.parent / "tinyassets" / "onboarding" / "app.html"
-    text = app.read_text(encoding="utf-8")
+    from tinyassets.onboarding.app_modules import shell_source
+
+    text = shell_source(app)
     assert "const display=executionLabel(receipt&&receipt.provider_display,200);" in text
     # The label is preferred, the routing identity is the fallback, and the model
     # is still named beside it.

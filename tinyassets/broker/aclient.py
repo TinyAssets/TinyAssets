@@ -177,7 +177,8 @@ class AsyncBrokerClient:
     @contextlib.asynccontextmanager
     async def stream(self, *, grant_id: str, connection_id: str, verb: str,
                      request: dict[str, Any], op_id: str,
-                     idle_s: float | None = None) -> AsyncIterator[_Stream]:
+                     idle_s: float | None = None,
+                     inference_usage: dict[str, Any] | None = None) -> AsyncIterator[_Stream]:
         from tinyassets.storage.outbound_connections import AmbiguousProxyOutcome
 
         refresh = (await asyncio.to_thread(self._refresh_factory, grant_id, connection_id)
@@ -194,6 +195,8 @@ class AsyncBrokerClient:
         }
         if idle_s is not None:
             document["idle_s"] = idle_s
+        if inference_usage is not None:
+            document["inference_usage"] = inference_usage
         if refresh is not None:
             document["refresh"] = True
         try:

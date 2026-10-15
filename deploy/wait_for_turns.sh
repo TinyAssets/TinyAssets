@@ -7,17 +7,17 @@
 # scripts/turns_in_flight.py on the droplet host against the daemon's data
 # volume (so it works whatever image is live) and asks whether anything is in
 # flight: seats a live process holds, or graph runs a live process owns. The
-# loop proceeds on
-#   idle                    nothing in flight
+# loop ends on
+#   idle                    nothing in flight; the deploy may continue (exit 0)
 #   daemon_not_serving      container absent, stopped or unhealthy: nothing to
-#                           protect, and the deploy may be its fix
-#   check_unavailable       three unanswerable polls in a row; "cannot tell" is
-#                           never read as idle, and never holds prod on an old image
+#                           protect, and the deploy may be its fix (exit 0)
+#   check_unavailable       three unanswerable polls in a row. "Cannot tell" is
+#                           never read as idle and is not a pass (exit 1)
 #   yield_to_host_mutation  a recovery workflow (YIELD_WORKFLOWS) is queued behind
-#                           this run's concurrency group; a P0 repair must not
-#                           wait out a 45 min turn, so the deploy goes now
-#   cap_reached             TURN_WAIT_CAP_S elapsed; the startup reconcile then
-#                           tells the user their turn was cut off
+#                           this run. Fail this deploy so the repair can run
+#                           without this swap cutting the turn (exit 1)
+#   cap_reached             TURN_WAIT_CAP_S elapsed with work still in flight.
+#                           Refuse the swap; do not cut the turn (exit 1)
 #
 # "idle" is a moment, not a promise: a turn can start between the last poll and
 # the swap, and the 20s drain bound then cuts it. IMAGE_REF is pulled BEFORE the
@@ -34,7 +34,8 @@
 # Env: DO_SSH_USER DO_DROPLET_HOST TURN_WAIT_CAP_S TURN_POLL_S GITHUB_OUTPUT;
 #      optional TARGET_REVISION RUN_URL IMAGE_REF CHECK_TIMEOUT_S DATA_VOLUME, and
 #      YIELD_WORKFLOWS with GH_TOKEN + GITHUB_REPOSITORY.
-# Writes outcome / waited_s / polls to GITHUB_OUTPUT. Always exits 0.
+# Writes outcome / waited_s / polls to GITHUB_OUTPUT. Exits 0 only for idle and
+# daemon_not_serving. Every other outcome fails the deploy before the swap.
 #
 # `set +e` on purpose: every poll's exit status is data (10 busy, 20 not
 # serving, 2 unknown), and the step's `bash -e` must not turn "busy" into a
@@ -84,27 +85,60 @@ if [ -n "${IMAGE_REF:-}" ]; then
   fi
 fi
 
-# The probe runs in a throwaway sibling container: the daemon's own image, the
-# daemon's uid, the data volume, no network. Never `docker exec` into the
+# The probe runs in a throwaway sibling container: the daemon's own image, as
+# root, the data volume mounted read-only, no network. Root is required because
+# /data/.broker is 1002:1101 mode 2700: the daemon uid's stat of
+# /data/.broker/.runs.db raises PermissionError and used to fail the whole
+# observation. The volume stays read-only and the probe copies sqlite into a
+# private temp dir, so this root process creates no -wal/-shm on the volume.
+# The pending marker is written on the host, against the volume's mountpoint,
+# because the read-only mount cannot hold it. Never `docker exec` into the
 # daemon (every repo exec into it goes through ta-op's closed mode table;
-# scripts/check_drop_first_exec.py). Not the host's python as root either: a
-# root sqlite open can create -wal/-shm files the daemon then cannot open, and
-# uid 1001 cannot walk /var/lib/docker to read the volume from the host. The
-# liveness locks are kernel flocks on the volume's inodes, so the sibling sees
-# the daemon's.
+# scripts/check_drop_first_exec.py). The liveness locks are kernel flocks on
+# the volume's inodes, taken on a read-only descriptor.
 #
 # $@ = the probe's arguments. All generated here (a sha, epochs, our own run
 # URL), never user text; printf %q keeps each one word anyway.
 check() {
-  local args
-  args="$(printf ' %q' "$@")"
+  local mark=0
+  local -a probe_args=()
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--mark-pending" ]; then
+      mark=1
+    else
+      probe_args+=("$1")
+    fi
+    shift
+  done
+  local args=""
+  if [ "${#probe_args[@]}" -gt 0 ]; then
+    args="$(printf ' %q' "${probe_args[@]}")"
+  fi
+  # --clear-pending removes the marker on the host. The read-only probe cannot.
+  if [ "$mark" = 0 ] && [ "${probe_args[0]:-}" = "--clear-pending" ]; then
+    remote "echo '${probe_sha}  ${remote_probe}' | sha256sum -c --status - || { echo 'probe checksum mismatch'; exit 2; }; \
+      vol=\$(sudo docker volume inspect -f '{{.Mountpoint}}' ${DATA_VOLUME}) || { echo 'volume mountpoint unreadable'; exit 2; }; \
+      python3 ${remote_probe} --clear-pending --data-dir \"\$vol\""
+    return
+  fi
+  local marker=""
+  if [ "$mark" = 1 ]; then
+    # The flag stays in this remote command: the host writes the marker from
+    # the probe's JSON. The container mount is read-only.
+    marker="vol=\$(sudo docker volume inspect -f '{{.Mountpoint}}' ${DATA_VOLUME}) || { echo 'volume mountpoint unreadable'; exit 2; }; \
+      printf '%s\n' \"\$probe_out\" | python3 ${remote_probe} --write-marker-from-report --mark-pending --data-dir \"\$vol\"${args} >/dev/null || echo '::warning::could not refresh the deploy-pending marker';"
+  fi
   remote "state=\$(sudo docker inspect -f '{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{end}}|{{.State.StartedAt}}|{{.Image}}' tinyassets-daemon 2>/dev/null); \
     case \"\${state%%|*}\" in running/healthy|running/) ;; *) echo \"daemon_state=\${state:-absent}\"; exit 20;; esac; \
     rest=\${state#*|}; image=\${rest#*|}; boot=\$(date -d \"\${rest%%|*}\" +%s 2>/dev/null) || boot=''; \
     echo '${probe_sha}  ${remote_probe}' | sha256sum -c --status - || { echo 'probe checksum mismatch'; exit 2; }; \
-    sudo docker run --rm -i --network none --memory 256m --user 1001:1001 \
-      -v ${DATA_VOLUME}:/data --entrypoint python \"\$image\" \
-      -I - --data-dir /data \${boot:+--boot-epoch \$boot}${args} < ${remote_probe}"
+    probe_out=\$(sudo docker run --rm -i --network none --memory 256m --user 0:0 --read-only --tmpfs /tmp \
+      -v ${DATA_VOLUME}:/data:ro --entrypoint python \"\$image\" \
+      -I - --data-dir /data \${boot:+--boot-epoch \$boot}${args} < ${remote_probe}); \
+    probe_rc=\$?; \
+    ${marker} \
+    printf '%s\n' \"\$probe_out\"; \
+    exit \$probe_rc"
 }
 
 # Is a host-mutating recovery run queued behind us? "Cannot tell" counts as no.
@@ -156,10 +190,26 @@ check --clear-pending >/dev/null 2>&1 || true
   echo "polls=${polls}"
 } >> "${GITHUB_OUTPUT}"
 case "${outcome}" in
-  idle) echo "::notice::no work in flight after ${waited}s" ;;
-  daemon_not_serving) echo "::notice::daemon not serving; nothing to protect" ;;
-  check_unavailable) echo "::warning::in-flight check unavailable; proceeding without proof that no turn is running" ;;
-  yield_to_host_mutation) echo "::warning::yielding to a queued recovery workflow; work in flight will be cut off by the restart" ;;
-  cap_reached) echo "::warning::work still in flight after the ${TURN_WAIT_CAP_S}s cap; proceeding, and the turn will be reported as cut off by the restart" ;;
+  idle)
+    echo "::notice::no work in flight after ${waited}s"
+    exit 0
+    ;;
+  daemon_not_serving)
+    echo "::notice::daemon not serving; nothing to protect"
+    exit 0
+    ;;
+  check_unavailable)
+    echo "::error::in-flight check unavailable; refusing to deploy without proof that no turn is running"
+    exit 1
+    ;;
+  yield_to_host_mutation)
+    echo "::error::yielding to a queued recovery workflow; refusing to cut off in-flight work"
+    exit 1
+    ;;
+  cap_reached)
+    echo "::error::work still in flight after the ${TURN_WAIT_CAP_S}s cap; refusing to cut the turn off"
+    exit 1
+    ;;
 esac
-exit 0
+echo "::error::in-flight check ended without an outcome"
+exit 1

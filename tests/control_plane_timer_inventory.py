@@ -37,6 +37,9 @@ CLASSES = frozenset({CONTROL_PLANE, CALL_SCOPED, DELETE, CLIENT, BOX})
 #: ``"<path>::<qualname>"`` -> (class, note). ``[Timer]``/``[call_later]`` mark a
 #: callback-scheduling site; ``#n`` is the n-th clock-driven site in one function.
 CLASSIFICATION: dict[str, tuple[str, str]] = {
+    "tinyassets/boxes/gvisor_files.py::GvisorFileBackend._wake": (
+        CALL_SCOPED, "host capacity FIFO waits only until this admitted request's deadline",
+    ),
     'tinyassets/browser_sessions.py::owner_action [Timer]': (
         CALL_SCOPED, 'One protected login capture expires and destroys its owner browser cell.'),
     "tinyassets/role_preview_cell.py::supervised": (
@@ -131,6 +134,15 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/role_tools.py::run": (
         CALL_SCOPED, "one TOOL cell is drained and reaped within its requested wall bound",
     ),
+    "tinyassets/boxes/host_service.py::_serve": (
+        CONTROL_PLANE,
+        "root box host reaps idle sandboxes; no owner task or inference scheduling",
+    ),
+    "tinyassets/boxes/production_files.py::ProductionFileProvider.stream": (
+        CALL_SCOPED,
+        "caller consumes one bounded host execution; ends at terminal receipt, "
+        "unknown outcome or caller deadline",
+    ),
     "tinyassets/boxes/boxd.py::BoxdCore._supervise": (
         CALL_SCOPED,
         "host-side thread for one exec; stops at leader exit, cancel, wall or "
@@ -187,6 +199,12 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/provider_admission.py::_acquire_waiting": (CALL_SCOPED, "slot wait"),
     "tinyassets/provider_admission.py::blocking_provider_child": (CALL_SCOPED, "slot wait"),
     "tinyassets/provider_admission.py::provider_slot_async": (CALL_SCOPED, "slot wait"),
+    "tinyassets/provider_assignment.py::ProviderAssignmentAdmission._async_admission": (
+        CALL_SCOPED, "task admission waits for readers/writer; cancellation removes its wait",
+    ),
+    "tinyassets/provider_assignment.py::ProviderAssignmentAdmission._async_admission#2": (
+        CALL_SCOPED, "nonblocking platform flock retry, owned by the awaiting admission task",
+    ),
     "tinyassets/provider_assignment.py::ProviderAssignmentAdmission.exclusive": (
         CALL_SCOPED, "admission wait",
     ),

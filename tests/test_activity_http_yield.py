@@ -4,7 +4,7 @@ import asyncio
 import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager, nullcontext
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -12,6 +12,7 @@ import pytest
 
 from tests import test_workflow_http_agent as workflow_tests
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.inference_usage_helpers import synthetic_stream
 from tests.test_run_provider_session import _branch, _run_branch
 from tinyassets import activity_runner, agent_activities, engine_mcp_server, shared_self
 from tinyassets.provider_assignment_manifest import ModelAccess
@@ -114,6 +115,13 @@ def test_http_activity_yield_stops_tools_and_inference_and_releases_claim(
 
         def close(self):
             self.proxy.close()
+
+        @asynccontextmanager
+        async def stream(self, verb, document, *, inference_usage=None, operation_id):
+            async with synthetic_stream(self, verb, document,
+                                        inference_usage=inference_usage,
+                                        operation_id=operation_id) as stream:
+                yield stream
 
         def request(self, verb, document, **kwargs):
             result = self.proxy.request(verb, document, **kwargs)

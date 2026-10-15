@@ -826,7 +826,7 @@ def test_a_file_that_cannot_be_imported_is_kept(tmp_path, monkeypatch):
     assert runnable == ["tests/test_broken.py"]
 
 
-def test_slow_only_files_are_dropped_before_the_digest():
+def test_slow_only_files_are_dropped_before_the_digest(tmp_path, monkeypatch):
     """Finding 3 from the #4359 review, fixed at the source.
 
     The required shards run `-m "not slow"`. A selected file whose tests are
@@ -834,11 +834,22 @@ def test_slow_only_files_are_dropped_before_the_digest():
     that reported no case. Neither is a regression -- `slow-tests` runs them --
     so the file leaves the selection before it is sharded or digested.
     """
-    runnable, dropped = gate.collectible_under_gate(
-        ["tests/test_node_bid_claim_stress.py", "tests/test_ci_required_tests.py"]
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_all_slow.py").write_text(
+        "import pytest\n\n@pytest.mark.slow\ndef test_slow_case():\n    assert True\n",
+        encoding="utf-8",
     )
-    assert dropped == ["tests/test_node_bid_claim_stress.py"], (runnable, dropped)
-    assert runnable == ["tests/test_ci_required_tests.py"]
+    (tests / "test_fast_case.py").write_text(
+        "def test_fast():\n    assert True\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gate, "REPO_ROOT", tmp_path)
+    runnable, dropped = gate.collectible_under_gate(
+        ["tests/test_all_slow.py", "tests/test_fast_case.py"]
+    )
+    assert dropped == ["tests/test_all_slow.py"], (runnable, dropped)
+    assert runnable == ["tests/test_fast_case.py"]
 
 
 def test_an_empty_selection_prunes_to_nothing_without_running_pytest():

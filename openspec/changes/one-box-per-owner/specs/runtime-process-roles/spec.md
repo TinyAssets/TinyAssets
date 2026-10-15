@@ -19,28 +19,39 @@ no configuration under which these roles share a uid.
   is set
 - **THEN** startup and every box operation behave identically to it being unset
 
-### Requirement: One forward-only migration, re-runnable after a crash
+## ADDED Requirements
+
+### Requirement: One owner-box migration with snapshot restore after interruption
 The box cutover SHALL convert the production volume once, with every writer stopped, after a
-verified full backup whose digest is checked. It SHALL refuse before any write when any of
-these holds: the volume lacks the `owner-split` marker, no backup id is given, the digest
-fails, or project quotas are unavailable on the data volume. It SHALL attach each owner's tree
-to that owner's box in place under the same UID, and SHALL move no owner byte. It SHALL copy
-rule and grant rows into the owner policy store, verified by count and digest. Each step SHALL
-converge to a computed target and change only fields that differ. The `owner-box` layout
-marker SHALL be written last. Rollback SHALL be restoring the previous image with its pinned
-runtime bundle, plus the backup once the old rule files are deleted. There SHALL be no reverse
-migration.
+verified full backup whose digest is checked.
+It SHALL copy admitted owner trees to the XFS box store under their permanent UID/GID,
+verify checksums, and write the `owner-box` layout marker last. A failure after the first
+write SHALL require restoring the verified snapshot with its paired runtime bundle.
+There SHALL be no automatic retry, reverse migration or previous-image fallback after commit.
 
-#### Scenario: A crash is fixed by running it again
+#### Scenario: A precondition fails
+- **WHEN** the volume lacks the `owner-split` marker, no backup id is given, the digest fails, or project quotas are unavailable on the box store
+- **THEN** the migration refuses before any write
+
+#### Scenario: An interrupted copy requires snapshot restore
 - **WHEN** the cutover is killed at any step and the same command is run again
-- **THEN** the final state equals an uninterrupted run
-- **AND** a further run changes nothing and `--check` reports zero diffs
+- **THEN** the migrating marker refuses startup and refuses reapplying the migration
+- **AND** the operator restores the verified paired snapshot before a fresh attempt
 
-#### Scenario: No owner bytes move
+#### Scenario: The verified copy preserves owner bytes
 - **WHEN** the cutover completes
-- **THEN** every owner file has the same path, inode content hash and UID as before
+- **THEN** every copied file has the same content checksum under its owner's permanent UID
+- **AND** the old trees remain until the post-cutover backup and restore test pass
+
+#### Scenario: A cross-owner inode stops the migration before any write
+- **WHEN** the preflight finds an inode named in two owner trees
+- **THEN** the migration exits non-zero, naming both paths, and the volume is unchanged
 
 ## REMOVED Requirements
+
+### Requirement: One forward-only migration, re-runnable after a crash
+**Reason**: The owner-split conversion is complete. The owner-box copy is one all-or-nothing maintenance-window move (ADR-022).
+**Migration**: Replaced by "One owner-box migration with snapshot restore after interruption"; a partial copy restores the verified snapshot rather than resuming.
 
 ### Requirement: Startup is a capability-retiring bootstrap that never migrates
 **Reason**: The daemon container starts unprivileged; box creation privilege belongs to the box host (one-box-per-owner P6).

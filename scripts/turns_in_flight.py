@@ -8,14 +8,17 @@ waits while it answers "busy" (``.github/workflows/deploy-prod.yml``, step
 
 **It runs in a throwaway sibling container, never in the daemon's.** The
 workflow ships this file from the checkout and pipes it to ``docker run --rm -i
---network none --user 1001:1001 -v tinyassets-data:/data --entrypoint python
-<the daemon's image> -``. That reads the same volume as the daemon's own uid.
-It does not ``docker exec``, because every repo-authored exec into the daemon goes
-through ``ta-op``'s closed mode table (``scripts/check_drop_first_exec.py``). It
-does not use the host's python as root either: a root sqlite open can create
-``-wal``/``-shm`` files the daemon then cannot open. The liveness locks below are
-kernel ``flock``s on the volume's inodes, so the sibling sees the daemon's. Because
-the image may predate any helper this repo has now, the probe imports nothing from
+--network none --user 0:0 --read-only -v tinyassets-data:/data:ro --entrypoint
+python <the daemon's image> -``. Root is required because ``/data/.broker`` is
+``1002:1101`` mode ``2700``: the daemon uid cannot stat ``/data/.broker/.runs.db``,
+and that ``PermissionError`` used to fail the whole observation. The volume is
+read-only and sqlite is opened on a private copy, so this root process cannot
+create ``-wal``/``-shm`` files the daemon then cannot open. It does not
+``docker exec``, because every repo-authored exec into the daemon goes through
+``ta-op``'s closed mode table (``scripts/check_drop_first_exec.py``). The
+liveness locks below are kernel ``flock``s on the volume's inodes, taken on a
+read-only descriptor so the read-only mount still works. Because the image may
+predate any helper this repo has now, the probe imports nothing from
 ``tinyassets`` and uses the standard library only (Python 3.11+).
 
 What counts as in flight
@@ -56,8 +59,10 @@ reading "update pending" forever. ``--clear-pending`` removes it.
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -84,15 +89,32 @@ ALIVE, DEAD, UNKNOWN_OWNER = "alive", "dead", "unknown"
 IDLE, BUSY, UNKNOWN = 0, 10, 2
 
 
-def _connect(path: Path) -> sqlite3.Connection:
-    """Open an EXISTING database without creating anything.
+def _copy_readonly(source: Path, target: Path) -> None:
+    """Copy ``source`` without creating anything beside it."""
+    with source.open("rb") as src, target.open("xb") as dst:
+        shutil.copyfileobj(src, dst)
 
-    ``mode=rw`` refuses to create a missing file and this runs no DDL. Not
-    ``mode=ro``: a WAL database whose ``-shm`` is missing cannot be opened
-    read-only, which is the state a freshly restarted box is in.
+
+def _connect(path: Path) -> sqlite3.Connection:
+    """Open a private copy of an existing database.
+
+    The probe runs as root on a read-only mount so it can see broker-owned
+    stores. A root ``mode=rw`` open of the volume file can create ``-wal`` and
+    ``-shm`` sidecars the daemon cannot open, and ``mode=ro`` on a WAL database
+    whose ``-shm`` is missing fails. Copy the database and any sidecars into a
+    temp directory and open that copy read-only. Nothing is created next to
+    ``path``.
     """
+    directory = Path(tempfile.mkdtemp(prefix="turns-ro-"))
+    atexit.register(shutil.rmtree, directory, True)
+    target = directory / path.name
+    _copy_readonly(path, target)
+    for suffix in ("-wal", "-shm"):
+        side = Path(str(path) + suffix)
+        if side.is_file():
+            _copy_readonly(side, directory / (path.name + suffix))
     conn = sqlite3.connect(
-        path.resolve().as_uri() + "?mode=rw", uri=True, timeout=10.0, isolation_level=None,
+        target.resolve().as_uri() + "?mode=ro", uri=True, timeout=10.0, isolation_level=None,
     )
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 10000")
@@ -139,7 +161,8 @@ def owner_state(base: Path, token: object) -> str:
     if not path.is_file():
         return UNKNOWN_OWNER
     try:
-        fd = os.open(str(path), os.O_RDWR)
+        # Read-only: the volume is mounted ro, and LOCK_EX works on that descriptor.
+        fd = os.open(str(path), os.O_RDONLY)
     except OSError:
         return UNKNOWN_OWNER
     try:
@@ -340,6 +363,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="also write the deploy-pending marker")
     parser.add_argument("--clear-pending", action="store_true",
                         help="remove the deploy-pending marker and exit")
+    parser.add_argument("--write-marker-from-report", action="store_true",
+                        help="write the pending marker from a JSON report on stdin; "
+                             "opens no database")
     parser.add_argument("--target", default="", help="revision the deploy is waiting to ship")
     parser.add_argument("--waiting-since", type=float, default=0.0,
                         help="epoch seconds the deploy started waiting")
@@ -352,6 +378,22 @@ def main(argv: list[str] | None = None) -> int:
                         help="epoch seconds the daemon container started")
     args = parser.parse_args(argv)
     data_dir = Path(args.data_dir)
+
+    if args.write_marker_from_report:
+        report = json.loads(sys.stdin.read() or "{}")
+        now = float(report.get("observed_at") or time.time())
+        write_marker(data_dir, {
+            "pending": True,
+            "target": args.target,
+            "waiting_since": _iso(args.waiting_since or now),
+            "deadline": _iso(args.deadline) if args.deadline else "",
+            "in_flight": report.get("in_flight"),
+            "observed_at": _iso(now),
+            "expires_at": _iso(now + max(args.ttl, 1.0)),
+            "run_url": args.run_url,
+        })
+        print(json.dumps({"marked": True}))
+        return IDLE
 
     if args.clear_pending:
         removed = clear_marker(data_dir)
