@@ -523,13 +523,15 @@ jobs:
       - name: Prune daemon images and require pull headroom
         id: disk_prepare
         timeout-minutes: 5
+        env:
+          IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
         run: |
           set -euo pipefail
           helper="/tmp/daemon-image-retention-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.py"
           scp -i ~/.ssh/do_deploy -o BatchMode=yes scripts/daemon_image_retention.py \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:${helper}"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo systemd-run --quiet --wait --pipe --collect -p EnvironmentFile=/etc/tinyassets/env /usr/bin/python3 ${helper} --apply --prepare-pull"
+              "sudo systemd-run --quiet --wait --pipe --collect -p EnvironmentFile=/etc/tinyassets/env /usr/bin/python3 ${helper} --apply --prepare-pull --image-ref '${IMAGE_REF}'"
           echo "helper=${helper}" >> "$GITHUB_OUTPUT"
 
       - name: Wait for in-flight turns
