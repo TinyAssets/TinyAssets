@@ -266,6 +266,10 @@ def reconcile_orphaned_turns(base_path: str | Path, *, owner_id: str | None = No
             "universe_id": universe, "turn_id": turn_id, "was": state,
         }
         try:
+            journal.adopt_orphan(
+                owner, universe, turn_id,
+                owner_generation=generation, runner_token=token,
+            )
             turn = _settle(journal, owner, universe, turn_id)
             record["settled"] = "" if turn is None else turn.state
             record["notified"] = turn is not None and _notify(
