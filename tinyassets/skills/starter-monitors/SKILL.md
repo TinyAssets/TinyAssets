@@ -24,8 +24,11 @@ actual connection capability, source and predicate; never insert secrets. Each
 successful observation updates matched, observed_at, a stable change_id from
 the source (not the check time), and a concise evidence-based summary. A match
 notifies only for a new change_id. A nonmatch does not erase the notified ID.
-Only update observed_at after a successful fetch. The runner refuses stale
-matches older than an hour; call it immediately after updating an observation.
+Only update observed_at after a successful fetch. Every active, requested watch
+needs a boolean matched value and a fresh observation, including nonmatches and
+already-notified changes. The runner refuses observations older than an hour or
+in the future; call it immediately after updating all observations. An invalid
+watch fails the whole check before notifying or acknowledging any changes.
 
 For a reminder, use the supplied reminder workflow and a reasonable interval
 appropriate to the requested precision (default 300 seconds). It delivers once
