@@ -436,6 +436,35 @@ def test_canary_patches_are_recorded_and_other_owners_keep_production(
     assert landed[0]["receiver_id"] == production["receiver_id"]
 
 
+def test_existing_runtime_directory_keeps_its_mode(root):
+    runtime = root / ".runtime"
+    runtime.mkdir()
+    runtime.chmod(0o710)
+    record = _install(root)
+    stored = runtime / "core-canary.json"
+    text = stored.read_text(encoding="utf-8")
+    assert stored.stat().st_mode & 0o777 == 0o600
+    assert runtime.stat().st_mode & 0o777 == 0o710
+    assert record["hmac_key"] in text
+    assert "pw-canary" not in text
+
+
+def test_a_linked_or_empty_record_is_unreadable(root, tmp_path):
+    runtime = root / ".runtime"
+    runtime.mkdir(mode=0o700)
+    record = runtime / "core-canary.json"
+    record.write_bytes(b"")
+    with pytest.raises(CoreCanaryRecordError, match="core canary record is unreadable"):
+        load_record(root)
+    record.unlink()
+    other = tmp_path / "elsewhere.json"
+    other.write_text("{}", encoding="utf-8")
+    record.symlink_to(other)
+    with pytest.raises(CoreCanaryRecordError, match="core canary record is unreadable"):
+        load_record(root)
+    assert other.read_text(encoding="utf-8") == "{}"
+
+
 def test_corrupt_record_does_not_fall_through_to_production(
     root,
     monkeypatch,

@@ -364,6 +364,23 @@ def test_append_and_exclusive_refuse_a_linked_file(data):
     assert (data / "u-bravo" / "founder.md").read_text(encoding="utf-8") == FOREIGN + "\n"
 
 
+def test_a_private_write_sets_the_file_mode_and_leaves_an_existing_directory(data):
+    parent = data / ".runtime"
+    parent.mkdir()
+    parent.chmod(0o710)
+    path = parent / "core-canary.json"
+    write_data_path(path, b"secret", permissions=0o600, directory_mode=0o700)
+    assert path.read_bytes() == b"secret"
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert parent.stat().st_mode & 0o777 == 0o710
+    fresh = data / ".fresh-runtime" / "note"
+    write_data_path(fresh, b"x", permissions=0o600, directory_mode=0o700)
+    assert fresh.read_bytes() == b"x"
+    assert fresh.stat().st_mode & 0o777 == 0o600
+    assert fresh.parent.stat().st_mode & 0o777 == 0o700
+    assert [p.name for p in fresh.parent.iterdir()] == ["note"]
+
+
 def test_a_failed_write_leaves_no_temp_file(data, monkeypatch):
     if not getattr(universe_files.fs, "_POSIX", False):
         pytest.skip("the descriptor write path is POSIX")

@@ -242,24 +242,63 @@ def _refuse_unadmitted_root(root: Path, current: int, part: str) -> None:
             f"{part!r}: a command-center root is created only by admission")
 
 
-def _parent_dir_fd(root: Path, parts: list[str], *, create: bool) -> int:
+def _optional_mode(value: int | None, label: str) -> int | None:
+    """A Unix permission bitfield, or ``None`` when the caller left the default."""
+    if value is None:
+        return None
+    if type(value) is not int or value < 0 or value > 0o777:
+        raise ValueError(f"{label} must be an int from 0 to 0o777")
+    return value
+
+
+def _fchmod(fd: int, permissions: int | None) -> None:
+    """Set an exact mode on an open file, ignoring umask. ``None`` leaves it."""
+    if permissions is None:
+        return
+    fchmod = getattr(os, "fchmod", None)
+    if fchmod is None:
+        raise UniverseFileError("exact file modes need fchmod")
+    fchmod(fd, permissions)
+
+
+def _parent_dir_fd(
+    root: Path,
+    parts: list[str],
+    *,
+    create: bool,
+    directory_mode: int | None = None,
+) -> int:
     """POSIX: a descriptor for the directory holding ``parts[-1]``, every
-    component opened (and, with ``create``, made) with no link followed."""
+    component opened (and, with ``create``, made) with no link followed.
+
+    ``directory_mode`` is applied only to a directory this call creates, and
+    with ``fchmod`` so umask cannot widen it. An existing directory is opened
+    and left at its current mode.
+    """
     current = fs.open_dir_nofollow(root.resolve(strict=False))
     try:
         for index, part in enumerate(parts[:-1]):
             _check_component(part)
+            created = False
             if create:
                 if index == 0:
                     _refuse_unadmitted_root(root, current, part)
                 try:
-                    os.mkdir(part, 0o777, dir_fd=current)
+                    os.mkdir(
+                        part,
+                        0o777 if directory_mode is None else directory_mode,
+                        dir_fd=current,
+                    )
                     os.fsync(current)
+                    created = True
                 except FileExistsError:
                     pass
             child = fs.open_subdir_nofollow(current, part)
             os.close(current)
             current = child
+            if created and directory_mode is not None:
+                os.fchmod(current, directory_mode)
+                os.fsync(current)
     except BaseException:
         os.close(current)
         raise
@@ -273,11 +312,21 @@ def _split(relpath: str) -> list[str]:
     return parts
 
 
-def _windows_parent(root: Path, parts: list[str], *, create: bool) -> Path:
+def _windows_parent(
+    root: Path,
+    parts: list[str],
+    *,
+    create: bool,
+    directory_mode: int | None = None,
+) -> Path:
     """Non-POSIX: the parent of ``parts[-1]``, each component checked to be no
     link BEFORE anything is created inside it. Check-then-use: this host is
-    the single-tenant tray, so the cross-universe guarantee is POSIX-only."""
+    the single-tenant tray, so the cross-universe guarantee is POSIX-only.
+
+    ``directory_mode`` applies only to a directory this call creates.
+    """
     parent = root
+    mode = 0o777 if directory_mode is None else directory_mode
     for part in parts[:-1]:
         parent = parent / part
         try:
@@ -285,7 +334,9 @@ def _windows_parent(root: Path, parts: list[str], *, create: bool) -> Path:
         except FileNotFoundError:
             if not create:
                 raise
-            parent.mkdir()
+            parent.mkdir(mode=mode)
+            if directory_mode is not None:
+                parent.chmod(directory_mode)  # noqa: PTH101 - exact mode, umask ignored
             continue
         if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
             raise UniverseFileError(f"{part!r} is a link; universe files are written link-free")
@@ -299,6 +350,8 @@ def write_universe_file(
     *,
     make_parents: bool = True,
     mode: str = "replace",
+    permissions: int | None = None,
+    directory_mode: int | None = None,
 ) -> None:
     """Write ``universe_dir/relpath`` with no link followed. The one writer.
 
@@ -313,9 +366,18 @@ def write_universe_file(
     * ``"exclusive"``: create the name ``O_CREAT|O_EXCL|O_NOFOLLOW``;
       ``FileExistsError`` if anything (a link included) is already there.
     * ``"append"``: open ``O_APPEND|O_CREAT|O_NOFOLLOW``; a link refuses.
+
+    ``permissions``, when set, is ``fchmod``'d on the open file before any
+    byte is written, so the published name appears at that mode and umask
+    cannot widen it. ``directory_mode``, when set, is the mode of directories
+    this call creates; an existing directory is not chmod'd. Owner-content
+    publication ignores neither: it refuses both, because that publisher
+    chooses the owner cell's mode itself.
     """
     if mode not in ("replace", "exclusive", "append"):
         raise ValueError(f"unknown write mode {mode!r}")
+    permissions = _optional_mode(permissions, "file mode")
+    directory_mode = _optional_mode(directory_mode, "directory mode")
     root = Path(universe_dir)
     parts = _split(relpath)
     name = parts[-1]
@@ -324,11 +386,18 @@ def write_universe_file(
 
         selected = role_content.locate(root, parts)
         if selected is not None:
+            if permissions is not None or directory_mode is not None:
+                raise ValueError(
+                    "owner-content publication does not accept daemon file or directory modes"
+                )
             role_content.write(*selected, data, make_parents=make_parents, mode=mode)
             return
     nofollow = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    create_mode = 0o666 if permissions is None else permissions
     if not getattr(fs, "_POSIX", False):
-        parent = _windows_parent(root, parts, create=make_parents)
+        parent = _windows_parent(
+            root, parts, create=make_parents, directory_mode=directory_mode,
+        )
         target = parent / name
         if mode != "replace":
             if mode == "exclusive" and os.path.lexists(target):
@@ -337,6 +406,7 @@ def write_universe_file(
             if os.path.islink(target):
                 raise UniverseFileError(f"{relpath!r} is a link; nothing was written")
             with open(target, "xb" if mode == "exclusive" else "ab") as handle:  # noqa: PTH123
+                _fchmod(handle.fileno(), permissions)
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -344,19 +414,22 @@ def write_universe_file(
         temp = parent / f".{name}.{uuid.uuid4().hex[:12]}.tmp"
         try:
             with open(temp, "xb") as handle:  # noqa: PTH123 - parent link-checked above
+                _fchmod(handle.fileno(), permissions)
                 handle.write(data)
             os.replace(temp, target)
         except BaseException:
             temp.unlink(missing_ok=True)
             raise
         return
-    dir_fd = _parent_dir_fd(root, parts, create=make_parents)
+    dir_fd = _parent_dir_fd(
+        root, parts, create=make_parents, directory_mode=directory_mode,
+    )
     try:
         if mode != "replace":
             flags = os.O_WRONLY | os.O_CREAT | nofollow
             flags |= os.O_EXCL if mode == "exclusive" else os.O_APPEND
             try:
-                fd = os.open(name, flags, 0o666, dir_fd=dir_fd)
+                fd = os.open(name, flags, create_mode, dir_fd=dir_fd)
             except OSError as exc:
                 if exc.errno == errno.ELOOP:
                     raise UniverseFileError(
@@ -364,6 +437,7 @@ def write_universe_file(
                     ) from exc
                 raise
             try:
+                _fchmod(fd, permissions)
                 _write_all(fd, data)
                 os.fsync(fd)
             finally:
@@ -371,9 +445,12 @@ def write_universe_file(
             os.fsync(dir_fd)
             return
         tmp = f".{name}.{uuid.uuid4().hex[:12]}.tmp"
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow, 0o666, dir_fd=dir_fd)
+        fd = os.open(
+            tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow, create_mode, dir_fd=dir_fd,
+        )
         try:
             try:
+                _fchmod(fd, permissions)
                 _write_all(fd, data)
                 os.fsync(fd)
             finally:
@@ -652,30 +729,54 @@ def write_data_path(
     *,
     make_parents: bool = True,
     mode: str = "replace",
+    permissions: int | None = None,
+    directory_mode: int | None = None,
 ) -> None:
     """Write a daemon file by absolute path, never through a link.
 
     Under the data dir this is :func:`write_universe_file` from the data root
     (no link at any component; ``mode`` replace / exclusive / append). Outside
     it -- a path in no universe -- the same modes on a plain path.
+
+    ``permissions`` and ``directory_mode`` match :func:`write_universe_file`:
+    an exact file mode applied before the bytes are written, and a create-only
+    directory mode. An existing directory is not chmod'd.
     """
+    permissions = _optional_mode(permissions, "file mode")
+    directory_mode = _optional_mode(directory_mode, "directory mode")
     payload = data.encode("utf-8") if isinstance(data, str) else bytes(data)
     located = _data_relative(Path(path))
     if located is not None:
         write_universe_file(
-            located[0], located[1], payload, make_parents=make_parents, mode=mode,
+            located[0],
+            located[1],
+            payload,
+            make_parents=make_parents,
+            mode=mode,
+            permissions=permissions,
+            directory_mode=directory_mode,
         )
         return
     target = Path(path)
     if make_parents:
-        target.parent.mkdir(parents=True, exist_ok=True)
+        parent = target.parent
+        creating = not parent.exists()
+        parent.mkdir(
+            parents=True,
+            exist_ok=True,
+            mode=0o777 if directory_mode is None else directory_mode,
+        )
+        if creating and directory_mode is not None:
+            parent.chmod(directory_mode)  # noqa: PTH101 - exact mode, umask ignored
     if mode != "replace":
         with open(target, "xb" if mode == "exclusive" else "ab") as handle:  # noqa: PTH123
+            _fchmod(handle.fileno(), permissions)
             handle.write(payload)
         return
     temp = target.with_name(f".{target.name}.{uuid.uuid4().hex[:12]}.tmp")
     try:
         with open(temp, "xb") as handle:  # noqa: PTH123 - outside every universe
+            _fchmod(handle.fileno(), permissions)
             handle.write(payload)
         os.replace(temp, target)
     except BaseException:

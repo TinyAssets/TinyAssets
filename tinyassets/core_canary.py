@@ -28,7 +28,6 @@ import logging
 import os
 import secrets
 import sys
-import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -100,28 +99,19 @@ def load_record(base: str | Path) -> dict[str, Any] | None:
     A present file that is unreadable, swapped for a symlink, or incomplete
     raises :class:`CoreCanaryRecordError`. The message is exactly
     ``core canary record is unreadable`` — JSON errors are not chained, because
-    their text can contain the file.
+    their text can contain the file. The read goes through
+    :func:`tinyassets.universe_files.read_data_path`, so a link on any
+    component is a refusal, not an absent file.
     """
-    path = _record_path(base)
-    if path.is_symlink():
-        raise CoreCanaryRecordError("core canary record is unreadable")
-    flags = os.O_RDONLY
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    from tinyassets.universe_files import read_data_path
+
     try:
-        fd = os.open(path, flags)
-    except FileNotFoundError:
-        return None
+        raw = read_data_path(_record_path(base), max_bytes=_MAX_RECORD_BYTES)
     except OSError:
         raise CoreCanaryRecordError("core canary record is unreadable") from None
-    try:
-        info = os.fstat(fd)
-        if not info.st_size or info.st_size > _MAX_RECORD_BYTES:
-            raise CoreCanaryRecordError("core canary record is unreadable")
-        raw = os.read(fd, info.st_size + 1)
-    finally:
-        os.close(fd)
-    if len(raw) > _MAX_RECORD_BYTES:
+    if raw is None:
+        return None
+    if not raw or len(raw) > _MAX_RECORD_BYTES:
         raise CoreCanaryRecordError("core canary record is unreadable")
     try:
         document = json.loads(raw)
@@ -143,29 +133,25 @@ def load_record(base: str | Path) -> dict[str, Any] | None:
 
 
 def _write_record(base: Path, record: dict[str, Any]) -> None:
-    directory = Path(base) / ".runtime"
-    if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
-        raise CoreCanaryProvisionError("core canary record could not be stored")
-    # Shared with owner sessions. Do not tighten an existing directory: the
-    # broker group is granted traverse on it. The record file itself is 0600.
-    directory.mkdir(mode=0o700, exist_ok=True)
+    """Publish the record atomically at mode 0600.
+
+    ``.runtime`` is created at 0700 only when it is missing. An existing
+    directory is left alone: owner sessions grant the broker group traverse
+    on it. The write, and the temp-file unlink if it fails, go through
+    :func:`tinyassets.universe_files.write_data_path`.
+    """
+    from tinyassets.universe_files import write_data_path
+
     payload = json.dumps(record, indent=2, sort_keys=True) + "\n"
-    fd, tmp_name = tempfile.mkstemp(dir=directory, prefix=".core-canary.", suffix=".tmp")
-    tmp = Path(tmp_name)
     try:
-        os.write(fd, payload.encode("utf-8"))
-        os.fchmod(fd, 0o600)
-        os.close(fd)
-        fd = -1
-        os.replace(tmp, _record_path(base))
-        os.chmod(_record_path(base), 0o600)
+        write_data_path(
+            _record_path(base),
+            payload,
+            permissions=0o600,
+            directory_mode=0o700,
+        )
     except OSError:
         raise CoreCanaryProvisionError("core canary record could not be stored") from None
-    finally:
-        if fd >= 0:
-            os.close(fd)
-        if tmp.exists():
-            tmp.unlink()
 
 
 def offered_intake(universe_id: str) -> dict[str, str] | None:
@@ -523,22 +509,14 @@ def _bearer_matches(presented: str, stored: str | None) -> bool:
 
 
 async def _read_body(request) -> bytes | None:
-    """The body, or ``None`` when it is over the cap."""
-    declared = request.headers.get("content-length")
-    if declared is not None:
-        try:
-            if int(declared) > _MAX_BODY_BYTES:
-                return None
-        except ValueError:
-            pass
-    chunks: list[bytes] = []
-    total = 0
-    async for chunk in request.stream():
-        total += len(chunk)
-        if total > _MAX_BODY_BYTES:
-            return None
-        chunks.append(chunk)
-    return b"".join(chunks)
+    """The body, or ``None`` when it is over the cap.
+
+    This is the reviewed bounded reader. A declared length that is not a
+    short ASCII integer is refused, the same as a body over the cap.
+    """
+    from tinyassets.onboarding import _read_bounded_body
+
+    return await _read_bounded_body(request, _MAX_BODY_BYTES)
 
 
 async def _decide(request) -> tuple[int, dict[str, str]]:
