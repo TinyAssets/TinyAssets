@@ -222,8 +222,8 @@ console.log(JSON.stringify({quota:quota.children.map(c=>c.className),
 def test_every_live_and_history_failure_path_passes_the_record():
     html, _ = render_app_html()
     assert "error.failure=recorded?failure:null;" in html
-    assert ",err.failureCode,err.failure);" in html
-    assert ",error.failureCode,error.failure);" in html
+    assert ("appendFailureNotice(err.message,{speaker:\"founder\",text:message,display,"
+            "truncated:false},undefined,err.failureCode,err.failure);") in html
     assert "observed.turn_failure.code,\n                  observed.turn_failure);" in html
     assert "index===ordered.length-1?t.failure:null" in html
 
