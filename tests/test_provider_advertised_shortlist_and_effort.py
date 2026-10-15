@@ -111,6 +111,9 @@ def warm_shortlist(native):  # noqa: F811
     """
     from tinyassets.providers.shortlist_refresh import SHORTLIST_CACHE
 
+    # Serving setup may have queued a refresh from its initial fixture executor.
+    # Finish that read before replacing its discovery result in this test.
+    SHORTLIST_CACHE.shutdown(wait=True)
     SHORTLIST_CACHE.refresh_now(
         base=native.base, owner="owner-1",
         universe_id=native.universe.name, provider="codex",

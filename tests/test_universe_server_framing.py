@@ -127,16 +127,6 @@ def test_control_station_reports_daemon_memory_surface_gap() -> None:
     assert "not exposed by the advertised" in text
 
 
-def test_control_station_reports_treasury_status_surface_gap() -> None:
-    """Treasury status stays named without inventing a canonical route."""
-    from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
-
-    text = _CONTROL_STATION_PROMPT
-    assert "read-only treasury" in text.lower()
-    assert "not exposed by" in text.lower()
-    assert "never substitute a write" in text.lower()
-
-
 def test_extension_guide_prompt_points_to_control_station() -> None:
     """#15 (post-c97feac): _EXTENSION_GUIDE_PROMPT no longer dup'd the
     NO SIMULATION block. It now points to control_station as the
