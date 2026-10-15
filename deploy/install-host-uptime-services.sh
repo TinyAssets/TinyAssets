@@ -47,6 +47,9 @@ UNIT_FILES=(
 RUNTIME_FILES=(
     deploy/daemon-watchdog.sh
     deploy/backup.sh
+    deploy/backup-owner-box.sh
+    deploy/backup-live-sqlite.py
+    deploy/backup-pair.py
     deploy/box-store-check.sh
     deploy/box-store-archive.py
     deploy/box-store-quotas.py

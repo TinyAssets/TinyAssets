@@ -149,11 +149,7 @@ def _binding(parent: Parent) -> SessionBinding | None:
         return binding
     provider, limits = configured_box_provider()
     if provider is None:
-        from tinyassets.storage_layout import ACTIVE_BOX_LAYOUT
-
-        if ACTIVE_BOX_LAYOUT == "owner-box":
-            raise BoxAuthError("owner-box session provider is not configured")
-        return None  # Existing pre-cutover layout; never an owner-box fallback.
+        raise BoxAuthError("owner-box session provider is not configured")
     if isinstance(parent, ChildOf):
         raise BoxAuthError("a child requires its parent's admitted box binding")
     if isinstance(parent, OwnerTurn):

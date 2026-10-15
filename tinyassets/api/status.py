@@ -1428,13 +1428,12 @@ def get_status(
     except Exception:  # noqa: BLE001 — best-effort observability
         pass
 
-    # sandbox_status: probe bwrap availability once per process (cached).
-    # Never raises — a probe error shows as bwrap_available=False with reason.
+    # sandbox_status: whether this process serves owner boxes. Never raises.
     try:
         from tinyassets.providers.base import get_sandbox_status
         sandbox_status = get_sandbox_status()
     except Exception as exc:  # noqa: BLE001 — best-effort observability
-        sandbox_status = {"bwrap_available": False, "reason": f"probe_error: {exc}"}
+        sandbox_status = {"box_available": False, "reason": f"probe_error: {exc}"}
 
     # BUG-027 — probe required static data files so operators can see which
     # files are absent in the cloud image without waiting for ASP to fail.

@@ -3,12 +3,12 @@ import tokenize
 
 import pytest
 
+from tinyassets.boxes.node import NodeSandbox
 from tinyassets.graph_compiler import (
     _source_without_literals,
     dangerous_source_patterns,
     source_code_problems,
 )
-from tinyassets.node_sandbox import NodeSandbox
 
 
 def test_wrapper_keeps_its_narrower_policy():
@@ -50,7 +50,8 @@ def test_fstring_expression_matches_the_interpreters_token_boundaries():
 
 
 def test_legacy_compile_value_error_is_reported(monkeypatch):
-    from tinyassets import graph_compiler, node_sandbox
+    from tinyassets import graph_compiler
+    from tinyassets.boxes import node as node_sandbox
 
     def null_byte_compile(*args, **kwargs):
         raise ValueError("source code cannot contain null bytes")
@@ -66,7 +67,8 @@ def test_legacy_compile_value_error_is_reported(monkeypatch):
 
 
 def test_compiler_exhaustion_returns_diagnostics(monkeypatch):
-    from tinyassets import graph_compiler, node_sandbox
+    from tinyassets import graph_compiler
+    from tinyassets.boxes import node as node_sandbox
 
     def exhausted(*args, **kwargs):
         raise RecursionError("too deeply nested")

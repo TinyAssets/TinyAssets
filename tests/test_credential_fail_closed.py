@@ -260,6 +260,8 @@ def test_malformed_real_vault_failure_is_sanitized_without_artifact_creation(
 ):
     universe = tmp_path / "u-malformed-vault"
     universe.mkdir()
+    # The vault lives in platform custody beside the center, never in its box.
+    credential_vault_path(universe).parent.mkdir(parents=True)
     credential_vault_path(universe).write_text(
         '{"credentials": [not-json]}',
         encoding="utf-8",
@@ -361,10 +363,11 @@ def test_explicit_universe_overrides_environment_bound_universe(
 
     env = subprocess_env_for_provider("claude-code", universe_dir=universe_b)
 
+    # A relative config dir resolves inside the center's platform custody.
     assert Path(env["CLAUDE_CONFIG_DIR"]).resolve() == (
-        universe_b / "auth-b"
+        credential_vault_path(universe_b).parent / "auth-b"
     ).resolve()
-    assert not (universe_a / "auth-a").exists()
+    assert not (credential_vault_path(universe_a).parent / "auth-a").exists()
 
 
 def test_host_api_provider_opt_in_does_not_leak_into_universe_cli(

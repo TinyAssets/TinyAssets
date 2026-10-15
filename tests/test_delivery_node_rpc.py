@@ -2,7 +2,6 @@
 # ruff: noqa: F811 -- imported pytest fixtures
 import contextvars
 import json
-import shutil
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
@@ -275,7 +274,8 @@ def test_concurrent_same_occurrence_reserves_one_receiver_run(node_env):
 
 
 def test_actual_rpc_cancellation_is_checked_inside_handler_after_read(node_env):
-    from tinyassets import graph_compiler, node_sandbox
+    from tinyassets import graph_compiler
+    from tinyassets.boxes import node as node_sandbox
 
     base, _, _, link, branch, _ = node_env
     run_id = _prepare(base, branch)
@@ -286,7 +286,7 @@ def test_actual_rpc_cancellation_is_checked_inside_handler_after_read(node_env):
         event_sink=lambda **_: cancelled.append(True),
         delivery_source=_source(base, branch, run_id), should_cancel=lambda: bool(cancelled),
     )
-    result = node_sandbox.NodeSandbox(timeout=10).run_sync(
+    result = node_sandbox.NodeSandbox(timeout=10, universe_dir=base / "u-sender").run_sync(
         node_id="entry", source_code=SOURCE, input_keys=["topic", "link"],
         input_state={"topic": "exact", "link": link["link_id"]},
         output_keys=["result", "receipts"],
@@ -298,12 +298,8 @@ def test_actual_rpc_cancellation_is_checked_inside_handler_after_read(node_env):
 
 
 @pytest.mark.real_jail
-@pytest.mark.skipif(not shutil.which("bwrap"), reason="requires Linux bubblewrap")
 def test_real_linux_jail_transports_delivery_rpc(node_env, monkeypatch):
-    from tinyassets import node_sandbox
-
     base, _, _, link, branch, _ = node_env
-    monkeypatch.setattr(node_sandbox, "DEFAULT_LAUNCHER_FACTORY", node_sandbox.BwrapLauncher)
     outcome = _execute(base, branch, link)
     assert outcome.status == "completed", outcome.error
     assert len(_rows(base)) == 2

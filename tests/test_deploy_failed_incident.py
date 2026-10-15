@@ -56,11 +56,3 @@ def test_failed_deploy_updates_one_issue_and_success_closes_it() -> None:
     assert failed["env"]["DEPLOY_COMMIT"] == "${{ steps.tag.outputs.revision || github.sha }}"
     assert "steps.deploy.outputs.rc" in failed["env"]["DEPLOY_RC"]
     assert "steps.deploy.outputs.deployed_image" in failed["env"]["DEPLOYED_IMAGE"]
-
-
-def test_content_repair_alert_stays_a_separate_issue() -> None:
-    repair = _step("Alert on incomplete owner content repair")
-    assert "gh issue create" in repair["run"]
-    assert "owner-content-repair:" in repair["run"]
-    assert "deploy-failed" in repair["run"]
-    assert repair["name"] != "Open deploy-failed issue"

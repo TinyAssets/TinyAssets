@@ -8,10 +8,9 @@ import threading
 
 import pytest
 
-from tests.test_agent_git_credentials import synthetic
-from tinyassets import git_egress
+from tests.support.synthetic_git import synthetic
 from tinyassets import rpc_frames as rf
-from tinyassets.boxes import git_bridge
+from tinyassets.boxes import git_bridge, git_routes
 from tinyassets.broker.client import BrokerClient
 from tinyassets.broker.owner_identities import OwnerIdentities
 from tinyassets.broker.server import BOX_HOST
@@ -78,12 +77,12 @@ def test_git_frames_use_owner_bound_channel_without_guest_credential(git_server,
         s.monkeypatch.setattr(git_bridge.os, "environ", dict(os.environ))
         context, proxy = git_bridge.prepare()
         try:
-            route = next(key[1] for key in git_egress._routes if key[0] == id(proxy))
+            route = next(key[1] for key in git_routes._routes if key[0] == id(proxy))
             raw = (f"GET http://ta-git.invalid/{route}/owner/repo.git/info/refs?"
                    "service=git-upload-pack HTTP/1.1\r\nHost: ta-git.invalid\r\n\r\n").encode()
             left, right = socket.socketpair()
             with left, right:
-                assert git_egress.serve(proxy, left, raw)
+                assert git_routes.serve(proxy, left, raw)
                 response = right.recv(65536)
             assert s.secret.encode() not in response
             if claimed_owner == "alice":
@@ -98,7 +97,7 @@ def test_git_frames_use_owner_bound_channel_without_guest_credential(git_server,
             thread.join(6)
         assert not thread.is_alive()
         assert not errors
-        assert not any(key[0] == id(proxy) for key in git_egress._routes)
+        assert not any(key[0] == id(proxy) for key in git_routes._routes)
 
 
 def test_cli_forwarder_without_git_stays_stdlib_only(tmp_path):

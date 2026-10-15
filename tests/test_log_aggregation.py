@@ -66,7 +66,8 @@ def test_runtime_containers_forward_logs_without_docker_socket():
         name for name, service in services.items()
         if name != "logs" and service.get("logging") is not None
     ]
-    assert set(forwarding_services) == {"daemon", "cloudflared"}, (
+    # The owner-box cutover runs the credential broker as its own container.
+    assert set(forwarding_services) == {"daemon", "broker", "cloudflared"}, (
         f"unexpected forwarding service set: {sorted(forwarding_services)}"
     )
     for name in forwarding_services:

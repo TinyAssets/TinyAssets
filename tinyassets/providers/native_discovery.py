@@ -7,30 +7,28 @@ or assignment admission lock may be held by the caller across enumeration.
 """
 
 import asyncio
-from dataclasses import dataclass, field
+import os
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from tinyassets.credential_vault import (
     LLMCredentialCustodyReference,
     cleanup_llm_credential_snapshot,
-    current_llm_subscription_custody,
     snapshot_llm_subscription_credential,
 )
 from tinyassets.exceptions import ProviderError
 from tinyassets.providers.native_catalogue import NativeCatalogue
-from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
 
-def _custody(base, universe, owner, service):
-    with SQLiteProviderWorkAuthorityStore(base).connection() as conn:
-        # IMMEDIATE so this write waits on the store's busy timeout. A deferred
-        # BEGIN upgrades without waiting and loses to a concurrent adoption.
-        conn.execute("BEGIN IMMEDIATE")
-        return current_llm_subscription_custody(
-            conn, universe_dir=universe, owner_user_id=owner,
-            universe_id=universe.name, service=service,
-        )
+def _custody(base, universe, owner, service, *, binding):
+    del base
+    if binding is None:
+        raise PermissionError("native discovery requires an admitted box binding")
+    from tinyassets.external_agents.home import box_custody
+
+    custody = box_custody(universe, owner, service, binding)
+    return custody.reference if custody else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,11 +40,12 @@ class NativeDiscoverySnapshot:
     observed_at: datetime
     completed_at: datetime
     catalogue: NativeCatalogue
+    binding: object | None = field(default=None, repr=False, compare=False)
 
     def assert_current(self):
         self.assert_fresh()
         if _custody(self.universe.parent, self.universe, self.owner_id,
-                    self.custody.service) != self.custody:
+                    self.custody.service, binding=self.binding) != self.custody:
             raise ProviderError("native model discovery source changed")
 
     def assert_fresh(self):
@@ -72,8 +71,10 @@ class NativeDiscoverySnapshot:
              and not model.hidden),
             None,
         )
+        selected_root = (Path(os.path.abspath(universe)) if self.binding is not None
+                         else Path(universe).resolve())
         if (self.provider != provider or self.owner_id != owner
-                or self.universe != Path(universe).resolve() or self.custody != custody
+                or self.universe != selected_root or self.custody != custody
                 or matched is None):
             raise PermissionError("native catalogue does not match current model authority")
         # The ONLY place a level is admitted, because it is the only place the
@@ -92,7 +93,7 @@ class NativeDiscoverySnapshot:
 
 
 async def refresh_native_catalogue(
-    provider, *, universe_dir, owner_user_id, expected_custody,
+    provider, *, universe_dir, owner_user_id, expected_custody, binding=None,
 ):
     """Discover through the registered executor, with exact current custody.
 
@@ -103,49 +104,64 @@ async def refresh_native_catalogue(
     """
     snapshot = None
     try:
-        universe = Path(universe_dir).resolve(strict=True)
+        from tinyassets.agent_loop.served_chat import configured_box_provider
+        from tinyassets.control_plane.binding import bind_session, current_binding
+
+        universe = Path(os.path.abspath(universe_dir))
+        binding = binding or current_binding()
+        if binding is None:
+            box_provider, limits = configured_box_provider()
+            if box_provider is not None:
+                binding = bind_session(
+                    provider=box_provider, limits=limits, universe_dir=universe,
+                    owner=owner_user_id,
+                    execution_id=f"catalogue:{owner_user_id}:{universe.name}:{provider.name}",
+                )
+        if binding is None:
+            raise PermissionError("native discovery requires an admitted box binding")
         if (type(expected_custody) is not LLMCredentialCustodyReference
                 or expected_custody.owner_user_id != owner_user_id
                 or expected_custody.universe_id != universe.name
                 or not provider.native_credential_service
                 or provider.native_credential_service != expected_custody.service
                 or _custody(universe.parent, universe, owner_user_id,
-                            expected_custody.service) != expected_custody):
+                            expected_custody.service, binding=binding) != expected_custody):
             raise PermissionError("native discovery custody mismatch")
         observed = datetime.now(timezone.utc)
         from tinyassets.external_agents.registry import PACKAGES
 
         if provider.name in PACKAGES:
-            from tinyassets.agent_loop.served_chat import configured_box_provider
-            from tinyassets.control_plane.binding import bind_session, current_binding
             from tinyassets.control_plane.native_launch import launcher
-            from tinyassets.external_agents.home import Custody
+            from tinyassets.external_agents.home import box_custody
             from tinyassets.external_agents.runner import run_catalogue
 
-            custody = Custody(universe, owner_user_id, expected_custody)
+            custody = box_custody(universe, owner_user_id, expected_custody.service, binding)
+            if custody is None:
+                raise PermissionError("native discovery custody mismatch")
 
             def launch_catalogue(operation_id):
-                box_provider, limits = configured_box_provider()
-                binding = current_binding()
-                if box_provider is not None:
-                    binding = bind_session(
-                        provider=box_provider, limits=limits, universe_dir=universe,
-                        owner=owner_user_id, execution_id=operation_id,
-                    )
                 return launcher(custody, binding=binding,
                                 operation_id=operation_id)
 
-            return await run_catalogue(
+            result = await run_catalogue(
                 provider.name,
                 launch_catalogue, custody,
             )
+            return replace(result, binding=binding) if result is not None else None
         snapshot = snapshot_llm_subscription_credential(
             universe_dir=universe, custody=expected_custody,
         )
-        async with asyncio.timeout(30):
-            catalogue = await provider.enumerate_models(
-                universe_dir=universe, credential_snapshot_dir=snapshot.directory,
-            )
+        from tinyassets.providers.owned_process import launch_scope
+
+        with launch_scope(universe, owner=owner_user_id, service=expected_custody.service,
+                          credential_dir=snapshot.directory,
+                          auth=getattr(provider, "native_launch_auth", None),
+                          operation_id=f"catalogue:{owner_user_id}:{universe.name}:"
+                                       f"{provider.name}:{snapshot.generation}"):
+            async with asyncio.timeout(30):
+                catalogue = await provider.enumerate_models(
+                    universe_dir=universe, credential_snapshot_dir=snapshot.directory,
+                )
         if catalogue is None:
             return None
         if type(catalogue) is not NativeCatalogue:
@@ -155,7 +171,7 @@ async def refresh_native_catalogue(
             raise ValueError("executor returned cached or future native metadata")
         result = NativeDiscoverySnapshot(
             provider.name, owner_user_id, universe, expected_custody,
-            observed, completed, catalogue,
+            observed, completed, catalogue, binding,
         )
         result.assert_current()
         return result
@@ -174,12 +190,26 @@ async def discover_native_models(*, base_path, owner_user_id, universe_id, provi
     service = getattr(executor, "native_credential_service", None)
     if not service:
         return None
-    universe = Path(base_path).resolve() / universe_id
-    expected = _custody(universe.parent, universe, owner_user_id, service)
+    universe = Path(os.path.abspath(base_path)) / universe_id
+    from tinyassets.agent_loop.served_chat import configured_box_provider
+    from tinyassets.control_plane.binding import bind_session, current_binding
+
+    binding = current_binding()
+    if binding is None:
+        box_provider, limits = configured_box_provider()
+        if box_provider is not None:
+            binding = bind_session(
+                provider=box_provider, limits=limits, universe_dir=universe,
+                owner=owner_user_id,
+                execution_id=f"catalogue:{owner_user_id}:{universe_id}:{service}",
+            )
+    expected = _custody(universe.parent, universe, owner_user_id, service,
+                        binding=binding)
     if expected is None:
         raise ProviderError("owned native model discovery unavailable")
     return await refresh_native_catalogue(
-        executor, universe_dir=universe, owner_user_id=owner_user_id, expected_custody=expected,
+        executor, universe_dir=universe, owner_user_id=owner_user_id,
+        expected_custody=expected, binding=binding,
     )
 
 

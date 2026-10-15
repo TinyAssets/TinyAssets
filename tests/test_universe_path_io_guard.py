@@ -29,12 +29,6 @@ _PKG = _REPO / "tinyassets"
 #: The helpers themselves: the only modules allowed to do the raw I/O.
 _EXEMPT = {
     "tinyassets/universe_files.py", "tinyassets/workspace_fs.py",
-    # Lower-level owner-inode creation/publication used by universe_files.
-    # It pins every parent, validates custody, and never follows symlinks.
-    "tinyassets/role_content.py",
-    # Fixed read-only owner-cell metadata walk: pinned/no-follow descriptors,
-    # exact owner custody, bounded traversal; no caller-selected path or file reads.
-    "tinyassets/role_storage.py",
 }
 
 _TOUCHES_UNIVERSE = re.compile(
@@ -201,15 +195,17 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/engine_mcp_http.py": [
         "_write_routes: os.open()",
         "_write_routes: os.replace()",
+        # The per-center engine socket under the daemon-owned .engine-mcp
+        # directory at the DATA ROOT (no owner tree), replaced on each start.
+        "box_engine_socket: .unlink()",
         "read_engine_mcp_route: .read_text()",
     ],
     # The refresh lock uses descriptor-relative O_NOFOLLOW opens and fstat
-    # ownership/mode checks; materialize reads a sealed snapshot the same way.
+    # ownership/mode checks.
     "tinyassets/external_agents/home.py": [
         "exclusive_refresh: os.open()",
         "exclusive_refresh: os.open()",
         "exclusive_refresh: os.open()",
-        "materialize: os.open()",
     ],
     "tinyassets/ingestion/extractors.py": [
         "synthesize_source: .read_text()",
@@ -279,22 +275,10 @@ PINNED: dict[str, list[str]] = {
         "_write: os.replace()",
         "list_commons_definitions: .read_text()",
     ],
-    # owner-dynamic-admission DA3: every call is descriptor-relative with
-    # O_NOFOLLOW; the setgid hand-off cannot go through the path helpers.
-    "tinyassets/role_center_admission.py": [
-        "_open_dir: os.open()",
-        "_remove_tree: os.unlink()",
-        "admit_center: os.open()",
-        "admit_center: os.open()",
-    ],
-    # The owner-home path is opened descriptor-relative with O_NOFOLLOW and
-    # checked for the expected owner/mode before the launcher receives it.
-    "tinyassets/role_external_agent.py": [
-        "_owner_home: os.open()",
-        "_owner_home: os.open()",
-        "_owner_home: os.open()",
-        "_owner_home: os.open()",
-        "aspawn_cell: os.open()",
+    # The one-run credential lease is read from the platform custody snapshot
+    # (never an owner tree) with O_NOFOLLOW and an fstat regular-file check.
+    "tinyassets/providers/owned_process.py": [
+        "_lease_files: os.open()",
     ],
     "tinyassets/reset.py": [
         "reset: .unlink()",
@@ -361,8 +345,6 @@ PINNED: dict[str, list[str]] = {
         "_publish_marker: os.replace()",
         "apply: .unlink()",
     ],
-    # Fixed owner-cell supervisor reads only kernel /proc/<pid>/stat records.
-    "tinyassets/role_preview_cell.py": ["_proc_snapshot: open()"],
     "tinyassets/ui_preview.py": [
         # The host-wide render slot's flock holder at the DATA ROOT
         # (.ui-preview.lock): no jail binds the data root, and flock needs the
@@ -370,21 +352,6 @@ PINNED: dict[str, list[str]] = {
         # not hand back. Opened O_NOFOLLOW.
         "_host_slot: os.open()",
         # Linux /proc, not a data path at all: reaping the render's strays.
-    ],
-    "tinyassets/universe_tools.py": [
-        # Direct-child removals in the validated, provider-masked workspace.
-        "_clear_link_mountpoint: .unlink()",
-        "_promote_brain_files: .unlink()",
-        "_remove_cgroup: .read_text()",
-        "_remove_cgroup: .write_text()",
-        "_root_cgroup: .read_text()",
-        "_root_cgroup: .read_text()",
-        "_root_cgroup: .write_text()",
-        "_root_cgroup: .write_text()",
-        "_root_cgroup: .write_text()",
-        "_root_cgroup: .write_text()",
-        "_supervise: .write_text()",
-        "_try_lock_one: os.open()",
     ],
     "tinyassets/wiki/okf_export.py": [
         "_conformance_report: .read_text()",
@@ -470,3 +437,23 @@ def test_the_module_call_exemption_is_exactly_one_pair():
     )}
     assert ".touch()" in ops, "a path touch is still raw file I/O"
     assert ".unlink()" in ops, "only the touch pair is exempt, not the module"
+
+
+def test_owner_box_callers_never_open_host_paths():
+    """Daemon-side node, media, preview and git box routes use their handle."""
+    box_routes = {
+        "tinyassets/box_process.py": {"run_bound"},
+        "tinyassets/boxes/node.py": {"run_in_box"},
+        "tinyassets/boxes/media.py": {"decode_image", "frames"},
+        "tinyassets/universe_tools.py": {"read_file", "write_file", "edit_file", "bash"},
+        "tinyassets/ui_preview.py": {"_run_child"},
+        "tinyassets/workspace_git.py": {"run_git"},
+        "tinyassets/workspace_worker.py": {"_boxed"},
+    }
+    for module, functions in box_routes.items():
+        source = (_REPO / module).read_text(encoding="utf-8")
+        raw = [(name, operation) for _, name, operation in _raw_ops(source)
+               if name in functions]
+        assert not raw, f"{module} opens an owner host path in its box route: {raw}"
+        assert ("run_bound(" in source or "BoxExecutor(" in source
+                or module.endswith("box_process.py") or module.endswith("workspace_git.py"))

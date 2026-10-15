@@ -155,7 +155,8 @@ class BrokerServer:
                  ops: OpStore, fence: Fence, roles: Mapping[int, str],
                  uid_of: Callable[[socket.socket], int] = peer_uid,
                  owner_identities: Any = None, policy_store: Any = None,
-                 provision_box: Callable[[str, str], None] | None = None) -> None:
+                 provision_box: Callable[[str, str], None] | None = None,
+                 data_root: Path | None = None) -> None:
         self._ledger_for = ledger_for
         self._dispatch_for = dispatch_for
         self._ops = ops
@@ -167,7 +168,7 @@ class BrokerServer:
         self._provision_box = provision_box
         from tinyassets.broker.public_egress import PublicEgress
 
-        self._public_egress = PublicEgress(owner_identities)
+        self._public_egress = PublicEgress(owner_identities, data_root)
         self._streams: dict[tuple[int, int], _Stream] = {}
         self._streams_lock = threading.Lock()
         self._ops.recover()

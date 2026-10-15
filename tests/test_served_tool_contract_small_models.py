@@ -236,16 +236,27 @@ def test_an_oversized_refusal_is_still_an_error_and_still_bounded(monkeypatch, s
     assert len(_text(result).encode()) <= bounds.DEFAULT_CEILING_BYTES
 
 
-def test_a_file_that_contains_an_error_field_is_read_successfully(monkeypatch, served):
+def test_a_file_that_contains_an_error_field_is_read_successfully(monkeypatch, served,
+                                                                  _owner_box_double):
     """gpt-6-astra repro: a successful read of `{"errors": [...]}` was flagged.
 
     A file's bytes are the owner's content, not this server's refusal shape.
     """
     from tinyassets import universe_tools
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.boxes.provider import ExecLimits
+    from tinyassets.control_plane.binding import bind_session, use_binding
 
+    assert _owner_box_double is not None, "the owner box double needs Linux"
     content = '{"errors": ["historical sample"], "ok": true}'
     monkeypatch.setattr(universe_tools, "read_file", lambda udir, **kw: content)
-    result = _call(served, "read", {"path": "notes/sample.json"})
+    # The engine runs a file tool only for the owner session admitted on the box.
+    udir = _universe_dir(served._GRAPH_ID)
+    udir.mkdir(parents=True, exist_ok=True)
+    binding = bind_session(provider=_owner_box_double, limits=ExecLimits(), universe_dir=udir,
+                           owner=served._ACTOR_ID, execution_id="small-model-read")
+    with use_binding(binding):
+        result = _call(served, "read", {"path": "notes/sample.json"})
     assert result.isError is False
     assert _text(result) == content
 

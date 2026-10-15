@@ -361,19 +361,24 @@ def test_two_connections_of_one_owner_keep_distinct_tokens(configured, provider,
     assert before["second"] != after["second"]
 
 
-def test_future_secret_names_are_filtered_without_a_python_patch(monkeypatch):
+def test_future_secret_names_are_filtered_without_a_python_patch(monkeypatch, tmp_path):
+    from tinyassets.box_process import run_bound
+    from tinyassets.control_plane.binding import file_binding
     from tinyassets.platform_secrets import child_env
 
     assert child_env({SECRET_NAME: SECRET, CLIENT_NAME: CLIENT,
                       service.ENV: "owner capability", "KEEP": "yes"}) == {"KEEP": "yes"}
-    from tinyassets.node_sandbox import BwrapLauncher, PlainSubprocessLauncher
 
+    # Owner code runs only in the admitted box, whose env is built from scratch:
+    # a secret in the platform process never reaches it.
     monkeypatch.setenv(SECRET_NAME, SECRET)
     monkeypatch.setenv(service.ENV, "owner capability")
-    for launcher in (BwrapLauncher(), PlainSubprocessLauncher()):
-        env = launcher.env("/tmp/private-home")
-        assert SECRET_NAME not in env and service.ENV not in env
-        assert SECRET not in str(env)
+    binding = file_binding(tmp_path / "cc-env")
+    proc = run_bound(binding, "env-probe", ["env"], wall_seconds=10, output_bytes=1 << 16)
+    env = proc.stdout.decode()
+    assert proc.returncode == 0 and "PATH=" in env
+    assert SECRET_NAME not in env and service.ENV not in env
+    assert SECRET not in env
 
 
 def test_concurrent_daemon_refresh_spends_once(configured, provider, app):

@@ -32,6 +32,17 @@ def _isolate_preview_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
 
+@pytest.fixture
+def alice_home(tmp_path):
+    """Alice is the recorded owner of her center, so her box admits her render."""
+    from tinyassets.daemon_server import _connect, initialize_author_server
+    from tinyassets.universe_owner import record_creation
+
+    initialize_author_server(tmp_path)
+    with _connect(tmp_path) as conn:
+        record_creation(conn, universe_id=HOME, owner_id=OWNER)
+
+
 def _png(rgb=(32, 160, 64), size=8) -> bytes:
     def chunk(kind: bytes, data: bytes) -> bytes:
         return (struct.pack(">I", len(data)) + kind + data
@@ -62,7 +73,7 @@ def _need_browser():
 
 
 @pytest.mark.real_browser
-def test_the_agent_sees_its_ui_as_rendered_with_its_assets(tmp_path):
+def test_the_agent_sees_its_ui_as_rendered_with_its_assets(tmp_path, alice_home):
     _need_browser()
     _add(tmp_path, "village",
          markup='<div id=sky></div><img id=grass src="ta-asset:img/grass.png">',
@@ -88,7 +99,7 @@ def test_the_agent_sees_its_ui_as_rendered_with_its_assets(tmp_path):
 
 
 @pytest.mark.real_browser
-def test_a_broken_ui_reports_its_error_and_its_blocked_egress(tmp_path):
+def test_a_broken_ui_reports_its_error_and_its_blocked_egress(tmp_path, alice_home):
     _need_browser()
     _add(tmp_path, "broken", libraries=["three"], script_type="module",
          script='import * as THREE from "three";\n'
@@ -118,12 +129,34 @@ def test_another_persons_ui_is_not_reachable(tmp_path):
                                   ui_id="village")
 
 
-def test_no_browser_is_a_loud_refusal_not_a_blank_image(tmp_path, monkeypatch):
+def test_no_browser_is_a_loud_refusal_not_a_blank_image(tmp_path, monkeypatch,
+                                                        _owner_box_double):
+    import subprocess
+
+    from tinyassets import box_process
+    from tinyassets.boxes.provider import ExecLimits
+    from tinyassets.control_plane.binding import bind_session, use_binding
+
+    assert _owner_box_double is not None, "the owner box double needs Linux"
     _add(tmp_path, "village")
     monkeypatch.setattr(ui_preview, "available", lambda: False)
-    with pytest.raises(ui_preview.PreviewUnavailable, match="ui_preview_unavailable"):
+    # The render runs in the owner's box; a box without a browser says so.
+    ran = []
+
+    def no_browser(binding, purpose, argv, **kwargs):
+        ran.append((binding.handle.account_id, purpose))
+        return subprocess.CompletedProcess(
+            argv, 0, b'{"unavailable": "no chromium in this box"}\n', b"")
+
+    monkeypatch.setattr(box_process, "run_bound", no_browser)
+    binding = bind_session(provider=_owner_box_double, limits=ExecLimits(),
+                           universe_dir=tmp_path / HOME, owner=OWNER,
+                           execution_id="preview-no-browser")
+    with use_binding(binding), pytest.raises(ui_preview.PreviewUnavailable,
+                                             match="ui_preview_unavailable"):
         ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
                                   ui_id="village")
+    assert ran == [(OWNER, "ui-preview")]
 
 
 def test_one_render_at_a_time(tmp_path, monkeypatch):
@@ -167,6 +200,34 @@ def test_the_screenshot_lands_in_previews_and_replaces_a_planted_hard_link(tmp_p
     assert (universe / "soul.md").read_text(encoding="utf-8") == "the persona", (
         "the write replaced the link instead of writing through it")
     assert sorted(p.name for p in (universe / "previews").iterdir()) == ["village.png"]
+
+
+def test_admitted_preview_write_uses_only_the_box_handle(tmp_path):
+    from tinyassets.boxes.provider import BoxHandle, ExecLimits
+    from tinyassets.control_plane.binding import SessionBinding, use_binding
+
+    class Provider:
+        def __init__(self):
+            self.calls = []
+
+        def write(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+
+    root = tmp_path / "u-alice"  # Deliberately absent on the frontend.
+    provider = Provider()
+    handle = BoxHandle("u-alice", OWNER, 1, "turn")
+    binding = SessionBinding(provider, handle, ExecLimits(), root)
+    with use_binding(binding):
+        assert ui_preview.write_preview(root, "village", b"png") == "/u/previews/village.png"
+        with pytest.raises(ui_preview.PreviewUnavailable):
+            ui_preview.write_preview(tmp_path / "u-bob", "village", b"png")
+
+    assert len(provider.calls) == 1
+    args, kwargs = provider.calls[0]
+    assert args[:2] == (handle, "session:turn:1:preview:village")
+    assert args[2:] == ("/cc/previews/village.png", b"png")
+    assert kwargs["max_bytes"] == 4 * 1024 * 1024
+    assert not root.exists()
 
 
 @pytest.mark.parametrize("ui_id", ["../soul", "a/b", "", "UPPER", "x" * 65, "con", "lpt1"])
@@ -787,7 +848,7 @@ def test_the_preview_whoami_hands_over_the_components_own_alias_maps(tmp_path):
 
 
 @pytest.mark.real_browser
-def test_a_ui_that_awaits_the_live_reads_renders_in_the_preview(tmp_path):
+def test_a_ui_that_awaits_the_live_reads_renders_in_the_preview(tmp_path, alice_home):
     """The whole point of the preview is that it answers like the app, so the
     proof is a render: a UI that awaits ``readLive()`` and reads the alias maps
     off ``whoami()`` paints green only if both answered in the shape it expects.
@@ -816,7 +877,7 @@ def test_a_ui_that_awaits_the_live_reads_renders_in_the_preview(tmp_path):
 
 
 @pytest.mark.real_browser
-def test_a_hostile_ui_cannot_break_out_or_flood_the_report(tmp_path):
+def test_a_hostile_ui_cannot_break_out_or_flood_the_report(tmp_path, alice_home):
     _need_browser()
     _add(tmp_path, "hostile",
          markup="</script><script>window.top.__pwned=1</script><p id=ok>still a frame</p>",
@@ -858,7 +919,7 @@ def test_preview_refuses_a_read_only_caller_before_writing(tmp_path, monkeypatch
 
 
 @pytest.mark.real_browser
-def test_owner_preview_timeout_retires_child_before_next_render(tmp_path):
+def test_owner_preview_timeout_retires_child_before_next_render(tmp_path, alice_home):
     _need_browser()
     _add(tmp_path, 'bounded', markup='<div>bounded preview</div>')
     with pytest.raises(ui_preview.PreviewUnavailable, match='timeout'):

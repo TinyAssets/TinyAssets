@@ -87,9 +87,12 @@ def test_extra_fields_are_not_stored(tmp_path):
 # --- account deletion -----------------------------------------------------------
 
 
-def test_deleting_an_account_takes_its_preferences_and_no_one_elses(tmp_path):
+def test_deleting_an_account_takes_its_preferences_and_no_one_elses(tmp_path, monkeypatch):
     from tests.test_account_deletion import HOME_A, HOME_B, A, B, _seed_user
     from tinyassets.account_deletion import delete_account
+
+    # The owner box that deletion destroys is admitted on the data root.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
     _seed_user(tmp_path, A, HOME_A)
     _seed_user(tmp_path, B, HOME_B)

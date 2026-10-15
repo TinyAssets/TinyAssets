@@ -143,8 +143,9 @@ def test_a_dangling_link_at_the_signal_name_is_read_not_skipped(data):
         load_enrichment_signals(_alpha(data), strict=True)
 
 
-def test_non_posix_exclusive_reports_an_existing_entry_as_file_exists(data, monkeypatch):
-    monkeypatch.setattr(universe_files.fs, "_POSIX", False)
+def test_box_exclusive_reports_an_existing_entry_as_file_exists(data):
+    # A command center's files are written only through its owner box; the
+    # host-side non-POSIX fallback is never reached for one.
     path = _alpha(data) / "bug-001.md"
     path.write_text("taken", encoding="utf-8")
     with pytest.raises(FileExistsError):

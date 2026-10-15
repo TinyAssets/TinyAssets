@@ -21,7 +21,9 @@ from tinyassets.effectors.workspace import (
     EXTERNAL_WRITE_SINK_WORKSPACE,
     WORKSPACE_READ_EFFECTS,
     repo_key_for,
-    run_workspace_effector,
+)
+from tinyassets.effectors.workspace import (
+    run_workspace_effector as _run_workspace_effector,
 )
 from tinyassets.storage.outbound_connections import ConnectionLedger
 from tinyassets.storage.workspace_authority import workspace_consent_destination
@@ -36,6 +38,22 @@ TOKEN = "ghp_EFFECTORTOKEN0123456789ABCDEFGHI"
 # --------------------------------------------------------------------------- #
 # Scaffolding
 # --------------------------------------------------------------------------- #
+
+
+def run_workspace_effector(**kwargs: Any) -> dict[str, Any]:
+    """Dispatch inside the admitted owner-box session, as a production run does.
+
+    Every owner read the sink makes (the lease stat, the generation measure)
+    goes through the session binding; with no ``base_path`` there is no center
+    to admit, and the sink must refuse on its own.
+    """
+    from tinyassets.control_plane import binding
+
+    base_path = kwargs.get("base_path")
+    if base_path is None:
+        return _run_workspace_effector(**kwargs)
+    with binding.use_binding(binding.file_binding(Path(base_path))):
+        return _run_workspace_effector(**kwargs)
 
 
 def _principal() -> str:
@@ -101,6 +119,15 @@ def _setup(
             granted_by="test",
         )
     return data_root, universe_dir
+
+
+def _host(universe_dir: Path, guest: str | Path) -> Path:
+    """The host directory a guest lease path (``/cc/<center>/...``) names.
+
+    On the box double the command center directory IS the box, so the guest
+    path's center-relative part is the same path under the test's universe.
+    """
+    return Path(universe_dir) / Path(guest).relative_to(wse._lease_center_root(universe_dir))
 
 
 def _packet(**over: Any) -> dict[str, Any]:
@@ -170,41 +197,24 @@ def test_checkout_receives_only_server_owned_cancel_predicate(tmp_path, monkeypa
 
 
 @pytest.fixture()
-def fs_spy(monkeypatch: pytest.MonkeyPatch):
-    """Double the no-follow directory openers the DAEMON side still uses.
+def fs_spy(monkeypatch: pytest.MonkeyPatch, _owner_box_double):
+    """Spy on the owner-box stats the DAEMON side makes to pick up the lease.
 
-    Since the owner split the daemon creates nothing: the cell makes the lease
-    and its repository, and the daemon only OPENS them to hold the capability
-    (``_open_cell_lease``). So the two openers are all that is doubled, and
-    asserting they were called is what proves the lease is picked up through a
-    no-follow handle rather than re-resolved by path. They are POSIX-only in
-    production, which is why the double exists at all.
+    The daemon creates nothing: the cell makes the lease and its repository,
+    and the daemon only CHECKS them through the admitted box handle
+    (``_open_cell_lease``), which resolves every component no-follow on the
+    host. Recording those stats is what proves the lease is picked up through
+    the box rather than re-resolved by a host path.
     """
-    from tinyassets import workspace_fs
+    assert _owner_box_double is not None, "the owner box double needs Linux"
+    calls: dict[str, list] = {"stat": []}
+    real_stat = _owner_box_double.stat
 
-    calls: dict[str, list] = {"open_dir_nofollow": [], "open_subdir_nofollow": []}
+    def stat(handle, path, *args, **kwargs):
+        calls["stat"].append(path)
+        return real_stat(handle, path, *args, **kwargs)
 
-    def open_dir_nofollow(path):
-        calls["open_dir_nofollow"].append(str(path))
-        # The REAL helper refuses a missing directory -- it opens, it does not
-        # create. A fake that is more permissive than the thing it stands in
-        # for is a fake that hides the bug it is standing in front of.
-        if not Path(path).is_dir():
-            raise FileNotFoundError(f"no such directory: {path}")
-        return f"fd:{path}"
-
-    def open_subdir_nofollow(parent_fd, name):
-        calls["open_subdir_nofollow"].append((parent_fd, name))
-        parent = Path(str(parent_fd).removeprefix("fd:"))
-        target = parent / name
-        if not target.is_dir():
-            raise FileNotFoundError(f"no such directory: {target}")
-        return f"fd:{target}"
-
-    monkeypatch.setattr(workspace_fs, "open_dir_nofollow", open_dir_nofollow, raising=False)
-    monkeypatch.setattr(
-        workspace_fs, "open_subdir_nofollow", open_subdir_nofollow, raising=False
-    )
+    monkeypatch.setattr(_owner_box_double, "stat", stat, raising=False)
     return calls
 
 
@@ -612,40 +622,13 @@ def test_the_bind_source_is_the_repository_not_the_lease_root(
     _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
     mount = chain.workspace_mount_or_none("n1")
     assert mount is not None
-    assert mount.repo_fd is not None, "the repository's own handle must be published"
-    assert mount.repo_fd != mount.lease_fd, "they are different directories"
-    # the lease handle names the lease; the repo handle names <lease>/repo
-    # (separator-agnostic: the fake joins with the host's own separator)
-    assert Path(str(mount.lease_fd).removeprefix("fd:")).name == Path(mount.lease.path).name
-    assert Path(str(mount.repo_fd).removeprefix("fd:")).name == "repo"
-    assert mount.bind_source.endswith("repo") or mount.bind_source.startswith("/proc/self/fd/")
-
-
-def test_a_host_without_openat_is_refused_not_crashed(
-    tmp_path: Path, chain: EffectChain, no_real_git, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A permanent property of the host is a refusal, not a bug in the sink.
-
-    Letting the no-follow layer's ``NotImplementedError`` reach the dispatcher
-    reported ``effector_crashed``, which reads as "the sink is broken" rather
-    than "this host cannot run workspaces at all".
-    """
-    from tinyassets import workspace_fs
-
-    def refuse(*args, **kwargs):
-        raise NotImplementedError(
-            "open_dir_nofollow needs POSIX openat semantics (O_NOFOLLOW + "
-            "dir_fd); this host is 'nt'. There is no fallback."
-        )
-
-    for name in ("open_dir_nofollow", "open_subdir_nofollow"):
-        monkeypatch.setattr(workspace_fs, name, refuse, raising=False)
-    _root, universe_dir = _setup(tmp_path)
-    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
-    assert result["error_kind"] == "workspace_checkout_failed"
-    assert result["error_kind"] != "effector_crashed"
-    assert "POSIX openat" in result["error"]
-    assert chain.workspace_mount_or_none("n1") is None
+    # The daemon holds no descriptor on an owner tree: the box handle is the
+    # capability, so the bind names the repository by its guest path.
+    assert (mount.lease_fd, mount.repo_fd) == (None, None), "no daemon-held handle"
+    assert Path(mount.bind_source) != Path(mount.lease.path), "they are different directories"
+    assert Path(mount.bind_source).parent == Path(mount.lease.path)
+    assert Path(mount.bind_source).name == "repo"
+    assert _host(universe_dir, mount.bind_source).is_dir(), "the repository the cell made"
 
 
 def test_the_compiler_binds_the_repository_handle_not_the_lease_handle(
@@ -779,7 +762,7 @@ def test_a_first_permanent_checkout_names_its_parents_for_the_cell(
     assert request["lease_parent"] == ["workspaces", repo_key_for(HOST, "owner", "name")]
     assert request["lease_name"] == str(result["lease_generation"])
     mount = chain.workspace_mount_or_none("n1")
-    assert Path(mount.lease.path).is_dir()
+    assert _host(universe_dir, mount.lease.path).is_dir()
 
 
 def test_a_second_permanent_checkout_reuses_the_existing_parents(
@@ -820,7 +803,7 @@ def test_a_first_permanent_checkout_works_with_the_real_cell_and_helpers(
                   chain=chain, worker=worker)
     assert result.get("error_kind") is None, result
     mount = chain.workspace_mount_or_none("n1")
-    assert Path(mount.lease.path).is_dir()
+    assert _host(universe_dir, mount.lease.path).is_dir()
     assert (universe_dir / "workspaces").is_dir()
 
 
@@ -841,21 +824,24 @@ def test_opening_a_cell_made_lease_leaks_no_handle_when_its_content_is_missing(
     number is immediately reusable, so comparing numbers stays green with
     every handle leaked (measured on Linux, 2026-08-31).
     """
-    lease = tmp_path / "universe-1" / "workspaces" / "scratch" / ("a" * 32)
+    from tinyassets.control_plane import binding
+
+    universe_dir = tmp_path / "universe-1"
+    relative = Path("workspaces") / "scratch" / ("a" * 32)
+    lease = universe_dir / relative
     lease.mkdir(parents=True)
+    guest = wse._lease_center_root(universe_dir) / relative
 
-    before = len(os.listdir("/proc/self/fd"))
-    with pytest.raises(Exception):  # noqa: B017 - the module's own refusal class
-        wse._open_cell_lease(lease)
-    assert len(os.listdir("/proc/self/fd")) == before, "a refused lease left a handle open"
+    with binding.use_binding(binding.file_binding(universe_dir)):
+        before = len(os.listdir("/proc/self/fd"))
+        with pytest.raises(wse._Refused):
+            wse._open_cell_lease(guest)
+        assert len(os.listdir("/proc/self/fd")) == before, "a refused lease left a handle open"
 
-    (lease / "repo").mkdir()
-    lease_fd, repo_fd = wse._open_cell_lease(lease)
-    try:
-        assert len(os.listdir("/proc/self/fd")) - before == 2
-    finally:
-        os.close(lease_fd)
-        os.close(repo_fd)
+        (lease / "repo").mkdir()
+        handles = wse._open_cell_lease(guest)
+        assert len(os.listdir("/proc/self/fd")) - before == 0, "the daemon holds no handle"
+        assert handles == (None, None), "the box handle is the only capability"
 
 
 def test_the_capability_carries_the_authority_it_was_created_under(
@@ -927,11 +913,13 @@ def test_the_published_lease_is_opened_through_the_no_follow_handles(
     """
     _root, universe_dir = _setup(tmp_path)
     _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
-    assert fs_spy["open_dir_nofollow"], "the lease was not opened no-follow"
-    assert ("fd:" + str(wse.scratch_pool_root(universe_dir)) not in
-            fs_spy["open_dir_nofollow"]), "the pool root is not what gets published"
-    assert [name for _fd, name in fs_spy["open_subdir_nofollow"]] == ["repo"], (
-        "the content directory is reached through the lease's own handle"
+    lease = wse._box_provider_path(
+        Path(chain.workspace_mount_or_none("n1").lease.path), universe_dir)
+    assert fs_spy["stat"], "the lease was not checked through the owner box"
+    assert (wse._box_provider_path(wse.scratch_pool_root(universe_dir), universe_dir)
+            not in fs_spy["stat"]), "the pool root is not what gets published"
+    assert fs_spy["stat"] == [lease, lease + "/repo"], (
+        "the content directory is checked beneath the lease the pool admitted"
     )
 
 
@@ -943,36 +931,26 @@ def test_a_directory_the_no_follow_layer_refuses_is_a_refusal_not_a_crash(
     Reported as ``effector_crashed`` it reads as a bug in the sink -- which is
     exactly how the generation bug presented in CI.
     """
-    from tinyassets import workspace_fs
-
     _root, universe_dir = _setup(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
 
-    def refuse(parent_fd, name):
-        raise workspace_fs.UnsafePoolPath(f"{name!r} is a symlink, not a directory")
+    class LinkingWorker(FakeWorker):
+        """A cell answer whose ``repo`` is a symlink out of the lease."""
 
-    monkeypatch.setattr(workspace_fs, "open_subdir_nofollow", refuse, raising=False)
-    result = _run(tmp_path, _packet(storage="universe"), universe_dir=universe_dir, chain=chain)
+        def __call__(self, request):
+            self.requests.append(request)
+            lease = self.lease_path(request)
+            lease.mkdir(parents=True, exist_ok=True)
+            (lease / "repo").symlink_to(elsewhere, target_is_directory=True)
+            return {**self.answer,
+                    "lease": "/".join((*request["lease_parent"], request["lease_name"]))}
+
+    result = _run(tmp_path, _packet(storage="universe"), universe_dir=universe_dir,
+                  chain=chain, worker=LinkingWorker())
 
     assert result["error_kind"] == "workspace_checkout_failed", result
-    assert "symlink" in result["error"], result
-
-
-def test_a_bad_component_from_the_no_follow_layer_is_also_a_refusal(
-    tmp_path: Path, chain: EffectChain, fs_spy, monkeypatch: pytest.MonkeyPatch, no_real_git
-) -> None:
-    """That layer raises ValueError for a name that is not one safe component."""
-    from tinyassets import workspace_fs
-
-    _root, universe_dir = _setup(tmp_path)
-
-    def refuse(parent_fd, name):
-        raise ValueError(f"{name!r} is not a single path component")
-
-    monkeypatch.setattr(workspace_fs, "open_subdir_nofollow", refuse, raising=False)
-    result = _run(tmp_path, _packet(storage="scratch"), universe_dir=universe_dir, chain=chain)
-
-    assert result["error_kind"] == "workspace_checkout_failed", result
-    assert result["error_kind"] != "effector_crashed"
+    assert "lease is incomplete" in result["error"], result
 
 
 # --------------------------------------------------------------------------- #
@@ -1030,7 +1008,7 @@ def test_a_created_workspace_is_an_empty_directory_a_node_can_write_in(
     assert result.get("error_kind") is None, result
 
     mount = chain.workspace_mount_or_none("n1")
-    content = Path(str(mount.bind_source).removeprefix("fd:"))
+    content = _host(universe_dir, mount.bind_source)
     assert content.is_dir()
     assert list(content.iterdir()) == [], "a created workspace starts empty"
     (content / "frame-001.png").write_bytes(b"not really a png")
@@ -1214,7 +1192,7 @@ def test_a_created_workspace_can_be_discarded(
 
 @pytest.mark.parametrize("is_ancestor", [True, False])
 def test_discard_uses_graph_ancestry_through_real_dispatch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, is_ancestor: bool,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, is_ancestor: bool, _owner_box_double,
 ) -> None:
     """Workspace ancestry must not require a fabricated HTTP response entry.
 
@@ -1224,6 +1202,8 @@ def test_discard_uses_graph_ancestry_through_real_dispatch(
     """
     from types import SimpleNamespace
 
+    from tinyassets.boxes.provider import ExecLimits
+    from tinyassets.control_plane import binding
     from tinyassets.effectors import (
         EffectFailedError,
         dispatch_node_effects,
@@ -1233,6 +1213,13 @@ def test_discard_uses_graph_ancestry_through_real_dispatch(
 
     _root, universe_dir = _empty_universe(tmp_path)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(_root))
+    # The run's admitted owner-box session, as a production turn carries it:
+    # bound for the signed-in owner, because the real worker validates that.
+    assert _owner_box_double is not None, "the owner box double needs Linux"
+    session = binding.use_binding(binding.bind_session(
+        provider=_owner_box_double, limits=ExecLimits(), universe_dir=universe_dir,
+        owner=_principal(), execution_id="dispatch-discard"))
+    session.__enter__()
     live_chain = EffectChain(
         run_id="dispatch-discard", base_path=str(universe_dir), universe_id=UNIVERSE,
     )
@@ -1275,6 +1262,7 @@ def test_discard_uses_graph_ancestry_through_real_dispatch(
     finally:
         live_chain.settle()
         forget_effect_chain(live_chain.run_id)
+        session.__exit__(None, None, None)
 
 
 def test_a_permanent_create_needs_a_name_and_uses_its_own_key_namespace(
@@ -1334,7 +1322,7 @@ def test_a_second_permanent_create_refuses_rather_than_wiping_the_first(
         node_id="n0",
     )
     assert first.get("error_kind") is None, first
-    kept = Path(chain.workspace_mount_or_none("n0").lease.path)
+    kept = _host(universe_dir, chain.workspace_mount_or_none("n0").lease.path)
     (kept / "repo" / "rows.csv").write_text("1,2,3", encoding="utf-8")
 
     second = _run(
@@ -1493,8 +1481,9 @@ def test_admission_and_the_sweep_agree_on_one_scratch_root(tmp_path: Path) -> No
     universe_dir.mkdir(parents=True)
     root = _runs._ensure_scratch_root(universe_dir)
     assert root == wse.scratch_pool_root(universe_dir)
-    assert root == universe_dir / "workspaces" / "scratch"
-    assert not root.exists(), "the pool root is the owner cell's to create"
+    # The guest path inside the owner box: /cc/<center>/workspaces/scratch.
+    assert root == wse._lease_center_root(universe_dir) / "workspaces" / "scratch"
+    assert not _host(universe_dir, root).exists(), "the pool root is the owner box's to create"
 
 
 def test_the_universe_root_is_the_universe_not_its_workspaces_dir(
@@ -1503,14 +1492,16 @@ def test_the_universe_root_is_the_universe_not_its_workspaces_dir(
     """`universe_paths` appends `workspaces/` itself; passing it again made
     `workspaces/workspaces/...` (Codex round 2, P0 #1)."""
     from tinyassets import workspace_pool
+    from tinyassets.boxes.provider import BOX_ROOT
 
     _root, universe_dir = _setup(tmp_path)
-    assert wse.universe_workspace_root(universe_dir) == universe_dir
+    # The universe's guest root inside its owner box, never its workspaces dir.
+    assert wse.universe_workspace_root(universe_dir) == Path(BOX_ROOT) / universe_dir.name
     result = _run(tmp_path, _packet(storage="universe"), universe_dir=universe_dir, chain=chain)
     assert result.get("error_kind") is None, result
     mount = chain.workspace_mount_or_none("n1")
     expected, _quarantine = workspace_pool.universe_paths(
-        universe_dir, mount.repo_key, mount.generation
+        Path(BOX_ROOT) / universe_dir.name, mount.repo_key, mount.generation
     )
     assert Path(mount.lease.path) == expected
     assert "workspaces/workspaces" not in Path(mount.lease.path).as_posix()
@@ -2285,8 +2276,12 @@ def _with_mount(
     It lives where a real scratch lease lives, INSIDE the command center: the
     cell is bound to that center and the push request names the lease
     relative to it, so a lease anywhere else is refused by construction.
+    The pool names it by its GUEST path (``/cc/<center>/...``); on the box
+    double that is the same directory under the test's data root.
     """
-    lease_dir = tmp_path / "data" / UNIVERSE / "workspaces" / "scratch" / ("c" * 32)
+    relative = Path("workspaces") / "scratch" / ("c" * 32)
+    lease_dir = tmp_path / "data" / UNIVERSE / relative
+    guest_dir = wse._lease_center_root(tmp_path / "data" / UNIVERSE) / relative
     (lease_dir / "repo" / ".tiny-export").mkdir(parents=True)
     (lease_dir / "repo" / ".tiny-export" / f"{SHA}.bundle").write_bytes(b"PACK-export")
 
@@ -2295,14 +2290,14 @@ def _with_mount(
         storage_class = "scratch"
         repo_key = "github.com--owner--name"
         generation = 1
-        path = lease_dir
+        path = guest_dir
 
     chain.register_workspace(
         node_id,
         WorkspaceMount(
             node_id=node_id,
-            bind_source=str(lease_dir / "repo"),
-            lease_fd=f"fd:{lease_dir}",
+            bind_source=str(guest_dir / "repo"),
+            lease_fd=None,
             lease=FakeLease(),
             storage_class="scratch",
             repo_key="github.com--owner--name",
@@ -2575,7 +2570,7 @@ def test_dry_run_describes_and_spawns_nothing(
     assert result["dry_run"] is True
     assert result["op"] == "checkout"
     assert worker.requests == [], "a dry run reaches no cell"
-    assert fs_spy["open_dir_nofollow"] == [], "and opens no lease"
+    assert fs_spy["stat"] == [], "and checks no lease"
     assert chain.workspace_mount_or_none("n1") is None
 
 
@@ -2827,15 +2822,18 @@ def test_provision_execution_reserved_before_wire_and_published_only_on_success(
 ):
     import sqlite3
 
-    from tinyassets import node_sandbox, workspace_provision_execution, workspace_resolver
+    from tinyassets import workspace_provision_execution, workspace_resolver
+    from tinyassets.boxes.provider import BoxError
     from tinyassets.workspace_provision import admit_requirements
     _, universe = _setup(tmp_path, consents=("checkout", "provision"))
     manifests = workspace_resolver.ProvisionManifests(admit_requirements(
         "example==1.0 --hash=sha256:" + "a" * 64), None)
     calls = []
-    def read(fd, **kwargs):
+    def read(**kwargs):
         calls.append("read")
         assert chain.workspace_mount_or_none("n1") is None
+        # The manifest is read through the admitted owner box, never a host fd.
+        assert callable(kwargs.pop("reader"))
         assert kwargs == {"python_path": "requirements.txt", "node": False}
         return manifests
     def execute(admitted, **kwargs):
@@ -2854,7 +2852,7 @@ def test_provision_execution_reserved_before_wire_and_published_only_on_success(
                 "AND kind='bytes'", ("%:provision:%",)).fetchone()
         assert (amount, reserved) == (kwargs["max_transfer_bytes"], 1)
         if failure == "unknown_death":
-            raise node_sandbox.SandboxTerminationError("unknown lifecycle")
+            raise BoxError("unknown lifecycle")
         return workspace_provision_execution.ProvisionResult(failure, 123)
     monkeypatch.setattr(workspace_resolver, "read_provision_manifests", read)
     monkeypatch.setattr(workspace_provision_execution, "execute_provision", execute)
@@ -2897,13 +2895,18 @@ def test_each_new_provision_attempt_reserves_again_after_prior_refund(tmp_path, 
         assert amounts == [(1000,)]
         return workspace_provision_execution.ProvisionResult(None, 123)
     monkeypatch.setattr(workspace_provision_execution, "execute_provision", execute)
+    from tinyassets.control_plane import binding
+
+    lease = SimpleNamespace(
+        reserved_bytes=1000,
+        path=wse._lease_center_root(universe) / "workspaces" / "scratch" / ("a" * 32))
     for _ in range(2):
-        result = wse._provision_checkout(
-            {"python": "requirements.txt"}, base_path=universe, principal=_principal(),
-            resource=SimpleNamespace(connection_id="conn-git"), host=HOST, repo=REPO,
-            lease=SimpleNamespace(reserved_bytes=1000), lease_fd=3, repo_fd=4,
-            run_id="same-run", node_id="same-node", universe_id=UNIVERSE,
-            timeout_seconds=10, should_cancel=None)
+        with binding.use_binding(binding.file_binding(universe)):
+            result = wse._provision_checkout(
+                {"python": "requirements.txt"}, base_path=universe, principal=_principal(),
+                resource=SimpleNamespace(connection_id="conn-git"), host=HOST, repo=REPO,
+                lease=lease, run_id="same-run", node_id="same-node", universe_id=UNIVERSE,
+                timeout_seconds=10, should_cancel=None)
         assert result["provision"] == "completed"
     with sqlite3.connect(wse._pool_db(universe)) as db:
         rows = db.execute(

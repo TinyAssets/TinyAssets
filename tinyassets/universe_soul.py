@@ -237,9 +237,6 @@ def write_universe_soul(
     caller that tries gets silent success — reported by cross-family review
     2026-08-05.
     """
-    from tinyassets.role_center_admission import ensure_center_dir
-
-    ensure_center_dir(universe_dir)
     # Collapse the persona name to a single line: a multiline name would inject
     # spurious meta lines / corrupt soul.md (Codex review 2026-06-25).
     name = " ".join(name.split())

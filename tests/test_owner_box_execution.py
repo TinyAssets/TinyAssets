@@ -330,7 +330,8 @@ def test_channel_detach_keeps_work_and_reconnected_handle_alive(runtime):
 def cli_config():
     return {"home_dir": "test-cli", "workdir": "/agent-home/jobs/" + "a" * 32,
             "auth_files": {"auth.json": b"old-private-material"}, "nonce": "b" * 32,
-            "catalogue_rewrite": None, "requested_model": None, "custody": "d" * 64}
+            "catalogue_rewrite": None, "requested_model": None, "custody": "d" * 64,
+            "env_from_file": {}}
 
 
 def cli_frames(*, nonce="b" * 32, code=0):

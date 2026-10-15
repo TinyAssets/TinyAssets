@@ -65,9 +65,21 @@ def _owner_key(ledger, principal):
     return current
 
 
-def local_operation(ledger, *, principal, command_center, document):
-    from tinyassets.browser_egress import origin
+def origin(url):
+    """The public HTTPS origin of a browser connection URL."""
+    from urllib.parse import urlsplit
 
+    if not isinstance(url, str) or len(url) > 8192:
+        raise ValueError('invalid browser URL')
+    parsed = urlsplit(url)
+    if (parsed.scheme != 'https' or not parsed.hostname or parsed.username
+            or parsed.password or parsed.port not in (None, 443)
+            or any(ord(c) < 33 for c in url) or '\\' in url):
+        raise ValueError('browser requires public HTTPS')
+    return 'https://' + parsed.hostname.lower()
+
+
+def local_operation(ledger, *, principal, command_center, document):
     action = document.get('action')
     ident = document.get('id', '')
     if (action not in {'create', 'list', 'read', 'save', 'revoke', 'capture', 'cancel'}

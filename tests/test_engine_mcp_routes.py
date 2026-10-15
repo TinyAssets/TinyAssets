@@ -6,7 +6,6 @@ import json
 import os
 import sqlite3
 from dataclasses import FrozenInstanceError
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -99,18 +98,22 @@ def _cli_uses_http(kind, tmp_path, *, root=None):
 
     from tinyassets import credential_vault
     from tinyassets.providers.claude_provider import _engine_mcp_flags
+    from tinyassets.providers.owned_process import launch_scope
 
     snapshot = tmp_path / "u-a" / ".runtime" / "provider-launch-credentials" / "claude-1"
     snapshot.mkdir(parents=True, exist_ok=True)
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(credential_vault, "_write_exclusive_snapshot_file",
                       lambda path, data: path.write_bytes(data))
-        flags = _engine_mcp_flags(replace(_config(), credential_snapshot_dir=snapshot),
-                                  tmp_path / "u-a")
+        # The route is sealed only into an admitted launch's leased snapshot.
+        with launch_scope(tmp_path / "u-a", owner="actor-a", service="claude-code",
+                          credential_dir=snapshot, operation_id="op-route"):
+            flags = _engine_mcp_flags(replace(_config(), credential_snapshot_dir=snapshot),
+                                      tmp_path / "u-a")
     # No route is no engine at all: there is no stdio fallback to run instead.
     if not flags:
         return False
-    data = json.loads(Path(flags[1]).read_text(encoding="utf-8"))
+    data = json.loads((snapshot / "engine-mcp.json").read_text(encoding="utf-8"))
     return "url" in data["mcpServers"]["tinyassets"]
 
 

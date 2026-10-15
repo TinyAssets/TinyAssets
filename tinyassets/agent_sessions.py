@@ -44,7 +44,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tinyassets.providers.provider_jail import PLATFORM_RUNTIME_DIR
+from tinyassets.boxes.layout import PLATFORM_RUNTIME_DIR
 
 logger = logging.getLogger(__name__)
 

@@ -211,11 +211,11 @@ def run(agent, observer=None, *, greeting=False):
     )
 
 
-def test_owner_split_served_turn_selects_engine_tools_before_inference(agent, monkeypatch):
+def test_owner_box_served_turn_selects_engine_tools_before_inference(agent, monkeypatch):
     from tinyassets.control_plane.binding import use_binding
     from tinyassets.storage_layout import ACTIVE_BOX_LAYOUT
 
-    assert ACTIVE_BOX_LAYOUT == "owner-split"
+    assert ACTIVE_BOX_LAYOUT == "owner-box"
     monkeypatch.setattr(provider_calls, "make_interactive_agent_turn", actual_make_turn)
     with use_binding(None):
         assert run(agent) == "finished exact answer"

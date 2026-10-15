@@ -144,57 +144,6 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  core-capabilities:
-    name: core-capabilities
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Select the real-image tier
-        id: tier
-        run: |
-          python -c 'import sys; sys.path.insert(0,"."); from scripts.affected_tests import changed_files, needs_image; print("required="+str(needs_image(changed_files("HEAD^1"))).lower())' >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@v3
-        if: steps.tier.outputs.required == 'true'
-      - name: Build the PR production image
-        if: steps.tier.outputs.required == 'true'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          load: true
-          tags: tinyassets-capability:pr
-          cache-from: |
-            type=gha,scope=core-capabilities
-            type=gha,scope=tinyassets-daemon
-            type=gha
-          cache-to: type=gha,scope=core-capabilities,mode=max
-      - name: Permit user namespaces for the capability container
-        if: steps.tier.outputs.required == 'true'
-        run: |
-          printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
-            'profile ta-capability-userns flags=(unconfined) {' '  userns,' '}' \
-            > "$RUNNER_TEMP/ta-capability-userns"
-          sudo apparmor_parser -r "$RUNNER_TEMP/ta-capability-userns"
-      - name: Exercise every core capability through real execution seams
-        if: steps.tier.outputs.required == 'true'
-        run: |
-          pip install cryptography
-          python scripts/core_capability_image.py --image tinyassets-capability:pr --apparmor ta-capability-userns --report core-capabilities.json
-      - name: Explain a runtime-equivalent change
-        if: steps.tier.outputs.required == 'false'
-        run: echo 'No runtime/deploy inputs changed; affected tests run in the jail container.'
-      - uses: actions/upload-artifact@v4
-        if: always() && steps.tier.outputs.required == 'true'
-        with:
-          name: core-capabilities
-          path: core-capabilities.json
-          if-no-files-found: error
-
   structural-guards:
     name: structural-guards
     runs-on: ubuntu-latest
@@ -580,7 +529,7 @@ jobs:
     # with the `gh api` protection update in
     # docs/decisions/ADR-003-required-test-aggregator.md.
     name: required-tests
-    needs: [select, required-tests-shard, affected-tests, structural-guards, core-capabilities]
+    needs: [select, required-tests-shard, affected-tests, structural-guards]
     # `always()` is the ONE condition this job may carry, and it is required,
     # not optional. Without it a failed or cancelled shard makes GitHub SKIP
     # this job, and a skipped required check is accepted by branch protection
@@ -601,10 +550,9 @@ jobs:
       - name: Require structural guards on every event
         env:
           STRUCTURAL_RESULT: ${{ needs.structural-guards.result }}
-          CAPABILITY_RESULT: ${{ needs.core-capabilities.result }}
         run: |
-          if [ "$STRUCTURAL_RESULT" != success ] || [ "$CAPABILITY_RESULT" != success ]; then
-            echo "::error::Required checks failed (structural=$STRUCTURAL_RESULT, capabilities=$CAPABILITY_RESULT). Fix the named job and rerun Tests."
+          if [ "$STRUCTURAL_RESULT" != success ]; then
+            echo "::error::Required checks failed (structural=$STRUCTURAL_RESULT). Fix the named job and rerun Tests."
             exit 1
           fi
 

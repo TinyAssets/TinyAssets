@@ -54,19 +54,24 @@ def test_job_receipt_distinguishes_resolved_and_unreported_model(tmp_path):
     assert row == ("gpt-6.1-sol", "gpt-6.1-sol", "", "unknown", "cli_reported")
 
 
-def test_native_job_retry_keeps_invocation_id_across_attempt_receipts(tmp_path, monkeypatch):
+def test_native_job_retry_keeps_invocation_id_across_attempt_receipts(tmp_path, monkeypatch,
+                                                                       _owner_box_double):
     from dataclasses import replace
 
+    from tinyassets.boxes.provider import ExecLimits
+    from tinyassets.control_plane.binding import bind_session, use_binding
     from tinyassets.external_agents import provider as native_provider
     from tinyassets.providers.base import ModelConfig
 
+    assert _owner_box_double is not None, "the owner box double needs Linux"
     center = tmp_path / "u-owner"
     center.mkdir()
     monkeypatch.setattr(native_provider, "resolve", lambda _: SimpleNamespace(row={
         "family": "openai", "auth": {"service": "codex"},
     }))
-    monkeypatch.setattr(native_provider, "_custody", lambda *_: SimpleNamespace(
-        service="codex", reference_digest="custody", universe_id=center.name))
+    monkeypatch.setattr(native_provider, "box_custody", lambda *_: SimpleNamespace(
+        service="codex", reference=SimpleNamespace(reference_digest="custody"),
+        universe_id=center.name))
     from tinyassets.control_plane import native_launch
 
     operation_ids = []
@@ -86,10 +91,13 @@ def test_native_job_retry_keeps_invocation_id_across_attempt_receipts(tmp_path, 
     config = ModelConfig(invocation_owner_user_id="owner", request_budget=budget,
                          request_attempt=1, native_model_id="gpt-6.1-sol")
     provider = native_provider.ExternalAgentProvider("codex")
+    binding = bind_session(provider=_owner_box_double, limits=ExecLimits(), universe_dir=center,
+                           owner="owner", execution_id="native-job-retry")
     for attempt in (1, 2):
-        assert asyncio.run(provider.complete(
-            "same prompt", "same system", replace(config, request_attempt=attempt),
-            universe_dir=center)) == "response"
+        with use_binding(binding):
+            assert asyncio.run(provider.complete(
+                "same prompt", "same system", replace(config, request_attempt=attempt),
+                universe_dir=center)) == "response"
     assert len(operation_ids) == 2 and operation_ids[0] == operation_ids[1]
 
 

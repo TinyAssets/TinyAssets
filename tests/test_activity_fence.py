@@ -193,62 +193,26 @@ def test_every_ta_request_is_refused_once_the_activity_stops(tmp_path):
     assert catalog == {"error": STOPPED}
 
 
-def test_a_running_command_is_killed_once_its_activity_stops(monkeypatch):
+def test_a_running_command_is_killed_once_its_activity_stops(tmp_path, _owner_box_double):
     """The rest of a bash command that yielded part-way does not keep acting:
-    the jail supervisor polls the activity and kills the command."""
-    import subprocess
-    import sys
-    import threading
+    the box bash polls the activity's stop check and kills the command."""
     import time
-    from types import SimpleNamespace
 
     from tinyassets import universe_tools
+    from tinyassets.boxes.provider import ExecLimits
+    from tinyassets.control_plane.binding import bind_session, use_binding
 
-    monkeypatch.setattr(universe_tools, "_tree", lambda pid: (1, 0))
-    monkeypatch.setattr(universe_tools, "_kill", lambda proc: proc.kill())
-    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    assert _owner_box_double is not None, "the owner box double needs Linux"
+    udir = tmp_path / "u"
+    udir.mkdir()
+    binding = bind_session(provider=_owner_box_double, limits=ExecLimits(), universe_dir=udir,
+                           owner="acct_alice", execution_id="activity-stop")
     stopped_at = time.monotonic() + 0.3
     started = time.monotonic()
-    try:
-        killed = universe_tools._watch(
-            proc, SimpleNamespace(over=threading.Event()), SimpleNamespace(breach=lambda: None),
-            limits=universe_tools.DEFAULT_LIMITS, wall=30.0, process_cap=64,
-            started=started,
+    with use_binding(binding):
+        out = universe_tools.bash(
+            udir, "sleep 30; echo past-the-stop", agent_id="a",
             stop=lambda: STOPPED if time.monotonic() >= stopped_at else None)
-    finally:
-        proc.kill()
-        proc.wait(timeout=5)
-    assert killed == "activity_stopped"
+    assert "activity stopped running" in out, out
     assert time.monotonic() - started < 5
-    run = universe_tools.ToolRun(exit_code=-9, output=b"", killed=killed, elapsed=0.4)
-    assert "activity stopped running" in universe_tools._trailer(
-        run, universe_tools.DEFAULT_LIMITS, 30.0)
-
-
-def test_the_command_that_yields_never_gets_past_its_ta_call():
-    """The yielding ``ta`` request is answered only after the jail is dead, so
-    no later line of that command runs; other requests pass straight through."""
-    import threading
-    import time
-
-    from tinyassets.universe_tools import _halting
-
-    state = {"stopped": False}
-
-    def dispatch(message):
-        if message.get("name") == "write_graph":
-            state["stopped"] = True          # the owner request this call raised
-        return {"result": message.get("name")}
-
-    ended = threading.Event()
-    halting = _halting(dispatch, lambda: STOPPED if state["stopped"] else None, ended)
-    assert halting({"name": "read_graph"}) == {"result": "read_graph"}
-    answers = []
-    worker = threading.Thread(target=lambda: answers.append(halting({"name": "write_graph"})))
-    worker.start()
-    time.sleep(0.3)
-    assert answers == [], "the yielding call was answered while the jail still ran"
-    ended.set()
-    worker.join(timeout=5)
-    assert answers == [{"error": STOPPED}]
-    assert _halting(dispatch, None, ended) is dispatch
+    assert "past-the-stop" not in out

@@ -1,4 +1,4 @@
-"""Provisioning must refuse before any cell or registry relay starts."""
+"""Provisioning must refuse before the owner box is consulted or a process starts."""
 import pytest
 
 from tinyassets import workspace_provision_execution as execution
@@ -18,7 +18,7 @@ def test_unadmitted_manifests_never_start_a_process(monkeypatch, tmp_path):
     monkeypatch.setattr('subprocess.Popen', forbidden)
     with pytest.raises(ValueError, match='admitted manifests'):
         execution.execute_provision(
-            object(), lease_fd=3, repo_fd=4, max_transfer_bytes=1, storage_bound=1,
+            object(), lease_path=tmp_path / 'lease', max_transfer_bytes=1, storage_bound=1,
             timeout_s=1, cancelled=lambda: False, universe_dir=tmp_path, principal='alice')
 
 
@@ -26,8 +26,8 @@ def test_unadmitted_manifests_never_start_a_process(monkeypatch, tmp_path):
 def test_invalid_deadline_refuses_before_admission(monkeypatch, tmp_path, timeout):
     def forbidden(*args, **kwargs):
         pytest.fail('invalid deadline reached owner admission')
-    monkeypatch.setattr('tinyassets.role_remote_git._scope', forbidden)
+    monkeypatch.setattr('tinyassets.control_plane.binding.current_binding', forbidden)
     with pytest.raises(ValueError, match='deadline'):
         execution.execute_provision(
-            plans(), lease_fd=3, repo_fd=4, max_transfer_bytes=1, storage_bound=1,
+            plans(), lease_path=tmp_path / 'lease', max_transfer_bytes=1, storage_bound=1,
             timeout_s=timeout, cancelled=lambda: False, universe_dir=tmp_path, principal='alice')

@@ -30,6 +30,19 @@ pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 @pytest.fixture
+def center(tmp_path, monkeypatch):
+    """A command center with its owner's box session bound: code nodes run there."""
+    from tinyassets.control_plane import binding as binding_module
+
+    data_root = tmp_path / "data"
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
+    cc = data_root / "cc-runner"
+    cc.mkdir(parents=True)
+    with binding_module.use_binding(binding_module.file_binding(cc)):
+        yield cc
+
+
+@pytest.fixture
 def runner_env(tmp_path, monkeypatch, authenticate_request):
     base = tmp_path / "output"
     base.mkdir()
@@ -222,7 +235,7 @@ def test_compiler_runs_owner_code_unapproved_and_refuses_foreign_code():
             actor="victim", universe_id="u", caller_provenance="public-foreign"))
 
 
-def test_compiler_accepts_approved_source_code():
+def test_compiler_accepts_approved_source_code(center):
     from langgraph.checkpoint.memory import InMemorySaver
 
     from tinyassets.graph_compiler import compile_branch
@@ -242,13 +255,13 @@ def test_compiler_accepts_approved_source_code():
         {"name": "x", "type": "int"},
         {"name": "out", "type": "int"},
     ]
-    compiled = compile_branch(b)
+    compiled = compile_branch(b, base_path=center)
     app = compiled.graph.compile(checkpointer=InMemorySaver())
     result = app.invoke({"x": 5}, config={"configurable": {"thread_id": "t1"}})
     assert result["out"] == 6
 
 
-def test_source_code_node_can_call_allowed_mcp_action(monkeypatch):
+def test_source_code_node_can_call_allowed_mcp_action(monkeypatch, center):
     from langgraph.checkpoint.memory import InMemorySaver
 
     import tinyassets.api.market as market
@@ -288,7 +301,7 @@ def test_source_code_node_can_call_allowed_mcp_action(monkeypatch):
         {"name": "goal_id", "type": "str"},
         {"name": "leaderboard_count", "type": "int"},
     ]
-    compiled = compile_branch(b)
+    compiled = compile_branch(b, base_path=center)
     app = compiled.graph.compile(checkpointer=InMemorySaver())
     result = app.invoke(
         {"goal_id": "g1"}, config={"configurable": {"thread_id": "mcp-ok"}},
@@ -298,7 +311,7 @@ def test_source_code_node_can_call_allowed_mcp_action(monkeypatch):
     assert calls == [("leaderboard", {"goal_id": "g1", "metric": "run_count"})]
 
 
-def test_source_code_node_rejects_mcp_action_not_in_tools_allowed(monkeypatch):
+def test_source_code_node_rejects_mcp_action_not_in_tools_allowed(monkeypatch, center):
     from langgraph.checkpoint.memory import InMemorySaver
 
     import tinyassets.api.market as market
@@ -327,7 +340,7 @@ def test_source_code_node_rejects_mcp_action_not_in_tools_allowed(monkeypatch):
         EdgeDefinition(from_node="only", to_node="END"),
     ]
     b.state_schema = [{"name": "out", "type": "str"}]
-    compiled = compile_branch(b)
+    compiled = compile_branch(b, base_path=center)
     app = compiled.graph.compile(checkpointer=InMemorySaver())
 
     with pytest.raises(CompilerError) as exc_info:
@@ -335,7 +348,7 @@ def test_source_code_node_rejects_mcp_action_not_in_tools_allowed(monkeypatch):
     assert "not allowed" in str(exc_info.value)
 
 
-def test_source_code_node_can_call_wiki_read(monkeypatch):
+def test_source_code_node_can_call_wiki_read(monkeypatch, center):
     from langgraph.checkpoint.memory import InMemorySaver
 
     import tinyassets.api.wiki as wiki_mod
@@ -371,7 +384,7 @@ def test_source_code_node_can_call_wiki_read(monkeypatch):
         {"name": "q", "type": "str"},
         {"name": "n", "type": "int"},
     ]
-    compiled = compile_branch(b)
+    compiled = compile_branch(b, base_path=center)
     app = compiled.graph.compile(checkpointer=InMemorySaver())
     result = app.invoke(
         {"q": "backlog"}, config={"configurable": {"thread_id": "wiki-ok"}},
@@ -381,7 +394,7 @@ def test_source_code_node_can_call_wiki_read(monkeypatch):
     assert calls == [("search", {"query": "backlog"})]
 
 
-def test_source_code_node_cannot_call_wiki_write(monkeypatch):
+def test_source_code_node_cannot_call_wiki_write(monkeypatch, center):
     from langgraph.checkpoint.memory import InMemorySaver
 
     import tinyassets.api.wiki as wiki_mod
@@ -410,7 +423,7 @@ def test_source_code_node_cannot_call_wiki_write(monkeypatch):
         EdgeDefinition(from_node="only", to_node="END"),
     ]
     b.state_schema = [{"name": "out", "type": "str"}]
-    compiled = compile_branch(b)
+    compiled = compile_branch(b, base_path=center)
     app = compiled.graph.compile(checkpointer=InMemorySaver())
 
     # 'wiki.write' is not in the alias allow-list at all — unsupported action.
@@ -419,7 +432,7 @@ def test_source_code_node_cannot_call_wiki_write(monkeypatch):
     assert "unsupported MCP action" in str(exc_info.value)
 
 
-def test_node_wiki_dispatch_blocks_write_even_if_aliased(monkeypatch):
+def test_node_wiki_dispatch_blocks_write_even_if_aliased(monkeypatch, center):
     from langgraph.checkpoint.memory import InMemorySaver
 
     import tinyassets.api.wiki as wiki_mod
@@ -454,7 +467,7 @@ def test_node_wiki_dispatch_blocks_write_even_if_aliased(monkeypatch):
         EdgeDefinition(from_node="only", to_node="END"),
     ]
     b.state_schema = [{"name": "out", "type": "str"}]
-    compiled = compile_branch(b)
+    compiled = compile_branch(b, base_path=center)
     app = compiled.graph.compile(checkpointer=InMemorySaver())
 
     with pytest.raises(CompilerError) as exc_info:
@@ -477,7 +490,7 @@ def test_branch_spec_preserves_tools_allowed():
     assert branch.node_defs[0].tools_allowed == ["goals.leaderboard"]
 
 
-def test_compiler_synthesized_typeddict_reducer_append():
+def test_compiler_synthesized_typeddict_reducer_append(center):
     """state_schema with reducer=append should accumulate across nodes."""
     from langgraph.checkpoint.memory import InMemorySaver
 
@@ -506,7 +519,7 @@ def test_compiler_synthesized_typeddict_reducer_append():
     b.state_schema = [
         {"name": "log", "type": "list", "reducer": "append"},
     ]
-    compiled = compile_branch(b)
+    compiled = compile_branch(b, base_path=center)
     app = compiled.graph.compile(checkpointer=InMemorySaver())
     result = app.invoke(
         {"log": ["start"]}, config={"configurable": {"thread_id": "acc1"}},

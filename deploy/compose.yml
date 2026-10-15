@@ -125,29 +125,21 @@ services:
     # fails. Containment, not automatic recovery.
     mem_limit: 4g
     memswap_limit: 4g
+    # Owner box (ADR-022): the daemon is unprivileged from its first
+    # instruction. Owner code never runs in this container; it runs in the
+    # owner's gVisor box under boxhostd on the host, reached through the
+    # bootstrap socket mounted read-only below. The credential broker is its
+    # own service (uid 1002). No capability, no unconfined profile, no
+    # privilege escalation anywhere in the daemon.
     security_opt:
-      - seccomp=unconfined
-      - apparmor=unconfined
-      # Served codex turns run inside a bubblewrap sandbox that mounts a fresh
-      # procfs in its own namespace; Docker's default masked/read-only /proc
-      # paths make that mount EPERM ("bwrap: Can't mount proc", live
-      # 2026-08-21). Unconfined system paths let the inner sandbox exist; every
-      # serving process is unprivileged once PID1 retires (below).
-      - systempaths=unconfined
-      # With system paths unconfined, keep the rest of the posture tight: no
-      # privilege escalation (bwrap uses unprivileged user namespaces).
       - no-new-privileges=true
-    # Owner split: PID1 starts as root holding ONLY the D70 bootstrap's four
-    # capabilities. It refuses an unmigrated volume, forks the broker (uid 1002)
-    # and the bounded mapper (owner uids 300001-399999 in its user namespace),
-    # then retires to the capability-free daemon (uid 1001) before importing
-    # the application. deploy/role_launcher.py ENTRY_CAPS and ta_op.c MASK are
-    # the same set; nothing here ever holds SYS_ADMIN, CHOWN or DAC_OVERRIDE.
-    user: "0:0"
+    user: "1001:1001"
+    # 1100 work, 1101 broker IPC, 1102 broker-readable platform files.
+    group_add: ["1100", "1101", "1102"]
     cap_drop:
       - ALL
-    cap_add: [KILL, SETGID, SETUID, SETPCAP]
-    # Image CMD runs /usr/local/libexec/ta-launch.py (the PID1 bootstrap).
+    # Image CMD runs /usr/local/libexec/ta-box-entry.py, which admits only a
+    # committed owner-box layout and execs the unprivileged frontend.
     # Expose loopback only; cloudflared reaches via Docker network.
     ports:
       - "127.0.0.1:8001:8001"
@@ -197,28 +189,52 @@ services:
       - /etc/tinyassets/app-ingress.env
     volumes:
       - tinyassets-data:/data
-      # Separate broker-only keys. Never included in data-volume backups.
-      - tinyassets-browser-keys:/var/lib/ta-broker
+      # boxhostd's bootstrap and admission sockets; the daemon only connects.
+      - /run/tinyassets-boxhostd:/run/tinyassets-boxhostd:ro
     healthcheck:
       # Liveness from release facts as the canary service principal. The token
       # is installed in /etc/tinyassets/env by deploy-prod before compose starts;
       # the tool surface is proved separately by the full authenticated probes.
-      # Drop-first: the exec starts as root with the bootstrap's four caps;
-      # ta-op verifies exactly that set, retires to uid/gid 1001 with every
-      # capability set empty and NNP on, then runs the canary argv
-      # (deploy/native/ta_op.c). ROLLBACK PAIRING: this probe needs the ta-op
-      # binary, which arrives with the image. deploy_fail_safe.sh's bundle
-      # transaction restores this file BEFORE rolling the image back, so the
-      # normal rollback keeps the pair compatible. An image-only or manual
-      # downgrade does NOT — see deploy/DEPLOY.md § Rolling back.
-      test: ["CMD", "/usr/local/libexec/ta-op", "pulse"]
+      # The container is already uid 1001 with no capability, so the probe is
+      # the canary itself.
+      test: [CMD, /opt/venv/bin/python, /app/scripts/mcp_public_canary.py,
+             --pulse-only, --url, "http://127.0.0.1:8001/mcp", --timeout, "10"]
       interval: 30s
       timeout: 15s
       retries: 3
       start_period: 60s
+    depends_on:
+      broker:
+        condition: service_started
     labels:
       org.tinyassets.component: daemon
       org.tinyassets.role: mcp-server
+
+  broker:
+    # The credential broker: the one process that holds connection secrets
+    # and the owner-box egress floor. Same immutable image, its own identity.
+    image: ${TINYASSETS_IMAGE:?Set immutable TINYASSETS_IMAGE}
+    container_name: tinyassets-broker
+    user: "1002:1002"
+    group_add: ["1102"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges=true"]
+    restart: unless-stopped
+    mem_limit: 512m
+    memswap_limit: 512m
+    entrypoint: [/opt/venv/bin/python, -I, -B, /app/broker_main.py]
+    command: [--socket, /run/tinyassets-boxhostd/broker/broker.sock,
+              --state, /data/.broker/state, --data-root, /data,
+              --owner-uid, "1001", --box-host]
+    volumes:
+      - tinyassets-data:/data
+      # Separate broker-only keys. Never included in data-volume backups.
+      - tinyassets-browser-keys:/var/lib/ta-broker
+      - /run/tinyassets-boxhostd:/run/tinyassets-boxhostd
+    logging: *tinyassets_log_forwarding
+    labels:
+      org.tinyassets.component: broker
+      org.tinyassets.role: credential-broker
 
   cloudflared:
     # Official image, pinned to a known-stable tag + digest. Bump by

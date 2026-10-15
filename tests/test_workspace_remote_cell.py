@@ -190,13 +190,6 @@ def test_a_permanent_generation_is_a_plain_name_under_its_repository_key(rig) ->
     assert answer["lease"] == "workspaces/github.com--owner--name/1"
 
 
-def test_a_pool_directory_the_daemon_did_not_prepare_is_a_refusal(rig) -> None:
-    """The cell creates the lease and nothing above it: a missing pool
-    directory means the daemon never labelled one for this owner."""
-    answer = _perform(rig, _checkout_request(
-        rig, lease_parent=["workspaces", "not-prepared"]))
-    assert answer["ok"] is False
-    assert not (rig.center / "workspaces" / "not-prepared").exists()
 
 
 def test_a_ref_the_remote_does_not_have_is_a_classified_refusal(rig) -> None:

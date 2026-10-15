@@ -6,7 +6,20 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from pathlib import Path
+
+LEGACY_LAUNCHER = Path("/usr/local/libexec/ta-launch.py")
+
+
+def _legacy(reason: str) -> list[str]:
+    if not LEGACY_LAUNCHER.is_file():
+        raise SystemExit(
+            f"startup refused: the data volume is not migrated to the owner-box layout "
+            f"({reason}); this image serves only owner-box data. Run the one-shot box "
+            "migration through deploy/deploy_fail_safe.sh or restore the paired backup."
+        )
+    return ["/opt/venv/bin/python", "-I", "-B", str(LEGACY_LAUNCHER)]
 
 
 def target(data: Path) -> list[str]:
@@ -15,7 +28,7 @@ def target(data: Path) -> list[str]:
         info = marker.lstat()
     except FileNotFoundError:
         # The existing launcher owns fresh-volume initialization.
-        return ["/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-launch.py"]
+        return _legacy("no layout marker")
     if not stat.S_ISREG(info.st_mode):
         raise RuntimeError("data layout marker is not a regular file")
     document = json.loads(marker.read_text(encoding="utf-8"))
@@ -23,7 +36,7 @@ def target(data: Path) -> list[str]:
         raise RuntimeError("data layout migration is incomplete")
     box_layout = document.get("box_layout", "owner-split")
     if box_layout == "owner-split":
-        return ["/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-launch.py"]
+        return _legacy("owner-split marker")
     if box_layout == "owner-box":
         if os.geteuid() != 1001:
             raise RuntimeError("owner-box daemon must start unprivileged")
@@ -32,7 +45,11 @@ def target(data: Path) -> list[str]:
 
 
 def main() -> None:
-    argv = target(Path(os.environ.get("TINYASSETS_DATA_DIR", "/data")))
+    try:
+        argv = target(Path(os.environ.get("TINYASSETS_DATA_DIR", "/data")))
+    except SystemExit as refused:
+        print(refused, file=sys.stderr, flush=True)
+        raise SystemExit(78) from None
     os.execv(argv[0], argv)
 
 

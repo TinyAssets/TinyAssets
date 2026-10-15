@@ -14,10 +14,22 @@ entry = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(entry)
 
 
-def test_owner_split_uses_existing_launcher(tmp_path):
-    assert entry.target(tmp_path)[-1] == "/usr/local/libexec/ta-launch.py"
+def test_owner_split_uses_existing_launcher(tmp_path, monkeypatch):
+    launcher = tmp_path / "ta-launch.py"
+    launcher.write_text("")
+    monkeypatch.setattr(entry, "LEGACY_LAUNCHER", launcher)
+    assert entry.target(tmp_path)[-1] == str(launcher)
     (tmp_path / ".layout.json").write_text('{"layout": 2, "state": "stable"}')
-    assert entry.target(tmp_path)[-1] == "/usr/local/libexec/ta-launch.py"
+    assert entry.target(tmp_path)[-1] == str(launcher)
+
+
+def test_an_image_without_the_legacy_launcher_refuses_unmigrated_data(tmp_path, monkeypatch):
+    monkeypatch.setattr(entry, "LEGACY_LAUNCHER", tmp_path / "absent")
+    with pytest.raises(SystemExit, match="startup refused: the data volume is not migrated"):
+        entry.target(tmp_path)
+    (tmp_path / ".layout.json").write_text('{"layout": 2, "state": "stable"}')
+    with pytest.raises(SystemExit, match="owner-split marker"):
+        entry.target(tmp_path)
 
 
 def test_owner_box_requires_unprivileged_frontend(tmp_path, monkeypatch):

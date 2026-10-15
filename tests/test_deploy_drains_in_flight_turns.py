@@ -70,11 +70,12 @@ def _workflow_job_timeout_s() -> int:
     assert match, "the deploy job's timeout-minutes moved; re-point this"
     steps = yaml.safe_load(text)["jobs"]["deploy"]["steps"]
     wait = next(s for s in steps if s.get("name") == "Wait for in-flight turns")
-    # The post-deploy content repair runs after the converges with its own
-    # bounded step timeout, so its share is not deploy work either.
-    repair = next(s for s in steps if s.get("name") == "Repair owner content online")
+    # The job reserves its owner-box backup verification/repair share apart
+    # from deploy work; the workflow states that share beside its timeout.
+    reserve = re.search(r"(\d+) for backup verification/repair", text)
+    assert reserve, "the deploy job's backup reservation moved; re-point this"
     return (int(match.group(1)) - int(wait["timeout-minutes"])
-            - int(repair["timeout-minutes"])) * 60
+            - int(reserve.group(1))) * 60
 
 
 def _health_timeout_s() -> int:

@@ -224,7 +224,7 @@ def in_process_broker(request, monkeypatch):
         yield None
         return
 
-    from tinyassets import role_modes
+    from tinyassets.boxes import layout as role_modes
     from tinyassets.broker import supervisor
 
     if os.getuid() != 0:
