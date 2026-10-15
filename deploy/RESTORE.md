@@ -181,7 +181,9 @@ matching archive through `BOX_BACKUP_FILE` and a registry export through
 temporary XFS store.
 For a data backup from before box-store pairing, set
 `ALLOW_PRE_STORE_BACKUP=1` when the box member is absent. The restore logs this
-allowance and retains the current box trees.
+allowance and retains the current box trees only when neither the staged archive
+nor the live volume has an owner-box layout marker. An owner-box layout requires
+its paired box-store archive.
 
 The restore script stops boxhostd and retains old owner trees in
 `.tinyassets-box-restore-old.*` on the store. After checking both restored

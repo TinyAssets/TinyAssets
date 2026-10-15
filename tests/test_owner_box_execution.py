@@ -368,6 +368,21 @@ def test_private_cli_writeback_stays_out_of_output_and_journal(runtime):
     assert len(state["launches"]) == 1
 
 
+def test_private_cli_ack_requires_received_writeback(runtime):
+    host, provider, handle, state = runtime
+    state["code"] = "sys.stdout.buffer.write(" + repr(cli_frames()) + ")"
+    ident = provider.start_cli(handle, "refresh", ["unused"], env={}, cli=cli_config())
+    collect(provider, handle, ident)
+    host.executions.private[ident] = None
+
+    with pytest.raises(BoxError, match="writeback was not received"):
+        provider.ack_cli(handle, ident)
+    assert host.state.lookup("alice", "refresh")["outcome"]["cli_ack"] is False
+    assert ident in host.executions.private
+    with pytest.raises(BoxError, match="unsettled"):
+        provider.start_cli(handle, "fresh-op", ["unused"], env={}, cli=cli_config())
+
+
 @pytest.mark.parametrize("failure", ["truncated", "foreign_nonce", "stop_failed"])
 def test_private_cli_unknown_writeback_never_recovers_or_replays(runtime, failure):
     host, provider, handle, state = runtime

@@ -352,6 +352,30 @@ if ! chown --reference="${VOLUME_DIR}" "${STAGE_DIR}" \
 fi
 log "  archive validated and staged at ${STAGE_DIR}"
 
+if [[ -e "${BOX_STORE_DIR}" && -z "${BOX_NAME:-}" && "$ALLOW_PRE_STORE_BACKUP" == 1 ]]; then
+    if ! python3 - "${STAGE_DIR}/.layout.json" "${VOLUME_DIR}/.layout.json" <<'PY'
+import json
+import pathlib
+import sys
+
+for name in sys.argv[1:]:
+    marker = pathlib.Path(name)
+    if marker.exists():
+        try:
+            layout = json.loads(marker.read_text()).get("box_layout")
+        except (OSError, ValueError, AttributeError) as exc:
+            print(f"invalid layout marker {name}: {exc}", file=sys.stderr)
+            raise SystemExit(1)
+        if layout == "owner-box":
+            print(f"owner-box layout requires a paired box-store archive: {name}", file=sys.stderr)
+            raise SystemExit(1)
+PY
+    then
+        log "ERROR: pre-store data restore refused by staged or live layout marker"
+        exit 4
+    fi
+fi
+
 if [[ -n "${BOX_NAME:-}" ]]; then
     archive_check="$(dirname "$(realpath "$0")")/box-store-archive.py"
     if [[ -n "${BOX_REMOTE}" ]]; then

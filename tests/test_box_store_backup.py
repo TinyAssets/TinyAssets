@@ -196,6 +196,34 @@ else:
     assert missing_pair.returncode == 2
     assert "paired box-store archive missing" in missing_pair.stdout
     env["ALLOW_PRE_STORE_BACKUP"] = "1"
+    marker = volume / ".layout.json"
+    marker.write_text('{"box_layout": "owner-box", "state": "stable"}')
+    guard_env = {**env, "BACKUP_FILE": str(data_archive)}
+    stopped_before = log.read_text().count("stop boxhostd.service")
+    live_owner_box = subprocess.run(
+        ["bash", str(ROOT / "deploy/backup-restore.sh")],
+        env=guard_env, capture_output=True, text=True,
+    )
+    assert live_owner_box.returncode == 4, live_owner_box.stdout + live_owner_box.stderr
+    assert "layout marker" in live_owner_box.stdout
+    assert log.read_text().count("stop boxhostd.service") == stopped_before
+    assert (volume / "record.txt").read_text() == "current"
+
+    owner_box_data = tmp_path / "owner-box-archive" / data_archive.name
+    owner_box_data.parent.mkdir()
+    with tarfile.open(owner_box_data, "w:gz") as archive:
+        archive.add(volume, arcname="_data")
+    marker.unlink()
+    staged_owner_box = subprocess.run(
+        ["bash", str(ROOT / "deploy/backup-restore.sh")],
+        env={**guard_env, "BACKUP_FILE": str(owner_box_data)},
+        capture_output=True, text=True,
+    )
+    assert staged_owner_box.returncode == 4, staged_owner_box.stdout + staged_owner_box.stderr
+    assert "layout marker" in staged_owner_box.stdout
+    assert log.read_text().count("stop boxhostd.service") == stopped_before
+    assert (volume / "record.txt").read_text() == "current"
+
     legacy = subprocess.run(
         ["bash", str(ROOT / "deploy/backup-restore.sh"), *restore_args],
         env=env, capture_output=True, text=True,

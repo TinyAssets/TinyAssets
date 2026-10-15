@@ -205,12 +205,12 @@ class Executions:
             if unknown or record["state"] != "done" or exec_id not in self.private:
                 raise BoxError("private CLI result unavailable; never replay refresh")
             result = self.private[exec_id]
+            if result is None:
+                raise BoxError("private CLI writeback was not received")
             if operation == "ack_cli":
                 host.state.acknowledge_cli(owner, record["op_id"])
                 del self.private[exec_id]
                 return None
-            if result is None:
-                raise BoxError("private CLI writeback was not received")
             return result
         running = self.running.get(exec_id)
         if operation == "stream":
