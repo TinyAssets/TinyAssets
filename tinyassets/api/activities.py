@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets import agent_activities as activities
-from tinyassets import storage_layout
 
 logger = logging.getLogger(__name__)
 
@@ -101,20 +100,17 @@ def read(base_path: Path, *, universe_id: str, activity_id: str = "", status: st
          cursor: str = "", after: int = 0) -> dict:
     """Every activity (paged), or one activity with one page of its status lines."""
     universe_dir = _universe_dir(base_path, universe_id)
-    marker = storage_layout.read_marker(Path(base_path)) or {}
-    failure = marker.get("activity_shape_failures", {}).get(universe_id)
-    notice = {"migration_error": failure} if failure else {}
     try:
         if activity_id:
             record = activities.get(universe_dir, activity_id)
             if record is None:
                 raise activities.ActivityRefused("No such activity.", kind="not_found")
             page = activities.events_page(universe_dir, activity_id, after=after)
-            return {**notice, "activity": _public(record), "events": page["events"],
+            return {"activity": _public(record), "events": page["events"],
                     "next_after": page["next_after"]}
         page = activities.list_page(universe_dir, status=status or None,
                                     cursor=cursor or None)
-        return {**notice, "activities": [_public(r) for r in page["activities"]],
+        return {"activities": [_public(r) for r in page["activities"]],
                 "next_cursor": page["next_cursor"]}
     except activities.ActivityRefused as exc:
         return {"error": exc.kind, "message": str(exc)}

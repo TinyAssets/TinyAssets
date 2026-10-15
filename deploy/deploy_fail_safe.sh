@@ -1950,7 +1950,7 @@ rm -f "$MIGRATION_DETAIL_FILE"
 # rc 4 (no marker) and rc 3 (unreadable, unstable, or unrecognized) refuse.
 # rc 0 on that candidate is a conflict. An owner-box candidate applies on
 # rc 10 after a fresh verified paired snapshot: either the one-shot box move
-# or the legacy Activities conversion within an already committed box layout.
+# or the one-time legacy Activities cutover within an already committed box layout.
 box_migration_container() {  # $1 = check|apply, then module arguments
   local posture=(--user 0)
   local data_mount="tinyassets-data:/data:ro"
@@ -2014,7 +2014,7 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
           if [ "$TURNS_IDLE_PROVED" != "1" ] || [ -z "$MIGRATION_SNAPSHOT" ]; then
             migration_refused "check=backup_verify move=box_layout_pending snapshot=${MIGRATION_SNAPSHOT:-unset}"
           fi
-          log "box layout: applying pending box or activity conversion using fresh snapshot ${MIGRATION_SNAPSHOT} (census, not the agent-files binding count)"
+          log "box layout: applying one-time box or activity cutover using fresh snapshot ${MIGRATION_SNAPSHOT} (census, not the agent-files binding count)"
           box_backup="tinyassets-box-store-${MIGRATION_SNAPSHOT#tinyassets-snapshot-}"
           box_apply="$(box_migration_container apply /data --store /box-store \
             --backup "/backup/${MIGRATION_SNAPSHOT}" \

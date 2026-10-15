@@ -18,6 +18,7 @@ from tinyassets import runs
 from tinyassets.storage import DB_FILENAME
 
 REASON = "Legacy Activities work could not be carried into the new agent session"
+UNAVAILABLE = "ended during the activity cutover: your box was unavailable; start it again"
 DEFAULT_PROMPT = (
     "You are working on one of your activities in the background; your owner "
     "is not in this chat.\n\nActivity: {title}\n\n{brief}\n\n"
@@ -63,8 +64,52 @@ def _pending(data: Path) -> list[str]:
                     "SELECT DISTINCT branch_def_id FROM runs "
                     "WHERE branch_def_id LIKE 'activities::%' "
                     "AND status IN ('queued','running','resumed')")}
-    pending = sorted(branch_centers | activity_centers | run_centers)
+    pending = sorted(center for center in branch_centers | activity_centers | run_centers
+                     if not _converted(data, center))
     return pending
+
+
+def _converted(data: Path, center: str) -> bool:
+    path = activities.store_path(data / center)
+    if any(part.is_symlink() for part in (path.parent.parent, path.parent, path)):
+        raise RuntimeError(f"unsafe activity record store {path}")
+    if not path.is_file():
+        return False
+    if path.stat().st_nlink != 1:
+        raise RuntimeError(f"linked activity record store {path}")
+    with _db(path) as db:
+        table = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='activity_shape_cutover'"
+        ).fetchone()
+        return bool(table and db.execute(
+            "SELECT 1 FROM activity_shape_cutover WHERE version=1"
+        ).fetchone())
+
+
+def _record_converted(data: Path, center: str) -> None:
+    path = activities.store_path(data / center)
+    for directory in (path.parent.parent, path.parent):
+        if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+            raise RuntimeError(f"unsafe activity record directory {directory}")
+        if not directory.exists():
+            directory.mkdir()
+            if hasattr(os, "chown"):
+                os.chown(directory, 1001, 1001)
+    if (path.is_symlink() or (path.exists() and not path.is_file())
+            or (path.exists() and path.stat().st_nlink != 1)):
+        raise RuntimeError(f"unsafe activity record store {path}")
+    new_store = not path.exists()
+    db = sqlite3.connect(path)
+    try:
+        db.execute("CREATE TABLE IF NOT EXISTS activity_shape_cutover "
+                   "(version INTEGER PRIMARY KEY CHECK(version=1))")
+        db.execute("INSERT OR IGNORE INTO activity_shape_cutover VALUES (1)")
+        db.commit()
+    finally:
+        db.close()
+    if new_store and hasattr(os, "chown"):
+        os.chown(path, 1001, 1001)
 
 
 def _write_owner_file(center: Path, name: str, text: str) -> None:
@@ -134,54 +179,56 @@ def _settle_center(data: Path, center: str, owner: str, reason: str) -> dict:
     root = data / center
     path = activities.store_path(root)
     converted = failed = 0
-    with _db(data / ".runs.db") as runs_db:
-        old_runs = runs_db.execute(
-            "SELECT run_id, status, owner_user_id, queue_universe_id FROM runs "
-            "WHERE branch_def_id=? "
-            "AND status IN ('queued','running','resumed')",
-            (f"activities::{center}",),
-        ).fetchall()
-        linked = set()
-        if path.is_file():
-            with activities._txn(root) as db:
-                db.row_factory = sqlite3.Row
-                rows = db.execute("SELECT * FROM activities WHERE status NOT IN "
-                                  "('completed','failed')").fetchall()
-                for row in rows:
-                    if row["owner_principal"] != owner:
-                        continue
-                    if row["runner_token"]:
-                        linked.add(row["runner_token"])
-                    old = next((run for run in old_runs
-                                if run["run_id"] == row["runner_token"]), None)
-                    cause = reason
-                    if old and old["owner_user_id"] != owner:
-                        cause = "cross-owner legacy run refused"
-                    if old and old["queue_universe_id"] != center:
-                        cause = "cross-center legacy run refused"
-                    if (row["status"] == activities.IN_PROGRESS
-                            and (old is None or old["status"] != "queued")):
-                        cause = cause or ("Legacy run may already have made effects; "
-                                          "review its history")
-                    if cause:
-                        failed += 1
-                        status = activities.FAILED
-                        summary = f"{REASON}: {cause}. Original run and definition are retained."
-                    elif row["status"] == activities.IN_PROGRESS:
-                        converted += 1
-                        status = activities.SCHEDULED
-                        summary = "Legacy queued run replaced by a new activity session."
-                    else:
-                        continue
-                    db.execute("UPDATE activities SET status=?, outcome=?, result_summary=?, "
-                               "runner_token='', retiring_token='', runner_generation="
-                               "runner_generation+1, revision=revision+1, updated_at=?, "
-                               "finished_at=? WHERE activity_id=?",
-                               (status, "legacy_conversion_failed" if cause else "",
-                                summary, time.time(), time.time() if cause else 0,
-                                row["activity_id"]))
-                    activities._event(db, {**dict(row), "status": status}, status,
-                                      summary)
+    old_runs = []
+    if (data / ".runs.db").is_file():
+        with _db(data / ".runs.db") as runs_db:
+            old_runs = runs_db.execute(
+                "SELECT run_id, status, owner_user_id, queue_universe_id FROM runs "
+                "WHERE branch_def_id=? "
+                "AND status IN ('queued','running','resumed')",
+                (f"activities::{center}",),
+            ).fetchall()
+    linked = set()
+    if path.is_file():
+        with activities._txn(root) as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute("SELECT * FROM activities WHERE status NOT IN "
+                              "('completed','failed')").fetchall()
+            for row in rows:
+                if row["owner_principal"] != owner:
+                    continue
+                if row["runner_token"]:
+                    linked.add(row["runner_token"])
+                old = next((run for run in old_runs
+                            if run["run_id"] == row["runner_token"]), None)
+                cause = reason
+                if old and old["owner_user_id"] != owner:
+                    cause = "cross-owner legacy run refused"
+                if old and old["queue_universe_id"] != center:
+                    cause = "cross-center legacy run refused"
+                if (row["status"] == activities.IN_PROGRESS
+                        and (old is None or old["status"] != "queued")):
+                    cause = cause or ("Legacy run may already have made effects; "
+                                      "review its history")
+                if cause:
+                    failed += 1
+                    status = activities.FAILED
+                    summary = f"{REASON}: {cause}. Original run and definition are retained."
+                elif row["status"] == activities.IN_PROGRESS:
+                    converted += 1
+                    status = activities.SCHEDULED
+                    summary = "Legacy queued run replaced by a new activity session."
+                else:
+                    continue
+                db.execute("UPDATE activities SET status=?, outcome=?, result_summary=?, "
+                           "runner_token='', retiring_token='', runner_generation="
+                           "runner_generation+1, revision=revision+1, updated_at=?, "
+                           "finished_at=? WHERE activity_id=?",
+                           (status, "legacy_conversion_failed" if cause else "",
+                            summary, time.time(), time.time() if cause else 0,
+                            row["activity_id"]))
+                activities._event(db, {**dict(row), "status": status}, status,
+                                  summary)
     owned_runs = [run for run in old_runs if run["owner_user_id"] == owner]
     for run in owned_runs:
         if run["queue_universe_id"] != center:
@@ -198,15 +245,20 @@ def _settle_center(data: Path, center: str, owner: str, reason: str) -> dict:
     return {"converted": converted, "failed": failed, "legacy_runs_ended": len(owned_runs)}
 
 
-def convert(data: Path, owner_roots: dict[str, Path], *, centers_to_convert=None) -> dict:
+def convert(data: Path, owner_roots: dict[str, Path], *, unavailable=None) -> dict:
     """Convert under the box migration's stopped-writer and paired-backup gate."""
     report = {}
     unsafe = []
     centers = _centers(data)
-    for center in centers_to_convert if centers_to_convert is not None else _pending(data):
+    unavailable = unavailable or {}
+    for center in _pending(data):
         owner = centers.get(center, "")
         root = owner_roots.get(center)
         try:
+            if center in unavailable:
+                report[center] = _settle_center(data, center, owner, UNAVAILABLE)
+                _record_converted(data, center)
+                continue
             if root is None or not root.is_dir() or root.is_symlink():
                 raise RuntimeError("admitted owner box is absent")
             prompt, tools, reason = _definition(data, center, owner)
@@ -217,12 +269,14 @@ def convert(data: Path, owner_roots: dict[str, Path], *, centers_to_convert=None
             if reason:
                 _write_owner_file(root, "Activities.error.txt", reason)
             report[center] = _settle_center(data, center, owner, reason)
+            _record_converted(data, center)
         except Exception as exc:
             reason = f"Activities conversion refused: {exc}"
             try:
                 if root is not None and not (root / "Activities.error.txt").is_file():
                     _write_owner_file(root, "Activities.error.txt", reason)
                 report[center] = _settle_center(data, center, owner, reason)
+                _record_converted(data, center)
             except Exception as fence_error:
                 unsafe.append(f"{center}: {fence_error}")
             report.setdefault(center, {"error": reason})

@@ -165,7 +165,7 @@ def layout_census(data: Path) -> dict:
 
 
 def check(data: Path) -> int:
-    """Print a census; 10 also covers legacy Activities in an owner box."""
+    """Print a census; 10 also covers the one-time Activities cutover."""
     census = layout_census(data)
     layout = census["box_layout"]
     state = census["marker_state"]
@@ -427,28 +427,29 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
 
     if os.geteuid() != 0:
         raise PermissionError("box layout apply requires the one-shot root container")
-    _verified_pair(data_backup, box_backup)
-    _mounted(store)
     lock = os.open(data / storage_layout.LOCK, os.O_RDWR | os.O_NOFOLLOW)
     try:
         fcntl.flock(lock, fcntl.LOCK_EX)
         marker = _marker(data)
+        if marker.get("box_layout") == "owner-box" and marker.get("activity_shape") == "v1":
+            return
+        _verified_pair(data_backup, box_backup)
+        _mounted(store)
         from tinyassets.activity_shape_migration import _pending, convert
 
         if marker.get("box_layout") == "owner-box":
-            if marker.get("activity_shape") == "v1" or not _pending(data):
+            if not _pending(data):
                 raise RuntimeError("owner-box has no pending activity conversion")
             roots, failures = _boxed_activity_roots(data, store)
             _atomic_json(storage_layout.marker_path(data), {
                 **marker, "state": "migrating", "migration": "owner-box",
             })
-            convert(data, roots, centers_to_convert=roots)
+            convert(data, roots, unavailable=failures)
             for center, reason in sorted(failures.items()):
-                print(f"box layout activity conversion refused for {center}: {reason}",
+                print(f"box layout activity cutover ended work for {center}: {reason}",
                       file=sys.stderr)
             _atomic_json(storage_layout.marker_path(data), {
-                **marker, "state": "stable", "activity_shape_failures": failures,
-                **({"activity_shape": "v1"} if not failures else {}),
+                **marker, "state": "stable", "activity_shape": "v1",
             })
             return
         if marker.get("box_layout", "owner-split") != "owner-split":
