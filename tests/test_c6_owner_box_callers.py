@@ -91,6 +91,50 @@ def test_workspace_git_projects_selected_grant_to_box(tmp_path, monkeypatch):
     assert "TINYASSETS_BOX_GIT" in binding.provider.calls[0][3]["env"]
 
 
+def test_native_cli_receives_only_broker_selected_git_grants(tmp_path, monkeypatch):
+    import asyncio
+
+    from tinyassets import storage_layout
+    from tinyassets.boxes.git_bridge import environment
+    from tinyassets.broker import ledger_queries
+    from tinyassets.control_plane import native_launch
+    from tinyassets.external_agents import home, provider, runner
+    from tinyassets.providers.base import ModelConfig
+
+    binding = _binding(tmp_path)
+    grant = SimpleNamespace(grant_id="git-grant")
+    view = SimpleNamespace(connection_id="git-connection", scopes=("git_read:a/b",),
+                           git_host="example.com")
+    selected = ((grant, view, "incarnation"),)
+    calls = []
+    monkeypatch.setattr(storage_layout, "ACTIVE_BOX_LAYOUT", "owner-box")
+    monkeypatch.setattr(home, "box_custody", lambda *args: SimpleNamespace(
+        owner_user_id="owner", universe_dir=binding.universe_dir))
+    monkeypatch.setattr(provider, "box_custody", home.box_custody)
+    monkeypatch.setattr(ledger_queries, "selected_git_connections",
+                        lambda *args, **kwargs: selected)
+
+    def launch(custody, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(git_environment=environment(
+            kwargs["connections"], kwargs["agent"]))
+
+    monkeypatch.setattr(native_launch, "launcher", launch)
+
+    async def run_job(agent, chosen, custody, **kwargs):
+        return chosen.git_environment
+
+    monkeypatch.setattr(runner, "run_job", run_job)
+    budget = SimpleNamespace(usage_id="usage", check_scope=lambda *args: None)
+    config = ModelConfig(invocation_owner_user_id="owner", request_budget=budget,
+                         request_attempt=0)
+    with use_binding(binding):
+        env = asyncio.run(provider.ExternalAgentProvider("codex").complete(
+            "prompt", "system", config, universe_dir=binding.universe_dir))
+    assert calls[0]["connections"] is selected
+    assert json.loads(env["TINYASSETS_BOX_GIT"])["connections"][0]["grant_id"] == "git-grant"
+
+
 def test_code_node_uses_box_runner(tmp_path):
     from tinyassets.role_node import _run_box
 

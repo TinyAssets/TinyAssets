@@ -8,6 +8,7 @@ import pytest
 from tinyassets.broker.fence import Fence
 from tinyassets.broker.ledger_queries import (
     DISCOVERY_FACTS,
+    GIT_GRANTS,
     HAS_PRICED_SOURCE,
     local_query,
     query_ledger,
@@ -118,6 +119,27 @@ def test_an_unavailable_broker_never_constructs_a_local_ledger(ledger, monkeypat
     with pytest.raises(ProxyRequestError, match="not running"):
         query_ledger(tmp_path, query=DISCOVERY_FACTS, principal="alice",
                      command_center="cc-alice", grant_id="grant-alice")
+
+
+def test_git_grants_select_only_live_owner_center_scopes(ledger):
+    for owner, center in (("alice", "cc-alice"), ("alice", "other"),
+                          ("bob", "cc-alice")):
+        suffix = f"{owner}-{center}"
+        ledger.create_connection(
+            connection_id=f"git-{suffix}", owner_user_id=owner,
+            connection_class="http", connection_type="http", auth_scheme="bearer",
+            scopes=("git_read:team/repo",), provider="http", destination="git",
+            credential_ref="vault://http/fixture", git_host="git.example.com",
+            allowed_endpoints=[{"host": "git.example.com", "path_template": "/team/repo.git",
+                                "methods": ["GET"]}],
+        )
+        ledger.grant_connection(grant_id=f"git-grant-{suffix}",
+                                connection_id=f"git-{suffix}", owner_user_id=owner,
+                                universe_id=center)
+    assert _query(ledger, query=GIT_GRANTS)["selected"] == [
+        ("git-grant-alice-cc-alice", "git-alice-cc-alice")]
+    ledger.revoke_grant("git-grant-alice-cc-alice")
+    assert _query(ledger, query=GIT_GRANTS)["selected"] == []
 
 
 def test_wire_whitelist_and_fence_are_checked_before_ledger_open(ledger, tmp_path):

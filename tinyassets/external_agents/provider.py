@@ -56,8 +56,12 @@ class ExternalAgentProvider(BaseProvider):
 
             launch = CellLauncher(universe_dir=universe, owner_user_id=owner)
         else:
+            from tinyassets.broker.ledger_queries import selected_git_connections
+
+            connections = selected_git_connections(
+                universe.parent, principal=owner, command_center=universe.name)
             launch = launcher(custody, binding=binding, operation_id=operation_id,
-                              agent=config.agent_node_id or "main")
+                              connections=connections, agent=config.agent_node_id or "main")
         return await run_job(
             self.name, launch,
             custody, prompt=prompt, system=system,
