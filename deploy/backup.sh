@@ -298,8 +298,9 @@ if missing or extra:
     raise SystemExit(1)
 print(len(expected))
 INVENTORY_PY
-)"; then
+    )"; then
         log "ERROR: snapshot does not match the restorable inventory"
+        rm -f -- "${SNAPSHOT_PATH}" "${SNAPSHOT_PATH}.sha256"
         exit 2
     fi
     sha="$(sha256sum "${SNAPSHOT_PATH}" | cut -d' ' -f1)"

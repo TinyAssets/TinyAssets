@@ -124,6 +124,9 @@
 #      bundle-dirty marker is set and normal deploys refuse until `--restore-bundle`
 #      clears it. On `rollback_needs_restore` the daemon is left stopped.
 set -uo pipefail
+# Freshness of the pre-move snapshot is measured from this process, not from
+# an earlier repair. A backup whose name is older than this epoch is not proof.
+DEPLOY_STARTED_EPOCH="${DEPLOY_STARTED_EPOCH:-$(date +%s)}"
 
 RESTORE_BUNDLE=0
 case "${1:-}" in
@@ -578,7 +581,11 @@ restart_stack() {
   elapsed=$((SECONDS - started))
   log "converge took ${elapsed}s (includes the old daemon's drain, bounded at ${MAX_DAEMON_STOP_GRACE_S}s)"
   if [ "$elapsed" -ge "$MAX_DAEMON_STOP_GRACE_S" ]; then
-    log "note: the converge reached the ${MAX_DAEMON_STOP_GRACE_S}s drain bound; a turn was very likely cut off (see tinyassets/agent_turn_reconcile.py for what the founder is told)"
+    # Compose has already SIGKILLed. Do not report this converge as success:
+    # the pre-stop idle proof is what avoids the kill, and hitting the bound
+    # means that proof was not enough.
+    err "the converge reached the ${MAX_DAEMON_STOP_GRACE_S}s drain bound; refusing this deploy rather than accepting a cut turn"
+    return 1
   fi
   systemctl start "$UNIT" 2>/dev/null || err "note: ${UNIT} did not start (stack converged directly; see journalctl -u ${UNIT})"
   return 0
@@ -1641,6 +1648,10 @@ case "$BOX_CANDIDATE_LAYOUT" in
   owner-split|owner-box) ;;
   *) err "candidate has invalid box layout; prod untouched"; exit 1 ;;
 esac
+log "candidate box layout: ${BOX_CANDIDATE_LAYOUT}"
+# #4920 installs the static box harness before an owner-box move. The call is
+# below, after the canary gate and the in-flight proof, so a deploy that must
+# not move data never writes the harness. A rollback does not install it.
 install_box_harness() {  # $1 = immutable image; install static rootfs, no owner data
   local image="$1" image_id root target stage container target_name
   root="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}"
@@ -1673,22 +1684,12 @@ install_box_harness() {  # $1 = immutable image; install static rootfs, no owner
   ln -s "$target_name" "${root}/.harness-current.$$" || return 1
   mv -Tf "${root}/.harness-current.$$" "${root}/harness-current" || return 1
 }
-if [ "$RESTORE_BUNDLE" != "1" ] && [ "$BOX_CANDIDATE_LAYOUT" = "owner-box" ]; then
-  if ! install_box_harness "$NEW_IMAGE"; then
-    err "candidate harness rootfs could not be installed; refusing before the box move"
-    echo "deploy_result=harness_invalid"
-    exit 1
-  fi
-fi
 # C8 (tinyassets/agent_file_migration.py): agent bindings leave SQL for files.
 # A read-only probe from the candidate, as the service user, says whether this
-# volume still holds rows to move. A migrated volume says no and the block ends
-# here, which is every deploy after the cutover. When it says yes, the cutover
-# IS this deploy (Direction 5: one migration, one window, after a full backup):
-#   stop the daemon        a running daemon holds the data-layout lock shared
-#                          for its lifetime, and the snapshot needs every
-#                          writer on the volume stopped;
-#   full-volume snapshot   deploy/backup.sh BACKUP_MODE=snapshot, the rollback
+# volume still holds rows to move, and prints what it counted. A migrated
+# volume says no. When it says yes, the cutover IS this deploy (Direction 5:
+# one migration, one window). The branch that applies it proves idle again,
+# stops the daemon, and takes a fresh verified snapshot as the rollback
 #                          point (numeric owners, ACLs, xattrs), kept under
 #                          ${MIGRATION_BACKUP_DIR} and uploaded;
 #   migrate                a one-shot container from the candidate image in the
@@ -1788,35 +1789,138 @@ migration_refused() {  # $1 = which check failed, with its values; volume unchan
   echo "deploy_result=migration_refused"
   exit 1
 }
+TURNS_PROBE="${TURNS_PROBE:-}"
+VERIFY_BACKUP_PY="${VERIFY_BACKUP_PY:-/tmp/verify_deploy_backup.py}"
+# 1 only when verify_core_canary_provision.py saw a complete config. Unset
+# refuses a data move and warns on every other forward deploy.
+CORE_CANARY_PROVISIONED="${CORE_CANARY_PROVISIONED:-}"
+# Set only by a successful in-flight probe. The owner-box move reads this and
+# refuses when the probe did not pass; a later probe failure clears it.
+TURNS_IDLE_PROVED=0
+prove_turns_idle() {
+  # Root on a read-only mount: /data/.broker is 1002:1101 mode 2700, so the
+  # daemon uid cannot stat it, and a writable root sqlite open creates sidecars.
+  # Unavailable, a non-zero probe, or a turn still in flight is not idle.
+  local out rc line
+  TURNS_IDLE_PROVED=0
+  if [ -z "$TURNS_PROBE" ] || [ ! -f "$TURNS_PROBE" ]; then
+    migration_detail "check=turns_idle probe=${TURNS_PROBE:-unset} present=no"
+    return 1
+  fi
+  out="$(timeout 90 docker run --rm --network none --memory 256m --user 0:0 --read-only \
+    --tmpfs /tmp -e TURNS_PROBE_KIND=in-flight \
+    -v tinyassets-data:/data:ro --entrypoint python "$NEW_IMAGE" \
+    -I - --data-dir /data < "$TURNS_PROBE" 2>&1)"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    line="$(printf '%s\n' "$out" | one_line)"
+    [ -n "$line" ] || line="<none>"
+    migration_detail "check=turns_idle rc=${rc} output=${line}"
+    return 1
+  fi
+  TURNS_IDLE_PROVED=1
+}
+verify_fresh_backup() {  # $1 = archive path taken during this run
+  local out rc line
+  if [ ! -f "$VERIFY_BACKUP_PY" ]; then
+    migration_detail "check=backup_verify script=${VERIFY_BACKUP_PY} present=no"
+    return 1
+  fi
+  out="$(python3 "$VERIFY_BACKUP_PY" "$1" "$DEPLOY_STARTED_EPOCH" 2>&1)"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    line="$(printf '%s\n' "$out" | one_line)"
+    [ -n "$line" ] || line="<none>"
+    migration_detail "check=backup_verify rc=${rc} path=$1 detail=${line}"
+    return 1
+  fi
+  log "$out"
+}
+stop_for_verified_snapshot() {  # $1 = 1 when the move also needs the box store
+  # Immediately before a data move: prove idle again, stop writers, snapshot,
+  # and verify. A rollback never calls this.
+  local require_box="${1:-0}" box_archive stop_out stop_rc stop_line
+  prove_turns_idle || migration_refused "$(cat "$MIGRATION_DETAIL_FILE")"
+  mkdir -p "$MIGRATION_BACKUP_DIR" && chmod 0700 "$MIGRATION_BACKUP_DIR" || {
+    migration_detail "check=backup_dir path=${MIGRATION_BACKUP_DIR} writable=no"
+    migration_refused "$(cat "$MIGRATION_DETAIL_FILE")"
+  }
+  log "stopping ${DAEMON_CONTAINER} for the fresh verified snapshot"
+  if [ -n "$(docker ps -q --filter "name=^${DAEMON_CONTAINER}\$")" ]; then
+    stop_out="$(docker stop --time "$MAX_DAEMON_STOP_GRACE_S" "$DAEMON_CONTAINER" 2>&1)"
+    stop_rc=$?
+    if [ "$stop_rc" -ne 0 ]; then
+      stop_line="$(printf '%s\n' "$stop_out" | one_line)"
+      [ -n "$stop_line" ] || stop_line="<none>"
+      migration_refused "check=daemon_stopped container=${DAEMON_CONTAINER} grace_s=${MAX_DAEMON_STOP_GRACE_S} rc=${stop_rc} output=${stop_line}"
+    fi
+  fi
+  if [ "$require_box" = "1" ]; then
+    MIGRATION_SNAPSHOT="$(BACKUP_REQUIRE_BOX_STORE=1 migration_snapshot)" || \
+      migration_refused "$(cat "$MIGRATION_DETAIL_FILE")"
+  else
+    MIGRATION_SNAPSHOT="$(migration_snapshot)" || migration_refused "$(cat "$MIGRATION_DETAIL_FILE")"
+  fi
+  verify_fresh_backup "${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}" || \
+    migration_refused "$(cat "$MIGRATION_DETAIL_FILE")"
+  if [ "$require_box" = "1" ]; then
+    box_archive="tinyassets-box-store-${MIGRATION_SNAPSHOT#tinyassets-snapshot-}"
+    verify_fresh_backup "${MIGRATION_BACKUP_DIR}/${box_archive}" || \
+      migration_refused "$(cat "$MIGRATION_DETAIL_FILE")"
+  fi
+}
 if [ "$RESTORE_BUNDLE" = "1" ]; then
-  MIGRATION_RC=0  # a rollback never migrates; the layout guard above governs it
+  MIGRATION_RC=0  # a rollback never migrates and does not take this snapshot
   probe_out=""
 else
+  # A missing canary blocks only a deploy that would move data. An owner-box
+  # candidate is one. A pending migration and the box move are checked at the
+  # step that would apply them. Every other deploy warns and continues.
+  # Only the literal 1 from verify_core_canary_provision.py counts; anything
+  # else, including an unset value, is not provisioned.
+  if [ "$CORE_CANARY_PROVISIONED" != "1" ] && [ "$BOX_CANDIDATE_LAYOUT" = "owner-box" ]; then
+    migration_refused "check=core_canary_not_provisioned move=owner-box_candidate"
+  fi
+  if [ "$CORE_CANARY_PROVISIONED" != "1" ]; then
+    log "WARNING: core canary is not provisioned (TINYASSETS_CORE_CANARY_CONFIG missing or canary_not_provisioned); continuing because this deploy is not an owner-box candidate. A pending migration or other data move still refuses."
+    printf '%s\n' "::warning::core canary is not provisioned (TINYASSETS_CORE_CANARY_CONFIG missing or canary_not_provisioned). Data-moving deploys refuse; this deploy continues only if it does not move data." >&2
+  fi
+  # Read-only probes stay up. The stop and the verified snapshot happen inside
+  # the branch that is about to move data.
+  log "in-flight proof: reading run stores before any stop"
+  prove_turns_idle || migration_refused "$(cat "$MIGRATION_DETAIL_FILE")"
+  log "in-flight proof: idle"
+  if [ "$BOX_CANDIDATE_LAYOUT" = "owner-box" ]; then
+    if ! install_box_harness "$NEW_IMAGE"; then
+      err "candidate harness rootfs could not be installed; refusing before the box move"
+      echo "deploy_result=harness_invalid"
+      exit 1
+    fi
+  fi
   log "migration: asking ${NEW_IMAGE} whether this volume still holds agent bindings"
-  mkdir -p "$MIGRATION_BACKUP_DIR" && chmod 0700 "$MIGRATION_BACKUP_DIR"
   probe_out="$(migration_container check /data 2>&1)"
   MIGRATION_RC=$?
   [ -z "$probe_out" ] || printf '%s\n' "$probe_out"
 fi
 case "$MIGRATION_RC" in
   0)
-    log "migration: nothing to move"
+    if [ "$RESTORE_BUNDLE" = "1" ]; then
+      log "migration: nothing to move"
+    else
+      probe_line="$(printf '%s\n' "$probe_out" | one_line)"
+      [ -n "$probe_line" ] || probe_line="<none>"
+      log "migration: nothing to move; inspected ${probe_line}"
+    fi
     ;;
   10)
+    if [ "$CORE_CANARY_PROVISIONED" != "1" ]; then
+      migration_refused "check=core_canary_not_provisioned move=agent_files_pending"
+    fi
     if [ "$BOX_CANDIDATE_LAYOUT" = "owner-box" ]; then
       migration_refused "check=agent_files_pending; complete C8 before the owner-box window"
     fi
-    log "migration: this deploy is the agent-files cutover; stopping ${DAEMON_CONTAINER} for the snapshot and the move"
-    if [ -n "$(docker ps -q --filter "name=^${DAEMON_CONTAINER}\$")" ]; then
-      stop_out="$(docker stop --time "$MAX_DAEMON_STOP_GRACE_S" "$DAEMON_CONTAINER" 2>&1)"
-      stop_rc=$?
-      if [ "$stop_rc" -ne 0 ]; then
-        stop_line="$(printf '%s\n' "$stop_out" | one_line)"
-        [ -n "$stop_line" ] || stop_line="<none>"
-        migration_refused "check=daemon_stopped container=${DAEMON_CONTAINER} grace_s=${MAX_DAEMON_STOP_GRACE_S} rc=${stop_rc} output=${stop_line}"
-      fi
-    fi
-    MIGRATION_SNAPSHOT="$(migration_snapshot)" || migration_refused "$(cat "$MIGRATION_DETAIL_FILE")"
+    stop_for_verified_snapshot 0
+    log "migration: this deploy is the agent-files cutover; using fresh snapshot ${MIGRATION_SNAPSHOT}"
     apply_out="$(migration_container apply /data --backup "/backup/${MIGRATION_SNAPSHOT}" 2>&1)"
     apply_rc=$?
     [ -z "$apply_out" ] || printf '%s\n' "$apply_out"
@@ -1855,58 +1959,100 @@ case "$MIGRATION_RC" in
 esac
 rm -f "$MIGRATION_DETAIL_FILE"
 
-# --- 3d. the P2b one-shot owner-box layout move ----------------------------
-# This branch is reached only by the final candidate. Its check is read-only;
-# after apply begins, even a failure before marker publication needs the paired
-# snapshot restore. No retry, startup migration, or old-image fallback exists.
+# --- 3d. layout census, and the one-shot move only for an owner-box candidate
+# The census always runs on a forward deploy, as root against a read-only
+# mount, and the log carries counts per layout. The move decision is this
+# census, never the agent-files binding count printed above. An owner-split
+# candidate does not apply the cutover: only rc 10 (stable owner-split) continues.
+# rc 4 (no marker) and rc 3 (unreadable, unstable, or unrecognized) refuse.
+# rc 0 on that candidate is a conflict. An owner-box candidate applies only on
+# rc 10, after a fresh verified snapshot taken for that move, then restarts
+# boxhostd on the committed layout. After apply begins, a failure needs that
+# paired restore.
 box_migration_container() {  # $1 = check|apply, then module arguments
-  local posture=()
-  [ "$1" = "apply" ] && posture=(--user 0 --cap-add CHOWN --cap-add FOWNER \
-    --cap-add DAC_OVERRIDE --cap-add SYS_ADMIN)
+  local posture=(--user 0)
+  local data_mount="tinyassets-data:/data:ro"
+  local extra=()
+  if [ "$1" = "apply" ]; then
+    posture=(--user 0 --cap-add CHOWN --cap-add FOWNER \
+      --cap-add DAC_OVERRIDE --cap-add SYS_ADMIN)
+    data_mount="tinyassets-data:/data"
+    extra=(-v "${MIGRATION_BACKUP_DIR}:/backup:ro" \
+      --mount type=bind,src=/var/lib/boxhostd/owners,dst=/box-store)
+  fi
   timeout "$MIGRATION_TIMEOUT" docker run --rm --cap-drop ALL ${posture[@]+"${posture[@]}"} \
     --security-opt no-new-privileges=true --network none --memory=1g --memory-swap=1g \
-    -v tinyassets-data:/data -v "${MIGRATION_BACKUP_DIR}:/backup:ro" \
-    --mount type=bind,src=/var/lib/boxhostd/owners,dst=/box-store \
+    -v "$data_mount" ${extra[@]+"${extra[@]}"} \
     --entrypoint python "$NEW_IMAGE" -B -m tinyassets.box_layout_migration "$@"
 }
-if [ "$RESTORE_BUNDLE" != "1" ] && [ "$BOX_CANDIDATE_LAYOUT" = "owner-box" ] \
-    && [ "$MIGRATION_OK" = "1" ]; then
-  if ! "$BOX_STORE_CHECK"; then
-    migration_refused "check=box_store_mount; required mounted XFS project-quota store unavailable"
-  fi
+if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
   box_probe="$(box_migration_container check /data 2>&1)"
   box_probe_rc=$?
+  census_line="$(printf '%s\n' "$box_probe" | one_line)"
+  [ -n "$census_line" ] || census_line="<none>"
+  log "box layout inspected: candidate=${BOX_CANDIDATE_LAYOUT} rc=${box_probe_rc} census=${census_line}"
   [ -z "$box_probe" ] || printf '%s\n' "$box_probe"
-  case "$box_probe_rc" in
-    0) log "box layout: already owner-box; no move" ;;
-    10)
-      log "box layout: stopping ${DAEMON_CONTAINER} for the one-shot move"
-      if [ -n "$(docker ps -q --filter "name=^${DAEMON_CONTAINER}\$")" ]; then
-        docker stop --time "$MAX_DAEMON_STOP_GRACE_S" "$DAEMON_CONTAINER" || \
-          migration_refused "check=box_daemon_stopped"
-      fi
-      MIGRATION_SNAPSHOT="$(BACKUP_REQUIRE_BOX_STORE=1 migration_snapshot)" || \
-        migration_refused "$(cat "$MIGRATION_DETAIL_FILE")"
-      box_backup="tinyassets-box-store-${MIGRATION_SNAPSHOT#tinyassets-snapshot-}"
-      box_apply="$(box_migration_container apply /data --store /box-store \
-        --backup "/backup/${MIGRATION_SNAPSHOT}" \
-        --box-backup "/backup/${box_backup}" 2>&1)"
-      box_apply_rc=$?
-      [ -z "$box_apply" ] || printf '%s\n' "$box_apply"
-      if [ "$box_apply_rc" -eq 0 ]; then
-        MIGRATION_COMMITTED=1
-        log "box layout committed; rollback point ${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}"
-        if ! systemctl restart boxhostd.service || ! systemctl is-active --quiet boxhostd.service; then
-          MIGRATION_OK=0
-          err "boxhostd could not start on the committed layout; $(migration_restore_command)"
-        fi
-      else
-        MIGRATION_COMMIT_UNVERIFIED=1
-        MIGRATION_OK=0
-        err "box layout apply failed after entering the one-shot window (rc=${box_apply_rc}); $(migration_restore_command)"
-      fi
+  case "$BOX_CANDIDATE_LAYOUT" in
+    owner-split)
+      case "$box_probe_rc" in
+        10)
+          log "box layout: stable owner-split census; this candidate does not apply the cutover"
+          ;;
+        4)
+          migration_refused "check=box_layout_absent candidate=owner-split census=${census_line}"
+          ;;
+        0) migration_refused "check=box_layout_conflict candidate=owner-split census=${census_line}" ;;
+        *) migration_refused "check=box_layout_ambiguous rc=${box_probe_rc} output=${census_line}" ;;
+      esac
       ;;
-    *) migration_refused "check=box_layout_probe rc=${box_probe_rc} output=$(printf '%s\n' "$box_probe" | one_line)" ;;
+    owner-box)
+      if ! "$BOX_STORE_CHECK"; then
+        migration_refused "check=box_store_mount; required mounted XFS project-quota store unavailable"
+      fi
+      case "$box_probe_rc" in
+        0) log "box layout: already owner-box; no move" ;;
+        10)
+          # The candidate constant selects this step. It does not authorize it.
+          # Apply runs only after every gate has passed in this run: a
+          # provisioned canary, an in-flight probe that proved idle (and is
+          # proved again inside the snapshot, so the drain cannot cut a turn),
+          # a stable owner-split census, and a fresh verified backup.
+          if [ "$CORE_CANARY_PROVISIONED" != "1" ]; then
+            migration_refused "check=core_canary_not_provisioned move=box_layout_pending"
+          fi
+          if [ "$TURNS_IDLE_PROVED" != "1" ]; then
+            migration_refused "check=turns_idle move=box_layout_pending proved=no"
+          fi
+          if [ "$box_probe_rc" -ne 10 ]; then
+            migration_refused "check=box_layout_probe move=box_layout_pending rc=${box_probe_rc}"
+          fi
+          stop_for_verified_snapshot 1
+          if [ "$TURNS_IDLE_PROVED" != "1" ] || [ -z "$MIGRATION_SNAPSHOT" ]; then
+            migration_refused "check=backup_verify move=box_layout_pending snapshot=${MIGRATION_SNAPSHOT:-unset}"
+          fi
+          log "box layout: one-shot move using fresh snapshot ${MIGRATION_SNAPSHOT} (census, not the agent-files binding count)"
+          box_backup="tinyassets-box-store-${MIGRATION_SNAPSHOT#tinyassets-snapshot-}"
+          box_apply="$(box_migration_container apply /data --store /box-store \
+            --backup "/backup/${MIGRATION_SNAPSHOT}" \
+            --box-backup "/backup/${box_backup}" 2>&1)"
+          box_apply_rc=$?
+          [ -z "$box_apply" ] || printf '%s\n' "$box_apply"
+          if [ "$box_apply_rc" -eq 0 ]; then
+            MIGRATION_COMMITTED=1
+            log "box layout committed; rollback point ${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}"
+            if ! systemctl restart boxhostd.service || ! systemctl is-active --quiet boxhostd.service; then
+              MIGRATION_OK=0
+              err "boxhostd could not start on the committed layout; $(migration_restore_command)"
+            fi
+          else
+            MIGRATION_COMMIT_UNVERIFIED=1
+            MIGRATION_OK=0
+            err "box layout apply failed after entering the one-shot window (rc=${box_apply_rc}); $(migration_restore_command)"
+          fi
+          ;;
+        *) migration_refused "check=box_layout_probe rc=${box_probe_rc} output=${census_line}" ;;
+      esac
+      ;;
   esac
 fi
 

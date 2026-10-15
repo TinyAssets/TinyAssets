@@ -16,7 +16,9 @@ import tinyassets.onboarding as onboarding
 def test_real_fetch_response_formats(tmp_path, case):
     node = shutil.which("node")
     assert node, "Node is required to verify the deployed JavaScript"
-    html = (Path(onboarding.__file__).parent / "app.html").read_text(encoding="utf-8")
+    from tinyassets.onboarding.app_modules import shell_source
+
+    html = shell_source(Path(onboarding.__file__).parent / "app.html")
     source = "// ---- MCP client" + html.split("// ---- MCP client", 1)[1].split(
         "// ---- UI ----", 1)[0]
     program = r"""

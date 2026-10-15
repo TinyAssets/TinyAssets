@@ -725,7 +725,9 @@ def test_refresh_and_activate_load_the_active_revision(tmp_path):
     fingerprint of the component, so a cached /app/ui-frame document cannot
     keep the previous screen.
     """
-    html = Path("tinyassets/onboarding/app.html").read_text(encoding="utf-8")
+    from tinyassets.onboarding.app_modules import shell_source
+
+    html = shell_source(Path("tinyassets/onboarding/app.html"))
     assert "AppUI.reloadFromServer()" in html
     assert "AppUI.mount(AppUI.active)" not in html
     out = _run(tmp_path, "refresh_active_app_ui.js", r'''

@@ -186,7 +186,7 @@ def test_voice_csp_and_disclosure_are_dark_until_all_flags(monkeypatch):
 def test_voice_client_keeps_converse_as_the_only_writer():
     html, _csp = onboarding.render_app_html()
     assert 'event.name!=="converse"' in html
-    assert 'const payload=await sendConversationRequest(message,message,voiceSentAt,opts);' in html
+    assert 'sendVoiceTurn(message)' in html
     assert '{message,input_method:turnInputMethod(inputMethod)}' in html
     assert 'sendTurn(turn.send, turn.display, {inputMethod:"typed"})' in html
     assert "voice_active" not in html
@@ -2903,9 +2903,7 @@ def test_a_credential_link_shows_where_it_goes_and_cannot_reach_back() -> None:
 def test_the_android_shell_shows_no_checkout_ui():
     """Play's payments policy: buy controls read one field, not a native check
     inside each link. The shell only names the surface; Android's policy is off."""
-    from pathlib import Path
-
-    html = (Path(onboarding.__file__).parent / "app.html").read_text(encoding="utf-8")
+    html, _csp = onboarding.render_app_html()
     surface = html[html.index("function billingSurface()"):html.index("function canPurchase()")]
     assert '? "android" : "web"' in surface
     assert "can_purchase_on_surface===true" in html
@@ -2925,9 +2923,7 @@ def test_native_store_shells_keep_review_declared_voice_dark():
     Default-hidden markup also prevents a pre-script flash while the Capacitor
     WebView starts.
     """
-    from pathlib import Path
-
-    html = (Path(onboarding.__file__).parent / "app.html").read_text(encoding="utf-8")
+    html, _csp = onboarding.render_app_html()
     assert 'id="btn-voice" class="btn btn--voice" type="button" hidden' in html
     assert 'aria-live="polite" aria-label="Voice status" hidden' in html
     assert '$("btn-voice").hidden=NATIVE;' in html
@@ -2941,9 +2937,7 @@ def test_the_app_itself_links_a_privacy_policy():
     app itself", not only in the store listing or on a website, and reachable in
     normal use rather than behind a menu. The app had none — zero occurrences of
     the word — which would have failed review."""
-    from pathlib import Path
-
-    html = (Path(onboarding.__file__).parent / "app.html").read_text(encoding="utf-8")
+    html, _csp = onboarding.render_app_html()
     # On the signed-OUT card, so it is reachable before anyone signs in.
     signin = html[html.index('id="view-signin"'):html.index('id="view-chat"')]
     assert "https://tinyassets.io/legal#privacy" in signin
