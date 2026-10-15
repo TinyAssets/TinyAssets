@@ -59,6 +59,9 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/api/runs.py::start_run_owner_watcher._watch": (
         CONTROL_PLANE, "dead-owner run recovery and terminal-event redelivery",
     ),
+    "tinyassets/box_process.py::run_bound.watch": (
+        CALL_SCOPED, "polls the run's cancel predicate while one bound box execution runs; "
+                     "ends when the execution finishes"),
     "tinyassets/turn_interrupt.py::LiveTurn.cancel_on_stop.watch": (
         CALL_SCOPED,
         "lives only while one stop-aware call is awaited; polls the turn's stop flag "

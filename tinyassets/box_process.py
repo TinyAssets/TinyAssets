@@ -53,57 +53,52 @@ def run_bound(
                     return
         threading.Thread(target=watch, daemon=True, name="box-exec-cancel").start()
     try:
-        return _collect(binding, op_id, exec_id, argv, wall_seconds, output_bytes,
-                        line_handler, cancelled)
+        output = bytearray()
+        pending = bytearray()
+        offset = 0
+        for attempt in range(2):
+            try:
+                for event in binding.provider.stream(
+                    binding.handle, exec_id, from_offset=offset, timeout=wall_seconds + 5,
+                ):
+                    if event.kind == "output":
+                        if event.offset != offset or offset + len(event.data) > output_bytes:
+                            raise BoxError("owner box output exceeded its bound or changed offset")
+                        offset += len(event.data)
+                        if line_handler is None:
+                            output.extend(event.data)
+                        else:
+                            pending.extend(event.data)
+                            while b"\n" in pending:
+                                line, _, rest = pending.partition(b"\n")
+                                pending = bytearray(rest)
+                                reply = line_handler(bytes(line))
+                                if reply is None:
+                                    output.extend(line + b"\n")
+                                else:
+                                    request_id = hashlib.sha256(
+                                        op_id.encode() + b"\0" + line,
+                                    ).hexdigest()[:32]
+                                    binding.provider.send_stdin(
+                                        binding.handle, exec_id, request_id, reply + b"\n",
+                                    )
+                    elif event.kind == "exit":
+                        if cancelled.is_set() and event.killed:
+                            raise BoxExecCancelled("owner cancelled the execution")
+                        if pending:
+                            raise BoxError("owner box execution ended with an incomplete frame")
+                        if event.killed or type(event.exit_code) is not int:
+                            killed = event.killed or "unknown"
+                            raise BoxError(f"owner box execution ended: {killed}")
+                        return subprocess.CompletedProcess(
+                            list(argv), event.exit_code, bytes(output), b"",
+                        )
+                raise ConnectionError("owner box stream ended without exit")
+            except BoxError:
+                raise
+            except Exception as exc:
+                if attempt:
+                    raise BoxError("owner box execution outcome is unknown") from exc
+        raise BoxError("owner box execution outcome is unknown")
     finally:
         finished.set()
-
-
-def _collect(binding, op_id, exec_id, argv, wall_seconds, output_bytes, line_handler,
-             cancelled):
-    output = bytearray()
-    pending = bytearray()
-    offset = 0
-    for attempt in range(2):
-        try:
-            for event in binding.provider.stream(
-                binding.handle, exec_id, from_offset=offset, timeout=wall_seconds + 5,
-            ):
-                if event.kind == "output":
-                    if event.offset != offset or offset + len(event.data) > output_bytes:
-                        raise BoxError("owner box output exceeded its bound or changed offset")
-                    offset += len(event.data)
-                    if line_handler is None:
-                        output.extend(event.data)
-                    else:
-                        pending.extend(event.data)
-                        while b"\n" in pending:
-                            line, _, rest = pending.partition(b"\n")
-                            pending = bytearray(rest)
-                            reply = line_handler(bytes(line))
-                            if reply is None:
-                                output.extend(line + b"\n")
-                            else:
-                                request_id = hashlib.sha256(
-                                    op_id.encode() + b"\0" + line,
-                                ).hexdigest()[:32]
-                                binding.provider.send_stdin(
-                                    binding.handle, exec_id, request_id, reply + b"\n",
-                                )
-                elif event.kind == "exit":
-                    if cancelled.is_set() and event.killed:
-                        raise BoxExecCancelled("owner cancelled the execution")
-                    if pending:
-                        raise BoxError("owner box execution ended with an incomplete frame")
-                    if event.killed or type(event.exit_code) is not int:
-                        raise BoxError(f"owner box execution ended: {event.killed or 'unknown'}")
-                    return subprocess.CompletedProcess(
-                        list(argv), event.exit_code, bytes(output), b"",
-                    )
-            raise ConnectionError("owner box stream ended without exit")
-        except BoxError:
-            raise
-        except Exception as exc:
-            if attempt:
-                raise BoxError("owner box execution outcome is unknown") from exc
-    raise BoxError("owner box execution outcome is unknown")
