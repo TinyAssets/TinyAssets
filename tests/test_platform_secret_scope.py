@@ -193,6 +193,7 @@ def test_http_engine_config_carries_only_its_route_and_no_ambient_secrets(tmp_pa
     from tinyassets import credential_vault, engine_mcp_http
     from tinyassets.providers.base import ModelConfig
     from tinyassets.providers.claude_provider import _engine_mcp_flags
+    from tinyassets.providers.owned_process import guest_job_dir, launch_scope
 
     sentinels = {name: f"SENTINEL-{name}" for name in CHILD_FORBIDDEN_ENV}
     for name, value in sentinels.items():
@@ -205,14 +206,21 @@ def test_http_engine_config_carries_only_its_route_and_no_ambient_secrets(tmp_pa
                         lambda path, data: path.write_bytes(data))
     config = ModelConfig(engine_mcp_actor_id="owner", engine_mcp_graph_id="home",
                          credential_snapshot_dir=tmp_path)
-    flags = _engine_mcp_flags(config, tmp_path)
+    # The config is sealed only inside a launch: the CLI reads it from the
+    # leased home in the owner's box, so the flag names the guest path and the
+    # file lands in the launch's private snapshot directory.
+    with launch_scope(tmp_path, owner="owner", service="claude", credential_dir=tmp_path,
+                      operation_id="op-engine-route"):
+        flags = _engine_mcp_flags(config, tmp_path)
     assert "--strict-mcp-config" in flags
-    path = Path(flags[flags.index("--mcp-config") + 1])
-    assert path.parent == tmp_path
+    guest = flags[flags.index("--mcp-config") + 1]
+    assert guest == guest_job_dir("op-engine-route") + "/claude/engine-mcp.json"
+    path = tmp_path / "engine-mcp.json"
     document = json.loads(path.read_text())
     server = document["mcpServers"]["tinyassets"]
     assert set(server) == {"type", "url", "headers"}
-    assert server["type"] == "http" and server["url"].startswith(route.url)
+    assert server["type"] == "http" and server["url"].startswith(
+        route.url.replace("127.0.0.1", engine_mcp_http.BOX_ENGINE_HOST, 1))
     assert server["headers"] == {"Authorization": "Bearer owner-route"}
     assert not any(value in path.read_text() for value in sentinels.values())
 

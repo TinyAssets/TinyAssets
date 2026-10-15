@@ -23,10 +23,10 @@ from tinyassets.storage.agent_request_usage import UsageStore
 def local_group(monkeypatch):
     import os
 
-    from tinyassets import role_modes
+    from tinyassets.boxes import layout as box_layout
 
     # Unit oracle has one group; production uses the actual broker-read group.
-    monkeypatch.setattr(role_modes, "BROKER_READ_GID", os.getgid())
+    monkeypatch.setattr(box_layout, "BROKER_READ_GID", os.getgid())
 
 
 def make_budget(source, **policy):

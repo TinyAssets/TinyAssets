@@ -118,7 +118,8 @@ def test_the_move_carries_no_row_and_sets_the_old_file_aside(data: Path):
     cc = data / "u-alpha"
     _forge(cc)
     (data / layout.MARKER).write_text(
-        json.dumps({"layout": 1, "state": "stable"}), encoding="utf-8")
+        json.dumps({"layout": 1, "state": "stable",
+                    "box_layout": layout.ACTIVE_BOX_LAYOUT}), encoding="utf-8")
 
     layout.check(data)
 
@@ -134,7 +135,8 @@ def test_the_move_is_idempotent(data: Path):
     cc = data / "u-alpha"
     _forge(cc)
     (data / layout.MARKER).write_text(
-        json.dumps({"layout": 1, "state": "stable"}), encoding="utf-8")
+        json.dumps({"layout": 1, "state": "stable",
+                    "box_layout": layout.ACTIVE_BOX_LAYOUT}), encoding="utf-8")
 
     layout.check(data)
     first = sorted(p.name for p in cc.iterdir())
@@ -151,7 +153,8 @@ def test_both_copies_present_is_a_refusal_naming_the_command_center(data: Path):
     _forge(cc)
     initialize_consents_db(cc)  # now both exist
     (data / layout.MARKER).write_text(
-        json.dumps({"layout": 1, "state": "stable"}), encoding="utf-8")
+        json.dumps({"layout": 1, "state": "stable",
+                    "box_layout": layout.ACTIVE_BOX_LAYOUT}), encoding="utf-8")
 
     with pytest.raises(psm.MoveRefused, match="u-alpha"):
         layout.check(data)
@@ -166,7 +169,7 @@ def test_an_interrupted_move_resumes(data: Path):
     cc = data / "u-alpha"
     _forge(cc)
     (data / layout.MARKER).write_text(
-        json.dumps({"layout": 1, "state": "stable",
+        json.dumps({"layout": 1, "state": "stable", "box_layout": layout.ACTIVE_BOX_LAYOUT,
                     psm.MOVES: {psm.CONSENTS: psm.MIGRATING}}), encoding="utf-8")
 
     layout.check(data)
@@ -253,7 +256,8 @@ def test_a_link_at_the_old_name_is_set_aside_not_followed(data: Path):
     except (OSError, NotImplementedError):
         pytest.skip("this host cannot create a symlink")
     (data / layout.MARKER).write_text(
-        json.dumps({"layout": 1, "state": "stable"}), encoding="utf-8")
+        json.dumps({"layout": 1, "state": "stable",
+                    "box_layout": layout.ACTIVE_BOX_LAYOUT}), encoding="utf-8")
 
     layout.check(data)
 

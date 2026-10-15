@@ -353,7 +353,8 @@ def test_single_subscription_write_replaces_reader_alias_slots(tmp_path):
         "claude_code_oauth_token": "tok-NEW",
     }])
 
-    assert resolve_claude_config_dir(tmp_path) == tmp_path / "new-config"
+    assert resolve_claude_config_dir(tmp_path) == (
+        credential_vault_path(tmp_path).parent / "new-config")
     assert resolve_claude_oauth_token(tmp_path) == "tok-NEW"
     assert load_credential_vault(tmp_path) == [{
         "credential_type": "llm_subscription",

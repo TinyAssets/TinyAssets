@@ -131,9 +131,11 @@ def _exec(db: Path, sql: str, params: tuple = ()) -> None:
 
 
 @pytest.fixture
-def two_users(tmp_path: Path) -> Path:
+def two_users(tmp_path: Path, monkeypatch) -> Path:
     base = tmp_path / "data"
     base.mkdir()
+    # Production deletes on the one data root; the owner box binds there.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     _seed_user(base, A, HOME_A)
     _seed_user(base, B, HOME_B)
     _seed_outbound(base)
