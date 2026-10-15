@@ -86,7 +86,6 @@ def bind_provenance(monkeypatch):
 _COPIED_CONTAINER_ENV = {
     "TINYASSETS_ALLOW_API_KEY_PROVIDERS": "0",
     "TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY": "1",
-    "TINYASSETS_GOAL_POOL": "off",
     "TINYASSETS_AUTO_SHIP_RUBRIC_MODE": "enforce",
     "TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE": "enforce",
     "TINYASSETS_MCP_CANARY_URL": "https://tinyassets.io/mcp",

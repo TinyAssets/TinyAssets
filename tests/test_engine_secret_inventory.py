@@ -19,7 +19,6 @@ _CONFIG = {
     "TINYASSETS_REPO_ROOT": "community-pool root",
     "TINYASSETS_IMAGE": "public image reference",
     "TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY": "legacy no-op flag",
-    "TINYASSETS_GOAL_POOL": "feature flag",
     "TINYASSETS_AUTO_SHIP_RUBRIC_MODE": "gate mode",
     "TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE": "gate mode",
     "TINYASSETS_MCP_CANARY_URL": "public endpoint",

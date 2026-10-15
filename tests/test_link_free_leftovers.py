@@ -204,7 +204,6 @@ def test_a_planted_soul_lock_link_does_not_create_a_file_outside_the_universe(da
 
 @pytest.mark.parametrize("module, lock, opener", [
     ("tinyassets.auto_ship_ledger", "LOCK_FILENAME", "_file_lock"),
-    ("tinyassets.bid.execution_log", "EXEC_LOG_LOCK_FILENAME", "_exec_log_lock"),
 ])
 def test_active_coordination_lock_link_does_not_create_a_file_outside_the_universe(
         data, module, lock, opener):
@@ -225,14 +224,13 @@ def test_active_coordination_lock_link_does_not_create_a_file_outside_the_univer
 def test_active_coordination_locks_are_dotted_platform_entries(data):
     """A visible lock is owner content; a daemon-created one fails the owner scan."""
     from tinyassets import auto_ship_ledger
-    from tinyassets.bid import execution_log
     from tinyassets.command_center_layout import PLATFORM, classify
 
     alpha = _alpha(data)
-    with (auto_ship_ledger._file_lock(alpha), execution_log._exec_log_lock(alpha)):
+    with auto_ship_ledger._file_lock(alpha):
         pass
     created = sorted(entry.name for entry in alpha.iterdir())
-    assert created == [".auto_ship_attempts.jsonl.lock", ".bid_execution_log.json.lock"]
+    assert created == [".auto_ship_attempts.jsonl.lock"]
     assert all(classify(name) == PLATFORM for name in created)
 
 

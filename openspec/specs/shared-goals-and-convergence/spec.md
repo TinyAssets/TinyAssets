@@ -203,16 +203,16 @@ rolling back or failing the mutation.
 - **AND** the original successful Goal result is returned without rollback
 
 ### Requirement: Per-universe participation in shared Goals is opt-in via subscriptions
-A universe SHALL participate in a Goal's cross-universe work pool only by explicitly subscribing to that Goal slug; participation SHALL NOT be implicit. A fresh-install universe with no subscriptions file SHALL behave as subscribed to exactly `["maintenance"]`. The goal-pool producer SHALL be flag-gated (`TINYASSETS_GOAL_POOL`); when enabled it SHALL read `goal_pool/<goal_slug>/*.yaml` only for the universe's subscribed goals, turning each pool YAML into a Branch task whose `inputs` are constrained to a flat dictionary of primitive values so per-universe state cannot cross the isolation boundary.
+A universe SHALL participate in a Goal's cross-universe work pool only by explicitly subscribing to that Goal slug; participation SHALL NOT be implicit. A fresh-install universe with no subscriptions file SHALL behave as subscribed to exactly `["maintenance"]`. The goal-pool producer is removed: no module reads a pool directory into Branch tasks, and there is no setting that turns that producer on.
 
 #### Scenario: Fresh install defaults to the maintenance subscription
 - **WHEN** the daemon reads subscriptions for a universe that has no subscriptions file
 - **THEN** the universe is treated as subscribed to `["maintenance"]` only
 
-#### Scenario: The pool producer only reads subscribed goals when enabled
-- **WHEN** `TINYASSETS_GOAL_POOL` is enabled and the goal-pool producer runs
-- **THEN** it scans `goal_pool/<goal_slug>/*.yaml` only for the universe's subscribed goals and emits Branch tasks with flat-primitive inputs
-- **AND** when the flag is off no goal-pool producer is registered and pool reads are a no-op
+#### Scenario: The pool producer is not a path
+- **WHEN** a deployment looks for the goal-pool producer
+- **THEN** no module reads a pool directory into Branch tasks
+- **AND** no setting registers that producer
 
 ### Requirement: Goal Branch protocols are ordered metadata, not an executor
 The system SHALL let an authenticated Goal author or the literal `host` actor replace a Goal's `branch_protocol` through `goals action=define_protocol`, persist the protocol as an ordered list of metadata step objects, and expose it through `goals action=get` and `goals action=get_protocol`. Each step MUST reference an existing Branch bound to that Goal; the system SHALL coerce a truthy `order` to an integer, substitute the one-based input position when `order` is omitted or otherwise falsy (including an explicitly supplied numeric zero), sort steps by the resulting order, and default `step_id`, `status`, artifact-label lists, `source_label`, `required_rung_key`, `required_verdict`, `rollback_policy`, and `next_step_conditions` when absent. The first step whose normalized status is not `completed`, `skipped`, or `superseded` SHALL be reported as `current_protocol_step`. Protocol fields SHALL remain descriptive metadata: this surface SHALL NOT execute a referenced Branch, enforce prerequisites or verdicts, advance step state, or perform rollback.

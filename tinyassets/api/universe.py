@@ -33,8 +33,7 @@ Public surface (back-compat re-exported via ``tinyassets.universe_server``):
     _parse_activity_line                : activity-log line parser (single-caller helper)
     _action_*                           : 27 universe-tool handlers
     _list_output_tree, _trim_overview_for_bytes, _overview_limits,
-    _tail_file_lines, _query_world_db, _normalize_escaped_text,
-    _goal_pool_not_available, _paid_market_not_available :
+    _tail_file_lines, _query_world_db, _normalize_escaped_text :
                                           handler-scoped helpers
 
 Cross-module note: ``_current_actor``, ``_truncate``, ``_append_ledger``,
@@ -97,7 +96,6 @@ logger = logging.getLogger("universe_server.universe")
 
 ENV_CAPABILITIES_VAR = "UNIVERSE_SERVER_CAPABILITIES"
 ACTION_CANCEL_BRANCH_TASK = "cancel_branch_task"
-ACTION_POST_PRIORITY_GOAL_POOL = "post_priority_goal_pool"
 LEGACY_FANTASY_LOOP_BRANCH_DEF_ID = "fantasy_author:universe_cycle_wrapper"
 
 
@@ -3297,14 +3295,6 @@ def _action_queue_cancel(
 
 
 
-
-
-
-def _paid_market_not_available() -> str:
-    return json.dumps({
-        "status": "not_available",
-        "hint": "TINYASSETS_PAID_MARKET=on required",
-    })
 
 
 

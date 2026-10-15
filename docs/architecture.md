@@ -113,7 +113,7 @@ beside `cloudflared` and a log shipper.
 | `tinyassets/memory/`, `tinyassets/retrieval/`, `tinyassets/knowledge/` | Memory, retrieval and the knowledge graph. |
 | `tinyassets/wiki/`, `tinyassets/daemon_wiki.py` | Wiki pages and the curated OKF export. |
 | `tinyassets/auth/`, `tinyassets/principals.py` | WorkOS AuthKit sessions and principals. |
-| `tinyassets/payments/`, `tinyassets/bid/`, `tinyassets/treasury/` | Paid-market primitives, test currency only. |
+| `tinyassets/payments/`, `tinyassets/treasury/` | Paid-market primitives, test currency only. |
 
 ### Domains
 
@@ -166,7 +166,7 @@ of #4624 (broker credentials and browser sign-in) is S28.
 | S15 | Cloud only, zero hosts (ADR-008, Dir 8) | the hosted cell | The root fantasy runner and its CLI entry are removed; the served owner process is the start surface | converged | `host-paths` | C5 |
 | S16 | One app, thin shells (Dir 1, 7) | `onboarding/` at `/app`; `mobile/`, `desktop-app/` load it | none for chat; the tray host is S15 | converged | `test_onboarding_app` routes | — |
 | S17 | Knowledge is files (ADR-017); export (ADR-018) | OKF bundle canonical, indexes derived; one export action | `memory/`, `retrieval/`, `knowledge/`, `daemon_brain.py` (10.7k) canonical; bundle is seed-only; `okf_export.py` unwired | unbuilt | none yet | C12 |
-| S18 | Abilities are files, no pre-built features (Dir 3) | starter package, skills | fantasy and research_probe domains remain installed entry points; `api/market.py` goals/escrow, `bid/`, `treasury/` | drifted | `domain-entry-points` | C5, C10 |
+| S18 | Abilities are files, no pre-built features (Dir 3) | starter package, skills | fantasy and research_probe domains remain installed entry points; `api/market.py` goals/escrow, `treasury/` | drifted | `domain-entry-points` | C5, C10 |
 | S19 | Built artifacts are not committed | Hosted Claude Code plugin uses the repository folder; `.mcpb` stages its own runtime at pack time | none | converged | `check_mirror_parity.py` rejects tracked plugin runtime files | C4 |
 | S20 | One home per fact (ADR-005, Dir 6) | README Direction, AGENTS.md, this file, ADRs, `openspec/specs`, `openspec/changes`, `docs/concerns`, `docs/reference` | none; C1 removed retired document trees and root clutter, retaining cited incident repros | converged | `doc-homes`: no new file outside a home | C1 |
 | S21 | One queue (AGENTS.md) | `openspec/changes/`, reconciled into one tracking issue | none; C2 archived completed changes and folded superseded lanes | converged | `superseded-open`; `shape-reconcile.yml` | C2 |

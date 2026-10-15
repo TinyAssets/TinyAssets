@@ -9,16 +9,16 @@ The built token/market/settlement subset: the flag-gated escrow money path with 
 ## Requirements
 
 ### Requirement: The money path is flag-gated off and pre-launch
-Every value-moving paid-market action SHALL be inert unless `TINYASSETS_PAID_MARKET` is truthy (`on`/`1`/`true`/`yes`), and the flag SHALL default off. Under flag-off, the escrow money actions (`escrow_lock`, `escrow_release`, `escrow_refund`, `escrow_fund`, `escrow_set_wallet`, `escrow_withdraw` in the paid-market API) SHALL return a `not_available` status instead of touching funds, and the `NodeBidProducer` SHALL NOT register, so the dispatcher never sees bid tasks. Read-only surfaces (escrow inspect/balance, treasury status) SHALL remain available regardless of the flag, because a read cannot move money. On-chain withdrawal defaults to a testnet chain (Base Sepolia), confirming the path is pre-launch.
+Every value-moving paid-market action SHALL be inert unless `TINYASSETS_PAID_MARKET` is truthy (`on`/`1`/`true`/`yes`), and the flag SHALL default off. Under flag-off, the escrow money actions (`escrow_lock`, `escrow_release`, `escrow_refund`, `escrow_fund`, `escrow_set_wallet`, `escrow_withdraw` in the paid-market API) SHALL return a `not_available` status instead of touching funds. The node-bid producer is removed, so the flag does not register bid tasks. Read-only surfaces (escrow inspect/balance, treasury status) SHALL remain available regardless of the flag, because a read cannot move money. On-chain withdrawal defaults to a testnet chain (Base Sepolia), confirming the path is pre-launch.
 
 #### Scenario: mutating escrow action is inert under flag-off
 - **WHEN** `TINYASSETS_PAID_MARKET` is unset or off and a caller invokes `escrow_lock`, `escrow_fund`, or `escrow_withdraw`
 - **THEN** the action returns `{"status": "not_available"}` with a message naming `TINYASSETS_PAID_MARKET=on`
 - **AND** no escrow, settlement, or wallet record is written
 
-#### Scenario: bid producer does not register under flag-off
-- **WHEN** `register_if_enabled` runs while the flag is off
-- **THEN** the `NodeBidProducer` is not registered
+#### Scenario: the flag does not register bid tasks
+- **WHEN** the flag is on or off
+- **THEN** no node-bid producer is registered
 - **AND** the dispatcher produces no bid-backed `BranchTask`s
 
 #### Scenario: reads stay available regardless of the flag

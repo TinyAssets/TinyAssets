@@ -65,14 +65,7 @@ def main() -> int:
 
     _check("tinyassets.universe_server.mcp exists", _mcp_has_tools)
 
-    # 4. Bid surface (R2 end-state). Regression here means the Phase-G
-    #    refactor left a broken re-export.
-    _check(
-        "tinyassets.bid imports",
-        lambda: importlib.import_module("tinyassets.bid"),
-    )
-
-    # 5. Catalog surface (R7a end-state). Regression here means the
+    # 4. Catalog surface (R7a end-state). Regression here means the
     #    storage-split rename left a broken import.
     _check(
         "tinyassets.catalog imports",
