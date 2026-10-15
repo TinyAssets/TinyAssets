@@ -65,13 +65,17 @@ def passed(report, capability, observation):
     )
 
 
-async def _sign_in_stall(page, step, exc):
-    """Where sign-in stopped: the step, the page host and title, and any visible
-    alert. Never a field value, so no secret can reach a log."""
+async def _sign_in_stall(page, step, exc, email=""):
+    """Where sign-in stopped: the step, the page host and title, and the page's
+    visible text. innerText never includes a field value, and the canary email
+    is masked, so no secret or address can reach a log."""
     alert = ""
     try:
-        texts = await page.get_by_role("alert").all_inner_texts()
-        alert = " ".join(" ".join(texts).split())[:160]
+        alert = " ".join((await page.locator("body").inner_text(timeout=5000)).split())
+        if email:
+            alert = alert.replace(email, "<email>")
+        alert = re.sub(r"[^\s@]+@[^\s@]+", "<email>", alert)
+        alert = alert[:300]
     except Exception:  # noqa: BLE001 - diagnostics only
         pass
     try:
@@ -80,7 +84,7 @@ async def _sign_in_stall(page, step, exc):
         title = ""
     return (
         f"sign-in step {step} failed ({type(exc).__name__}) on "
-        f"{urlsplit(page.url).hostname or '?'} title={title!r} alert={alert!r}"
+        f"{urlsplit(page.url).hostname or '?'} title={title!r} text={alert!r}"
     )
 
 
@@ -107,7 +111,9 @@ async def login(config, http):
                 try:
                     await action()
                 except Exception as exc:  # noqa: BLE001 - named, never a secret value
-                    raise ProbeFailure(await _sign_in_stall(page, step, exc)) from exc
+                    raise ProbeFailure(
+                        await _sign_in_stall(page, step, exc, config["email"])
+                    ) from exc
             for cookie in await context.cookies(ORIGIN):
                 http.cookies.set(
                     cookie["name"], cookie["value"], domain=cookie["domain"], path=cookie["path"]
