@@ -62,7 +62,13 @@ def test_the_image_runs_the_pid1_launcher():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     commands = re.findall(r"^CMD\s+(.+)$", dockerfile, flags=re.MULTILINE)
     assert commands == ['["/opt/venv/bin/python", "-I", "-B", '
-                        '"/usr/local/libexec/ta-launch.py"]']
+                        '"/usr/local/libexec/ta-box-entry.py"]']
+    result = subprocess.run(
+        [sys.executable, "-c", _AS_SCRIPT_SPAWN_CHILD.format(
+            path=str(ROOT / "deploy" / "box_daemon_entry.py"))],
+        cwd=ROOT, capture_output=True, text=True, timeout=300, check=True,
+    )
+    assert result.stdout.strip().splitlines()[-1] == "False"
 
 
 def test_the_launcher_starts_the_same_server():

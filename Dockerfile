@@ -224,8 +224,10 @@ RUN set -e; \
         libgomp1 \
         ffmpeg \
         ripgrep \
+        rsync \
         tini \
-        util-linux; \
+        util-linux \
+        xfsprogs; \
     mkdir -p -m 755 /etc/apt/keyrings; \
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
         -o /tmp/nodesource-repo.gpg.key; \
@@ -368,6 +370,7 @@ COPY scripts/workspace_bwrap_oracle.py /app/scripts/workspace_bwrap_oracle.py
 # before the bootstrap trusts it. ta-migrate.py is the one-time volume migration
 # (docs/ops/owner-split-cutover-runbook.md); the service never runs it.
 COPY deploy/docker-entrypoint.sh /usr/local/libexec/ta-entry.sh
+COPY deploy/box_daemon_entry.py /usr/local/libexec/ta-box-entry.py
 COPY scripts/check_privileged_chain.py /usr/local/libexec/ta-chain.py
 COPY deploy/role_launcher.py /usr/local/libexec/ta-launch.py
 COPY deploy/role_owner_launcher.py /usr/local/libexec/ta-owner-launch.py
@@ -401,6 +404,7 @@ RUN mkdir -p /data /home/tinyassets /var/lib/ta-broker /run/tinyassets-roles/bro
     chown -R root:root /app && \
     chmod -R a-w,a+rX /app && \
     chmod 0555 /app/broker_main.py /usr/local/libexec/ta-entry.sh \
+        /usr/local/libexec/ta-box-entry.py \
         /usr/local/libexec/ta-chain.py /usr/local/libexec/ta-launch.py \
         /usr/local/libexec/ta-owner-launch.py /usr/local/libexec/ta-decoder.py \
         /usr/local/libexec/ta-git.py /usr/local/libexec/ta-provision.py /usr/local/libexec/ta-admission-contract.py \
@@ -416,11 +420,6 @@ EXPOSE 8001
 # CMD in place.
 ENTRYPOINT ["/usr/local/libexec/ta-entry.sh"]
 
-# Default command: the owner-split PID1 (deploy/role_launcher.py). It refuses
-# unless it starts as root holding only KILL, SETGID, SETUID and SETPCAP
-# (compose `user: "0:0"` and `cap_add`) on a migrated volume; then it forks the
-# broker and the mapper, retires to uid 1001 and serves the FastMCP server on
-# 0.0.0.0:8001. Its __main__ imports only the standard library, so every
-# multiprocessing spawn child, which re-imports __main__ first, stays light.
-# As the image's default uid 1001 it refuses (the CI startup check).
-CMD ["/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-launch.py"]
+# The marker selects one serving path. Before the P2b cutover this execs the
+# existing launcher; after it, only the unprivileged owner-box frontend runs.
+CMD ["/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-box-entry.py"]
