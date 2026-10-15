@@ -1929,6 +1929,54 @@ case "$MIGRATION_RC" in
 esac
 rm -f "$MIGRATION_DETAIL_FILE"
 
+# Activities use the same stopped-writer, full-snapshot and restore gate as C8.
+# The candidate converts each owner's queued legacy work before it can serve;
+# any apply failure leaves the old image down until the named snapshot restores.
+activity_migration_container() {
+  local posture=() data_mount="tinyassets-data:/data"
+  if [ "$1" = "apply" ]; then
+    posture=(--user 0 --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE)
+    data_mount="tinyassets-data:/data"
+  fi
+  timeout "$MIGRATION_TIMEOUT" docker run --rm --cap-drop ALL ${posture[@]+"${posture[@]}"} \
+    --security-opt no-new-privileges=true --network none --memory=1g --memory-swap=1g \
+    -v "$data_mount" -v "${MIGRATION_BACKUP_DIR}:/backup:ro" \
+    --entrypoint python "$NEW_IMAGE" -B -m tinyassets.activity_shape_migration "$@"
+}
+if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
+  activity_probe="$(activity_migration_container check /data 2>&1)"
+  activity_probe_rc=$?
+  [ -z "$activity_probe" ] || printf '%s\n' "$activity_probe"
+  case "$activity_probe_rc" in
+    0) log "activity shape: already converted or no legacy work" ;;
+    10)
+      if [ "$CORE_CANARY_PROVISIONED" != "1" ]; then
+        migration_refused "check=core_canary_not_provisioned move=activity_shape_pending"
+      fi
+      if [ -z "$MIGRATION_SNAPSHOT" ]; then
+        if [ "$BOX_CANDIDATE_LAYOUT" = "owner-box" ]; then
+          stop_for_verified_snapshot 1
+        else
+          stop_for_verified_snapshot 0
+        fi
+      fi
+      log "activity shape: converting under snapshot ${MIGRATION_SNAPSHOT}"
+      activity_apply="$(activity_migration_container apply /data \
+        --backup "/backup/${MIGRATION_SNAPSHOT}" 2>&1)"
+      activity_apply_rc=$?
+      [ -z "$activity_apply" ] || printf '%s\n' "$activity_apply"
+      if [ "$activity_apply_rc" -eq 0 ]; then
+        MIGRATION_COMMITTED=1
+      else
+        MIGRATION_OK=0
+        MIGRATION_COMMIT_UNVERIFIED=1
+        err "activity conversion failed after entering the snapshot window (rc=${activity_apply_rc}); $(migration_restore_command)"
+      fi
+      ;;
+    *) migration_refused "check=activity_shape_probe rc=${activity_probe_rc} output=$(printf '%s\n' "$activity_probe" | one_line)" ;;
+  esac
+fi
+
 # --- 3d. layout census, and the one-shot move only for an owner-box candidate
 # The census always runs on a forward deploy, as root against a read-only
 # mount, and the log carries counts per layout. The move decision is this
@@ -1996,7 +2044,9 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
           if [ "$box_probe_rc" -ne 10 ]; then
             migration_refused "check=box_layout_probe move=box_layout_pending rc=${box_probe_rc}"
           fi
-          stop_for_verified_snapshot 1
+          if [ -z "$MIGRATION_SNAPSHOT" ]; then
+            stop_for_verified_snapshot 1
+          fi
           if [ "$TURNS_IDLE_PROVED" != "1" ] || [ -z "$MIGRATION_SNAPSHOT" ]; then
             migration_refused "check=backup_verify move=box_layout_pending snapshot=${MIGRATION_SNAPSHOT:-unset}"
           fi

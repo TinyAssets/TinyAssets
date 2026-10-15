@@ -15,6 +15,15 @@ An activity SHALL bind its durable run and generation before execution and enter
 - **THEN** further invocation/effect dispatch is refused and terminal cancellation is explicit
 - **AND** replacement waits until the former execution is proven terminal
 
+#### Scenario: An owner edited the retired Activities branch
+- **WHEN** a protected deploy converts a queued activity tied to that branch
+- **THEN** the owner's prompt text and tool grant are preserved in owner files and the next activity generation enters `session.start`
+- **AND** an unrepresentable or cross-owner legacy run ends with a visible reason, while another owner's conversion continues
+- **AND** restoring the pre-conversion snapshot restores the prior records and instructions
+
+### Requirement: Live workflow invoke/await remains guarded
+Until workflow execution itself is retired, invoke/await nodes SHALL continue through the existing runtime with its actor authorization, child allocation, workspace parent, and failure behavior. The runtime SHALL NOT be deleted while those callers remain.
+
 ### Requirement: One handle registration preserves profile confinement
 Public and pinned profiles SHALL use the same registration boundary while retaining independent owner globals, middleware and authenticated capabilities.
 

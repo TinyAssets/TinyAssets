@@ -4224,6 +4224,10 @@ def _prepare_run(
     editable definition. A capture failure raises ``AdmissionEnvelopeError``
     carrying the reserved ``run_id`` so the caller can refuse to dispatch.
     """
+    if branch.branch_def_id.startswith("activities::"):
+        raise PermissionError(
+            "The Activities workflow was retired; start an activity through the "
+            "agent session instead. The workflow definition remains available as history.")
     initialize_runs_db(base_path)
     run_id = create_run(
         base_path,

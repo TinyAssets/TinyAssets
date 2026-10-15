@@ -2245,6 +2245,8 @@ _ADMISSION_REFUSED_MARKERS = (
 def _failure_pause_reason(error_text: str) -> str:
     """Why a failed run should pause the automation, or '' to retry next period."""
     text = error_text or ""
+    if "The Activities workflow was retired" in text:
+        return "run_admission_refused"
     if AUTHORITY_LOST_MARKER in text:
         return "owner_lost_admin"
     lowered = text.lower()

@@ -8,7 +8,6 @@ there is deliberately no resume, startup hook, or reverse move.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import json
 import os
@@ -318,14 +317,16 @@ def _atomic_json(path: Path, value: dict) -> None:
             os.fsync(stream.fileno())
         if path.exists():
             info = path.stat()
-            os.chown(temporary, info.st_uid, info.st_gid)
+            if hasattr(os, "chown"):
+                os.chown(temporary, info.st_uid, info.st_gid)
             os.chmod(temporary, stat.S_IMODE(info.st_mode))
         os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        if hasattr(os, "O_DIRECTORY"):
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -345,6 +346,8 @@ def _copy(source: Path, target: Path, uid: int) -> None:
 
 
 def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
+    import fcntl
+
     if os.geteuid() != 0:
         raise PermissionError("box layout apply requires the one-shot root container")
     _verified_pair(data_backup, box_backup)

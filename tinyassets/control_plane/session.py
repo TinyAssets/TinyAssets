@@ -219,6 +219,9 @@ def _run_step(agent: AgentFile, prompt: str, parent: RunStep):
     from tinyassets.workflow_agent import call_foreground_work_agent
 
     session = parent.session
+    if parent.activity is not None:
+        prompt, legacy_node = _activity_instructions(session._universe_dir, parent.activity)
+        parent = replace(parent, node=legacy_node)
     prompt, system, config = prepare_shared_self_turn(
         session._base_path, session._universe_id, session._principal_id, prompt,
         parent.prompt_config, parent.node,
@@ -239,6 +242,48 @@ def _run_step(agent: AgentFile, prompt: str, parent: RunStep):
         **({"metadata_observer": parent.metadata_observer}
            if parent.metadata_observer is not None else {}),
     )
+
+
+def _activity_instructions(universe_dir: Path, activity: dict) -> tuple[str, dict | None]:
+    """Read the migrated owner-authored activity prompt from the admitted box."""
+    import json
+
+    from tinyassets.control_plane.binding import file_binding
+    from tinyassets.graph_compiler import _render_template
+    from tinyassets.universe_files import MAX_UNIVERSE_FILE_BYTES, read_universe_text
+
+    names = ("Activities.md", "Activities.tools.json", "Activities.error.txt")
+    binding = file_binding(universe_dir)
+    if binding is None:
+        def read(name):
+            try:
+                return read_universe_text(universe_dir, name)
+            except FileNotFoundError:
+                return None
+    else:
+        snapshot = binding.provider.read_many(
+            binding.handle, names, max_total=MAX_UNIVERSE_FILE_BYTES + 4096)
+        binding.check_read(snapshot.generation)
+        if (set(snapshot.files) | set(snapshot.missing) != set(names)
+                or set(snapshot.files) & set(snapshot.missing)):
+            raise PermissionError("incomplete activity instruction snapshot")
+
+        def read(name):
+            raw = snapshot.files.get(name)
+            return raw.decode("utf-8") if raw is not None else None
+
+    error = read(names[2])
+    if error:
+        raise PermissionError(error)
+    template = read(names[0])
+    if template is None:
+        return (f"Work on this activity until it is done.\n\n{activity['title']}\n\n"
+                f"{activity['brief']}\n\n"
+                "Finish with a short result summary and file locations.", None)
+    tools = read(names[1])
+    node = {"tools_allowed": json.loads(tools)} if tools is not None else None
+    return _render_template(template, {"title": activity["title"],
+                                       "brief": activity["brief"]}), node
 
 
 def _child(agent: AgentFile, input: str, parent: ChildOf) -> dict:
