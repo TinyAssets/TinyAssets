@@ -148,8 +148,8 @@ then
     exit 2
 fi
 
-# Root host receipts are part of the data member. The pair is coherent only
-# while every owner-box service is excluded and no guest survived its host.
+# Root host receipts are part of the data member. The nightly owner-box backup
+# is live (backup-owner-box.sh); BACKUP_MODE=snapshot is the offline variant.
 OWNER_BOX=0
 if [[ -f "${VOLUME_DIR}/.layout.json" ]] && python3 - "${VOLUME_DIR}/.layout.json" <<'BOX_LAYOUT_PY'
 import json
@@ -163,10 +163,8 @@ then
         exit 2
     fi
     if [[ "${BACKUP_MODE:-}" != snapshot ]]; then
-        # The host barrier takes the mutation lock before reacquiring this
-        # layout lock exclusively. Never wait for it while holding fd 9.
-        flock -u 9
-        exec 9>&-
+        # Live backup: the shared layout lock on fd 9 is inherited and held
+        # through the copy; no service is stopped.
         exec "$(dirname "$(realpath "$0")")/backup-owner-box.sh" \
             "${VOLUME_DIR}" "${BOX_STORE_DIR}" "${BACKUP_DEST}"
     fi

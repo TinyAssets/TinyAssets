@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
-# One acknowledged writer barrier for a live owner-box nightly backup.
-# Called only by backup.sh after it identifies a committed owner-box layout.
+# Live owner-box nightly backup: every service keeps serving (24/7).
+# Called only by backup.sh after it identifies a committed owner-box layout;
+# it inherits backup.sh's SHARED layout lock on fd 9, so no migration can
+# start while the trees are copied, and nothing here ever stops a writer.
+#
+# Copy: data volume and owner trees by reflink (same-filesystem XFS clone for
+# the box store), then every SQLite file in the copies re-taken from its live
+# source through the SQLite online backup API (backup-live-sqlite.py).
 set -euo pipefail
 
 DATA_DIR="$1"
@@ -16,37 +22,12 @@ STAGE=""
 DATA_COPY=""
 BOX_COPY=""
 BOX_STAGE=""
-STOPPED=0
-LOCKED=0
 
 log() { echo "[backup $(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
-running() { [[ "$(docker inspect --format '{{.State.Running}}' "$1")" == true ]]; }
-
-resume() {
-    if [[ "$LOCKED" == 1 ]]; then
-        flock -u 9 || return 1
-        LOCKED=0
-    fi
-    if [[ "$STOPPED" == 1 ]]; then
-        # The root host must be ready before the broker, and the broker before
-        # the frontend. A failed restart remains a failed backup invocation.
-        systemctl is-active --quiet boxhostd.service \
-            || systemctl start boxhostd.service || return 1
-        running tinyassets-broker || docker start tinyassets-broker || return 1
-        running tinyassets-daemon || docker start tinyassets-daemon || return 1
-        systemctl is-active --quiet boxhostd.service \
-            && running tinyassets-broker && running tinyassets-daemon || return 1
-        STOPPED=0
-    fi
-}
 
 finish() {
     local rc=$?
     trap - EXIT
-    if ! resume; then
-        log "CRITICAL: writer barrier release failed; inspect host and containers"
-        rc=2
-    fi
     if [[ -n "$BOX_STAGE" ]]; then
         rm -rf -- "$BOX_STAGE" || rc=2
     fi
@@ -76,48 +57,8 @@ if stage.is_relative_to(data) or stage.is_relative_to(box):
     raise SystemExit("backup staging must be outside data and owner stores")
 PY
 
-# Serialize deploy, watchdog and backup mutations. The parent has released its
-# shared layout lock, avoiding a lock inversion with deployment/migration.
 exec 7>>/var/lock/tinyassets-backup-owner-box.lock
 flock -n 7 || { log "ERROR: another owner-box backup is active"; exit 2; }
-exec 8>>/var/lock/tinyassets-host-mutation.lock
-flock -x -w 600 8 || { log "ERROR: host mutation lock unavailable"; exit 2; }
-running tinyassets-daemon && running tinyassets-broker \
-    && systemctl is-active --quiet boxhostd.service || {
-    log "ERROR: all three owner-box writers must be running before the barrier"; exit 2;
-}
-
-# Stopping the frontend interrupts active sessions/ticks and prevents new
-# admissions. The broker stop drains its SQLite writers; boxhostd.close stops
-# every owner sandbox and closes the root receipt journal. Each stop command
-# acknowledges process exit; the census below is the final guest assertion.
-STOPPED=1
-docker stop -t 30 tinyassets-daemon || exit 2
-docker stop -t 30 tinyassets-broker || exit 2
-systemctl stop boxhostd.service || exit 2
-
-exec 9>>"$DATA_DIR/.layout.lock"
-flock -x -w 60 9 || { log "ERROR: exclusive layout lock unavailable"; exit 2; }
-LOCKED=1
-if ! python3 - "$DATA_DIR/.layout.json" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as source:
-    marker = json.load(source)
-assert marker.get("state") == "stable" and marker.get("box_layout") == "owner-box"
-PY
-then
-    log "ERROR: layout changed before the writer barrier"; exit 2
-fi
-if [[ -n "$(docker ps -q --filter "volume=${BACKUP_VOLUME:-tinyassets-data}")" ]] \
-        || systemctl is-active --quiet boxhostd.service; then
-    log "ERROR: a volume writer survived the barrier"; exit 2
-fi
-python3 "$HERE/box-store-quotas.py" --snapshot-data "$DATA_DIR" --quiescent || {
-    log "ERROR: root receipts or guest census refused the barrier"; exit 2;
-}
-log "writer barrier acknowledged: frontend, broker, host and guests stopped"
 
 mkdir -p "$STAGE_ROOT"
 chmod 0700 "$STAGE_ROOT"
@@ -127,15 +68,12 @@ data_root="$(basename "$DATA_DIR")"
 box_root="$(basename "$BOX_DIR")"
 [[ "$data_root" != "$box_root" ]] || { log "ERROR: backup roots collide"; exit 2; }
 DATA_COPY="$STAGE/$data_root"
-BOX_COPY="$STAGE/$box_root"
 
-# The writer pause covers only a coherent file copy. Compression, manifest
-# hashing and remote upload all consume these immutable staged trees later.
 cp -a --reflink=auto -- "$DATA_DIR" "$DATA_COPY"
+python3 "$HERE/backup-live-sqlite.py" "$DATA_DIR" "$DATA_COPY"
 # The owner store is a separate XFS mount. A destination under that mount is
 # necessary for a real reflink; copying to /var/backups silently falls back to
-# a full copy. Writers are already stopped, so freezing XFS here would prevent
-# the reflink metadata writes themselves. Keep only numeric owner trees.
+# a full copy. Keep only numeric owner trees.
 BOX_STAGE="$(mktemp -d "$BOX_DIR/.backup-stage-${TS}.XXXXXX")"
 chmod 0700 "$BOX_STAGE"
 BOX_COPY="$BOX_STAGE/$box_root"
@@ -143,10 +81,11 @@ mkdir -m 0700 "$BOX_COPY"
 for tree in "$BOX_DIR"/[0-9]*; do
     [[ -d "$tree" && ! -L "$tree" ]] || continue
     cp -a --reflink=always -- "$tree" "$BOX_COPY/$(basename "$tree")"
+    python3 "$HERE/backup-live-sqlite.py" "$tree" "$BOX_COPY/$(basename "$tree")"
 done
-resume || { log "ERROR: writer barrier could not be released"; exit 2; }
-flock -u 8
-exec 8>&-
+# The copies are now immutable; release the layout lock before the slow part.
+flock -u 9 2>/dev/null || true
+log "live copy staged; services were never paused"
 
 tar -czf "$STAGE/$DATA_NAME" --numeric-owner --acls --xattrs \
     --exclude="$data_root/.broker/browser-vault" \
@@ -164,7 +103,7 @@ tar -czf "$STAGE/$BOX_NAME" --numeric-owner --acls --xattrs \
 python3 "$HERE/box-store-archive.py" "$STAGE/$BOX_NAME"
 
 # The manifest is the commit record for a single generation. Both local
-# members and the manifest are fsynced before writers are released.
+# members and the manifest are fsynced before the remote upload.
 python3 "$HERE/backup-pair.py" create "$STAGE/$DATA_NAME" \
     "$STAGE/$BOX_NAME" "$STAGE/$MANIFEST_NAME"
 log "paired generation staged durably at $STAGE"
