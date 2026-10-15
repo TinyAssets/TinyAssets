@@ -732,9 +732,17 @@ def _ensure_private_provider_dir(path: Path) -> None:
         pass
 
 
+def _custody_root(universe_root: Path) -> Path:
+    """The center's platform credential custody, outside its box."""
+    from tinyassets.credential_vault import _credential_root
+
+    return _credential_root(Path(universe_root)).resolve(strict=False)
+
+
 def _resolved_universe_child(universe_root: Path, path: Path) -> Path:
     resolved = path.resolve(strict=False)
-    if not resolved.is_relative_to(universe_root):
+    if not (resolved.is_relative_to(universe_root)
+            or resolved.is_relative_to(_custody_root(universe_root))):
         raise ValueError("provider path escapes command center")
     return resolved
 
@@ -767,7 +775,7 @@ def _preflight_vault_source(universe_root: Path, vault_path: Path) -> None:
     ):
         raise ValueError("credential vault source is not a private regular file")
     resolved = vault_path.resolve(strict=True)
-    if not resolved.is_relative_to(universe_root):
+    if not resolved.is_relative_to(_custody_root(universe_root)):
         raise ValueError("credential vault source escapes command center")
 
 
