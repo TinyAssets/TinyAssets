@@ -165,7 +165,7 @@ def test_one_broken_owner_and_low_volume_never_alarm():
 def test_live_missing_config_and_restarts_are_unknown_not_failed(monkeypatch, tmp_path, capsys):
     from scripts import core_capability_live as live
 
-    monkeypatch.delenv("TINYASSETS_CORE_CANARY_CONFIG", raising=False)
+    monkeypatch.delenv("TINYASSETS_CANARY_EMAIL", raising=False)
     report = asyncio.run(live.collect())
     assert report["warnings"][0]["code"] == "canary_not_provisioned"
     assert not report["failures"]
@@ -204,6 +204,34 @@ def test_model_missing_and_failed_evidence_is_alert_only(monkeypatch):
     report = asyncio.run(live.collect())
     assert not report["failures"]
     assert {row["capability"] for row in report["warnings"]} == {"chat_stream", "read_image"}
+
+
+def test_live_platform_failure_fails_the_step_and_model_rows_do_not(monkeypatch, tmp_path):
+    from scripts import core_capability_live as live
+
+    async def platform_red(report):
+        report["model_dependent"] = ["chat_stream", "patch_request"]
+        for name in CAPABILITIES:
+            if name not in {"chat_stream", "patch_request", "background_run"}:
+                live.passed(report, name, {"verified": True})
+
+    monkeypatch.setattr(live, "run", platform_red)
+    assert live.main(["--report", str(tmp_path / "red.json")]) == 1
+
+    async def model_red(report):
+        report["model_dependent"] = ["chat_stream", "patch_request"]
+        for name in CAPABILITIES:
+            if name not in report["model_dependent"]:
+                live.passed(report, name, {"verified": True})
+
+    monkeypatch.setattr(live, "run", model_red)
+    assert live.main(["--report", str(tmp_path / "advisory.json")]) == 0
+
+    async def crashed(report):
+        raise RuntimeError("probe bug")
+
+    monkeypatch.setattr(live, "run", crashed)
+    assert live.main(["--report", str(tmp_path / "crash.json")]) == 1
 
 
 @pytest.mark.parametrize("failure", ["github", "pushover", "report"])
