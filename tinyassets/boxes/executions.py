@@ -6,6 +6,7 @@ import hashlib
 import math
 import sqlite3
 import threading
+import time
 import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -149,6 +150,8 @@ class Executions:
     def request(self, grant, center, operation, args, op_id):
         host, owner = self.host, grant.owner_id
         if operation in {"start_exec", "start_cli"}:
+            for stale_exec in host.state.sweep_cli():
+                self.private.pop(stale_exec, None)
             digest = op_digest(operation, [center, grant.session_id, args])
             with self.guard:
                 previous = host.state.lookup(owner, op_id)
@@ -297,6 +300,8 @@ class Executions:
                         host.state.finish(owner, op_id, {
                             "exec_id": exec_id, "center": center, "session": grant.session_id,
                             **({"cli_lease": args["cli"]["custody"], "cli_ack": False}
+                               if "cli" in args else {}),
+                            **({"cli_deadline": time.time() + 3600}
                                if "cli" in args else {}),
                             **result, "output": encode({"data": bytes(running.output)}).decode()})
                     else:

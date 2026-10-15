@@ -13,6 +13,8 @@ DATA_NAME="tinyassets-data-${TS}.tar.gz"
 BOX_NAME="tinyassets-box-store-${TS}.tar.gz"
 MANIFEST_NAME="tinyassets-pair-${TS}.json"
 STAGE=""
+DATA_COPY=""
+BOX_COPY=""
 FROZEN=0
 STOPPED=0
 LOCKED=0
@@ -122,24 +124,37 @@ mkdir -p "$STAGE_ROOT"
 chmod 0700 "$STAGE_ROOT"
 STAGE="$(mktemp -d "$STAGE_ROOT/.tinyassets-pair-${TS}.XXXXXX")"
 chmod 0700 "$STAGE"
+data_root="$(basename "$DATA_DIR")"
+box_root="$(basename "$BOX_DIR")"
+[[ "$data_root" != "$box_root" ]] || { log "ERROR: backup roots collide"; exit 2; }
+DATA_COPY="$STAGE/$data_root"
+BOX_COPY="$STAGE/$box_root"
+
+# The writer pause covers only a coherent file copy. Compression, manifest
+# hashing and remote upload all consume these immutable staged trees later.
+cp -a --reflink=auto -- "$DATA_DIR" "$DATA_COPY"
+xfs_freeze -f "$BOX_DIR"
+FROZEN=1
+cp -a --reflink=auto -- "$BOX_DIR" "$BOX_COPY"
+xfs_freeze -u "$BOX_DIR"
+FROZEN=0
+resume || { log "ERROR: writer barrier could not be released"; exit 2; }
+flock -u 8
+exec 8>&-
+
 tar -czf "$STAGE/$DATA_NAME" --numeric-owner --acls --xattrs \
-    --exclude="$(basename "$DATA_DIR")/.broker/browser-vault" \
-    -C "$(dirname "$DATA_DIR")" "$(basename "$DATA_DIR")"
+    --exclude="$data_root/.broker/browser-vault" \
+    -C "$STAGE" "$data_root"
 tar -tzf "$STAGE/$DATA_NAME" >/dev/null
 
-box_root="$(basename "$BOX_DIR")"
 box_members=()
-for tree in "$BOX_DIR"/[0-9]*; do
+for tree in "$BOX_COPY"/[0-9]*; do
     [[ -d "$tree" && ! -L "$tree" ]] || continue
     box_members+=("$box_root/$(basename "$tree")")
 done
-xfs_freeze -f "$BOX_DIR"
-FROZEN=1
 tar -czf "$STAGE/$BOX_NAME" --numeric-owner --acls --xattrs \
-    -C "$(dirname "$BOX_DIR")" --no-recursion "$box_root" \
+    -C "$STAGE" --no-recursion "$box_root" \
     --recursion "${box_members[@]}"
-xfs_freeze -u "$BOX_DIR"
-FROZEN=0
 python3 "$HERE/box-store-archive.py" "$STAGE/$BOX_NAME"
 
 # The manifest is the commit record for a single generation. Both local
@@ -147,9 +162,6 @@ python3 "$HERE/box-store-archive.py" "$STAGE/$BOX_NAME"
 python3 "$HERE/backup-pair.py" create "$STAGE/$DATA_NAME" \
     "$STAGE/$BOX_NAME" "$STAGE/$MANIFEST_NAME"
 log "paired generation staged durably at $STAGE"
-resume || { log "ERROR: writer barrier could not be released"; exit 2; }
-flock -u 8
-exec 8>&-
 
 # Remote commit is the manifest, uploaded only after both immutable members.
 # A failed upload leaves the local generation for repair and publishes no
@@ -203,6 +215,7 @@ else
     log "WARN: owner-box pair retention listing failed"
 fi
 
+rm -rf -- "$DATA_COPY" "$BOX_COPY"
 rm -f -- "$STAGE/$DATA_NAME" "$STAGE/$BOX_NAME" "$STAGE/$MANIFEST_NAME" \
     "$STAGE/remote-names" "$STAGE/victims"
 rmdir -- "$STAGE"

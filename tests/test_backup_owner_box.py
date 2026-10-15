@@ -42,6 +42,9 @@ class OwnerBoxBarrierTest(unittest.TestCase):
                     '{"state":"stable","box_layout":"owner-box"}'
                 )
                 (data / "file").write_text("receipt and platform data")
+                private = data / ".platform" / "credential-vaults" / "center"
+                private.mkdir(parents=True)
+                (private / ".credential-vault.json").write_text("platform credential")
                 owner = box / "300001"
                 owner.mkdir()
                 (owner / "file").write_text("owner bytes")
@@ -73,6 +76,10 @@ case "$1" in
 esac
 """)
                 shim(binary, "xfs_freeze", 'echo "freeze $1" >> "$TEST_LOG"\n')
+                shim(binary, "tar", """
+echo "archive $(cat "$TEST_STATE/tinyassets-daemon")" >> "$TEST_LOG"
+exec /usr/bin/tar "$@"
+""")
                 shim(binary, "rclone", """
 case "$1" in
   copyto) cp "${@: -2:1}" "${@: -1}" ;;
@@ -112,6 +119,10 @@ esac
                     len(list(remote.glob("tinyassets-pair-*.json"))), 0 if survivor else 1
                 )
                 if not survivor:
+                    actions = log.read_text().splitlines()
+                    self.assertIn("archive true", actions)
+                    self.assertLess(actions.index("start tinyassets-daemon"),
+                                    actions.index("archive true"))
                     self.assertEqual(len(list(remote.glob("tinyassets-data-*.tar.gz"))), 1)
                     self.assertEqual(len(list(remote.glob("tinyassets-box-store-*.tar.gz"))), 1)
                     self.assertTrue((remote / "unrelated.txt").exists())
