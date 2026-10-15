@@ -308,6 +308,13 @@ def admit_center(data_root, *, principal, center):
     unfinished step, and an already-bound center is a success. Nothing here
     removes a published root, and there is no legacy mkdir fallback.
     """
+    from tinyassets.boxes.lifecycle import owner_layout
+
+    if owner_layout(data_root) == "owner-box":
+        from tinyassets.boxes.lifecycle import admit_center as admit_box_center
+
+        return admit_box_center(data_root, principal=principal, center=center)
+
     from tinyassets.broker.owner_identities import center_admission, owner_identity
 
     client = bounded_client()
