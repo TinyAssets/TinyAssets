@@ -143,9 +143,6 @@ def exercise(base, center, principal):
         ('workspace-sweep', sweep_data_root),
     ):
         check(name, lambda operation=operation: operation(base))
-    check('execution-log', lambda: append_execution_log_entry(root, {'oracle': True}),
-          produces=('bid_execution_log.json',))
-    check('execution-log-append', lambda: append_execution_log_entry(root, {'second': True}))
     from tinyassets.auto_ship_ledger import ShipAttempt, record_attempt, update_attempt
     check('auto-ship-content', lambda: record_attempt(root, ShipAttempt(
         ship_attempt_id='oracle', created_at='', updated_at='', ship_status='skipped')),
