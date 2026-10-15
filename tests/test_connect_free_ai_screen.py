@@ -224,6 +224,8 @@ def test_every_live_and_history_failure_path_passes_the_record():
     assert "error.failure=recorded?failure:null;" in html
     assert ("appendFailureNotice(err.message,{speaker:\"founder\",text:message,display,"
             "truncated:false},undefined,err.failureCode,err.failure);") in html
+    # Voice no longer has its own send path, so its separate failure call is gone.
+    assert ",error.failureCode,error.failure);" not in html
     assert "observed.turn_failure.code,\n                  observed.turn_failure);" in html
     assert "index===ordered.length-1?t.failure:null" in html
 
