@@ -22,12 +22,25 @@ def test_tree_refuses_descendant_mismatch_and_cleared_root_retaining_project(tmp
     child.write_text("payload")
 
     def reader(path):
-        return (300002, True) if path == child else (300001, True)
+        return (300002, False) if path == child else (300001, path.is_dir())
 
     with pytest.raises(RuntimeError, match="payload"):
         readback.verify_tree(tree, 300001, True, reader=reader)
     with pytest.raises(RuntimeError, match="project read-back mismatch"):
         readback.verify_tree(tree, 0, False, reader=lambda _: (300001, True))
+
+
+def test_tree_checks_inherit_on_directories_and_project_on_files(tmp_path):
+    tree = tmp_path / "300001"
+    directory = tree / "center"
+    directory.mkdir(parents=True)
+    (directory / "payload").write_text("payload")
+
+    readback.verify_tree(tree, 300001, True,
+                         reader=lambda path: (300001, path.is_dir()))
+    with pytest.raises(RuntimeError, match="center"):
+        readback.verify_tree(tree, 300001, True,
+                             reader=lambda path: (300001, path == tree))
 
 
 @pytest.mark.parametrize("found", [0, 1023, 1025])

@@ -49,10 +49,13 @@ def verify_tree(
             break
     for path in paths:
         found = reader(path)
-        if found != (project, inherit):
+        # XFS only needs PROJINHERIT on directories: regular files carry the
+        # project ID but cannot create descendants to inherit it.
+        expected = (project, inherit if stat.S_ISDIR(path.lstat().st_mode) else False)
+        if found != expected:
             raise RuntimeError(
                 f"XFS project read-back mismatch at {path}: "
-                f"expected {(project, inherit)}, found {found}")
+                f"expected {expected}, found {found}")
 
 
 def read_hard_limit(store: Path, project: int) -> int:

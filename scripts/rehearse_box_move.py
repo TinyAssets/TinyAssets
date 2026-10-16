@@ -27,6 +27,7 @@ IMAGE = "tinyassets-c6-rehearsal:local"
 STAMP = "2026-10-15T00-00-00Z"
 DATA_ARCHIVE = f"tinyassets-snapshot-{STAMP}.tar.gz"
 BOX_ARCHIVE = f"tinyassets-box-store-{STAMP}.tar.gz"
+PAIR_MANIFEST = f"tinyassets-pair-{STAMP}.json"
 ARCHIVE_NAME = re.compile(r"tinyassets-data-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z\.tar\.gz\Z")
 
 FIXTURE = r'''
@@ -144,7 +145,7 @@ print(json.dumps([{'uid': owner.uid, 'centers': list(owner.centers), 'quota': ow
 '''
 
 QUOTA_READBACK = r'''
-import sqlite3, sys
+import json, sqlite3, sys
 from pathlib import Path
 from deploy.box_project_readback import verify_owner, verify_tree
 
@@ -159,9 +160,16 @@ if sys.argv[1] == 'set':
 else:
     retained = sorted(store.glob('.tinyassets-box-restore-old.*/[0-9]*'))
     assert retained, 'no retained owner trees'
+    if sys.argv[1] == 'retained':
+        plan = json.loads(sys.argv[2])
     for tree in retained:
-        verify_tree(tree, 0, False)
-        print(f'owner={tree.name} retained_project_cleared=PASS')
+        if sys.argv[1] == 'retained':
+            assert not (store / tree.name).exists(), 'pre-move restore installed a box'
+            verify_owner(store, tree, int(tree.name), plan[tree.name])
+            print(f'owner={tree.name} retained_project_and_hard_limit=PASS')
+        else:
+            verify_tree(tree, 0, False)
+            print(f'owner={tree.name} retained_project_cleared=PASS')
 '''
 
 ARCHIVE_REPORT = r'''
@@ -265,7 +273,9 @@ raise SystemExit(0 if good else 1)
 def run(*argv: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     done = subprocess.run(argv, text=True, capture_output=True)
     if check and done.returncode:
-        raise RuntimeError(f"{' '.join(argv[:5])}: FAIL (rc={done.returncode})")
+        raise RuntimeError(
+            f"{' '.join(argv[:5])}: FAIL (rc={done.returncode}) "
+            f"{(done.stderr or done.stdout).strip()[:2000]}")
     return done
 
 
@@ -447,7 +457,8 @@ def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int
             raise RuntimeError(f'owner commit verification: FAIL (rc={report.returncode})')
         if not fail:
             quotas = container('--rm', '--cap-drop', 'ALL', '--user', '0',
-                               '--cap-add', 'SYS_ADMIN', '--device', f'{device}:{device}:r',
+                               '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SYS_ADMIN',
+                               '--device', f'{device}:{device}:r',
                                '--network', 'none', '-v', f"{names['data']}:/data:ro",
                                '--mount', f'type=bind,src={store_path},dst=/box-store',
                                '--entrypoint', 'python', image, '-c', QUOTA_READBACK, 'set',
@@ -489,9 +500,13 @@ bash /rehearsal-deploy/backup-restore.sh
             print(checked.stdout, end='')
             if checked.returncode:
                 raise RuntimeError(f'restore verification: FAIL (rc={checked.returncode})')
-            cleared = container('--rm', '--user', '0', '--network', 'none',
-                                '--mount', f'type=bind,src={store_path},dst=/box-store,readonly',
-                                '--entrypoint', 'python', image, '-c', QUOTA_READBACK, 'clear',
+            retained_quotas = json.dumps({str(row['uid']): row['quota'] for row in owners})
+            cleared = container('--rm', '--cap-drop', 'ALL', '--user', '0',
+                                '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SYS_ADMIN',
+                                '--device', f'{device}:{device}:r', '--network', 'none',
+                                '--mount', f'type=bind,src={store_path},dst=/box-store',
+                                '--entrypoint', 'python', image, '-c', QUOTA_READBACK, 'retained',
+                                retained_quotas,
                                 check=False)
             print(cleared.stdout, end='')
             if cleared.returncode:
@@ -580,6 +595,10 @@ def rehearsal(image: str, *, fail: bool) -> None:
                        '-B', '-m', 'tinyassets.box_layout_migration', 'check', '/data',
                        check=False)
         assert probe.returncode == 10, probe.stdout + probe.stderr
+        planned = docker('run', '--rm', '--user', '0', '--network', 'none',
+                         '-v', f"{names['data']}:/data:ro", '--entrypoint', 'python',
+                         image, '-c', ARCHIVE_PLAN)
+        owners = json.loads(planned.stdout)
 
         # Keep this argv in lockstep with deploy_fail_safe.sh:box_migration_container.
         apply = docker('run', '--rm', '--cap-drop', 'ALL', '--user', '0',
@@ -627,14 +646,19 @@ bash /rehearsal-deploy/backup-restore.sh
                               '--mount', f'type=bind,src={store_path},dst=/box-store',
                               '--entrypoint', 'python', image, '-c', VERIFY_RESTORE)
             print('[rehearsal] ' + verified.stdout.strip())
-            cleared = docker('run', '--rm', '--user', '0', '--network', 'none',
-                             '--mount', f'type=bind,src={store_path},dst=/box-store,readonly',
-                             '--entrypoint', 'python', image, '-c', QUOTA_READBACK, 'clear')
+            retained_quotas = json.dumps({str(row['uid']): row['quota'] for row in owners})
+            cleared = docker('run', '--rm', '--cap-drop', 'ALL', '--user', '0',
+                             '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SYS_ADMIN',
+                             '--device', f'{device}:{device}:r', '--network', 'none',
+                             '--mount', f'type=bind,src={store_path},dst=/box-store',
+                             '--entrypoint', 'python', image, '-c', QUOTA_READBACK, 'retained',
+                             retained_quotas)
             print('[rehearsal] ' + cleared.stdout.strip())
         else:
             assert apply.returncode == 0, apply.stdout + apply.stderr
             quotas = docker('run', '--rm', '--cap-drop', 'ALL', '--user', '0',
-                            '--cap-add', 'SYS_ADMIN', '--device', f'{device}:{device}:r',
+                            '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SYS_ADMIN',
+                            '--device', f'{device}:{device}:r',
                             '--network', 'none', '-v', f"{names['data']}:/data:ro",
                             '--mount', f'type=bind,src={store_path},dst=/box-store',
                             '--entrypoint', 'python', image, '-c', QUOTA_READBACK, 'set')
@@ -644,6 +668,65 @@ bash /rehearsal-deploy/backup-restore.sh
                               '--mount', f'type=bind,src={store_path},dst=/box-store',
                               '--entrypoint', 'python', image, '-c', VERIFY_COMMIT)
             print('[rehearsal] ' + verified.stdout.strip())
+            # Take a committed owner-box generation and restore it over the
+            # same live boxes. This exercises project clearing on retained
+            # trees and reapplication on every restored owner.
+            docker('run', '--rm', '--user', '0', '--network', 'none',
+                   '-v', f"{names['parent']}:/parent:ro",
+                   '-v', f"{names['backup']}:/backup", '--entrypoint', 'tar', image,
+                   '--numeric-owner', '--acls', '--xattrs', '-czf',
+                   f'/backup/{DATA_ARCHIVE}', '-C', '/parent', '_data')
+            docker('run', '--rm', '--user', '0', '--network', 'none',
+                   '-v', f"{names['backup']}:/backup",
+                   '--mount', f'type=bind,src={store_path},dst=/box-store,readonly',
+                   '--entrypoint', 'tar', image,
+                   '--numeric-owner', '--acls', '--xattrs', '-czf',
+                   f'/backup/{BOX_ARCHIVE}', '-C', '/box-store',
+                   '--transform=s,^,owners/,', *(str(row['uid']) for row in owners))
+            docker('run', '--rm', '--user', '0', '--network', 'none',
+                   '-v', f"{names['backup']}:/backup",
+                   '--mount', f'type=bind,src={ROOT / "deploy"},'
+                              'dst=/rehearsal-deploy,readonly',
+                   '--entrypoint', 'python', image, '/rehearsal-deploy/backup-pair.py',
+                   'create', f'/backup/{DATA_ARCHIVE}', f'/backup/{BOX_ARCHIVE}',
+                   f'/backup/{PAIR_MANIFEST}')
+            shim = r'''set -eu
+mkdir -p /tmp/c6-bin
+printf '#!/bin/sh\ncase "$1 $2" in\n' > /tmp/c6-bin/docker
+printf '"volume inspect") echo /parent/_data;;\n' >> /tmp/c6-bin/docker
+printf '"ps -q") exit 0;; *) exit 1;; esac\n' >> /tmp/c6-bin/docker
+printf '#!/bin/sh\nexit 0\n' > /tmp/c6-bin/systemctl
+chmod +x /tmp/c6-bin/docker /tmp/c6-bin/systemctl
+mkdir -p /opt/tinyassets/boxhostd/current
+printf '#!/bin/sh\necho "[]"\n' > /opt/tinyassets/boxhostd/current/runsc
+chmod +x /opt/tinyassets/boxhostd/current/runsc
+export PATH=/tmp/c6-bin:$PATH
+export BACKUP_FILE=/backup/''' + DATA_ARCHIVE + r'''
+export BOX_BACKUP_FILE=/backup/''' + BOX_ARCHIVE + r'''
+export BACKUP_VOLUME=rehearsal-data BOX_STORE_DIR=/box-store
+export BACKUP_LOG=/tmp/c6-restore.log
+bash /rehearsal-deploy/backup-restore.sh
+'''
+            restored = docker('run', '--rm', '--privileged', '--user', '0',
+                              '--network', 'none', '-v', f"{names['parent']}:/parent",
+                              '-v', f"{names['backup']}:/backup:ro",
+                              '--mount', f'type=bind,src={store_path},dst=/box-store',
+                              '--mount', f'type=bind,src={ROOT / "deploy"},'
+                                         'dst=/rehearsal-deploy,readonly',
+                              '--entrypoint', 'sh', image, '-ec', shim)
+            print('[rehearsal] committed owner-box restore: '
+                  + restored.stdout.strip().splitlines()[-1])
+            restored_quotas = docker('run', '--rm', '--cap-drop', 'ALL', '--user', '0',
+                                    '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SYS_ADMIN',
+                                    '--device', f'{device}:{device}:r', '--network', 'none',
+                                    '-v', f"{names['data']}:/data:ro",
+                                    '--mount', f'type=bind,src={store_path},dst=/box-store',
+                                    '--entrypoint', 'python', image, '-c', QUOTA_READBACK, 'set')
+            print('[rehearsal] restored ' + restored_quotas.stdout.strip())
+            cleared = docker('run', '--rm', '--user', '0', '--network', 'none',
+                             '--mount', f'type=bind,src={store_path},dst=/box-store,readonly',
+                             '--entrypoint', 'python', image, '-c', QUOTA_READBACK, 'clear')
+            print('[rehearsal] ' + cleared.stdout.strip())
     finally:
         if mounted:
             unmount = docker('run', '--rm', '--privileged', '--pid=host', '--user', '0',
