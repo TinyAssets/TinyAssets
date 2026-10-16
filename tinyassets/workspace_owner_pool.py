@@ -14,5 +14,3 @@ def pool_parts(storage: str, repo_key: str) -> tuple[str, ...]:
     if storage == "universe":
         return (WORKSPACES_DIR, repo_key)
     raise ValueError(f"unknown workspace storage class: {storage!r}")
-
-

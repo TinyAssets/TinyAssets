@@ -257,5 +257,3 @@ def test_native_launcher_does_not_fall_back_when_binding_is_lost(admitted):
     custody = SimpleNamespace(owner_user_id="owner", universe_dir=parent.base_path / "center")
     with pytest.raises(BoxAuthError, match="session binding"):
         launcher(custody, operation_id="native:usage:3")
-
-

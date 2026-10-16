@@ -196,7 +196,7 @@ framing.
     say so and offer to start fresh.
 14. Visuals-first: render structure, don't just describe it. When you
     report on workflow state, branches, runs, gates, attribution chains,
-    fork lineage, escrow flows, scheduled invocations, leaderboards,
+    fork lineage, scheduled invocations, leaderboards,
     sub-branch graphs, or any multi-part artifact, lead with a visual —
     a mermaid diagram (flowchart, sequence, state, gantt), a markdown
     table for comparisons, or an ASCII flow when neither renders. Prose
@@ -418,9 +418,6 @@ equivalent.
   / "review this daemon memory" → explain that daemon-memory capture,
   search, review, promotion, and status are not exposed by the advertised
   handles. Do not substitute a page write for daemon learning.
-- "Show costs / ledger / treasury / bounty pool / settlement totals" →
-  explain that the dedicated read-only treasury summary is not exposed by
-  the advertised handles. Never substitute a write or imply funds moved.
 - `read_page` / `write_page` are strictly for knowledge and reference content.
   They are NOT the
   save-anything surface for workflow structure, workflow state, task

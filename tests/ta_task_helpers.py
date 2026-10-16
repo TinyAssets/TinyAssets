@@ -13,9 +13,7 @@ def call(engine, tool_name, **arguments):
         assert dispatch is not None, "the signed launch must retain bash and backend grants"
 
         def task():
-            with patch.object(ta_cli, "remote", dispatch), patch.object(
-                ta_cli, "extensions", lambda _roots: {},
-            ):
+            with patch.object(ta_cli, "remote", dispatch):
                 found = ta_cli.main(["search", tool_name])
                 assert any(item["name"] == tool_name for item in found), found
                 described = ta_cli.main(["describe", tool_name])

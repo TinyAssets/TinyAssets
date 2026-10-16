@@ -1,6 +1,6 @@
 """Task #14 — direct tests for `tinyassets.api.market` after decomp Step 7.
 
-Legacy goals/gates/escrow/outcome/attribution tests still cover the
+Legacy goals/gates/outcome/attribution tests still cover the
 chatbot-facing `tinyassets.universe_server` MCP wrappers. This file exercises
 `tinyassets.api.market` directly to lock in the canonical implementation surface.
 """
@@ -12,16 +12,15 @@ import json
 import pytest
 
 from tinyassets.api import market as mkt_mod
+from tinyassets.api.extensions import _extensions_impl
 from tinyassets.api.market import (
     _ATTRIBUTION_ACTIONS,
-    _ESCROW_ACTIONS,
     _GATE_EVENT_ACTIONS,
     _GATES_ACTIONS,
     _GOAL_ACTIONS,
     _GOAL_WRITE_ACTIONS,
     _OUTCOME_ACTIONS,
     _action_attest_gate_event,
-    _action_escrow_inspect,
     _action_get_outcome,
     _action_goal_propose,
     _action_record_remix,
@@ -37,14 +36,11 @@ def test_module_exposes_expected_public_names():
     """Contract surface — guards against silent removal."""
     expected = {
         # Dispatch tables
-        "_ESCROW_ACTIONS", "_OUTCOME_ACTIONS", "_ATTRIBUTION_ACTIONS",
+        "_OUTCOME_ACTIONS", "_ATTRIBUTION_ACTIONS",
         "_GOAL_ACTIONS", "_GOAL_WRITE_ACTIONS", "_dispatch_goal_action",
         "_GATES_ACTIONS", "_GATE_EVENT_ACTIONS",
         # Plain MCP-tool callables (Pattern A2)
         "goals", "gates",
-        # Escrow handlers
-        "_action_escrow_lock", "_action_escrow_release",
-        "_action_escrow_refund", "_action_escrow_inspect",
         # Outcome handlers
         "_action_record_outcome", "_action_list_outcomes",
         "_action_get_outcome",
@@ -60,8 +56,6 @@ def test_module_exposes_expected_public_names():
         "_action_gates_claim", "_action_gates_claim_from_branch_run",
         "_action_gates_retract",
         "_action_gates_list_claims", "_action_gates_leaderboard",
-        "_action_gates_stake_bonus", "_action_gates_unstake_bonus",
-        "_action_gates_release_bonus",
         # Gate event handlers (6)
         "_action_attest_gate_event", "_action_verify_gate_event",
         "_action_dispute_gate_event", "_action_retract_gate_event",
@@ -73,15 +67,8 @@ def test_module_exposes_expected_public_names():
     assert not missing, f"market.py is missing public names: {missing}"
 
 
-# ── _ESCROW_ACTIONS dispatch table ──────────────────────────────────────────
 
 
-def test_escrow_actions_keys():
-    expected = {
-        "escrow_lock", "escrow_release", "escrow_refund", "escrow_inspect",
-        "escrow_fund", "escrow_balance", "escrow_set_wallet", "escrow_withdraw",
-    }
-    assert set(_ESCROW_ACTIONS.keys()) == expected
 
 
 # ── _OUTCOME_ACTIONS dispatch table ─────────────────────────────────────────
@@ -179,13 +166,33 @@ def test_gates_actions_keys():
     expected = {
         "define_ladder", "get_ladder", "claim", "retract", "list",
         "list_claims", "leaderboard",
-        "stake_bonus", "unstake_bonus", "release_bonus",
         # PR-126 M5 — claim from completed run's recommended_rung_claim.
         "claim_from_branch_run",
         # Conformance-pack registry handlers.
         "record_conformance_pack", "list_conformance_packs", "get_conformance_pack",
     }
     assert set(_GATES_ACTIONS.keys()) == expected
+
+
+@pytest.mark.parametrize("action", ["stake_bonus", "unstake_bonus", "release_bonus"])
+def test_paid_market_flag_cannot_restore_retired_money_routes(monkeypatch, action):
+    monkeypatch.setenv("GATES_ENABLED", "1")
+    assert not hasattr(mkt_mod, "_ESCROW_ACTIONS")
+    result = json.loads(gates(action=action))
+    assert "error" in result
+    assert action not in result["available_actions"]
+
+
+@pytest.mark.parametrize("action", [
+    "escrow_lock", "escrow_release", "escrow_refund", "escrow_inspect",
+    "escrow_fund", "escrow_balance", "escrow_set_wallet", "escrow_withdraw",
+])
+def test_extensions_refuses_retired_escrow_actions(monkeypatch, action):
+    result = json.loads(_extensions_impl(action=action))
+    assert result == {
+        "status": "rejected",
+        "error": f"Action '{action}' was retired with the paid market.",
+    }
 
 
 def test_gate_event_actions_keys():
@@ -202,7 +209,6 @@ def test_gate_event_actions_keys():
 @pytest.mark.parametrize(
     "table_name, table",
     [
-        ("_ESCROW_ACTIONS", _ESCROW_ACTIONS),
         ("_OUTCOME_ACTIONS", _OUTCOME_ACTIONS),
         ("_ATTRIBUTION_ACTIONS", _ATTRIBUTION_ACTIONS),
         ("_GOAL_ACTIONS", _GOAL_ACTIONS),
@@ -218,9 +224,6 @@ def test_dispatch_table_handlers_are_callable(table_name, table):
 # ── handler error paths (no monkeypatch) ────────────────────────────────────
 
 
-def test_action_escrow_inspect_missing_args_returns_error():
-    out = json.loads(_action_escrow_inspect({}))
-    assert "error" in out
 
 
 def test_action_get_outcome_missing_args_returns_error():

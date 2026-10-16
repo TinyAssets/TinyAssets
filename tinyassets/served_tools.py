@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 #: The engine-MCP handles the served agent may call, on EVERY provider surface.
-#: A handler is only reachable when it is BOTH registered (``@mcp.tool`` in
-#: ``engine_mcp_server``) AND present here.
+#: A handler is only reachable when it is BOTH registered (by
+#: ``control_plane.registration``) AND present here.
 #:
 #: Included:
 #:   read_graph, get_status, browse_commons, read_commons_shape  — read surfaces

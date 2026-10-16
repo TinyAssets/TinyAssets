@@ -1952,16 +1952,15 @@ case "$MIGRATION_RC" in
 esac
 rm -f "$MIGRATION_DETAIL_FILE"
 
-# --- 3d. layout census, and the one-shot move only for an owner-box candidate
+# --- 3d. layout census and owner-box cutover
 # The census always runs on a forward deploy, as root against a read-only
 # mount, and the log carries counts per layout. The move decision is this
 # census, never the agent-files binding count printed above. An owner-split
 # candidate does not apply the cutover: only rc 10 (stable owner-split) continues.
 # rc 4 (no marker) and rc 3 (unreadable, unstable, or unrecognized) refuse.
-# rc 0 on that candidate is a conflict. An owner-box candidate applies only on
-# rc 10, after a fresh verified snapshot taken for that move, then restarts
-# boxhostd on the committed layout. After apply begins, a failure needs that
-# paired restore.
+# rc 0 on that candidate is a conflict. An owner-box candidate applies on
+# rc 10 after a fresh verified paired snapshot: either the one-shot box move
+# or the one-time legacy Activities cutover within an already committed box layout.
 box_migration_container() {  # $1 = check|apply, then module arguments
   local posture=(--user 0)
   local data_mount="tinyassets-data:/data:ro"
@@ -2009,7 +2008,7 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
           # Apply runs only after every gate has passed in this run: a
           # provisioned canary, an in-flight probe that proved idle (and is
           # proved again inside the snapshot, so the drain cannot cut a turn),
-          # a stable owner-split census, and a fresh verified backup.
+          # a stable layout census, and a fresh verified paired backup.
           if [ "$CORE_CANARY_PROVISIONED" != "1" ]; then
             migration_refused "check=core_canary_not_provisioned move=box_layout_pending"
           fi
@@ -2019,11 +2018,13 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
           if [ "$box_probe_rc" -ne 10 ]; then
             migration_refused "check=box_layout_probe move=box_layout_pending rc=${box_probe_rc}"
           fi
-          stop_for_verified_snapshot 1
+          if [ -z "$MIGRATION_SNAPSHOT" ]; then
+            stop_for_verified_snapshot 1
+          fi
           if [ "$TURNS_IDLE_PROVED" != "1" ] || [ -z "$MIGRATION_SNAPSHOT" ]; then
             migration_refused "check=backup_verify move=box_layout_pending snapshot=${MIGRATION_SNAPSHOT:-unset}"
           fi
-          log "box layout: one-shot move using fresh snapshot ${MIGRATION_SNAPSHOT} (census, not the agent-files binding count)"
+          log "box layout: applying one-time box or activity cutover using fresh snapshot ${MIGRATION_SNAPSHOT} (census, not the agent-files binding count)"
           box_backup="tinyassets-box-store-${MIGRATION_SNAPSHOT#tinyassets-snapshot-}"
           box_apply="$(box_migration_container apply /data --store /box-store \
             --backup "/backup/${MIGRATION_SNAPSHOT}" \

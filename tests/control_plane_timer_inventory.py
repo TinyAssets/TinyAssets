@@ -112,11 +112,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         "one broker stream waits for the daemon's refresh answer only until "
         "that stream's own deadline; nothing reschedules",
     ),
-    "tinyassets/activity_runner.py::linked_activity": (
-        CALL_SCOPED,
-        "one activity run waits up to wait_s for the dispatcher to bind its "
-        "record, then returns or refuses before inference; no background scheduling",
-    ),
     "tinyassets/boxes/host_service.py::_serve": (
         CONTROL_PLANE,
         "root box host reaps idle sandboxes; no owner task or inference scheduling",

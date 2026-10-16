@@ -46,7 +46,7 @@ def test_module_exposes_expected_public_names():
         "_action_stream_run", "_action_wait_for_run", "_action_cancel_run",
         "_action_get_run_output", "_action_attach_existing_child_run",
         "_action_resume_run",
-        "_action_estimate_run_cost", "_action_query_runs",
+        "_action_query_runs",
         "_action_run_routing_evidence", "_action_get_memory_scope_status",
         "_action_run_branch_version", "_action_rollback_merge",
         "_action_get_rollback_history",
@@ -68,7 +68,7 @@ def test_run_actions_table_keys_are_expected_set():
     expected = {
         "run_branch", "run_branch_version", "get_run", "list_runs",
         "stream_run", "wait_for_run", "cancel_run", "get_run_output",
-        "attach_existing_child_run", "resume_run", "estimate_run_cost", "query_runs",
+        "attach_existing_child_run", "resume_run", "query_runs",
         "record_run_receipt", "list_run_receipts",
         "get_routing_evidence", "get_memory_scope_status",
         "rollback_merge", "get_rollback_history",
@@ -111,7 +111,7 @@ def test_run_write_actions_excludes_read_actions():
     """Read actions stay out of the ledger to avoid log spam."""
     for read_action in (
         "get_run", "list_runs", "stream_run", "wait_for_run",
-        "get_run_output", "estimate_run_cost", "query_runs",
+        "get_run_output", "query_runs",
         "get_routing_evidence", "get_memory_scope_status",
         "get_rollback_history",
     ):

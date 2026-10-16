@@ -292,7 +292,7 @@ def test_receipt_store_requires_one_shared_volume_and_data_relative_override(tmp
     assert selected.container_path == "/data/receipts.db"
     assert selected.host_path == tmp_path / "receipts.db"
 
-    inspections["tinyassets-worker"]["Config"]["Env"] = [
+    inspections[EXPECTED_CONTAINERS[0]]["Config"]["Env"] = [
         "TINYASSETS_TRIGGER_RECEIPTS_DB=/tmp/escape.db"
     ]
     with pytest.raises(FenceError, match="outside /data"):
@@ -333,7 +333,7 @@ def test_volume_consumer_inventory_includes_stopped_containers():
     assert "-a" in host.args
 
 
-def test_safe_fleet_requires_exact_five_exact_digest_revision_and_no_old_ids():
+def test_safe_fleet_requires_exact_writer_set_digest_revision_and_no_old_ids():
     image_ref = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "a" * 64
     revision = "b" * 40
     observation = {
@@ -353,7 +353,7 @@ def test_safe_fleet_requires_exact_five_exact_digest_revision_and_no_old_ids():
     old_ids = {name: f"old-{index}" for index, name in enumerate(EXPECTED_CONTAINERS)}
     assert safe_fleet_matches(observation, image_ref, revision, old_ids)
 
-    observation["containers"]["tinyassets-worker"]["revision"] = "c" * 40
+    observation["containers"][EXPECTED_CONTAINERS[0]]["revision"] = "c" * 40
     assert not safe_fleet_matches(observation, image_ref, revision, old_ids)
 
 
@@ -1798,7 +1798,7 @@ def test_preflight_refuses_mismatched_restored_recovery_provenance_before_mutati
     _patch_lifecycle_runtime(monkeypatch, configured_ref)
     state_path = tmp_path / "fence-state.json"
     _write_restored_recovery_state(host, state_path)
-    host.containers["tinyassets-worker"]["Config"]["Labels"][
+    host.containers[EXPECTED_CONTAINERS[0]]["Config"]["Labels"][
         "com.docker.compose.project"
     ] = "foreign-project"
 
@@ -1851,16 +1851,16 @@ def test_prepare_refuses_recovery_handoff_drift_without_removal(
     if drift == "partial":
         del host.containers[EXPECTED_CONTAINERS[-1]]
     elif drift == "foreign_project":
-        host.containers["tinyassets-worker"]["Config"]["Labels"][
+        host.containers[EXPECTED_CONTAINERS[0]]["Config"]["Labels"][
             "com.docker.compose.project"
         ] = "foreign-project"
     elif drift == "running":
-        host.containers["tinyassets-worker"]["State"] = {
+        host.containers[EXPECTED_CONTAINERS[0]]["State"] = {
             "Running": True,
             "Pid": 9999,
         }
     else:
-        host.containers["tinyassets-worker"]["HostConfig"]["RestartPolicy"][
+        host.containers[EXPECTED_CONTAINERS[0]]["HostConfig"]["RestartPolicy"][
             "Name"
         ] = "always"
     configured_ref[0] = host.target_image_ref
@@ -1926,7 +1926,7 @@ def test_prepare_replays_partial_recovery_removal_after_durable_intent(
 
     interrupted_state = json.loads(state_path.read_text(encoding="utf-8"))
     assert interrupted_state["recovery_handoff"]["removal_phase"] == "planned"
-    assert 0 < len(host.containers) < len(EXPECTED_CONTAINERS)
+    assert host.containers == {}
 
     host.run = original_run  # type: ignore[method-assign]
     evidence = prepare_deploy(
@@ -2945,7 +2945,7 @@ def test_unsafe_cleanup_without_receipt_resolution_never_claims_fenced(
     monkeypatch: pytest.MonkeyPatch,
 ):
     host = LifecycleHost(tmp_path)
-    del host.containers["tinyassets-worker"]
+    del host.containers[EXPECTED_CONTAINERS[0]]
     _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
     state_path = tmp_path / "missing-state.json"
 
@@ -4452,253 +4452,6 @@ def test_recover_unsafe_accepts_compose_down_zero_container_fence(
     )
 
 
-def test_recover_unsafe_replaces_proved_partial_canonical_target(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    host = LifecycleHost(tmp_path)
-    configured = [host.old_image_ref]
-    _patch_lifecycle_runtime(monkeypatch, configured)
-    state_path = tmp_path / "state.json"
-    _unsafe_recovery_state(host, state_path)
-    partial = host._containers("partial-target", "sha256:target", running=False)
-    host.containers = {"tinyassets-daemon": partial["tinyassets-daemon"]}
-    for info in host.containers.values():
-        info["Config"]["Labels"]["com.docker.compose.project"] = "tinyassets"
-        info["HostConfig"]["RestartPolicy"]["Name"] = "no"
-    partial_id = str(host.containers["tinyassets-daemon"]["Id"])
-    host.start_installs_target = True
-
-    evidence = recover_unsafe(
-        host,
-        source_run_id="source-run-1",
-        run_id="recovery-partial-target",
-        image_ref=host.old_image_ref,
-        revision=host.old_revision,
-        state_path=state_path,
-    )
-
-    assert evidence["phase"] == "recovery_pending_canary"
-    remove = next(call for call in host.calls if call[:2] == ("docker", "rm"))
-    assert remove == ("docker", "rm", partial_id)
-    assert "-v" not in remove
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["partial_target_removal"] == {
-        "container_ids": {"tinyassets-daemon": partial_id},
-        "image_ref": host.target_image_ref,
-        "project_name": "tinyassets",
-        "removal_phase": "removed",
-        "revision": host.target_revision,
-    }
-
-
-@pytest.mark.parametrize(
-    "drift",
-    ["foreign_project", "running", "restart_policy", "foreign_image", "off_volume"],
-)
-def test_recover_unsafe_refuses_unproved_partial_canonical_target(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    drift: str,
-):
-    host = LifecycleHost(tmp_path)
-    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
-    state_path = tmp_path / "state.json"
-    _unsafe_recovery_state(host, state_path)
-    partial = host._containers("partial-target", "sha256:target", running=False)
-    host.containers = {"tinyassets-daemon": partial["tinyassets-daemon"]}
-    info = host.containers["tinyassets-daemon"]
-    info["Config"]["Labels"]["com.docker.compose.project"] = "tinyassets"
-    info["HostConfig"]["RestartPolicy"]["Name"] = "no"
-    if drift == "foreign_project":
-        info["Config"]["Labels"]["com.docker.compose.project"] = "foreign"
-    elif drift == "running":
-        info["State"] = {"Running": True, "Pid": 9999}
-    elif drift == "restart_policy":
-        info["HostConfig"]["RestartPolicy"]["Name"] = "always"
-    elif drift == "foreign_image":
-        info["Image"] = "sha256:old"
-    else:
-        off_volume = partial["tinyassets-worker"]
-        off_volume["Config"]["Labels"]["com.docker.compose.project"] = "tinyassets"
-        off_volume["HostConfig"]["RestartPolicy"]["Name"] = "no"
-        host.containers["tinyassets-worker"] = off_volume
-        monkeypatch.setattr(
-            host,
-            "volume_container_names",
-            lambda: ["tinyassets-daemon"],
-        )
-
-    with pytest.raises(FenceError):
-        recover_unsafe(
-            host,
-            source_run_id="source-run-1",
-            run_id=f"recovery-partial-{drift}",
-            image_ref=host.old_image_ref,
-            revision=host.old_revision,
-            state_path=state_path,
-        )
-
-    assert not any(call[:2] == ("docker", "rm") for call in host.calls)
-
-
-def test_partial_target_removal_replays_after_interrupted_subset(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    host = LifecycleHost(tmp_path)
-    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
-    state_path = tmp_path / "state.json"
-    _unsafe_recovery_state(host, state_path)
-    partial = host._containers("partial-target", "sha256:target", running=False)
-    host.containers = {
-        name: partial[name]
-        for name in EXPECTED_CONTAINERS[:2]
-    }
-    for info in host.containers.values():
-        info["Config"]["Labels"]["com.docker.compose.project"] = "tinyassets"
-        info["HostConfig"]["RestartPolicy"]["Name"] = "no"
-    original_run = host.run
-    interrupted = False
-
-    def interrupt_after_one_remove(
-        args: list[str] | tuple[str, ...],
-        *,
-        check: bool = True,
-        input_text: str | None = None,
-        timeout_seconds: int = fence.HOST_COMMAND_TIMEOUT_SECONDS,
-    ) -> str:
-        nonlocal interrupted
-        command = tuple(args)
-        if command[:2] == ("docker", "rm") and not interrupted:
-            interrupted = True
-            original_run(
-                ["docker", "rm", command[2]],
-                check=check,
-                input_text=input_text,
-            )
-            raise FenceError("simulated partial target removal interruption")
-        return original_run(args, check=check, input_text=input_text)
-
-    host.run = interrupt_after_one_remove  # type: ignore[method-assign]
-    with pytest.raises(FenceError, match="simulated partial target"):
-        fence._remove_partial_canonical_target_for_recovery(
-            host,
-            json.loads(state_path.read_text(encoding="utf-8")),
-            state_path=state_path,
-        )
-
-    interrupted_state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert interrupted_state["partial_target_removal"]["removal_phase"] == "planned"
-    assert len(host.containers) == 1
-
-    host.run = original_run  # type: ignore[method-assign]
-    removed = fence._remove_partial_canonical_target_for_recovery(
-        host,
-        interrupted_state,
-        state_path=state_path,
-    )
-
-    assert set(removed) == set(EXPECTED_CONTAINERS[:2])
-    assert host.containers == {}
-    final_state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert final_state["partial_target_removal"]["removal_phase"] == "removed"
-
-
-def test_partial_target_removal_empty_replay_refuses_off_volume_name(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    host = LifecycleHost(tmp_path)
-    state_path = tmp_path / "state.json"
-    _unsafe_recovery_state(host, state_path)
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["partial_target_removal"] = {
-        "container_ids": {"tinyassets-daemon": "removed-target-id"},
-        "image_ref": host.target_image_ref,
-        "project_name": "tinyassets",
-        "removal_phase": "planned",
-        "revision": host.target_revision,
-    }
-    substituted = host._containers(
-        "substituted", "sha256:old", running=False
-    )["tinyassets-worker"]
-    host.containers = {"tinyassets-worker": substituted}
-    monkeypatch.setattr(host, "volume_container_names", lambda: [])
-
-    with pytest.raises(FenceError, match="canonical target name still exists"):
-        fence._remove_partial_canonical_target_for_recovery(
-            host,
-            state,
-            state_path=state_path,
-        )
-
-    assert not any(call[:2] == ("docker", "rm") for call in host.calls)
-    assert state["partial_target_removal"]["removal_phase"] == "planned"
-
-
-def test_partial_target_removal_replay_refuses_full_volume_fleet(
-    tmp_path: Path
-):
-    host = LifecycleHost(tmp_path)
-    state_path = tmp_path / "state.json"
-    _unsafe_recovery_state(host, state_path)
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["partial_target_removal"] = {
-        "container_ids": {"tinyassets-daemon": "recorded-target-id"},
-        "image_ref": host.target_image_ref,
-        "project_name": "tinyassets",
-        "removal_phase": "planned",
-        "revision": host.target_revision,
-    }
-    host.containers = host._containers(
-        "replacement-target", "sha256:target", running=False
-    )
-
-    with pytest.raises(FenceError, match="removal inventory changed"):
-        fence._remove_partial_canonical_target_for_recovery(
-            host,
-            state,
-            state_path=state_path,
-        )
-
-    assert not any(call[:2] == ("docker", "rm") for call in host.calls)
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("image_ref", "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "f" * 64),
-        ("revision", "f" * 40),
-        ("project_name", "foreign"),
-    ],
-)
-def test_partial_target_removal_empty_replay_refuses_metadata_substitution(
-    tmp_path: Path,
-    field: str,
-    value: str,
-):
-    host = LifecycleHost(tmp_path)
-    state_path = tmp_path / "state.json"
-    _unsafe_recovery_state(host, state_path)
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["partial_target_removal"] = {
-        "container_ids": {"tinyassets-daemon": "removed-target-id"},
-        "image_ref": host.target_image_ref,
-        "project_name": "tinyassets",
-        "removal_phase": "planned",
-        "revision": host.target_revision,
-    }
-    state["partial_target_removal"][field] = value
-    host.containers = {}
-
-    with pytest.raises(FenceError, match="removal intent is invalid"):
-        fence._remove_partial_canonical_target_for_recovery(
-            host,
-            state,
-            state_path=state_path,
-        )
-
-    assert state["partial_target_removal"]["removal_phase"] == "planned"
-
-
 def test_recover_unsafe_refuses_unrecorded_stopped_container_generation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -4707,7 +4460,7 @@ def test_recover_unsafe_refuses_unrecorded_stopped_container_generation(
     state_path = tmp_path / "state.json"
     _unsafe_recovery_state(host, state_path)
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["old_container_ids"]["tinyassets-worker"] = "another-generation"
+    state["old_container_ids"][EXPECTED_CONTAINERS[0]] = "another-generation"
     state_path.write_text(json.dumps(state), encoding="utf-8")
     host.start_installs_target = True
 
@@ -5208,7 +4961,7 @@ def test_refence_rejects_extra_volume_consumer_without_mutation(
     host.containers["foreign-extra"] = extra
     calls_before = len(host.calls)
 
-    with pytest.raises(FenceError, match="exact owned five"):
+    with pytest.raises(FenceError, match="exact owned writer fleet"):
         refence_recovery(
             host,
             source_run_id="source-run-1",
@@ -5474,60 +5227,6 @@ def test_expired_pending_recovery_is_reconciled_before_new_attempt(
     }
 
 
-def test_expired_partial_owned_recovery_is_stopped_removed_and_replaced(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    host = LifecycleHost(tmp_path)
-    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
-    state_path = tmp_path / "state.json"
-    _unsafe_recovery_state(host, state_path)
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    state.update(
-        {
-            "phase": "recovery_starting",
-            "recovery_deadline_epoch": 0,
-            "recovery_project_name": "tinyassets-recovery-old",
-            "recovery_attempts": ["recovery-old"],
-        }
-    )
-    state_path.write_text(json.dumps(state), encoding="utf-8")
-    host.containers = {
-        name: info
-        for name, info in host._containers(
-            "partial",
-            "sha256:old",
-            running=True,
-        ).items()
-        if name in {"tinyassets-daemon", "tinyassets-worker"}
-    }
-    for info in host.containers.values():
-        info["HostConfig"]["RestartPolicy"]["Name"] = "no"
-        info["Config"]["Labels"][
-            "com.docker.compose.project"
-        ] = "tinyassets-recovery-old"
-    host.start_installs_target = True
-
-    evidence = recover_unsafe(
-        host,
-        source_run_id="source-run-1",
-        run_id="recovery-new",
-        image_ref=host.old_image_ref,
-        revision=host.old_revision,
-        state_path=state_path,
-    )
-
-    assert evidence["phase"] == "recovery_pending_canary"
-    stop = next(call for call in host.calls if call[:2] == ("docker", "stop"))
-    remove = next(call for call in host.calls if call[:2] == ("docker", "rm"))
-    assert set(stop[2:]) == {"partial-0", "partial-1"}
-    assert set(remove[2:]) == {"partial-0", "partial-1"}
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["recovery_removed_partial_container_ids"] == {
-        "tinyassets-daemon": "partial-0",
-        "tinyassets-worker": "partial-1",
-    }
-
-
 def test_expired_partial_foreign_recovery_generation_is_not_touched(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -5574,7 +5273,7 @@ def test_expired_partial_foreign_recovery_generation_is_not_touched(
     assert info["State"]["Running"]
 
 
-def test_unexpired_stopped_partial_recovery_lease_is_not_stolen(
+def test_unexpired_stopped_recovery_lease_is_not_stolen(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     host = LifecycleHost(tmp_path)
@@ -5597,7 +5296,7 @@ def test_unexpired_stopped_partial_recovery_lease_is_not_stolen(
             "sha256:old",
             running=False,
         ).items()
-        if name in {"tinyassets-daemon", "tinyassets-worker"}
+        if name in EXPECTED_CONTAINERS
     }
     for info in host.containers.values():
         info["HostConfig"]["RestartPolicy"]["Name"] = "no"
@@ -5623,10 +5322,7 @@ def test_unexpired_stopped_partial_recovery_lease_is_not_stolen(
         }
         for call in host.calls
     )
-    assert set(host.containers) == {
-        "tinyassets-daemon",
-        "tinyassets-worker",
-    }
+    assert set(host.containers) == set(EXPECTED_CONTAINERS)
 
 
 @pytest.mark.parametrize(
@@ -5880,7 +5576,7 @@ def test_recover_unsafe_requires_complete_saved_restart_policies_before_wal(
     state_path = tmp_path / "state.json"
     _unsafe_recovery_state(host, state_path)
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["old_restart_policies"].pop("tinyassets-worker")
+    state["old_restart_policies"].pop(EXPECTED_CONTAINERS[0])
     state_path.write_text(json.dumps(state), encoding="utf-8")
     before = state_path.read_bytes()
 

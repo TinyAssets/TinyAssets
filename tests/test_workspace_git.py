@@ -2506,7 +2506,3 @@ def test_libcurl_version_text_fails_loud_with_neither():
 # ---------------------------------------------------------------------------
 # the daemon-side hand-off: nothing spawns here
 # ---------------------------------------------------------------------------
-
-
-
-

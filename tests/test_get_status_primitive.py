@@ -96,7 +96,7 @@ def test_get_status_returns_required_shape() -> None:
     trp = payload["tier_routing_policy"]
     assert "served_llm_type" in trp
     assert "accept_external_requests" in trp
-    assert "accept_paid_bids" in trp
+    assert "accept_paid_bids" not in trp
     assert "tier_status_map" in trp
 
     # evidence shape — each field load-bearing for chatbot trust claim.

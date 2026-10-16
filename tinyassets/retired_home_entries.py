@@ -7,6 +7,7 @@ never guessed to be agent-editable content.
 
 PLATFORM_NAMES = frozenset({
     "subscriptions.json", ".idle_cycle_stamp.json", "bid_ledger.json",
+    "settlements",
 })
 PLATFORM_LOCK_NAMES = frozenset({
     ".subscriptions.json.lock", ".branch_tasks.json.lock",

@@ -79,27 +79,12 @@ def test_action_scope_registry_is_derived_from_internal_dispatch_tables() -> Non
     assert all("schema" not in row.source.lower() for row in registry.values())
 
 
-def test_money_escrow_writes_require_write_scope_not_read() -> None:
-    """slice1a review CRITICAL 2: the money WRITE actions must derive a write
-    (or costlier) scope, never read. A read classification would let an
-    authenticated reader fund / set-wallet / withdraw."""
+def test_retired_paid_market_actions_are_not_authorizable() -> None:
     registry = build_action_scope_registry()
-
-    # These mutate balances / move funds out — must NOT be read-scoped.
-    money_writes = (
-        "escrow_fund",
-        "escrow_set_wallet",
-        "escrow_withdraw",
-        "escrow_release",
-    )
-    for action in money_writes:
-        row = registry[f"extensions.{action}"]
-        assert row.effect != "read", (
-            f"{action} derived read-scope ({row.oauth_scope}); money writes "
-            f"must require write authorization"
-        )
-        assert row.effect in ("write", "costly", "admin"), row.effect
-        assert row.oauth_scope != "tinyassets.extensions.read", action
+    assert not any("escrow_" in action for action in registry)
+    assert "universe.treasury_status" not in registry
+    for action in ("stake_bonus", "unstake_bonus", "release_bonus"):
+        assert f"gates.{action}" not in registry
 
 
 def test_action_scope_status_self_audit_reports_table_and_caveats() -> None:
