@@ -10,6 +10,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -554,6 +555,17 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
         db.execute("INSERT INTO platform_run VALUES ('kept')")
     (data / "c1" / ".runtime").mkdir()
     (data / "c1" / ".runtime" / "existing").write_text("host runtime")
+    (data / "c1" / "provider_definitions.json").write_text("[]")
+    (data / "c1" / ".oauth-refresh").mkdir()
+    (data / "c1" / ".soul.lock").touch()
+    (data / "c1" / "dispatcher_config.yaml").write_text(
+        "allow_opportunistic: false\n")
+    (data / "c1" / ".workspace-staging").mkdir()
+    from tinyassets.knowledge.knowledge_graph import initialize_knowledge_index
+
+    with sqlite3.connect(data / "c1" / "knowledge.db") as db:
+        db.row_factory = sqlite3.Row
+        initialize_knowledge_index(db)
     monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
     monkeypatch.setattr(migration.os, "chown", lambda *args: None)
     monkeypatch.setattr(migration, "_verified_pair", lambda *args: None)
@@ -576,6 +588,7 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
         if copy_fails:
             raise OSError("copy failed after the move began")
         (target / "note.txt").write_bytes((source / "note.txt").read_bytes())
+        (target / "knowledge.db").write_bytes((source / "knowledge.db").read_bytes())
 
     monkeypatch.setattr(migration, "_copy", copy)
     arguments = (data, store, tmp_path / "data.tar.gz", tmp_path / "box.tar.gz")
@@ -604,8 +617,13 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
         from tinyassets.api import helpers
         from tinyassets.api.branches import _resolve_udir
         from tinyassets.boxes.local import LocalBoxProvider
+        from tinyassets.control_plane.queue_policy import load_dispatcher_config
+        from tinyassets.credential_refresh import file_lock, lock_path
         from tinyassets.daemon_server import grant_universe_access, set_founder_home
+        from tinyassets.providers import definition as provider_definition
+        from tinyassets.soul_edit import _soul_lock
         from tinyassets.universe_owner import account_type_of
+        from tinyassets.workspace_staging import sweep
 
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data))
         set_founder_home(data, founder_sub="person", universe_id="c1")
@@ -615,12 +633,23 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
         assert helpers._default_universe() == "c1"
         assert _resolve_udir() == data / "c1"
         assert (data / "c1" / ".runtime" / "existing").read_text() == "host runtime"
+        assert provider_definition._load("c1") == []
+        refresh = lock_path(data / "c1", "credential")
+        with file_lock(refresh, deadline=time.monotonic() + 5):
+            assert refresh.parent == data / "c1" / ".oauth-refresh"
+        with _soul_lock(data / "c1"):
+            assert (data / "c1" / ".soul.lock").is_file()
+        assert load_dispatcher_config(data / "c1").allow_opportunistic is False
+        assert str(data / "c1" / ".workspace-staging") in sweep(data / "c1").roots
         assert native_store(data / "c1", "codex").is_dir()
         with sqlite3.connect(data / "c1" / ".runs.db") as db:
             assert db.execute("SELECT id FROM platform_run").fetchone() == ("kept",)
         assert {p.name for p in (data / "c1").iterdir()} == {
-            ".subscription_state.db", ".runs.db", ".runtime",
+            "note.txt", ".subscription_state.db", ".runs.db", ".runtime",
+            "provider_definitions.json", ".oauth-refresh", ".soul.lock",
+            "dispatcher_config.yaml", ".workspace-staging",
         }
+        assert not (data / "c1" / "knowledge.db").exists()
         provider = LocalBoxProvider(
             boxes_root=store / "300001", state_dir=tmp_path / "delete-state",
             owner_of=lambda center: "person" if center == "c1" else None,
@@ -863,7 +892,7 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
     assert (store / "300001" / "home" / "Activities.md").read_text() == (
         "Owner activity instructions")
     assert (data / "home").is_dir()
-    assert not list((data / "home").iterdir())
+    assert {entry.name for entry in (data / "home").iterdir()} == {"note.txt"}
     marker = json.loads((data / ".layout.json").read_text())
     assert marker["box_layout"] == "owner-box"
     assert marker["state"] == "stable"

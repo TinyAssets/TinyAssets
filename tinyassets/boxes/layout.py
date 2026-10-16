@@ -40,7 +40,6 @@ HOST_CENTER_ENTRIES = frozenset({
     ".conversation_attention.db", ".effector_consents.db",
     # api/storage_observations, automation_context, conversation_custody
     ".runs.db", ".automations.db", ".tinyassets.db",
-    "episodic.db", "promises.db", "versions.db", "temporal.db",
     "rules.db", "steering.db",
     # api/universe status and liveness readers
     "activity.log", "status.json", ".runtime_status.json", ".engine_mcp_config.json",
@@ -54,10 +53,32 @@ HOST_CENTER_COPY_EXCLUDES = HOST_CENTER_ENTRIES | frozenset(
     for suffix in _SQLITE_COMPANIONS
 )
 
+# Only these copied owner entries are retired from the host at cutover. Other
+# entries may still be read or written by platform code through <data>/<center>.
+# In particular, the four split host/box files are intentionally absent here.
+HOST_CENTER_MOVED = frozenset({
+    # C12 knowledge sources and their original vector stores.
+    "daemon_brain.db", ".project_memory.db", "episodic.db", "knowledge.db",
+    "promises.db", "versions.db", "temporal.db", "lancedb", ".lance", "lance",
+    # Agent definitions, brain and owner-editable harness/content.
+    ".agent-workspace", "agents", "brain", "AGENTS.md", "MEMORY.md",
+    "Activities.md", "Activities.tools.json", "Activities.error.txt",
+    "voice.md", "identity.md", "founder.md", "settings.yaml", "origin.md",
+    "body.md", "orgchart.md", "projects.md", "goals.md", "index.md",
+    "log.md", "skills", "prompts", "extensions", "workflows", "bin",
+    "notes", "notes.json", "PROGRAM.md", "progress.md", "timeline.json",
+    "promises.json",
+    "facts.json", "characters.json",
+})
 
-def host_center_entry(name: str) -> bool:
-    """Whether a top-level host center entry belongs to platform custody."""
-    return name in HOST_CENTER_COPY_EXCLUDES
+
+def host_center_moved(name: str) -> bool:
+    """Whether a copied top-level owner entry is retired from the host."""
+    return name in HOST_CENTER_MOVED or any(
+        name == database + suffix
+        for database in HOST_CENTER_MOVED if database.endswith(".db")
+        for suffix in _SQLITE_COMPANIONS
+    )
 
 
 def host_center_stub(data_root: str | Path, center: str) -> Path:

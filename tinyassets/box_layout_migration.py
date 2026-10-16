@@ -23,7 +23,7 @@ from pathlib import Path, PurePosixPath
 
 from deploy.box_project_readback import verify_owner, verify_tree
 from tinyassets import storage_layout
-from tinyassets.boxes.layout import HOST_CENTER_COPY_EXCLUDES, host_center_entry, host_center_stub
+from tinyassets.boxes.layout import HOST_CENTER_COPY_EXCLUDES, host_center_moved, host_center_stub
 from tinyassets.broker.owner_identities import OWNER_ID_FIRST, OWNER_ID_LAST
 from tinyassets.sqlite_readonly import readonly_db, readonly_snapshot
 from tinyassets.universe_owner import account_type_of
@@ -494,7 +494,7 @@ def _retire_host_centers(data: Path, marker: dict) -> None:
                             dir_fd=parent)
             try:
                 for entry in os.listdir(child):
-                    if not host_center_entry(entry):
+                    if host_center_moved(entry):
                         _remove_beneath(child, entry)
             finally:
                 os.close(child)
