@@ -152,6 +152,8 @@ class TestDashboardHandlerOverviewFanOut:
         handler.refresh_from_overview(_VALID_OVERVIEW)
         assert handler.dispatcher_pane.tier_status != {}
         assert handler.queue_pane.pending_count == 3
+        # The paid earnings pane is retired with the paid market.
+        assert not hasattr(handler, "earnings_pane")
 
     def test_malformed_one_pane_does_not_crash_others(self):
         """R3 invariant 2: if one pane's refresh raises, others still run."""
