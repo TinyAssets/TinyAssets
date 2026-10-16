@@ -416,6 +416,15 @@ def main(argv):
                     True if layout == "owner-split" else False,
                 )
                 return 0 if layout == "owner-box" else 10
+            if command == "preflight":
+                store = os.environ.get("FAKE_DOCKER_BOX_STORE_DIR")
+                if store and any(name != "lost+found" for name in os.listdir(store)):
+                    sys.stderr.write(
+                        "box layout migration refused: "
+                        "box store must be empty before the one-shot move\n"
+                    )
+                    return 3
+                return 0
             state["box_migration_apply_attempted"] = True
             outcome = state.get("box_migration_apply", "commit")
             if outcome == "commit":
@@ -2617,28 +2626,23 @@ def _daemon_starts(box: Box) -> list[str]:
     ]
 
 
-@pytest.mark.parametrize("outcome", ["commit", "fail"])
-def test_owner_box_move_commits_once_or_requires_snapshot_restore(box: Box, outcome):
+def _owner_box_cutover(box: Box, *, device_present: bool = True):
     volume, env = _cutover(box)
     box.set_docker_state(
         migration_pending=False,
         active_box_layout={NEW_IMAGE: "owner-box"},
-        # The real C6 image declares owner-box only (storage_layout.py).
         known_layouts={NEW_IMAGE: {"layouts": [1, 2], "boxes": ["owner-box"]}},
-        box_migration_apply=outcome,
     )
     env["BOX_STORE_CHECK"] = "/bin/true"
     harness_root = box.root / "boxhostd"
-    harness_root.mkdir()
+    harness_root.mkdir(exist_ok=True)
     env["BOX_HARNESS_ROOT"] = str(harness_root)
-    # The fake docker only records the device pass-through. Give this process
-    # a fake mount source and make Bash's -b check see it as a block node;
-    # no device or mount on the test host is changed.
     device = "/dev/tinyassets-test-box-store"
     findmnt = box.bin / "findmnt"
     findmnt.write_text(
         f'#!/bin/sh\nif [ "$*" = "--mountpoint /var/lib/boxhostd/owners -no SOURCE" ]; '
-        f'then printf "%s\\n" "{device}"; else exec /usr/bin/findmnt "$@"; fi\n',
+        f'then printf "%s\\n" "{device if device_present else "/dev/missing-box-store"}"; '
+        'else exec /usr/bin/findmnt "$@"; fi\n',
         encoding="utf-8",
     )
     findmnt.chmod(0o755)
@@ -2661,9 +2665,21 @@ int stat(const char *path, struct stat *out) {
     subprocess.run(["cc", "-shared", "-fPIC", "-o", str(preload), str(fake_stat), "-ldl"],
                    check=True)
     env["LD_PRELOAD"] = str(preload)
+    return volume, env, device, harness_root
+
+
+@pytest.mark.parametrize("outcome", ["commit", "fail"])
+def test_owner_box_move_commits_once_or_requires_snapshot_restore(box: Box, outcome):
+    volume, env, device, harness_root = _owner_box_cutover(box)
+    box.set_docker_state(box_migration_apply=outcome)
     box.stage_bundle()
     completed = box.run(NEW_IMAGE, **env)
     calls = box.docker_calls_text()
+    preflight_call = next(line for line in calls.splitlines()
+                          if "tinyassets.box_layout_migration preflight" in line)
+    assert "tinyassets-data:/data:ro" in preflight_call
+    assert "dst=/box-store,readonly" in preflight_call
+    assert calls.index(preflight_call) < calls.index("stop --time")
     apply_call = next(line for line in calls.splitlines()
                       if "tinyassets.box_layout_migration apply" in line)
     assert "apply /data --store /box-store" in apply_call
@@ -2688,6 +2704,39 @@ int stat(const char *path, struct stat *out) {
         assert "BACKUP_FILE=" in completed.stderr
         assert marker["state"] == "migrating"
         assert not _daemon_starts(box)
+
+
+@pytest.mark.parametrize("failure,reason", [
+    ("leftover", "box store must be empty before the one-shot move"),
+    ("device", "owner store has no block device"),
+])
+def test_owner_box_preflight_refuses_before_daemon_stop_and_preserves_prod(
+    box: Box, failure: str, reason: str,
+):
+    volume, env, _, _ = _owner_box_cutover(box, device_present=failure != "device")
+    if failure == "leftover":
+        store = box.root / "owners"
+        (store / "300001").mkdir(parents=True)
+        env["FAKE_DOCKER_BOX_STORE_DIR"] = str(store)
+    before = box.live()
+    marker_before = (volume / ".layout.json").read_bytes()
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE, **env)
+
+    assert completed.returncode == 1
+    assert _result(completed) == "migration_refused"
+    assert "check=box_layout_preflight" in _migration_refusal(completed)
+    assert reason in _migration_refusal(completed)
+    assert box.live() == before
+    assert (volume / ".layout.json").read_bytes() == marker_before
+    if failure == "leftover":
+        assert (store / "300001").is_dir()
+    calls = box.docker_calls_text()
+    assert "stop --time" not in calls
+    assert "start tinyassets-daemon" not in calls
+    assert "tinyassets.box_layout_migration apply" not in calls
+    assert not list((box.root / "backups").glob("*.tar.gz"))
 
 
 @pytest.mark.parametrize("candidate", ["healthy", "unhealthy", "converge_fails"])
@@ -3088,6 +3137,8 @@ def test_flipping_active_box_layout_without_a_gate_refuses(box: Box, gate, reaso
     elif gate == "in_flight":
         box.set_docker_state(turns_rc=10)
     elif gate == "backup":
+        _, ready_env, _, _ = _owner_box_cutover(box)
+        env.update(ready_env)
         _refusing_backup(
             box,
             "#!/usr/bin/env bash\n"

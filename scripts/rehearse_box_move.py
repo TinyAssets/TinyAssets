@@ -77,8 +77,6 @@ with sqlite3.connect(data / '.broker/state/owner-identities.db') as db:
         os.chmod(setuid, 0o4750)
         if index == 0:
             (root / '.credential-vault.json').write_text('private credential')
-        if index == 1 and os.environ['FAIL_AFTER_FIRST_OWNER'] == '1':
-            (root / '.credential-vault.json').symlink_to('relative-link')
 
 home = data / '.platform/owners/300001/agent-home'
 home.mkdir(parents=True)
@@ -251,20 +249,20 @@ if len(records) != len(plan) and mode == 'commit':
 raise SystemExit(0 if success else 1)
 '''
 
-ARCHIVE_FAILURE = r'''
-import os, sys
+QUOTA_FAILURE = r'''
+import shutil, sys
 from pathlib import Path
 
-data = Path('/data')
-uid, center = sys.argv[1:]
-source = data / center / '.oauth-refresh'
-if source.exists() or source.is_symlink():
-    saved = source.with_name(source.name + '.c6-rehearsal-original')
-    if saved.exists() or saved.is_symlink():
-        raise SystemExit(f'failure fixture save path already exists: {saved}')
-    source.rename(saved)
-source.symlink_to('rehearsal-invalid-credential')
-print(f'failure fixture path={source}')
+uid = sys.argv[1]
+real = shutil.which('xfs_quota')
+assert real and not real.startswith('/backup/'), real
+wrapper = Path('/backup/xfs_quota')
+wrapper.write_text('#!/bin/sh\n'
+                   f'if [ "$3" = "project -s -p /box-store/{uid} {uid}" ]; then\n'
+                   '  echo "induced quota failure after migration marker" >&2\n'
+                   '  exit 0\nfi\n'
+                   f'exec {real} "$@"\n')
+wrapper.chmod(0o755)
 '''
 
 ARCHIVE_RESTORE_CHECK = r'''
@@ -341,7 +339,8 @@ def validate_archive(path: Path) -> int:
     return total
 
 
-def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int) -> None:
+def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int,
+                      leftover_owner_tree: bool = False) -> None:
     prefix = f'ta-c6-{uuid.uuid4().hex[:12]}'
     names = {kind: f'{prefix}-{kind}' for kind in ('image', 'store', 'parent', 'data', 'backup')}
     created: list[str] = []
@@ -427,13 +426,38 @@ def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int
                 target = next((owner for owner in owners if owner['centers']), None)
             if target is None:
                 raise RuntimeError('archive has no admitted centers for a failed-move fixture')
-            center = target['centers'][0]
+
+        if leftover_owner_tree:
+            container('--rm', '--user', '0',
+                      '--mount', f'type=bind,src={store_path},dst=/box-store',
+                      '--entrypoint', 'mkdir', image, '-p',
+                      f'/box-store/{owners[0]["uid"]}')
+        preflight = container('--rm', '--cap-drop', 'ALL', '--user', '0',
+                              '--cap-add', 'CHOWN', '--cap-add', 'FOWNER',
+                              '--cap-add', 'FSETID', '--cap-add', 'DAC_OVERRIDE',
+                              '--cap-add', 'SYS_ADMIN', '--security-opt',
+                              'no-new-privileges=true', '--network', 'none',
+                              '--memory=1g', '--memory-swap=1g',
+                              '-v', f"{names['data']}:/data:ro",
+                              '--device', f'{device}:{device}:r', '--mount',
+                              f'type=bind,src={store_path},dst=/box-store,readonly',
+                              '--entrypoint', 'python', image, '-B', '-m',
+                              'tinyassets.box_layout_migration', 'preflight',
+                              '/data', '--store', '/box-store', check=False)
+        if leftover_owner_tree:
+            assert preflight.returncode == 3 and 'box store must be empty' in preflight.stderr, (
+                preflight.stdout + preflight.stderr)
+            print('[rehearsal] leftover owner tree: preflight refused before stop/apply: PASS')
+            return
+        if preflight.returncode:
+            raise RuntimeError(f'archive preflight: FAIL ({preflight.stderr})')
+        if fail:
             injected = container('--rm', '--user', '0', '--network', 'none',
-                                 '-v', f"{names['data']}:/data", '--entrypoint', 'python',
-                                 image, '-c', ARCHIVE_FAILURE, str(target['uid']), center,
-                                 check=False)
+                                 '-v', f"{names['backup']}:/backup", '--entrypoint',
+                                 'python', image, '-c', QUOTA_FAILURE,
+                                 str(target['uid']), check=False)
             if injected.returncode:
-                raise RuntimeError(f'failure fixture path=/data/{center}/.oauth-refresh: FAIL')
+                raise RuntimeError('quota failure fixture: FAIL')
 
         # Exactly deploy_fail_safe.sh:box_migration_container apply, with its
         # block-device mapping and the same resource/security posture.
@@ -442,6 +466,8 @@ def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int
                           '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SYS_ADMIN',
                           '--security-opt', 'no-new-privileges=true', '--network', 'none',
                           '--memory=1g', '--memory-swap=1g',
+                          *(['-e', 'PATH=/backup:/usr/local/bin:/usr/bin:/bin:/usr/sbin']
+                            if fail else []),
                           '-v', f"{names['data']}:/data", '-v', f"{names['backup']}:/backup:ro",
                           '--device', f'{device}:{device}:r',
                           '--mount', f'type=bind,src={store_path},dst=/box-store',
@@ -465,10 +491,9 @@ def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int
         if apply.returncode != expected:
             raise RuntimeError(f'apply: FAIL (rc={apply.returncode}, expected={expected})')
         if fail:
-            fixture_error = f'non-regular credential source: /data/{center}/.oauth-refresh'
-            if fixture_error not in apply.stderr:
+            if 'induced quota failure after migration marker' not in apply.stderr:
                 raise RuntimeError(
-                    'apply: FAIL (refusal did not reach the injected credential path)')
+                    'apply: FAIL (refusal did not reach the injected quota command)')
         if not fail and report.returncode:
             raise RuntimeError(f'owner commit verification: FAIL (rc={report.returncode})')
         if not fail:
@@ -567,7 +592,7 @@ bash /rehearsal-deploy/backup-restore.sh
             raise RuntimeError(f'cleanup: FAIL ({", ".join(cleanup_errors)})')
 
 
-def rehearsal(image: str, *, fail: bool) -> None:
+def rehearsal(image: str, *, fail: bool, leftover_owner_tree: bool = False) -> None:
     prefix = f"ta-c6-{uuid.uuid4().hex[:12]}"
     names = {kind: f"{prefix}-{kind}" for kind in ('image', 'store', 'parent', 'data', 'backup')}
     created: list[str] = []
@@ -601,8 +626,7 @@ def rehearsal(image: str, *, fail: bool) -> None:
         assert device.startswith('/dev/') and fstype == 'xfs' and 'prjquota' in options, source
         print(f'[rehearsal] {"failed-move restore" if fail else "commit"}: {source}')
 
-        fixture_env = ['-e', f'DATA_ARCHIVE={DATA_ARCHIVE}', '-e', f'BOX_ARCHIVE={BOX_ARCHIVE}',
-                       '-e', f'FAIL_AFTER_FIRST_OWNER={int(fail)}']
+        fixture_env = ['-e', f'DATA_ARCHIVE={DATA_ARCHIVE}', '-e', f'BOX_ARCHIVE={BOX_ARCHIVE}']
         docker('run', '--rm', '--user', '0', '--network', 'none',
                '-v', f"{names['data']}:/data", '-v', f"{names['backup']}:/backup",
                *fixture_env, '--entrypoint', 'python', image, '-c', FIXTURE)
@@ -616,12 +640,41 @@ def rehearsal(image: str, *, fail: bool) -> None:
                          image, '-c', ARCHIVE_PLAN)
         owners = json.loads(planned.stdout)
 
+        if leftover_owner_tree:
+            docker('run', '--rm', '--user', '0',
+                   '--mount', f'type=bind,src={store_path},dst=/box-store',
+                   '--entrypoint', 'mkdir', image, '-p', '/box-store/300001')
+        preflight = docker('run', '--rm', '--cap-drop', 'ALL', '--user', '0',
+                           '--cap-add', 'CHOWN', '--cap-add', 'FOWNER',
+                           '--cap-add', 'FSETID', '--cap-add', 'DAC_OVERRIDE',
+                           '--cap-add', 'SYS_ADMIN', '--security-opt',
+                           'no-new-privileges=true', '--network', 'none',
+                           '--memory=1g', '--memory-swap=1g',
+                           '-v', f"{names['data']}:/data:ro",
+                           '--device', f'{device}:{device}:r', '--mount',
+                           f'type=bind,src={store_path},dst=/box-store,readonly',
+                           '--entrypoint', 'python', image, '-B', '-m',
+                           'tinyassets.box_layout_migration', 'preflight',
+                           '/data', '--store', '/box-store', check=False)
+        if leftover_owner_tree:
+            assert preflight.returncode == 3 and 'box store must be empty' in preflight.stderr, (
+                preflight.stdout + preflight.stderr)
+            print('[rehearsal] leftover owner tree: preflight refused before stop/apply: PASS')
+            return
+        assert preflight.returncode == 0, preflight.stdout + preflight.stderr
+        if fail:
+            docker('run', '--rm', '--user', '0', '--network', 'none',
+                   '-v', f"{names['backup']}:/backup", '--entrypoint', 'python',
+                   image, '-c', QUOTA_FAILURE, '300002')
+
         # Keep this argv in lockstep with deploy_fail_safe.sh:box_migration_container.
         apply = docker('run', '--rm', '--cap-drop', 'ALL', '--user', '0',
                        '--cap-add', 'CHOWN', '--cap-add', 'FOWNER', '--cap-add', 'FSETID',
                        '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SYS_ADMIN',
                        '--security-opt', 'no-new-privileges=true', '--network', 'none',
                        '--memory=1g', '--memory-swap=1g',
+                       *(['-e', 'PATH=/backup:/usr/local/bin:/usr/bin:/bin:/usr/sbin']
+                         if fail else []),
                        '-v', f"{names['data']}:/data",
                        '-v', f"{names['backup']}:/backup:ro",
                        '--device', f'{device}:{device}:r',
@@ -631,8 +684,9 @@ def rehearsal(image: str, *, fail: bool) -> None:
                        '--store', '/box-store', '--backup', f'/backup/{DATA_ARCHIVE}',
                        '--box-backup', f'/backup/{BOX_ARCHIVE}', check=False)
         if fail:
-            assert apply.returncode == 3 and 'non-regular credential source' in apply.stderr, (
-                apply.stdout + apply.stderr)
+            assert (apply.returncode == 3
+                    and 'induced quota failure after migration marker' in apply.stderr), (
+                        apply.stdout + apply.stderr)
             print('[rehearsal] induced failure after first owner: ' + apply.stderr.strip())
             shim = r'''set -eu
 mkdir -p /tmp/c6-bin
@@ -767,6 +821,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--image', default=IMAGE)
     parser.add_argument('--no-build', action='store_true')
+    parser.add_argument('--leftover-owner-tree', action='store_true',
+                        help='seed a partial owner tree and prove read-only preflight refusal')
     parser.add_argument('--archive', type=Path,
                         help='absolute path to a tinyassets-data-*.tar.gz full backup')
     args = parser.parse_args()
@@ -784,13 +840,16 @@ def main() -> None:
         if build.returncode:
             raise RuntimeError(f'daemon image build: FAIL (rc={build.returncode})')
     if args.archive is None:
-        rehearsal(args.image, fail=False)
-        rehearsal(args.image, fail=True)
+        rehearsal(args.image, fail=False, leftover_owner_tree=args.leftover_owner_tree)
+        if not args.leftover_owner_tree:
+            rehearsal(args.image, fail=True)
     else:
         assert archive_bytes is not None
         store_bytes = max(1024**3, int(archive_bytes * 1.25) + 512 * 1024**2)
-        archive_rehearsal(args.image, args.archive, fail=False, store_bytes=store_bytes)
-        archive_rehearsal(args.image, args.archive, fail=True, store_bytes=store_bytes)
+        archive_rehearsal(args.image, args.archive, fail=False, store_bytes=store_bytes,
+                          leftover_owner_tree=args.leftover_owner_tree)
+        if not args.leftover_owner_tree:
+            archive_rehearsal(args.image, args.archive, fail=True, store_bytes=store_bytes)
 
 
 def _terminate(_signum: int, _frame: object) -> None:

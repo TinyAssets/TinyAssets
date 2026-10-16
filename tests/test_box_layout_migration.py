@@ -68,6 +68,54 @@ def _cutover_root(tmp_path: Path) -> tuple[Path, Path]:
     return data, store
 
 
+@pytest.mark.parametrize("refusal", ["store", "mount", "inode", "quota"])
+def test_read_only_preflight_refuses_without_changing_the_layout(tmp_path, monkeypatch, refusal):
+    from tinyassets import activity_shape_migration as activity_shape
+
+    data, store = _cutover_root(tmp_path)
+    original = (data / ".layout.json").read_bytes()
+    monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(migration, "_owner_plan", lambda _: [
+        migration.OwnerMove("alice", 300001, ("c1",), 1024**3)])
+    monkeypatch.setattr(activity_shape, "_pending", lambda _: [])
+    monkeypatch.setattr(migration, "_mounted", lambda _: None)
+    monkeypatch.setattr(migration, "_owner_inode_preflight", lambda *_: None)
+    monkeypatch.setattr(migration, "_xfs_quota", lambda *_: "project report")
+    if refusal == "store":
+        (store / "300001").mkdir()
+        reason = "box store must be empty"
+    elif refusal == "mount":
+        monkeypatch.setattr(migration, "_mounted", lambda _: (_ for _ in ()).throw(
+            RuntimeError("XFS project quota missing")))
+        reason = "XFS project quota missing"
+    elif refusal == "inode":
+        monkeypatch.setattr(migration, "_owner_inode_preflight", lambda *_: (
+            _ for _ in ()).throw(RuntimeError("unsupported owner inode")))
+        reason = "unsupported owner inode"
+    else:
+        monkeypatch.setattr(migration, "_xfs_quota", lambda *_: "")
+        reason = "project report unavailable"
+    with pytest.raises(RuntimeError, match=reason):
+        migration.preflight(data, store)
+    assert (data / ".layout.json").read_bytes() == original
+    assert not (store / "300002").exists()
+
+
+def test_read_only_preflight_accepts_clean_owner_split(tmp_path, monkeypatch):
+    from tinyassets import activity_shape_migration as activity_shape
+
+    data, store = _cutover_root(tmp_path)
+    monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(migration, "_mounted", lambda _: None)
+    monkeypatch.setattr(migration, "_owner_plan", lambda _: [
+        migration.OwnerMove("alice", 300001, ("c1",), 1024**3)])
+    monkeypatch.setattr(activity_shape, "_pending", lambda _: [])
+    monkeypatch.setattr(migration, "_owner_inode_preflight", lambda *_: None)
+    monkeypatch.setattr(migration, "_xfs_quota", lambda *_: "project report")
+    migration.preflight(data, store)
+    assert not list(store.iterdir())
+
+
 def test_cross_owner_inode_refuses_before_marker_or_destination_write(tmp_path, monkeypatch):
     import os
 
@@ -141,7 +189,7 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
     )
     monkeypatch.setattr(migration, "_xfs_quota", lambda _store, command:
                         f"Setting up project {command.rsplit(' ', 1)[-1]} "
-                        if command.startswith("project ") else "")
+                        if command.startswith("project ") else "project report")
     monkeypatch.setattr(migration, "verify_tree", lambda *args: None)
     monkeypatch.setattr(migration, "verify_owner", lambda *args: None)
 
@@ -314,7 +362,7 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
     monkeypatch.setattr(migration.subprocess, "run", run)
     monkeypatch.setattr(migration, "_xfs_quota", lambda _store, command:
                         f"Setting up project {command.rsplit(' ', 1)[-1]} "
-                        if command.startswith("project ") else "")
+                        if command.startswith("project ") else "project report")
     monkeypatch.setattr(migration, "verify_tree", lambda *args: None)
     monkeypatch.setattr(migration, "verify_owner", lambda *args: None)
     from tinyassets import activity_shape_migration as activity_shape

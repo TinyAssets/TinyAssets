@@ -12,7 +12,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import sqlite3
 import stat
 import subprocess
@@ -416,10 +415,7 @@ def _copy(source: Path, target: Path, uid: int, *, extra_excludes=()) -> None:
             f"rsync verification differs for {source}: {result.stdout.strip()[:2000]}")
 
 
-def _copy_credentials(source: Path, target: Path) -> None:
-    """Copy only recognized credential artifacts into platform custody."""
-    from tinyassets.boxes.layout import BROKER_READ_GID
-
+def _check_credential_sources(source: Path) -> None:
     for name in _CREDENTIAL_ENTRIES:
         entry = source / name
         if not entry.exists() and not entry.is_symlink():
@@ -432,6 +428,13 @@ def _copy_credentials(source: Path, target: Path) -> None:
         info = entry.lstat()
         if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
             raise RuntimeError(f"non-regular credential source: {entry}")
+
+
+def _copy_credentials(source: Path, target: Path) -> None:
+    """Copy only recognized credential artifacts into platform custody."""
+    from tinyassets.boxes.layout import BROKER_READ_GID
+
+    _check_credential_sources(source)
     target.mkdir(mode=0o710)
     os.chown(target, 1001, BROKER_READ_GID)
     filters = [f"--include=/{name}" for name in _CREDENTIAL_ENTRIES]
@@ -480,13 +483,24 @@ def _owner_move_preconditions(data: Path, store: Path, marker: dict) -> list[Own
     if set(_pending(data)) - admitted_centers:
         raise RuntimeError("activity center has no admitted owner")
     _owner_inode_preflight(data, plan)
+    for owner in plan:
+        for center in owner.centers:
+            _check_credential_sources(data / center)
     if any(entry.name != "lost+found" for entry in store.iterdir()):
         raise RuntimeError("box store must be empty before the one-shot move")
     custody_root = data / ".platform" / "credential-vaults"
     if custody_root.exists() or custody_root.is_symlink():
         raise RuntimeError("private credential custody already exists")
-    if shutil.which("xfs_quota") is None:
-        raise RuntimeError("xfs_quota tooling unavailable")
+    custody_parent = custody_root.parent
+    if custody_parent.is_symlink() or (custody_parent.exists() and not custody_parent.is_dir()):
+        raise RuntimeError("platform credential parent is invalid")
+    journal = data / ".boxhost"
+    if journal.exists() or journal.is_symlink():
+        raise RuntimeError("boxhost journal already exists")
+    identity_db = data / ".broker" / "state" / "owner-identities.db"
+    with sqlite3.connect(f"{identity_db.resolve().as_uri()}?mode=ro", uri=True) as db:
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='box_records'").fetchone():
+            raise RuntimeError("box records already exist")
     if not _xfs_quota(store, "report -p -n").strip():
         raise RuntimeError("xfs_quota project report unavailable")
     return plan
@@ -495,7 +509,17 @@ def _owner_move_preconditions(data: Path, store: Path, marker: dict) -> list[Own
 def preflight(data: Path, store: Path) -> None:
     if os.geteuid() != 0:
         raise PermissionError("box layout preflight requires the one-shot root container")
+    lock = _open_layout_lock(data, os.O_RDONLY)
+    os.close(lock)
     _owner_move_preconditions(data, store, _marker(data))
+
+
+def _open_layout_lock(data: Path, access: int) -> int:
+    fd = os.open(data / storage_layout.LOCK, access | os.O_NOFOLLOW)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise RuntimeError("owner layout lock is not a regular file")
+    return fd
 
 
 def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
@@ -503,7 +527,7 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
 
     if os.geteuid() != 0:
         raise PermissionError("box layout apply requires the one-shot root container")
-    lock = os.open(data / storage_layout.LOCK, os.O_RDWR | os.O_NOFOLLOW)
+    lock = _open_layout_lock(data, os.O_RDWR)
     try:
         fcntl.flock(lock, fcntl.LOCK_EX)
         marker = _marker(data)
