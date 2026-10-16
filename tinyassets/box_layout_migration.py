@@ -322,7 +322,8 @@ def _mounted(store: Path) -> None:
 
 def _owner_inode_preflight(data: Path, plan: list[OwnerMove]) -> None:
     """Census before the first write, while all source writers are stopped."""
-    seen: dict[tuple[int, int], tuple[str, Path]] = {}
+    seen: dict[tuple[int, int], tuple[str, Path, Path, int, int]] = {}
+    link_counts: dict[tuple[int, int], int] = {}
     from tinyassets.boxes.destroy import _mount
 
     data_fd = os.open(data, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -345,10 +346,21 @@ def _owner_inode_preflight(data: Path, plan: list[OwnerMove]) -> None:
                 for name in (".", *dirs, *files):
                     info = os.stat(name, dir_fd=fd, follow_symlinks=False)
                     path = Path(directory) if name == "." else Path(directory) / name
+                    if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)
+                            or stat.S_ISLNK(info.st_mode)):
+                        raise RuntimeError(f"unsupported owner inode (FIFO/socket/device): {path}")
                     key = (info.st_dev, info.st_ino)
-                    previous = seen.setdefault(key, (owner.principal, path))
+                    previous = seen.setdefault(
+                        key, (owner.principal, source, path, info.st_mode, info.st_nlink))
                     if previous[0] != owner.principal:
-                        raise RuntimeError(f"cross-owner inode: {previous[1]} and {path}")
+                        raise RuntimeError(f"cross-owner inode: {previous[2]} and {path}")
+                    if previous[1] != source and not stat.S_ISDIR(info.st_mode):
+                        raise RuntimeError(f"cross-copy hard link: {previous[2]} and {path}")
+                    if not stat.S_ISDIR(info.st_mode):
+                        link_counts[key] = link_counts.get(key, 0) + 1
+    for key, (_, _, path, mode, links) in seen.items():
+        if not stat.S_ISDIR(mode) and link_counts.get(key, 0) != links:
+            raise RuntimeError(f"owner hard link leaves the move sources: {path}")
 
 
 def _atomic_json(path: Path, value: dict) -> None:

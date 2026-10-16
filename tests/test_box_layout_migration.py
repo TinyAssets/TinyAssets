@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import sqlite3
 import stat
 import subprocess
@@ -62,6 +63,41 @@ def test_cross_owner_inode_refuses_before_marker_or_destination_write(tmp_path, 
         migration.apply(data, store, tmp_path / "snapshot", tmp_path / "boxes")
     assert (data / ".layout.json").read_bytes() == original
     assert not list(store.iterdir())
+
+
+@pytest.mark.skipif(os.name != "posix", reason="owner inode preflight requires Linux")
+def test_cross_copy_and_external_hard_links_refuse(tmp_path):
+    data, _ = _cutover_root(tmp_path)
+    (data / "c2").mkdir()
+    os.link(data / "c1/note.txt", data / "c2/borrowed.txt")
+    plan = [migration.OwnerMove("alice", 300001, ("c1", "c2"), 1024**3)]
+    with pytest.raises(RuntimeError, match="cross-copy hard link"):
+        migration._owner_inode_preflight(data, plan)
+
+    (data / "c2/borrowed.txt").unlink()
+    os.link(data / "c1/note.txt", data / "outside.txt")
+    with pytest.raises(RuntimeError, match="hard link leaves the move sources"):
+        migration._owner_inode_preflight(data, plan)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="owner inode preflight requires Linux")
+@pytest.mark.parametrize("kind", ["fifo", "socket"])
+def test_special_owner_inodes_refuse_before_copy(tmp_path, kind):
+    data, _ = _cutover_root(tmp_path)
+    path = data / "c1" / kind
+    if kind == "fifo":
+        os.mkfifo(path)
+        listener = None
+    else:
+        listener = socket.socket(socket.AF_UNIX)
+        listener.bind(str(path))
+    try:
+        with pytest.raises(RuntimeError, match="unsupported owner inode"):
+            migration._owner_inode_preflight(
+                data, [migration.OwnerMove("alice", 300001, ("c1",), 1024**3)])
+    finally:
+        if listener is not None:
+            listener.close()
 
 
 @pytest.mark.parametrize("copy_fails", [False, True])
@@ -388,6 +424,27 @@ def test_real_copy_places_vault_only_in_platform_custody(tmp_path):
     assert not (guest / ".credential-vault.json").exists()
     assert not (guest / ".credentials").exists()
     assert (guest / "note.txt").read_text() == "owner content"
+
+
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() != 0
+                    or shutil.which("rsync") is None,
+                    reason="special-bit ownership copy requires Linux root and rsync")
+def test_real_copy_preserves_setgid_sticky_and_setuid_modes(tmp_path):
+    source, guest = tmp_path / "center", tmp_path / "guest"
+    source.mkdir()
+    guest.mkdir()
+    modes = {"setgid": 0o2750, "sticky": 0o1777, "setuid": 0o4750}
+    for name in ("setgid", "sticky"):
+        (source / name).mkdir()
+        os.chmod(source / name, modes[name])
+    (source / "setuid").write_text("fixture, never executed")
+    os.chmod(source / "setuid", modes["setuid"])
+
+    migration._copy(source, guest, 300001)
+
+    for name, mode in modes.items():
+        assert stat.S_IMODE((guest / name).stat().st_mode) == mode
+        assert (guest / name).stat().st_uid == 300001
 
 
 def test_private_copy_selects_only_credential_sources(tmp_path, monkeypatch):

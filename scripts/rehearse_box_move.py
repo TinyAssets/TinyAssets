@@ -64,6 +64,17 @@ with sqlite3.connect(data / '.broker/state/owner-identities.db') as db:
             owner_db.execute('INSERT INTO events VALUES (?)', (principal,))
         (root / 'nested').mkdir()
         (root / 'nested' / 'payload.bin').write_bytes(bytes(range(256)))
+        special = root / '.agent-workspace' / '.tmp' / 'pytest-of-unknown'
+        special.mkdir(parents=True)
+        liveness = special / '.consumer_liveness'
+        liveness.mkdir()
+        os.chmod(liveness, 0o2750)
+        sticky = root / 'sticky'
+        sticky.mkdir()
+        os.chmod(sticky, 0o1777)
+        setuid = root / 'setuid-tool'
+        setuid.write_bytes(b'fixture, never executed\n')
+        os.chmod(setuid, 0o4750)
         if index == 0:
             (root / '.credential-vault.json').write_text('private credential')
         if index == 1 and os.environ['FAIL_AFTER_FIRST_OWNER'] == '1':
@@ -110,6 +121,11 @@ for principal, uid, center in (
     assert (moved / 'relative-link').is_symlink()
     assert os.readlink(moved / 'relative-link') == 'odd name ü\nline.txt'
     assert (moved / 'hard-link').stat().st_ino == (moved / 'odd name ü\nline.txt').stat().st_ino
+    for relative, expected in (
+            ('.agent-workspace/.tmp/pytest-of-unknown/.consumer_liveness', 0o2750),
+            ('sticky', 0o1777), ('setuid-tool', 0o4750)):
+        assert (source / relative).stat().st_mode & 0o7777 == expected
+        assert (moved / relative).stat().st_mode & 0o7777 == expected
     with sqlite3.connect(moved / 'state.sqlite') as db:
         assert db.execute('SELECT name FROM events').fetchone() == (principal,)
 assert (data / '.platform/credential-vaults/command-center/.credential-vault.json'
@@ -422,7 +438,7 @@ def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int
         # Exactly deploy_fail_safe.sh:box_migration_container apply, with its
         # block-device mapping and the same resource/security posture.
         apply = container('--rm', '--cap-drop', 'ALL', '--user', '0',
-                          '--cap-add', 'CHOWN', '--cap-add', 'FOWNER',
+                          '--cap-add', 'CHOWN', '--cap-add', 'FOWNER', '--cap-add', 'FSETID',
                           '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SYS_ADMIN',
                           '--security-opt', 'no-new-privileges=true', '--network', 'none',
                           '--memory=1g', '--memory-swap=1g',
@@ -602,7 +618,7 @@ def rehearsal(image: str, *, fail: bool) -> None:
 
         # Keep this argv in lockstep with deploy_fail_safe.sh:box_migration_container.
         apply = docker('run', '--rm', '--cap-drop', 'ALL', '--user', '0',
-                       '--cap-add', 'CHOWN', '--cap-add', 'FOWNER',
+                       '--cap-add', 'CHOWN', '--cap-add', 'FOWNER', '--cap-add', 'FSETID',
                        '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SYS_ADMIN',
                        '--security-opt', 'no-new-privileges=true', '--network', 'none',
                        '--memory=1g', '--memory-swap=1g',
@@ -682,7 +698,8 @@ bash /rehearsal-deploy/backup-restore.sh
                    '--entrypoint', 'tar', image,
                    '--numeric-owner', '--acls', '--xattrs', '-czf',
                    f'/backup/{BOX_ARCHIVE}', '-C', '/box-store',
-                   '--transform=s,^,owners/,', *(str(row['uid']) for row in owners))
+                   '--transform=flags=rh;s,^,owners/,',
+                   *(str(row['uid']) for row in owners))
             docker('run', '--rm', '--user', '0', '--network', 'none',
                    '-v', f"{names['backup']}:/backup",
                    '--mount', f'type=bind,src={ROOT / "deploy"},'
@@ -723,6 +740,12 @@ bash /rehearsal-deploy/backup-restore.sh
                                     '--mount', f'type=bind,src={store_path},dst=/box-store',
                                     '--entrypoint', 'python', image, '-c', QUOTA_READBACK, 'set')
             print('[rehearsal] restored ' + restored_quotas.stdout.strip())
+            restored_modes = docker('run', '--rm', '--user', '0', '--network', 'none',
+                                    '-v', f"{names['data']}:/data:ro",
+                                    '--mount', f'type=bind,src={store_path},'
+                                               'dst=/box-store,readonly',
+                                    '--entrypoint', 'python', image, '-c', VERIFY_COMMIT)
+            print('[rehearsal] restored ' + restored_modes.stdout.strip())
             cleared = docker('run', '--rm', '--user', '0', '--network', 'none',
                              '--mount', f'type=bind,src={store_path},dst=/box-store,readonly',
                              '--entrypoint', 'python', image, '-c', QUOTA_READBACK, 'clear')

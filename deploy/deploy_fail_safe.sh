@@ -1972,7 +1972,7 @@ box_migration_container() {  # $1 = check|apply, then module arguments
       err "box migration: owner store has no block device: ${store_device}"
       return 1
     fi
-    posture=(--user 0 --cap-add CHOWN --cap-add FOWNER \
+    posture=(--user 0 --cap-add CHOWN --cap-add FOWNER --cap-add FSETID \
       --cap-add DAC_OVERRIDE --cap-add SYS_ADMIN)
     data_mount="tinyassets-data:/data"
     extra=(-v "${MIGRATION_BACKUP_DIR}:/backup:ro" \
