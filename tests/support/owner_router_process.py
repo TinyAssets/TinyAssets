@@ -11,7 +11,12 @@ from tinyassets.owner_daemon import create_app
 
 def main():
     root, relay, secret, socket = map(Path, sys.argv[1:])
-    app = create_app(data=root, relay=relay, secret_file=secret)
+    import tinyassets.owner_runtime as owner_runtime
+
+    # A test process has no boxhostd mount: the fixed mount is this temp root.
+    owner_runtime.OWNER_MOUNT = root
+    owner_runtime._is_owner_mount = lambda path: path == root
+    app = create_app(relay=relay, secret_file=secret)
     from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
     from tinyassets.owner_runtime import current
 

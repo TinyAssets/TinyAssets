@@ -48,6 +48,18 @@ adding a check in shared code.
 - **Defaults.** Admitted owner startup enables the existing app-door and engine-tool flags; sandbox status uses that admission, and storage measurement walks the local owner root.
 - **Loopback.** The `bash`/`ta` engine transport uses loopback TCP inside the
   box's own netns. That is allowed. The rule is no NON-loopback connection.
+- **The `owner-box` verdict is a mode marker, not authority** (slice 1
+  review). It lets the owner daemon record provider work in its OWN data
+  root, and nothing else. Every boundary-crossing authority stays in
+  infrastructure: egress and credentials come only through the broker
+  (slice 3 makes owner-mode egress broker-only), and inbound traffic reaches
+  a box only through the router's admission-derived socket (slice 2). A host
+  process that fakes the relay gains no egress, no credentials and no routed
+  traffic. A signed "I am in a box" proof is not added: a host process can
+  forge it as easily as the socket, so it would protect nothing.
+- **Data root = the boxhostd owner mount** (`/home/owner`, as in the C6
+  design and `gvisor_runtime`), never a CLI path. Startup refuses if that path
+  isn't a mount (slice 1 review: durable, quota-bound storage only).
 
 ## D2. Shared router
 

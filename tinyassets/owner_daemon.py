@@ -6,10 +6,10 @@ import argparse
 from pathlib import Path
 
 
-def create_app(*, data: Path, relay: Path, secret_file: Path):
+def create_app(*, relay: Path, secret_file: Path):
     from tinyassets.owner_runtime import start
 
-    start(data, relay)
+    start(relay)
     from tinyassets.owner_ingress import OwnerIngress
     from tinyassets.universe_server import create_streamable_http_app
 
@@ -18,12 +18,11 @@ def create_app(*, data: Path, relay: Path, secret_file: Path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data", required=True, type=Path)
     parser.add_argument("--socket", required=True, type=Path)
     parser.add_argument("--secret-file", required=True, type=Path)
     parser.add_argument("--relay", type=Path, default=Path("/run/boxhostd/relay.sock"))
     args = parser.parse_args()
-    app = create_app(data=args.data, relay=args.relay, secret_file=args.secret_file)
+    app = create_app(relay=args.relay, secret_file=args.secret_file)
     import uvicorn
 
     try:
