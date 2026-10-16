@@ -18,8 +18,9 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
+from deploy.box_project_readback import verify_owner, verify_tree
 from tinyassets import storage_layout
 from tinyassets.broker.owner_identities import OWNER_ID_FIRST, OWNER_ID_LAST
 from tinyassets.universe_owner import account_type_of
@@ -319,16 +320,30 @@ def _mounted(store: Path) -> None:
         raise RuntimeError("owner store must be mounted XFS with project quota, no discard")
 
 
+def _refuse_nested_mounts(
+    data: Path, mountinfo: Path = Path("/proc/self/mountinfo"),
+) -> None:
+    """Refuse every mount below the source root, including file bind mounts."""
+    root = PurePosixPath(data)
+    if not root.is_absolute():
+        raise RuntimeError(f"owner data root must be absolute: {data}")
+    with mountinfo.open(encoding="utf-8", errors="surrogateescape") as stream:
+        for line in stream:
+            fields = line.split()
+            if len(fields) < 10 or "-" not in fields[6:]:
+                raise RuntimeError("invalid migration mountinfo")
+            mount_point = PurePosixPath(re.sub(
+                r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), fields[4],
+            ))
+            if mount_point != root and mount_point.is_relative_to(root):
+                raise RuntimeError(f"mount beneath owner data root: {mount_point}")
+
+
 def _owner_inode_preflight(data: Path, plan: list[OwnerMove]) -> None:
     """Census before the first write, while all source writers are stopped."""
-    seen: dict[tuple[int, int], tuple[str, Path]] = {}
-    from tinyassets.boxes.destroy import _mount
-
-    data_fd = os.open(data, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        mount = _mount(data_fd)
-    finally:
-        os.close(data_fd)
+    seen: dict[tuple[int, int], tuple[str, Path, Path, int, int]] = {}
+    link_counts: dict[tuple[int, int], int] = {}
+    _refuse_nested_mounts(data)
     for owner in plan:
         sources = [data / center for center in owner.centers]
         home = data / ".platform" / "owners" / str(owner.uid) / "agent-home"
@@ -339,15 +354,24 @@ def _owner_inode_preflight(data: Path, plan: list[OwnerMove]) -> None:
             if not stat.S_ISDIR(info.st_mode):
                 raise RuntimeError(f"owner source is not a real directory: {source}")
             for directory, dirs, files, fd in os.fwalk(source, follow_symlinks=False):
-                if _mount(fd) != mount:
-                    raise RuntimeError(f"foreign mount in owner source: {directory}")
                 for name in (".", *dirs, *files):
                     info = os.stat(name, dir_fd=fd, follow_symlinks=False)
                     path = Path(directory) if name == "." else Path(directory) / name
+                    if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)
+                            or stat.S_ISLNK(info.st_mode)):
+                        raise RuntimeError(f"unsupported owner inode (FIFO/socket/device): {path}")
                     key = (info.st_dev, info.st_ino)
-                    previous = seen.setdefault(key, (owner.principal, path))
+                    previous = seen.setdefault(
+                        key, (owner.principal, source, path, info.st_mode, info.st_nlink))
                     if previous[0] != owner.principal:
-                        raise RuntimeError(f"cross-owner inode: {previous[1]} and {path}")
+                        raise RuntimeError(f"cross-owner inode: {previous[2]} and {path}")
+                    if previous[1] != source and not stat.S_ISDIR(info.st_mode):
+                        raise RuntimeError(f"cross-copy hard link: {previous[2]} and {path}")
+                    if not stat.S_ISDIR(info.st_mode):
+                        link_counts[key] = link_counts.get(key, 0) + 1
+    for key, (_, _, path, mode, links) in seen.items():
+        if not stat.S_ISDIR(mode) and link_counts.get(key, 0) != links:
+            raise RuntimeError(f"owner hard link leaves the move sources: {path}")
 
 
 def _atomic_json(path: Path, value: dict) -> None:
@@ -387,7 +411,8 @@ def _copy(source: Path, target: Path, uid: int, *, extra_excludes=()) -> None:
         check=True, capture_output=True, text=True,
     )
     if result.stdout.strip():
-        raise RuntimeError(f"rsync checksum differs for {source}")
+        raise RuntimeError(
+            f"rsync verification differs for {source}: {result.stdout.strip()[:2000]}")
 
 
 def _copy_credentials(source: Path, target: Path) -> None:
@@ -419,7 +444,20 @@ def _copy_credentials(source: Path, target: Path) -> None:
         check=True, capture_output=True, text=True,
     )
     if result.stdout.strip():
-        raise RuntimeError(f"credential checksum differs for {source}")
+        raise RuntimeError(
+            f"credential verification differs for {source}: {result.stdout.strip()[:2000]}")
+
+
+def _xfs_quota(store: Path, command: str) -> str:
+    # xfs_quota exits zero even when it cannot resolve a mounted block device.
+    # A successful process status alone did not establish any project quota.
+    result = subprocess.run(
+        ["xfs_quota", "-x", "-c", command, str(store)],
+        check=True, capture_output=True, text=True,
+    )
+    if result.stderr.strip():
+        raise RuntimeError(f"xfs_quota {command}: {result.stderr.strip()}")
+    return result.stdout
 
 
 def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
@@ -484,15 +522,9 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
             tree = store / str(owner.uid)
             tree.mkdir(mode=0o700)
             os.chown(tree, owner.uid, owner.uid)
-            subprocess.run(
-                ["xfs_quota", "-x", "-c", f"project -s -p {tree} {owner.uid}",
-                 str(store)], check=True,
-            )
-            subprocess.run(
-                ["xfs_quota", "-x", "-c",
-                 f"limit -p bhard={owner.quota // 1024}k {owner.uid}", str(store)],
-                check=True,
-            )
+            _xfs_quota(store, f"project -s -p {tree} {owner.uid}")
+            verify_tree(tree, owner.uid, True)
+            _xfs_quota(store, f"limit -p bhard={owner.quota // 1024}k {owner.uid}")
             for center in owner.centers:
                 _copy_credentials(data / center, custody_root / center)
                 destination = tree / center
@@ -519,6 +551,7 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
                 )
                 _copy(agent_home, destination, owner.uid,
                       extra_excludes=auth_paths)
+            verify_owner(store, tree, owner.uid, owner.quota)
         broker_state = data / ".broker" / "state"
         with sqlite3.connect(broker_state / "owner-identities.db") as db:
             db.execute("PRAGMA synchronous=FULL")
