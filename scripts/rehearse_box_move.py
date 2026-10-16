@@ -249,18 +249,21 @@ if len(records) != len(plan) and mode == 'commit':
 raise SystemExit(0 if success else 1)
 '''
 
-QUOTA_FAILURE = r'''
+COPY_FAILURE = r'''
 import shutil, sys
 from pathlib import Path
 
-uid = sys.argv[1]
-real = shutil.which('xfs_quota')
+center = sys.argv[1]
+real = shutil.which('rsync')
 assert real and not real.startswith('/backup/'), real
-wrapper = Path('/backup/xfs_quota')
+wrapper = Path('/backup/rsync')
 wrapper.write_text('#!/bin/sh\n'
-                   f'if [ "$3" = "project -s -p /box-store/{uid} {uid}" ]; then\n'
-                   '  echo "induced quota failure after migration marker" >&2\n'
-                   '  exit 0\nfi\n'
+                   'for arg in "$@"; do\n'
+                   f'  if [ "$arg" = "/data/{center}/" ]; then\n'
+                   '    echo "induced copy failure after migration marker" >&2\n'
+                   '    exit 1\n'
+                   '  fi\n'
+                   'done\n'
                    f'exec {real} "$@"\n')
 wrapper.chmod(0o755)
 '''
@@ -454,10 +457,12 @@ def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int
         if fail:
             injected = container('--rm', '--user', '0', '--network', 'none',
                                  '-v', f"{names['backup']}:/backup", '--entrypoint',
-                                 'python', image, '-c', QUOTA_FAILURE,
-                                 str(target['uid']), check=False)
+                                 'python', image, '-c', COPY_FAILURE,
+                                 target['centers'][0], check=False)
             if injected.returncode:
-                raise RuntimeError('quota failure fixture: FAIL')
+                raise RuntimeError('copy failure fixture: FAIL')
+        failure_env = (['-e', 'PATH=/backup:/opt/venv/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin']
+                       if fail else [])
 
         # Exactly deploy_fail_safe.sh:box_migration_container apply, with its
         # block-device mapping and the same resource/security posture.
@@ -466,8 +471,7 @@ def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int
                           '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SYS_ADMIN',
                           '--security-opt', 'no-new-privileges=true', '--network', 'none',
                           '--memory=1g', '--memory-swap=1g',
-                          *(['-e', 'PATH=/backup:/usr/local/bin:/usr/bin:/bin:/usr/sbin']
-                            if fail else []),
+                          *failure_env,
                           '-v', f"{names['data']}:/data", '-v', f"{names['backup']}:/backup:ro",
                           '--device', f'{device}:{device}:r',
                           '--mount', f'type=bind,src={store_path},dst=/box-store',
@@ -491,9 +495,9 @@ def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int
         if apply.returncode != expected:
             raise RuntimeError(f'apply: FAIL (rc={apply.returncode}, expected={expected})')
         if fail:
-            if 'induced quota failure after migration marker' not in apply.stderr:
+            if 'induced copy failure after migration marker' not in apply.stderr:
                 raise RuntimeError(
-                    'apply: FAIL (refusal did not reach the injected quota command)')
+                    'apply: FAIL (refusal did not reach the injected copy command)')
         if not fail and report.returncode:
             raise RuntimeError(f'owner commit verification: FAIL (rc={report.returncode})')
         if not fail:
@@ -665,7 +669,9 @@ def rehearsal(image: str, *, fail: bool, leftover_owner_tree: bool = False) -> N
         if fail:
             docker('run', '--rm', '--user', '0', '--network', 'none',
                    '-v', f"{names['backup']}:/backup", '--entrypoint', 'python',
-                   image, '-c', QUOTA_FAILURE, '300002')
+                   image, '-c', COPY_FAILURE, 'research')
+        failure_env = (['-e', 'PATH=/backup:/opt/venv/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin']
+                       if fail else [])
 
         # Keep this argv in lockstep with deploy_fail_safe.sh:box_migration_container.
         apply = docker('run', '--rm', '--cap-drop', 'ALL', '--user', '0',
@@ -673,8 +679,7 @@ def rehearsal(image: str, *, fail: bool, leftover_owner_tree: bool = False) -> N
                        '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SYS_ADMIN',
                        '--security-opt', 'no-new-privileges=true', '--network', 'none',
                        '--memory=1g', '--memory-swap=1g',
-                       *(['-e', 'PATH=/backup:/usr/local/bin:/usr/bin:/bin:/usr/sbin']
-                         if fail else []),
+                       *failure_env,
                        '-v', f"{names['data']}:/data",
                        '-v', f"{names['backup']}:/backup:ro",
                        '--device', f'{device}:{device}:r',
@@ -685,7 +690,7 @@ def rehearsal(image: str, *, fail: bool, leftover_owner_tree: bool = False) -> N
                        '--box-backup', f'/backup/{BOX_ARCHIVE}', check=False)
         if fail:
             assert (apply.returncode == 3
-                    and 'induced quota failure after migration marker' in apply.stderr), (
+                    and 'induced copy failure after migration marker' in apply.stderr), (
                         apply.stdout + apply.stderr)
             print('[rehearsal] induced failure after first owner: ' + apply.stderr.strip())
             shim = r'''set -eu
