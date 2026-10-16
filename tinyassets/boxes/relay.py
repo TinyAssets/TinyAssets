@@ -68,6 +68,21 @@ class OwnerRelays:
                         "op": "OWNER_IS", "principal": owner, "uid": uid,
                     }))
                     return
+                if set(doc) == {"op", "request"} and doc["op"] == "ROUTER_CREDENTIAL":
+                    broker.settimeout(30)
+                    broker.connect(str(self.admission.broker_socket))
+                    if peer(broker)[1:] != (1002, 1002):
+                        raise BoxAuthError("relay peer is not the broker")
+                    broker.sendall(rf.control(rf.CONNECTION, {
+                        "op": "BOX_CREDENTIAL", "principal": owner, "uid": uid,
+                        "request": doc["request"],
+                    }))
+                    answer = rf.read_frame_blocking(broker)
+                    if (answer is None or answer.kind != rf.CONTROL
+                            or answer.stream != rf.CONNECTION):
+                        raise BoxAuthError("invalid credential reply")
+                    guest.sendall(rf.control(rf.CONNECTION, answer.control()))
+                    return
                 if set(doc) != {"op", "center"} or doc["op"] not in {"BOX_CONNECT", "BOX_PUBLIC"}:
                     raise BoxAuthError("invalid relay operation")
                 center = doc["center"]

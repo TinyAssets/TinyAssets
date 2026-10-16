@@ -56,7 +56,7 @@ def resolve_box(owner: str) -> BoxRoute:
     from tinyassets.storage import data_dir
 
     uid, secret = owner_box_route(data_dir(), principal=owner)
-    root = Path(os.environ.get("TINYASSETS_BOXES_RUN", "/run/boxhostd"))
+    root = Path(os.environ.get("TINYASSETS_BOXES_RUN", "/run/tinyassets-boxhostd"))
     return BoxRoute(root / str(uid) / "app.sock", secret)
 
 
@@ -96,6 +96,9 @@ class OwnerRouter:
 
             session = await run_in_threadpool(lookup, Request(scope).cookies.get(COOKIE, ""))
             if session is not None:
+                if json.loads(session["identity_json"])["user_id"] != identity.user_id:
+                    return await JSONResponse({"error": "identity_conflict"}, status_code=401)(
+                        scope, receive, send)
                 # Protected-view proof is shared session state; its consumer in
                 # the box retains the existing exact-origin/expiry checks.
                 from dataclasses import replace

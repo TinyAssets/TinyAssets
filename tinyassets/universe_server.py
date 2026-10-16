@@ -4197,8 +4197,12 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
 
         if not owner_mode:
             # The router has no owner stores, tick, sweepers or MCP sessions.
-            emit_startup()
-            yield
+            from tinyassets.router_credentials import serving as serve_credentials
+            from tinyassets.storage import data_dir
+
+            async with serve_credentials(data_dir()):
+                emit_startup()
+                yield
             return
 
         from tinyassets.scoped_reset import prepare_service_writer_barrier

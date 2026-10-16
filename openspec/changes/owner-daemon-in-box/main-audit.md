@@ -35,9 +35,9 @@ Test-Removal: retired `test_staged_bundle_enumerates_seven_under_simulated_admis
 Test-Removal: retired `test_staged_bundle_enumerates_without_credentials`: shared stdio serving was deleted; the replacement proves refusal and no server response without credentials.
 
 Remaining integration belongs to later slices: boxhostd mounting the socket and
-read-only secret, rotation on start and wake-on-request (4); shared-state broker
-publication/revocation of hook digests and shared credential management from
-boxes (3); seeding shared maps and splitting existing owner stores (6). No
+read-only secret, rotation on start and wake-on-request (4); seeding shared maps
+and splitting existing owner stores (6). Review fixes below complete shared key
+and hook management from boxes in slice 2. No
 provisioning, egress, migration or deploy files changed; nothing was pushed.
 
 Local implementation commits: `38fae347fb9`, `6e3d9ecb220`, `3acb71ee293`,

@@ -72,6 +72,10 @@ class ApiKeyStore:
 
     @contextmanager
     def db(self, *, timeout: float = 10):
+        from tinyassets.owner_runtime import current
+
+        if current() is not None:
+            raise RuntimeError("API key storage belongs to the router")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.path, timeout=timeout)
         try:
@@ -106,7 +110,7 @@ class ApiKeyStore:
             raise ValueError("owner required")
         if not isinstance(name, str) or not name.strip() or len(name) > MAX_NAME:
             raise ValueError("key name required (at most 80 characters)")
-        if not isinstance(scopes, list) or not scopes:
+        if authority is not None and (not isinstance(scopes, list) or not scopes):
             raise ValueError("at least one scope required")
         for scope in scopes:
             if not isinstance(scope, dict) or scope.get("capability") not in CAPABILITIES:
@@ -126,10 +130,11 @@ class ApiKeyStore:
                 raise ValueError("too many live API keys; revoke one first")
             bound = {"client": _client(key_id), "family": _family(key_id),
                      "authenticated_at": int(now)}
-            authority.observe(owner, bound)
-            # Raises before the row commits, so a refused grant leaves no key.
-            authority.change(owner, bound["client"], expected_generation=0,
-                             family=bound["family"], scopes=scopes)
+            if authority is not None:
+                authority.observe(owner, bound)
+                # Raises before the row commits, so a refused grant leaves no key.
+                authority.change(owner, bound["client"], expected_generation=0,
+                                 family=bound["family"], scopes=scopes)
             conn.execute("INSERT INTO api_keys VALUES (?,?,?,?,?,NULL,NULL)",
                          (key_id, owner, name.strip(), _digest(secret), now))
         return {"key": f"{PREFIX}{key_id}_{secret}", "key_id": key_id, "name": name.strip(),
@@ -147,7 +152,7 @@ class ApiKeyStore:
                              (time.time(), key_id))
                 client = _client(key_id)
                 grant = next((c for c in authority.inspect(owner)["clients"]
-                              if c["client"] == client), None)
+                              if c["client"] == client), None) if authority is not None else None
                 if grant is not None and not grant["revoked"]:
                     authority.change(owner, client, expected_generation=grant["generation"],
                                      family=grant["family"], scopes=[], revoke=True)
@@ -156,7 +161,8 @@ class ApiKeyStore:
     def list(self, owner: str, *, authority: Any) -> dict[str, Any]:
         import json
 
-        grants = {c["client"]: c for c in authority.inspect(owner)["clients"]}
+        grants = ({c["client"]: c for c in authority.inspect(owner)["clients"]}
+                  if authority is not None else {})
         with self.db() as conn:
             rows = conn.execute("SELECT key_id,name,created_at,last_used_at,revoked_at FROM "
                                 "api_keys WHERE owner=? ORDER BY created_at", (owner,)).fetchall()
@@ -247,10 +253,69 @@ class ApiKeyStore:
             logger.warning("api key %s: last_used_at not recorded (store busy)", key_id)
 
 
-def current_store() -> ApiKeyStore:
+class OwnerApiKeys:
+    """Key metadata lives at the router; only outside grants live in this box."""
+
+    @staticmethod
+    def request_key_id(owner: str, request_ref: str) -> str:
+        from tinyassets.owner_runtime import current
+
+        return ApiKeyStore.request_key_id(current().principal, request_ref)
+
+    def mint(self, owner, *, name, scopes, authority, request_ref=""):
+        from tinyassets.owner_runtime import current, router_credential
+
+        owner = current().principal
+        if (not isinstance(scopes, list) or not scopes
+                or any(not isinstance(s, dict) or s.get("capability") not in CAPABILITIES
+                       for s in scopes)):
+            raise ValueError("valid API scopes required")
+        result = router_credential("key_mint", name=name, request_ref=request_ref)
+        if result.get("already_created"):
+            return result
+        bound = {"client": _client(result["key_id"]), "family": _family(result["key_id"]),
+                 "authenticated_at": int(result["created_at"])}
+        try:
+            authority.observe(owner, bound)
+            authority.change(owner, bound["client"], expected_generation=0,
+                             family=bound["family"], scopes=scopes)
+        except Exception:
+            router_credential("key_revoke", key_id=result["key_id"])
+            raise
+        return {**result, "scopes": scopes}
+
+    def list(self, owner, *, authority):
+        import json
+
+        from tinyassets.owner_runtime import current, router_credential
+
+        result = router_credential("key_list")
+        grants = {c["client"]: c for c in authority.inspect(current().principal)["clients"]}
+        for key in result["keys"]:
+            grant = grants.get(_client(key["key_id"]))
+            key["scopes"] = json.loads(grant["scopes"]) if grant else []
+        return result
+
+    def revoke(self, owner, key_id, *, authority):
+        from tinyassets.owner_runtime import current, router_credential
+
+        result = router_credential("key_revoke", key_id=key_id)
+        owner = current().principal
+        grant = next((c for c in authority.inspect(owner)["clients"]
+                      if c["client"] == _client(key_id)), None)
+        if grant is not None and not grant["revoked"]:
+            authority.change(owner, grant["client"], expected_generation=grant["generation"],
+                             family=grant["family"], scopes=[], revoke=True)
+        return result
+
+
+def current_store(base: Path | None = None) -> ApiKeyStore | OwnerApiKeys:
+    from tinyassets.owner_runtime import current
     from tinyassets.storage import data_dir
 
-    return ApiKeyStore(data_dir())
+    if current() is not None:
+        return OwnerApiKeys()
+    return ApiKeyStore(base if base is not None else data_dir())
 
 
 def resolve_identity(token: str):

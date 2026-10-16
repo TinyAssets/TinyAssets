@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import socket
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -80,9 +79,28 @@ def test_route_operation_rejects_forged_authority_or_socket_overrides(
 
 
 @pytest.fixture
-def boxes(admitted, tmp_path, monkeypatch):
+def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
+    from tinyassets import router_credentials
+    from tinyassets.boxes import relay as relay_module
     from tinyassets.boxes.relay import OwnerRelays
+    from tinyassets.broker.server import BOX_HOST, BrokerServer
 
+    # Same-uid fixture: production pins both directions to the kernel role uid.
+    monkeypatch.setattr(router_credentials, "BROKER_UID", os.getuid())
+    monkeypatch.setattr(router_credentials, "DAEMON_UID", os.getuid())
+    monkeypatch.setattr(relay_module, "peer", lambda sock: (os.getpid(), 1002, 1002))
+    monkeypatch.setattr(relay_module, "os", SimpleNamespace(
+        chown=lambda *args: None, chmod=os.chmod))
+    host_broker = BrokerServer(
+        ledger_for=broker.server._ledger_for, dispatch_for=broker.server._dispatch_for,
+        ops=broker.ops, fence=broker.fence, roles={os.getuid(): BOX_HOST},
+        owner_identities=admitted, data_root=tmp_path,
+    )
+    host_path = tmp_path / "host.sock"
+    listener = asyncio.run_coroutine_threadsafe(host_broker.serve(host_path),
+                                               broker.loop).result(5)
+    credential_service = router_credentials.serving(tmp_path)
+    asyncio.run_coroutine_threadsafe(credential_service.__aenter__(), broker.loop).result(5)
     processes = []
     with tempfile.TemporaryDirectory(prefix="ta-router-") as short:
         run = Path(short)
@@ -100,12 +118,12 @@ def boxes(admitted, tmp_path, monkeypatch):
                 root = tmp_path / owner
                 root.mkdir()
                 roots[owner], secrets[owner] = root, secret
-                relay = OwnerRelays(directory / "relay", None)
+                relay = OwnerRelays(directory / "relay", SimpleNamespace(broker_socket=host_path))
                 relays.append(relay)
                 log = tempfile.TemporaryFile()
                 process = subprocess.Popen([
                     sys.executable, "-m", "tests.support.owner_router_process", str(root),
-                    str(relay.bind(owner, os.getuid())), str(secret_path),
+                    str(relay.bind(owner, uid)), str(secret_path),
                     str(directory / "app.sock"),
                 ], stdout=log, stderr=log)
                 processes.append((process, log))
@@ -119,17 +137,9 @@ def boxes(admitted, tmp_path, monkeypatch):
                 else:
                     log.seek(0)
                     pytest.fail(log.read().decode())
-            # Only shared credential rows are copied to the router. Grants stay
-            # inside each owner root, as do all center/file/database records.
-            from tinyassets.api_keys import ApiKeyStore
-
-            keys = {}
-            with ApiKeyStore(tmp_path).db() as destination:
-                for owner, root in roots.items():
-                    keys[owner] = json.loads((root / "key.json").read_text())["key"]
-                    with sqlite3.connect(root / ".api-keys.sqlite3") as source:
-                        destination.executemany("INSERT INTO api_keys VALUES (?,?,?,?,?,?,?)",
-                                                source.execute("SELECT * FROM api_keys"))
+            keys = {owner: json.loads((root / "key.json").read_text())["key"]
+                    for owner, root in roots.items()}
+            assert all(not (root / ".api-keys.sqlite3").exists() for root in roots.values())
             yield SimpleNamespace(run=run, roots=roots, secrets=secrets, keys=keys)
         finally:
             for process, log in processes:
@@ -138,6 +148,9 @@ def boxes(admitted, tmp_path, monkeypatch):
                 log.close()
             for relay in relays:
                 relay.close()
+            asyncio.run_coroutine_threadsafe(
+                credential_service.__aexit__(None, None, None), broker.loop).result(5)
+            broker.loop.call_soon_threadsafe(listener.close)
 
 
 @pytest.fixture
@@ -270,6 +283,12 @@ def test_shared_owner_session_authenticates_and_carries_protected_view_proof(rou
             response = await client.post("/app/test-session", headers=headers, json={})
             assert response.status_code == 200, response.text
             assert response.json() == {"owner": "alice"}
+            mixed = await client.post("/app/test-session", headers=headers | {
+                "authorization": "Bearer bob"}, json={})
+            assert mixed.status_code == 401
+            matching = await client.post("/app/test-session", headers=headers | {
+                "authorization": "Bearer alice"}, json={})
+            assert matching.status_code == 200
             refused = await client.post("/app/api/file", headers=headers | {
                 "origin": "https://foreign.example"}, json={})
             assert refused.status_code == 401
@@ -379,3 +398,114 @@ def test_hook_map_is_router_state_and_unknown_owners_open_no_socket(admitted, tm
             assert selected == ["alice", "alice"]
 
     asyncio.run(exercise())
+
+
+def test_box_minted_key_authenticates_router_until_box_revokes_it(router, boxes):
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=router),
+                                     base_url="http://test") as client:
+            key = json.loads((boxes.roots["alice"] / "key.json").read_text())
+            api = "/api/command-centers/cc-alice/status"
+            bearer = {"authorization": "Bearer " + key["key"]}
+            assert (await client.get(api, headers=bearer)).status_code == 200
+            headers = {"authorization": "Bearer alice"}
+            listing = await client.post("/app/test-credentials", headers=headers,
+                                        json={"operation": "key_list"})
+            assert listing.status_code == 200, listing.text
+            assert listing.json()["keys"][0]["key_id"] == key["key_id"]
+            assert "secret" not in listing.text and key["key"] not in listing.text
+            revoked = await client.post("/app/test-credentials", headers=headers,
+                                        json={"operation": "key_revoke", "key_id": key["key_id"]})
+            assert revoked.status_code == 200, revoked.text
+            assert (await client.get(api, headers=bearer)).status_code == 401
+            assert not (boxes.roots["alice"] / ".api-keys.sqlite3").exists()
+
+    asyncio.run(exercise())
+
+
+def test_box_created_hooks_route_then_all_revocation_paths_refuse(router, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "1")
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=router),
+                                     base_url="http://test") as client:
+            headers = {"authorization": "Bearer alice"}
+            for operation in ("hook_revoke", "hook_revoke_prefix", "hook_revoke_source"):
+                source = {"source_id": "source-a"} if operation == "hook_revoke_source" else {}
+                minted = await client.post("/app/test-credentials", headers=headers,
+                                          json={"operation": "hook_mint", **source})
+                assert minted.status_code == 200, minted.text
+                token = minted.json()["token"]
+                response = await client.post("/hooks/inbound/" + token, content=b"delivery")
+                assert response.status_code == 202, response.text
+                assert response.json() == {"owner": "alice", "payload": "delivery"}
+                from tinyassets.storage.webhook_hooks import _PREFIX_LEN
+
+                revoked = await client.post("/app/test-credentials", headers=headers, json={
+                    "operation": operation, "token": token, "prefix": token[:_PREFIX_LEN],
+                    **source,
+                })
+                assert revoked.status_code == 200 and revoked.json()["revoked"], revoked.text
+                for prefix in ("/hooks/inbound/", "/mcp/hooks/"):
+                    refused = await client.post(prefix + token, content=b"delivery")
+                    assert refused.status_code == 404
+
+    asyncio.run(exercise())
+
+
+def test_box_channel_cannot_supply_owner_or_revoke_another_owners_credentials(
+    boxes, tmp_path, admitted,
+):
+    from tinyassets import rpc_frames as rf
+    from tinyassets.router_credentials import HookOwners
+
+    def request(owner, fields, **extra):
+        directory = next(path for path in boxes.run.iterdir()
+                         if (path / "secret").read_text() == boxes.secrets[owner])
+        relay = next((directory / "relay").glob("*.sock"))
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+            channel.settimeout(5)
+            channel.connect(str(relay))
+            channel.sendall(rf.control(0, {"op": "ROUTER_CREDENTIAL", "request": fields, **extra}))
+            answer = rf.read_frame_blocking(channel)
+            return answer.control() if answer else None
+
+    key = json.loads((boxes.roots["alice"] / "key.json").read_text())
+    assert request("bob", {"operation": "key_revoke", "key_id": key["key_id"]}) == {
+        "op": "ROUTER_CREDENTIAL_REFUSED"}
+    assert request("bob", {"operation": "key_list", "owner": "alice"}) == {
+        "op": "ROUTER_CREDENTIAL_REFUSED"}
+    assert request("bob", {"operation": "key_list"}, principal="alice") is None
+    token = request("alice", {"operation": "hook_mint"})["result"]["token"]
+    request("bob", {"operation": "hook_revoke", "token_hash": hashlib.sha256(token.encode())
+            .hexdigest()})
+    assert HookOwners(tmp_path).resolve(token) == "alice"
+    admitted.admission("retire", "bob", "cc-bob")
+    assert request("bob", {"operation": "key_list"}) == {"op": "ROUTER_CREDENTIAL_REFUSED"}
+
+
+def test_router_credential_socket_refuses_a_non_broker_peer(boxes, tmp_path, monkeypatch):
+    from tinyassets import router_credentials
+    from tinyassets import rpc_frames as rf
+
+    monkeypatch.setattr(router_credentials, "BROKER_UID", os.getuid() + 1)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+        channel.settimeout(5)
+        channel.connect(str(router_credentials.credential_socket(tmp_path)))
+        channel.sendall(rf.control(0, {"op": "ROUTER_CREDENTIAL", "owner": "alice",
+                                       "request": {"operation": "key_list"}}))
+        try:
+            assert rf.read_frame_blocking(channel) is None
+        except ConnectionResetError:
+            pass
+
+
+def test_default_socket_is_under_the_existing_compose_mount(admitted, monkeypatch):
+    from tinyassets.owner_router import resolve_box
+
+    monkeypatch.delenv("TINYASSETS_BOXES_RUN", raising=False)
+    route = resolve_box("alice")
+    assert route.socket == Path("/run/tinyassets-boxhostd") / str(
+        admitted.owner_machine("alice")) / "app.sock"
+    compose = (Path(__file__).parents[1] / "deploy/compose.yml").read_text()
+    assert "/run/tinyassets-boxhostd:/run/tinyassets-boxhostd:ro" in compose

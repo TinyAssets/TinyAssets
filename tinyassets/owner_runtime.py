@@ -19,6 +19,7 @@ class OwnerRuntime:
     root: Path
     pid: int
     tools: object
+    relay: Path | None = None
 
 
 _runtime: OwnerRuntime | None = None
@@ -56,8 +57,26 @@ def start(data: Path, relay: Path) -> OwnerRuntime:
     os.environ["TINYASSETS_DATA_DIR"] = str(root)
     os.environ["TINYASSETS_ENGINE_MCP_TOOLS"] = "1"
     os.environ["TINYASSETS_ONBOARDING_APP"] = "1"
-    _runtime = OwnerRuntime(doc["principal"], doc["uid"], root, os.getpid(), tools)
+    _runtime = OwnerRuntime(doc["principal"], doc["uid"], root, os.getpid(), tools, relay)
     return _runtime
+
+
+def router_credential(operation: str, **fields):
+    """One bounded request on the relay whose bind supplies the owner identity."""
+    runtime = current()
+    if runtime is None or runtime.relay is None:
+        raise RuntimeError("owner credential channel is unavailable")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+        channel.settimeout(30)
+        channel.connect(str(runtime.relay))
+        channel.sendall(rf.control(rf.CONNECTION, {
+            "op": "ROUTER_CREDENTIAL", "request": {"operation": operation, **fields},
+        }))
+        answer = rf.read_frame_blocking(channel)
+    if (answer is None or answer.kind != rf.CONTROL or answer.stream != rf.CONNECTION
+            or answer.control().get("op") != "ROUTER_CREDENTIAL_IS"):
+        raise PermissionError("router credential request refused")
+    return answer.control()["result"]
 
 
 def broker_egress(*args, **kwargs):
