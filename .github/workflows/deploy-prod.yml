@@ -205,6 +205,27 @@ jobs:
           fi
           python scripts/verify_core_canary_provision.py
 
+      - name: Resolve the core canary gate (founder waiver)
+        id: canary_gate
+        # The fail-safe's canary value: the real provisioning result, or 1 for
+        # one founder-waived manual deploy. Compared in bash, which is
+        # case-sensitive (GitHub expression == is not): exactly main, first
+        # attempt only, so a re-run cannot reuse the waiver.
+        env:
+          PROVISIONED: ${{ steps.core_canary_provision.outputs.provisioned }}
+          WAIVER: ${{ github.event_name == 'workflow_dispatch' && inputs.founder_canary_waiver || false }}
+        run: |
+          set -euo pipefail
+          value=0
+          [ "$PROVISIONED" = "1" ] && value=1
+          if [ "$value" != "1" ] && [ "$WAIVER" = "true" ] \
+             && [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] \
+             && [ "$GITHUB_REF" = "refs/heads/main" ] && [ "$GITHUB_RUN_ATTEMPT" = "1" ]; then
+            value=1
+            echo "::warning::founder canary waiver used: this deploy proceeds without a provisioned core canary"
+          fi
+          echo "provisioned=${value}" >> "$GITHUB_OUTPUT"
+
       - name: Validate OAuth provider credentials
         id: oauth
         env:
@@ -611,7 +632,7 @@ jobs:
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:${verifier}"
           set +e
           out="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo HEALTH_TIMEOUT=180 DISK_HEADROOM_HELPER='${RETENTION_HELPER}' BUNDLE_DIR='${BUNDLE_DIR}' DEPLOY_STARTED_EPOCH='${{ steps.run_clock.outputs.epoch }}' TURNS_PROBE='${probe}' VERIFY_BACKUP_PY='${verifier}' CORE_CANARY_PROVISIONED='${{ (steps.core_canary_provision.outputs.provisioned == '1' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.run_attempt == 1 && inputs.founder_canary_waiver)) && '1' || '0' }}' bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"
+                "sudo HEALTH_TIMEOUT=180 DISK_HEADROOM_HELPER='${RETENTION_HELPER}' BUNDLE_DIR='${BUNDLE_DIR}' DEPLOY_STARTED_EPOCH='${{ steps.run_clock.outputs.epoch }}' TURNS_PROBE='${probe}' VERIFY_BACKUP_PY='${verifier}' CORE_CANARY_PROVISIONED='${{ steps.canary_gate.outputs.provisioned }}' bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"
           rc=$?
           set -e
           echo "${out}"
