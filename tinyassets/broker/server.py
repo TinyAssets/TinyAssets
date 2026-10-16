@@ -495,8 +495,9 @@ class _Connection:
         token, parent = "box_" + secrets.token_hex(16), "request_" + usage_id
         try:
             for name in (token, parent):
-                self._usage_leases.append(await asyncio.to_thread(
-                    hold_liveness, ledger._data_root, name))
+                # This opens a nonblocking flock. Do not detach acquisition into
+                # a worker: cancellation could discard its returned descriptor.
+                self._usage_leases.append(hold_liveness(ledger._data_root, name))
             await self.send_async(rf.control(rf.CONNECTION, {
                 "op": "BOX_RESULT", "result": {"owner_token": token, "parent_token": parent}}))
         except Exception:
