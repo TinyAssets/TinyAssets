@@ -2631,10 +2631,48 @@ def test_owner_box_move_commits_once_or_requires_snapshot_restore(box: Box, outc
     harness_root = box.root / "boxhostd"
     harness_root.mkdir()
     env["BOX_HARNESS_ROOT"] = str(harness_root)
+    # The fake docker only records the device pass-through. Give this process
+    # a fake mount source and make Bash's -b check see it as a block node;
+    # no device or mount on the test host is changed.
+    device = "/dev/tinyassets-test-box-store"
+    findmnt = box.bin / "findmnt"
+    findmnt.write_text(
+        f'#!/bin/sh\nif [ "$*" = "--mountpoint /var/lib/boxhostd/owners -no SOURCE" ]; '
+        f'then printf "%s\\n" "{device}"; else exec /usr/bin/findmnt "$@"; fi\n',
+        encoding="utf-8",
+    )
+    findmnt.chmod(0o755)
+    fake_stat = box.root / "fake-block-stat.c"
+    fake_stat.write_text(r'''
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <string.h>
+#include <sys/stat.h>
+int stat(const char *path, struct stat *out) {
+    int (*real_stat)(const char *, struct stat *) = dlsym(RTLD_NEXT, "stat");
+    if (strcmp(path, "/dev/tinyassets-test-box-store") != 0)
+        return real_stat(path, out);
+    int result = real_stat("/dev/null", out);
+    if (result == 0) out->st_mode = (out->st_mode & ~S_IFMT) | S_IFBLK;
+    return result;
+}
+''', encoding="utf-8")
+    preload = box.root / "fake-block-stat.so"
+    subprocess.run(["cc", "-shared", "-fPIC", "-o", str(preload), str(fake_stat), "-ldl"],
+                   check=True)
+    env["LD_PRELOAD"] = str(preload)
     box.stage_bundle()
     completed = box.run(NEW_IMAGE, **env)
     calls = box.docker_calls_text()
-    assert "box_layout_migration apply /data --store /box-store" in calls
+    apply_call = next(line for line in calls.splitlines()
+                      if "tinyassets.box_layout_migration apply" in line)
+    assert "apply /data --store /box-store" in apply_call
+    assert "--cap-drop ALL --user 0" in apply_call
+    for flag in ("CHOWN", "FOWNER", "FSETID", "DAC_OVERRIDE", "SYS_ADMIN"):
+        assert f"--cap-add {flag}" in apply_call
+    assert f"--device {device}:{device}:r" in apply_call
+    assert "--mount type=bind,src=/var/lib/boxhostd/owners,dst=/box-store" in apply_call
+    assert "--security-opt no-new-privileges=true --network none" in apply_call
     assert "--box-backup /backup/tinyassets-box-store-" in calls
     harness = (harness_root / "harness-current").resolve()
     assert (harness / "app" / "tinyassets" / "boxd.py").is_file()
