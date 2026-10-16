@@ -33,6 +33,8 @@ ARCHIVE_NAME = re.compile(r"tinyassets-data-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z
 FIXTURE = r'''
 import hashlib, json, os, sqlite3, tarfile
 from pathlib import Path
+from tinyassets.knowledge.knowledge_graph import initialize_knowledge_index
+from tinyassets.memory.project import PROJECT_SCHEMA
 
 data, backup = Path('/data'), Path('/backup')
 (data / '.broker/state').mkdir(parents=True)
@@ -62,6 +64,16 @@ with sqlite3.connect(data / '.broker/state/owner-identities.db') as db:
         with sqlite3.connect(root / 'state.sqlite') as owner_db:
             owner_db.execute('CREATE TABLE events (name TEXT)')
             owner_db.execute('INSERT INTO events VALUES (?)', (principal,))
+        with sqlite3.connect(root / '.project_memory.db') as knowledge_db:
+            knowledge_db.executescript(PROJECT_SCHEMA)
+            knowledge_db.execute('INSERT INTO project_memory VALUES (?,?,?,?,?,?)',
+                                 (f'project-{principal}', 'fixture',
+                                  json.dumps({'owner': principal}), 'now', principal, 1))
+        with sqlite3.connect(root / 'knowledge.db') as knowledge_db:
+            knowledge_db.row_factory = sqlite3.Row
+            initialize_knowledge_index(knowledge_db)
+            knowledge_db.execute('INSERT INTO entities(entity_id, universe_id) VALUES (?,?)',
+                                 (f'entity-{principal}', center))
         (root / 'nested').mkdir()
         (root / 'nested' / 'payload.bin').write_bytes(bytes(range(256)))
         special = root / '.agent-workspace' / '.tmp' / 'pytest-of-unknown'
@@ -105,6 +117,7 @@ data, store = Path('/data'), Path('/box-store')
 marker = json.loads((data / '.layout.json').read_text())
 assert marker['box_layout'] == 'owner-box' and marker['state'] == 'stable'
 assert marker['activity_shape'] == 'v1'
+assert marker['knowledge_shape'] == 'v1'
 with sqlite3.connect(data / '.broker/state/owner-identities.db') as db:
     records = db.execute('SELECT principal,machine,project_id FROM box_records '
                          'ORDER BY machine').fetchall()
@@ -142,6 +155,7 @@ from pathlib import Path
 data, store = Path('/parent/_data'), Path('/box-store')
 marker = json.loads((data / '.layout.json').read_text())
 assert marker['box_layout'] == 'owner-split' and marker['state'] == 'stable'
+assert 'knowledge_shape' not in marker
 with sqlite3.connect(data / '.broker/state/owner-identities.db') as db:
     assert db.execute("SELECT 1 FROM sqlite_master WHERE name='box_records'").fetchone() is None
 assert (data / 'command-center/odd name ü\nline.txt').read_text() == 'owner=alice\n'
@@ -149,6 +163,68 @@ assert not (store / '300001').exists()
 retained = list(store.glob('.tinyassets-box-restore-old.*/300001/command-center/state.sqlite'))
 assert len(retained) == 1, retained
 print('pre-move marker and DB restored; partial boxes retained: PASS')
+'''
+
+KNOWLEDGE_VERIFY = r'''
+import hashlib, json, tempfile
+from pathlib import Path
+from tinyassets.box_layout_migration import _owner_plan
+from tinyassets.boxes.local import LocalBoxProvider
+from tinyassets.okf.box_cutover import _FILES, prepare_center
+from tinyassets.okf.bundle import KnowledgeBundle
+from tinyassets.okf.namespace_census import census_sources
+from tinyassets.okf.records import SourceRecords, source_census
+
+data, store = Path('/data'), Path('/box-store')
+marker = json.loads((data / '.layout.json').read_text())
+assert marker.get('box_layout') == 'owner-box' and marker.get('state') == 'stable'
+assert marker.get('knowledge_shape') == 'v1'
+owners = _owner_plan(data)
+for owner in owners:
+    owner_rows = 0
+    for center in owner.centers:
+        with tempfile.TemporaryDirectory(prefix='knowledge-rehearsal-') as scratch:
+            root = Path(scratch)
+            (root / 'snapshots').mkdir()
+            (root / 'state').mkdir()
+            plan = prepare_center(data / center, root / 'snapshots', owner=owner.principal)
+            provider = LocalBoxProvider(
+                boxes_root=store / str(owner.uid), state_dir=root / 'state',
+                owner_of=lambda candidate: owner.principal if candidate == center else None,
+                allow_unisolated=True,
+            )
+            try:
+                handle = provider.bind(center, account_id=owner.principal)
+                bundle = KnowledgeBundle(provider, handle)
+                snapshot = bundle.snapshot()
+                operation = 'owner-box-knowledge-' + hashlib.sha256(
+                    (owner.principal + '\0' + center).encode()).hexdigest()
+                assert snapshot.manifest.get('operation_id') == operation
+                census = census_sources(
+                    plan.sources, plan.bindings,
+                    verify_authority=lambda principal, home: (principal, home) ==
+                    (owner.principal, center),
+                )
+                expected = {entry.id: entry.encode() for _, entry in census.rows}
+                expected.update({entry.id: entry.encode() for entry in plan.vector_entries})
+                assert {key: entry.encode() for key, entry in snapshot.entries.items()} == expected
+                actual_rows = 0
+                for source in _FILES:
+                    source_census(snapshot, source)
+                    rows = SourceRecords(bundle, source).rows(snapshot)
+                    actual_rows += sum(map(len, rows.values()))
+                assert actual_rows == plan.source_rows
+                vectors = sum(entry.type == 'vector-record'
+                              for entry in snapshot.entries.values())
+                assert vectors == len(plan.vector_entries)
+                owner_rows += actual_rows + len(plan.vector_entries)
+            finally:
+                provider.close()
+        print(f'owner={owner.uid} path=/box-store/{owner.uid}/{center}/brain/knowledge '
+              f'consumers={len(_FILES)} rows={actual_rows} vectors={len(plan.vector_entries)} PASS')
+    print(f'owner={owner.uid} knowledge_centers={len(owner.centers)} '
+          f'knowledge_records={owner_rows} PASS')
+print(f'knowledge_shape={marker["knowledge_shape"]} owners={len(owners)} PASS')
 '''
 
 ARCHIVE_PLAN = r'''
@@ -203,7 +279,8 @@ if mode == 'commit':
         records = {row[0]: row[1:] for row in db.execute(
             'SELECT principal, machine, project_id FROM box_records')}
     if (marker.get('box_layout') != 'owner-box' or marker.get('state') != 'stable'
-            or marker.get('activity_shape') != 'v1'):
+            or marker.get('activity_shape') != 'v1'
+            or marker.get('knowledge_shape') != 'v1'):
         print('layout: FAIL')
         success = False
 else:
@@ -278,7 +355,8 @@ with sqlite3.connect(data / '.broker/state/owner-identities.db') as db:
 retained = [path for path in store.glob('.tinyassets-box-restore-old.*/[0-9]*')
             if path.is_dir()]
 good = (marker.get('box_layout', 'owner-split') == 'owner-split'
-        and marker.get('state') == 'stable' and box_records is None
+        and marker.get('state') == 'stable' and 'knowledge_shape' not in marker
+        and box_records is None
         and bool(retained))
 print(f'restore marker={marker.get("state")} box_records={int(box_records is not None)} '
       f'retained_owners={len(retained)} {"PASS" if good else "FAIL"}')
@@ -472,6 +550,16 @@ def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int
         if not fail and report.returncode:
             raise RuntimeError(f'owner commit verification: FAIL (rc={report.returncode})')
         if not fail:
+            knowledge = container('--rm', '--user', '0', '--network', 'none',
+                                  '-v', f"{names['data']}:/data:ro",
+                                  '--mount', f'type=bind,src={store_path},dst=/box-store,readonly',
+                                  '--entrypoint', 'python', image, '-c', KNOWLEDGE_VERIFY,
+                                  check=False)
+            print(knowledge.stdout, end='')
+            if knowledge.returncode:
+                raise RuntimeError(
+                    f'owner knowledge verification: FAIL (rc={knowledge.returncode}) '
+                    + knowledge.stderr)
             quotas = container('--rm', '--cap-drop', 'ALL', '--user', '0',
                                '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SYS_ADMIN',
                                '--device', f'{device}:{device}:r',
@@ -633,6 +721,9 @@ def rehearsal(image: str, *, fail: bool) -> None:
         if fail:
             assert apply.returncode == 3 and 'non-regular credential source' in apply.stderr, (
                 apply.stdout + apply.stderr)
+            report = json.loads(apply.stdout.strip().splitlines()[-1])
+            assert report['knowledge_owners']['alice']['status'] == 'converted', report
+            assert report['knowledge_centers']['command-center']['status'] == 'converted', report
             print('[rehearsal] induced failure after first owner: ' + apply.stderr.strip())
             shim = r'''set -eu
 mkdir -p /tmp/c6-bin
@@ -684,6 +775,11 @@ bash /rehearsal-deploy/backup-restore.sh
                               '--mount', f'type=bind,src={store_path},dst=/box-store',
                               '--entrypoint', 'python', image, '-c', VERIFY_COMMIT)
             print('[rehearsal] ' + verified.stdout.strip())
+            knowledge = docker('run', '--rm', '--user', '0', '--network', 'none',
+                               '-v', f"{names['data']}:/data:ro",
+                               '--mount', f'type=bind,src={store_path},dst=/box-store,readonly',
+                               '--entrypoint', 'python', image, '-c', KNOWLEDGE_VERIFY)
+            print('[rehearsal] ' + knowledge.stdout.strip())
             # Take a committed owner-box generation and restore it over the
             # same live boxes. This exercises project clearing on retained
             # trees and reapplication on every restored owner.
