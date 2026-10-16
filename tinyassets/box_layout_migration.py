@@ -598,6 +598,9 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
         })
     finally:
         if owner_plan:
+            for record in knowledge_status.values():
+                if record["status"] == "pending":
+                    record["status"] = "blocked: knowledge cutover incomplete"
             owner_status = {
                 owner.principal: {
                     "centers": list(owner.centers),

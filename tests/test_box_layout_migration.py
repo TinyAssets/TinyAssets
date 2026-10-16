@@ -146,7 +146,9 @@ def test_knowledge_cutover_retains_vector_prose_as_owner_record(tmp_path):
         reset_db()
 
 
-def test_cross_owner_inode_refuses_before_marker_or_destination_write(tmp_path, monkeypatch):
+def test_cross_owner_inode_refuses_before_marker_or_destination_write(
+    tmp_path, monkeypatch, capsys,
+):
     import os
 
     data, store = _cutover_root(tmp_path)
@@ -161,6 +163,11 @@ def test_cross_owner_inode_refuses_before_marker_or_destination_write(tmp_path, 
         migration.OwnerMove("bob", 300002, ("c2",), 1024**3)])
     with pytest.raises(RuntimeError, match=r"cross-owner inode: .*note.txt.*borrowed.txt"):
         migration.apply(data, store, tmp_path / "snapshot", tmp_path / "boxes")
+    report = json.loads(capsys.readouterr().out)
+    assert set(report["knowledge_owners"]) == {"alice", "bob"}
+    assert {record["status"] for record in report["knowledge_centers"].values()} == {
+        "blocked: knowledge cutover incomplete"
+    }
     assert (data / ".layout.json").read_bytes() == original
     assert not list(store.iterdir())
 
