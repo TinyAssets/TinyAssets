@@ -338,6 +338,32 @@ def test_router_only_routes_need_no_box(tmp_path, monkeypatch, cloud_runtime):  
         assert client.get("/.well-known/oauth-protected-resource").status_code == 200
         response = client.get("/app/run/" + listing["agent_definition_id"])
         assert response.status_code == 200 and "Public item" in response.text
+    # Approval handoff is sign-in navigation at the door: before sign-in it
+    # redirects with a return cookie; with the session it reaches the app.
+    import json
+    import time
+
+    from tinyassets.onboarding import approval_handoff
+    from tinyassets.onboarding.owner_sessions import COOKIE, hashed, store
+
+    ref = "h" * 43
+    with approval_handoff.flows() as conn:
+        conn.execute("INSERT INTO approval_handoffs VALUES (?,?,?,?,?)",
+                     (hashed(ref), "alice", "request-1", "web", time.time() + 600))
+    with TestClient(app, base_url="https://testserver") as client:
+        response = client.get(approval_handoff.PREFIX + ref, follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers["location"].startswith("/app/owner-sign-in")
+        assert approval_handoff.RETURN_COOKIE in response.headers["set-cookie"]
+        with store() as conn:
+            conn.execute("INSERT INTO owner_sessions VALUES (?,?,?)", (
+                hashed("alice-session"),
+                json.dumps(Identity(user_id="alice", username="alice").to_dict()),
+                time.time() + 600))
+        client.cookies.set(COOKIE, "alice-session")
+        response = client.get(approval_handoff.PREFIX + ref, follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers["location"] == "/app?approval=" + ref
 
 
 def test_owner_socket_requires_current_secret(boxes, admitted):
@@ -509,3 +535,40 @@ def test_default_socket_is_under_the_existing_compose_mount(admitted, monkeypatc
         admitted.owner_machine("alice")) / "app.sock"
     compose = (Path(__file__).parents[1] / "deploy/compose.yml").read_text()
     assert "/run/tinyassets-boxhostd:/run/tinyassets-boxhostd:ro" in compose
+
+
+def test_router_hook_rows_are_capped_per_owner(tmp_path, monkeypatch):
+    from tinyassets import router_credentials
+    from tinyassets.router_credentials import HookOwners
+
+    monkeypatch.setattr(router_credentials, "MAX_HOOKS_PER_OWNER", 3)
+    hooks = HookOwners(tmp_path)
+    digests = [hashlib.sha256(f"alice-{n}".encode()).hexdigest() for n in range(4)]
+    for digest in digests[:3]:
+        hooks.publish(digest, "alice")
+    with pytest.raises(ValueError, match="too many inbound hooks"):
+        hooks.publish(digests[3], "alice")
+    # Another owner's room is its own; a revocation frees a slot.
+    hooks.publish(hashlib.sha256(b"bob-0").hexdigest(), "bob")
+    hooks.revoke(digests[0], "alice")
+    hooks.publish(digests[3], "alice")
+
+
+def test_router_key_rows_stay_bounded_across_mint_revoke_cycles(tmp_path, monkeypatch):
+    import sqlite3
+    from contextlib import closing
+
+    from tinyassets import api_keys
+    from tinyassets.api_keys import ApiKeyStore
+
+    monkeypatch.setattr(api_keys, "MAX_REVOKED_KEYS_PER_OWNER", 2)
+    keys = ApiKeyStore(tmp_path)
+    for n in range(6):
+        minted = keys.mint("alice", name=f"k{n}", request_ref=f"ref-{n}", scopes=[],
+                           authority=None)
+        keys.revoke("alice", minted["key_id"], authority=None)
+    bob = keys.mint("bob", name="b", request_ref="ref-b", scopes=[], authority=None)
+    keys.revoke("bob", bob["key_id"], authority=None)
+    with closing(sqlite3.connect(keys.path)) as db:
+        rows = dict(db.execute("SELECT owner, COUNT(*) FROM api_keys GROUP BY owner"))
+    assert rows == {"alice": 2, "bob": 1}

@@ -24,8 +24,11 @@ _SHARED_APP = {
     "/app", "/app/client-error", "/app/token", "/app/native-sign-in",
     "/app/owner-sign-in", "/app/owner-sign-in/complete", "/app/canary-sign-in",
     "/app/oauth/client-metadata.json", "/app/ui-frame", "/app/sw.js",
+    # Sign-in navigation: its rows live in the router's owner-sessions store.
+    "/app/approval-handoff",
 }
-_SHARED_APP_PREFIXES = ("/app/billing/", "/app/run/", "/app/m/", "/app/model-callback/")
+_SHARED_APP_PREFIXES = ("/app/billing/", "/app/run/", "/app/m/", "/app/model-callback/",
+                        "/app/approval-handoff/")
 
 
 def hook_token(path: str) -> str | None:
@@ -86,8 +89,9 @@ class OwnerRouter:
         token = hook_token(scope["path"])
         if token is not None:
             from tinyassets.router_credentials import hook_identity
+            from tinyassets.storage import data_dir
 
-            identity = await run_in_threadpool(hook_identity, token)
+            identity = await run_in_threadpool(hook_identity, data_dir(), token)
         if identity is None:
             return await JSONResponse({"error": "not_found"}, status_code=404)(
                 scope, receive, send)

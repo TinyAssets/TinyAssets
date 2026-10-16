@@ -18,6 +18,9 @@ from pathlib import Path
 from tinyassets import rpc_frames as rf
 from tinyassets.boxes.layout import BROKER_READ_GID, BROKER_UID, DAEMON_UID
 
+#: Router rows one owner may hold, so no box can grow the shared map unbounded.
+MAX_HOOKS_PER_OWNER = 200
+
 
 class HookOwners:
     def __init__(self, root: Path):
@@ -27,7 +30,13 @@ class HookOwners:
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("CREATE TABLE IF NOT EXISTS hook_owners ("
                        "token_hash TEXT PRIMARY KEY, owner TEXT NOT NULL)")
-            db.execute("INSERT INTO hook_owners VALUES (?, ?)", (token_hash, owner))
+            # One statement: the count and the insert cannot interleave.
+            added = db.execute(
+                "INSERT INTO hook_owners SELECT ?, ? WHERE "
+                "(SELECT COUNT(*) FROM hook_owners WHERE owner=?) < ?",
+                (token_hash, owner, owner, MAX_HOOKS_PER_OWNER)).rowcount
+        if added != 1:
+            raise ValueError("too many inbound hooks; revoke one first")
 
     def revoke(self, token_hash: str, owner: str):
         with closing(sqlite3.connect(self.path)) as db, db:
@@ -43,14 +52,13 @@ class HookOwners:
         return row[0] if row else None
 
 
-def hook_identity(token: str):
+def hook_identity(root: Path, token: str):
     from tinyassets.auth.provider import Identity
-    from tinyassets.storage import data_dir
     from tinyassets.webhook_inbound import inbound_enabled
 
     if not inbound_enabled():
         return None
-    owner = HookOwners(data_dir()).resolve(token)
+    owner = HookOwners(root).resolve(token)
     return Identity(user_id=owner, username=owner) if owner else None
 
 
