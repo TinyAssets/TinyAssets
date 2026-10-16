@@ -44,7 +44,7 @@ Converge a shape; add no second path. Write durable state before replying.
 4. Review only floor-class (ADR-015) and gate-file changes: one adversarial
    round by a separate reviewer told to break the change (any model family,
    not the author), floor/correctness findings, `AGREE`/`DISAGREE_EVIDENCE`.
-   A queued plan's "cross-family review" means this.
+   Older text's "cross-family review" means this round.
 5. No lane cap: fold colliding or superseded lanes; serialize merges.
 6. Done = sha asserted deployed, one naive-user pass through the app agent, spec
    synced. A pasted chat is a bug report.
