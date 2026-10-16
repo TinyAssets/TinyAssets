@@ -630,7 +630,9 @@ def test_async_discovery_rechecks_changes_after_releasing_admission(
     asyncio.run(scenario())
 
 
-def test_cancelled_router_does_not_launch_or_duplicate_discovery(served, blocked_discovery):
+def test_cancelled_router_does_not_launch_or_duplicate_discovery(
+    served, blocked_discovery, monkeypatch
+):
     entered, release, calls = blocked_discovery
 
     async def scenario():
@@ -639,20 +641,33 @@ def test_cancelled_router_does_not_launch_or_duplicate_discovery(served, blocked
         try:
             assert await asyncio.to_thread(entered.wait, 3)
             assert not first.done()
+            discovery, = snapshots._INFLIGHT.values()
             first.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await first
             assert served.wire == []
             assert auth._active_provider_request(served.capability)["invocations"] == 0
+            assert list(snapshots._INFLIGHT.values()) == [discovery]
+            assert not discovery.done()
+            joined = asyncio.Event()
+            shield = asyncio.shield
+
+            def observe_join(task):
+                waiter = shield(task)
+                if task is discovery:
+                    joined.set()
+                return waiter
+
+            monkeypatch.setattr(snapshots.asyncio, "shield", observe_join)
             second = asyncio.create_task(_async_call(served))
-            # Admission and its SQL checks now yield to the bounded worker
-            # pool; wait for the second caller to reach discovery, not a fixed
-            # single event-loop tick. It must share the pending discovery.
-            async with asyncio.timeout(3):
-                while len([c for c in calls if "models/user" in c["url"]]) < 3:
-                    assert not second.done()
-                    await asyncio.sleep(0.01)
+            # The third read is synchronous preflight, before single-flight
+            # discovery. Releasing there can finish the first flight before
+            # the second caller joins, legitimately requiring a fresh read.
+            # Observe its shield attaching to the original pending worker.
+            await asyncio.wait_for(joined.wait(), 3)
             assert not second.done() and len([c for c in calls if "models/user" in c["url"]]) == 3
+            assert served.wire == []
+            assert auth._active_provider_request(served.capability)["invocations"] == 0
             release.set()
             await asyncio.wait_for(second, 5)
             assert len(served.wire) == 1
