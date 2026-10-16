@@ -1,6 +1,6 @@
 ---
 name: peer-agents
-description: Use when dispatching a bounded task or independent cross-family review to the Claude Code or Codex CLI on that subscription's budget; for task-scoped external implementation examples, use a repo search for precedent to define the research role and return contract.
+description: Use when dispatching a bounded task or independent adversarial review to the Claude Code or Codex CLI on that subscription's budget; for task-scoped external implementation examples, use a repo search for precedent to define the research role and return contract.
 ---
 
 # peer-agents
@@ -77,7 +77,7 @@ Useful flags: `--timeout SEC` (default 1800), `--effort low|medium|high|xhigh` (
 
 ## When to use which peer
 
-- **Which changes need a review is not decided here.** `AGENTS.md` § *The loop* (item 4) owns the scope — floor-class changes and gate files, one round, after the PR opens; this skill owns the mechanics. When one is owed: if you are Kimi/Claude, dispatch to codex; if you are Codex/OpenAI, dispatch to claude.
+- **Which changes need a review is not decided here.** `AGENTS.md` § *The loop* (item 4) owns the scope — floor-class changes and gate files, one round, after the PR opens; this skill owns the mechanics. When one is owed, dispatch a separate reviewer told to break the change: either CLI, any model family, never the authoring session. Prefer the other family when it is available on this host.
 - **claude**: strong at nuanced code review, design critique, long-document analysis. Read-only by default; write mode works but codex is usually the better coding workhorse on this host.
 - **codex**: strong autonomous coding loops (edit → run tests → iterate) in `--write` mode inside a worktree.
 

@@ -9,7 +9,7 @@ arXiv 2607.12068):
 * **Tampering.** A failing test gets deleted, skipped or its assertions
   loosened inside the feature PR that broke it. Deleting, skipping or
   weakening a test is legitimate -- but as its OWN change, with a stated
-  reason, reviewed by the other model family. Not riding along in a feature.
+  reason, given an adversarial review. Not riding along in a feature.
 * **Suppression that never ends.** ``tests/test_wiki_file_bug.py`` skipped
   itself for 144 days behind a guard that looked in the wrong module.
 * **Non-hermetic new tests.** Real sleeps, the real calendar, the network,
@@ -569,7 +569,7 @@ def evaluate(delta: Delta, body: str) -> list[str]:
             failures.append(
                 f"this PR removes, skips or loosens existing tests: {listed}. That is allowed "
                 "only as its own reviewed change: add `Test-Removal: retired|consolidated|wrong "
-                "-- <why>` to the PR body and get the other model family's review."
+                "-- <why>` to the PR body and get an adversarial review."
             )
         elif delta.feature_lines and not (
             reason.group(1).lower() == "retired" and delta.removals_only and delta.product_deleted

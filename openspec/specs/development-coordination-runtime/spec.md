@@ -255,7 +255,7 @@ lanes it will discard.
 
 ### Requirement: Peer dispatch runs from a lane-local worktree with bounded autonomy
 
-Cross-family dispatch SHALL run the peer CLI as a subprocess against an explicit
+Peer dispatch SHALL run the peer CLI as a subprocess against an explicit
 working directory so a write-enabled run is confined to a lane worktree rather
 than the live checkout. Read-only SHALL be the default; write autonomy SHALL be
 explicit. The peer's result SHALL always land in the declared output file, and a
