@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import stat
@@ -21,6 +22,8 @@ from tinyassets.boxes.layout import (
     WORKER_HEARTBEAT_PATTERN as WORKER_HEARTBEAT_PATTERN,
 )
 from tinyassets.universe_files import _lstat_nofollow_windows, _windows_parent
+
+logger = logging.getLogger(__name__)
 
 
 def _center(center: str) -> str:
@@ -231,7 +234,29 @@ def _remove(universe_dir: Path, name: str) -> None:
 
 
 def is_paused(universe_dir: Path) -> bool:
-    return _read(universe_dir, PAUSE, max_bytes=4096) is not None
+    """Whether the center is paused; fails closed for an admitted center.
+
+    An admitted center whose host stub is missing or unreadable (a move or a
+    restore in flight) counts as PAUSED, so its due work is never dispatched
+    on a pause record we cannot see. Only a name the broker does not admit
+    reads a missing stub as not paused.
+    """
+    try:
+        return _read_existing(universe_dir, PAUSE, max_bytes=4096) is not None
+    except OSError as exc:
+        try:
+            admitted = center_admitted(universe_dir)
+        except Exception:  # noqa: BLE001 - an unknowable admission fails closed too
+            logger.exception("admission of %s unknown while its pause state is "
+                             "unreadable; treating it as paused", Path(universe_dir).name)
+            return True
+        if admitted:
+            logger.warning("pause state of admitted center %s unreadable (%s); "
+                           "treating it as paused", Path(universe_dir).name, exc)
+            return True
+        if isinstance(exc, FileNotFoundError):
+            return False
+        raise
 
 
 def set_paused(universe_dir: Path, timestamp: str) -> None:
@@ -239,7 +264,13 @@ def set_paused(universe_dir: Path, timestamp: str) -> None:
 
 
 def clear_paused(universe_dir: Path) -> None:
-    _remove(universe_dir, PAUSE)
+    _ensure_admitted_stub(universe_dir)
+    try:
+        _remove(universe_dir, PAUSE)
+    except FileNotFoundError:
+        if not center_admitted(universe_dir):
+            raise
+        # A restored stub carries no pause: the resume already holds.
 
 
 def worker_heartbeat_name(worker_id: str | None = None) -> str:
@@ -313,6 +344,8 @@ def replace_ledger(universe_dir: Path, chunks) -> None:
 
 def open_ledger_lock(universe_dir: Path) -> int:
     center = center_from_path(universe_dir)
+    # Every host writer restores an admitted center's missing stub first.
+    _ensure_admitted_stub(universe_dir)
     if fs._POSIX:
         with _directory(universe_dir) as directory:
             fd = os.open(LEDGER_LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,

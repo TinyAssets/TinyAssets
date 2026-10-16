@@ -127,6 +127,48 @@ def test_first_contact_uses_only_box_soul(center, monkeypatch):
     assert not home_is_complete(center.parent, center.name)
 
 
+def test_admitted_center_with_missing_stub_counts_as_paused(center, monkeypatch):
+    """A paused center whose stub is briefly gone (move/restore) must not
+    have its due work dispatched; the scheduler fails closed."""
+    import tinyassets.automations as automations
+    from tinyassets.center_platform_files import is_paused, set_paused
+
+    set_paused(center, "now")
+    (center / ".pause").unlink()
+    center.rmdir()
+    assert is_paused(center)
+    monkeypatch.setattr(automations, "due_automations", lambda *a, **k: [
+        (SimpleNamespace(universe_id=center.name), "due")])
+    monkeypatch.setattr(automations, "owed_since", lambda *a: 0)
+    monkeypatch.setattr(automations, "automation_lease_key", lambda _a: "center:agent")
+    consumer = AssignedQueueConsumer(center.parent)
+    monkeypatch.setattr(consumer, "_reap_finished", lambda: (1, set()))
+    monkeypatch.setattr(consumer, "_agent_running_elsewhere", lambda *a: False)
+
+    class Recorder:
+        count = 0
+
+        def submit(self, *args):
+            self.count += 1
+            return Future()
+
+    recorder = Recorder()
+    consumer._executor.shutdown(wait=False)
+    consumer._continuation_executor.shutdown(wait=False)
+    consumer._executor = recorder
+    assert consumer._submit_due_automations([center.name], None)[0] == 0
+    assert recorder.count == 0
+    assert not center.exists()
+
+
+def test_admitted_center_without_stub_records_a_ship_attempt(center):
+    center.rmdir()
+    record_attempt(center, ShipAttempt(ship_attempt_id="after-restore", created_at="t",
+                                       updated_at="t", ship_status="skipped"))
+    assert center.is_dir()
+    assert [a.ship_attempt_id for a in read_attempts(center)] == ["after-restore"]
+
+
 def test_fresh_admitted_center_first_contact_sees_its_box_soul(center, monkeypatch):
     import tinyassets.daemon_server as server
 
@@ -290,6 +332,13 @@ def test_host_helpers_use_caller_base_and_missing_centers_are_empty(center, monk
     set_paused(center, "now")
     assert is_paused(center)
     missing = center.parent / "missing"
+    from tinyassets.broker.owner_identities import CenterUnadmitted
+
+    def refuse(root, *, center):
+        raise CenterUnadmitted(center)
+
+    # The fixture admits every name; only an unadmitted name is "not paused".
+    monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner", refuse)
     assert not is_paused(missing)
     assert read_worker_heartbeats(missing, max_bytes=4096) == {}
     assert read_attempts(missing) == []
