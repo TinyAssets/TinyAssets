@@ -771,6 +771,8 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
         initialize_knowledge_index(db)
         db.execute("INSERT INTO entities(entity_id, universe_id) VALUES (?, ?)",
                    ("root-entity", "home"))
+        db.execute("INSERT INTO facts(fact_id, text, universe_id) VALUES (?, ?, ?)",
+                   ("root-fact", "The tower is bone.", "home"))
     (center / ".agent-workspace").mkdir()
     (center / ".agent-workspace" / "knowledge.db").touch()
     (data / ".layout.json").write_text(json.dumps({
@@ -887,6 +889,20 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
         bundle = KnowledgeBundle(provider, provider.bind("home", account_id="person"))
         entities = SourceRecords(bundle, "knowledge").rows(bundle.snapshot())["entities"]
         assert [row["entity_id"] for row in entities.values()] == ["root-entity"]
+        from tinyassets.agent_loop import served_chat
+        from tinyassets.api import engine_helpers, universe
+
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data))
+        monkeypatch.setattr(served_chat, "configured_box_provider", lambda: (provider, None))
+        monkeypatch.setattr(engine_helpers, "_current_actor", lambda: "person")
+        assert not (data / "home" / "knowledge.db").exists()
+        world = json.loads(universe._action_query_world(universe_id="home"))
+        assert world["source"] == "knowledge.db::facts"
+        assert [row["text"] for row in world["results"]] == ["The tower is bone."]
+        filtered = json.loads(universe._action_query_world(
+            universe_id="home", filter_text="no match",
+        ))
+        assert filtered["results"] == []
     finally:
         provider.close()
     assert (store / "300001" / "home" / "Activities.md").read_text() == (
@@ -957,6 +973,40 @@ def test_guest_copy_omits_persistent_credential_sources(tmp_path):
     assert (guest / "note.txt").read_text() == "owner content"
     assert all(not (guest / name).exists() for name in migration._CREDENTIAL_ENTRIES)
     assert not (guest / ".runtime").exists()
+
+
+def test_host_center_coordination_files_stay_out_of_box(tmp_path, monkeypatch):
+    from tinyassets.boxes.layout import host_center_entry
+
+    source, guest = tmp_path / "center", tmp_path / "guest"
+    source.mkdir()
+    guest.mkdir()
+    host_files = (
+        ".worker_supervisor.json", ".worker_supervisor.assignment.json",
+        "auto_ship_attempts.jsonl", ".auto_ship_attempts.jsonl",
+        ".auto_ship_attempts.jsonl.lock",
+    )
+    for name in host_files:
+        (source / name).write_text("host state")
+        assert host_center_entry(name)
+    (source / "owner-note.txt").write_text("owner state")
+    assert not host_center_entry("owner-note.txt")
+
+    commands = []
+
+    def capture(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(migration.subprocess, "run", capture)
+    migration._copy(source, guest, os.getuid())
+
+    assert len(commands) == 2
+    for command in commands:
+        excludes = {arg.removeprefix("--exclude=/") for arg in command
+                    if arg.startswith("--exclude=/")}
+        assert ".worker_supervisor*.json" in excludes
+        assert set(host_files[2:]) <= excludes
 
 
 @pytest.mark.skipif(

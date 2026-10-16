@@ -3394,19 +3394,30 @@ def _action_query_world(
     }, default=str)
 
 
+def _canonical_world_rows(uid: str, table: str) -> list[dict[str, Any]]:
+    """Read the admitted owner's migrated knowledge records."""
+    from tinyassets.api.engine_helpers import _current_actor
+    from tinyassets.okf.records import SourceRecords
+    from tinyassets.okf.sql_index import reviewed_rows
+
+    source = SourceRecords.bind(owner=_current_actor(), center=uid, source="knowledge")
+    rows = reviewed_rows(source, source.snapshot())
+    return list(rows[table].values())
+
+
 def _query_world_db(
     udir: Path, uid: str, query_type: str, filter_text: str, limit: int,
 ) -> str:
     """Query the SQLite world-state stores.
 
-    World state is split across two DBs today:
+    World state is split across two sources today:
       - story.db       — extracted_facts, character_states, promises
                          (written by the commit pipeline)
-      - knowledge.db   — entities, facts, edges, communities
-                         (written by the KG pipeline)
+      - canonical knowledge records — entities, facts, edges, communities
+                         (migrated from knowledge.db)
 
-    A single `query_type` may live in either DB. We probe known candidate
-    (db, table) pairs in priority order and return the first one that
+    A single `query_type` may live in either source. We probe known candidate
+    (source, table) pairs in priority order and return the first one that
     contains data. This is the source-of-truth routing — previous versions
     of this function pointed `characters -> entities` in story.db, which
     never existed and surfaced to users as "entities table missing". The
@@ -3452,12 +3463,23 @@ def _query_world_db(
     import sqlite3
 
     # Pick the first (db, table) pair that exists. Prefer ones with data.
-    chosen: tuple[str, str] | None = None
-    fallback_empty: tuple[str, str] | None = None
+    chosen: tuple[str, str, list[dict[str, Any]] | None] | None = None
+    fallback_empty: tuple[str, str, list[dict[str, Any]] | None] | None = None
     checked: list[str] = []
     for dbname, table in candidates:
-        db_path = udir / dbname
         checked.append(f"{dbname}::{table}")
+        if dbname == "knowledge.db":
+            # The one-pass cutover removes this host file. The bound box owns
+            # its records; never treat an absent host copy as an empty graph.
+            rows = _canonical_world_rows(uid, table)
+            candidate = (dbname, table, rows)
+            if rows:
+                chosen = candidate
+                break
+            if fallback_empty is None:
+                fallback_empty = candidate
+            continue
+        db_path = udir / dbname
         if not db_path.exists():
             continue
         try:
@@ -3479,10 +3501,10 @@ def _query_world_db(
         except sqlite3.Error:
             continue
         if has_rows:
-            chosen = (dbname, table)
+            chosen = (dbname, table, None)
             break
         if fallback_empty is None:
-            fallback_empty = (dbname, table)
+            fallback_empty = (dbname, table, None)
 
     if chosen is None and fallback_empty is None:
         return json.dumps({
@@ -3496,7 +3518,25 @@ def _query_world_db(
             ),
         })
 
-    dbname, table = chosen or fallback_empty  # type: ignore[misc]
+    dbname, table, canonical_rows = chosen or fallback_empty  # type: ignore[misc]
+    if canonical_rows is not None:
+        if filter_text:
+            needle = filter_text.casefold()
+            canonical_rows = [
+                row for row in canonical_rows
+                if any(needle in str(value).casefold() for value in row.values())
+            ]
+        rows = canonical_rows[:limit]
+        response: dict[str, Any] = {
+            "universe_id": uid,
+            "query_type": query_type,
+            "results": rows,
+            "count": len(rows),
+            "source": f"{dbname}::{table}",
+        }
+        if not rows and chosen is None:
+            response["note"] = f"Table '{table}' has no rows yet."
+        return json.dumps(response, default=str)
     db_path = udir / dbname
 
     try:

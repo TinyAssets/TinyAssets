@@ -9,6 +9,7 @@ under any of them.
 import json
 import os
 from contextlib import contextmanager
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 #: The retired, capability-free daemon.
@@ -45,6 +46,9 @@ HOST_CENTER_ENTRIES = frozenset({
     "activity.log", "status.json", ".runtime_status.json", ".engine_mcp_config.json",
     ".engine_mcp_http_routes.json", ".pause",
     ".provider-authority", ".provider-assignment-admission.lock",
+    ".worker_supervisor*.json", "auto_ship_attempts.jsonl",
+    ".auto_ship_attempts.jsonl",
+    ".auto_ship_attempts.jsonl.lock",
 })
 _SQLITE_COMPANIONS = ("-wal", "-shm", "-journal")
 HOST_CENTER_COPY_EXCLUDES = HOST_CENTER_ENTRIES | frozenset(
@@ -52,6 +56,14 @@ HOST_CENTER_COPY_EXCLUDES = HOST_CENTER_ENTRIES | frozenset(
     for database in HOST_CENTER_ENTRIES if database.endswith(".db")
     for suffix in _SQLITE_COMPANIONS
 )
+
+
+def host_center_entry(name: str) -> bool:
+    """Whether a top-level entry stays in the host command center."""
+    return name in HOST_CENTER_ENTRIES or (
+        "/" not in name and "\\" not in name
+        and fnmatchcase(name, ".worker_supervisor*.json")
+    )
 
 # Only these copied owner entries are retired from the host at cutover. Other
 # entries may still be read or written by platform code through <data>/<center>.
