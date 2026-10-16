@@ -19,6 +19,7 @@ import signal
 import subprocess
 import sys
 import tarfile
+import time
 import uuid
 from pathlib import Path
 
@@ -77,12 +78,16 @@ with sqlite3.connect(data / '.broker/state/owner-identities.db') as db:
         os.chmod(setuid, 0o4750)
         if index == 0:
             (root / '.credential-vault.json').write_text('private credential')
-        if index == 1 and os.environ['FAIL_AFTER_FIRST_OWNER'] == '1':
-            (root / '.credential-vault.json').symlink_to('relative-link')
 
 home = data / '.platform/owners/300001/agent-home'
 home.mkdir(parents=True)
 (home / 'session notes.txt').write_text('agent home')
+
+from tinyassets.daemon_server import set_founder_home
+set_founder_home(data, founder_sub='alice', universe_id='command-center')
+with sqlite3.connect(data / 'command-center/.subscription_state.db') as db:
+    db.execute('CREATE TABLE subscription_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+    db.execute("INSERT INTO subscription_meta VALUES ('tier', 'paid')")
 
 with tarfile.open(backup / os.environ['DATA_ARCHIVE'], 'w:gz') as archive:
     archive.add(data, arcname='_data')
@@ -100,12 +105,13 @@ for name in (os.environ['DATA_ARCHIVE'], os.environ['BOX_ARCHIVE']):
 VERIFY_COMMIT = r'''
 import json, os, sqlite3
 from pathlib import Path
+from tinyassets.sqlite_readonly import readonly_db
 
 data, store = Path('/data'), Path('/box-store')
 marker = json.loads((data / '.layout.json').read_text())
 assert marker['box_layout'] == 'owner-box' and marker['state'] == 'stable'
 assert marker['activity_shape'] == 'v1'
-with sqlite3.connect(data / '.broker/state/owner-identities.db') as db:
+with readonly_db(data / '.broker/state/owner-identities.db') as db:
     records = db.execute('SELECT principal,machine,project_id FROM box_records '
                          'ORDER BY machine').fetchall()
 assert records == [('alice', 300001, 300001), ('bob', 300002, 300002),
@@ -126,7 +132,7 @@ for principal, uid, center in (
             ('sticky', 0o1777), ('setuid-tool', 0o4750)):
         assert (source / relative).stat().st_mode & 0o7777 == expected
         assert (moved / relative).stat().st_mode & 0o7777 == expected
-    with sqlite3.connect(moved / 'state.sqlite') as db:
+    with readonly_db(moved / 'state.sqlite') as db:
         assert db.execute('SELECT name FROM events').fetchone() == (principal,)
 assert (data / '.platform/credential-vaults/command-center/.credential-vault.json'
         ).read_text() == 'private credential'
@@ -138,11 +144,12 @@ print('owner-box marker, three records, SQLite, bytes, links, credentials and ag
 VERIFY_RESTORE = r'''
 import json, sqlite3
 from pathlib import Path
+from tinyassets.sqlite_readonly import readonly_db
 
 data, store = Path('/parent/_data'), Path('/box-store')
 marker = json.loads((data / '.layout.json').read_text())
 assert marker['box_layout'] == 'owner-split' and marker['state'] == 'stable'
-with sqlite3.connect(data / '.broker/state/owner-identities.db') as db:
+with readonly_db(data / '.broker/state/owner-identities.db') as db:
     assert db.execute("SELECT 1 FROM sqlite_master WHERE name='box_records'").fetchone() is None
 assert (data / 'command-center/odd name ü\nline.txt').read_text() == 'owner=alice\n'
 assert not (store / '300001').exists()
@@ -155,19 +162,63 @@ ARCHIVE_PLAN = r'''
 import json
 from pathlib import Path
 from tinyassets.box_layout_migration import _owner_plan
+from tinyassets.sqlite_readonly import readonly_snapshot
 
-print(json.dumps([{'uid': owner.uid, 'centers': list(owner.centers), 'quota': owner.quota}
-                  for owner in _owner_plan(Path('/data'))]))
+with readonly_snapshot():
+    print(json.dumps([{'uid': owner.uid, 'centers': list(owner.centers), 'quota': owner.quota}
+                      for owner in _owner_plan(Path('/data'))]))
+'''
+
+QUIESCE_SHM = r'''
+from pathlib import Path
+
+root = Path('/data')
+for sidecar in root.rglob('*-shm'):
+    assert sidecar.is_file() and not sidecar.is_symlink(), sidecar
+    sidecar.unlink()
+assert not list(root.rglob('*-shm'))
+print('quiescent SQLite volume has no shared-memory sidecars: PASS')
+'''
+
+LIVE_WRITER = r'''
+import sqlite3, time
+from pathlib import Path
+
+connections = []
+for path in (Path('/data/.broker/state/owner-identities.db'),
+             Path('/data/.tinyassets.db'),
+             Path('/data/command-center/.subscription_state.db')):
+    db = sqlite3.connect(path)
+    db.execute('PRAGMA journal_mode=WAL')
+    db.execute('PRAGMA wal_autocheckpoint=0')
+    db.execute('PRAGMA user_version=1')
+    connections.append(db)
+Path('/backup/writer-ready').touch()
+while True:
+    time.sleep(1)
+'''
+
+DATA_DIGEST = r'''
+import hashlib
+from pathlib import Path
+
+root = Path('/data')
+digest = hashlib.sha256()
+for path in sorted(item for item in root.rglob('*') if item.is_file()):
+    digest.update(str(path.relative_to(root)).encode())
+    digest.update(hashlib.sha256(path.read_bytes()).digest())
+print(digest.hexdigest())
 '''
 
 QUOTA_READBACK = r'''
 import json, sqlite3, sys
 from pathlib import Path
 from deploy.box_project_readback import verify_owner, verify_tree
+from tinyassets.sqlite_readonly import readonly_db
 
 store = Path('/box-store')
 if sys.argv[1] == 'set':
-    with sqlite3.connect('/data/.broker/state/owner-identities.db') as db:
+    with readonly_db(Path('/data/.broker/state/owner-identities.db')) as db:
         rows = db.execute('SELECT machine,project_id,bhard_bytes FROM box_records').fetchall()
     assert rows, 'no owner box records'
     for uid, project, limit in rows:
@@ -192,14 +243,16 @@ ARCHIVE_REPORT = r'''
 import json, os, sqlite3, subprocess, sys
 from pathlib import Path
 from tinyassets.box_layout_migration import _owner_plan
+from tinyassets.sqlite_readonly import readonly_db, readonly_snapshot
 
 data, store = Path('/data'), Path('/box-store')
 mode = sys.argv[1]
-plan = _owner_plan(data)
+with readonly_snapshot():
+    plan = _owner_plan(data)
 success = True
 if mode == 'commit':
     marker = json.loads((data / '.layout.json').read_text())
-    with sqlite3.connect(data / '.broker/state/owner-identities.db') as db:
+    with readonly_db(data / '.broker/state/owner-identities.db') as db:
         records = {row[0]: row[1:] for row in db.execute(
             'SELECT principal, machine, project_id FROM box_records')}
     if (marker.get('box_layout') != 'owner-box' or marker.get('state') != 'stable'
@@ -251,29 +304,33 @@ if len(records) != len(plan) and mode == 'commit':
 raise SystemExit(0 if success else 1)
 '''
 
-ARCHIVE_FAILURE = r'''
-import os, sys
+COPY_FAILURE = r'''
+import shutil, sys
 from pathlib import Path
 
-data = Path('/data')
-uid, center = sys.argv[1:]
-source = data / center / '.oauth-refresh'
-if source.exists() or source.is_symlink():
-    saved = source.with_name(source.name + '.c6-rehearsal-original')
-    if saved.exists() or saved.is_symlink():
-        raise SystemExit(f'failure fixture save path already exists: {saved}')
-    source.rename(saved)
-source.symlink_to('rehearsal-invalid-credential')
-print(f'failure fixture path={source}')
+center = sys.argv[1]
+real = shutil.which('rsync')
+assert real and not real.startswith('/backup/'), real
+wrapper = Path('/backup/rsync')
+wrapper.write_text('#!/bin/sh\n'
+                   'for arg in "$@"; do\n'
+                   f'  if [ "$arg" = "/data/{center}/" ]; then\n'
+                   '    echo "induced copy failure after migration marker" >&2\n'
+                   '    exit 1\n'
+                   '  fi\n'
+                   'done\n'
+                   f'exec {real} "$@"\n')
+wrapper.chmod(0o755)
 '''
 
 ARCHIVE_RESTORE_CHECK = r'''
 import json, sqlite3, sys
 from pathlib import Path
+from tinyassets.sqlite_readonly import readonly_db
 
 data, store = Path('/parent/_data'), Path('/box-store')
 marker = json.loads((data / '.layout.json').read_text())
-with sqlite3.connect(data / '.broker/state/owner-identities.db') as db:
+with readonly_db(data / '.broker/state/owner-identities.db') as db:
     box_records = db.execute("SELECT 1 FROM sqlite_master WHERE name='box_records'").fetchone()
 retained = [path for path in store.glob('.tinyassets-box-restore-old.*/[0-9]*')
             if path.is_dir()]
@@ -297,6 +354,21 @@ def run(*argv: str, check: bool = True) -> subprocess.CompletedProcess[str]:
 
 def docker(*argv: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     return run('docker', *argv, check=check)
+
+
+def preflight_args(data_volume: str, store_path: str, device: str, image: str) -> tuple[str, ...]:
+    """The exact deploy preflight container posture, against disposable volumes."""
+    return ('--rm', '--cap-drop', 'ALL', '--user', '0',
+            '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SYS_ADMIN',
+            '--security-opt', 'no-new-privileges=true', '--network', 'none',
+            '--memory=2g', '--memory-swap=2g',
+            '--tmpfs', '/tmp:rw,size=512m,mode=1777',
+            '-v', f'{data_volume}:/data:ro',
+            '--device', f'{device}:{device}:r',
+            '--mount', f'type=bind,src={store_path},dst=/box-store,readonly',
+            '--entrypoint', 'python', image, '-B', '-m',
+            'tinyassets.box_layout_migration', 'preflight',
+            '/data', '--store', '/box-store')
 
 
 def volume_path(name: str) -> str:
@@ -341,7 +413,8 @@ def validate_archive(path: Path) -> int:
     return total
 
 
-def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int) -> None:
+def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int,
+                      leftover_owner_tree: bool = False) -> None:
     prefix = f'ta-c6-{uuid.uuid4().hex[:12]}'
     names = {kind: f'{prefix}-{kind}' for kind in ('image', 'store', 'parent', 'data', 'backup')}
     created: list[str] = []
@@ -405,6 +478,10 @@ def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int
                            DATA_ARCHIVE, BOX_ARCHIVE, check=False)
         if staged.returncode:
             raise RuntimeError(f'archive staging: FAIL (rc={staged.returncode})')
+        quiesced = container('--rm', '--user', '0', '--network', 'none',
+                             '-v', f"{names['data']}:/data", '--entrypoint',
+                             'python', image, '-c', QUIESCE_SHM)
+        print('[rehearsal] ' + quiesced.stdout.strip())
         probe = container('--rm', '--user', '0', '--network', 'none',
                           '-v', f"{names['data']}:/data:ro", '--entrypoint', 'python', image,
                           '-B', '-m', 'tinyassets.box_layout_migration', 'check', '/data',
@@ -427,13 +504,30 @@ def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int
                 target = next((owner for owner in owners if owner['centers']), None)
             if target is None:
                 raise RuntimeError('archive has no admitted centers for a failed-move fixture')
-            center = target['centers'][0]
+
+        if leftover_owner_tree:
+            container('--rm', '--user', '0',
+                      '--mount', f'type=bind,src={store_path},dst=/box-store',
+                      '--entrypoint', 'mkdir', image, '-p',
+                      f'/box-store/{owners[0]["uid"]}')
+        preflight = container(*preflight_args(names['data'], store_path, device, image),
+                              check=False)
+        if leftover_owner_tree:
+            assert preflight.returncode == 3 and 'box store must be empty' in preflight.stderr, (
+                preflight.stdout + preflight.stderr)
+            print('[rehearsal] leftover owner tree: preflight refused before stop/apply: PASS')
+            return
+        if preflight.returncode:
+            raise RuntimeError(f'archive preflight: FAIL ({preflight.stderr})')
+        if fail:
             injected = container('--rm', '--user', '0', '--network', 'none',
-                                 '-v', f"{names['data']}:/data", '--entrypoint', 'python',
-                                 image, '-c', ARCHIVE_FAILURE, str(target['uid']), center,
-                                 check=False)
+                                 '-v', f"{names['backup']}:/backup", '--entrypoint',
+                                 'python', image, '-c', COPY_FAILURE,
+                                 target['centers'][0], check=False)
             if injected.returncode:
-                raise RuntimeError(f'failure fixture path=/data/{center}/.oauth-refresh: FAIL')
+                raise RuntimeError('copy failure fixture: FAIL')
+        failure_env = (['-e', 'PATH=/backup:/opt/venv/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin']
+                       if fail else [])
 
         # Exactly deploy_fail_safe.sh:box_migration_container apply, with its
         # block-device mapping and the same resource/security posture.
@@ -441,7 +535,9 @@ def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int
                           '--cap-add', 'CHOWN', '--cap-add', 'FOWNER', '--cap-add', 'FSETID',
                           '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SYS_ADMIN',
                           '--security-opt', 'no-new-privileges=true', '--network', 'none',
-                          '--memory=1g', '--memory-swap=1g',
+                          '--memory=2g', '--memory-swap=2g',
+                          '--tmpfs', '/tmp:rw,size=512m,mode=1777',
+                          *failure_env,
                           '-v', f"{names['data']}:/data", '-v', f"{names['backup']}:/backup:ro",
                           '--device', f'{device}:{device}:r',
                           '--mount', f'type=bind,src={store_path},dst=/box-store',
@@ -465,10 +561,9 @@ def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int
         if apply.returncode != expected:
             raise RuntimeError(f'apply: FAIL (rc={apply.returncode}, expected={expected})')
         if fail:
-            fixture_error = f'non-regular credential source: /data/{center}/.oauth-refresh'
-            if fixture_error not in apply.stderr:
+            if 'induced copy failure after migration marker' not in apply.stderr:
                 raise RuntimeError(
-                    'apply: FAIL (refusal did not reach the injected credential path)')
+                    'apply: FAIL (refusal did not reach the injected copy command)')
         if not fail and report.returncode:
             raise RuntimeError(f'owner commit verification: FAIL (rc={report.returncode})')
         if not fail:
@@ -567,11 +662,13 @@ bash /rehearsal-deploy/backup-restore.sh
             raise RuntimeError(f'cleanup: FAIL ({", ".join(cleanup_errors)})')
 
 
-def rehearsal(image: str, *, fail: bool) -> None:
+def rehearsal(image: str, *, fail: bool, leftover_owner_tree: bool = False) -> None:
     prefix = f"ta-c6-{uuid.uuid4().hex[:12]}"
     names = {kind: f"{prefix}-{kind}" for kind in ('image', 'store', 'parent', 'data', 'backup')}
     created: list[str] = []
     mounted = False
+    writer_name = f'{prefix}-writer'
+    writer_started = False
     try:
         for kind in ('image', 'store', 'parent', 'backup'):
             docker('volume', 'create', names[kind])
@@ -601,11 +698,38 @@ def rehearsal(image: str, *, fail: bool) -> None:
         assert device.startswith('/dev/') and fstype == 'xfs' and 'prjquota' in options, source
         print(f'[rehearsal] {"failed-move restore" if fail else "commit"}: {source}')
 
-        fixture_env = ['-e', f'DATA_ARCHIVE={DATA_ARCHIVE}', '-e', f'BOX_ARCHIVE={BOX_ARCHIVE}',
-                       '-e', f'FAIL_AFTER_FIRST_OWNER={int(fail)}']
+        fixture_env = ['-e', f'DATA_ARCHIVE={DATA_ARCHIVE}', '-e', f'BOX_ARCHIVE={BOX_ARCHIVE}']
         docker('run', '--rm', '--user', '0', '--network', 'none',
                '-v', f"{names['data']}:/data", '-v', f"{names['backup']}:/backup",
                *fixture_env, '--entrypoint', 'python', image, '-c', FIXTURE)
+        docker('run', '-d', '--rm', '--name', writer_name, '--user', '0',
+               '--network', 'none', '-v', f"{names['data']}:/data",
+               '-v', f"{names['backup']}:/backup", '--entrypoint', 'python',
+               image, '-c', LIVE_WRITER)
+        writer_started = True
+        for _ in range(50):
+            ready = docker('exec', writer_name, 'test', '-f', '/backup/writer-ready',
+                           check=False)
+            if ready.returncode == 0:
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError('live WAL writer failed to become ready')
+        digest_args = ('run', '--rm', '--user', '0', '--network', 'none',
+                       '-v', f"{names['data']}:/data:ro", '--entrypoint',
+                       'python', image, '-c', DATA_DIGEST)
+        before = docker(*digest_args).stdout.strip()
+        live = docker('run', *preflight_args(names['data'], store_path, device, image),
+                      check=False)
+        assert live.returncode == 0, live.stdout + live.stderr
+        assert docker(*digest_args).stdout.strip() == before
+        print('[rehearsal] live WAL writer, read-only preflight, unchanged data: PASS')
+        docker('stop', writer_name)
+        writer_started = False
+        quiesced = docker('run', '--rm', '--user', '0', '--network', 'none',
+                          '-v', f"{names['data']}:/data", '--entrypoint',
+                          'python', image, '-c', QUIESCE_SHM)
+        print('[rehearsal] ' + quiesced.stdout.strip())
         probe = docker('run', '--rm', '--user', '0', '--network', 'none',
                        '-v', f"{names['data']}:/data:ro", '--entrypoint', 'python', image,
                        '-B', '-m', 'tinyassets.box_layout_migration', 'check', '/data',
@@ -616,12 +740,35 @@ def rehearsal(image: str, *, fail: bool) -> None:
                          image, '-c', ARCHIVE_PLAN)
         owners = json.loads(planned.stdout)
 
+        if leftover_owner_tree:
+            docker('run', '--rm', '--user', '0',
+                   '--mount', f'type=bind,src={store_path},dst=/box-store',
+                   '--entrypoint', 'mkdir', image, '-p', '/box-store/300001')
+        before = docker(*digest_args).stdout.strip()
+        preflight = docker('run', *preflight_args(names['data'], store_path, device, image),
+                           check=False)
+        assert docker(*digest_args).stdout.strip() == before
+        if leftover_owner_tree:
+            assert preflight.returncode == 3 and 'box store must be empty' in preflight.stderr, (
+                preflight.stdout + preflight.stderr)
+            print('[rehearsal] leftover owner tree: preflight refused before stop/apply: PASS')
+            return
+        assert preflight.returncode == 0, preflight.stdout + preflight.stderr
+        if fail:
+            docker('run', '--rm', '--user', '0', '--network', 'none',
+                   '-v', f"{names['backup']}:/backup", '--entrypoint', 'python',
+                   image, '-c', COPY_FAILURE, 'research')
+        failure_env = (['-e', 'PATH=/backup:/opt/venv/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin']
+                       if fail else [])
+
         # Keep this argv in lockstep with deploy_fail_safe.sh:box_migration_container.
         apply = docker('run', '--rm', '--cap-drop', 'ALL', '--user', '0',
                        '--cap-add', 'CHOWN', '--cap-add', 'FOWNER', '--cap-add', 'FSETID',
                        '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SYS_ADMIN',
                        '--security-opt', 'no-new-privileges=true', '--network', 'none',
-                       '--memory=1g', '--memory-swap=1g',
+                       '--memory=2g', '--memory-swap=2g',
+                       '--tmpfs', '/tmp:rw,size=512m,mode=1777',
+                       *failure_env,
                        '-v', f"{names['data']}:/data",
                        '-v', f"{names['backup']}:/backup:ro",
                        '--device', f'{device}:{device}:r',
@@ -631,8 +778,9 @@ def rehearsal(image: str, *, fail: bool) -> None:
                        '--store', '/box-store', '--backup', f'/backup/{DATA_ARCHIVE}',
                        '--box-backup', f'/backup/{BOX_ARCHIVE}', check=False)
         if fail:
-            assert apply.returncode == 3 and 'non-regular credential source' in apply.stderr, (
-                apply.stdout + apply.stderr)
+            assert (apply.returncode == 3
+                    and 'induced copy failure after migration marker' in apply.stderr), (
+                        apply.stdout + apply.stderr)
             print('[rehearsal] induced failure after first owner: ' + apply.stderr.strip())
             shim = r'''set -eu
 mkdir -p /tmp/c6-bin
@@ -751,6 +899,8 @@ bash /rehearsal-deploy/backup-restore.sh
                              '--entrypoint', 'python', image, '-c', QUOTA_READBACK, 'clear')
             print('[rehearsal] ' + cleared.stdout.strip())
     finally:
+        if writer_started:
+            docker('rm', '-f', writer_name, check=False)
         if mounted:
             unmount = docker('run', '--rm', '--privileged', '--pid=host', '--user', '0',
                              '--entrypoint', 'nsenter', image, '-t', '1', '-m', 'umount',
@@ -767,6 +917,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--image', default=IMAGE)
     parser.add_argument('--no-build', action='store_true')
+    parser.add_argument('--leftover-owner-tree', action='store_true',
+                        help='seed a partial owner tree and prove read-only preflight refusal')
     parser.add_argument('--archive', type=Path,
                         help='absolute path to a tinyassets-data-*.tar.gz full backup')
     args = parser.parse_args()
@@ -784,13 +936,16 @@ def main() -> None:
         if build.returncode:
             raise RuntimeError(f'daemon image build: FAIL (rc={build.returncode})')
     if args.archive is None:
-        rehearsal(args.image, fail=False)
-        rehearsal(args.image, fail=True)
+        rehearsal(args.image, fail=False, leftover_owner_tree=args.leftover_owner_tree)
+        if not args.leftover_owner_tree:
+            rehearsal(args.image, fail=True)
     else:
         assert archive_bytes is not None
         store_bytes = max(1024**3, int(archive_bytes * 1.25) + 512 * 1024**2)
-        archive_rehearsal(args.image, args.archive, fail=False, store_bytes=store_bytes)
-        archive_rehearsal(args.image, args.archive, fail=True, store_bytes=store_bytes)
+        archive_rehearsal(args.image, args.archive, fail=False, store_bytes=store_bytes,
+                          leftover_owner_tree=args.leftover_owner_tree)
+        if not args.leftover_owner_tree:
+            archive_rehearsal(args.image, args.archive, fail=True, store_bytes=store_bytes)
 
 
 def _terminate(_signum: int, _frame: object) -> None:

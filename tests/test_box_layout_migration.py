@@ -1,5 +1,6 @@
 """The owner-box move's irreversible boundary and paired backup proof."""
 
+import errno
 import hashlib
 import json
 import os
@@ -8,11 +9,13 @@ import socket
 import sqlite3
 import stat
 import subprocess
+import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
 
 from tinyassets import box_layout_migration as migration
+from tinyassets.usage_policy import AccountType, limits_for
 
 
 def _archive(path: Path, data: bytes) -> None:
@@ -66,6 +69,236 @@ def _cutover_root(tmp_path: Path) -> tuple[Path, Path]:
     store.mkdir()
     sqlite3.connect(data / ".broker" / "state" / "owner-identities.db").close()
     return data, store
+
+
+@pytest.mark.parametrize("refusal", ["store", "mount", "inode", "quota"])
+def test_read_only_preflight_refuses_without_changing_the_layout(tmp_path, monkeypatch, refusal):
+    from tinyassets import activity_shape_migration as activity_shape
+
+    data, store = _cutover_root(tmp_path)
+    original = (data / ".layout.json").read_bytes()
+    monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(migration, "_owner_plan", lambda _, **_kwargs: [
+        migration.OwnerMove("alice", 300001, ("c1",), 1024**3)])
+    monkeypatch.setattr(activity_shape, "_pending", lambda _: [])
+    monkeypatch.setattr(migration, "_mounted", lambda _: None)
+    monkeypatch.setattr(migration, "_owner_inode_preflight", lambda *_: None)
+    monkeypatch.setattr(migration, "_xfs_quota", lambda *_: "project report")
+    if refusal == "store":
+        (store / "300001").mkdir()
+        reason = "box store must be empty"
+    elif refusal == "mount":
+        monkeypatch.setattr(migration, "_mounted", lambda _: (_ for _ in ()).throw(
+            RuntimeError("XFS project quota missing")))
+        reason = "XFS project quota missing"
+    elif refusal == "inode":
+        monkeypatch.setattr(migration, "_owner_inode_preflight", lambda *_: (
+            _ for _ in ()).throw(RuntimeError("unsupported owner inode")))
+        reason = "unsupported owner inode"
+    else:
+        monkeypatch.setattr(migration, "_xfs_quota", lambda *_: "")
+        reason = "project report unavailable"
+    with pytest.raises(RuntimeError, match=reason):
+        migration.preflight(data, store)
+    assert (data / ".layout.json").read_bytes() == original
+    assert not (store / "300002").exists()
+
+
+def test_read_only_preflight_accepts_clean_owner_split(tmp_path, monkeypatch):
+    from tinyassets import activity_shape_migration as activity_shape
+
+    data, store = _cutover_root(tmp_path)
+    monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(migration, "_mounted", lambda _: None)
+    monkeypatch.setattr(migration, "_owner_plan", lambda _, **_kwargs: [
+        migration.OwnerMove("alice", 300001, ("c1",), 1024**3)])
+    monkeypatch.setattr(activity_shape, "_pending", lambda _: [])
+    monkeypatch.setattr(migration, "_owner_inode_preflight", lambda *_: None)
+    monkeypatch.setattr(migration, "_xfs_quota", lambda *_: "project report")
+    migration.preflight(data, store)
+    assert not list(store.iterdir())
+
+
+@pytest.mark.skipif(os.name != "posix", reason="read-only WAL exercise runs on Linux")
+@pytest.mark.parametrize("live_writer", [False, True])
+def test_preflight_reads_wal_without_writing_data(tmp_path, monkeypatch, live_writer):
+    data, store = _cutover_root(tmp_path)
+    identity = data / ".broker/state/owner-identities.db"
+    author = data / ".tinyassets.db"
+    tier = data / "c1/.subscription_state.db"
+    statements = {
+        identity: (
+            "CREATE TABLE owner_identities (principal TEXT, machine_id INTEGER);"
+            "CREATE TABLE center_admissions (generation INTEGER, event TEXT, "
+            "principal TEXT, center TEXT, machine INTEGER);"
+            "INSERT INTO owner_identities VALUES ('alice', 300001);"
+            "INSERT INTO center_admissions VALUES (1, 'admit', 'alice', 'c1', 300001);"
+        ),
+        author: (
+            "CREATE TABLE founder_home (founder_sub TEXT, universe_id TEXT);"
+            "CREATE TABLE branch_definitions (branch_def_id TEXT);"
+            "INSERT INTO founder_home VALUES ('alice', 'c1');"
+        ),
+        tier: (
+            "CREATE TABLE subscription_meta (key TEXT, value TEXT);"
+            "INSERT INTO subscription_meta VALUES ('tier', 'paid');"
+        ),
+    }
+    writer = None
+    try:
+        if live_writer:
+            child = (
+                "import sqlite3, sys; connections=[]; "
+                "\nfor index in range(1, len(sys.argv), 2):\n"
+                " db=sqlite3.connect(sys.argv[index]); "
+                "db.execute('PRAGMA journal_mode=WAL'); "
+                "db.execute('PRAGMA wal_autocheckpoint=0'); "
+                "db.executescript(sys.argv[index+1]); connections.append(db)\n"
+                "print('ready', flush=True); sys.stdin.readline()"
+            )
+            arguments = [item for path, sql in statements.items() for item in (str(path), sql)]
+            writer = subprocess.Popen(  # noqa: S603 -- isolated local SQLite fixture
+                [sys.executable, "-u", "-c", child, *arguments],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True,
+            )
+            assert writer.stdout is not None
+            assert writer.stdout.readline() == "ready\n"
+            for path in statements:
+                assert path.with_name(path.name + "-shm").is_file()
+        else:
+            for path, sql in statements.items():
+                # Abrupt exit leaves committed WAL frames; remove the stale index
+                # as on a quiescent archive restored without its -shm sidecar.
+                child = (
+                    "import os, sqlite3, sys; "
+                    "db=sqlite3.connect(sys.argv[1]); "
+                    "db.execute('PRAGMA journal_mode=WAL'); "
+                    "db.execute('PRAGMA wal_autocheckpoint=0'); "
+                    "db.executescript(sys.argv[2]); os._exit(0)"
+                )
+                subprocess.run([sys.executable, "-c", child, str(path), sql], check=True)
+                path.with_name(path.name + "-shm").unlink()
+                assert path.with_name(path.name + "-wal").is_file()
+        original = {p.relative_to(data): p.read_bytes() for p in data.rglob("*") if p.is_file()}
+        modes = {p: stat.S_IMODE(p.stat().st_mode) for p in (data, *data.rglob("*"))}
+        for path in modes:
+            path.chmod(0o444 if path.is_file() else 0o555)
+        real_lstat = Path.lstat
+
+        def owner_lstat(path):
+            info = real_lstat(path)
+            if path == data / "c1":
+                return os.stat_result((
+                    info.st_mode, info.st_ino, info.st_dev, info.st_nlink,
+                    1001, 300001, info.st_size, info.st_atime, info.st_mtime, info.st_ctime,
+                ))
+            return info
+
+        monkeypatch.setattr(Path, "lstat", owner_lstat)
+        monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
+        monkeypatch.setattr(migration, "_mounted", lambda _: None)
+        monkeypatch.setattr(migration, "_owner_inode_preflight", lambda *_: None)
+        monkeypatch.setattr(migration, "_xfs_quota", lambda *_: "project report")
+        plan = migration._owner_plan(data)
+        assert plan[0].quota == limits_for(AccountType.SUBSCRIPTION).storage_bytes
+        migration.preflight(data, store)
+        after = {p.relative_to(data): p.read_bytes() for p in data.rglob("*") if p.is_file()}
+        assert after == original
+    finally:
+        if "modes" in locals():
+            for path, mode in modes.items():
+                path.chmod(mode)
+        if writer is not None:
+            writer.communicate(input="\n", timeout=10)
+
+
+def test_preflight_refuses_unreadable_founder_home(tmp_path):
+    data, _ = _cutover_root(tmp_path)
+    from tinyassets.sqlite_readonly import readonly_db
+    from tinyassets.universe_owner import account_type_of
+
+    with pytest.raises(FileNotFoundError):
+        account_type_of(data, "alice", db_reader=readonly_db)
+
+
+def test_apply_refuses_unreadable_founder_home_before_any_write(tmp_path, monkeypatch):
+    data, store = _cutover_root(tmp_path)
+    _identities(data / ".broker/state/owner-identities.db", "alice", 300001, "c1")
+    marker = (data / ".layout.json").read_bytes()
+    real_lstat = Path.lstat
+
+    def owner_lstat(path):
+        info = real_lstat(path)
+        if path == data / "c1":
+            return os.stat_result((
+                info.st_mode, info.st_ino, info.st_dev, info.st_nlink,
+                1001, 300001, info.st_size, info.st_atime, info.st_mtime, info.st_ctime,
+            ))
+        return info
+
+    monkeypatch.setattr(Path, "lstat", owner_lstat)
+    monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(migration, "_verified_pair", lambda *args: None)
+    monkeypatch.setattr(migration, "_mounted", lambda *args: None)
+    with pytest.raises(FileNotFoundError, match=r"\.tinyassets\.db"):
+        migration.apply(data, store, tmp_path / "snapshot", tmp_path / "boxes")
+    assert (data / ".layout.json").read_bytes() == marker
+    assert not list(store.iterdir())
+    assert not (data / ".boxhost").exists()
+    with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
+        assert db.execute(
+            "SELECT name FROM sqlite_master WHERE name='box_records'"
+        ).fetchone() is None
+
+
+def test_readonly_snapshot_releases_each_copy_and_refuses_rollback_journal(
+    tmp_path, monkeypatch,
+):
+    from tinyassets import sqlite_readonly
+
+    database = tmp_path / "state.db"
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE records (value TEXT)")
+        db.execute("INSERT INTO records VALUES ('kept')")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    temporary_directory = sqlite_readonly.tempfile.TemporaryDirectory
+    monkeypatch.setattr(
+        sqlite_readonly.tempfile, "TemporaryDirectory",
+        lambda **kwargs: temporary_directory(dir=scratch, **kwargs),
+    )
+    with sqlite_readonly.readonly_snapshot():
+        with sqlite_readonly.readonly_db(database) as db:
+            assert db.execute("SELECT value FROM records").fetchone() == ("kept",)
+            assert len(list(scratch.iterdir())) == 1
+        assert not list(scratch.iterdir())
+        with sqlite_readonly.readonly_db(database) as db:
+            assert db.execute("SELECT COUNT(*) FROM records").fetchone() == (1,)
+        assert not list(scratch.iterdir())
+
+    journal = database.with_name(database.name + "-journal")
+    journal.write_bytes(b"hot rollback journal")
+    with pytest.raises(RuntimeError, match="rollback journal present"):
+        with sqlite_readonly.readonly_db(database):
+            pass
+    assert not list(scratch.iterdir())
+
+    journal.unlink()
+    original_open = Path.open
+
+    def full_tmpfs(path, mode="r", *args, **kwargs):
+        if mode == "wb" and path.parent.parent == scratch:
+            raise OSError(errno.ENOSPC, "tmpfs full")
+        return original_open(path, mode, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", full_tmpfs)
+        with pytest.raises(OSError) as error:
+            with sqlite_readonly.readonly_db(database):
+                pass
+    assert error.value.errno == errno.ENOSPC
+    assert not list(scratch.iterdir())
 
 
 def test_cross_owner_inode_refuses_before_marker_or_destination_write(tmp_path, monkeypatch):
@@ -141,7 +374,7 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
     )
     monkeypatch.setattr(migration, "_xfs_quota", lambda _store, command:
                         f"Setting up project {command.rsplit(' ', 1)[-1]} "
-                        if command.startswith("project ") else "")
+                        if command.startswith("project ") else "project report")
     monkeypatch.setattr(migration, "verify_tree", lambda *args: None)
     monkeypatch.setattr(migration, "verify_owner", lambda *args: None)
 
@@ -246,6 +479,8 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
     _identities(
         data / ".broker" / "state" / "owner-identities.db", "person", 300001, "home",
     )
+    with sqlite3.connect(data / ".tinyassets.db") as db:
+        db.execute("CREATE TABLE founder_home (founder_sub TEXT, universe_id TEXT)")
     assert pending(data) == 0
 
     code = migration.check(data)
@@ -314,7 +549,7 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
     monkeypatch.setattr(migration.subprocess, "run", run)
     monkeypatch.setattr(migration, "_xfs_quota", lambda _store, command:
                         f"Setting up project {command.rsplit(' ', 1)[-1]} "
-                        if command.startswith("project ") else "")
+                        if command.startswith("project ") else "project report")
     monkeypatch.setattr(migration, "verify_tree", lambda *args: None)
     monkeypatch.setattr(migration, "verify_owner", lambda *args: None)
     from tinyassets import activity_shape_migration as activity_shape

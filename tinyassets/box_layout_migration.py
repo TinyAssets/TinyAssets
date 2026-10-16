@@ -23,6 +23,7 @@ from pathlib import Path, PurePosixPath
 from deploy.box_project_readback import verify_owner, verify_tree
 from tinyassets import storage_layout
 from tinyassets.broker.owner_identities import OWNER_ID_FIRST, OWNER_ID_LAST
+from tinyassets.sqlite_readonly import readonly_db, readonly_snapshot
 from tinyassets.universe_owner import account_type_of
 from tinyassets.usage_policy import limits_for
 
@@ -94,8 +95,7 @@ def layout_census(data: Path) -> dict:
         identity_error = "identity database unreadable"
     elif present:
         try:
-            uri = identity_db.resolve().as_uri() + "?mode=ro"
-            with sqlite3.connect(uri, uri=True) as db:
+            with readonly_db(identity_db) as db:
                 row = db.execute("SELECT COUNT(*) FROM owner_identities").fetchone()
             counts["owner-split"]["admitted_owners"] = int(row[0]) if row else 0
         except sqlite3.Error as exc:
@@ -219,7 +219,7 @@ def _verified_pair(data_backup: Path, box_backup: Path) -> None:
 
 def _owner_plan(data: Path) -> list[OwnerMove]:
     identity_db = data / ".broker" / "state" / "owner-identities.db"
-    with sqlite3.connect(f"file:{identity_db}?mode=ro", uri=True) as db:
+    with readonly_db(identity_db) as db:
         identities = dict(db.execute(
             "SELECT principal, machine_id FROM owner_identities"
         ))
@@ -259,7 +259,8 @@ def _owner_plan(data: Path) -> list[OwnerMove]:
             if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 1001
                     or info.st_gid != uid):
                 raise RuntimeError(f"noncanonical owner center {center}")
-        quota = int(limits_for(account_type_of(data, principal)).storage_bytes)
+        account = account_type_of(data, principal, db_reader=readonly_db)
+        quota = int(limits_for(account).storage_bytes)
         quota = (quota // 1024) * 1024
         if quota <= 0:
             raise RuntimeError("owner quota is not positive")
@@ -281,7 +282,7 @@ def _boxed_activity_roots(data: Path, store: Path) -> tuple[dict[str, Path], dic
     from tinyassets.activity_shape_migration import _centers, _pending
 
     identity_db = data / ".broker" / "state" / "owner-identities.db"
-    with sqlite3.connect(f"{identity_db.resolve().as_uri()}?mode=ro", uri=True) as db:
+    with readonly_db(identity_db) as db:
         records = dict(db.execute("SELECT principal, machine FROM box_records"))
     centers = _centers(data)
     by_owner: dict[str, list[str]] = {}
@@ -415,10 +416,7 @@ def _copy(source: Path, target: Path, uid: int, *, extra_excludes=()) -> None:
             f"rsync verification differs for {source}: {result.stdout.strip()[:2000]}")
 
 
-def _copy_credentials(source: Path, target: Path) -> None:
-    """Copy only recognized credential artifacts into platform custody."""
-    from tinyassets.boxes.layout import BROKER_READ_GID
-
+def _check_credential_sources(source: Path) -> None:
     for name in _CREDENTIAL_ENTRIES:
         entry = source / name
         if not entry.exists() and not entry.is_symlink():
@@ -431,6 +429,13 @@ def _copy_credentials(source: Path, target: Path) -> None:
         info = entry.lstat()
         if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
             raise RuntimeError(f"non-regular credential source: {entry}")
+
+
+def _copy_credentials(source: Path, target: Path) -> None:
+    """Copy only recognized credential artifacts into platform custody."""
+    from tinyassets.boxes.layout import BROKER_READ_GID
+
+    _check_credential_sources(source)
     target.mkdir(mode=0o710)
     os.chown(target, 1001, BROKER_READ_GID)
     filters = [f"--include=/{name}" for name in _CREDENTIAL_ENTRIES]
@@ -460,24 +465,83 @@ def _xfs_quota(store: Path, command: str) -> str:
     return result.stdout
 
 
+def _owner_move_preconditions(
+    data: Path, store: Path, marker: dict,
+) -> list[OwnerMove] | None:
+    """Read-only checks shared by the live preflight and locked apply."""
+    _mounted(store)
+    if marker.get("box_layout") == "owner-box":
+        from tinyassets.activity_shape_migration import _pending
+
+        if not _pending(data):
+            raise RuntimeError("owner-box has no pending activity conversion")
+        _boxed_activity_roots(data, store)
+        return None
+    if marker.get("box_layout", "owner-split") != "owner-split":
+        raise RuntimeError("one-shot box migration requires owner-split")
+    plan = _owner_plan(data)
+    from tinyassets.activity_shape_migration import _pending
+
+    admitted_centers = {center for owner in plan for center in owner.centers}
+    if set(_pending(data)) - admitted_centers:
+        raise RuntimeError("activity center has no admitted owner")
+    _owner_inode_preflight(data, plan)
+    for owner in plan:
+        for center in owner.centers:
+            _check_credential_sources(data / center)
+    if any(entry.name != "lost+found" for entry in store.iterdir()):
+        raise RuntimeError("box store must be empty before the one-shot move")
+    custody_root = data / ".platform" / "credential-vaults"
+    if custody_root.exists() or custody_root.is_symlink():
+        raise RuntimeError("private credential custody already exists")
+    custody_parent = custody_root.parent
+    if custody_parent.is_symlink() or (custody_parent.exists() and not custody_parent.is_dir()):
+        raise RuntimeError("platform credential parent is invalid")
+    journal = data / ".boxhost"
+    if journal.exists() or journal.is_symlink():
+        raise RuntimeError("boxhost journal already exists")
+    identity_db = data / ".broker" / "state" / "owner-identities.db"
+    with readonly_db(identity_db) as db:
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='box_records'").fetchone():
+            raise RuntimeError("box records already exist")
+    if not _xfs_quota(store, "report -p -n").strip():
+        raise RuntimeError("xfs_quota project report unavailable")
+    return plan
+
+
+def preflight(data: Path, store: Path) -> None:
+    if os.geteuid() != 0:
+        raise PermissionError("box layout preflight requires the one-shot root container")
+    lock = _open_layout_lock(data, os.O_RDONLY)
+    os.close(lock)
+    with readonly_snapshot():
+        _owner_move_preconditions(data, store, _marker(data))
+
+
+def _open_layout_lock(data: Path, access: int) -> int:
+    fd = os.open(data / storage_layout.LOCK, access | os.O_NOFOLLOW)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise RuntimeError("owner layout lock is not a regular file")
+    return fd
+
+
 def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
     import fcntl
 
     if os.geteuid() != 0:
         raise PermissionError("box layout apply requires the one-shot root container")
-    lock = os.open(data / storage_layout.LOCK, os.O_RDWR | os.O_NOFOLLOW)
+    lock = _open_layout_lock(data, os.O_RDWR)
     try:
         fcntl.flock(lock, fcntl.LOCK_EX)
         marker = _marker(data)
         if marker.get("box_layout") == "owner-box" and marker.get("activity_shape") == "v1":
             return
         _verified_pair(data_backup, box_backup)
-        _mounted(store)
+        plan = _owner_move_preconditions(data, store, marker)
         from tinyassets.activity_shape_migration import _pending, convert
 
         if marker.get("box_layout") == "owner-box":
-            if not _pending(data):
-                raise RuntimeError("owner-box has no pending activity conversion")
             roots, failures = _boxed_activity_roots(data, store)
             _atomic_json(storage_layout.marker_path(data), {
                 **marker, "state": "migrating", "migration": "owner-box",
@@ -490,19 +554,9 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
                 **marker, "state": "stable", "activity_shape": "v1",
             })
             return
-        if marker.get("box_layout", "owner-split") != "owner-split":
-            raise RuntimeError("one-shot box migration requires owner-split")
-        plan = _owner_plan(data)
+        assert plan is not None
         pending_activities = _pending(data)
-        admitted_centers = {center for owner in plan for center in owner.centers}
-        if set(pending_activities) - admitted_centers:
-            raise RuntimeError("activity center has no admitted owner")
-        _owner_inode_preflight(data, plan)
-        if any(entry.name != "lost+found" for entry in store.iterdir()):
-            raise RuntimeError("box store must be empty before the one-shot move")
         custody_root = data / ".platform" / "credential-vaults"
-        if custody_root.exists() or custody_root.is_symlink():
-            raise RuntimeError("private credential custody already exists")
         # This is the point of no automatic restart. A failed copy remains
         # visibly migrating until the paired snapshot is restored by an operator.
         _atomic_json(storage_layout.marker_path(data), {
@@ -580,7 +634,7 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("check", "apply"))
+    parser.add_argument("mode", choices=("check", "preflight", "apply"))
     parser.add_argument("data", type=Path)
     parser.add_argument("--store", type=Path)
     parser.add_argument("--backup", type=Path)
@@ -589,6 +643,11 @@ def main() -> int:
     try:
         if args.mode == "check":
             return check(args.data)
+        if args.mode == "preflight":
+            if args.store is None:
+                parser.error("preflight requires store")
+            preflight(args.data, args.store)
+            return 0
         if not all((args.store, args.backup, args.box_backup)):
             parser.error("apply requires store and both paired backups")
         apply(args.data, args.store, args.backup, args.box_backup)
