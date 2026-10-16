@@ -509,3 +509,40 @@ def test_default_socket_is_under_the_existing_compose_mount(admitted, monkeypatc
         admitted.owner_machine("alice")) / "app.sock"
     compose = (Path(__file__).parents[1] / "deploy/compose.yml").read_text()
     assert "/run/tinyassets-boxhostd:/run/tinyassets-boxhostd:ro" in compose
+
+
+def test_router_hook_rows_are_capped_per_owner(tmp_path, monkeypatch):
+    from tinyassets import router_credentials
+    from tinyassets.router_credentials import HookOwners
+
+    monkeypatch.setattr(router_credentials, "MAX_HOOKS_PER_OWNER", 3)
+    hooks = HookOwners(tmp_path)
+    digests = [hashlib.sha256(f"alice-{n}".encode()).hexdigest() for n in range(4)]
+    for digest in digests[:3]:
+        hooks.publish(digest, "alice")
+    with pytest.raises(ValueError, match="too many inbound hooks"):
+        hooks.publish(digests[3], "alice")
+    # Another owner's room is its own; a revocation frees a slot.
+    hooks.publish(hashlib.sha256(b"bob-0").hexdigest(), "bob")
+    hooks.revoke(digests[0], "alice")
+    hooks.publish(digests[3], "alice")
+
+
+def test_router_key_rows_stay_bounded_across_mint_revoke_cycles(tmp_path, monkeypatch):
+    import sqlite3
+    from contextlib import closing
+
+    from tinyassets import api_keys
+    from tinyassets.api_keys import ApiKeyStore
+
+    monkeypatch.setattr(api_keys, "MAX_REVOKED_KEYS_PER_OWNER", 2)
+    keys = ApiKeyStore(tmp_path)
+    for n in range(6):
+        minted = keys.mint("alice", name=f"k{n}", request_ref=f"ref-{n}", scopes=[],
+                           authority=None)
+        keys.revoke("alice", minted["key_id"], authority=None)
+    bob = keys.mint("bob", name="b", request_ref="ref-b", scopes=[], authority=None)
+    keys.revoke("bob", bob["key_id"], authority=None)
+    with closing(sqlite3.connect(keys.path)) as db:
+        rows = dict(db.execute("SELECT owner, COUNT(*) FROM api_keys GROUP BY owner"))
+    assert rows == {"alice": 2, "bob": 1}

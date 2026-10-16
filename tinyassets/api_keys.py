@@ -31,6 +31,8 @@ _KEY_RE = re.compile(r"^ta_key_([0-9a-f]{16})_([A-Za-z0-9_-]{43})$")
 #: REST capabilities a key may hold. Each is the MCP handle the route runs.
 CAPABILITIES = frozenset({"read_graph", "run_graph", "converse"})
 MAX_KEYS_PER_OWNER = 25
+#: Revoked rows kept per owner; older ones are pruned so the shared store stays bounded.
+MAX_REVOKED_KEYS_PER_OWNER = 100
 MAX_NAME = 80
 #: ``last_used_at`` is coarse: written at most once a minute per key, with a
 #: short lock wait, so polling a run is a read, not a disk-synced write.
@@ -150,6 +152,14 @@ class ApiKeyStore:
             if row["revoked_at"] is None:
                 conn.execute("UPDATE api_keys SET revoked_at=? WHERE key_id=?",
                              (time.time(), key_id))
+                stale = [r["key_id"] for r in conn.execute(
+                    "SELECT key_id FROM api_keys WHERE owner=? AND revoked_at IS NOT NULL "
+                    "ORDER BY revoked_at DESC LIMIT -1 OFFSET ?",
+                    (owner, MAX_REVOKED_KEYS_PER_OWNER))]
+                for stale_id in stale:
+                    conn.execute("DELETE FROM api_keys WHERE key_id=?", (stale_id,))
+                    conn.execute("DELETE FROM api_key_request_counts WHERE kind='key' "
+                                 "AND subject=?", (stale_id,))
                 client = _client(key_id)
                 grant = next((c for c in authority.inspect(owner)["clients"]
                               if c["client"] == client), None) if authority is not None else None
