@@ -43,14 +43,13 @@ class HookOwners:
         return row[0] if row else None
 
 
-def hook_identity(token: str):
+def hook_identity(root: Path, token: str):
     from tinyassets.auth.provider import Identity
-    from tinyassets.storage import data_dir
     from tinyassets.webhook_inbound import inbound_enabled
 
     if not inbound_enabled():
         return None
-    owner = HookOwners(data_dir()).resolve(token)
+    owner = HookOwners(root).resolve(token)
     return Identity(user_id=owner, username=owner) if owner else None
 
 

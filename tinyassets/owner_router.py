@@ -86,8 +86,9 @@ class OwnerRouter:
         token = hook_token(scope["path"])
         if token is not None:
             from tinyassets.router_credentials import hook_identity
+            from tinyassets.storage import data_dir
 
-            identity = await run_in_threadpool(hook_identity, token)
+            identity = await run_in_threadpool(hook_identity, data_dir(), token)
         if identity is None:
             return await JSONResponse({"error": "not_found"}, status_code=404)(
                 scope, receive, send)
