@@ -217,9 +217,10 @@ def run_phase_retrieval(
 
         if loop is not None and loop.is_running():
             import concurrent.futures
+            from contextvars import copy_context
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                result = pool.submit(asyncio.run, coro).result()
+                result = pool.submit(copy_context().run, asyncio.run, coro).result()
         else:
             result = asyncio.run(coro)
 

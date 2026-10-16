@@ -308,6 +308,45 @@ def test_session_scope_requires_admission_and_clears_after_exit(migrated, monkey
             pytest.fail("wrong namespace admitted")
 
 
+def test_admitted_agent_start_assembles_memory_and_retrieves(migrated, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from tinyassets.agent_loop import served_chat
+    from tinyassets.control_plane import session
+    from tinyassets.memory.runtime import current_memory
+    from tinyassets.retrieval import agentic_search
+    from tinyassets.retrieval.router import RetrievalRouter
+
+    provider = migrated["episodic"].bundle.provider
+    monkeypatch.setattr(served_chat, "configured_box_provider", lambda: (provider, None))
+    monkeypatch.setattr(session, "load_agent", lambda *a, **k: SimpleNamespace(slug="main"))
+    monkeypatch.setattr(agentic_search, "_build_provider_call", lambda: None)
+    queried = []
+    original_query = RetrievalRouter.query
+
+    async def query(self, **kwargs):
+        queried.append(kwargs["scope"].universe_id)
+        return await original_query(self, **kwargs)
+
+    monkeypatch.setattr(RetrievalRouter, "query", query)
+
+    def run_turn(_agent, _message, _parent):
+        assert current_memory().namespace == "a"
+        return agentic_search.assemble_phase_search_context(
+            {"universe_id": "a", "plan_output": {"scene_id": "scene-1"}}, "plan"
+        )
+
+    monkeypatch.setattr(session, "_owner_turn", run_turn)
+    parent = session.OwnerTurn(tmp_path, "a", "owner-a", "free", "thread-1",
+                               execution_id="turn-1")
+    result = session.start("main", "remember", parent)
+    assert result["memory_context"]["phase"] == "plan"
+    assert "retrieved_context" in result
+    assert queried == ["a"]
+    with pytest.raises(InvalidBundle, match="authenticated owner session"):
+        current_memory()
+
+
 def test_temporal_index_forgets_owner_deleted_facts(migrated):
     from tinyassets.memory.temporal import TemporalIndex
 

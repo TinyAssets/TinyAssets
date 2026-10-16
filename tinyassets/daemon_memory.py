@@ -193,15 +193,16 @@ def build_daemon_memory_packet(
         remaining = budget - len(context)
         if remaining > 0:
             from tinyassets.daemon_brain import DaemonBrain
-            from tinyassets.memory.runtime import current_memory
+            from tinyassets.memory.runtime import session_memory_scope
 
-            brain = DaemonBrain(
-                current_memory().source("daemon"), daemon_id=daemon_id
-            ).build_packet(
-                query=brain_query if brain_query is not None else _default_brain_query(daemon),
-                max_chars=min(max(0, int(brain_max_chars)), remaining),
-                limit=brain_limit,
-            )
+            with session_memory_scope() as memory:
+                brain = DaemonBrain(
+                    memory.source("daemon"), daemon_id=daemon_id
+                ).build_packet(
+                    query=brain_query if brain_query is not None else _default_brain_query(daemon),
+                    max_chars=min(max(0, int(brain_max_chars)), remaining),
+                    limit=brain_limit,
+                )
             brain_section = "\n\n" + str(brain.get("context") or "")
             if len(brain_section) > remaining:
                 marker = "\n[truncated]\n"

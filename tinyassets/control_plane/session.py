@@ -28,7 +28,6 @@ are C9's one loop in waiting; nothing starts them except this function.
 
 from __future__ import annotations
 
-from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
@@ -123,21 +122,30 @@ def start(agent_ref: str, input: str, parent: Parent):
     binding = _binding(parent)
     parent = replace(parent, box_binding=binding)
     with use_binding(binding):
+        from tinyassets.memory.runtime import owner_memory_scope
+
+        with owner_memory_scope(owner=_owner(parent), center=_universe_dir(parent).name,
+                                namespace=_universe_dir(parent).name):
+            return _start_bound(agent_ref, input, parent, binding)
+
+
+def _start_bound(agent_ref: str, input: str, parent: Parent, binding: SessionBinding):
+    """Resolve and run one agent inside its admitted owner memory lifetime."""
+    try:
         try:
-            try:
-                with binding.coherent_reads() if binding is not None else nullcontext():
-                    agent = load_agent(_universe_dir(parent), agent_ref, owner=_owner(parent))
-            except (LookupError, ValueError, OSError) as exc:
-                raise AgentUnavailable(
-                    f"no agent named {agent_ref!r} in this command center") from exc
-            if isinstance(parent, OwnerTurn):
-                return _owner_turn(agent, input, parent)
-            if isinstance(parent, RunStep):
-                return _run_step(agent, input, parent)
-            return _child(agent, input, parent)
-        finally:
-            if binding is not None and _terminal_stop(parent):
-                binding.cancel_terminal()
+            with binding.coherent_reads():
+                agent = load_agent(_universe_dir(parent), agent_ref, owner=_owner(parent))
+        except (LookupError, ValueError, OSError) as exc:
+            raise AgentUnavailable(
+                f"no agent named {agent_ref!r} in this command center") from exc
+        if isinstance(parent, OwnerTurn):
+            return _owner_turn(agent, input, parent)
+        if isinstance(parent, RunStep):
+            return _run_step(agent, input, parent)
+        return _child(agent, input, parent)
+    finally:
+        if _terminal_stop(parent):
+            binding.cancel_terminal()
 
 
 def _binding(parent: Parent) -> SessionBinding | None:

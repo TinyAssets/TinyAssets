@@ -30,6 +30,8 @@ class OwnerMemory:
                 if namespace not in definition["scope"].get("universe_id", []):
                     raise InvalidBundle("Session namespace has no reviewed canonical binding")
         self._closed = False
+        self.owner = owner
+        self.center = center
         self.namespace = namespace
         self._objects = {}
         root.bundle.access_check = self._check_open
@@ -89,3 +91,26 @@ def owner_memory_scope(*, owner, center, namespace):
     finally:
         _MEMORY.reset(token)
         memory.close()
+
+
+@contextmanager
+def session_memory_scope():
+    """Use the current admitted memory or open it from the bound owner session."""
+    from tinyassets.control_plane.binding import current_binding
+
+    binding = current_binding()
+    memory = _MEMORY.get()
+    if binding is None:
+        yield current_memory()
+    elif memory is not None:
+        if (memory.owner, memory.center, memory.namespace) != (
+            binding.handle.account_id, binding.handle.command_center_id,
+            binding.handle.command_center_id,
+        ):
+            raise InvalidBundle("Memory session differs from admitted owner binding")
+        yield memory
+    else:
+        with owner_memory_scope(owner=binding.handle.account_id,
+                                center=binding.handle.command_center_id,
+                                namespace=binding.handle.command_center_id) as memory:
+            yield memory
