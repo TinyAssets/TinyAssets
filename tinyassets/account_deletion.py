@@ -1045,6 +1045,12 @@ def _destroy_owner_box(root: Path, home: str, *, principal: str):
                         )
             finally:
                 os.close(legacy)
+            # The box receipt is authoritative; an empty pre-cutover stub is
+            # no longer an owner home. Remove only that empty directory.
+            try:
+                os.rmdir(home, dir_fd=parent)
+            except FileNotFoundError:
+                pass
     finally:
         os.close(parent)
     return result
