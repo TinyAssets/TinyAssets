@@ -459,7 +459,8 @@ class UsageStore:
             )]
         return [self.receipt((owner, universe, uid)) for uid in ids]
 
-    def _validate_source(self, scope, attempt, grant_id, connection_id, verb, request):
+    def _validate_source(self, scope, attempt, grant_id, connection_id, verb, request,
+                         *, accounting_connection=None):
         """Bind server admission to its installed descriptor and current grant.
 
         A paid reservation cannot be relabelled as another HTTP source. Model
@@ -477,9 +478,11 @@ class UsageStore:
                 raise ValueError("source or model mismatch")
             from tinyassets.broker.provider_metadata import read_definitions
 
-            with self._connection() as conn:
-                row = conn.execute(f"SELECT owner_token FROM agent_request_usage WHERE {_SCOPE}",
-                                   scope).fetchone()
+            # Reuse the broker's admission transaction. Daemon-side source
+            # inspection has no local accounting database to open.
+            row = (accounting_connection.execute(
+                f"SELECT owner_token FROM agent_request_usage WHERE {_SCOPE}", scope).fetchone()
+                   if accounting_connection is not None else None)
             if row is not None and row[0].startswith("box_"):
                 from tinyassets.broker.owner_sources import read
 
@@ -538,7 +541,8 @@ class UsageStore:
                 if budget._attempts[ordinal - 1].state != "reserved":
                     raise ProviderAuthorityHeldError("inference usage reservation already consumed")
                 self._validate_source(scope, budget._attempts[ordinal - 1],
-                                      grant_id, connection_id, verb, request)
+                                      grant_id, connection_id, verb, request,
+                                      accounting_connection=conn)
                 conn.execute(
                     "INSERT INTO agent_request_dispatches "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)",
