@@ -1,5 +1,73 @@
 # Main vs the clean per-user-instance shape: read-only audit
 
+## Slice 2 review fixes and validation (2026-10-16)
+
+Local implementation: `545139dd00e`. Validation fixture correction: `50323502234`.
+Review disposition: AGREE on findings 1–4; finding 5 is deferred to slice 4,
+with no secret-start/rotation implementation change. Nothing was pushed or deployed.
+
+- **1, socket:** `resolve_box` defaults to the existing Compose mount,
+  `/run/tinyassets-boxhostd/<uid>/app.sock`; a test checks that deployment contract.
+- **2, keys:** the router alone writes key records. Owner-mode mint/list/revoke,
+  including connected-agent listing, use the bound relay, broker admission and
+  broker-only router RPC; grants remain local and the box has no key database.
+  Real owner-process tests mint a key through this channel, authenticate `/api`,
+  revoke it from the box and observe 401. The fixture no longer copies key rows.
+- **3, hooks:** the router mints and revokes the token map through the same channel;
+  payload/configuration rows remain local. Box-created tokens reach the owner's
+  real socket, and raw-token, prefix and source revocations all yield inbound 404.
+- **4, identity:** B's bearer plus A's valid protected cookie returns 401;
+  matching bearer/cookie and cookie-only requests still work.
+- **Channel admission:** tests refuse owner-field injection, another owner's
+  key revocation, a non-broker router-socket peer and a retired box admission;
+  another owner's hook-map entry survives a foreign revocation attempt.
+
+`design.md` D2 records the socket default, bound credential channel and sole
+router writer, local grants and failure cleanup, hook revocation ordering,
+single request identity, slice-4 secret-start deferral and stack-only maintenance
+cutover after the `--archive` rehearsal. No deploy or provisioning files changed.
+
+Focused Linux runs: 146 passed; the expanded router/connected-agent/key/hook and
+inventory rerun passed 99; the corrected snapshot fixture passed 7. No skips in
+these runs. All used `python scripts/linux_oracle.py`.
+
+After the local implementation commit, CI's exact selection command
+`python scripts/affected_tests.py --base origin/main --pr --out <file>` selected
+889 files. CRs were removed, no paths were missing, and `split -l 155` produced
+the ordered chunks below. Regenerating after the fixture commit produced the
+same selection byte for byte. Each chunk ran through `linux_oracle.py`.
+
+| Chunk | Files | Passed | Existing skips |
+| --- | ---: | ---: | ---: |
+| AA, complete corrected rerun | 155 | 3,502 | 12 |
+| AB | 155 | 2,709 | 2 |
+| AC | 155 | 3,694 | 47 |
+| AD | 155 | 3,123 | 20 |
+| AE | 155 | 2,855 | 1 |
+| AF | 114 | 2,402 | 5 |
+| Affected heavy files | 34 | 1,359 | 0 |
+
+The selected chunks total 18,285 passes and 87 existing skips, with zero final
+failures. No skips were added and no tests were retired. Logs, exact ordered
+lists, JUnit reports and the selection digest are under
+`%TEMP%/owner-s2-review-9a6wl8na/`; `final-results.json` references AA's corrected
+report rather than replacing its original failed-run evidence.
+
+AA first hit a disappearing `.runs.db-shm` while the activity migration fixture
+tarred a supposedly stopped tree. Its SQLite contexts committed without closing;
+garbage collection could remove a sidecar during traversal. The fixture now
+explicitly closes its SQLite connections. The identical 155-file
+order on clean, detached `../wf-c12-rehearse` at `origin/main`
+`417f6a4c003db2bfde9cf216cb734eb5e317adc2` passed 3,501 tests with 12 skips: it did
+not reproduce the failure, and no baseline exemption is claimed. The complete
+corrected branch AA rerun passed, as shown above.
+
+Ruff passes for every changed Python file; `git diff --check` passes. Bare
+`python -m ruff check` reports 35 existing findings, identical to detached main
+by relative filename, code, line and message; both JSON reports are retained
+with the validation evidence. The baseline worktree stayed detached and clean;
+the slice-3 worktree was not touched, and no agents were dispatched.
+
 ## Slice 2 implementation follow-up (2026-10-16)
 
 The authenticated router now forwards owner-facing app routes, MCP transport, REST owner
