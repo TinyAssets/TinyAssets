@@ -335,6 +335,21 @@ def test_owner_socket_requires_current_secret(boxes, admitted):
             "x-box-secret": boxes.secrets["alice"]}).status_code == 200
 
 
+def test_owner_box_refuses_a_request_for_any_other_owner(boxes, admitted):
+    """The silo authorizes its own caller: even with its valid secret, alice's
+    box serves no identity but alice's."""
+    other = Identity(user_id="bob", username="bob")
+    path = boxes.run / str(admitted.owner_machine("alice")) / "app.sock"
+    with httpx.Client(transport=httpx.HTTPTransport(uds=str(path)),
+                      base_url="http://owner") as client:
+        response = client.get("/mcp", headers={
+            "x-owner": "bob", "x-box-secret": boxes.secrets["alice"],
+            "x-owner-identity": base64.urlsafe_b64encode(
+                json.dumps(asdict(other)).encode()).decode(),
+        })
+        assert response.status_code == 401
+
+
 def test_hook_map_is_router_state_and_unknown_owners_open_no_socket(admitted, tmp_path,
                                                                   monkeypatch):
     from starlette.responses import Response

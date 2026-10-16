@@ -41,6 +41,13 @@ class OwnerIngress:
             identity.user_id = headers[b"x-owner"].decode("utf-8")
             if not identity.user_id:
                 raise ValueError("router identity required")
+            # One owner lives in this box: a request for anyone else is refused
+            # here, by the silo itself (research: the instance authorizes each call).
+            from tinyassets.owner_runtime import current
+
+            runtime = current()
+            if runtime is None or identity.user_id != runtime.principal:
+                raise ValueError("request is not for this box's owner")
         except (ValueError, KeyError, TypeError):
             return await JSONResponse({"error": "router_required"}, status_code=401)(
                 scope, receive, send)
