@@ -18,7 +18,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from deploy.box_project_readback import verify_owner, verify_tree
 from tinyassets import storage_layout
@@ -320,17 +320,30 @@ def _mounted(store: Path) -> None:
         raise RuntimeError("owner store must be mounted XFS with project quota, no discard")
 
 
+def _refuse_nested_mounts(
+    data: Path, mountinfo: Path = Path("/proc/self/mountinfo"),
+) -> None:
+    """Refuse every mount below the source root, including file bind mounts."""
+    root = PurePosixPath(data)
+    if not root.is_absolute():
+        raise RuntimeError(f"owner data root must be absolute: {data}")
+    with mountinfo.open(encoding="utf-8", errors="surrogateescape") as stream:
+        for line in stream:
+            fields = line.split()
+            if len(fields) < 10 or "-" not in fields[6:]:
+                raise RuntimeError("invalid migration mountinfo")
+            mount_point = PurePosixPath(re.sub(
+                r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), fields[4],
+            ))
+            if mount_point != root and mount_point.is_relative_to(root):
+                raise RuntimeError(f"mount beneath owner data root: {mount_point}")
+
+
 def _owner_inode_preflight(data: Path, plan: list[OwnerMove]) -> None:
     """Census before the first write, while all source writers are stopped."""
     seen: dict[tuple[int, int], tuple[str, Path, Path, int, int]] = {}
     link_counts: dict[tuple[int, int], int] = {}
-    from tinyassets.boxes.destroy import _mount
-
-    data_fd = os.open(data, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        mount = _mount(data_fd)
-    finally:
-        os.close(data_fd)
+    _refuse_nested_mounts(data)
     for owner in plan:
         sources = [data / center for center in owner.centers]
         home = data / ".platform" / "owners" / str(owner.uid) / "agent-home"
@@ -341,8 +354,6 @@ def _owner_inode_preflight(data: Path, plan: list[OwnerMove]) -> None:
             if not stat.S_ISDIR(info.st_mode):
                 raise RuntimeError(f"owner source is not a real directory: {source}")
             for directory, dirs, files, fd in os.fwalk(source, follow_symlinks=False):
-                if _mount(fd) != mount:
-                    raise RuntimeError(f"foreign mount in owner source: {directory}")
                 for name in (".", *dirs, *files):
                     info = os.stat(name, dir_fd=fd, follow_symlinks=False)
                     path = Path(directory) if name == "." else Path(directory) / name

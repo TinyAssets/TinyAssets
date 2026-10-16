@@ -8,7 +8,7 @@ import socket
 import sqlite3
 import stat
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -30,6 +30,28 @@ def test_paired_snapshot_requires_both_real_digests(tmp_path):
     box.write_bytes(b"corrupted box snapshot")
     with pytest.raises(RuntimeError, match="digest mismatch"):
         migration._verified_pair(data, box)
+
+
+@pytest.mark.parametrize("nested", ["/data/c1/payload.txt", "/data/c1/nested"])
+def test_mountinfo_refuses_file_and_directory_bind_mounts(tmp_path, nested):
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_text(
+        "10 1 8:1 / /data rw - xfs /dev/loop0 rw\n"
+        f"11 10 8:1 /source {nested} rw - xfs /dev/loop0 rw\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match=f"mount beneath owner data root: {nested}"):
+        migration._refuse_nested_mounts(PurePosixPath("/data"), mountinfo)
+
+
+def test_mountinfo_accepts_clean_tree(tmp_path):
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_text(
+        "10 1 8:1 / /data rw - xfs /dev/loop0 rw\n"
+        "11 1 8:1 / /data-other rw - xfs /dev/loop0 rw\n",
+        encoding="utf-8",
+    )
+    migration._refuse_nested_mounts(PurePosixPath("/data"), mountinfo)
 
 
 def _cutover_root(tmp_path: Path) -> tuple[Path, Path]:
