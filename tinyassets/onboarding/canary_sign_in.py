@@ -12,6 +12,8 @@ is deliberately useless to anybody else:
   404 a route that does not exist answers, so nothing here is even visible.
 - The caller presents that key AND the canary's real password, which WorkOS
   authenticates server-side. That is one proof MORE than an ordinary sign-in.
+  Every failed proof gets the same answer, so the door is an oracle for
+  nothing; which one failed is in the server log.
 - The account is pinned by the SERVER's configured WorkOS user id, never by
   anything in the request: the address must be that user's own (read from
   WorkOS before any password is forwarded, so the door cannot test a third
@@ -277,10 +279,9 @@ async def handle(request):
         if not presented or not email or not password:
             raise _Refused("invalid_request", status=400)
         if not _matches(presented, key):
-            # Nothing is distinguished before the shared key verifies: an
-            # unkeyed caller learns only that it was refused. It also costs
-            # nothing — see `_rate_limited`.
-            raise _Refused("refused")
+            # Refused like every other failed proof, and it costs the door
+            # nothing — see `_rate_limited` and the one answer below.
+            raise _Refused("wrong_door_key")
         if _rate_limited(request):
             raise _Refused("rate_limited", status=429)
         cfg = app_config()
@@ -298,6 +299,14 @@ async def handle(request):
         headers = dict(HEADERS)
         if refusal.status == 429:
             headers["Retry-After"] = str(int(WINDOW))
-        return JSONResponse({"error": refusal.code}, status_code=refusal.status, headers=headers)
+        # ONE answer for every refusal of a proof: wrong key, wrong password
+        # and wrong account are the same response, so a key holder cannot use
+        # this door to learn which of them failed (Codex review, 2026-10-15).
+        # The reason stays in the log above. Only the request-shape 400, the
+        # rate-limit 429 and a genuine server/upstream 5xx say more; the
+        # response is identical, though its latency is not equalized.
+        says_more = refusal.status in (400, 429) or refusal.status >= 500
+        public = refusal.code if says_more else "refused"
+        return JSONResponse({"error": public}, status_code=refusal.status, headers=headers)
     logger.info("canary_sign_in issued a canary session via=%s", via)
     return JSONResponse({"access_token": token, "issued_via": via}, headers=HEADERS)

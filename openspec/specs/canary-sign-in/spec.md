@@ -20,13 +20,25 @@ answer the same 404 as an absent route whenever either is missing.
 A caller SHALL present the shared key, compared in constant time, AND the
 account's real password, which the identity provider authenticates
 server-side. The server SHALL refuse unless the authenticated user id equals
-the pinned one, and SHALL disclose no refusal detail before the key verifies.
+the pinned one.
 
 #### Scenario: wrong key, wrong password, or another account
 - **WHEN** the key does not match, the provider refuses the password, or the
   authenticated user is not the pinned canary
 - **THEN** sign-in is refused, nothing upstream is asked before the key
   verifies, and no session is issued
+
+### Requirement: One answer for every failed proof
+Every refusal of a proof SHALL be the identical client response — same status,
+same body, same headers — so the door is an oracle for nothing, including for
+a caller holding the key. Only a malformed request, the rate limit, the
+unconfigured 404 and a genuine server or upstream failure MAY answer
+differently, and the distinguishing reason SHALL exist only in the server log.
+
+#### Scenario: a key holder probes which proof failed
+- **WHEN** requests fail on the key, on the password, on an address that is
+  not the pinned account's, and on an authenticated id that is not the pin
+- **THEN** all four responses are identical and only the log tells them apart
 
 ### Requirement: Only a session the connector already accepts
 The door SHALL return a session the identity provider issued, SHALL mint no
@@ -62,3 +74,12 @@ address or token material.
 - **WHEN** many addresses send requests with a wrong key
 - **THEN** each is refused, no limiter state is recorded, and the correct key
   still signs in
+
+## Residuals
+Accepted, 2026-10-15. Revocation lands when the daemon next reads its
+environment: deleting the secret removes the host values on the next deploy,
+and that deploy restarts the daemon — to revoke outside a deploy, remove the
+values and run the daemon restart. A compromised key is answered by rotating
+the key, not by the limiter: a caller who holds the key can still fill the
+bounded limiter table from enough addresses and deny the canary its own door
+until the window passes.

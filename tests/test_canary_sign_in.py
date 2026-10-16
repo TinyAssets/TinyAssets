@@ -6,6 +6,7 @@ Every fixture value is a placeholder: no real key, password or account id.
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import httpx
@@ -45,8 +46,6 @@ class _WorkOS:
                 return httpx.Response(self.lookup_status, json={"code": "entity_not_found"})
             return httpx.Response(200, json={"id": CANARY, "email": self.pinned_email})
         if str(request.url) == door.AUTHENTICATE_URL:
-            import json
-
             body = json.loads(request.content.decode())
             self.calls.append(("password", body))
             if self.password_status >= 400:
@@ -170,7 +169,7 @@ def test_a_wrong_password_is_refused_and_no_token_is_issued(rig):
     rig.password_status = 401
     response = knock(_ask(password="not-the-password"))
     assert response.status_code == 403
-    assert response.json() == {"error": "password_refused"}
+    assert response.json() == {"error": "refused"}
     assert [name for name, _ in rig.calls] == ["lookup", "password"]
 
 
@@ -179,7 +178,7 @@ def test_another_address_never_reaches_the_password_api_at_all(rig):
     the only address it ever authenticates is the pinned user's own."""
     response = knock(_ask(email="someone-else@example.invalid"))
     assert response.status_code == 403
-    assert response.json() == {"error": "not_the_canary_account"}
+    assert response.json() == {"error": "refused"}
     assert [name for name, _ in rig.calls] == ["lookup"]
 
 
@@ -189,9 +188,37 @@ def test_an_account_workos_authenticates_as_someone_else_is_refused(rig):
     rig.accepted[RESOURCE_TOKEN] = OTHER
     response = knock(_ask())
     assert response.status_code == 403
-    assert response.json() == {"error": "not_the_canary_account"}
+    assert response.json() == {"error": "refused"}
     # Refused before any token was asked for, let alone returned.
     assert [name for name, _ in rig.calls] == ["lookup", "password"]
+
+
+def test_every_failed_proof_is_the_same_answer_and_only_the_log_differs(rig, caplog):
+    """The door must be an oracle for nothing, including to a key holder: a
+    distinguishable refusal told one which proof failed (Codex review,
+    2026-10-15)."""
+    caplog.set_level("WARNING")
+    answers, logged = set(), []
+
+    def record(response):
+        answers.add((response.status_code, response.text, tuple(sorted(response.headers.items()))))
+
+    record(knock(_ask(key="k" * 49)))                             # wrong key
+    record(knock(_ask(email="someone-else@example.invalid")))     # not this account's address
+    rig.password_status = 401
+    record(knock(_ask()))                                         # wrong password
+    rig.password_status, rig.user = 200, OTHER
+    record(knock(_ask()))                                         # provider authenticated another
+
+    assert len(answers) == 1, answers
+    status, body, _ = answers.pop()
+    assert (status, json.loads(body)) == (403, {"error": "refused"})
+    logged = [line.split("code=")[1] for line in caplog.text.splitlines() if "code=" in line]
+    assert logged == [
+        "wrong_door_key", "not_the_canary_account", "password_refused", "not_the_canary_account",
+    ]
+    for secret in (KEY, PASSWORD, EMAIL):
+        assert secret not in caplog.text
 
 
 def test_a_mistyped_pinned_user_id_says_so_instead_of_signing_anybody_in(rig):

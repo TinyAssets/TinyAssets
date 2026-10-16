@@ -79,12 +79,17 @@ async def login(config, http):
         json={"key": config["door_key"], "email": config["email"], "password": config["password"]},
     )
     if response.status_code != 200:
-        # The door answers bounded codes only; neither it nor this prints a value.
+        # The door answers bounded codes only, and gives every failed proof the
+        # same one so it cannot be used as an oracle: which proof failed is in
+        # the daemon log. Neither the door nor this prints a value.
         try:
             code = str(response.json().get("error", ""))[:64]
         except ValueError:
             code = ""
-        raise ProbeFailure(f"canary sign-in refused (HTTP {response.status_code} {code})")
+        raise ProbeFailure(
+            f"canary sign-in refused (HTTP {response.status_code} {code}); "
+            "the daemon log names the reason"
+        )
     token = str(response.json().get("access_token", ""))
     if not token:
         raise ProbeFailure("canary sign-in returned no session")
