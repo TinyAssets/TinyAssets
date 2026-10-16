@@ -10,6 +10,11 @@ name: Clear C6 failed-move leftovers (one-shot)
 #      89% that the cutover needs for its image pull.
 # Production serves the restored _data volume and has never committed a box
 # move (layout marker: owner-split, no box_layout), so neither path is live.
+#
+# Precondition: deploy-prod.yml is disabled. Today these two leftovers are what
+# stop an automatic deploy of main from applying the live box move (the
+# non-empty store refuses it; the full disk fails pull headroom). Deleting them
+# without an explicit hold would arm the next merge to deploy C6 live.
 # This workflow is deleted once it has run.
 
 on:
@@ -22,6 +27,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: production-host-mutation
@@ -37,6 +43,18 @@ jobs:
       DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
       DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
     steps:
+      - name: Require the deploy hold
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          state="$(gh api "repos/${REPO}/actions/workflows/deploy-prod.yml" --jq .state)"
+          if [ "$state" != "disabled_manually" ]; then
+            echo "::error::deploy-prod.yml is '${state}'; disable it first so no deploy can apply the box move once the store is empty"
+            exit 2
+          fi
+
       - name: Install SSH key
         env:
           SSH_KEY: ${{ secrets.DO_SSH_KEY }}
@@ -53,30 +71,32 @@ jobs:
       - name: Delete exactly the two leftovers, after checking each one
         run: |
           set -euo pipefail
-          # One connection, one single-quoted literal: nothing from the
-          # workflow inputs or the checkout reaches the host.
-          ssh -n -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" '
-            set -euo pipefail
-            MARKER=/var/lib/docker/volumes/tinyassets-data/_data/.layout.json
-            TREE=/var/lib/boxhostd/owners/300001
-            OLD=/var/lib/docker/volumes/tinyassets-data/.tinyassets-restore-old.YGbAUk
-            sudo test -f "$MARKER" || { echo "refuse: no layout marker"; exit 2; }
-            if sudo grep -q "\"box_layout\"[[:space:]]*:[[:space:]]*\"owner-box\"" "$MARKER"; then
-              echo "refuse: production has committed a box move; the owner tree may be live"; exit 2
+          # One connection under the deploy's own host-mutation flock. The
+          # script is a quoted literal: nothing from the workflow inputs or the
+          # checkout reaches the host.
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+            'sudo flock -w 60 /var/lock/tinyassets-host-mutation.lock bash -s' <<'HOST'
+          set -euo pipefail
+          MARKER=/var/lib/docker/volumes/tinyassets-data/_data/.layout.json
+          TREE=/var/lib/boxhostd/owners/300001
+          OLD=/var/lib/docker/volumes/tinyassets-data/.tinyassets-restore-old.YGbAUk
+          test -f "$MARKER" || { echo "refuse: no layout marker"; exit 2; }
+          if grep -q '"box_layout"[[:space:]]*:[[:space:]]*"owner-box"' "$MARKER"; then
+            echo "refuse: production has committed a box move; the owner tree may be live"; exit 2
+          fi
+          for target in "$TREE" "$OLD"; do
+            if test -L "$target"; then echo "refuse: $target is a symlink"; exit 2; fi
+            if ! test -d "$target"; then echo "absent (already cleared?): $target"; continue; fi
+            echo "size: $(du -sh --one-file-system "$target" | cut -f1) $target"
+          done
+          echo "--- free space before"; df -h / /var/lib/boxhostd/owners
+          for target in "$TREE" "$OLD"; do
+            if test -d "$target" && ! test -L "$target"; then
+              rm -rf --one-file-system -- "$target"
+              if test -e "$target"; then echo "FAILED to remove $target"; exit 3; fi
+              echo "removed: $target"
             fi
-            for target in "$TREE" "$OLD"; do
-              if sudo test -L "$target"; then echo "refuse: $target is a symlink"; exit 2; fi
-              if ! sudo test -d "$target"; then echo "absent (already cleared?): $target"; continue; fi
-              echo "size: $(sudo du -sh --one-file-system "$target" | cut -f1) $target"
-            done
-            echo "--- free space before"; df -h / /var/lib/boxhostd/owners
-            for target in "$TREE" "$OLD"; do
-              if sudo test -d "$target" && ! sudo test -L "$target"; then
-                sudo rm -rf --one-file-system -- "$target"
-                if sudo test -e "$target"; then echo "FAILED to remove $target"; exit 3; fi
-                echo "removed: $target"
-              fi
-            done
-            echo "--- free space after"; df -h / /var/lib/boxhostd/owners
-            echo "--- box store now:"; sudo ls -la /var/lib/boxhostd/owners
-          '
+          done
+          echo "--- free space after"; df -h / /var/lib/boxhostd/owners
+          echo "--- box store now:"; ls -la /var/lib/boxhostd/owners
+          HOST

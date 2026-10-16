@@ -123,6 +123,7 @@ on:
       - '.github/workflows/restart-daemon.yml'
       - '.github/workflows/box-preflight.yml'
       - '.github/workflows/box-store-volume.yml'
+      - '.github/workflows/clear-c6-failed-move-leftovers.yml'
       - 'scripts/do_api_request.py'
       - 'scripts/ensure_box_store_volume.py'
   workflow_dispatch:
