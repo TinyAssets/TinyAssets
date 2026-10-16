@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -135,9 +136,13 @@ def _connect(base_path: str | Path) -> sqlite3.Connection:
     from tinyassets.runs import runs_db_path
     path = runs_db_path(base_path)
     conn = sqlite3.connect(str(path), timeout=30.0)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA busy_timeout = 30000")
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA busy_timeout = 30000")
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 
@@ -157,7 +162,7 @@ def initialize_branch_versions_db(base_path: str | Path) -> None:
     """
     from tinyassets.runs import runs_db_path
     runs_db_path(base_path)  # ensure parent runs DB exists
-    with _connect(base_path) as conn:
+    with closing(_connect(base_path)) as conn, conn:
         # Step 1: ensure the table exists. For fresh DBs this creates the
         # full new column set; for pre-Task-#22 DBs it's a no-op (table
         # already exists with old columns).
@@ -406,7 +411,7 @@ def publish_branch_version(
         nbytes=len(str(snapshot).encode("utf-8")) + len(str(notes or "").encode("utf-8")),
     )
 
-    with _connect(base_path) as conn:
+    with closing(_connect(base_path)) as conn, conn:
         # Deterministic: same content_hash for same branch_def_id returns existing.
         existing = conn.execute(
             "SELECT * FROM branch_versions "
@@ -524,7 +529,7 @@ def get_branch_version(
 ) -> BranchVersion | None:
     """Fetch a published version by ID. Returns None if not found."""
     initialize_branch_versions_db(base_path)
-    with _connect(base_path) as conn:
+    with closing(_connect(base_path)) as conn, conn:
         row = conn.execute(
             "SELECT * FROM branch_versions WHERE branch_version_id = ?",
             (branch_version_id,),
@@ -539,7 +544,7 @@ def branch_version_def_id(base_path: str | Path, branch_version_id: str) -> str:
     loading its (potentially large / private) snapshot. Used by the invoke_branch
     authorization gate to authorize-before-snapshot-load. Empty string if absent."""
     initialize_branch_versions_db(base_path)
-    with _connect(base_path) as conn:
+    with closing(_connect(base_path)) as conn, conn:
         row = conn.execute(
             "SELECT branch_def_id FROM branch_versions WHERE branch_version_id = ?",
             (branch_version_id,),
@@ -552,7 +557,7 @@ def branch_version_def_id(base_path: str | Path, branch_version_id: str) -> str:
 def branch_version_is_public(base_path: str | Path, branch_version_id: str) -> bool:
     """Read only the publication mark, without loading private snapshot content."""
     initialize_branch_versions_db(base_path)
-    with _connect(base_path) as conn:
+    with closing(_connect(base_path)) as conn, conn:
         row = conn.execute(
             "SELECT public FROM branch_versions WHERE branch_version_id = ?",
             (branch_version_id,),
@@ -569,7 +574,7 @@ def list_branch_versions(
     """List published versions for a branch, newest first."""
     initialize_branch_versions_db(base_path)
     limit = min(max(1, limit), 500)
-    with _connect(base_path) as conn:
+    with closing(_connect(base_path)) as conn, conn:
         rows = conn.execute(
             "SELECT * FROM branch_versions WHERE branch_def_id = ? "
             "ORDER BY published_at DESC LIMIT ?",
@@ -677,7 +682,7 @@ def mark_versions_public(
 ) -> None:
     """Set (or clear) the publication mark on exactly these versions."""
     initialize_branch_versions_db(base_path)
-    with _connect(base_path) as conn:
+    with closing(_connect(base_path)) as conn, conn:
         for version_id in version_ids:
             conn.execute(
                 "UPDATE branch_versions SET public = ? WHERE branch_version_id = ?",
