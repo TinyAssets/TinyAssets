@@ -154,13 +154,15 @@ def layout_census(data: Path) -> dict:
     layout = marker.get("box_layout", "owner-split")
     state = marker.get("state")
     pending = True if layout == "owner-split" and state == "stable" else (
-        False if layout == "owner-box" and state == "stable" else None
+        False if layout == "owner-box" and state == "stable"
+        and marker.get("knowledge_shape") == "v1" else None
     )
     return {
         **base,
         "marker_layout": marker.get("layout"),
         "marker_state": state,
         "box_layout": layout,
+        "knowledge_shape": marker.get("knowledge_shape"),
         "pending": pending,
     }
 
@@ -174,7 +176,14 @@ def check(data: Path) -> int:
     if layout == "owner-box" and state == "stable":
         from tinyassets.activity_shape_migration import _pending
 
-        if _marker(data).get("activity_shape") != "v1":
+        marker = _marker(data)
+        if marker.get("knowledge_shape") != "v1":
+            census["knowledge_shape_error"] = (
+                "owner-box predates the one-pass knowledge conversion"
+            )
+            print(json.dumps(census, sort_keys=True))
+            return UNREADABLE
+        if marker.get("activity_shape") != "v1":
             activity_pending = _pending(data)
             census["pending"] = bool(activity_pending)
     census["activity_shape_pending"] = activity_pending
@@ -435,6 +444,9 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
     try:
         fcntl.flock(lock, fcntl.LOCK_EX)
         marker = _marker(data)
+        if (marker.get("box_layout") == "owner-box"
+                and marker.get("knowledge_shape") != "v1"):
+            raise RuntimeError("owner-box predates the one-pass knowledge conversion")
         if marker.get("box_layout") == "owner-box" and marker.get("activity_shape") == "v1":
             return
         _verified_pair(data_backup, box_backup)
@@ -582,7 +594,7 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
         os.chmod(journal / "boxhost.db", 0o600)
         _atomic_json(storage_layout.marker_path(data), {
             **marker, "box_layout": "owner-box", "state": "stable",
-            "activity_shape": "v1",
+            "activity_shape": "v1", "knowledge_shape": "v1",
         })
     finally:
         if owner_plan:

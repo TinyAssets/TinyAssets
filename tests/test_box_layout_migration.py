@@ -202,6 +202,7 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
     else:
         assert marker["state"] == "stable"
         assert marker["box_layout"] == "owner-box"
+        assert marker["knowledge_shape"] == "v1"
         assert (store / "300001" / "c1" / "note.txt").read_text() == "owner content"
         with sqlite3.connect(data / ".broker" / "state" / "owner-identities.db") as db:
             assert db.execute("SELECT principal, machine FROM box_records").fetchall() == [
@@ -228,9 +229,31 @@ def test_census_reports_each_layout_and_does_not_invent_a_zero(tmp_path):
     assert migration.check(data) == migration.PENDING
     (data / ".layout.json").write_text(
         '{"layout": 2, "state": "stable", "box_layout": "owner-box"}')
+    assert migration.check(data) == migration.UNREADABLE
+    assert migration.layout_census(data)["pending"] is None
+    (data / ".layout.json").write_text(
+        '{"layout": 2, "state": "stable", "box_layout": "owner-box", '
+        '"knowledge_shape": "v1"}')
     assert migration.check(data) == 0
     (data / ".layout.json").write_text("{")
     assert migration.check(data) == migration.UNREADABLE
+
+
+def test_apply_refuses_boxed_layout_without_knowledge_receipt(tmp_path, monkeypatch):
+    data, store = _cutover_root(tmp_path)
+    (data / ".layout.json").write_text(
+        '{"layout": 2, "state": "stable", "box_layout": "owner-box", '
+        '"activity_shape": "v1"}'
+    )
+    before = (data / ".layout.json").read_bytes()
+    monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(migration, "_verified_pair", lambda *args: None)
+    monkeypatch.setattr(migration, "_mounted", lambda *args: None)
+
+    with pytest.raises(RuntimeError, match="predates the one-pass knowledge"):
+        migration.apply(data, store, tmp_path / "data-backup", tmp_path / "box-backup")
+    assert (data / ".layout.json").read_bytes() == before
+    assert not list(store.iterdir())
 
 
 def _identities(path: Path, principal: str, uid: int, center: str) -> None:
@@ -374,6 +397,7 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
     assert marker["box_layout"] == "owner-box"
     assert marker["state"] == "stable"
     assert marker["activity_shape"] == "v1"
+    assert marker["knowledge_shape"] == "v1"
     moved = migration.layout_census(data)
     assert moved["box_layout"] == "owner-box"
     assert moved["pending"] is False
