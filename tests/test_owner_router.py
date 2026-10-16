@@ -338,6 +338,32 @@ def test_router_only_routes_need_no_box(tmp_path, monkeypatch, cloud_runtime):  
         assert client.get("/.well-known/oauth-protected-resource").status_code == 200
         response = client.get("/app/run/" + listing["agent_definition_id"])
         assert response.status_code == 200 and "Public item" in response.text
+    # Approval handoff is sign-in navigation at the door: before sign-in it
+    # redirects with a return cookie; with the session it reaches the app.
+    import json
+    import time
+
+    from tinyassets.onboarding import approval_handoff
+    from tinyassets.onboarding.owner_sessions import COOKIE, hashed, store
+
+    ref = "h" * 43
+    with approval_handoff.flows() as conn:
+        conn.execute("INSERT INTO approval_handoffs VALUES (?,?,?,?,?)",
+                     (hashed(ref), "alice", "request-1", "web", time.time() + 600))
+    with TestClient(app, base_url="https://testserver") as client:
+        response = client.get(approval_handoff.PREFIX + ref, follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers["location"].startswith("/app/owner-sign-in")
+        assert approval_handoff.RETURN_COOKIE in response.headers["set-cookie"]
+        with store() as conn:
+            conn.execute("INSERT INTO owner_sessions VALUES (?,?,?)", (
+                hashed("alice-session"),
+                json.dumps(Identity(user_id="alice", username="alice").to_dict()),
+                time.time() + 600))
+        client.cookies.set(COOKIE, "alice-session")
+        response = client.get(approval_handoff.PREFIX + ref, follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers["location"] == "/app?approval=" + ref
 
 
 def test_owner_socket_requires_current_secret(boxes, admitted):
