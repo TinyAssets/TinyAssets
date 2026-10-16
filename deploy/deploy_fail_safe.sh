@@ -1766,15 +1766,17 @@ migration_snapshot() {  # prints the archive name backup.sh took
 migration_restore_command() {  # the exact remedy for the snapshot this run took
   printf 'restore it with: BACKUP_FILE=%s/%s sudo bash deploy/backup-restore.sh' "$MIGRATION_BACKUP_DIR" "$MIGRATION_SNAPSHOT"
 }
-migration_refused() {  # $1 = which check failed, with its values; volume unchanged
+migration_refused() {  # $1 = failed check; $2 = pre_stop skips needless daemon start
   log "migration refused: $1"
   err "migration: $1; the volume is unchanged, refusing (prod back where it started)"
-  start_out="$(docker start "$DAEMON_CONTAINER" 2>&1)" || {
+  if [ "${2:-}" != "pre_stop" ]; then
+    start_out="$(docker start "$DAEMON_CONTAINER" 2>&1)" || {
     start_line="$(printf '%s\n' "$start_out" | one_line)"
     [ -n "$start_line" ] || start_line="<none>"
     log "migration refused: check=daemon_restart container=${DAEMON_CONTAINER} output=${start_line}"
     err "migration: ${DAEMON_CONTAINER} did not restart (output: ${start_line}); run: systemctl start ${UNIT}"
-  }
+    }
+  fi
   if [ "$INSTALLED_THIS_RUN" = "1" ]; then
     recover_from_failed_install migration_refused
   fi
@@ -1961,11 +1963,11 @@ rm -f "$MIGRATION_DETAIL_FILE"
 # rc 0 on that candidate is a conflict. An owner-box candidate applies on
 # rc 10 after a fresh verified paired snapshot: either the one-shot box move
 # or the one-time legacy Activities cutover within an already committed box layout.
-box_migration_container() {  # $1 = check|apply, then module arguments
+box_migration_container() {  # $1 = check|preflight|apply, then module arguments
   local posture=(--user 0)
   local data_mount="tinyassets-data:/data:ro"
   local extra=()
-  if [ "$1" = "apply" ]; then
+  if [ "$1" = "apply" ] || [ "$1" = "preflight" ]; then
     local store_device
     store_device="$(findmnt --mountpoint /var/lib/boxhostd/owners -no SOURCE)" || return 1
     if [[ "$store_device" != /dev/* || ! -b "$store_device" ]]; then
@@ -1974,10 +1976,14 @@ box_migration_container() {  # $1 = check|apply, then module arguments
     fi
     posture=(--user 0 --cap-add CHOWN --cap-add FOWNER --cap-add FSETID \
       --cap-add DAC_OVERRIDE --cap-add SYS_ADMIN)
-    data_mount="tinyassets-data:/data"
-    extra=(-v "${MIGRATION_BACKUP_DIR}:/backup:ro" \
-      --device "${store_device}:${store_device}:r" \
-      --mount type=bind,src=/var/lib/boxhostd/owners,dst=/box-store)
+    extra=(--device "${store_device}:${store_device}:r")
+    if [ "$1" = "apply" ]; then
+      data_mount="tinyassets-data:/data"
+      extra+=(-v "${MIGRATION_BACKUP_DIR}:/backup:ro" \
+        --mount type=bind,src=/var/lib/boxhostd/owners,dst=/box-store)
+    else
+      extra+=(--mount type=bind,src=/var/lib/boxhostd/owners,dst=/box-store,readonly)
+    fi
   fi
   timeout "$MIGRATION_TIMEOUT" docker run --rm --cap-drop ALL ${posture[@]+"${posture[@]}"} \
     --security-opt no-new-privileges=true --network none --memory=1g --memory-swap=1g \
@@ -2024,6 +2030,16 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
           fi
           if [ "$box_probe_rc" -ne 10 ]; then
             migration_refused "check=box_layout_probe move=box_layout_pending rc=${box_probe_rc}"
+          fi
+          # The live source can change while writers run. Apply repeats these
+          # checks under the layout lock after the daemon stops and the paired
+          # snapshot is verified; mount/device/tooling drift is also rechecked.
+          box_preflight="$(box_migration_container preflight /data --store /box-store 2>&1)"
+          box_preflight_rc=$?
+          if [ "$box_preflight_rc" -ne 0 ]; then
+            preflight_line="$(printf '%s\n' "$box_preflight" | one_line)"
+            [ -n "$preflight_line" ] || preflight_line="<none>"
+            migration_refused "check=box_layout_preflight rc=${box_preflight_rc} reason=${preflight_line}" pre_stop
           fi
           if [ -z "$MIGRATION_SNAPSHOT" ]; then
             stop_for_verified_snapshot 1

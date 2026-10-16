@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 import stat
 import subprocess
@@ -460,6 +461,43 @@ def _xfs_quota(store: Path, command: str) -> str:
     return result.stdout
 
 
+def _owner_move_preconditions(data: Path, store: Path, marker: dict) -> list[OwnerMove] | None:
+    """Read-only checks shared by the live preflight and locked apply."""
+    _mounted(store)
+    if marker.get("box_layout") == "owner-box":
+        from tinyassets.activity_shape_migration import _pending
+
+        if not _pending(data):
+            raise RuntimeError("owner-box has no pending activity conversion")
+        _boxed_activity_roots(data, store)
+        return None
+    if marker.get("box_layout", "owner-split") != "owner-split":
+        raise RuntimeError("one-shot box migration requires owner-split")
+    plan = _owner_plan(data)
+    from tinyassets.activity_shape_migration import _pending
+
+    admitted_centers = {center for owner in plan for center in owner.centers}
+    if set(_pending(data)) - admitted_centers:
+        raise RuntimeError("activity center has no admitted owner")
+    _owner_inode_preflight(data, plan)
+    if any(entry.name != "lost+found" for entry in store.iterdir()):
+        raise RuntimeError("box store must be empty before the one-shot move")
+    custody_root = data / ".platform" / "credential-vaults"
+    if custody_root.exists() or custody_root.is_symlink():
+        raise RuntimeError("private credential custody already exists")
+    if shutil.which("xfs_quota") is None:
+        raise RuntimeError("xfs_quota tooling unavailable")
+    if not _xfs_quota(store, "report -p -n").strip():
+        raise RuntimeError("xfs_quota project report unavailable")
+    return plan
+
+
+def preflight(data: Path, store: Path) -> None:
+    if os.geteuid() != 0:
+        raise PermissionError("box layout preflight requires the one-shot root container")
+    _owner_move_preconditions(data, store, _marker(data))
+
+
 def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
     import fcntl
 
@@ -472,12 +510,10 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
         if marker.get("box_layout") == "owner-box" and marker.get("activity_shape") == "v1":
             return
         _verified_pair(data_backup, box_backup)
-        _mounted(store)
+        plan = _owner_move_preconditions(data, store, marker)
         from tinyassets.activity_shape_migration import _pending, convert
 
         if marker.get("box_layout") == "owner-box":
-            if not _pending(data):
-                raise RuntimeError("owner-box has no pending activity conversion")
             roots, failures = _boxed_activity_roots(data, store)
             _atomic_json(storage_layout.marker_path(data), {
                 **marker, "state": "migrating", "migration": "owner-box",
@@ -490,19 +526,9 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
                 **marker, "state": "stable", "activity_shape": "v1",
             })
             return
-        if marker.get("box_layout", "owner-split") != "owner-split":
-            raise RuntimeError("one-shot box migration requires owner-split")
-        plan = _owner_plan(data)
+        assert plan is not None
         pending_activities = _pending(data)
-        admitted_centers = {center for owner in plan for center in owner.centers}
-        if set(pending_activities) - admitted_centers:
-            raise RuntimeError("activity center has no admitted owner")
-        _owner_inode_preflight(data, plan)
-        if any(entry.name != "lost+found" for entry in store.iterdir()):
-            raise RuntimeError("box store must be empty before the one-shot move")
         custody_root = data / ".platform" / "credential-vaults"
-        if custody_root.exists() or custody_root.is_symlink():
-            raise RuntimeError("private credential custody already exists")
         # This is the point of no automatic restart. A failed copy remains
         # visibly migrating until the paired snapshot is restored by an operator.
         _atomic_json(storage_layout.marker_path(data), {
@@ -580,7 +606,7 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("check", "apply"))
+    parser.add_argument("mode", choices=("check", "preflight", "apply"))
     parser.add_argument("data", type=Path)
     parser.add_argument("--store", type=Path)
     parser.add_argument("--backup", type=Path)
@@ -589,6 +615,11 @@ def main() -> int:
     try:
         if args.mode == "check":
             return check(args.data)
+        if args.mode == "preflight":
+            if args.store is None:
+                parser.error("preflight requires store")
+            preflight(args.data, args.store)
+            return 0
         if not all((args.store, args.backup, args.box_backup)):
             parser.error("apply requires store and both paired backups")
         apply(args.data, args.store, args.backup, args.box_backup)
