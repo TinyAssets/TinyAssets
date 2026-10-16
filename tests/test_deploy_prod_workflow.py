@@ -271,10 +271,16 @@ def test_canary_step_only_probes_canonical():
     names = [step.get("name") for step in steps]
     assert steps.index(provision) < names.index("Prepare data volume root")
     deploy = next(s for s in steps if s.get("id") == "deploy")
+    # The founder waiver counts only on a manual run from main; anything else
+    # passes the provisioning result through unchanged.
     assert (
-        "CORE_CANARY_PROVISIONED='${{ steps.core_canary_provision.outputs.provisioned }}'"
+        "CORE_CANARY_PROVISIONED='${{ (steps.core_canary_provision.outputs.provisioned == '1'"
+        " || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'"
+        " && inputs.founder_canary_waiver)) && '1' || '0' }}'"
         in deploy["run"]
     )
+    waiver = _load()[True]["workflow_dispatch"]["inputs"]["founder_canary_waiver"]
+    assert waiver["type"] == "boolean" and waiver["default"] is False
     public = next(s for s in steps if s.get("id") == "canary")
     assert "https://tinyassets.io/mcp --assert-handles" in public["run"]
     assert not public.get("continue-on-error")
