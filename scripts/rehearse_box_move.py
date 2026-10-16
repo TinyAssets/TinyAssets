@@ -166,7 +166,7 @@ from tinyassets.sqlite_readonly import readonly_snapshot
 
 with readonly_snapshot():
     print(json.dumps([{'uid': owner.uid, 'centers': list(owner.centers), 'quota': owner.quota}
-                      for owner in _owner_plan(Path('/data'), readonly=True)]))
+                      for owner in _owner_plan(Path('/data'))]))
 '''
 
 QUIESCE_SHM = r'''
@@ -248,7 +248,7 @@ from tinyassets.sqlite_readonly import readonly_db, readonly_snapshot
 data, store = Path('/data'), Path('/box-store')
 mode = sys.argv[1]
 with readonly_snapshot():
-    plan = _owner_plan(data, readonly=True)
+    plan = _owner_plan(data)
 success = True
 if mode == 'commit':
     marker = json.loads((data / '.layout.json').read_text())
@@ -361,7 +361,8 @@ def preflight_args(data_volume: str, store_path: str, device: str, image: str) -
     return ('--rm', '--cap-drop', 'ALL', '--user', '0',
             '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SYS_ADMIN',
             '--security-opt', 'no-new-privileges=true', '--network', 'none',
-            '--memory=1g', '--memory-swap=1g',
+            '--memory=2g', '--memory-swap=2g',
+            '--tmpfs', '/tmp:rw,size=512m,mode=1777',
             '-v', f'{data_volume}:/data:ro',
             '--device', f'{device}:{device}:r',
             '--mount', f'type=bind,src={store_path},dst=/box-store,readonly',
@@ -534,7 +535,8 @@ def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int
                           '--cap-add', 'CHOWN', '--cap-add', 'FOWNER', '--cap-add', 'FSETID',
                           '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SYS_ADMIN',
                           '--security-opt', 'no-new-privileges=true', '--network', 'none',
-                          '--memory=1g', '--memory-swap=1g',
+                          '--memory=2g', '--memory-swap=2g',
+                          '--tmpfs', '/tmp:rw,size=512m,mode=1777',
                           *failure_env,
                           '-v', f"{names['data']}:/data", '-v', f"{names['backup']}:/backup:ro",
                           '--device', f'{device}:{device}:r',
@@ -764,7 +766,8 @@ def rehearsal(image: str, *, fail: bool, leftover_owner_tree: bool = False) -> N
                        '--cap-add', 'CHOWN', '--cap-add', 'FOWNER', '--cap-add', 'FSETID',
                        '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SYS_ADMIN',
                        '--security-opt', 'no-new-privileges=true', '--network', 'none',
-                       '--memory=1g', '--memory-swap=1g',
+                       '--memory=2g', '--memory-swap=2g',
+                       '--tmpfs', '/tmp:rw,size=512m,mode=1777',
                        *failure_env,
                        '-v', f"{names['data']}:/data",
                        '-v', f"{names['backup']}:/backup:ro",

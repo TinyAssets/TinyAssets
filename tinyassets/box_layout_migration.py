@@ -217,7 +217,7 @@ def _verified_pair(data_backup: Path, box_backup: Path) -> None:
     _verified_archive(box_backup)
 
 
-def _owner_plan(data: Path, *, readonly: bool = False) -> list[OwnerMove]:
+def _owner_plan(data: Path) -> list[OwnerMove]:
     identity_db = data / ".broker" / "state" / "owner-identities.db"
     with readonly_db(identity_db) as db:
         identities = dict(db.execute(
@@ -259,9 +259,7 @@ def _owner_plan(data: Path, *, readonly: bool = False) -> list[OwnerMove]:
             if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 1001
                     or info.st_gid != uid):
                 raise RuntimeError(f"noncanonical owner center {center}")
-        account = account_type_of(
-            data, principal, db_reader=readonly_db if readonly else None,
-        )
+        account = account_type_of(data, principal, db_reader=readonly_db)
         quota = int(limits_for(account).storage_bytes)
         quota = (quota // 1024) * 1024
         if quota <= 0:
@@ -468,7 +466,7 @@ def _xfs_quota(store: Path, command: str) -> str:
 
 
 def _owner_move_preconditions(
-    data: Path, store: Path, marker: dict, *, readonly: bool = False,
+    data: Path, store: Path, marker: dict,
 ) -> list[OwnerMove] | None:
     """Read-only checks shared by the live preflight and locked apply."""
     _mounted(store)
@@ -481,7 +479,7 @@ def _owner_move_preconditions(
         return None
     if marker.get("box_layout", "owner-split") != "owner-split":
         raise RuntimeError("one-shot box migration requires owner-split")
-    plan = _owner_plan(data, readonly=True) if readonly else _owner_plan(data)
+    plan = _owner_plan(data)
     from tinyassets.activity_shape_migration import _pending
 
     admitted_centers = {center for owner in plan for center in owner.centers}
@@ -517,7 +515,7 @@ def preflight(data: Path, store: Path) -> None:
     lock = _open_layout_lock(data, os.O_RDONLY)
     os.close(lock)
     with readonly_snapshot():
-        _owner_move_preconditions(data, store, _marker(data), readonly=True)
+        _owner_move_preconditions(data, store, _marker(data))
 
 
 def _open_layout_lock(data: Path, access: int) -> int:

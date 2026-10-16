@@ -1,5 +1,6 @@
 """The owner-box move's irreversible boundary and paired backup proof."""
 
+import errno
 import hashlib
 import json
 import os
@@ -199,7 +200,7 @@ def test_preflight_reads_wal_without_writing_data(tmp_path, monkeypatch, live_wr
         monkeypatch.setattr(migration, "_mounted", lambda _: None)
         monkeypatch.setattr(migration, "_owner_inode_preflight", lambda *_: None)
         monkeypatch.setattr(migration, "_xfs_quota", lambda *_: "project report")
-        plan = migration._owner_plan(data, readonly=True)
+        plan = migration._owner_plan(data)
         assert plan[0].quota == limits_for(AccountType.SUBSCRIPTION).storage_bytes
         migration.preflight(data, store)
         after = {p.relative_to(data): p.read_bytes() for p in data.rglob("*") if p.is_file()}
@@ -219,6 +220,85 @@ def test_preflight_refuses_unreadable_founder_home(tmp_path):
 
     with pytest.raises(FileNotFoundError):
         account_type_of(data, "alice", db_reader=readonly_db)
+
+
+def test_apply_refuses_unreadable_founder_home_before_any_write(tmp_path, monkeypatch):
+    data, store = _cutover_root(tmp_path)
+    _identities(data / ".broker/state/owner-identities.db", "alice", 300001, "c1")
+    marker = (data / ".layout.json").read_bytes()
+    real_lstat = Path.lstat
+
+    def owner_lstat(path):
+        info = real_lstat(path)
+        if path == data / "c1":
+            return os.stat_result((
+                info.st_mode, info.st_ino, info.st_dev, info.st_nlink,
+                1001, 300001, info.st_size, info.st_atime, info.st_mtime, info.st_ctime,
+            ))
+        return info
+
+    monkeypatch.setattr(Path, "lstat", owner_lstat)
+    monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(migration, "_verified_pair", lambda *args: None)
+    monkeypatch.setattr(migration, "_mounted", lambda *args: None)
+    with pytest.raises(FileNotFoundError, match=r"\.tinyassets\.db"):
+        migration.apply(data, store, tmp_path / "snapshot", tmp_path / "boxes")
+    assert (data / ".layout.json").read_bytes() == marker
+    assert not list(store.iterdir())
+    assert not (data / ".boxhost").exists()
+    with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
+        assert db.execute(
+            "SELECT name FROM sqlite_master WHERE name='box_records'"
+        ).fetchone() is None
+
+
+def test_readonly_snapshot_releases_each_copy_and_refuses_rollback_journal(
+    tmp_path, monkeypatch,
+):
+    from tinyassets import sqlite_readonly
+
+    database = tmp_path / "state.db"
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE records (value TEXT)")
+        db.execute("INSERT INTO records VALUES ('kept')")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    temporary_directory = sqlite_readonly.tempfile.TemporaryDirectory
+    monkeypatch.setattr(
+        sqlite_readonly.tempfile, "TemporaryDirectory",
+        lambda **kwargs: temporary_directory(dir=scratch, **kwargs),
+    )
+    with sqlite_readonly.readonly_snapshot():
+        with sqlite_readonly.readonly_db(database) as db:
+            assert db.execute("SELECT value FROM records").fetchone() == ("kept",)
+            assert len(list(scratch.iterdir())) == 1
+        assert not list(scratch.iterdir())
+        with sqlite_readonly.readonly_db(database) as db:
+            assert db.execute("SELECT COUNT(*) FROM records").fetchone() == (1,)
+        assert not list(scratch.iterdir())
+
+    journal = database.with_name(database.name + "-journal")
+    journal.write_bytes(b"hot rollback journal")
+    with pytest.raises(RuntimeError, match="rollback journal present"):
+        with sqlite_readonly.readonly_db(database):
+            pass
+    assert not list(scratch.iterdir())
+
+    journal.unlink()
+    original_open = Path.open
+
+    def full_tmpfs(path, mode="r", *args, **kwargs):
+        if mode == "wb" and path.parent.parent == scratch:
+            raise OSError(errno.ENOSPC, "tmpfs full")
+        return original_open(path, mode, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", full_tmpfs)
+        with pytest.raises(OSError) as error:
+            with sqlite_readonly.readonly_db(database):
+                pass
+    assert error.value.errno == errno.ENOSPC
+    assert not list(scratch.iterdir())
 
 
 def test_cross_owner_inode_refuses_before_marker_or_destination_write(tmp_path, monkeypatch):
@@ -399,6 +479,8 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
     _identities(
         data / ".broker" / "state" / "owner-identities.db", "person", 300001, "home",
     )
+    with sqlite3.connect(data / ".tinyassets.db") as db:
+        db.execute("CREATE TABLE founder_home (founder_sub TEXT, universe_id TEXT)")
     assert pending(data) == 0
 
     code = migration.check(data)

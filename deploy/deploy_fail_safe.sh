@@ -1988,7 +1988,8 @@ box_migration_container() {  # $1 = check|preflight|apply, then module arguments
     fi
   fi
   timeout "$MIGRATION_TIMEOUT" docker run --rm --cap-drop ALL ${posture[@]+"${posture[@]}"} \
-    --security-opt no-new-privileges=true --network none --memory=1g --memory-swap=1g \
+    --security-opt no-new-privileges=true --network none --memory=2g --memory-swap=2g \
+    --tmpfs /tmp:rw,size=512m,mode=1777 \
     -v "$data_mount" ${extra[@]+"${extra[@]}"} \
     --entrypoint python "$NEW_IMAGE" -B -m tinyassets.box_layout_migration "$@"
 }
