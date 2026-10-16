@@ -247,6 +247,7 @@ from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 from tinyassets.providers.base import ModelConfig
 from tinyassets.request_budget import TurnRequestBudget
 root, relay, definition = Path(sys.argv[1]), Path(sys.argv[2]), json.loads(sys.argv[3])
+root.mkdir()
 owner_runtime.OWNER_MOUNT = root
 owner_runtime._is_owner_mount = lambda candidate: candidate == root
 runtime = owner_runtime.start(relay)

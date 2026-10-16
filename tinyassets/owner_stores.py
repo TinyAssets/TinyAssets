@@ -26,6 +26,10 @@ INFRASTRUCTURE: frozenset[str] = frozenset({
     "tinyassets/storage/owner_fence.py",
     # Router identity state, never written by an owner's execution generation.
     "tinyassets/router_credentials.py",
+    # Broker-held shared state (plans, credential-free source descriptors),
+    # likewise outside every owner's box.
+    "tinyassets/broker/owner_reads.py",
+    "tinyassets/broker/owner_sources.py",
 })
 
 #: Owner-written stores not fenced yet. Safe while exactly one owner tree runs
