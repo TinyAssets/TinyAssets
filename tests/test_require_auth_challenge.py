@@ -274,6 +274,8 @@ def test_dev_mode_challenges_a_missing_token_too():
         ("/mcp/anything", True),
         ("/app", False),                       # the SPA shell loads before sign-in
         ("/app/token", False),                 # its PKCE exchange
+        ("/app/canary-sign-in", False),        # the deploy canary's own door
+        ("/app/canary-sign-in/x", True),       # exact path, nothing under it
         ("/app/settings", True),               # every other app route needs the bearer
         ("/app/billing/webhook", False),       # Stripe-signed
         ("/app/client-error", False),          # browser trail beacon

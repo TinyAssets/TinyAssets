@@ -68,6 +68,7 @@ jobs:
         with:
           email: ${{ secrets.TINYASSETS_CANARY_EMAIL }}
           password: ${{ secrets.TINYASSETS_CANARY_PASSWORD }}
+          door-key: ${{ secrets.TINYASSETS_CANARY_DOOR_KEY }}
           hmac-key: ${{ secrets.TINYASSETS_CANARY_HMAC_KEY }}
           service-url: ${{ vars.TINYASSETS_CANARY_SERVICE_URL }}
           home: ${{ vars.TINYASSETS_CANARY_UNIVERSE_ID }}

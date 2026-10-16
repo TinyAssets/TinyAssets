@@ -190,13 +190,17 @@ jobs:
         env:
           TINYASSETS_CANARY_EMAIL: ${{ secrets.TINYASSETS_CANARY_EMAIL }}
           TINYASSETS_CANARY_PASSWORD: ${{ secrets.TINYASSETS_CANARY_PASSWORD }}
+          TINYASSETS_CANARY_DOOR_KEY: ${{ secrets.TINYASSETS_CANARY_DOOR_KEY }}
           TINYASSETS_CANARY_HMAC_KEY: ${{ secrets.TINYASSETS_CANARY_HMAC_KEY }}
           TINYASSETS_CANARY_SERVICE_URL: ${{ vars.TINYASSETS_CANARY_SERVICE_URL }}
           TINYASSETS_CANARY_UNIVERSE_ID: ${{ vars.TINYASSETS_CANARY_UNIVERSE_ID }}
         run: |
+          # No browser install: the canary signs in through the canary-only
+          # door. This runs against the CURRENTLY deployed daemon, so the first
+          # deploy that carries that door reports not-provisioned here (a loud
+          # warning, never a rollback) and the post-deploy canary exercises it.
           if [ -n "${TINYASSETS_CANARY_EMAIL}" ]; then
-            pip install fastmcp==3.2.0 httpx==0.28.1 pillow==12.1.1 playwright==1.58.0
-            python -m playwright install --with-deps chromium
+            pip install fastmcp==3.2.0 httpx==0.28.1 pillow==12.1.1
           fi
           python scripts/verify_core_canary_provision.py
 
@@ -481,6 +485,31 @@ jobs:
                 "sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_WIKI_CANARY_TOKEN"
           echo "canary bearer synced"
 
+      - name: Sync the canary sign-in door into /etc/tinyassets/env
+        # The canary-only sign-in (tinyassets/onboarding/canary_sign_in.py)
+        # needs BOTH the shared key and the pinned WorkOS user id, and 404s
+        # with either missing. OPTIONAL on purpose: until the founder creates
+        # them the deploy continues and the canary reports not-provisioned,
+        # exactly as it does for any other missing canary secret. The pair is
+        # installed in one atomic write so the door is never half-configured.
+        env:
+          TINYASSETS_CANARY_DOOR_KEY: ${{ secrets.TINYASSETS_CANARY_DOOR_KEY }}
+          TINYASSETS_CANARY_USER_ID: ${{ vars.TINYASSETS_CANARY_USER_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TINYASSETS_CANARY_DOOR_KEY}" ] || [ -z "${TINYASSETS_CANARY_USER_ID}" ]; then
+            echo "::warning::canary sign-in door not configured (needs secret TINYASSETS_CANARY_DOOR_KEY and variable TINYASSETS_CANARY_USER_ID); the route stays 404 and the core canary cannot sign in"
+            exit 0
+          fi
+          if [ "${#TINYASSETS_CANARY_DOOR_KEY}" -lt 32 ]; then
+            echo "::error::TINYASSETS_CANARY_DOOR_KEY is under 32 bytes; the daemon refuses a short door key"
+            exit 1
+          fi
+          printf '%s\n%s\n' "${TINYASSETS_CANARY_DOOR_KEY}" "${TINYASSETS_CANARY_USER_ID}" \
+            | ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo bash /tmp/install-tinyassets-env.sh set-pair TINYASSETS_CANARY_DOOR_KEY TINYASSETS_CANARY_USER_ID"
+          echo "canary sign-in door synced"
+
       # Expected-instance state for cloud provenance admission
       # (openspec change cloud-only-runtime-admission, task 4). This MUST run
       # before the candidate starts: the release receipt below is published only
@@ -634,6 +663,7 @@ jobs:
         with:
           email: ${{ secrets.TINYASSETS_CANARY_EMAIL }}
           password: ${{ secrets.TINYASSETS_CANARY_PASSWORD }}
+          door-key: ${{ secrets.TINYASSETS_CANARY_DOOR_KEY }}
           hmac-key: ${{ secrets.TINYASSETS_CANARY_HMAC_KEY }}
           service-url: ${{ vars.TINYASSETS_CANARY_SERVICE_URL }}
           home: ${{ vars.TINYASSETS_CANARY_UNIVERSE_ID }}

@@ -218,7 +218,10 @@ def test_live_platform_failure_fails_the_step_and_model_rows_do_not(monkeypatch,
     assert live.main(["--report", str(tmp_path / "red.json")]) == 1
 
     async def model_red(report):
-        report["model_dependent"] = ["chat_stream", "patch_request"]
+        # The probe's real advisory set: the rows it cannot observe at all
+        # (`approval` needs the protected cookie the canary door never issues)
+        # must not roll a deploy back either.
+        report["model_dependent"] = ["chat_stream", "patch_request", "approval"]
         for name in CAPABILITIES:
             if name not in report["model_dependent"]:
                 live.passed(report, name, {"verified": True})

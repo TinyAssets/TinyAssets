@@ -1,9 +1,11 @@
 """Make the dedicated core-canary owner ready, the way a normal user would.
 
-The canary signs in with three secrets (``TINYASSETS_CANARY_EMAIL``,
-``TINYASSETS_CANARY_PASSWORD``, ``TINYASSETS_CANARY_HMAC_KEY``), refuses any
-account whose home is not ``TINYASSETS_CANARY_UNIVERSE_ID``, and then
-creates or repairs, through the same public doors any owner uses:
+The canary signs in with four secrets (``TINYASSETS_CANARY_EMAIL``,
+``TINYASSETS_CANARY_PASSWORD``, ``TINYASSETS_CANARY_HMAC_KEY``,
+``TINYASSETS_CANARY_DOOR_KEY``) through the canary-only door the deployment
+pins to this one account, refuses any account whose home is not
+``TINYASSETS_CANARY_UNIVERSE_ID``, and then creates or repairs, through the
+same public doors any owner uses:
 
 - a saved default model: a free model (``:free``) its connected source offers,
   since paid models exceed the canary's cost cap;
@@ -43,7 +45,14 @@ BRANCH_SPEC = {
     "edges": [{"from": "echo", "to": "END"}],
     "state_schema": [{"name": "nonce", "type": "str"}, {"name": "echo", "type": "str"}],
 }
-SECRETS = ("TINYASSETS_CANARY_EMAIL", "TINYASSETS_CANARY_PASSWORD", "TINYASSETS_CANARY_HMAC_KEY")
+SECRETS = (
+    "TINYASSETS_CANARY_EMAIL",
+    "TINYASSETS_CANARY_PASSWORD",
+    "TINYASSETS_CANARY_HMAC_KEY",
+    # The canary-only sign-in door's shared key. The deployment holds the same
+    # value and pins the one account it works for.
+    "TINYASSETS_CANARY_DOOR_KEY",
+)
 # The dedicated canary's home id (repo variable, not a secret). Sign-in refuses
 # any other account, so wrong credentials can never repair a real owner.
 HOME = "TINYASSETS_CANARY_UNIVERSE_ID"
@@ -59,8 +68,14 @@ def credentials() -> dict | None:
     values = [os.environ.get(name, "") for name in REQUIRED]
     if not all(values):
         return None
-    email, password, key, home = values
-    return {"email": email, "password": password, "service_hmac_key": key, "universe_id": home}
+    email, password, key, door_key, home = values
+    return {
+        "email": email,
+        "password": password,
+        "service_hmac_key": key,
+        "door_key": door_key,
+        "universe_id": home,
+    }
 
 
 def missing_secrets() -> list[str]:

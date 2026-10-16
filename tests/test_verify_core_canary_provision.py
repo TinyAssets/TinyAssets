@@ -14,6 +14,7 @@ _SECRETS = {
     "TINYASSETS_CANARY_EMAIL": "canary@example.invalid",
     "TINYASSETS_CANARY_PASSWORD": "secret-value",
     "TINYASSETS_CANARY_HMAC_KEY": "hmac-secret",
+    "TINYASSETS_CANARY_DOOR_KEY": "door-secret",
     "TINYASSETS_CANARY_UNIVERSE_ID": "u-canary",
 }
 
@@ -53,6 +54,7 @@ def test_failed_setup_names_the_step_not_the_secret(monkeypatch, capsys, tmp_pat
     assert "no free model" in captured.err
     assert "secret-value" not in captured.err + captured.out
     assert "hmac-secret" not in captured.err + captured.out
+    assert "door-secret" not in captured.err + captured.out
     assert output.read_text(encoding="utf-8") == "provisioned=0\n"
 
 
@@ -223,6 +225,61 @@ def test_missing_home_id_is_not_provisioned(monkeypatch, capsys):
     _set(monkeypatch, TINYASSETS_CANARY_UNIVERSE_ID=None)
     assert provision.main() == 0
     assert "TINYASSETS_CANARY_UNIVERSE_ID" in capsys.readouterr().err
+
+
+class _Door:
+    """The canary door and /app/me, as the probe sees them."""
+
+    def __init__(self, *, status=200, body=None, home="u-canary"):
+        self.status, self.body, self.home = status, body, home
+        self.headers, self.posts = {}, []
+
+    async def post(self, url, json):
+        self.posts.append((url, json))
+        document = {"access_token": "canary-session"} if self.body is None else self.body
+        return _Response(document, self.status)
+
+    async def get(self, url):
+        assert url.endswith("/app/me")
+        assert self.headers["Authorization"] == "Bearer canary-session"
+        return _Response({"universe_id": self.home})
+
+
+def _login(door, monkeypatch, **overrides):
+    _set(monkeypatch)
+    from scripts import core_capability_live as live
+
+    config = {**setup.credentials(), **overrides}
+    return asyncio.run(live.login(config, door))
+
+
+def test_login_presents_the_door_key_and_the_password_and_keeps_the_home_check(monkeypatch):
+    door = _Door()
+    assert _login(door, monkeypatch) == "canary-session"
+    url, body = door.posts[0]
+    assert url == "https://tinyassets.io/app/canary-sign-in"
+    assert body == {
+        "key": "door-secret", "email": "canary@example.invalid", "password": "secret-value",
+    }
+    assert door.headers["Authorization"] == "Bearer canary-session"
+
+
+def test_a_refused_door_names_the_status_and_code_only(monkeypatch):
+    from scripts import core_capability_live as live
+
+    door = _Door(status=403, body={"error": "not_the_canary_account"})
+    with pytest.raises(live.ProbeFailure) as refusal:
+        _login(door, monkeypatch)
+    message = str(refusal.value)
+    assert "403" in message and "not_the_canary_account" in message
+    assert "secret-value" not in message and "door-secret" not in message
+
+
+def test_another_home_stops_the_probe_before_it_repairs_anything(monkeypatch):
+    from scripts import core_capability_live as live
+
+    with pytest.raises(live.ProbeFailure, match="dedicated canary home"):
+        _login(_Door(home="u-someone-else"), monkeypatch)
 
 
 def test_verification_calls_the_real_provisioning_pass(monkeypatch):
