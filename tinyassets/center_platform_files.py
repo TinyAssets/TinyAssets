@@ -95,6 +95,11 @@ def _read_existing(universe_dir: Path, name: str, *, max_bytes: int) -> bytes | 
 
 
 def _write(universe_dir: Path, name: str, data: bytes, *, append: bool = False) -> None:
+    _write_chunks(universe_dir, name, (data,), append=append)
+
+
+def _write_chunks(universe_dir: Path, name: str, chunks, *, append: bool = False) -> None:
+    """Append, or atomically replace, ``name`` from an iterable of byte chunks."""
     if fs._POSIX:
         with _directory(universe_dir) as directory:
             try:
@@ -112,12 +117,17 @@ def _write(universe_dir: Path, name: str, data: bytes, *, append: bool = False) 
                 flags |= os.O_EXCL
             fd = os.open(target, flags, 0o600, dir_fd=directory)
             try:
-                view = memoryview(data)
-                while view:
-                    view = view[os.write(fd, view):]
+                for chunk in chunks:
+                    view = memoryview(chunk)
+                    while view:
+                        view = view[os.write(fd, view):]
                 os.fsync(fd)
-            finally:
+            except BaseException:
                 os.close(fd)
+                if not append:
+                    os.unlink(target, dir_fd=directory)
+                raise
+            os.close(fd)
             if not append:
                 try:
                     os.replace(target, name, src_dir_fd=directory, dst_dir_fd=directory)
@@ -135,10 +145,16 @@ def _write(universe_dir: Path, name: str, data: bytes, *, append: bool = False) 
     except FileNotFoundError:
         pass
     temporary = target if append else parent / f".{uuid.uuid4().hex}.tmp"
-    with temporary.open("ab" if append else "xb") as handle:
-        handle.write(data)
-        handle.flush()
-        os.fsync(handle.fileno())
+    try:
+        with temporary.open("ab" if append else "xb") as handle:
+            for chunk in chunks:
+                handle.write(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        if not append:
+            temporary.unlink(missing_ok=True)
+        raise
     if not append:
         os.replace(temporary, target)
 
@@ -201,10 +217,6 @@ def ledger_path(universe_dir: Path) -> Path:
     return _path(universe_dir, LEDGER)
 
 
-def read_ledger(universe_dir: Path) -> bytes | None:
-    return _read(universe_dir, LEDGER)
-
-
 def iter_ledger_lines(universe_dir: Path):
     """Scan any size ledger with at most one bounded row in memory.
 
@@ -234,6 +246,11 @@ def iter_ledger_lines(universe_dir: Path):
 
 def write_ledger(universe_dir: Path, data: bytes, *, append: bool = False) -> None:
     _write(universe_dir, LEDGER, data, append=append)
+
+
+def replace_ledger(universe_dir: Path, chunks) -> None:
+    """Atomically replace the ledger from streamed rows; the caller holds the lock."""
+    _write_chunks(universe_dir, LEDGER, chunks)
 
 
 def open_ledger_lock(universe_dir: Path) -> int:

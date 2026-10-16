@@ -68,6 +68,36 @@ def test_record_streams_past_old_size_cap_and_rejects_old_and_new_duplicates(tmp
             record_attempt(tmp_path, duplicate)
         assert path.stat().st_size == size
 
+def test_every_reader_and_update_stream_past_old_size_cap(tmp_path):
+    first = ShipAttempt(ship_attempt_id="first", created_at="t", updated_at="t",
+                        ship_status="opened")
+    record_attempt(tmp_path, first)
+    path = ledger_path(tmp_path)
+    with path.open("ab") as stream:
+        for i in range(18):
+            stream.write(json.dumps({
+                "ship_attempt_id": f"padding-{i}", "created_at": "t", "updated_at": "t",
+                "ship_status": "skipped", "request_id": "x" * 1024 * 1024,
+            }).encode() + b"\n")
+    last = ShipAttempt(ship_attempt_id="last", created_at="t", updated_at="t",
+                       ship_status="opened")
+    record_attempt(tmp_path, last)
+    assert path.stat().st_size > 16 * 1024 * 1024
+
+    assert [a.ship_attempt_id for a in read_attempts(tmp_path, limit=1)] == ["last"]
+    assert [a.ship_attempt_id for a in read_attempts(tmp_path, ship_status="opened")] == [
+        "first", "last"]
+    assert len(read_attempts(tmp_path)) == 20
+    assert find_attempt(tmp_path, "first").ship_status == "opened"
+
+    updated = update_attempt(tmp_path, "first", ship_status="merged")
+    assert updated.ship_status == "merged"
+    assert find_attempt(tmp_path, "first").ship_status == "merged"
+    assert len(read_attempts(tmp_path)) == 20
+    with pytest.raises(KeyError):
+        update_attempt(tmp_path, "never-recorded", ship_status="merged")
+    assert len(read_attempts(tmp_path)) == 20
+
 # ── rubric warn-mode observability ─────────────────────────────────────────
 
 

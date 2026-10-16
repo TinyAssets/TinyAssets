@@ -122,6 +122,40 @@ def test_first_contact_uses_only_box_soul(center, monkeypatch):
     assert not home_is_complete(center.parent, center.name)
 
 
+def test_pinned_soul_reads_a_box_only_soul_without_a_session(center, monkeypatch, tmp_path):
+    """Prompt assembly pins the soul before any session is bound; a soul that
+    lives only in the box must still carry its purpose, why and hard lines."""
+    from tinyassets.boxes.local import LocalBoxProvider
+    from tinyassets.control_plane.binding import current_binding
+    from tinyassets.universe_soul import (
+        UniverseSoul,
+        read_pinned_universe_soul,
+        render_soul_markdown,
+    )
+
+    provider = LocalBoxProvider(boxes_root=tmp_path / "boxes", state_dir=tmp_path / "state",
+                                owner_of=lambda _center: "owner", allow_unisolated=True)
+    try:
+        handle = provider.bind(center.name, account_id="owner")
+        text = render_soul_markdown(UniverseSoul(
+            name="Box soul", purpose="keep the books", why="the founder asked",
+            hard_lines=("never wire money",)))
+        provider.write(handle, "seed-soul", "/cc/soul.md", text.encode(),
+                       max_bytes=len(text.encode()))
+        monkeypatch.setattr("tinyassets.agent_loop.served_chat.configured_box_provider",
+                            lambda: (provider, None))
+        assert current_binding() is None
+        assert not (center / "soul.md").exists()
+        pinned = read_pinned_universe_soul(center)
+        assert pinned is not None
+        context = pinned.context(max_chars=2000)
+        assert context["purpose"] == "keep the books"
+        assert context["why"] == "the founder asked"
+        assert context["hard_lines"] == ["never wire money"]
+    finally:
+        provider.close()
+
+
 def test_soul_presence_uses_admitted_binding(center, monkeypatch):
     from tinyassets.boxes.provider import BoxHandle, ExecLimits
     from tinyassets.control_plane.binding import SessionBinding, use_binding
@@ -142,7 +176,7 @@ def test_soul_presence_uses_admitted_binding(center, monkeypatch):
 
 
 def test_host_files_refuse_links_and_bad_center(center):
-    from tinyassets.center_platform_files import is_paused, read_ledger, set_paused
+    from tinyassets.center_platform_files import is_paused, set_paused
 
     with pytest.raises(ValueError):
         is_paused("../other")
@@ -159,14 +193,14 @@ def test_host_files_refuse_links_and_bad_center(center):
     link.unlink()
     (center / "auto_ship_attempts.jsonl").symlink_to(victim)
     with pytest.raises(OSError):
-        read_ledger(center)
+        read_attempts(center)
+    assert victim.read_text() == "do not change"
 
 
 def test_host_helpers_use_caller_base_and_missing_centers_are_empty(center, monkeypatch):
     from tinyassets.center_platform_files import (
         center_from_path,
         is_paused,
-        read_ledger,
         read_worker_heartbeats,
         set_paused,
     )
@@ -177,7 +211,6 @@ def test_host_helpers_use_caller_base_and_missing_centers_are_empty(center, monk
     missing = center.parent / "missing"
     assert not is_paused(missing)
     assert read_worker_heartbeats(missing, max_bytes=4096) == {}
-    assert read_ledger(missing) is None
     assert read_attempts(missing) == []
     assert not missing.exists()
     assert center_from_path(center, base_path=center.parent) == center.name

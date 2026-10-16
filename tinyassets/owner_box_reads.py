@@ -13,6 +13,10 @@ class UnadmittedCenter(BoxAuthError):
     """No proven center to read; presence probes may report absent."""
 
 
+class MissingCenter(UnadmittedCenter):
+    """The center has no host stub at all: nothing exists to read."""
+
+
 def _access(universe_dir: Path):
     from tinyassets.agent_loop.served_chat import configured_box_provider
     from tinyassets.broker.owner_identities import CenterUnadmitted, admitted_owner
@@ -28,7 +32,7 @@ def _access(universe_dir: Path):
         with _directory(root):
             pass
     except FileNotFoundError as exc:
-        raise UnadmittedCenter(f"command center {center!r} has no host stub") from exc
+        raise MissingCenter(f"command center {center!r} has no host stub") from exc
     binding = current_binding()
     if binding is not None and binding.universe_dir == root:
         binding.validate(binding.handle.account_id, root)

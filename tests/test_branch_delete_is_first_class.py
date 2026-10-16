@@ -401,16 +401,18 @@ def test_a_universe_whose_soul_declares_it_as_the_LOOP_branch_is_named(universe_
     branch for every incoming request; deleting it leaves the universe
     queuing a workflow that does not exist."""
     from tinyassets.api.helpers import _base_path
-    from tinyassets.daemon_server import set_founder_home
+    from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
     from tinyassets.universe_soul import write_universe_soul
 
-    us, _actor = universe_surface
+    us, actor = universe_surface
     bid = _create(us, "the-loop")
     udir = _base_path() / "u-loop"
     udir.mkdir()
     # ...and an OWNER, or it is not a universe and cannot be a dependent
-    # (2026-09-02 -- tests/test_a_universe_needs_an_owner.py).
-    set_founder_home(_base_path(), founder_sub="test-owner::u-loop", universe_id="u-loop")
+    # (2026-09-02 -- tests/test_a_universe_needs_an_owner.py). The caller's own
+    # center, so the refusal may name it.
+    set_founder_home(_base_path(), founder_sub=actor["id"], universe_id="u-loop")
+    grant_universe_ownership(_base_path(), universe_id="u-loop", owner_id=actor["id"])
     write_universe_soul(udir, name="Loop universe", purpose="runs the loop", loop_branch_def_id=bid)
 
     out = _delete(us, bid)
@@ -420,6 +422,36 @@ def test_a_universe_whose_soul_declares_it_as_the_LOOP_branch_is_named(universe_
 
     write_universe_soul(udir, clear_loop_branch=True)
     assert _delete(us, bid)["status"] == "deleted"
+
+
+def test_another_owners_PRIVATE_loop_center_blocks_without_being_named(universe_surface):
+    """Another owner's center that runs this branch as its loop still blocks the
+    delete (it would queue a missing workflow), but the caller only gets a count:
+    its id is private to its owner."""
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
+    from tinyassets.universe_soul import write_universe_soul
+
+    us, _actor = universe_surface
+    bid = _create(us, "the-loop")
+    _make_public(us, bid)
+    udir = _base_path() / "u-bobs"
+    udir.mkdir()
+    set_founder_home(_base_path(), founder_sub="bob", universe_id="u-bobs")
+    grant_universe_ownership(_base_path(), universe_id="u-bobs", owner_id="bob")
+    from tinyassets.api.visibility import set_universe_visibility
+    from tinyassets.daemon_server import ensure_universe_registered
+
+    ensure_universe_registered(_base_path(), universe_id="u-bobs", universe_path=udir)
+    set_universe_visibility("u-bobs", "private", source="owner")
+    write_universe_soul(udir, name="Bob's", purpose="runs alice's loop", loop_branch_def_id=bid)
+
+    out = _delete(us, bid)
+    assert out.get("error") == "branch_has_dependents", out
+    assert out["dependents"]["universes"] == []
+    assert out["dependents"]["other_owners_universes"] == 1
+    assert "u-bobs" not in json.dumps(out)
+    assert bid in _listed(us)
 
 
 def test_an_UNOWNED_directory_carrying_the_soul_is_not_a_dependent(

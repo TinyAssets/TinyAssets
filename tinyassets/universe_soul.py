@@ -169,6 +169,14 @@ def read_universe_soul(universe_dir: Path, *, strict: bool = False) -> UniverseS
     on a refusal, so an update never rebuilds the soul from defaults over a
     file it could not read.
     """
+    text = _read_soul_text(universe_dir, strict=strict)
+    if text is None:
+        return None
+    return _soul_from_text(text)
+
+
+def _read_soul_text(universe_dir: Path, *, strict: bool = False) -> str | None:
+    """soul.md from the owner's box, newline-normalized, or ``None``."""
     from tinyassets.owner_box_reads import box_read
     from tinyassets.universe_files import MAX_UNIVERSE_FILE_BYTES
 
@@ -181,7 +189,10 @@ def read_universe_soul(universe_dir: Path, *, strict: bool = False) -> UniverseS
         if strict:
             raise
         return None
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
+
+def _soul_from_text(text: str) -> UniverseSoul:
     return UniverseSoul(
         schema_version=_read_int_meta(text, "Schema version", SOUL_SCHEMA_VERSION),
         name=_read_name_meta(text),
@@ -202,16 +213,11 @@ def read_universe_soul(universe_dir: Path, *, strict: bool = False) -> UniverseS
 
 
 def read_pinned_universe_soul(universe_dir: Path) -> PinnedUniverseSoul | None:
-    soul = read_universe_soul(universe_dir)
-    if soul is None:
+    # One box read: the parsed soul and its pinned content are the same bytes.
+    content = _read_soul_text(universe_dir)
+    if content is None:
         return None
-
-    from tinyassets.universe_files import read_universe_text
-
-    try:
-        content = read_universe_text(universe_dir, SOUL_FILENAME)
-    except (OSError, UnicodeDecodeError):
-        return None
+    soul = _soul_from_text(content)
 
     version_id = _matching_soul_version_id(universe_dir, content)
     if version_id is None:
@@ -386,13 +392,15 @@ def effect_authority_from_soul(universe_dir: Path) -> tuple[str, ...]:
     if soul is not None:
         return soul.effect_authority
     # The same box reader distinguishes absence from an unreadable existing soul.
-    from tinyassets.owner_box_reads import box_stat
+    from tinyassets.owner_box_reads import MissingCenter, box_stat
 
     try:
         if box_stat(universe_dir, SOUL_FILENAME) is None:
             return ()
+    except MissingCenter:
+        return ()  # no center exists at all, so it declares nothing
     except OSError:
-        pass  # unadmitted center or box error: absence unproven -> fail closed below
+        pass  # refused admission or box error: absence unproven -> fail closed below
     raise OSError(
         "soul file exists but could not be read; failing closed for "
         "effect-authority resolution"

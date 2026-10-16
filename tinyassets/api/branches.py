@@ -1111,18 +1111,32 @@ def _branch_dependents(
         ]
     except OSError:
         universe_dirs = []
+    from tinyassets.api.visibility import visibility_permits
+
+    # Another owner's center still blocks the delete (its loop would queue a
+    # missing workflow), but the caller only learns a count, never its id.
+    others = 0
     for udir in sorted(universe_dirs):
-        if not soul_present(udir):
-            continue
+        visible = visibility_permits(udir.name, "discover_existence")
         try:
+            if not soul_present(udir):
+                continue
             soul = read_universe_soul(udir)
         except Exception:  # noqa: BLE001 - one unreadable soul must not hide the rest
             logger.exception("could not read %s while checking branch dependents", udir / "soul.md")
-            loops.append(f"{udir.name}?")
+            if visible:
+                loops.append(f"{udir.name}?")
+            else:
+                others += 1
             continue
         if soul is not None and (soul.loop_branch_def_id or "").strip() == branch_def_id:
-            loops.append(udir.name)
+            if visible:
+                loops.append(udir.name)
+            else:
+                others += 1
     out["universes"] = loops
+    if others:
+        out["other_owners_universes"] = others
     return out
 
 
@@ -1166,7 +1180,8 @@ def _ext_branch_delete_own(kwargs: dict[str, Any]) -> str:
                 "subscriptions, unset the goals' canonical binding, edit the "
                 "branches (and their published versions) that invoke it, or "
                 "declare a different loop branch in the command centers that run it, "
-                "then delete."
+                "then delete. `other_owners_universes` counts command centers you "
+                "cannot see whose owners run it as their loop; they must change it first."
             ),
         })
     removed = delete_branch_definition(base, branch_def_id=bid)

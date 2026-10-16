@@ -34,6 +34,7 @@ will mutate ``ship_status`` to ``"opened"`` once it lands, then to
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import json
 import os
@@ -54,7 +55,7 @@ from tinyassets.center_platform_files import (
 from tinyassets.center_platform_files import (
     iter_ledger_lines,
     open_ledger_lock,
-    read_ledger,
+    replace_ledger,
     write_ledger,
 )
 from tinyassets.center_platform_files import (
@@ -238,16 +239,14 @@ def _file_lock(universe_path: Path) -> Iterator[None]:
 # ── Read / write primitives ──────────────────────────────────────────────
 
 
-def _read_raw(lp: Path) -> list[dict]:
-    """Read all rows from the JSONL file. Returns [] if missing or empty.
+def _stream_rows(lp: Path) -> Iterator[dict]:
+    """Every row, one bounded line at a time; the caller holds the lock.
 
     Skips blank lines silently. Raises ``RuntimeError`` on a malformed
     JSON line — Hard Rule 8 (no silent fallback on corrupt data).
     """
-    data = read_ledger(lp.parent)
-    if data is None:
-        return []
-    return list(_parse_rows(lp, data.splitlines()))
+    with contextlib.closing(iter_ledger_lines(lp.parent)) as lines:
+        yield from _parse_rows(lp, lines)
 
 
 def _parse_rows(lp: Path, lines) -> Iterator[dict]:
@@ -268,14 +267,13 @@ def _parse_rows(lp: Path, lines) -> Iterator[dict]:
         yield row
 
 
-def _write_raw(lp: Path, rows: list[dict]) -> None:
-    """Atomic temp+rename rewrite of the entire ledger.
+def _write_raw(lp: Path, rows: Iterator[dict]) -> None:
+    """Atomically replace the ledger from streamed rows (``update_attempt``).
 
-    Used by ``update_attempt``. ``record_attempt`` uses a true append
-    instead so it does not have to re-serialize the whole file.
+    ``record_attempt`` appends instead, so it never re-serializes the file.
     """
-    data = ''.join(json.dumps(row, default=str) + '\n' for row in rows).encode()
-    write_ledger(lp.parent, data)
+    replace_ledger(lp.parent, ((json.dumps(row, default=str) + "\n").encode()
+                               for row in rows))
 
 
 # ── Public API ───────────────────────────────────────────────────────────
@@ -294,18 +292,20 @@ def read_attempts(
     ``limit`` is applied AFTER ``ship_status`` so callers can ask for
     "the last 10 merged attempts" cleanly.
     """
+    if limit is not None and limit <= 0:
+        return []
     lp = ledger_path(universe_path)
+    # A tail keeps only ``limit`` rows in memory; the scan streams any size.
+    kept = collections.deque(maxlen=limit) if limit is not None else []
     try:
         with _file_lock(universe_path):
-            raw = _read_raw(lp)
+            for row in _stream_rows(lp):
+                attempt = ShipAttempt.from_dict(row)
+                if ship_status is None or attempt.ship_status == ship_status:
+                    kept.append(attempt)
     except FileNotFoundError:
-        raw = []
-    attempts = [ShipAttempt.from_dict(row) for row in raw]
-    if ship_status is not None:
-        attempts = [a for a in attempts if a.ship_status == ship_status]
-    if limit is not None:
-        attempts = attempts[-limit:] if limit > 0 else []
-    return attempts
+        return []
+    return list(kept)
 
 
 def find_attempt(
@@ -315,12 +315,11 @@ def find_attempt(
     lp = ledger_path(universe_path)
     try:
         with _file_lock(universe_path):
-            raw = _read_raw(lp)
+            for row in _stream_rows(lp):
+                if row.get("ship_attempt_id") == ship_attempt_id:
+                    return ShipAttempt.from_dict(row)
     except FileNotFoundError:
-        raw = []
-    for row in raw:
-        if row.get("ship_attempt_id") == ship_attempt_id:
-            return ShipAttempt.from_dict(row)
+        return None
     return None
 
 
@@ -426,13 +425,12 @@ def record_attempt(universe_path: Path, attempt: ShipAttempt) -> None:
 
     lp = ledger_path(universe_path)
     with _file_lock(universe_path):
-        with contextlib.closing(iter_ledger_lines(lp.parent)) as lines:
-            for row in _parse_rows(lp, lines):
-                if row.get("ship_attempt_id") == attempt.ship_attempt_id:
-                    raise ValueError(
-                        f"ship_attempt_id {attempt.ship_attempt_id!r} already "
-                        f"recorded — use update_attempt to mutate"
-                    )
+        for row in _stream_rows(lp):
+            if row.get("ship_attempt_id") == attempt.ship_attempt_id:
+                raise ValueError(
+                    f"ship_attempt_id {attempt.ship_attempt_id!r} already "
+                    f"recorded — use update_attempt to mutate"
+                )
         write_ledger(lp.parent,
                      (json.dumps(attempt.to_dict(), default=str) + '\n').encode(),
                      append=True)
@@ -466,17 +464,24 @@ def update_attempt(
 
     lp = ledger_path(universe_path)
     with _file_lock(universe_path):
-        raw = _read_raw(lp)
-        for idx, row in enumerate(raw):
-            if row.get("ship_attempt_id") == ship_attempt_id:
-                row.update({k: v for k, v in fields.items() if k != "updated_at"})
-                row["updated_at"] = fields.get("updated_at") or _now_iso()
-                raw[idx] = row
-                _write_raw(lp, raw)
-                return ShipAttempt.from_dict(row)
-        raise KeyError(
-            f"ship_attempt_id {ship_attempt_id!r} not found in ledger at {lp}"
-        )
+        # First pass proves the row exists, so a miss never rewrites the file.
+        if not any(row.get("ship_attempt_id") == ship_attempt_id
+                   for row in _stream_rows(lp)):
+            raise KeyError(
+                f"ship_attempt_id {ship_attempt_id!r} not found in ledger at {lp}"
+            )
+        updated: dict = {}
+
+        def rewritten() -> Iterator[dict]:
+            for row in _stream_rows(lp):
+                if not updated and row.get("ship_attempt_id") == ship_attempt_id:
+                    row.update({k: v for k, v in fields.items() if k != "updated_at"})
+                    row["updated_at"] = fields.get("updated_at") or _now_iso()
+                    updated.update(row)
+                yield row
+
+        _write_raw(lp, rewritten())
+        return ShipAttempt.from_dict(updated)
 
 
 # ── Convenience constructor for the common Phase 1 path ──────────────────
