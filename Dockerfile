@@ -325,6 +325,7 @@ RUN /opt/venv/bin/playwright install --with-deps --only-shell chromium &&\
     ls -d /opt/ms-playwright/chromium_headless_shell-*
 
 COPY --from=builder /build/tinyassets /app/tinyassets
+COPY deploy/box_project_readback.py /app/deploy/box_project_readback.py
 COPY --from=builder /build/domains /app/domains
 COPY --from=builder /build/pyproject.toml /app/pyproject.toml
 # Install the actual package metadata and entry points against /app. Dependencies

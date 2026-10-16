@@ -83,10 +83,12 @@ rollback_box() {
                 log "CRITICAL: failed to restore original box tree ${name}"
         fi
     done
-    if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
-            "${BOX_STORE_DIR}" "${BOX_STORE_DIR}" \
-            "${VOLUME_DIR}/.broker/state/owner-identities.db"; then
-        log "CRITICAL: failed to restore original box quota limits"
+    if [[ "${quota_restore:-0}" == 1 ]]; then
+        if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
+                "${BOX_STORE_DIR}" "${BOX_STORE_DIR}" \
+                "${VOLUME_DIR}/.broker/state/owner-identities.db"; then
+            log "CRITICAL: failed to restore original box quota limits"
+        fi
     fi
     rmdir -- "$BOX_OLD" 2>/dev/null || true
     BOX_SWAP_ACTIVE=0
@@ -447,6 +449,19 @@ if [[ -n "${BOX_NAME:-}" ]]; then
             exit 4
         fi
     fi
+    quota_restore=0
+    if [[ "$staged_layout" == owner-box ]]; then
+        quota_restore=1
+    else
+        # Older paired backups can carry boxes without a box-layout marker.
+        # Only an empty pre-move box archive can be restored without box_records.
+        for tree in "${BOX_STAGE}"/[0-9]*; do
+            if [[ -e "$tree" || -L "$tree" ]]; then
+                quota_restore=1
+                break
+            fi
+        done
+    fi
     REGISTRY="${STAGE_DIR}/.broker/state/owner-identities.db"
     if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
             --snapshot-data "${STAGE_DIR}"; then
@@ -518,10 +533,15 @@ if [[ -n "${BOX_STAGE}" ]]; then
         box_old_names+=("$name")
     done
     quota_script="$(dirname "$(realpath "$0")")/box-store-quotas.py"
-    if ! python3 "$quota_script" "${BOX_STORE_DIR}" "${BOX_OLD}" \
-            "${VOLUME_DIR}/.broker/state/owner-identities.db" --clear; then
-        log "ERROR: failed to clear retained box project IDs"
-        exit 4
+    # A failed owner-split move may have written box trees before creating
+    # box_records. The staged pre-move archive has no boxes to install, so
+    # retain those trees and their quota state together for rollback/inspection.
+    if [[ "$quota_restore" == 1 ]]; then
+        if ! python3 "$quota_script" "${BOX_STORE_DIR}" "${BOX_OLD}" \
+                "${VOLUME_DIR}/.broker/state/owner-identities.db" --clear; then
+            log "ERROR: failed to clear retained box project IDs"
+            exit 4
+        fi
     fi
     for tree in "${BOX_STAGE}"/[0-9]*; do
         [[ -d "$tree" && ! -L "$tree" ]] || continue
@@ -530,9 +550,11 @@ if [[ -n "${BOX_STAGE}" ]]; then
         mv -- "$tree" "${BOX_STORE_DIR}/"
         box_new_names+=("$name")
     done
-    if ! python3 "$quota_script" "${BOX_STORE_DIR}" "${BOX_STORE_DIR}" "$REGISTRY"; then
-        log "ERROR: box-store quota restoration failed"
-        exit 4
+    if [[ "$quota_restore" == 1 ]]; then
+        if ! python3 "$quota_script" "${BOX_STORE_DIR}" "${BOX_STORE_DIR}" "$REGISTRY"; then
+            log "ERROR: box-store quota restoration failed"
+            exit 4
+        fi
     fi
     rmdir -- "$BOX_STAGE"
 fi

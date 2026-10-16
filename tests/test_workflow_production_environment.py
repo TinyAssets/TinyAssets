@@ -45,6 +45,9 @@ PRODUCTION_SECRETS = (
     "TINYASSETS_CANARY_EMAIL",
     "TINYASSETS_CANARY_PASSWORD",
     "TINYASSETS_CANARY_HMAC_KEY",
+    # Half the proof the canary-only sign-in door needs; the deployment holds
+    # the other copy. A branch run must never see it.
+    "TINYASSETS_CANARY_DOOR_KEY",
 )
 
 # Secrets a job may read WITHOUT `environment: production`. A branch dispatch

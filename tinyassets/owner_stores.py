@@ -105,6 +105,8 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/onboarding/approval_handoff.py",
     "tinyassets/onboarding/owner_sessions.py",
     "tinyassets/onboarding/native_sign_in.py",
+    # Its own attempt budget, in the owner-sessions store the two above share.
+    "tinyassets/onboarding/canary_sign_in.py",
     "tinyassets/outcomes/schema.py",
     "tinyassets/provider_assignment.py",
     "tinyassets/provider_assignment_manifest.py",

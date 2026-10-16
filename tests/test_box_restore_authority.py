@@ -95,6 +95,7 @@ def test_quota_restore_allows_unmaterialized_reservations(tmp_path, monkeypatch)
     calls = []
     monkeypatch.setattr(restore.os, "chown", lambda *args: None)
     monkeypatch.setattr(restore.subprocess, "run", lambda argv, **kwargs: calls.append(argv))
+    monkeypatch.setattr(restore, "verify_owner", lambda *args: None)
     restore.reapply(owners, owners, database)
     assert any("limit -p bhard=1024k 300001" in call for call in calls)
     assert all("300002" not in " ".join(call) for call in calls)

@@ -220,6 +220,9 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app", "/app/token", "/app/me", "/app/apps", "/app/ui-frame", "/app/native-sign-in",
         "/app/run/{listing}", "/app/run/{listing}/preview.png", "/app/unread",
         "/app/owner-sign-in", "/app/owner-sign-in/complete", "/app/approvals/{operation}",
+        # The deploy canary's own sign-in: 404 unless the host pins that one
+        # synthetic account (onboarding/canary_sign_in.py).
+        "/app/canary-sign-in",
         "/app/approval-handoff", "/app/approval-handoff/{ref}",
         # K1: owner-session-only grant/revoke control for outside clients.
         "/app/outside-clients", "/app/api-keys",

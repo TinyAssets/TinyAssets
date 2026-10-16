@@ -452,7 +452,9 @@ full snapshot. The migration is not a startup hook and has no retry ledger or
 fallback path:
 
 1. It refuses unless the volume carries the `owner-split` marker, a backup
-   id is given and the digest verifies.
+   id is given and the digest verifies. Before copying, it reads the migration
+   container's `/proc/self/mountinfo` and refuses any file or directory mount
+   strictly beneath the data root, naming the mount point.
 2. For each owner, it creates the box record in the broker log, rsyncs
    the tree into `/var/lib/boxhostd/owners/<uid>` under the same UID/GID,
    sets the project id and `bhard`, and verifies with `rsync --checksum`.
@@ -462,6 +464,10 @@ fallback path:
 5. After the candidate serves successfully, a post-cutover verified backup
    including the box store is taken and restore-tested on the production
    copy. Only then are the old trees removed (ADR-022 amendment).
+
+Accepted residual: `xfs_quota`'s project walk skips symlinks. Symlink inodes
+created by a restore may therefore remain charged to project 0 (bytes only);
+this causes no cross-owner exposure or data loss.
 
 Any apply failure after mutation requires restoring the verified snapshot;
 the deploy cannot retry the migration or restart the previous image after

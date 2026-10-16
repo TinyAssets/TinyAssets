@@ -9,7 +9,11 @@ import os
 import sqlite3
 import stat
 import subprocess
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from deploy.box_project_readback import verify_owner, verify_tree  # noqa: E402
 
 
 def reapply(store: Path, trees: Path, registry: Path, *, clear: bool = False) -> None:
@@ -51,12 +55,14 @@ def reapply(store: Path, trees: Path, registry: Path, *, clear: bool = False) ->
         else:
             command = f"project -s -p {tree} {project}"
         subprocess.run(["xfs_quota", "-x", "-c", command, str(store)], check=True)
+        if clear:
+            verify_tree(tree, 0, False)
         if not clear:
             subprocess.run(
                 ["xfs_quota", "-x", "-c", f"limit -p bhard={limit // 1024}k {project}", str(store)],
                 check=True,
             )
-    subprocess.run(["xfs_quota", "-x", "-c", "report -p -n", str(store)], check=True)
+            verify_owner(store, tree, project, limit)
 
 
 def fence_restore(current: Path, staged: Path) -> None:

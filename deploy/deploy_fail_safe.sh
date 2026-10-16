@@ -1966,10 +1966,17 @@ box_migration_container() {  # $1 = check|apply, then module arguments
   local data_mount="tinyassets-data:/data:ro"
   local extra=()
   if [ "$1" = "apply" ]; then
-    posture=(--user 0 --cap-add CHOWN --cap-add FOWNER \
+    local store_device
+    store_device="$(findmnt --mountpoint /var/lib/boxhostd/owners -no SOURCE)" || return 1
+    if [[ "$store_device" != /dev/* || ! -b "$store_device" ]]; then
+      err "box migration: owner store has no block device: ${store_device}"
+      return 1
+    fi
+    posture=(--user 0 --cap-add CHOWN --cap-add FOWNER --cap-add FSETID \
       --cap-add DAC_OVERRIDE --cap-add SYS_ADMIN)
     data_mount="tinyassets-data:/data"
     extra=(-v "${MIGRATION_BACKUP_DIR}:/backup:ro" \
+      --device "${store_device}:${store_device}:r" \
       --mount type=bind,src=/var/lib/boxhostd/owners,dst=/box-store)
   fi
   timeout "$MIGRATION_TIMEOUT" docker run --rm --cap-drop ALL ${posture[@]+"${posture[@]}"} \

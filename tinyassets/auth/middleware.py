@@ -664,6 +664,14 @@ def _auth_challenge_path(path: str) -> bool:
 
         if is_callback_path(path):
             return False  # Shell only; authenticated exchange remains challenged.
+    if path == "/app/canary-sign-in":
+        # The deploy canary's own sign-in: it runs BEFORE any bearer exists,
+        # exactly like /app/token, because obtaining one is its whole job. It
+        # answers 404 unless the host pins the one synthetic account, and its
+        # own proof (a server-held key plus that account's WorkOS password) is
+        # stricter than the bearer this carve-out skips. Exactly one path, by
+        # equality (tinyassets/onboarding/canary_sign_in.py).
+        return False
     if path in {"/app", "/app/token", "/app/owner-sign-in"}:
         # The onboarding SPA (tinyassets/onboarding) is a public page that MUST
         # load before sign-in, and /app/token is its same-origin PKCE
