@@ -309,9 +309,11 @@ def test_usage_lease_disconnect_closes_allocation(box):
                        model="model", free=True)
 
 
-def test_owner_startup_refuses_credential_environment(tmp_path, monkeypatch):
+@pytest.mark.parametrize("name", ["OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN",
+                                 "STRIPE_WEBHOOK_SECRET", "TINYASSETS_BILLING_ENTITLEMENT_KEY"])
+def test_owner_startup_refuses_credential_environment(tmp_path, monkeypatch, name):
     monkeypatch.setattr(owner_runtime, "_runtime", None)
-    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
+    monkeypatch.setenv(name, "synthetic-key")
     with pytest.raises(PermissionError, match="environment contains a raw credential"):
         owner_runtime.start(tmp_path, tmp_path / "relay.sock")
     assert owner_runtime.current() is None
