@@ -9,7 +9,7 @@ Every slice:
 
 Nothing deploys until slice 7.
 
-- [ ] 0. Founder approves this design.
+- [x] 0. Founder approves (2026-10-16: "Build what the research told you to build").
 - [ ] 1. The owner daemon runs in a box on the LocalBoxProvider and gVisor
       with an owner data root, serving its ASGI app on a unix socket. Test:
       the app, an MCP read and a chat turn all work for one owner, with no
@@ -28,5 +28,6 @@ Nothing deploys until slice 7.
 - [ ] 6. Migration and census, with the shared root DB split by owner, the
       synthetic rehearsal, and the `--archive` rehearsal on the production
       copy (run by the lead).
-- [ ] 7. Cutover deploy (lead), with deployed sha asserted and one naive-user
+- [ ] 6b. Per-box deploy roll and the canary-box acceptance (D11).
+- [ ] 7. Report the list of unported, dropped features to the founder; then the cutover deploy (lead), with deployed sha asserted and one naive-user
       pass per surface: app, MCP and a scheduled run.

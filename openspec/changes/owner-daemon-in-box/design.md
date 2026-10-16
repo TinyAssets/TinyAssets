@@ -99,10 +99,53 @@ cutover. The `--archive` rehearsal on the private production copy must:
   owner routing; daemon-side `_call_writer` placement; cross-owner listing
   filters; multi-owner tick loop.
 
-## Open questions for the founder
+## D8. Shared stores stay shared, owner stores move (review gap 1)
 
-1. Is a co-admin of a shared center refused, with sharing done by
-   publishing? The research's default is refusal.
-2. Does each owner's daemon run the full feature set from the first cutover,
-   or does the cutover drop features not yet ported (e.g. fantasy domain
-   readers)? Proposed: drop, and list them.
+The migration classifies every table of every shared root database:
+
+- **Router store:** identity and WorkOS mapping, API keys and their owner,
+  MCP OAuth clients and tokens, inbound hook token → owner, the canary
+  account, published commons records.
+- **Broker store:** `owner_identities`, `center_admissions`, `box_records`,
+  credential custody, billing and plan state.
+- **Owner box:** every table whose rows belong to one owner, split by owner
+  principal or center id.
+
+The census refuses only on an unknown table, or an owner-table row that
+cannot be attributed. Shared tables are not split.
+
+## D9. Router state, the per-box secret and the socket (review gaps 2, 3)
+
+- `/hooks/inbound` and `/api` keys resolve to an owner from the router's
+  own maps. That is router state.
+- The router resolves owner → box socket only through broker admission
+  (`owner_machine`), never from a request field.
+- The broker mints the per-box secret when the box is admitted and rotates
+  it on every box start. boxhostd passes it into the box as a read-only file.
+  A restored box gets a fresh secret on its first start.
+
+## D10. Waker floor and the interactive priority (review gaps 4, 5)
+
+- The waker keeps the last reported `next_wake_at` until it is replaced, and
+  wakes every admitted, unsuspended owner at least once every 24 hours. A box
+  that dies before reporting is still woken.
+- At the awake cap, an interactive request evicts the least recently used
+  idle box. Scheduled wakes queue behind interactive requests.
+
+## D11. Deploys, canary and rollback (review gaps 6–8)
+
+- **Deploy:** the router rolls a new image per box. It waits until the box
+  has no running turn, restarts it on the new image, health-checks it, and
+  rolls back that box alone if the check fails. The router itself deploys as
+  today.
+- **Canary:** the canary account signs in through the router and runs one
+  turn in its own box. That is the per-deploy acceptance.
+- **Cutover rollback:** after the first owner-box write, the old image can't
+  run on the split data. Rollback is restore-from-backup only, within the
+  cutover's maintenance window.
+
+## Founder decisions (2026-10-16)
+
+- Build what the research says to build.
+- A co-admin of a shared center is refused, as the research recommends by default. Sharing is by publishing.
+- Features not ported into the owner daemon at cutover are dropped. The list is reported to the founder before the cutover deploy.
