@@ -308,15 +308,46 @@ for owner in plan:
             differences.append(f'missing path={str(target)!r}')
             compare_target = Path('/tmp/c6-empty-target')
             compare_target.mkdir(exist_ok=True)
+        # --delete itemizes target-only paths as well as changed source paths.
         args = ['rsync', '-aH', '--xattrs', '--one-file-system', '--numeric-ids',
                 '--chown', f'{owner.uid}:{owner.uid}', '--checksum', '--dry-run',
+                '--delete',
                 '--itemize-changes', '--out-format=%i %n%L',
                 '--exclude=/.credential-vault.json', '--exclude=/.credentials',
                 '--exclude=/.credentials.json', '--exclude=/.oauth-refresh',
-                '--exclude=/.runtime', f'{source}/', f'{compare_target}/']
+                '--exclude=/.runtime']
+        if mode == 'commit':
+            # The copy is verified before C12 writes its canonical projection.
+            # Compare every other path against that pre-conversion copy.
+            args.append('--exclude=/brain/knowledge/***')
+        args.extend((f'{source}/', f'{compare_target}/'))
         result = subprocess.run(args, capture_output=True, text=True)
-        differences.extend(f'path={str(target)!r} attributes={line!r}'
-                           for line in result.stdout.splitlines())
+        source_brain = source / 'brain'
+        brain_was_absent = not source_brain.exists() and not source_brain.is_symlink()
+        knowledge_was_absent = (not (source_brain / 'knowledge').exists()
+                                and not (source_brain / 'knowledge').is_symlink())
+        for line in result.stdout.splitlines():
+            # Creating brain/knowledge changes its parents' mtimes. Rsync also
+            # cannot delete a new brain parent while knowledge is protected;
+            # the explicit child check below accounts for that one message.
+            if mode == 'commit' and (
+                    (brain_was_absent and line == '.d..t...... ./')
+                    or (brain_was_absent
+                        and line == 'cannot delete non-empty directory: brain')
+                    or (not brain_was_absent and knowledge_was_absent
+                        and line == '.d..t...... brain/')):
+                continue
+            differences.append(f'path={str(target)!r} attributes={line!r}')
+        if mode == 'commit' and brain_was_absent:
+            # Rsync protects the excluded projection and so cannot report an
+            # otherwise extra brain directory. Inspect that parent explicitly.
+            brain = target / 'brain'
+            if brain.is_symlink() or not brain.is_dir():
+                differences.append(f'missing canonical parent path={str(brain)!r}')
+            else:
+                differences.extend(
+                    f'unexpected path={str(child)!r}' for child in brain.iterdir()
+                    if child.name != 'knowledge')
         if result.returncode:
             differences.append(f'rsync rc={result.returncode} path={str(source)!r}')
     if mode == 'commit':
@@ -774,6 +805,13 @@ bash /rehearsal-deploy/backup-restore.sh
             print('[rehearsal] ' + cleared.stdout.strip())
         else:
             assert apply.returncode == 0, apply.stdout + apply.stderr
+            report = docker('run', '--rm', '--user', '0', '--network', 'none',
+                            '-v', f"{names['data']}:/data:ro",
+                            '--mount', f'type=bind,src={store_path},dst=/box-store,readonly',
+                            '--entrypoint', 'python', image, '-c', ARCHIVE_REPORT,
+                            'commit', check=False)
+            print('[rehearsal] ' + report.stdout.strip())
+            assert report.returncode == 0, report.stderr
             quotas = docker('run', '--rm', '--cap-drop', 'ALL', '--user', '0',
                             '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SYS_ADMIN',
                             '--device', f'{device}:{device}:r',
