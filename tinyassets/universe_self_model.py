@@ -40,10 +40,14 @@ def ensure_self_model(universe_dir: Path) -> Path:
     return Path(universe_dir)
 
 
-def read_self_model(universe_dir: Path) -> dict[str, object]:
+def read_self_model(universe_dir: Path, *, owner: str | None = None) -> dict[str, object]:
     """Return known/open identity questions from the root OKF soul bundle."""
+    from tinyassets.universe_owner import owner_of
+    from tinyassets.universe_soul import soul_present
+
     root = Path(universe_dir)
-    if not (root / "soul.md").is_file():
+    owner = owner or owner_of(root.parent, root.name)
+    if not owner or not soul_present(root, owner=owner):
         return {
             "bundle_exists": False,
             "okf_version": "",

@@ -32,13 +32,15 @@ def _fixture_decision(case_id: str):
     raise AssertionError(f"fixture case not found: {case_id}")
 
 
-def test_identity_can_replays_with_soul_and_resolver_fixture(tmp_path: Path) -> None:
+def test_identity_can_replays_with_soul_and_resolver_fixture(tmp_path: Path, monkeypatch) -> None:
     universe_dir = tmp_path / "permission-test-universe"
     ensure_universe_soul(
         universe_dir,
         purpose="Permission consolidation staging universe.",
     )
-    assert has_soul(universe_dir)
+    with monkeypatch.context() as patch:
+        patch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        assert has_soul(universe_dir, owner="test-owner")
 
     decision = _fixture_decision("surface-mismatch-reframe-preserves-claims")
     identity = Identity(

@@ -9,7 +9,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from tinyassets.universe_self_model import SEED_QUESTIONS, ensure_self_model, read_self_model
+
+
+@pytest.fixture(autouse=True)
+def _box_data_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path.parent))
 
 
 def _write_blank_root_bundle(root: Path) -> None:
@@ -47,7 +54,7 @@ def test_seed_questions_match_root_soul_files() -> None:
 
 
 def test_read_missing_root_soul_bundle_reports_absent(tmp_path: Path) -> None:
-    view = read_self_model(tmp_path)
+    view = read_self_model(tmp_path, owner="test-owner")
     assert view["bundle_exists"] is False
     assert view["known"] == []
     assert view["open_questions"] == []
@@ -55,7 +62,7 @@ def test_read_missing_root_soul_bundle_reports_absent(tmp_path: Path) -> None:
 
 def test_read_blank_root_soul_bundle_is_all_open(tmp_path: Path) -> None:
     _write_blank_root_bundle(tmp_path)
-    view = read_self_model(tmp_path)
+    view = read_self_model(tmp_path, owner="test-owner")
     assert view["bundle_exists"] is True
     assert view["okf_version"] == "0.1"
     assert view["known"] == []
@@ -82,7 +89,7 @@ def test_read_root_soul_files_distinguishes_known_from_open(tmp_path: Path) -> N
         "[1] founder.md\n",
         encoding="utf-8",
     )
-    view = read_self_model(tmp_path)
+    view = read_self_model(tmp_path, owner="test-owner")
     known_slugs = {c["slug"] for c in view["known"]}
     open_slugs = {q["slug"] for q in view["open_questions"]}
     assert known_slugs == {"identity"}
@@ -98,7 +105,7 @@ def test_read_ignores_legacy_self_directory(tmp_path: Path) -> None:
         "---\ntype: self/identity\nname: Legacy\n---\n\nOld model.\n",
         encoding="utf-8",
     )
-    view = read_self_model(tmp_path)
+    view = read_self_model(tmp_path, owner="test-owner")
     assert view["known"] == []
     assert view["name"] == ""
 
@@ -109,4 +116,4 @@ def test_read_reports_actual_okf_version_from_root_index(tmp_path: Path) -> None
         '---\nokf_version: "0.2"\n---\n\n# Universe Bundle Index\n',
         encoding="utf-8",
     )
-    assert read_self_model(tmp_path)["okf_version"] == "0.2"
+    assert read_self_model(tmp_path, owner="test-owner")["okf_version"] == "0.2"

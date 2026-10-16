@@ -19,6 +19,14 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets.branch_tasks_v2 import DESCRIPTOR_VALIDITY_SECONDS
+from tinyassets.center_platform_files import (
+    WORKER_HEARTBEAT as SUPERVISOR_HEARTBEAT_FILENAME,  # noqa: F401 - public export
+)
+from tinyassets.center_platform_files import (
+    is_paused,
+    worker_heartbeat_name,
+    write_worker_heartbeat,
+)
 from tinyassets.consumer_reason_actions import RETIRED_FLEET_CONTROL_REASON
 from tinyassets.platform_runtime_provenance import (
     require_process_cloud_admission,
@@ -88,24 +96,13 @@ _STARTED_CONSUMERS: weakref.WeakSet[AssignedQueueConsumer] = weakref.WeakSet()
 # `tinyassets.cloud_worker` fleet supervisor: the served consumer is the only
 # remaining writer of these beats, and `deploy/daemon-watchdog.sh` restarts
 # the daemon when the freshest one goes stale.
-SUPERVISOR_HEARTBEAT_FILENAME = ".worker_supervisor.json"
-
-
-def _safe_worker_id(worker_id: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", worker_id.strip())
-    return safe.strip(".-") or "default"
-
-
 def supervisor_heartbeat_filename(worker_id: str | None = None) -> str:
     """Per-consumer heartbeat filename, falling back to the shared legacy name.
 
     A blank / unsanitizable id keeps the legacy ``.worker_supervisor.json``
     so readers that predate per-consumer beats still find one.
     """
-    clean = _safe_worker_id(worker_id or "")
-    if not worker_id or clean == "default":
-        return SUPERVISOR_HEARTBEAT_FILENAME
-    return f".worker_supervisor.{clean}.json"
+    return worker_heartbeat_name(worker_id)
 
 
 def _configured_poll_seconds() -> float:
@@ -973,7 +970,7 @@ class AssignedQueueConsumer:
             self._automation_runs.add(run_id)
 
     def _paused(self, universe_id: str) -> bool:
-        return (self.base_path / universe_id / ".pause").exists()
+        return is_paused(universe_id)
 
     def _record_reason(
         self,
@@ -1094,13 +1091,7 @@ class AssignedQueueConsumer:
                 now + timedelta(seconds=DESCRIPTOR_VALIDITY_SECONDS)
             ).isoformat(),
         }
-        universe = self.base_path / universe_id
-        universe.mkdir(parents=True, exist_ok=True)
-        filename = supervisor_heartbeat_filename(self.consumer_id)
-        target = universe / filename
-        temporary = universe / f"{filename}.tmp"
-        temporary.write_text(json.dumps(beat), encoding="utf-8")
-        temporary.replace(target)
+        write_worker_heartbeat(universe_id, self.consumer_id, json.dumps(beat).encode())
 
     def _retire_fleet_controls(self) -> None:
         """Stop every fleet-era cloud-automation control, with a recorded reason.

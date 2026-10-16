@@ -982,7 +982,7 @@ def _resolve_entry_universe(universe_id: str) -> tuple[str, bool]:
 
     founder = permissions.current_actor_id()
     home = get_founder_home(base, founder)
-    if home_is_complete(base, home):
+    if home_is_complete(base, home, owner=founder):
         return home, False
     # No home, a stale binding, or a partial dir: status observes but never
     # repairs it. The authenticated conversation entry path does that.

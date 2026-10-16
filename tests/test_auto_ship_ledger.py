@@ -39,6 +39,11 @@ from tinyassets.auto_ship_ledger import (
     update_attempt,
 )
 
+
+@pytest.fixture(autouse=True)
+def _ledger_data_root(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path.parent))
+
 # ── rubric warn-mode observability ─────────────────────────────────────────
 
 

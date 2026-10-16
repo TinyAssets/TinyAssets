@@ -3,9 +3,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tinyassets.center_platform_files import center_from_path, is_paused
+
 
 def _paused(universe_dir: Path, agent_id: str) -> bool:
-    return (universe_dir / ".pause").exists()
+    return is_paused(center_from_path(universe_dir))
 
 
 def _busy(universe_dir: Path, agent_id: str) -> bool:

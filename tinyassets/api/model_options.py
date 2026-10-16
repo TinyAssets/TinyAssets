@@ -54,7 +54,7 @@ def _scope(conn, base, owner, uid):
     from tinyassets.api.first_contact import home_is_complete
 
     check_current_home(conn, owner, uid)
-    if not home_is_complete(base, uid) or conn.execute(
+    if not home_is_complete(base, uid, owner=owner) or conn.execute(
         "SELECT 1 FROM universe_acl "
         "WHERE universe_id = ? AND actor_id = ? AND permission = 'admin'",
         (uid, owner),
@@ -384,7 +384,7 @@ def read_model_options(*, universe_id=""):
     try:
         base = _base_path()
         home = get_founder_home(base, owner)
-        if not home or not home_is_complete(base, home):
+        if not home or not home_is_complete(base, home, owner=owner):
             return {"error": "no_home_universe"}
         if universe_id and universe_id != home:
             return {"error": "not_found", "resource": "model_options"}

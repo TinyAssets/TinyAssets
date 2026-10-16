@@ -45,10 +45,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-LEDGER_FILENAME = "auto_ship_attempts.jsonl"
-# Dotted: a platform coordination file, never owner content
-# (command_center_layout.PLATFORM_LOCK_NAMES).
-LOCK_FILENAME = ".auto_ship_attempts.jsonl.lock"
+from tinyassets.center_platform_files import (
+    LEDGER as LEDGER_FILENAME,  # noqa: F401 - public compatibility export
+)
+from tinyassets.center_platform_files import (
+    LEDGER_LOCK as LOCK_FILENAME,  # noqa: F401 - public compatibility export
+)
+from tinyassets.center_platform_files import (
+    center_from_path,
+    open_ledger_lock,
+    read_ledger,
+    write_ledger,
+)
+from tinyassets.center_platform_files import (
+    ledger_path as _host_ledger_path,
+)
 
 #: Valid ``ship_status`` values across Phase 1-3 (§10).
 VALID_SHIP_STATUSES: frozenset[str] = frozenset({
@@ -177,11 +188,7 @@ def _now_iso() -> str:
 
 
 def ledger_path(universe_path: Path) -> Path:
-    return Path(universe_path) / LEDGER_FILENAME
-
-
-def _lock_path(universe_path: Path) -> Path:
-    return Path(universe_path) / LOCK_FILENAME
+    return _host_ledger_path(center_from_path(universe_path))
 
 
 # ── File lock ──────────────────
@@ -193,12 +200,9 @@ def _file_lock(universe_path: Path) -> Iterator[None]:
 
     Two concurrent ledger writes serialize on the dedicated
     ``.auto_ship_attempts.jsonl.lock`` file. Opened link-free through
-    ``universe_files.open_lock_file``.
+    ``center_platform_files.open_ledger_lock``.
     """
-    from tinyassets.universe_files import open_lock_file
-
-    Path(universe_path).mkdir(parents=True, exist_ok=True)
-    fd = open_lock_file(universe_path, LOCK_FILENAME)
+    fd = open_ledger_lock(center_from_path(universe_path))
     try:
         if sys.platform == "win32":
             import msvcrt
@@ -240,25 +244,25 @@ def _read_raw(lp: Path) -> list[dict]:
     Skips blank lines silently. Raises ``RuntimeError`` on a malformed
     JSON line — Hard Rule 8 (no silent fallback on corrupt data).
     """
-    if not lp.exists():
+    data = read_ledger(center_from_path(lp.parent))
+    if data is None:
         return []
     rows: list[dict] = []
-    with lp.open("r", encoding="utf-8") as fh:
-        for lineno, line in enumerate(fh, start=1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(
-                    f"Corrupt ledger row at {lp}:{lineno}: {exc}"
-                ) from exc
-            if not isinstance(row, dict):
-                raise RuntimeError(
-                    f"Ledger row at {lp}:{lineno} is not a JSON object"
-                )
-            rows.append(row)
+    for lineno, line in enumerate(data.decode("utf-8").splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"Corrupt ledger row at {lp}:{lineno}: {exc}"
+            ) from exc
+        if not isinstance(row, dict):
+            raise RuntimeError(
+                f"Ledger row at {lp}:{lineno} is not a JSON object"
+            )
+        rows.append(row)
     return rows
 
 
@@ -268,10 +272,8 @@ def _write_raw(lp: Path, rows: list[dict]) -> None:
     Used by ``update_attempt``. ``record_attempt`` uses a true append
     instead so it does not have to re-serialize the whole file.
     """
-    from tinyassets.universe_files import write_universe_file
-
     data = ''.join(json.dumps(row, default=str) + '\n' for row in rows).encode()
-    write_universe_file(lp.parent, lp.name, data, mode="replace")
+    write_ledger(center_from_path(lp.parent), data)
 
 
 # ── Public API ───────────────────────────────────────────────────────────
@@ -328,8 +330,6 @@ def summarize_rubric_warnings(
     any ledger row. Robust to hand-edited/corrupt rows (non-list or unparseable
     ``rubric_warnings_json`` is skipped, never raises).
     """
-    if not ledger_path(universe_path).exists():
-        return {"total_attempts": 0, "attempts_with_warnings": 0, "rule_id_counts": {}}
     attempts = read_attempts(universe_path, limit=limit)
     rule_counts: dict[str, int] = {}
     warned = 0
@@ -370,8 +370,6 @@ def summarize_trajectory_warnings(
     (non-list or unparseable ``trajectory_warnings_json`` is skipped, never
     raises).
     """
-    if not ledger_path(universe_path).exists():
-        return {"total_attempts": 0, "attempts_with_warnings": 0, "check_counts": {}}
     attempts = read_attempts(universe_path, limit=limit)
     check_counts: dict[str, int] = {}
     warned = 0
@@ -428,11 +426,9 @@ def record_attempt(universe_path: Path, attempt: ShipAttempt) -> None:
                     f"ship_attempt_id {attempt.ship_attempt_id!r} already "
                     f"recorded — use update_attempt to mutate"
                 )
-        from tinyassets.universe_files import write_universe_file
-
-        write_universe_file(lp.parent, lp.name,
-                            (json.dumps(attempt.to_dict(), default=str) + '\n').encode(),
-                            mode="append")
+        write_ledger(center_from_path(lp.parent),
+                     (json.dumps(attempt.to_dict(), default=str) + '\n').encode(),
+                     append=True)
 
 
 def update_attempt(

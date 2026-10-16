@@ -26,6 +26,11 @@ from tinyassets.control_plane.tick import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _host_data_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path.parent))
+
+
 def _utc(offset_s: float = 0.0) -> datetime:
     return datetime.now(timezone.utc) + timedelta(seconds=offset_s)
 

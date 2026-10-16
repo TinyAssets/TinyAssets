@@ -10,12 +10,19 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from tinyassets.api.status import (
     _compute_auto_ship_health,
     _parse_iso_to_epoch,
     get_status,
 )
 from tinyassets.auto_ship_ledger import ShipAttempt, ledger_path, record_attempt
+
+
+@pytest.fixture(autouse=True)
+def _ledger_data_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path.parent))
 
 
 def _ts(minutes: int) -> str:

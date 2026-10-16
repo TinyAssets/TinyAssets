@@ -147,10 +147,12 @@ def test_staleness_bucket_handles_none() -> None:
     assert result  # non-empty
 
 
-def test_daemon_liveness_returns_dict_with_required_keys(tmp_path) -> None:
+def test_daemon_liveness_returns_dict_with_required_keys(tmp_path, monkeypatch) -> None:
     """`_daemon_liveness(udir, status)` returns the contract dict shape
     consumed by `_action_list_universes`, `_action_inspect_universe`,
     and `_action_daemon_overview`."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path.parent))
+    monkeypatch.setattr(univ_mod, "_center_owner", lambda _udir: "test-owner")
     result = univ_mod._daemon_liveness(tmp_path, status=None)
     assert isinstance(result, dict)
     # The exact keys are part of the public contract — lock the shape.

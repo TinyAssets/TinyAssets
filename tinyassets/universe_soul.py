@@ -7,7 +7,9 @@ mirror while introducing ``soul.md`` as the durable universe-intent artifact.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import stat
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -102,8 +104,35 @@ def legacy_premise_path(universe_dir: Path) -> Path:
     return universe_dir / LEGACY_PREMISE_FILENAME
 
 
-def has_soul(universe_dir: Path) -> bool:
-    return soul_path(universe_dir).is_file()
+def soul_present(universe_dir: Path, *, owner: str) -> bool:
+    """Check the owner's box, with an admitted session or a host provider bind."""
+    from tinyassets.agent_loop.served_chat import configured_box_provider
+    from tinyassets.control_plane.binding import current_binding, file_binding
+
+    root = Path(universe_dir)
+    try:
+        if not stat.S_ISDIR(root.lstat().st_mode):
+            return False
+    except FileNotFoundError:
+        return False
+    admitted = current_binding()
+    if admitted is not None and admitted.universe_dir == Path(os.path.abspath(root)):
+        binding = file_binding(root)
+        if binding is not None:
+            binding.validate(owner, root)
+            info = binding.provider.stat(binding.handle, SOUL_FILENAME)
+            return info is not None and info.kind == "file"
+    provider, _ = configured_box_provider()
+    if provider is None:
+        raise RuntimeError("owner box provider is unavailable for soul presence")
+    handle = provider.bind(root.name, account_id=owner,
+                           turn_id=f"soul-presence:{owner}:{root.name}")
+    info = provider.stat(handle, SOUL_FILENAME)
+    return info is not None and info.kind == "file"
+
+
+def has_soul(universe_dir: Path, *, owner: str) -> bool:
+    return soul_present(universe_dir, owner=owner)
 
 
 def render_soul_markdown(soul: UniverseSoul) -> str:
@@ -372,16 +401,11 @@ def effect_authority_from_soul(universe_dir: Path) -> tuple[str, ...]:
     soul = read_universe_soul(universe_dir)
     if soul is not None:
         return soul.effect_authority
-    # read_universe_soul returned None: distinguish a genuinely ABSENT soul
-    # (-> () -> UNDECLARED) from an existing-but-unreadable one (-> raise ->
-    # DENIED). Use lstat(), NOT is_file(): is_file() can suppress a metadata
-    # error to False (Codex adapt 2026-08-20, Python 3.14.3), wrongly restoring
-    # UNDECLARED. lstat() raises FileNotFoundError only when the path is truly
-    # gone; ANY other failure — or any existing entry, including a dangling or
-    # malformed symlink — means we cannot treat the soul as absent, so we fail
-    # closed. Only the genuine-deletion race lands in ().
+    # A second box read distinguishes absence from an unreadable existing soul.
+    from tinyassets.universe_files import read_universe_file
+
     try:
-        soul_path(universe_dir).lstat()
+        read_universe_file(universe_dir, SOUL_FILENAME)
     except FileNotFoundError:
         return ()
     except OSError:

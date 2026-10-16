@@ -18,6 +18,12 @@ from __future__ import annotations
 
 import re
 
+from tinyassets.center_platform_files import (
+    LEDGER,
+    LEDGER_LOCK,
+    PAUSE,
+    WORKER_HEARTBEAT,
+)
 from tinyassets.retired_home_entries import (
     PLATFORM_LOCK_NAMES as RETIRED_PLATFORM_LOCK_NAMES,
 )
@@ -57,7 +63,7 @@ PLATFORM_NAMES = frozenset({
     "activity.log", "status.json", "universe.json", "work_targets.json",
     "ledger.json", "provider_definitions.json", "hard_priorities.json",
     "requests.json", "branch_tasks.json",
-    "branch_tasks_archive.json", "auto_ship_attempts.jsonl",
+    "branch_tasks_archive.json", "auto_ship_attempts.jsonl", LEDGER,
     "bid_execution_log.json", "enrichment_signals.json", "worldbuild_signals.json",
     "platform-expected-instance.json", "uptime-probe", "executions", "runs",
     "reviews", "discarded_targets", "archived",
@@ -70,11 +76,11 @@ PLATFORM_NAMES = frozenset({
     # credentials and runtime
     ".credentials", ".credentials.json", ".credential-vault.json", ".oauth-refresh", ".runtime",
     ".runtime_status.json", ".engine_mcp_config.json", ".engine_mcp_http_routes.json",
-    ".pause", ".agent-sessions", ".consumer_liveness", ".quarantine",
+    PAUSE, ".agent-sessions", ".consumer_liveness", ".quarantine",
     ".workspace-staging", ".authoring_blobs",
     # the queue consumer's heartbeat (api/universe.py _WORKER_SUPERVISOR_FILENAME,
     # control_plane/tick.py SUPERVISOR_HEARTBEAT_FILENAME)
-    ".worker_supervisor.json",
+    WORKER_HEARTBEAT,
 }) | RETIRED_PLATFORM_NAMES
 
 #: storage_accounting.UNIVERSE_ENTRIES; rules/steering in ROOT_ENTRIES.
@@ -96,7 +102,7 @@ PLATFORM_DB_NAMES: frozenset[str] = frozenset({
 #: would read the example as a real on-disk name nobody accounts for.)
 PLATFORM_LOCK_NAMES: frozenset[str] = frozenset({
     ".provider-assignment-admission.lock", ".soul.lock",
-    ".auto_ship_attempts.jsonl.lock",
+    LEDGER_LOCK,
 }) | RETIRED_PLATFORM_LOCK_NAMES
 
 VERBATIM_EXEMPT_NAMES: frozenset[str] = frozenset({
@@ -124,7 +130,9 @@ _DB_PATTERNS = tuple(
 #: ``_WORKER_SUPERVISOR_PREFIX`` + an assignment key + ``_WORKER_SUPERVISOR_SUFFIX``
 #: (api/universe.py). Production holds hundreds of these; an exact-name table
 #: cannot enumerate a minted key, so the pattern is the provenance.
-_MINTED_PATTERNS = (re.compile(r"\.worker_supervisor\.[^.][^/\\]*\.json"),)
+_MINTED_PATTERNS = (re.compile(
+    re.escape(WORKER_HEARTBEAT.removesuffix(".json")) + r"\.[^.][^/\\]*\.json"
+),)
 
 #: Authority fields that must leave the agent-editable config.yaml (#4263 D8a):
 #: config.py:60-66 and the routing ceiling the router enforces.

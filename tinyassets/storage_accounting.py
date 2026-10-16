@@ -55,6 +55,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
 
+from tinyassets.center_platform_files import PAUSE
 from tinyassets.principals import named_principal
 
 _log = logging.getLogger(__name__)
@@ -746,7 +747,7 @@ ROOT_ENTRIES: dict[str, str] = {
 UNIVERSE_ENTRIES: frozenset[str] = frozenset({
     ".conversation_memory.db", ".conversation_attention.db",
     ".credentials", ".credentials.json",
-    ".engine_mcp_config.json", ".oauth-refresh", ".pause",
+    ".engine_mcp_config.json", ".oauth-refresh", PAUSE,
     ".provider-assignment-admission.lock", ".runtime_status.json",
     ".subscription_state.db", ".pending_requests.db", ".usage_ledger.db",
     ".wiki_write_back_destination_markers.db", ".authoring.db", ".lock",
