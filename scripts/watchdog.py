@@ -135,12 +135,20 @@ def _save_state(path: Path, state: dict) -> None:
 
 
 def _probe(canary_script: Path, url: str, timeout: float) -> tuple[bool, str]:
-    """Return (green, message). Green=True on canary exit 0."""
+    """Return (green, message). Green=True on canary exit 0.
+
+    Liveness only (``--pulse-only``), the same probe as the container
+    healthcheck. The full canary also checks the anonymous challenge, whose
+    ``resource_metadata`` is the configured PUBLIC resource; probed on the
+    loopback URL it can never match, so the full check restarted a healthy
+    daemon every ten minutes from 2026-10-14 (watchdog issues #4918 on).
+    """
     if not canary_script.is_file():
         return (False, f"canary script missing: {canary_script}")
     try:
         result = subprocess.run(
-            [sys.executable, str(canary_script), "--url", url, "--timeout", str(timeout)],
+            [sys.executable, str(canary_script), "--pulse-only",
+             "--url", url, "--timeout", str(timeout)],
             capture_output=True,
             text=True,
             timeout=timeout + 5,
