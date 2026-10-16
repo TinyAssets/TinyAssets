@@ -32,4 +32,10 @@ def admit_center(data_root: str | Path, *, principal: str, center: str) -> int:
                            turn_id=f"center-admission-{generation}")
     if handle.command_center_id != center or handle.account_id != principal:
         raise RuntimeError("box host returned another center admission")
+    from tinyassets.boxes.layout import host_center_stub
+
+    stub = host_center_stub(data_root, center)
+    stub.mkdir(mode=0o700, exist_ok=True)
+    if stub.is_symlink() or not stub.is_dir():
+        raise RuntimeError("host center stub is not a plain directory")
     return generation

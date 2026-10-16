@@ -546,6 +546,14 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
     tmp_path, monkeypatch, copy_fails,
 ):
     data, store = _cutover_root(tmp_path)
+    with sqlite3.connect(data / "c1" / ".subscription_state.db") as db:
+        db.execute("CREATE TABLE subscription_meta (key TEXT PRIMARY KEY, value TEXT)")
+        db.execute("INSERT INTO subscription_meta VALUES ('tier', 'paid')")
+    with sqlite3.connect(data / "c1" / ".runs.db") as db:
+        db.execute("CREATE TABLE platform_run (id TEXT)")
+        db.execute("INSERT INTO platform_run VALUES ('kept')")
+    (data / "c1" / ".runtime").mkdir()
+    (data / "c1" / ".runtime" / "existing").write_text("host runtime")
     monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
     monkeypatch.setattr(migration.os, "chown", lambda *args: None)
     monkeypatch.setattr(migration, "_verified_pair", lambda *args: None)
@@ -592,11 +600,27 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
         from tinyassets import account_deletion
         from tinyassets.account_deletion import delete_account
         from tinyassets.agent_loop import served_chat
+        from tinyassets.agent_sessions import native_store
+        from tinyassets.api import helpers
+        from tinyassets.api.branches import _resolve_udir
         from tinyassets.boxes.local import LocalBoxProvider
-        from tinyassets.daemon_server import set_founder_home
+        from tinyassets.daemon_server import grant_universe_access, set_founder_home
+        from tinyassets.universe_owner import account_type_of
 
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data))
         set_founder_home(data, founder_sub="person", universe_id="c1")
+        grant_universe_access(data, universe_id="c1", actor_id="person",
+                              permission="admin", granted_by="person")
+        assert account_type_of(data, "person") == AccountType.SUBSCRIPTION
+        assert helpers._default_universe() == "c1"
+        assert _resolve_udir() == data / "c1"
+        assert (data / "c1" / ".runtime" / "existing").read_text() == "host runtime"
+        assert native_store(data / "c1", "codex").is_dir()
+        with sqlite3.connect(data / "c1" / ".runs.db") as db:
+            assert db.execute("SELECT id FROM platform_run").fetchone() == ("kept",)
+        assert {p.name for p in (data / "c1").iterdir()} == {
+            ".subscription_state.db", ".runs.db", ".runtime",
+        }
         provider = LocalBoxProvider(
             boxes_root=store / "300001", state_dir=tmp_path / "delete-state",
             owner_of=lambda center: "person" if center == "c1" else None,
@@ -621,7 +645,7 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
     if copy_fails:
         assert (data / "c1" / "note.txt").read_text() == "owner content"
     else:
-        assert not (data / "c1").exists()
+        assert not (data / "c1").exists()  # account deletion staged and removed the stub
 
 
 def test_census_reports_each_layout_and_does_not_invent_a_zero(tmp_path):
@@ -838,7 +862,8 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
         provider.close()
     assert (store / "300001" / "home" / "Activities.md").read_text() == (
         "Owner activity instructions")
-    assert not (data / "home").exists()
+    assert (data / "home").is_dir()
+    assert not list((data / "home").iterdir())
     marker = json.loads((data / ".layout.json").read_text())
     assert marker["box_layout"] == "owner-box"
     assert marker["state"] == "stable"

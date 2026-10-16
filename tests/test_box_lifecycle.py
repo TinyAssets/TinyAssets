@@ -35,6 +35,8 @@ def test_committed_admission_reserves_then_provisions_through_host(tmp_path, mon
     assert admit_center(tmp_path, principal="alice", center="cc-a") == 17
     assert events == [("broker", tmp_path, "admit", "alice", "cc-a"),
                       ("host", "cc-a", "alice", "center-admission-17")]
+    assert (tmp_path / "cc-a").is_dir()
+    assert not list((tmp_path / "cc-a").iterdir())
 
 
 def test_committed_admission_refuses_missing_host_and_invalid_layout(tmp_path, monkeypatch):
@@ -71,7 +73,7 @@ def test_destroy_uses_c12_stable_id_and_validates_receipt(tmp_path, monkeypatch)
     assert calls[1][1] == calls[3][1]
 
 
-def test_destroy_refuses_residual_legacy_bytes(tmp_path, monkeypatch):
+def test_destroy_then_stage_residual_host_bytes(tmp_path, monkeypatch):
     (tmp_path / "cc-a").mkdir()
     (tmp_path / "cc-a" / "residual").write_text("bytes")
 
@@ -84,8 +86,11 @@ def test_destroy_refuses_residual_legacy_bytes(tmp_path, monkeypatch):
 
     monkeypatch.setattr("tinyassets.agent_loop.served_chat.configured_box_provider",
                         lambda: (Provider(), None))
-    with pytest.raises(account_deletion.AccountDeletionError, match="legacy owner bytes"):
-        account_deletion._destroy_owner_box(tmp_path, "cc-a", principal="alice")
+    account_deletion._destroy_owner_box(tmp_path, "cc-a", principal="alice")
+    staged = account_deletion._stage_home(tmp_path, "cc-a")
+    assert staged is not None
+    assert (staged / "legacy" / "residual").read_text() == "bytes"
+    assert not (tmp_path / "cc-a").exists()
 
 
 def test_destroy_refuses_receipt_for_another_center(tmp_path, monkeypatch):

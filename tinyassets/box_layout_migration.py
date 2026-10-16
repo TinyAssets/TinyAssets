@@ -23,6 +23,7 @@ from pathlib import Path, PurePosixPath
 
 from deploy.box_project_readback import verify_owner, verify_tree
 from tinyassets import storage_layout
+from tinyassets.boxes.layout import HOST_CENTER_COPY_EXCLUDES, host_center_entry, host_center_stub
 from tinyassets.broker.owner_identities import OWNER_ID_FIRST, OWNER_ID_LAST
 from tinyassets.sqlite_readonly import readonly_db, readonly_snapshot
 from tinyassets.universe_owner import account_type_of
@@ -35,7 +36,6 @@ MAX_BACKUP_AGE_S = 3600
 _CENTER = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _CREDENTIAL_ENTRIES = (".credential-vault.json", ".credentials", ".credentials.json",
                        ".oauth-refresh")
-_EPHEMERAL_ENTRIES = (".runtime",)
 
 
 @dataclass(frozen=True)
@@ -415,7 +415,7 @@ def _copy(source: Path, target: Path, uid: int, *, extra_excludes=()) -> None:
         "--chown", f"{uid}:{uid}", f"{source}/", f"{target}/",
     ]
     command[-2:-2] = [f"--exclude=/{name}" for name in
-                      (*_CREDENTIAL_ENTRIES, *_EPHEMERAL_ENTRIES, *extra_excludes)]
+                      (*_CREDENTIAL_ENTRIES, *HOST_CENTER_COPY_EXCLUDES, *extra_excludes)]
     subprocess.run(command, check=True)
     result = subprocess.run(
         [*command[:-2], "--checksum", "--dry-run", "--itemize-changes", *command[-2:]],
@@ -476,7 +476,7 @@ def _xfs_quota(store: Path, command: str) -> str:
 
 
 def _retire_host_centers(data: Path, marker: dict) -> None:
-    """Retire committed host copies; the verified pre-move backup retains restore bytes."""
+    """Retire copied owner content, retaining each center's platform stub."""
     from tinyassets.workspace_fs import _remove_beneath, open_dir_nofollow
 
     centers = marker.get("legacy_centers_pending", [])
@@ -489,7 +489,15 @@ def _retire_host_centers(data: Path, marker: dict) -> None:
     parent = open_dir_nofollow(data)
     try:
         for center in centers:
-            _remove_beneath(parent, center)
+            stub = host_center_stub(data, center)
+            child = os.open(stub.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=parent)
+            try:
+                for entry in os.listdir(child):
+                    if not host_center_entry(entry):
+                        _remove_beneath(child, entry)
+            finally:
+                os.close(child)
     finally:
         os.close(parent)
     _atomic_json(storage_layout.marker_path(data), {

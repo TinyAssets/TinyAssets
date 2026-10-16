@@ -299,7 +299,12 @@ def _rmdir_if_empty(path: Path) -> None:
 
 def _home_dir(root: Path, home: str) -> Path:
     """The home directory inside ``root`` — refuses traversal and odd names."""
-    candidate = (root / home).resolve(strict=False)
+    from tinyassets.boxes.layout import host_center_stub
+
+    try:
+        candidate = host_center_stub(root, home).resolve(strict=False)
+    except ValueError as exc:
+        raise AccountDeletionError("home path escapes the data root") from exc
     if candidate.parent != root or candidate.name != home:
         raise AccountDeletionError("home path escapes the data root")
     return candidate
@@ -320,8 +325,8 @@ def _stage_home(root: Path, home: str) -> Path | None:
     custody = _credential_root(target)
     staging = root / _STAGING_DIR
     staged = staging / home
-    # The committed pre-move backup retains restore bytes; an old host copy is
-    # still this owner's data and must be journalled through the same staging.
+    # The platform stub (or a legacy host copy) is this owner's host state.
+    # Journal it with the sidecars after the owner box has been destroyed.
     sources = ((target, staged / "legacy"), (sidecar, staged / "sidecar"),
                (custody, staged / "credentials"))
     # Check every parent and source before the first rename. A symlink must

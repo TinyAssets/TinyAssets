@@ -102,6 +102,8 @@ set_founder_home(data, founder_sub='alice', universe_id='command-center')
 with sqlite3.connect(data / 'command-center/.subscription_state.db') as db:
     db.execute('CREATE TABLE subscription_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
     db.execute("INSERT INTO subscription_meta VALUES ('tier', 'paid')")
+(data / 'command-center/.runtime').mkdir()
+(data / 'command-center/.runtime/existing').write_text('host runtime')
 
 with tarfile.open(backup / os.environ['DATA_ARCHIVE'], 'w:gz') as archive:
     archive.add(data, arcname='_data')
@@ -120,6 +122,9 @@ VERIFY_COMMIT = r'''
 import json, os, sqlite3
 from pathlib import Path
 from tinyassets.sqlite_readonly import readonly_db
+from tinyassets.boxes.layout import host_center_entry
+from tinyassets.universe_owner import account_type_of
+from tinyassets.usage_policy import AccountType
 
 data, store = Path('/data'), Path('/box-store')
 marker = json.loads((data / '.layout.json').read_text())
@@ -136,7 +141,9 @@ for principal, uid, center in (
         ('bob', 300002, 'research'),
         ('carol', 300003, 'notes')):
     source, moved = data / center, store / str(uid) / center
-    assert not source.exists(), 'committed host owner copy remains'
+    assert source.is_dir(), 'committed host center stub is absent'
+    assert all(host_center_entry(entry.name) for entry in source.iterdir())
+    assert not (source / 'state.sqlite').exists()
     for relative in ('odd name ü\nline.txt', 'state.sqlite', 'nested/payload.bin'):
         assert (moved / relative).exists()
     assert os.getxattr(moved / 'odd name ü\nline.txt', b'user.c6') == principal.encode()
@@ -150,6 +157,9 @@ for principal, uid, center in (
     with readonly_db(moved / 'state.sqlite') as db:
         assert db.execute('SELECT name FROM events').fetchone() == (principal,)
     if principal == 'alice':
+        assert account_type_of(data, principal, db_reader=readonly_db) == AccountType.SUBSCRIPTION
+        assert (source / '.runtime/existing').read_text() == 'host runtime'
+        assert (source / '.subscription_state.db').is_file()
         assert (moved / '.agent-workspace/knowledge.db').stat().st_size == 0
         with sqlite3.connect(moved / 'knowledge.db') as db:
             assert db.execute('SELECT entity_id FROM entities').fetchone() == ('entity-alice',)
@@ -331,6 +341,7 @@ import json, os, sqlite3, subprocess, sys
 from pathlib import Path
 from types import SimpleNamespace
 from tinyassets.box_layout_migration import _owner_plan
+from tinyassets.boxes.layout import HOST_CENTER_COPY_EXCLUDES, host_center_entry
 from tinyassets.sqlite_readonly import readonly_db, readonly_snapshot
 
 data, store = Path('/data'), Path('/box-store')
@@ -361,8 +372,10 @@ for owner in plan:
     for center in owner.centers:
         source, target = data / center, store / str(owner.uid) / center
         if mode == 'commit':
-            if source.exists() or source.is_symlink():
-                differences.append(f'committed host copy remains: {source}')
+            if not source.is_dir() or source.is_symlink():
+                differences.append(f'committed host stub absent: {source}')
+            elif any(not host_center_entry(entry.name) for entry in source.iterdir()):
+                differences.append(f'owner content remains on host: {source}')
             source = target
         count += sum(len(files) + len(dirs) for _, dirs, files in os.walk(source))
         compare_target = target
@@ -378,6 +391,7 @@ for owner in plan:
                 '--exclude=/.credential-vault.json', '--exclude=/.credentials',
                 '--exclude=/.credentials.json', '--exclude=/.oauth-refresh',
                 '--exclude=/.runtime']
+        args.extend(f'--exclude=/{entry}' for entry in sorted(HOST_CENTER_COPY_EXCLUDES))
         if mode == 'commit':
             # The copy is verified before C12 writes its canonical projection.
             # Compare every other path against that pre-conversion copy.
