@@ -1052,6 +1052,10 @@ def get_sandbox_status() -> dict[str, object]:
     The box provider is installed once at daemon start by the owner-box
     frontend; a process without one runs no owner code at all.
     """
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        return {"box_available": True, "reason": ""}
     from tinyassets.agent_loop.served_chat import configured_box_provider
 
     provider, _ = configured_box_provider()

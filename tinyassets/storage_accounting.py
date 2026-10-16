@@ -142,6 +142,11 @@ def _walk_bytes(
 
 
 def _center_bytes(root: Path, *, scope: str, exclude_top=frozenset()):
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        target = root / 'workspaces' if scope == 'workspaces' else root
+        return _walk_bytes(target, exclude_top=exclude_top)
     from tinyassets.broker.owner_identities import OWNER_ID_FIRST, OWNER_ID_LAST
     from tinyassets.storage import data_dir
 
@@ -641,6 +646,7 @@ STORES: dict[str, Store] = {
 #: code creates at the data root must appear here -- the completeness test reads
 #: the source for them.
 ROOT_ENTRIES: dict[str, str] = {
+    ".owner-boxd": "platform: in-box file operation generations and idempotency receipts",
     ".boxhost": "platform: root-private owner generations and idempotency receipts",
     ".platform": "platform: platform stores; legacy agent homes move to quota-charged owner boxes",
     ".layout.json": "platform: committed storage layout admission marker",

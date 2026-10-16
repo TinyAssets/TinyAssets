@@ -281,6 +281,10 @@ def box_engine_socket(root: Path, universe_id: str) -> Path | None:
     None outside the owner-box frontend (no box provider): then no box can
     reach the route and nothing listens for one.
     """
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        return None  # the endpoint is already inside the box, on loopback
     from tinyassets.agent_loop.served_chat import configured_box_provider
 
     if configured_box_provider()[0] is None or os.name != "posix":
@@ -398,7 +402,8 @@ def _desired_owners(root: Path) -> dict[str, str]:
     return {universe: next(iter(found)) for universe, found in owners.items() if len(found) == 1}
 
 
-def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
+def start_engine_mcp_http_servers(base: str | Path | None = None, *,
+                                  stop_event=None, stopped_event=None) -> list:
     """Start one auth'd loopback engine server per admitted serving universe
     and a daemon supervisor that respawns crashes + reconciles serving intent.
 
@@ -416,7 +421,10 @@ def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
         raise ValueError("engine MCP data root must be absolute")
     data_dir_env = str(root)
     # Serving begins only after the daemon has retired its bootstrap authority.
-    _protect_daemon()
+    from tinyassets.owner_runtime import current
+
+    if current() is None:
+        _protect_daemon()
 
     servers: dict[str, _EngineServer] = {}
     used_ports: set[int] = set()
@@ -447,6 +455,13 @@ def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
         while True:
             wake.wait(_SUPERVISOR_INTERVAL_S)
             wake.clear()
+            if stop_event is not None and stop_event.is_set():
+                for uid in list(servers):
+                    _retire(uid)
+                _SUPERVISOR_WAKE_EVENTS.pop(root.resolve(), None)
+                if stopped_event is not None:
+                    stopped_event.set()
+                return
             try:
                 current = _desired_owners(root)
                 changed = False

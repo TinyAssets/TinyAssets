@@ -147,6 +147,10 @@ def bind_session(*, provider, limits, universe_dir, owner, execution_id):
 
 def file_binding(root: Path) -> SessionBinding | None:
     """Resolve an existing capability, never bind by a path's basename."""
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        return None
     root = _path(root)
     binding = current_binding()
     if binding is not None:

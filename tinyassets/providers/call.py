@@ -50,9 +50,10 @@ def make_interactive_agent_turn(*, prompt, system, universe_context, config):
     register_open_providers_for(universe_context)
     from tinyassets.control_plane.binding import current_binding
     from tinyassets.interactive_http_agent import ServedChatAgentAdapter
+    from tinyassets.owner_runtime import current
 
     adapter = ServedChatAgentAdapter()
-    if current_binding() is not None:
+    if current() is not None or current_binding() is not None:
         from tinyassets.agent_loop.served_chat import ThinLoopChatAdapter
 
         adapter = ThinLoopChatAdapter()

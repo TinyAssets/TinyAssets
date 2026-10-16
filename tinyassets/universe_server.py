@@ -4239,6 +4239,9 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
             start_scheduler_for_serving()
             run_visibility_startup_gate()
             async with AsyncExitStack() as stack:
+                from tinyassets.owner_runtime import serving as owner_serving
+
+                stack.enter_context(owner_serving())
                 await stack.enter_async_context(
                     canonical_app.router.lifespan_context(canonical_app),
                 )

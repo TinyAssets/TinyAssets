@@ -142,7 +142,7 @@ class RuntimeProvenance:
 
     @property
     def is_cloud(self) -> bool:
-        return self.verdict == CLOUD
+        return self.verdict in {CLOUD, "owner-box"}
 
 
 class _UrlOpener(Protocol):  # pragma: no cover - structural type only
@@ -430,12 +430,27 @@ _PROCESS_OBSERVATION = ProcessProvenanceObservation()
 
 def observe_platform_runtime_provenance() -> RuntimeProvenance:
     """Process-wide observation consumed by the application admission sites."""
+    owner = _owner_observation()
+    if owner is not None:
+        return owner
     return _PROCESS_OBSERVATION.observe()
 
 
 def peek_platform_runtime_provenance() -> RuntimeProvenance | None:
     """Process-wide non-mutating read. ``None`` means nothing was observed."""
+    owner = _owner_observation()
+    if owner is not None:
+        return owner
     return _PROCESS_OBSERVATION.peek()
+
+
+_OWNER_OBSERVATION = RuntimeProvenance("owner-box", "owner_relay_admitted", False, True)
+
+
+def _owner_observation() -> RuntimeProvenance | None:
+    from tinyassets.owner_runtime import current
+
+    return _OWNER_OBSERVATION if current() is not None else None
 
 
 # --- admission helpers (tasks 6-7: claim CAS + runtime registration) -------
@@ -518,7 +533,7 @@ def admitted_cloud_executor_class() -> str:
                 surface="cloud-class provider work authority",
             )
         )
-    return CLOUD
+    return peek_platform_runtime_provenance().verdict
 
 
 def platform_not_cloud_message(

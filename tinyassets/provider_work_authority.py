@@ -442,8 +442,8 @@ class ProviderUniverseWorkAuthority:
             agent_invocation_command_digest=self.agent_invocation_command_digest,
             agent_invocation_generation=self.agent_invocation_generation,
         )
-        if self.executor_class != "cloud":
-            raise ValueError("executor_class must be cloud")
+        if self.executor_class not in {"cloud", "owner-box"}:
+            raise ValueError("executor_class must be cloud or owner-box")
         _integer(self.max_invocations, "max_invocations", minimum=1)
         _integer(self.max_tokens, "max_tokens", minimum=0)
         _integer(
@@ -687,8 +687,8 @@ class ProviderUniverseWorkReceipt:
             )
         _integer(self.assignment_generation, "assignment_generation", minimum=1)
         _digest(self.assignment_digest, "assignment_digest")
-        if self.executor_class != "cloud":
-            raise ValueError("executor_class must be cloud")
+        if self.executor_class not in {"cloud", "owner-box"}:
+            raise ValueError("executor_class must be cloud or owner-box")
         object.__setattr__(
             self,
             "allowed_operations",

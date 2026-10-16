@@ -110,6 +110,14 @@ async def open_loop_tools(
     to bind is refused loudly rather than silently dropped from the turn.
     """
     granted = tuple(granted)
+    from tinyassets.owner_runtime import current
+
+    local = current() is not None
+    if local:
+        from tinyassets.agent_loop.owner_tools import tools_for
+
+        def bind_box():
+            return tools_for(universe_dir)
     box_names = tuple(name for name in granted if name in BOX_TOOLS)
     engine_names = tuple(name for name in granted if name not in BOX_TOOLS)
     if box_names and bind_box is None:
@@ -135,18 +143,27 @@ async def open_loop_tools(
             from tinyassets.agent_loop.box_ta import TurnBridge, engine_deliver, engine_ta
             from tinyassets.storage import data_dir
 
-            if (actor_id, graph_id) != (owner, universe_dir.name):
+            if local:
+                bridge = box.enable_ta(
+                    turn=ta_turn,
+                    dispatch=lambda message, **kw: engine_ta(engine, message, **kw),
+                    deliver=lambda: engine_deliver(engine, universe_dir=universe_dir,
+                                                    owner=owner, session_key=session_key),
+                )
+            elif (actor_id, graph_id) != (owner, universe_dir.name):
                 raise EngineToolError("remote_ta_binding_refused")
-            bridge = TurnBridge(owner=owner, center=universe_dir.name, turn=ta_turn,
-                                session_id=box_session_id,
-                                handle=box._exec.handle,
-                                database=data_dir() / ".remote-ta-receipts.sqlite3",
-                                dispatch=lambda message, **kw: engine_ta(engine, message, **kw),
-                                deliver=lambda: engine_deliver(
-                                    engine, universe_dir=universe_dir, owner=owner,
-                                    session_key=session_key))
+            else:
+                bridge = TurnBridge(owner=owner, center=universe_dir.name, turn=ta_turn,
+                                    session_id=box_session_id,
+                                    handle=box._exec.handle,
+                                    database=data_dir() / ".remote-ta-receipts.sqlite3",
+                                    dispatch=lambda message, **kw: engine_ta(engine, message, **kw),
+                                    deliver=lambda: engine_deliver(
+                                        engine, universe_dir=universe_dir, owner=owner,
+                                        session_key=session_key))
             stack.callback(bridge.close)
-            box._exec.enable_ta(bridge)
+            if not local:
+                box._exec.enable_ta(bridge)
         box_definitions = box_tool_definitions(root)
         tools = tuple(
             _tool(name, box_definitions[name]) if name in BOX_TOOLS else engine_tools[name]
