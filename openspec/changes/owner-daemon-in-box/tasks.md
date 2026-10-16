@@ -21,9 +21,11 @@ Nothing deploys until slice 7.
       as each moves. Test: owner B's identity can never reach A's socket;
       an unknown owner gets 404.
       Slice 2 Linux results and local commits: `main-audit.md`.
-- [ ] 3. Broker socket into each box: model calls, connections, plan tier
+- [x] 3. Broker socket into each box: model calls, connections, plan tier
       and commons reads. Test: the box holds no secret; egress outside the
       broker fails.
+      D3 decisions and pre-cutover integration limits: `design.md` and
+      `main-audit.md`; chunked Linux results and local commits: `main-audit.md`.
 - [ ] 4. boxhostd persistent per-owner sandbox lifecycle: wake, idle sleep,
       crash restart, memory cap, awake cap.
 - [ ] 5. The waker and the next-wake index. Test: a scheduled automation in

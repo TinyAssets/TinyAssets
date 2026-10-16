@@ -4,8 +4,8 @@
 
 Owner-mode model and authenticated HTTP calls now acquire the admitted relay,
 use the broker's existing grant/policy/accounting operations and stream over
-`OPEN`. Source descriptors and allocation liveness live at the broker; no
-broker operation needs a box-private file. Plan and published-catalog reads
+`OPEN`. Source descriptors and allocation liveness live at the broker; these
+model-source and accounting reads do not open box-private files. Plan and published-catalog reads
 use `BOX_SHARED`. D3 decisions in `design.md` record the protocol choices.
 
 Focused Linux validation: **95 passed** across the new owner-egress tests,
@@ -13,7 +13,10 @@ owner daemon app/MCP chat tests, broker server, upstream streaming and usage
 IPC tests. This includes a fresh box subprocess model call, secret absence
 in its environment and data root, an authenticated effector, revoked grants,
 lost accounting-channel liveness, missing broker refusal and socket/HTTP
-refusal. Ruff and `git diff --check` pass. No tests were retired or skipped.
+refusal. The final accounting/owner/router recheck passed **68 tests**, and
+the selected AD chunk ran all **18 owner-egress cases**. Ruff, strict OpenSpec
+validation and `git diff --check` pass. No tests were retired and no
+skip/skipif was added.
 
 Cutover work remains outside this slice: boxhostd supplies the relay mount,
 sanitized environment and null network namespace; slice 6 seeds the shared
@@ -22,9 +25,59 @@ commons publishing must be wired to those stores before cutover (these reads
 do not migrate either writer). Provider CLIs refuse pending broker-endpoint
 authentication; daemon-side subscription/credential refresh is disabled, with
 no vault fallback. The founder's slice 7 unported-feature report must include
-these remaining writer and authentication paths.
+these remaining writer and authentication paths. D2's hook-digest publication
+and shared credential-management integration also remain pre-cutover work;
+this slice implements the requested egress and shared-read operations.
 
-CI-selected chunk results will be recorded after the implementation commit.
+Implementation commits: `45e5035341f`, `0cf18d31da2`, `8970069eed7`,
+`dd58f98022b`, `ce98cb2beb2`; validation-fixture corrections: `bea903d8cbc`.
+No push, deploy, provisioning, waker or migration change was performed. No
+agent was dispatched.
+
+After committing, ran `python scripts/affected_tests.py --base origin/main
+--pr --out <file>`, stripped CRs, dropped missing paths (none), and ran
+`split -l 155`. The final regenerated selection is identical: **900 files**,
+five 155-file chunks and one 125-file chunk. Each ordered list ran through
+`linux_oracle.py`; all 34 affected heavy files ran separately. Exact lists,
+logs and JUnit reports are in `%TEMP%/owner-s3-validation/`.
+
+| Linux selection | Result |
+| --- | --- |
+| AA, 155 files | 3,505 passed, 12 existing skips, 1 identical main-baseline failure |
+| AB, 155 files, complete corrected rerun | 2,715 passed, 2 existing skips |
+| AC, 155 files | 3,683 passed, 47 existing skips |
+| AD, 155 files | 3,133 passed, 20 existing skips |
+| AE, 155 files | 2,841 passed, 1 existing skip |
+| AF, 125 files, complete corrected rerun | 2,535 passed, 5 existing skips |
+| Affected heavy files, 34 files | 1,359 passed, no skips |
+
+AA's `test_activity_shape_migration::test_conversion_is_per_owner_idempotent_and_restoreable`
+failed while archiving a disappearing `.runs.db-shm`. The same 155 files in
+the same order on the initial `origin/main` (`417f6a4c003`) produced identical
+JUnit failure text (3,504 passed, 12 skips, that one failure). Migration code
+was not changed. Main advanced to slice 1 (`e5583246c25`) during validation.
+
+AB exposed a real source-validation regression: a daemon-side caller tried
+to open a local accounting DB. The fix reuses the broker's existing admission
+transaction and preserves daemon-side grant queries; the entire AB chunk was
+rerun successfully.
+
+AF initially exposed two timing-sensitive fixture failures: catalogue expiry
+during an authority-only test, and an accounting finalizer timing out during
+a workspace test. The two files passed together in isolation (178 passed,
+2 skips), and the full ordered main-baseline AF run passed (2,535 passed,
+5 skips at `e5583246c25`), so neither was counted as a baseline exception.
+The authority fixture now holds its synthetic discovery clock constant; the
+workspace fixture collects prior cyclic allocations on the test thread before
+an in-process broker can run their synchronous accounting finalizers. The
+original assertions and runtime freshness checks are retained. The complete
+corrected AF chunk passed with no warnings.
+
+Existing skip reasons include Windows, Linux root/rsync, shellcheck, Docker Compose,
+or the explicitly opt-in live CLI venue; two older vault-link fixtures also
+skip on their missing destination parent. They are not counted as passes.
+The selected and heavy runs total **19,771 passed, 87 existing skips**, and
+the one exactly reproduced AA baseline failure. The work remains local.
 
 ## Slice 2 implementation follow-up (2026-10-16)
 
