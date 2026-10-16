@@ -123,7 +123,9 @@ def box(broker, tmp_path, monkeypatch):  # noqa: F811
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "0")
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "0")
-    runtime = owner_runtime.start(root, path)
+    monkeypatch.setattr(owner_runtime, "OWNER_MOUNT", root)
+    monkeypatch.setattr(owner_runtime, "_is_owner_mount", lambda candidate: candidate == root)
+    runtime = owner_runtime.start(path)
     from tinyassets.broker import supervisor
 
     monkeypatch.setattr(supervisor, "get_supervisor", lambda root: owner_runtime.broker_egress())
@@ -239,13 +241,15 @@ def test_model_in_fresh_box_process_has_no_secret(box):
     code = """
 import asyncio, json, os, sys
 from pathlib import Path
-from tinyassets.owner_runtime import start
+from tinyassets import owner_runtime
 from tinyassets.providers.definition import ProviderDefinition
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 from tinyassets.providers.base import ModelConfig
 from tinyassets.request_budget import TurnRequestBudget
 root, relay, definition = Path(sys.argv[1]), Path(sys.argv[2]), json.loads(sys.argv[3])
-runtime = start(root, relay)
+owner_runtime.OWNER_MOUNT = root
+owner_runtime._is_owner_mount = lambda candidate: candidate == root
+runtime = owner_runtime.start(relay)
 (root / 'center').mkdir()
 provider = ApiKeyHttpProvider(ProviderDefinition(**definition))
 budget = TurnRequestBudget('owner', 'center')
@@ -326,7 +330,9 @@ def test_owner_startup_refuses_credential_environment(tmp_path, monkeypatch, nam
     for secret_name in CHILD_FORBIDDEN_ENV | ENGINE_REQUIRED_SECRET_ENV.keys():
         monkeypatch.delenv(secret_name, raising=False)
     monkeypatch.setattr(owner_runtime, "_runtime", None)
+    monkeypatch.setattr(owner_runtime, "OWNER_MOUNT", tmp_path)
+    monkeypatch.setattr(owner_runtime, "_is_owner_mount", lambda candidate: True)
     monkeypatch.setenv(name, "synthetic-key")
     with pytest.raises(PermissionError, match="environment contains a raw credential"):
-        owner_runtime.start(tmp_path, tmp_path / "relay.sock")
+        owner_runtime.start(tmp_path / "relay.sock")
     assert owner_runtime.current() is None

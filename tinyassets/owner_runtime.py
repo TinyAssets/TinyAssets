@@ -25,6 +25,14 @@ class OwnerRuntime:
 
 _runtime: OwnerRuntime | None = None
 
+#: boxhostd bind-mounts the owner's durable tree here (one-box-per-owner design;
+#: ``boxes/gvisor_runtime``). It is the only data root an owner daemon serves.
+OWNER_MOUNT = Path("/home/owner")
+
+
+def _is_owner_mount(path: Path) -> bool:
+    return path.is_dir() and not path.is_symlink() and os.path.ismount(path)
+
 
 def current() -> OwnerRuntime | None:
     if _runtime is not None and _runtime.pid != os.getpid():
@@ -32,11 +40,18 @@ def current() -> OwnerRuntime | None:
     return _runtime
 
 
-def start(data: Path, relay: Path) -> OwnerRuntime:
-    """Read identity once from the per-box socket, before constructing the app."""
+def start(relay: Path) -> OwnerRuntime:
+    """Read identity once from the per-box socket, before constructing the app.
+
+    The data root is the owner mount boxhostd provides, never a caller-chosen
+    path: anything else would put the owner's databases outside the durable,
+    quota-bound tree and lose them on restart.
+    """
     global _runtime
     if _runtime is not None:
         raise RuntimeError("owner runtime is already initialized")
+    if not _is_owner_mount(OWNER_MOUNT):
+        raise PermissionError(f"owner daemon requires the boxhostd owner mount at {OWNER_MOUNT}")
     # A misconfigured launcher must fail before constructing any owner app.
     # Values are never included in the error. The image's static environment
     # and the null netns remain boxhostd's startup contract.
@@ -61,8 +76,7 @@ def start(data: Path, relay: Path) -> OwnerRuntime:
             or not isinstance(doc["principal"], str) or not doc["principal"].strip()
             or type(doc["uid"]) is not int or doc["uid"] < 0):
         raise PermissionError("owner relay refused startup admission")
-    root = Path(data).resolve()
-    root.mkdir(parents=True, exist_ok=True)
+    root = OWNER_MOUNT
     from tinyassets.boxes.boxd import OwnerBoxd
 
     tools = OwnerBoxd(owner_id=doc["principal"], owner_root=root,
@@ -74,6 +88,24 @@ def start(data: Path, relay: Path) -> OwnerRuntime:
                             Path(relay).resolve())
     install_outbound_guard()
     return _runtime
+
+
+def router_credential(operation: str, **fields):
+    """One bounded request on the relay whose bind supplies the owner identity."""
+    runtime = current()
+    if runtime is None or runtime.relay is None:
+        raise RuntimeError("owner credential channel is unavailable")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+        channel.settimeout(30)
+        channel.connect(str(runtime.relay))
+        channel.sendall(rf.control(rf.CONNECTION, {
+            "op": "ROUTER_CREDENTIAL", "request": {"operation": operation, **fields},
+        }))
+        answer = rf.read_frame_blocking(channel)
+    if (answer is None or answer.kind != rf.CONTROL or answer.stream != rf.CONNECTION
+            or answer.control().get("op") != "ROUTER_CREDENTIAL_IS"):
+        raise PermissionError("router credential request refused")
+    return answer.control()["result"]
 
 
 def broker_egress():
