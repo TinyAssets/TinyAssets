@@ -1,6 +1,7 @@
 """Account deletion consumes C6's opaque destruction-only handle and durable receipt."""
 from __future__ import annotations
 
+import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -15,6 +16,15 @@ from tinyassets.boxes.provider import DestroyReceipt
 from tinyassets.daemon_server import get_founder_home
 
 REAL_DESTROY = deletion._destroy_owner_box
+
+
+def _remove(path):
+    """The local test box uses the center directory as its box root."""
+    if not path.exists():
+        return 0
+    assert not path.is_symlink()
+    shutil.rmtree(path)
+    return 1
 
 
 class AuthenticatedDestroy:
@@ -39,8 +49,6 @@ class AuthenticatedDestroy:
         return handle
 
     def destroy(self, handle, op_id):
-        from tests.support.admission_double import _remove
-
         with self.lock:
             center, owner = self.handles[handle]
             self.operations.append(op_id)
@@ -109,8 +117,6 @@ def test_receipt_for_a_different_root_cannot_orphan_legacy_home_bytes(bound, mon
 
 
 def test_absent_home_requires_and_accepts_idempotent_provider_receipt(bound):
-    from tests.support.admission_double import _remove
-
     root, provider = bound
     _remove(root / HOME_A)
     result = deletion.delete_account(root, founder_sub=A, cancel_billing=lambda _: "none",

@@ -64,6 +64,7 @@ def test_unmigrated_and_unbound_namespaces_refuse(bundle, tmp_path, monkeypatch,
     records(bundle, tmp_path)
     with pytest.raises(InvalidBundle, match="binding"):
         runtime_ops._action_project_memory_get({**args, "project_id": "unassigned"})
+    monkeypatch.setattr("tinyassets.auth.middleware.current_request_boundary_id", lambda: None)
     assert "request_id" in json.loads(runtime_ops._action_project_memory_set(args))["error"]
 
 

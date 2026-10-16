@@ -306,7 +306,7 @@ def _home_dir(root: Path, home: str) -> Path:
 
 
 def _stage_home(root: Path, home: str) -> Path | None:
-    """Stage the retired home and platform sidecars after owner-box destruction.
+    """Stage platform sidecars after authenticated owner-box destruction.
 
     The deterministic container survives a crash between renames; retry moves
     only the remaining sources. No destination lies inside user-owned content.
@@ -320,9 +320,8 @@ def _stage_home(root: Path, home: str) -> Path | None:
     custody = _credential_root(target)
     staging = root / _STAGING_DIR
     staged = staging / home
-    # The copied pre-cutover home and platform custody follow the account.
-    sources = ((target, staged / "home"), (sidecar, staged / "sidecar"),
-               (custody, staged / "credentials"))
+    # Only platform sidecars are staged; owner content belongs to the box.
+    sources = ((sidecar, staged / "sidecar"), (custody, staged / "credentials"))
     # Check every parent and source before the first rename. A symlink must
     # never redirect staging or removal into another account's directory.
     for path in (sidecar.parent, custody.parent.parent, custody.parent, staging, staged,
