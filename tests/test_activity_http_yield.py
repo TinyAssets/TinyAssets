@@ -93,6 +93,7 @@ def test_http_activity_yield_stops_tools_and_inference_and_releases_claim(
 
         close_foreground_run_provider(kwargs.get("provider_call"))
         run_id = enqueue(base, universe.name, record, generation)
+        assert run_id
         run_ids.append(run_id)
         return SimpleNamespace(run_id=run_id, status="queued", output={}, error=None)
 
@@ -101,7 +102,7 @@ def test_http_activity_yield_stops_tools_and_inference_and_releases_claim(
 
     def prepare_activity(*args, activity, agent):
         assert activity["activity_id"] == aid and activity["runner_generation"] == generation
-        assert activity["runner_token"]
+        assert activity["runner_token"] == run_ids[0]
         return shared_turn(*args, activity=activity, agent=agent)
 
     monkeypatch.setattr(shared_self, "prepare_shared_self_turn", prepare_activity)
