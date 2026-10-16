@@ -24,6 +24,8 @@ FENCED: dict[str, str] = {
 INFRASTRUCTURE: frozenset[str] = frozenset({
     "tinyassets/owner_lease.py",
     "tinyassets/storage/owner_fence.py",
+    # Router identity state, never written by an owner's execution generation.
+    "tinyassets/router_credentials.py",
 })
 
 #: Owner-written stores not fenced yet. Safe while exactly one owner tree runs

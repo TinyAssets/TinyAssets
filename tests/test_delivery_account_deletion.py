@@ -105,7 +105,7 @@ def test_delivery_tick_exception_does_not_starve_budget_reconciliation(
     from pathlib import Path
     from types import SimpleNamespace
 
-    tree = ast.parse(Path("tinyassets/universe_server.py").read_text(encoding="utf-8"))
+    tree = ast.parse(Path("tinyassets/owner_runtime.py").read_text(encoding="utf-8"))
     function = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
                     and n.name == "_served_budget_lease_loop")
     seen, cursors, file_cursors, deliveries, sleeps = [], [], [], [], []
@@ -152,6 +152,7 @@ def test_delivery_tick_exception_does_not_starve_budget_reconciliation(
         return builtins.__import__(name, globals, locals, fromlist, level)
 
     scope = {"__builtins__": {**vars(builtins), "__import__": loop_import},
+             "stop": SimpleNamespace(wait=sleep),
              "reconcile_deliveries": delivery,
              "reconcile_admitted_runs": admitted,
              "reconcile_run_files": files,

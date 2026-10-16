@@ -35,6 +35,12 @@ def _owner_box_double():
 
 @pytest.fixture
 def owner_mode(tmp_path, monkeypatch):
+    from tinyassets.api import runs as api_runs
+
+    # The real lifespan now owns boot recovery. Its process-lifetime lock must
+    # not survive this fixture and suppress recovery in a later test's root.
+    monkeypatch.setattr(api_runs, "_RUNS_RECOVERY_DONE", False)
+    monkeypatch.setattr(api_runs, "_RUNS_RECOVERY_LOCK", None)
     monkeypatch.setattr(owner_runtime, "_runtime", None)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "0")
@@ -64,6 +70,10 @@ def owner_mode(tmp_path, monkeypatch):
         finally:
             runtime.tools.close()
             relay.close()
+            if api_runs._RUNS_RECOVERY_LOCK is not None:
+                from tinyassets.singleton_lock import release_singleton_lock
+
+                release_singleton_lock(api_runs._RUNS_RECOVERY_LOCK)
     assert attempts == []
 
 

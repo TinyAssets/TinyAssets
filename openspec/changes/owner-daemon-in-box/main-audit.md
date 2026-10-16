@@ -29,6 +29,13 @@ replacement tests assert no owner initialization and refusal of those transports
 The owner lifespan's storage-order/failure tests remain. The former admitted
 router lifespan initialization assertion now asserts no owner-state access.
 
+Test-Removal: retired `test_both_bearerless_transports_bind_the_local_operator`:
+the shared local-operator serving paths were deleted; both now assert refusal.
+Test-Removal: retired `test_staged_bundle_enumerates_seven_under_simulated_admission`:
+the bundled shared stdio serving path was deleted; the staged artifact now proves refusal even with cloud admission.
+Test-Removal: retired `test_staged_bundle_enumerates_without_credentials`:
+the same deleted stdio path cannot enumerate without credentials; the replacement proves refusal and no server response.
+
 Remaining integration belongs to later slices: boxhostd mounting the socket and
 read-only secret, rotation on start and wake-on-request (4); shared-state broker
 publication/revocation of hook digests and shared credential management from

@@ -472,33 +472,11 @@ def test_a_source_event_carries_its_hook_owner_to_the_run(monkeypatch, tmp_path)
     ) if hasattr(scheduler, "_dispatch_event") else None
 
 
-def test_both_bearerless_transports_bind_the_local_operator():
-    """SSE and stdio carry no bearer and run outside the auth middleware, so
-    each binds the local operator once for the process.
-
-    Verified against the SOURCE of `main`, because the alternative is starting
-    a server. The previous commit claimed this fix and did not contain it: a
-    patch script exited before the edit, and the claim went into a commit
-    message unchecked. This assertion is the check.
-    """
-    import inspect
-
+@pytest.mark.parametrize("transport", ["sse", "stdio"])
+def test_router_refuses_bearerless_transports(transport, monkeypatch, tmp_path):
+    """Owner serving cannot bypass router authentication through local stdio/SSE."""
     from tinyassets import universe_server
 
-    lines = inspect.getsource(universe_server.main).splitlines()
-    start = next(
-        i for i, line in enumerate(lines)
-        if line.strip().startswith('if transport in ("sse", "stdio")')
-    )
-    bind = next(
-        i for i, line in enumerate(lines[start:], start)
-        if line.strip() == "bound = bind_local_operator_identity()"
-    )
-    # ...and it happens BEFORE either transport starts serving. Matched on
-    # whole lines, not a substring: the comment above mentions mcp.run() too.
-    serves = [
-        i for i, line in enumerate(lines[start:], start)
-        if line.strip() in ('mcp.run()', 'mcp.run(transport="sse", host=host, port=port)')
-    ]
-    assert serves, "neither transport starts in this branch"
-    assert bind < min(serves)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    with pytest.raises(ValueError, match="only authenticated streamable-http"):
+        universe_server.main(transport=transport)

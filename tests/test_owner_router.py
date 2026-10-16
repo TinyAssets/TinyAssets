@@ -302,6 +302,7 @@ def test_router_only_routes_need_no_box(tmp_path, monkeypatch, cloud_runtime):  
     from tinyassets import universe_server
     from tinyassets.broker import owner_identities
     from tinyassets.commons_catalog import publish_definition
+    from tinyassets.owner_router import forwarded_path
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
@@ -311,8 +312,7 @@ def test_router_only_routes_need_no_box(tmp_path, monkeypatch, cloud_runtime):  
     monkeypatch.setattr(owner_identities, "owner_box_route", no_box)
     listing = publish_definition(tmp_path, author_id="alice", payload=_definition("Public item"))
     app = universe_server.create_streamable_http_app()
-    assert all(not route.path.startswith(("/api", "/app/api/", "/mcp/hooks/"))
-               for route in app.routes)
+    assert all(not forwarded_path(route.path) for route in app.routes)
     with TestClient(app) as client:
         assert client.get("/app").status_code == 200
         assert client.get("/mcp/pulse", headers={"authorization": "Bearer any"}).status_code == 200

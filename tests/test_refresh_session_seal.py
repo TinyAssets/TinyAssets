@@ -753,7 +753,7 @@ def test_the_daemon_arms_the_seal_as_the_first_thing_main_does():
 
     body = inspect.getsource(universe_server.main)
     arm_at = body.index("_session_seal.arm()")
-    for later in ("threading", "uvicorn", "create_streamable_http_app", "logger.info"):
+    for later in ("prepare_children", "uvicorn", "create_streamable_http_app", "logger.info"):
         assert arm_at < body.index(later), (
             f"{later!r} runs before the seal key is scrubbed from os.environ; "
             "anything spawned in that window inherits the key"
