@@ -728,6 +728,10 @@ def _merge_base(root: Path) -> str | None:
                 return _related_merge_base(root, borrowed)
             except subprocess.CalledProcessError:
                 return borrowed
+    # The local oracle copies a linked worktree into /work. Its /src/.git is a
+    # worktree pointer, so the snapshot has no accessible upstream history.
+    if root == Path("/work") and _CHECKOUT_GIT.is_file():
+        return None
     if _on_actions():
         raise RuntimeError("shape guard needs main history; fetch-depth must be 0")
     return None  # linux_oracle constructs a single-commit snapshot repository
