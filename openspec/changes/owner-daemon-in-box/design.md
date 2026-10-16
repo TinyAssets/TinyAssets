@@ -36,7 +36,23 @@ adding a check in shared code.
   router sets it, and the box trusts only the router's per-box secret), the
   plan tier, and published commons reads, all through the broker socket.
 
-## D2. The router (the shared daemon, reduced)
+### D1 decisions from the slice 1 stop (2026-10-16)
+
+- **Runtime admission.** Today, cloud admission
+  (`platform_runtime_provenance`) comes from DigitalOcean metadata over HTTP.
+  It gates the app lifespan, the tick and provider authority. Inside a box, the
+  verdict comes from the broker instead. boxhostd binds the broker socket only
+  into a box the broker admitted. The owner daemon asks it once at startup
+  (`WHOAMI` → admitted `owner_id`, executor class `owner-box`) and caches the
+  answer as its process admission. With no broker socket, or a refused answer,
+  the daemon refuses to start, as it does today with no cloud verdict. No
+  network is used, and nothing is fixtured as "cloud".
+- **Local tools.** In owner mode, the four tools and `ta` use the existing
+  in-box core (`boxes/boxd.BoxdCore` over the owner root) in-process. That is
+  the same file and exec API with no remote hop, and the `box_tools` →
+  `start_exec` bridge is not used.
+- **Loopback.** The `bash`/`ta` engine transport uses loopback TCP inside the
+  box's own netns. That is allowed. The rule is no NON-loopback connection.
 
 - Keeps the public doors (Cloudflare tunnel → `/mcp`, `/app`, `/api`,
   `/hooks/inbound`), WorkOS sign-in, MCP OAuth and API keys.
