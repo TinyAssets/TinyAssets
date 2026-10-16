@@ -83,6 +83,10 @@ class TestCreationRecordsTheOwner:
         )
         assert captured["daemon_id"] == uid
         assert search_daemon_memory(daemon, daemon_id=uid, query="Remember")
+        from tinyassets.okf.box_cutover import initialize_empty_center
+
+        initialize_empty_center(owner=A, center=uid, source=base / uid)
+        assert project_memory_get(project, project_id=uid, key="note")["value"] == "ready"
 
     def test_a_created_universe_is_owned_by_its_creator(self, base, signed_in):
         signed_in(A)

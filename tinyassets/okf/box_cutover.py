@@ -16,6 +16,7 @@ import shutil
 import sqlite3
 import stat
 import tempfile
+import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -345,19 +346,15 @@ def initialize_empty_center(*, owner: str, center: str, source: Path) -> None:
     if provider is None:
         raise InvalidBundle("Canonical owner-box provider is unavailable")
     bundle = KnowledgeBundle(provider, provider.bind(center, account_id=owner))
-    operation_id = "owner-box-empty-" + hashlib.sha256(
-        (owner + "\0" + center).encode()
-    ).hexdigest()
     before = bundle.snapshot()
     if "revision" in before.manifest:
-        if before.manifest.get("operation_id") != operation_id:
-            raise InvalidBundle("New center already has another knowledge revision")
         from tinyassets.okf.records import source_census
 
         for name in _FILES:
             source_census(before, name)
         return
     with tempfile.TemporaryDirectory(prefix="owner-box-empty-") as scratch:
+        operation_id = "owner-box-empty-" + uuid.uuid4().hex
         plan = prepare_center(source, Path(scratch), owner=owner)
         if plan.source_rows or plan.vector_entries:
             raise InvalidBundle("New center contains legacy knowledge sources")

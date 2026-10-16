@@ -347,6 +347,34 @@ def test_admitted_agent_start_assembles_memory_and_retrieves(migrated, monkeypat
         current_memory()
 
 
+def test_daemon_prompt_opens_memory_from_bound_session(migrated, monkeypatch, tmp_path):
+    from tinyassets import daemon_memory, daemon_registry, daemon_wiki
+    from tinyassets.agent_loop import served_chat
+    from tinyassets.control_plane.binding import bind_session, use_binding
+    from tinyassets.memory.runtime import current_memory
+
+    provider = migrated["daemon"].bundle.provider
+    monkeypatch.setattr(served_chat, "configured_box_provider", lambda: (provider, None))
+    monkeypatch.setattr(daemon_registry, "get_daemon", lambda *a, **k: {
+        "daemon_id": "daemon-a", "display_name": "Daemon A", "has_soul": True,
+        "soul_text": "Memory test", "soul_hash": "hash", "domain_claims": [],
+    })
+    monkeypatch.setattr(daemon_wiki, "scaffold_daemon_wiki", lambda *a, **k: None)
+    monkeypatch.setattr(daemon_memory, "daemon_wiki_status", lambda *a, **k: {
+        "total_bytes": 0, "file_count": 0,
+    })
+    monkeypatch.setattr(daemon_wiki, "daemon_wiki_root", lambda *a, **k: tmp_path)
+    binding = bind_session(provider=provider, limits=None, universe_dir=tmp_path / "a",
+                           owner="owner-a", execution_id="daemon-prompt-1")
+    with use_binding(binding):
+        packet = daemon_memory.build_daemon_memory_packet(
+            tmp_path, daemon_id="daemon-a", brain_query="memory", max_chars=2000,
+        )
+        assert packet["brain"] is not None
+        with pytest.raises(InvalidBundle, match="authenticated owner session"):
+            current_memory()
+
+
 def test_temporal_index_forgets_owner_deleted_facts(migrated):
     from tinyassets.memory.temporal import TemporalIndex
 

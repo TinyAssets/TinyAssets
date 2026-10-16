@@ -392,6 +392,10 @@ def _run_branch(
     )
     universe_dir = tmp_path / "universe_alice"
     universe_dir.mkdir(exist_ok=True)
+    from tinyassets.okf.box_cutover import initialize_empty_center
+
+    initialize_empty_center(owner="acct_alice", center="universe_alice",
+                            source=universe_dir)
     selected_provider = "codex"
     providers = {
         name: _CountingProvider(name, after_provider_call)
