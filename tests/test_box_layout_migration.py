@@ -132,6 +132,28 @@ def test_knowledge_cutover_refuses_foreign_universe_before_any_box_write(tmp_pat
         prepare_center(center, snapshots, owner="alice")
 
 
+def test_legacy_source_lookup_ignores_dot_directories_for_every_store(tmp_path):
+    from tinyassets.okf.box_cutover import _FILES, _source_path
+    from tinyassets.okf.bundle import InvalidBundle
+
+    center = tmp_path / "home"
+    workspace = center / ".agent-workspace"
+    universe = center / "universe-one"
+    workspace.mkdir(parents=True)
+    universe.mkdir()
+    for name, filename in _FILES.items():
+        root_store = center / filename
+        root_store.write_bytes(b"root")
+        (workspace / filename).touch()
+        assert _source_path(center, name) == root_store
+        universe_store = universe / filename
+        universe_store.write_bytes(b"second")
+        with pytest.raises(InvalidBundle, match=f"multiple {name} databases"):
+            _source_path(center, name)
+        universe_store.unlink()
+        root_store.unlink()
+
+
 def test_knowledge_cutover_retains_vector_prose_as_owner_record(tmp_path):
     from tinyassets.okf.box_cutover import commit_center, prepare_center
     from tinyassets.retrieval.vector_store import VectorStore, reset_db
@@ -363,12 +385,20 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
     censuses are not a skip: check refuses them instead of reporting owner-box.
     """
     from tinyassets.agent_file_migration import pending
+    from tinyassets.knowledge.knowledge_graph import initialize_knowledge_index
 
     data = tmp_path / "data"
     store = tmp_path / "owners"
     center = data / "home"
     center.mkdir(parents=True)
     (center / "note.txt").write_text("owner sentence")
+    with sqlite3.connect(center / "knowledge.db") as db:
+        db.row_factory = sqlite3.Row
+        initialize_knowledge_index(db)
+        db.execute("INSERT INTO entities(entity_id, universe_id) VALUES (?, ?)",
+                   ("root-entity", "home"))
+    (center / ".agent-workspace").mkdir()
+    (center / ".agent-workspace" / "knowledge.db").touch()
     (data / ".layout.json").write_text(json.dumps({
         "layout": 2, "state": "stable", "box_layout": "owner-split",
     }))
@@ -465,6 +495,24 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
     migration.apply(data, store, data_backup, box_backup)
 
     assert (store / "300001" / "home" / "note.txt").read_text() == "owner sentence"
+    assert (store / "300001" / "home" / ".agent-workspace" / "knowledge.db").stat().st_size == 0
+    with sqlite3.connect(store / "300001" / "home" / "knowledge.db") as db:
+        assert db.execute("SELECT entity_id FROM entities").fetchall() == [("root-entity",)]
+    from tinyassets.boxes.local import LocalBoxProvider
+    from tinyassets.okf.bundle import KnowledgeBundle
+    from tinyassets.okf.records import SourceRecords
+
+    provider = LocalBoxProvider(
+        boxes_root=store / "300001", state_dir=tmp_path / "state",
+        owner_of=lambda name: "person" if name == "home" else None,
+        allow_unisolated=True,
+    )
+    try:
+        bundle = KnowledgeBundle(provider, provider.bind("home", account_id="person"))
+        entities = SourceRecords(bundle, "knowledge").rows(bundle.snapshot())["entities"]
+        assert [row["entity_id"] for row in entities.values()] == ["root-entity"]
+    finally:
+        provider.close()
     assert (store / "300001" / "home" / "Activities.md").read_text() == (
         "Owner activity instructions")
     assert (data / "home" / "note.txt").read_text() == "owner sentence"

@@ -78,6 +78,8 @@ with sqlite3.connect(data / '.broker/state/owner-identities.db') as db:
         (root / 'nested' / 'payload.bin').write_bytes(bytes(range(256)))
         special = root / '.agent-workspace' / '.tmp' / 'pytest-of-unknown'
         special.mkdir(parents=True)
+        if index == 0:
+            (root / '.agent-workspace' / 'knowledge.db').touch()
         liveness = special / '.consumer_liveness'
         liveness.mkdir()
         os.chmod(liveness, 0o2750)
@@ -141,6 +143,10 @@ for principal, uid, center in (
         assert (moved / relative).stat().st_mode & 0o7777 == expected
     with sqlite3.connect(moved / 'state.sqlite') as db:
         assert db.execute('SELECT name FROM events').fetchone() == (principal,)
+    if principal == 'alice':
+        assert (moved / '.agent-workspace/knowledge.db').stat().st_size == 0
+        with sqlite3.connect(moved / 'knowledge.db') as db:
+            assert db.execute('SELECT entity_id FROM entities').fetchone() == ('entity-alice',)
 assert (data / '.platform/credential-vaults/command-center/.credential-vault.json'
         ).read_text() == 'private credential'
 assert not (store / '300001/command-center/.credential-vault.json').exists()

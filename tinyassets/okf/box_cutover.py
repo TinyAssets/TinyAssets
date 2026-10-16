@@ -201,9 +201,11 @@ def _seed(name: str, conn: sqlite3.Connection) -> None:
 def _source_path(center: Path, name: str) -> Path | None:
     filename = _FILES[name]
     # Known legacy stores may be at the center root or inside one universe.
+    # Dot-directories are agent/platform work areas, never universe roots.
     # A second match requires an explicit consolidation, never a first match.
     matches = [path for path in (center / filename, *center.glob("*/" + filename))
-               if path.exists() or path.is_symlink()]
+               if not (path.parent != center and path.parent.name.startswith("."))
+               and (path.exists() or path.is_symlink())]
     if len(matches) > 1:
         raise InvalidBundle(f"{center.name}: multiple {name} databases")
     if not matches:
