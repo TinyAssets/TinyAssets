@@ -492,13 +492,21 @@ jobs:
         # them the deploy continues and the canary reports not-provisioned,
         # exactly as it does for any other missing canary secret. The pair is
         # installed in one atomic write so the door is never half-configured.
+        #
+        # This step is the whole revocation path, so absent HERE must mean
+        # absent THERE: deleting the GitHub secret is how a leaked key is
+        # revoked, and leaving the host copy would keep the door open with the
+        # value being revoked. Both names are removed instead (a no-op when the
+        # host never had them), so that deploy closes the door back to 404.
         env:
           TINYASSETS_CANARY_DOOR_KEY: ${{ secrets.TINYASSETS_CANARY_DOOR_KEY }}
           TINYASSETS_CANARY_USER_ID: ${{ vars.TINYASSETS_CANARY_USER_ID }}
         run: |
           set -euo pipefail
           if [ -z "${TINYASSETS_CANARY_DOOR_KEY}" ] || [ -z "${TINYASSETS_CANARY_USER_ID}" ]; then
-            echo "::warning::canary sign-in door not configured (needs secret TINYASSETS_CANARY_DOOR_KEY and variable TINYASSETS_CANARY_USER_ID); the route stays 404 and the core canary cannot sign in"
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo bash /tmp/install-tinyassets-env.sh delete TINYASSETS_CANARY_DOOR_KEY TINYASSETS_CANARY_USER_ID"
+            echo "::warning::canary sign-in door not configured (needs secret TINYASSETS_CANARY_DOOR_KEY and variable TINYASSETS_CANARY_USER_ID); any host copies were removed, so the route is 404 and the core canary cannot sign in"
             exit 0
           fi
           if [ "${#TINYASSETS_CANARY_DOOR_KEY}" -lt 32 ]; then

@@ -103,8 +103,11 @@ def _limits():
 def _rate_limited(request) -> bool:
     """Count this attempt against its caller; True once the window is spent.
 
-    The shared key is the boundary, not this counter — but a password door with
-    no counter is a password door someone can grind at.
+    Called only AFTER the shared key verifies, which is what the budget is for:
+    bounding password guessing by whoever holds the key. Counting unkeyed
+    requests instead let anyone fill the bounded table from enough addresses
+    and lock the canary out of its own door (Codex review, 2026-10-15). The
+    shared key is the boundary; this counter only limits what it admits.
     """
     from tinyassets.onboarding.native_sign_in import client_ip
     from tinyassets.onboarding.owner_sessions import hashed
@@ -273,12 +276,13 @@ async def handle(request):
         )
         if not presented or not email or not password:
             raise _Refused("invalid_request", status=400)
-        if _rate_limited(request):
-            raise _Refused("rate_limited", status=429)
         if not _matches(presented, key):
             # Nothing is distinguished before the shared key verifies: an
-            # unkeyed caller learns only that it was refused.
+            # unkeyed caller learns only that it was refused. It also costs
+            # nothing — see `_rate_limited`.
             raise _Refused("refused")
+        if _rate_limited(request):
+            raise _Refused("rate_limited", status=429)
         cfg = app_config()
         if not cfg.get("configured"):
             raise _Refused("not_configured", status=503)

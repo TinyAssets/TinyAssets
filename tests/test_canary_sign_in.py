@@ -95,15 +95,24 @@ def rig(tmp_path, monkeypatch):
     return workos
 
 
-def knock(body, *, headers=None, path="/app/canary-sign-in"):
+def knock(body, *, headers=None, path="/app/canary-sign-in", caller=None):
+    # `caller` is the edge-stamped address the limiter counts: the ASGI peer is
+    # loopback, which `native_sign_in.client_ip` trusts to carry it.
+    sent = {**(headers or {}), **({"cf-connecting-ip": caller} if caller else {})}
+
     async def run():
         async with CLIENT(
             transport=httpx.ASGITransport(app=Starlette(routes=onboarding.onboarding_routes())),
             base_url="https://tinyassets.io",
         ) as client:
-            return await client.post(path, json=body, headers=headers or {})
+            return await client.post(path, json=body, headers=sent)
 
     return asyncio.run(run())
+
+
+def _limiter_rows() -> int:
+    with door._limits() as conn:
+        return conn.execute("SELECT COUNT(*) FROM canary_door_limits").fetchone()[0]
 
 
 def _ask(**overrides):
@@ -217,7 +226,7 @@ def test_without_audience_binding_the_password_session_is_accepted_on_its_own(ri
     assert response.json() == {"access_token": SESSION_TOKEN, "issued_via": "password_grant"}
 
 
-def test_grinding_the_door_is_rate_limited(rig):
+def test_grinding_the_door_with_the_key_is_rate_limited(rig):
     rig.password_status = 401
     for _ in range(door.ATTEMPTS):
         assert knock(_ask()).status_code == 403
@@ -225,6 +234,18 @@ def test_grinding_the_door_is_rate_limited(rig):
     assert response.status_code == 429
     assert response.json() == {"error": "rate_limited"}
     assert response.headers["Retry-After"] == str(int(door.WINDOW))
+
+
+def test_an_unkeyed_flood_cannot_lock_the_canary_out_of_its_own_door(rig):
+    """Counting unkeyed requests let anyone fill the bounded limiter table from
+    enough addresses and 429 the canary (Codex review, 2026-10-15)."""
+    for index in range(door.MAX_COUNTERS + door.ATTEMPTS + 5):
+        refused = knock(_ask(key="wrong-key"), caller=f"203.0.113.{index % 256}")
+        assert refused.status_code == 403
+        assert refused.json() == {"error": "refused"}
+    assert _limiter_rows() == 0  # A wrong key costs the door nothing at all.
+    assert not rig.calls
+    assert knock(_ask()).status_code == 200
 
 
 @pytest.mark.parametrize("body,headers", [

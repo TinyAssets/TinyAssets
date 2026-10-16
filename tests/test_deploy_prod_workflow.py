@@ -285,6 +285,78 @@ def test_canary_step_only_probes_canonical():
     assert deploy < steps.index(core) < steps.index(public)
 
 
+_DOOR_STEP = "Sync the canary sign-in door into /etc/tinyassets/env"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash to execute the step")
+@pytest.mark.parametrize(
+    "key,user_id,want",
+    [
+        ("k" * 48, "user_01CANARY", "set-pair"),
+        ("", "user_01CANARY", "delete"),
+        ("k" * 48, "", "delete"),
+        ("", "", "delete"),
+    ],
+)
+def test_the_door_step_installs_the_pair_or_removes_it(tmp_path, key, user_id, want):
+    """Revocation is this step: deleting the GitHub secret must close the door.
+
+    Leaving the host copy when the secret is gone kept /app/canary-sign-in live
+    with the value being revoked (Codex review, 2026-10-15).
+    """
+    step = _step_named(_load(), _DOOR_STEP)
+    stub = tmp_path / "ssh"
+    # LF endings: a CRLF script breaks bash on a Windows checkout. The stub
+    # drains stdin so the `printf | ssh` pipeline cannot die of SIGPIPE.
+    stub.write_bytes(
+        b"#!/usr/bin/env bash\ncat > payload.txt\nprintf '%s\\n' \"${!#}\" >> remote.txt\n"
+    )
+    stub.chmod(0o755)
+    script = tmp_path / "step.sh"
+    prelude = (
+        'export DO_SSH_USER=deployer\nexport DO_DROPLET_HOST=host.invalid\n'
+        f'export TINYASSETS_CANARY_DOOR_KEY={key}\n'
+        f'export TINYASSETS_CANARY_USER_ID={user_id}\n'
+        'export PATH="$(pwd):$PATH"\n'
+    )
+    script.write_bytes((prelude + str(step.get("run", ""))).encode())
+    proc = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", script.name],
+        cwd=tmp_path, capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    remote = (tmp_path / "remote.txt").read_text(encoding="utf-8")
+    assert f"install-tinyassets-env.sh {want} " in remote, remote
+    assert "TINYASSETS_CANARY_DOOR_KEY TINYASSETS_CANARY_USER_ID" in remote
+    if want == "delete":
+        assert "::warning::canary sign-in door not configured" in proc.stdout
+    else:
+        # One atomic write, both values, in the order the helper reads them.
+        assert (tmp_path / "payload.txt").read_text(encoding="utf-8") == f"{key}\n{user_id}\n"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash to execute the step")
+def test_the_door_step_refuses_a_short_key_instead_of_installing_it(tmp_path):
+    step = _step_named(_load(), _DOOR_STEP)
+    stub = tmp_path / "ssh"
+    stub.write_bytes(b"#!/usr/bin/env bash\ncat > payload.txt\nprintf 'reached\\n' >> remote.txt\n")
+    stub.chmod(0o755)
+    script = tmp_path / "step.sh"
+    script.write_bytes((
+        'export DO_SSH_USER=deployer\nexport DO_DROPLET_HOST=host.invalid\n'
+        'export TINYASSETS_CANARY_DOOR_KEY=short\n'
+        'export TINYASSETS_CANARY_USER_ID=user_01CANARY\n'
+        'export PATH="$(pwd):$PATH"\n'
+    ) .encode() + str(step.get("run", "")).encode())
+    proc = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", script.name],
+        cwd=tmp_path, capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == 1
+    assert "under 32 bytes" in proc.stdout
+    assert not (tmp_path / "remote.txt").exists()
+
+
 def test_access_gate_step_present():
     """A post-deploy step must prove Cloudflare Access still gates the origin.
 

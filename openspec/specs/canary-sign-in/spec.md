@@ -48,10 +48,17 @@ session, so approval-answering authority stays with interactive sign-in.
   reported as unexercised rather than passed
 
 ### Requirement: Bounded attempts and secret-free records
-Attempts SHALL be rate-limited per caller with bounded limiter state, and
-every outcome SHALL be logged as a code without key, password, address or
-token material.
+Attempts that present the correct key SHALL be rate-limited per caller with
+bounded limiter state. A request without the correct key SHALL consume no
+limiter state, so no volume of unkeyed requests can deny the door to its own
+account. Every outcome SHALL be logged as a code without key, password,
+address or token material.
 
-#### Scenario: repeated attempts
-- **WHEN** a caller exceeds the attempt budget inside the window
+#### Scenario: repeated keyed attempts
+- **WHEN** a keyed caller exceeds the attempt budget inside the window
 - **THEN** further attempts are refused with a retry hint and reach no upstream
+
+#### Scenario: unkeyed flood
+- **WHEN** many addresses send requests with a wrong key
+- **THEN** each is refused, no limiter state is recorded, and the correct key
+  still signs in
