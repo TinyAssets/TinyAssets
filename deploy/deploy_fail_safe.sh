@@ -1974,10 +1974,12 @@ box_migration_container() {  # $1 = check|preflight|apply, then module arguments
       err "box migration: owner store has no block device: ${store_device}"
       return 1
     fi
-    posture=(--user 0 --cap-add CHOWN --cap-add FOWNER --cap-add FSETID \
-      --cap-add DAC_OVERRIDE --cap-add SYS_ADMIN)
+    # Preflight only reads (DAC_OVERRIDE) and queries quotas (SYS_ADMIN);
+    # ownership and mode capabilities belong to apply alone.
+    posture=(--user 0 --cap-add DAC_OVERRIDE --cap-add SYS_ADMIN)
     extra=(--device "${store_device}:${store_device}:r")
     if [ "$1" = "apply" ]; then
+      posture+=(--cap-add CHOWN --cap-add FOWNER --cap-add FSETID)
       data_mount="tinyassets-data:/data"
       extra+=(-v "${MIGRATION_BACKUP_DIR}:/backup:ro" \
         --mount type=bind,src=/var/lib/boxhostd/owners,dst=/box-store)
@@ -2039,7 +2041,11 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
           if [ "$box_preflight_rc" -ne 0 ]; then
             preflight_line="$(printf '%s\n' "$box_preflight" | one_line)"
             [ -n "$preflight_line" ] || preflight_line="<none>"
-            migration_refused "check=box_layout_preflight rc=${box_preflight_rc} reason=${preflight_line}" pre_stop
+            # pre_stop only while nothing has stopped the daemon yet.
+            if [ -z "$MIGRATION_SNAPSHOT" ]; then
+              migration_refused "check=box_layout_preflight rc=${box_preflight_rc} reason=${preflight_line}" pre_stop
+            fi
+            migration_refused "check=box_layout_preflight rc=${box_preflight_rc} reason=${preflight_line}"
           fi
           if [ -z "$MIGRATION_SNAPSHOT" ]; then
             stop_for_verified_snapshot 1
