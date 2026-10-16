@@ -470,6 +470,28 @@ def _xfs_quota(store: Path, command: str) -> str:
     return result.stdout
 
 
+def _retire_host_centers(data: Path, marker: dict) -> None:
+    """Retire committed host copies; the verified pre-move backup retains restore bytes."""
+    from tinyassets.workspace_fs import _remove_beneath, open_dir_nofollow
+
+    centers = marker.get("legacy_centers_pending", [])
+    if not isinstance(centers, list) or any(
+        not isinstance(center, str) or not center or center.startswith(".")
+        or Path(center).name != center or center in (".", "..")
+        for center in centers
+    ):
+        raise RuntimeError("invalid committed host center cleanup list")
+    parent = open_dir_nofollow(data)
+    try:
+        for center in centers:
+            _remove_beneath(parent, center)
+    finally:
+        os.close(parent)
+    _atomic_json(storage_layout.marker_path(data), {
+        key: value for key, value in marker.items() if key != "legacy_centers_pending"
+    })
+
+
 def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
     import fcntl
 
@@ -486,6 +508,9 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
                 and marker.get("knowledge_shape") != "v1"):
             raise RuntimeError("owner-box predates the one-pass knowledge conversion")
         if marker.get("box_layout") == "owner-box" and marker.get("activity_shape") == "v1":
+            if marker.get("legacy_centers_pending"):
+                _verified_pair(data_backup, box_backup)
+                _retire_host_centers(data, marker)
             return
         _verified_pair(data_backup, box_backup)
         _mounted(store)
@@ -628,7 +653,9 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
         _atomic_json(storage_layout.marker_path(data), {
             **marker, "box_layout": "owner-box", "state": "stable",
             "activity_shape": "v1", "knowledge_shape": "v1",
+            "legacy_centers_pending": [center for owner in plan for center in owner.centers],
         })
+        _retire_host_centers(data, _marker(data))
     finally:
         if owner_plan:
             for record in knowledge_status.values():

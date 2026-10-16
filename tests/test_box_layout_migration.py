@@ -300,7 +300,39 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
             assert db.execute("SELECT principal, machine FROM box_records").fetchall() == [
                 ("person", 300001)
             ]
-    assert (data / "c1" / "note.txt").read_text() == "owner content"
+        from tinyassets import account_deletion
+        from tinyassets.account_deletion import delete_account
+        from tinyassets.agent_loop import served_chat
+        from tinyassets.boxes.local import LocalBoxProvider
+        from tinyassets.daemon_server import set_founder_home
+
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data))
+        set_founder_home(data, founder_sub="person", universe_id="c1")
+        provider = LocalBoxProvider(
+            boxes_root=store / "300001", state_dir=tmp_path / "delete-state",
+            owner_of=lambda center: "person" if center == "c1" else None,
+            allow_unisolated=True,
+        )
+        monkeypatch.setattr(served_chat, "configured_box_provider", lambda: (provider, None))
+        def destroy_box(_root, center, *, principal):
+            operation = "account-delete-" + hashlib.sha256(
+                (principal + "\0" + center).encode()
+            ).hexdigest()
+            return provider.destroy(provider.bind(center, account_id=principal), operation)
+
+        monkeypatch.setattr(account_deletion, "_destroy_owner_box", destroy_box)
+        try:
+            receipt = delete_account(data, founder_sub="person",
+                                     delete_identity=lambda _: "deleted")
+            assert receipt["unfinished_phases"] == []
+            assert not (store / "300001" / "c1").exists()
+            assert not (data / "c1").exists()
+        finally:
+            provider.close()
+    if copy_fails:
+        assert (data / "c1" / "note.txt").read_text() == "owner content"
+    else:
+        assert not (data / "c1").exists()
 
 
 def test_census_reports_each_layout_and_does_not_invent_a_zero(tmp_path):
@@ -515,7 +547,7 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
         provider.close()
     assert (store / "300001" / "home" / "Activities.md").read_text() == (
         "Owner activity instructions")
-    assert (data / "home" / "note.txt").read_text() == "owner sentence"
+    assert not (data / "home").exists()
     marker = json.loads((data / ".layout.json").read_text())
     assert marker["box_layout"] == "owner-box"
     assert marker["state"] == "stable"

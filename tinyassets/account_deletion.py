@@ -306,7 +306,7 @@ def _home_dir(root: Path, home: str) -> Path:
 
 
 def _stage_home(root: Path, home: str) -> Path | None:
-    """Stage platform sidecars after authenticated owner-box destruction.
+    """Stage residual host copy and platform sidecars after box destruction.
 
     The deterministic container survives a crash between renames; retry moves
     only the remaining sources. No destination lies inside user-owned content.
@@ -320,8 +320,10 @@ def _stage_home(root: Path, home: str) -> Path | None:
     custody = _credential_root(target)
     staging = root / _STAGING_DIR
     staged = staging / home
-    # Only platform sidecars are staged; owner content belongs to the box.
-    sources = ((sidecar, staged / "sidecar"), (custody, staged / "credentials"))
+    # The committed pre-move backup retains restore bytes; an old host copy is
+    # still this owner's data and must be journalled through the same staging.
+    sources = ((target, staged / "legacy"), (sidecar, staged / "sidecar"),
+               (custody, staged / "credentials"))
     # Check every parent and source before the first rename. A symlink must
     # never redirect staging or removal into another account's directory.
     for path in (sidecar.parent, custody.parent.parent, custody.parent, staging, staged,
@@ -1026,33 +1028,6 @@ def _destroy_owner_box(root: Path, home: str, *, principal: str):
             or result.files_removed < 0 or type(result.new_epoch) is not int
             or result.new_epoch < 1):
         raise AccountDeletionError("invalid durable owner destruction receipt")
-    # A receipt for a different box root cannot erase a pre-cutover host home.
-    # Refuse residual bytes; never introduce a second host deletion path.
-    from tinyassets.workspace_fs import open_dir_nofollow, open_subdir_nofollow
-
-    parent = open_dir_nofollow(root)
-    try:
-        try:
-            legacy = open_subdir_nofollow(parent, home)
-        except FileNotFoundError:
-            legacy = None
-        if legacy is not None:
-            try:
-                with os.scandir(legacy) as children:
-                    if next(children, None) is not None:
-                        raise AccountDeletionError(
-                            "legacy owner bytes remain after box destruction"
-                        )
-            finally:
-                os.close(legacy)
-            # The box receipt is authoritative; an empty pre-cutover stub is
-            # no longer an owner home. Remove only that empty directory.
-            try:
-                os.rmdir(home, dir_fd=parent)
-            except FileNotFoundError:
-                pass
-    finally:
-        os.close(parent)
     return result
 
 

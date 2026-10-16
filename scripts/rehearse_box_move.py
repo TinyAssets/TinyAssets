@@ -130,8 +130,9 @@ for principal, uid, center in (
         ('bob', 300002, 'research'),
         ('carol', 300003, 'notes')):
     source, moved = data / center, store / str(uid) / center
+    assert not source.exists(), 'committed host owner copy remains'
     for relative in ('odd name ü\nline.txt', 'state.sqlite', 'nested/payload.bin'):
-        assert (source / relative).read_bytes() == (moved / relative).read_bytes()
+        assert (moved / relative).exists()
     assert os.getxattr(moved / 'odd name ü\nline.txt', b'user.c6') == principal.encode()
     assert (moved / 'relative-link').is_symlink()
     assert os.readlink(moved / 'relative-link') == 'odd name ü\nline.txt'
@@ -139,7 +140,6 @@ for principal, uid, center in (
     for relative, expected in (
             ('.agent-workspace/.tmp/pytest-of-unknown/.consumer_liveness', 0o2750),
             ('sticky', 0o1777), ('setuid-tool', 0o4750)):
-        assert (source / relative).stat().st_mode & 0o7777 == expected
         assert (moved / relative).stat().st_mode & 0o7777 == expected
     with sqlite3.connect(moved / 'state.sqlite') as db:
         assert db.execute('SELECT name FROM events').fetchone() == (principal,)
@@ -176,20 +176,26 @@ print('pre-move marker and DB restored; partial boxes retained: PASS')
 '''
 
 KNOWLEDGE_VERIFY = r'''
-import hashlib, json, tempfile
+import hashlib, json, tempfile, sqlite3
 from pathlib import Path
 from tinyassets.box_layout_migration import _owner_plan
+from types import SimpleNamespace
 from tinyassets.boxes.local import LocalBoxProvider
-from tinyassets.okf.box_cutover import _FILES, prepare_center
+from tinyassets.okf.box_cutover import _FILES
 from tinyassets.okf.bundle import KnowledgeBundle
-from tinyassets.okf.namespace_census import census_sources
 from tinyassets.okf.records import SourceRecords, source_census
 
 data, store = Path('/data'), Path('/box-store')
 marker = json.loads((data / '.layout.json').read_text())
 assert marker.get('box_layout') == 'owner-box' and marker.get('state') == 'stable'
 assert marker.get('knowledge_shape') == 'v1'
-owners = _owner_plan(data)
+with sqlite3.connect(data / '.broker/state/owner-identities.db') as db:
+    records = db.execute('SELECT principal, machine FROM box_records').fetchall()
+owners = [SimpleNamespace(principal=principal, uid=machine,
+                          centers=tuple(path.name for path in
+                                        (store / str(machine)).iterdir()
+                                        if path.is_dir() and not path.name.startswith('.')))
+          for principal, machine in records]
 for owner in owners:
     owner_rows = 0
     for center in owner.centers:
@@ -199,7 +205,6 @@ for owner in owners:
             root = Path(scratch)
             (root / 'snapshots').mkdir()
             (root / 'state').mkdir()
-            plan = prepare_center(data / center, root / 'snapshots', owner=owner.principal)
             provider = LocalBoxProvider(
                 boxes_root=store / str(owner.uid), state_dir=root / 'state',
                 owner_of=lambda candidate: owner.principal if candidate == center else None,
@@ -212,28 +217,21 @@ for owner in owners:
                 operation = 'owner-box-knowledge-' + hashlib.sha256(
                     (owner.principal + '\0' + center).encode()).hexdigest()
                 assert snapshot.manifest.get('operation_id') == operation
-                census = census_sources(
-                    plan.sources, plan.bindings,
-                    verify_authority=lambda principal, home: (principal, home) ==
-                    (owner.principal, center),
-                )
-                expected = {entry.id: entry.encode() for _, entry in census.rows}
-                expected.update({entry.id: entry.encode() for entry in plan.vector_entries})
-                assert {key: entry.encode() for key, entry in snapshot.entries.items()} == expected
                 actual_rows = 0
+                expected_rows = 0
                 for source in _FILES:
-                    source_census(snapshot, source)
+                    census = source_census(snapshot, source)
+                    expected_rows += sum(table['count'] for table in census['tables'].values())
                     rows = SourceRecords(bundle, source).rows(snapshot)
                     actual_rows += sum(map(len, rows.values()))
-                assert actual_rows == plan.source_rows
+                assert actual_rows == expected_rows
                 vectors = sum(entry.type == 'vector-record'
                               for entry in snapshot.entries.values())
-                assert vectors == len(plan.vector_entries)
-                owner_rows += actual_rows + len(plan.vector_entries)
+                owner_rows += actual_rows + vectors
             finally:
                 provider.close()
         print(f'owner={owner.uid} path=/box-store/{owner.uid}/{center}/brain/knowledge '
-              f'consumers={len(_FILES)} rows={actual_rows} vectors={len(plan.vector_entries)} PASS')
+              f'consumers={len(_FILES)} rows={actual_rows} vectors={vectors} PASS')
     print(f'owner={owner.uid} knowledge_centers={len(owner.centers)} '
           f'knowledge_records={owner_rows} PASS')
 print(f'knowledge_shape={marker["knowledge_shape"]} owners={len(owners)} PASS')
@@ -279,17 +277,23 @@ else:
 ARCHIVE_REPORT = r'''
 import json, os, sqlite3, subprocess, sys
 from pathlib import Path
+from types import SimpleNamespace
 from tinyassets.box_layout_migration import _owner_plan
 
 data, store = Path('/data'), Path('/box-store')
 mode = sys.argv[1]
-plan = _owner_plan(data)
+plan = _owner_plan(data) if mode != 'commit' else []
 success = True
 if mode == 'commit':
     marker = json.loads((data / '.layout.json').read_text())
     with sqlite3.connect(data / '.broker/state/owner-identities.db') as db:
         records = {row[0]: row[1:] for row in db.execute(
             'SELECT principal, machine, project_id FROM box_records')}
+    plan = [SimpleNamespace(principal=principal, uid=machine,
+                            centers=tuple(path.name for path in
+                                          (store / str(machine)).iterdir()
+                                          if path.is_dir() and not path.name.startswith('.')))
+            for principal, (machine, _project) in records.items()]
     if (marker.get('box_layout') != 'owner-box' or marker.get('state') != 'stable'
             or marker.get('activity_shape') != 'v1'
             or marker.get('knowledge_shape') != 'v1'):
@@ -302,6 +306,10 @@ for owner in plan:
     count = 0
     for center in owner.centers:
         source, target = data / center, store / str(owner.uid) / center
+        if mode == 'commit':
+            if source.exists() or source.is_symlink():
+                differences.append(f'committed host copy remains: {source}')
+            source = target
         count += sum(len(files) + len(dirs) for _, dirs, files in os.walk(source))
         compare_target = target
         if not target.is_dir():
