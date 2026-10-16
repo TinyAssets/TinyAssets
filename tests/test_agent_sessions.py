@@ -167,7 +167,7 @@ def data_dir(tmp_path, monkeypatch):
 
 def test_the_founder_prompt_is_result_first_and_proactive(data_dir):
     udir = _seed(data_dir)
-    prompt = ui._build_persona_system_prompt(udir, universe_id="u-test", tier=interlocutor.FOUNDER)
+    assert ui.read_operating_instructions(udir) == ""
     from tinyassets.starter_release import starter_manifest
     from tinyassets.starter_seeds import seed_store
 
@@ -183,8 +183,10 @@ def test_the_founder_prompt_is_result_first_and_proactive(data_dir):
 
 def test_operating_instructions_are_seeded_once_and_then_the_universes_own(data_dir):
     udir = _seed(data_dir)
-    ui._build_persona_system_prompt(udir, universe_id="u-test", tier=interlocutor.FOUNDER)
-    assert not (udir / "AGENTS.md").exists()  # Rendering never provisions.
+    # Read before explicit creation; a full persona turn separately upgrades
+    # an admitted center and treats a missing historical file as deleted.
+    assert ui.read_operating_instructions(udir) == ""
+    assert not (udir / "AGENTS.md").exists()  # Reading never provisions.
     from tinyassets.starter_release import starter_manifest
     from tinyassets.starter_seeds import seed_store
     from tinyassets.starter_skills import starter_agent_files

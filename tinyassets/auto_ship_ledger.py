@@ -45,19 +45,30 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-LEDGER_FILENAME = "auto_ship_attempts.jsonl"
-# Dotted: a platform coordination file, never owner content
-# (command_center_layout.PLATFORM_LOCK_NAMES).
-LOCK_FILENAME = ".auto_ship_attempts.jsonl.lock"
+from tinyassets.center_platform_files import (
+    LEDGER as LEDGER_FILENAME,  # noqa: F401 - public compatibility export
+)
+from tinyassets.center_platform_files import (
+    LEDGER_LOCK as LOCK_FILENAME,  # noqa: F401 - public compatibility export
+)
+from tinyassets.center_platform_files import (
+    iter_ledger_lines,
+    open_ledger_lock,
+    read_ledger,
+    write_ledger,
+)
+from tinyassets.center_platform_files import (
+    ledger_path as _host_ledger_path,
+)
 
 #: Valid ``ship_status`` values across Phase 1-3 (§10).
 VALID_SHIP_STATUSES: frozenset[str] = frozenset({
-    "skipped",   # Phase 1 — validator passed but no PR open requested
-    "blocked",   # validator blocked — error_class+error_message set
-    "opened",    # Phase 2 — PR opened, awaiting CI/merge
-    "merged",    # Phase 3 — PR merged, observation window starts
-    "failed",    # PR opened but CI failed or merge rejected
-    "rolled_back",  # Slice C — observation gate triggered a revert PR
+    "skipped",  # Phase 1 — validator passed but no PR open requested
+    "blocked",  # validator blocked — error_class+error_message set
+    "opened",   # Phase 2 — PR opened, awaiting CI/merge
+    "merged",   # Phase 3 — PR merged, observation window starts
+    "failed",   # PR opened but CI failed or merge rejected
+    "rolled_back", # Slice C — observation gate triggered a revert PR
 })
 
 #: Mutable fields ``update_attempt`` is allowed to change after creation.
@@ -75,8 +86,8 @@ MUTABLE_FIELDS: frozenset[str] = frozenset({
     "error_message",
     "observation_status",
     "observation_status_at",
-    "rollback_pr_number",  # Slice C — set when rollback PR opens
-    "rollback_pr_url",     # Slice C — full URL of rollback PR
+    "rollback_pr_number", # Slice C — set when rollback PR opens
+    "rollback_pr_url",    # Slice C — full URL of rollback PR
 })
 
 
@@ -177,11 +188,7 @@ def _now_iso() -> str:
 
 
 def ledger_path(universe_path: Path) -> Path:
-    return Path(universe_path) / LEDGER_FILENAME
-
-
-def _lock_path(universe_path: Path) -> Path:
-    return Path(universe_path) / LOCK_FILENAME
+    return _host_ledger_path(universe_path)
 
 
 # ── File lock ──────────────────
@@ -193,12 +200,9 @@ def _file_lock(universe_path: Path) -> Iterator[None]:
 
     Two concurrent ledger writes serialize on the dedicated
     ``.auto_ship_attempts.jsonl.lock`` file. Opened link-free through
-    ``universe_files.open_lock_file``.
+    ``center_platform_files.open_ledger_lock``.
     """
-    from tinyassets.universe_files import open_lock_file
-
-    Path(universe_path).mkdir(parents=True, exist_ok=True)
-    fd = open_lock_file(universe_path, LOCK_FILENAME)
+    fd = open_ledger_lock(universe_path)
     try:
         if sys.platform == "win32":
             import msvcrt
@@ -240,26 +244,28 @@ def _read_raw(lp: Path) -> list[dict]:
     Skips blank lines silently. Raises ``RuntimeError`` on a malformed
     JSON line — Hard Rule 8 (no silent fallback on corrupt data).
     """
-    if not lp.exists():
+    data = read_ledger(lp.parent)
+    if data is None:
         return []
-    rows: list[dict] = []
-    with lp.open("r", encoding="utf-8") as fh:
-        for lineno, line in enumerate(fh, start=1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(
-                    f"Corrupt ledger row at {lp}:{lineno}: {exc}"
-                ) from exc
-            if not isinstance(row, dict):
-                raise RuntimeError(
-                    f"Ledger row at {lp}:{lineno} is not a JSON object"
-                )
-            rows.append(row)
-    return rows
+    return list(_parse_rows(lp, data.splitlines()))
+
+
+def _parse_rows(lp: Path, lines) -> Iterator[dict]:
+    for lineno, line in enumerate(lines, start=1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"Corrupt ledger row at {lp}:{lineno}: {exc}"
+            ) from exc
+        if not isinstance(row, dict):
+            raise RuntimeError(
+                f"Ledger row at {lp}:{lineno} is not a JSON object"
+            )
+        yield row
 
 
 def _write_raw(lp: Path, rows: list[dict]) -> None:
@@ -268,10 +274,8 @@ def _write_raw(lp: Path, rows: list[dict]) -> None:
     Used by ``update_attempt``. ``record_attempt`` uses a true append
     instead so it does not have to re-serialize the whole file.
     """
-    from tinyassets.universe_files import write_universe_file
-
     data = ''.join(json.dumps(row, default=str) + '\n' for row in rows).encode()
-    write_universe_file(lp.parent, lp.name, data, mode="replace")
+    write_ledger(lp.parent, data)
 
 
 # ── Public API ───────────────────────────────────────────────────────────
@@ -291,8 +295,11 @@ def read_attempts(
     "the last 10 merged attempts" cleanly.
     """
     lp = ledger_path(universe_path)
-    with _file_lock(universe_path):
-        raw = _read_raw(lp)
+    try:
+        with _file_lock(universe_path):
+            raw = _read_raw(lp)
+    except FileNotFoundError:
+        raw = []
     attempts = [ShipAttempt.from_dict(row) for row in raw]
     if ship_status is not None:
         attempts = [a for a in attempts if a.ship_status == ship_status]
@@ -306,8 +313,11 @@ def find_attempt(
 ) -> ShipAttempt | None:
     """File-locked lookup by ship_attempt_id. Returns None if not found."""
     lp = ledger_path(universe_path)
-    with _file_lock(universe_path):
-        raw = _read_raw(lp)
+    try:
+        with _file_lock(universe_path):
+            raw = _read_raw(lp)
+    except FileNotFoundError:
+        raw = []
     for row in raw:
         if row.get("ship_attempt_id") == ship_attempt_id:
             return ShipAttempt.from_dict(row)
@@ -328,8 +338,6 @@ def summarize_rubric_warnings(
     any ledger row. Robust to hand-edited/corrupt rows (non-list or unparseable
     ``rubric_warnings_json`` is skipped, never raises).
     """
-    if not ledger_path(universe_path).exists():
-        return {"total_attempts": 0, "attempts_with_warnings": 0, "rule_id_counts": {}}
     attempts = read_attempts(universe_path, limit=limit)
     rule_counts: dict[str, int] = {}
     warned = 0
@@ -370,8 +378,6 @@ def summarize_trajectory_warnings(
     (non-list or unparseable ``trajectory_warnings_json`` is skipped, never
     raises).
     """
-    if not ledger_path(universe_path).exists():
-        return {"total_attempts": 0, "attempts_with_warnings": 0, "check_counts": {}}
     attempts = read_attempts(universe_path, limit=limit)
     check_counts: dict[str, int] = {}
     warned = 0
@@ -403,9 +409,8 @@ def record_attempt(universe_path: Path, attempt: ShipAttempt) -> None:
     if missing.
 
     Raises ``ValueError`` on invalid ``ship_status`` or duplicate
-    ``ship_attempt_id``. Duplicate detection is by full read so the
-    ledger can be modest (~1k rows) before the read becomes a
-    bottleneck; at that point graduate to sqlite.
+    ``ship_attempt_id``. Duplicate detection streams bounded rows across the
+    entire ledger, so old IDs remain protected without a whole-file size cap.
     """
     if attempt.ship_status not in VALID_SHIP_STATUSES:
         raise ValueError(
@@ -421,18 +426,16 @@ def record_attempt(universe_path: Path, attempt: ShipAttempt) -> None:
 
     lp = ledger_path(universe_path)
     with _file_lock(universe_path):
-        raw = _read_raw(lp)
-        for row in raw:
-            if row.get("ship_attempt_id") == attempt.ship_attempt_id:
-                raise ValueError(
-                    f"ship_attempt_id {attempt.ship_attempt_id!r} already "
-                    f"recorded — use update_attempt to mutate"
-                )
-        from tinyassets.universe_files import write_universe_file
-
-        write_universe_file(lp.parent, lp.name,
-                            (json.dumps(attempt.to_dict(), default=str) + '\n').encode(),
-                            mode="append")
+        with contextlib.closing(iter_ledger_lines(lp.parent)) as lines:
+            for row in _parse_rows(lp, lines):
+                if row.get("ship_attempt_id") == attempt.ship_attempt_id:
+                    raise ValueError(
+                        f"ship_attempt_id {attempt.ship_attempt_id!r} already "
+                        f"recorded — use update_attempt to mutate"
+                    )
+        write_ledger(lp.parent,
+                     (json.dumps(attempt.to_dict(), default=str) + '\n').encode(),
+                     append=True)
 
 
 def update_attempt(

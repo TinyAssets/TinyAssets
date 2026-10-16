@@ -39,6 +39,35 @@ from tinyassets.auto_ship_ledger import (
     update_attempt,
 )
 
+
+@pytest.fixture(autouse=True)
+def _ledger_data_root(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path.parent))
+
+
+def test_record_streams_past_old_size_cap_and_rejects_old_and_new_duplicates(tmp_path):
+    old = ShipAttempt(ship_attempt_id="old-id", created_at="t", updated_at="t",
+                      ship_status="skipped")
+    record_attempt(tmp_path, old)
+    path = ledger_path(tmp_path)
+    # Valid rows put the old ID well outside any bounded tail window.
+    with path.open("ab") as stream:
+        for i in range(18):
+            stream.write(json.dumps({"ship_attempt_id": f"padding-{i}",
+                                     "padding": "x" * 1024 * 1024}).encode() + b"\n")
+    assert path.stat().st_size > 16 * 1024 * 1024
+    new = ShipAttempt(ship_attempt_id="new-id", created_at="t", updated_at="t",
+                      ship_status="skipped")
+    record_attempt(tmp_path, new)
+    with path.open("rb") as stream:
+        stream.seek(-2048, 2)
+        assert json.loads(stream.read().splitlines()[-1])["ship_attempt_id"] == "new-id"
+    size = path.stat().st_size
+    for duplicate in (old, new):
+        with pytest.raises(ValueError, match="already recorded"):
+            record_attempt(tmp_path, duplicate)
+        assert path.stat().st_size == size
+
 # ── rubric warn-mode observability ─────────────────────────────────────────
 
 

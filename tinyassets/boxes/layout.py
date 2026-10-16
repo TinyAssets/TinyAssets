@@ -29,6 +29,51 @@ PLATFORM_RUNTIME_DIR = ".runtime"
 #: The agent's own workspace inside its command center: the tools' ``/u``.
 AGENT_WORKSPACE_DIR = ".agent-workspace"
 
+PAUSE = ".pause"
+WORKER_HEARTBEAT = ".worker_supervisor.json"
+WORKER_HEARTBEAT_PATTERN = ".worker_supervisor.<id>.json"
+LEDGER = "auto_ship_attempts.jsonl"
+LEDGER_LOCK = ".auto_ship_attempts.jsonl.lock"
+
+# A center's host control state and its owner box content have one home each.
+HOST_CENTER_ENTRIES = frozenset({
+    PLATFORM_RUNTIME_DIR, PAUSE, WORKER_HEARTBEAT, LEDGER, LEDGER_LOCK,
+    ".subscription_state.db", ".usage_ledger.db", ".external_write_receipts.db",
+    ".pending_requests.db", ".wiki_write_back_destination_markers.db",
+    ".authoring.db", ".idempotency.db", ".conversation_memory.db",
+    ".conversation_attention.db", ".effector_consents.db",
+    ".effector_consents.db.premigration", ".runs.db", ".automations.db",
+    ".tinyassets.db", "rules.db", "steering.db",
+    ".runtime_status.json", ".engine_mcp_config.json",
+    ".engine_mcp_http_routes.json", ".provider-authority",
+    ".provider-assignment-admission.lock", "provider_definitions.json",
+    ".oauth-refresh", ".soul.lock",
+    ".workspace-staging", "checkpoints.db",
+})
+HOST_CENTER_MOVED = frozenset({
+    "soul.md", "soul_versions", "config.yaml", "wiki", "canon", "output",
+    "agents", "brain", "identity.md", "founder.md", "origin.md", "body.md",
+    "orgchart.md", "AGENTS.md", "MEMORY.md", "settings.yaml",
+    AGENT_WORKSPACE_DIR, "skills", "prompts", "extensions", "workflows",
+    "notes", "notes.json", "dispatcher_config.yaml", "activity.log", "status.json",
+})
+assert HOST_CENTER_ENTRIES.isdisjoint(HOST_CENTER_MOVED)
+
+
+def host_center_entry(name: str) -> bool:
+    if name in HOST_CENTER_ENTRIES:
+        return True
+    if (name.startswith(".worker_supervisor.") and name.endswith(".json")
+            and len(name) > len(".worker_supervisor..json")):
+        return True
+    return any(name == database + suffix for database in HOST_CENTER_ENTRIES
+               if database.endswith((".db", ".db.premigration"))
+               for suffix in ("-wal", "-shm", "-journal"))
+
+
+def host_center_moved(name: str) -> bool:
+    return name in HOST_CENTER_MOVED
+
 
 @contextmanager
 def hold(data):

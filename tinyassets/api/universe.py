@@ -69,6 +69,16 @@ from tinyassets.api.helpers import (
     _universe_dir,
 )
 from tinyassets.catalog import list_unreconciled_writes
+from tinyassets.center_platform_files import (
+    PAUSE,
+    clear_paused,
+    is_paused,
+    read_worker_heartbeats,
+    set_paused,
+)
+from tinyassets.center_platform_files import (
+    WORKER_HEARTBEAT as _WORKER_SUPERVISOR_FILENAME,
+)
 from tinyassets.ids import new_universe_id
 from tinyassets.ingestion.canon_io import iter_canon_files, read_canon_bytes, safe_canon_path
 from tinyassets.storage_accounting import StorageRefused
@@ -268,7 +278,7 @@ def _extract_control_daemon(
     kwargs: dict[str, Any], result: dict[str, Any],
 ) -> tuple[str, str, dict[str, Any]]:
     return (
-        ".pause",
+        PAUSE,
         str(result.get("action", kwargs.get("text", "").strip().lower())),
         {"status": result.get("status", "")},
     )
@@ -1152,7 +1162,7 @@ def _daemon_liveness(udir: Path, status: dict[str, Any] | None) -> dict[str, Any
     has_work = isinstance(targets, list) and any(
         t.get("lifecycle") == "active" for t in targets if isinstance(t, dict)
     )
-    is_paused = (udir / ".pause").exists()
+    paused = is_paused(udir)
     last_activity = _last_activity_at(udir, status)
     staleness = _staleness_bucket(last_activity)
 
@@ -1171,9 +1181,9 @@ def _daemon_liveness(udir: Path, status: dict[str, Any] | None) -> dict[str, Any
     return {
         "phase": raw_phase or "offline",
         "phase_human": _phase_human(
-            raw_phase, has_premise, has_work, is_paused, staleness,
+            raw_phase, has_premise, has_work, paused, staleness,
         ),
-        "is_paused": is_paused,
+        "is_paused": paused,
         "has_premise": has_premise,
         "has_soul": has_soul(udir),
         "has_work": has_work,
@@ -1187,8 +1197,7 @@ def _daemon_liveness(udir: Path, status: dict[str, Any] | None) -> dict[str, Any
     }
 
 
-_WORKER_SUPERVISOR_FILENAME = ".worker_supervisor.json"
-_WORKER_SUPERVISOR_PREFIX = ".worker_supervisor."
+_WORKER_SUPERVISOR_PREFIX = _WORKER_SUPERVISOR_FILENAME.removesuffix("json")
 _WORKER_SUPERVISOR_SUFFIX = ".json"
 _WORKER_QUEUE_DESCRIPTOR_FIELDS = (
     "queue_protocol_version",
@@ -1216,11 +1225,11 @@ def _worker_id_from_heartbeat_path(path: Path) -> str:
 def _read_worker_liveness_entry(
     beat_path: Path,
     *,
+    raw_beat: bytes,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     worker_id = _worker_id_from_heartbeat_path(beat_path)
     try:
-        raw_beat = read_data_path(beat_path, max_bytes=MAX_CONFIG_BYTES) or b""
         beat = json.loads(raw_beat.decode("utf-8"))
     except (OSError, ValueError, TypeError):  # noqa: BLE001 — probe, not gate
         return {
@@ -1286,24 +1295,22 @@ def _worker_liveness(
     writes (openspec/specs/uptime-and-alarms/spec.md). Consumers (the activity
     canary) use it to page on wedge and stay quiet on idle.
     """
-    legacy_path = udir / _WORKER_SUPERVISOR_FILENAME
-    worker_paths = sorted(
-        path for path in udir.glob(
-            f"{_WORKER_SUPERVISOR_PREFIX}*{_WORKER_SUPERVISOR_SUFFIX}"
-        )
-        if path.name != _WORKER_SUPERVISOR_FILENAME
-    )
-    if not worker_paths and legacy_path.exists():
-        worker_paths = [legacy_path]
-    if not worker_paths:
+    beats = read_worker_heartbeats(udir, max_bytes=MAX_CONFIG_BYTES)
+    worker_names = [name for name in beats if name != _WORKER_SUPERVISOR_FILENAME]
+    if not worker_names and _WORKER_SUPERVISOR_FILENAME in beats:
+        worker_names = [_WORKER_SUPERVISOR_FILENAME]
+    if not worker_names:
         return {"present": False}
 
     workers = [
-        _read_worker_liveness_entry(path, now=now)
-        for path in worker_paths
+        _read_worker_liveness_entry(udir / name, raw_beat=beats[name], now=now)
+        for name in worker_names
     ]
-    if legacy_path.exists():
-        summary = _read_worker_liveness_entry(legacy_path, now=now)
+    if _WORKER_SUPERVISOR_FILENAME in beats:
+        summary = _read_worker_liveness_entry(
+            udir / _WORKER_SUPERVISOR_FILENAME,
+            raw_beat=beats[_WORKER_SUPERVISOR_FILENAME], now=now,
+        )
     else:
         summary = min(
             workers,
@@ -4103,11 +4110,9 @@ def _action_control_daemon(
     if not udir.is_dir():
         return json.dumps({"error": f"Command center '{uid}' not found."})
 
-    pause_path = udir / ".pause"
-
     if action == "pause":
         try:
-            write_data_path(pause_path, datetime.now(timezone.utc).isoformat())
+            set_paused(udir, datetime.now(timezone.utc).isoformat())
             return json.dumps({
                 "universe_id": uid,
                 "action": "pause",
@@ -4118,7 +4123,7 @@ def _action_control_daemon(
             return json.dumps({"error": f"Failed to write pause signal: {exc}"})
 
     elif action == "resume":
-        if not pause_path.exists():
+        if not is_paused(udir):
             return json.dumps({
                 "universe_id": uid,
                 "action": "resume",
@@ -4126,7 +4131,7 @@ def _action_control_daemon(
                 "note": "Daemon was not paused.",
             })
         try:
-            pause_path.unlink()
+            clear_paused(udir)
             return json.dumps({
                 "universe_id": uid,
                 "action": "resume",
@@ -4480,7 +4485,7 @@ def _action_create_universe(
     # owner-dynamic-admission DA4: an incomplete root left by a failed create
     # resumes in place (same id); the ownership grant below still refuses
     # another account's id.
-    if udir.exists() and (udir / "soul.md").is_file():
+    if udir.exists() and has_soul(udir):
         return json.dumps({"error": f"Command center '{uid}' already exists."})
 
     from tinyassets.boxes.layout import UNIVERSE_SIDECARS_DIR
@@ -4610,7 +4615,7 @@ def _action_create_universe(
         from tinyassets.daemon_server import get_founder_home, set_founder_home
 
         _home = get_founder_home(base, founder)
-        if not _home or not (base / _home / "soul.md").is_file():
+        if not _home or not has_soul(base / _home):
             set_founder_home(
                 base,
                 founder_sub=founder,

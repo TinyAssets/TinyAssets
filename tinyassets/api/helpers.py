@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -59,11 +60,23 @@ def _base_path() -> Path:
 
 
 def _universe_dir(universe_id: str) -> Path:
-    """Resolve a specific universe directory with path-traversal guard."""
+    """Keep the requested authority key; refuse traversal and linked centers."""
+    from tinyassets.center_platform_files import _center
+
     base = _base_path()
-    result = (base / universe_id).resolve()
-    if not result.is_relative_to(base):
+    try:
+        _center(universe_id)
+    except ValueError as exc:
+        raise ValueError(f"Invalid universe_id: {universe_id}") from exc
+    result = base / universe_id
+    if result.name != universe_id or result.parent != base:
         raise ValueError(f"Invalid universe_id: {universe_id}")
+    try:
+        info = result.lstat()
+    except FileNotFoundError:
+        return result
+    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
+        raise ValueError(f"Invalid universe_id: {universe_id}: linked center")
     return result
 
 

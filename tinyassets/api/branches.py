@@ -1093,7 +1093,7 @@ def _branch_dependents(
     out["branches"] = sorted(invokers)
 
     # A universe queues its declared loop branch on every request it admits.
-    from tinyassets.universe_soul import read_universe_soul
+    from tinyassets.universe_soul import read_universe_soul, soul_present
 
     loops: list[str] = []
     # Owned only. This names universe ids back to the caller, and an archived
@@ -1112,7 +1112,7 @@ def _branch_dependents(
     except OSError:
         universe_dirs = []
     for udir in sorted(universe_dirs):
-        if not (udir / "soul.md").is_file():
+        if not soul_present(udir):
             continue
         try:
             soul = read_universe_soul(udir)

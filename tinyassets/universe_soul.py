@@ -102,8 +102,19 @@ def legacy_premise_path(universe_dir: Path) -> Path:
     return universe_dir / LEGACY_PREMISE_FILENAME
 
 
+def soul_present(universe_dir: Path) -> bool:
+    """Check the owner's box for its soul."""
+    from tinyassets.owner_box_reads import UnadmittedCenter, box_stat
+
+    try:
+        info = box_stat(universe_dir, SOUL_FILENAME)
+    except UnadmittedCenter:
+        return False
+    return info is not None and info.kind == "file"
+
+
 def has_soul(universe_dir: Path) -> bool:
-    return soul_path(universe_dir).is_file()
+    return soul_present(universe_dir)
 
 
 def render_soul_markdown(soul: UniverseSoul) -> str:
@@ -158,10 +169,12 @@ def read_universe_soul(universe_dir: Path, *, strict: bool = False) -> UniverseS
     on a refusal, so an update never rebuilds the soul from defaults over a
     file it could not read.
     """
-    from tinyassets.universe_files import read_universe_text
+    from tinyassets.owner_box_reads import box_read
+    from tinyassets.universe_files import MAX_UNIVERSE_FILE_BYTES
 
     try:
-        text = read_universe_text(universe_dir, SOUL_FILENAME)
+        text = box_read(universe_dir, SOUL_FILENAME,
+                        max_bytes=MAX_UNIVERSE_FILE_BYTES).decode("utf-8")
     except FileNotFoundError:
         return None
     except (OSError, UnicodeDecodeError):
@@ -372,20 +385,14 @@ def effect_authority_from_soul(universe_dir: Path) -> tuple[str, ...]:
     soul = read_universe_soul(universe_dir)
     if soul is not None:
         return soul.effect_authority
-    # read_universe_soul returned None: distinguish a genuinely ABSENT soul
-    # (-> () -> UNDECLARED) from an existing-but-unreadable one (-> raise ->
-    # DENIED). Use lstat(), NOT is_file(): is_file() can suppress a metadata
-    # error to False (Codex adapt 2026-08-20, Python 3.14.3), wrongly restoring
-    # UNDECLARED. lstat() raises FileNotFoundError only when the path is truly
-    # gone; ANY other failure — or any existing entry, including a dangling or
-    # malformed symlink — means we cannot treat the soul as absent, so we fail
-    # closed. Only the genuine-deletion race lands in ().
+    # The same box reader distinguishes absence from an unreadable existing soul.
+    from tinyassets.owner_box_reads import box_stat
+
     try:
-        soul_path(universe_dir).lstat()
-    except FileNotFoundError:
-        return ()
+        if box_stat(universe_dir, SOUL_FILENAME) is None:
+            return ()
     except OSError:
-        pass  # metadata error on an uncertain path -> fail closed below
+        pass  # unadmitted center or box error: absence unproven -> fail closed below
     raise OSError(
         "soul file exists but could not be read; failing closed for "
         "effect-authority resolution"

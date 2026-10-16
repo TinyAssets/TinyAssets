@@ -29,6 +29,7 @@ _PKG = _REPO / "tinyassets"
 #: The helpers themselves: the only modules allowed to do the raw I/O.
 _EXEMPT = {
     "tinyassets/universe_files.py", "tinyassets/workspace_fs.py",
+    "tinyassets/center_platform_files.py",  # Descriptor-safe host adapter.
 }
 
 _TOUCHES_UNIVERSE = re.compile(
@@ -132,7 +133,6 @@ PINNED: dict[str, list[str]] = {
         "_load_release_state: .read_text()",
     ],
     "tinyassets/api/universe.py": [
-        "_action_control_daemon: .unlink()",
         "_action_create_universe: .write_text()",
         "_action_switch_universe: .write_text()",
     ],
@@ -141,9 +141,6 @@ PINNED: dict[str, list[str]] = {
     ],
     "tinyassets/authoring/store.py": [
         "put_file_handle: .write_bytes()",
-    ],
-    "tinyassets/auto_ship_ledger.py": [
-        "_read_raw: .open()",
     ],
     "tinyassets/automation_context.py": [
         "_brain: .open()",
@@ -289,7 +286,6 @@ PINNED: dict[str, list[str]] = {
     ],
     "tinyassets/control_plane/tick.py": [
         "_hold_liveness: .unlink()",
-        "_publish_heartbeat: .write_text()",
     ],
     "tinyassets/storage/__init__.py": [
         "_reject_orphaned_legacy_sidecars: os.replace()",

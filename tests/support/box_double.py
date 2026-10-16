@@ -265,6 +265,14 @@ def install(monkeypatch):
         return binding
 
     monkeypatch.setattr(binding_module, "file_binding", file_binding)
+    def admitted_owner(root, *, center):
+        # Existing directory fixtures model broker-admitted centers. Reads must
+        # never create the directory that proves admission.
+        if not (Path(root) / center).is_dir():
+            raise PermissionError("center owner admission refused")
+        return double.admitted_owner(root, center)
+
+    monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner", admitted_owner)
     from tinyassets.boxes import lifecycle
 
     def admit_center(data_root, *, principal, center):

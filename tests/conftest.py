@@ -237,7 +237,7 @@ def _emulate_deployed_visibility_backfill(request, monkeypatch):
     monkeypatch.setattr(_vis, "universe_visibility", _post_backfill)
 
 
-def own_universe(base_path, *universe_ids: str) -> None:
+def own_universe(base_path, *universe_ids: str, owner_id: str | None = None) -> None:
     """Give each universe an OWNER, which is what makes it a universe.
 
     Since 2026-09-02 a universe exists because an ownership row names it, and a
@@ -255,12 +255,19 @@ def own_universe(base_path, *universe_ids: str) -> None:
     fixtures make a bare directory with no function call to hook, and a helper
     that guessed would be a permissive double rather than a truth-maker.
     """
-    from tinyassets.daemon_server import set_founder_home
+    from tinyassets.daemon_server import _connect, set_founder_home
+    from tinyassets.universe_owner import owner_of, record_creation
 
     for uid in universe_ids:
+        owner = owner_id or f"test-owner::{uid}"
         set_founder_home(
-            base_path, founder_sub=f"test-owner::{uid}", universe_id=uid,
+            base_path, founder_sub=owner, universe_id=uid,
         )
+        # Box binds use the explicit owner table, not the legacy home pointer.
+        # Preserve a real owner a more specific fixture has already recorded.
+        if owner_of(base_path, uid) is None:
+            with _connect(base_path) as conn:
+                record_creation(conn, universe_id=uid, owner_id=owner)
 
 
 @pytest.fixture(autouse=True)

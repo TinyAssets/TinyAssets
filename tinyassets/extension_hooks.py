@@ -115,6 +115,10 @@ async def engine_event(server, event, payload):
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.auth.middleware import _current_identity
 
+    # Discovery/refusal calls can reach middleware before an engine is pinned.
+    # There is no center hook or evidence destination in that case.
+    if not server._GRAPH_ID or not server._ACTOR_ID:
+        return
     token = None
     try:
         token = server._bind_founder_identity(server._RUN_CAPABILITIES)

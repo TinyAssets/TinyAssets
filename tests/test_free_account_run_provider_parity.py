@@ -199,6 +199,9 @@ def _seed_universe(
     initialize_author_server(tmp_path)
     universe_dir = tmp_path / universe
     universe_dir.mkdir(exist_ok=True)
+    from tests.conftest import own_universe
+
+    own_universe(tmp_path, universe, owner_id=owner)
     grant_universe_access(tmp_path, universe_id=universe, actor_id=owner,
                           permission="admin", granted_by=owner)
     set_founder_home(tmp_path, founder_sub=owner, universe_id=universe,

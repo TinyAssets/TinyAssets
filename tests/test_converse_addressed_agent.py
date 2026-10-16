@@ -70,13 +70,13 @@ def _become(base: Path, actor: str, uid: str) -> None:
     auth_middleware("ok")
 
 
-def _universe(base: Path, uid: str) -> Path:
+def _universe(base: Path, uid: str, *, owner_id: str | None = None) -> Path:
     from tests.conftest import own_universe
     from tinyassets.daemon_server import ensure_universe_registered
 
     udir = base / uid
     udir.mkdir()
-    own_universe(base, uid)
+    own_universe(base, uid, owner_id=owner_id)
     seed_okf_bundle(udir, purpose="To help my founder bring their projects to life.")
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
     return udir
@@ -119,7 +119,7 @@ class _Provider:
 @pytest.fixture
 def world(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    udir = _universe(tmp_path, "u-home")
+    udir = _universe(tmp_path, "u-home", owner_id=OWNER)
     _universe(tmp_path, "u-other")
     _become(tmp_path, OWNER, "u-home")
     provider = _Provider()

@@ -157,6 +157,9 @@ _RUNTIME_PROBE = r"""
 import json, os, sys, tempfile
 base = tempfile.mkdtemp()
 os.environ["TINYASSETS_DATA_DIR"] = base
+from pytest import MonkeyPatch
+from tests.support.box_double import install
+box = install(MonkeyPatch())
 from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity
 from tinyassets.daemon_server import grant_universe_ownership, set_founder_home

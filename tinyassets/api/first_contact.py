@@ -34,14 +34,21 @@ def _home_dir(base: Path, universe_id: str) -> Path | None:
     if not universe_id:
         return None
     root = base.resolve()
-    candidate = (root / universe_id).resolve()
-    return candidate if candidate.parent == root else None
+    from tinyassets.center_platform_files import _center
+
+    try:
+        _center(universe_id)
+    except ValueError:
+        return None
+    return root / universe_id
 
 
 def home_is_complete(base: Path, universe_id: str) -> bool:
     """Return whether a bound home has the canonical completed-seed marker."""
     universe_dir = _home_dir(base, universe_id)
-    return universe_dir is not None and (universe_dir / "soul.md").is_file()
+    from tinyassets.universe_soul import soul_present
+
+    return universe_dir is not None and soul_present(universe_dir)
 
 
 def principal_is_deleted(base: Path, founder: str) -> bool:

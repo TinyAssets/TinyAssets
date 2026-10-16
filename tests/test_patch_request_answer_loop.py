@@ -152,7 +152,7 @@ def test_the_next_real_turn_carries_the_notice_once(world, monkeypatch):
     _answer(auth, "receiver", "u-receiver", delivery_id)
 
     udir = base / "u-sender"
-    own_universe(base, "u-sender")
+    own_universe(base, "u-sender", owner_id="sender")
     seed_okf_bundle(udir, purpose="To help my founder.")
     ensure_universe_registered(base, universe_id="u-sender", universe_path=udir)
     _become(base, "sender", "u-sender")
