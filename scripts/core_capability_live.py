@@ -16,7 +16,6 @@ import shlex
 import sys
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tinyassets.core_capabilities import CAPABILITIES, failure_code, validate_report  # noqa: E402
@@ -65,66 +64,35 @@ def passed(report, capability, observation):
     )
 
 
-async def _sign_in_stall(page, step, exc, email=""):
-    """Where sign-in stopped: the step, the page host and title, and the page's
-    visible text. innerText never includes a field value, and the canary email
-    is masked, so no secret or address can reach a log."""
-    alert = ""
-    try:
-        alert = " ".join((await page.locator("body").inner_text(timeout=5000)).split())
-        if email:
-            alert = alert.replace(email, "<email>")
-        alert = re.sub(r"[^\s@]+@[^\s@]+", "<email>", alert)
-        alert = alert[:300]
-    except Exception:  # noqa: BLE001 - diagnostics only
-        pass
-    try:
-        title = (await page.title())[:80]
-    except Exception:  # noqa: BLE001 - diagnostics only
-        title = ""
-    return (
-        f"sign-in step {step} failed ({type(exc).__name__}) on "
-        f"{urlsplit(page.url).hostname or '?'} title={title!r} text={alert!r}"
-    )
-
-
 async def login(config, http):
-    """Normal interactive owner login, including the protected approval cookie."""
-    from playwright.async_api import async_playwright
+    """Sign in through the canary-only door with the shared key and the real password.
 
-    async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch()
+    AuthKit's hosted page shows a headless browser a human check, and defeating
+    one is never an option, so the deployment pins this one synthetic account
+    and authenticates its password with WorkOS server-side
+    (``tinyassets/onboarding/canary_sign_in.py``). What comes back is the
+    ordinary session ``/mcp`` and ``/app`` accept. No protected approval cookie
+    is issued, by design — see ``exercise``.
+    """
+    response = await http.post(
+        ORIGIN + "/app/canary-sign-in",
+        json={"key": config["door_key"], "email": config["email"], "password": config["password"]},
+    )
+    if response.status_code != 200:
+        # The door answers bounded codes only, and gives every failed proof the
+        # same one so it cannot be used as an oracle: which proof failed is in
+        # the daemon log. Neither the door nor this prints a value.
         try:
-            context = await browser.new_context()
-            page = await context.new_page()
-            continue_button = re.compile("^continue( with email)?$", re.I)
-            sign_in_button = re.compile("^(sign in|continue)$", re.I)
-            steps = (
-                ("open", lambda: page.goto(ORIGIN + "/app/owner-sign-in?app=1")),
-                ("email", lambda: page.locator("input[type=email]").fill(config["email"])),
-                ("continue", lambda: page.get_by_role("button", name=continue_button).click()),
-                ("password", lambda: page.locator("input[type=password]").fill(config["password"])),
-                ("sign_in", lambda: page.get_by_role("button", name=sign_in_button).click()),
-                ("return", lambda: page.wait_for_url(ORIGIN + "/app**", timeout=60000)),
-            )
-            for step, action in steps:
-                try:
-                    await action()
-                except Exception as exc:  # noqa: BLE001 - named, never a secret value
-                    raise ProbeFailure(
-                        await _sign_in_stall(page, step, exc, config["email"])
-                    ) from exc
-            for cookie in await context.cookies(ORIGIN):
-                http.cookies.set(
-                    cookie["name"], cookie["value"], domain=cookie["domain"], path=cookie["path"]
-                )
-            if not http.cookies.get("__Host-ta-owner"):
-                raise ProbeFailure("owner callback did not issue its protected session")
-        finally:
-            await browser.close()
-    response = await http.post(ORIGIN + "/app/token", json={"grant_type": "refresh_token"})
-    response.raise_for_status()
-    token = response.json()["access_token"]
+            code = str(response.json().get("error", ""))[:64]
+        except ValueError:
+            code = ""
+        raise ProbeFailure(
+            f"canary sign-in refused (HTTP {response.status_code} {code}); "
+            "the daemon log names the reason"
+        )
+    token = str(response.json().get("access_token", ""))
+    if not token:
+        raise ProbeFailure("canary sign-in returned no session")
     http.headers["Authorization"] = "Bearer " + token
     me = await http.get(ORIGIN + "/app/me")
     me.raise_for_status()
@@ -242,10 +210,15 @@ async def exercise(config, http, token, report):
         await call("read_graph", target="status", graph_id=universe)
         passed(report, "public_mcp", {"url": ORIGIN + "/mcp", "authenticated_tool": "read_graph"})
 
-        # A plain protected approval (no action): it grants nothing, so the
-        # canary never consents to the deployment's real patch intake.
-        report["active_capability"] = "approval"
-        await approval(call, http, report, universe, nonce)
+        # Answering an approval needs the protected owner cookie, and the
+        # canary door does not issue one: that cookie is the interactive,
+        # browser-bound session, and minting it from a shared key would hand
+        # out approval authority on less proof than a real user gives. The row
+        # stays advisory (model_dependent below) until a probe can hold that
+        # proof without a browser.
+        report["capabilities"].append(
+            dict(capability="approval", status="failed", code="not_exercised")
+        )
 
         async def model_probe():
             if report.get("direct_observations"):
@@ -413,7 +386,9 @@ async def exercise(config, http, token, report):
             await direct_tools(client, config, report, nonce, scratch)
         # Model output is an advisory observation even when it claims a tool
         # failed. Keep its missing/invalid evidence out of rollback selection.
-        report["model_dependent"] = ["chat_stream", "patch_request"]
+        # `approval` rides the same list: it is not observed at all (above), so
+        # its row must never select a rollback either.
+        report["model_dependent"] = ["chat_stream", "patch_request", "approval"]
         if not report.get("direct_observations"):
             report["model_dependent"] += [
                 "read", "write", "edit", "bash", "read_image", "ta", "connected_service"
@@ -428,35 +403,6 @@ async def exercise(config, http, token, report):
                     detail=type(exc).__name__,
                 )
             )
-
-
-async def approval(call, http, report, universe, nonce):
-    ask = await call(
-        "write_graph",
-        target="connection",
-        operation="request_from_user",
-        graph_id=universe,
-        payload_json=json.dumps(
-            dict(
-                kind="Approval",
-                title="Synthetic canary " + nonce,
-                body="Synthetic canary check; approving grants nothing.",
-                fields=[],
-            )
-        ),
-    )
-    request_id = ask.get("request_id") or ask.get("request", {}).get("request_id")
-    if not request_id:
-        raise ProbeFailure("approval request was not created")
-    answer = await http.post(
-        ORIGIN + "/app/approvals/answer",
-        json=dict(universe_id=universe, request_id=request_id, values={}),
-    )
-    answer.raise_for_status()
-    decision = answer.json()
-    if decision.get("status") != "answered" or decision.get("decision") != "allowed":
-        raise ProbeFailure("protected approval was not answered")
-    passed(report, "approval", {"request_id": request_id, "decision": "allowed"})
 
 
 async def run(report):

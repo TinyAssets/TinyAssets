@@ -7,6 +7,9 @@ inputs:
   password:
     description: Canary owner password
     required: false
+  door-key:
+    description: Shared key of the canary-only sign-in door (the deployment holds the same value)
+    required: false
   hmac-key:
     description: Key of the canary signing service, to check its replies
     required: false
@@ -31,21 +34,19 @@ inputs:
 runs:
   using: composite
   steps:
+    # No browser: the canary signs in through the canary-only door, so nothing
+    # here drives AuthKit's hosted page (which shows a headless browser a human
+    # check). That also saves ~1.5 runner-minutes a run.
     - name: Install pinned canary client
       shell: bash
-      run: pip install fastmcp==3.2.0 httpx==0.28.1 pillow==12.1.1 playwright==1.58.0
-    # Until the dedicated owner is provisioned the probe only reports
-    # canary_not_provisioned, so skip the browser install (~1.5 runner-minutes a run).
-    - name: Install browser
-      if: inputs.email != ''
-      shell: bash
-      run: python -m playwright install --with-deps chromium
+      run: pip install fastmcp==3.2.0 httpx==0.28.1 pillow==12.1.1
     - name: Probe all capabilities and daemon failure rates
       id: probe
       shell: bash
       env:
         TINYASSETS_CANARY_EMAIL: ${{ inputs.email }}
         TINYASSETS_CANARY_PASSWORD: ${{ inputs.password }}
+        TINYASSETS_CANARY_DOOR_KEY: ${{ inputs.door-key }}
         TINYASSETS_CANARY_HMAC_KEY: ${{ inputs.hmac-key }}
         TINYASSETS_CANARY_SERVICE_URL: ${{ inputs.service-url }}
         TINYASSETS_CANARY_UNIVERSE_ID: ${{ inputs.home }}

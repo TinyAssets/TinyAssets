@@ -71,6 +71,8 @@ DAEMON_AUTH_ENV: frozenset[str] = frozenset({
     "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY",
     "TINYASSETS_APP_INGRESS_HMAC_KEY",
     "TINYASSETS_WIKI_CANARY_TOKEN",
+    # The deploy canary's sign-in door key (onboarding/canary_sign_in.py).
+    "TINYASSETS_CANARY_DOOR_KEY",
     # Normally popped by session_store.arm(); also protect launches before arm.
     "TINYASSETS_SESSION_SEAL_KEY",
 })

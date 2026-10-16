@@ -145,8 +145,14 @@ def test_no_daemon_code_reads_a_forbidden_name(name):
 
 @pytest.mark.parametrize("name", sorted(DAEMON_ONLY_ENV))
 def test_daemon_only_names_are_read_by_daemon_routes_only(name):
-    """Billing and account deletion are daemon HTTP routes; no child serves them."""
-    allowed = {"tinyassets/billing/stripe_adapter.py", "tinyassets/account_deletion.py"}
+    """Billing, account deletion and the canary door are daemon HTTP routes;
+    no child serves them."""
+    allowed = {
+        "tinyassets/billing/stripe_adapter.py",
+        "tinyassets/account_deletion.py",
+        # The WorkOS password check behind the canary-only sign-in.
+        "tinyassets/onboarding/canary_sign_in.py",
+    }
     assert _readers(name) <= allowed
 
 

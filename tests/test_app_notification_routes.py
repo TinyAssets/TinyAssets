@@ -31,6 +31,10 @@ PUBLIC_APP_PATHS = {
     "/app",              # the SPA shell, loads before sign-in
     "/app/token",        # its same-origin PKCE exchange
     "/app/owner-sign-in",  # document navigation begins interactive owner PKCE
+    # The deploy canary's own sign-in: obtaining a bearer is its job, so it
+    # cannot carry one. 404 unless the host pins one synthetic account, and it
+    # still requires a server-held key AND that account's WorkOS password.
+    "/app/canary-sign-in",
     "/app/billing/webhook",  # Stripe POSTs with no bearer
     # The OAuth return lands in the browser with no bearer; only the shell is
     # open and the authenticated exchange after it is still challenged.
