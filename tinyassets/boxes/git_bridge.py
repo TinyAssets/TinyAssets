@@ -35,8 +35,8 @@ def prepare():
     if raw is None:
         return None, None
     # CLI-only forwarding runs with -S. Keep its no-git path stdlib-only.
-    from tinyassets import git_egress
     from tinyassets import rpc_frames as rf
+    from tinyassets.boxes import git_routes
 
     if len(raw.encode()) > 16384:
         raise ValueError("git launch scope exceeds bound")
@@ -72,10 +72,10 @@ def prepare():
                                allowed_endpoints=())
         connections.append((grant, view, row["incarnation"]))
     proxy = object()
-    context = git_egress._open_routes(proxy, client, connections, document["agent"])
+    context = git_routes._open_routes(proxy, client, connections, document["agent"])
     rewrites = context.__enter__()
     os.environ.update(GIT_CONFIG_COUNT=str(len(rewrites)), GIT_TERMINAL_PROMPT="0")
-    for i, (key, value) in enumerate(git_egress.config_pairs(rewrites)):
+    for i, (key, value) in enumerate(git_routes.config_pairs(rewrites)):
         os.environ[f"GIT_CONFIG_KEY_{i}"] = key
         os.environ[f"GIT_CONFIG_VALUE_{i}"] = value
     return context, proxy

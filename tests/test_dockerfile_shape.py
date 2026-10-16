@@ -344,7 +344,7 @@ def test_compose_requires_explicit_workflow_image_without_latest_default():
         for name, service in data["services"].items()
         if "TINYASSETS_IMAGE" in str(service.get("image", ""))
     ]
-    assert set(tinyassets_services) == {"daemon"}, (
+    assert set(tinyassets_services) == {"daemon", "broker"}, (
         "unexpected TinyAssets-image service set: " f"{sorted(tinyassets_services)}"
     )
 

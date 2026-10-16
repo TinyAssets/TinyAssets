@@ -24,7 +24,8 @@ whose next step is *"the founder logs into Cloudflare."*
 
 | One-time core-canary setup (2026-10-10) | Founder-only action |
 |---|---|
-| Dedicated synthetic owner | Create a separate owner with normal password sign-in, a connected model, and a bounded HTTP connection whose POST endpoint returns `hmac`: lowercase hex HMAC-SHA256 of the submitted UTF-8 `nonce`, using a dedicated random key the model never receives. Install a private code branch taking `nonce` and returning it as `echo`. Route this owner's synthetic patch requests to an intake that records them without creating production issues. Set GitHub secret `TINYASSETS_CORE_CANARY_CONFIG` to JSON containing `email`, `password`, `universe_id`, `connection_id`, `service_path`, `service_hmac_key`, `intake_receiver_id`, and `branch_id`. Reuse the existing health-canary and Pushover secrets. No founder/user data belongs in this account. `deploy-prod` runs `scripts/verify_core_canary_provision.py` before any host change. A missing or incomplete secret is a loud warning: a deploy that does not move data continues, and a deploy that would move data (an owner-box layout candidate, a pending migration, or any other data-moving step) refuses before the move. Once this canary is provisioned, a red public canary, app probe, or failed core-canary step still rolls the new image back. |
+| Dedicated synthetic owner | Done by the founder: a separate owner with normal password sign-in and a connected model source offering free (`:free`) models, plus GitHub secrets `TINYASSETS_CANARY_EMAIL`, `TINYASSETS_CANARY_PASSWORD` and `TINYASSETS_CANARY_HMAC_KEY` (the key of the canary signing service, POST `/sign` `{nonce}` -> `{hmac}`). Remaining: (1) move the three canary secrets into the main-only `production` environment (`copy-secrets-to-production.yml` lists them) and delete the repo-level copies, so no branch run can read them; (2) set repo variable `TINYASSETS_CANARY_UNIVERSE_ID` to the canary's home id (sign-in refuses any other account, so wrong credentials never repair a real owner); (3) set repo variable `TINYASSETS_CANARY_SERVICE_URL` to that service's https base URL (needed only until the canary has created its `canary-hmac` connection). Everything else self-provisions (`scripts/core_canary_provision.py`): `deploy-prod` signs in before any host change and creates or repairs the free default model, the `canary-hmac` connection and the private `canary-echo` branch. The canary never touches the real patch intake: its approval row grants nothing, and the patch row is advisory until a record-only door exists. A canary that cannot sign in or repair itself is a loud warning and never a rollback: a deploy that does not move data continues, and a deploy that would move data refuses before the move. Only a canary that was ready before the deploy can roll it back. No founder/user data belongs in this account. |
+| Canary-only sign-in door (2026-10-15) | AuthKit now shows a headless browser a "verify you are human" check, so the canary signs in through a door the deployment opens for this one account (`tinyassets/onboarding/canary_sign_in.py`), never by driving the hosted page. Two founder actions, both needed or the route stays 404 and the canary reports not-provisioned: (1) create secret `TINYASSETS_CANARY_DOOR_KEY` in the main-only `production` environment — 32+ random bytes, `python -c "import secrets; print(secrets.token_hex(32))"`; (2) set repo variable `TINYASSETS_CANARY_USER_ID` to the canary account's WorkOS `user_...` id (Dashboard → Users). `deploy-prod` installs both onto the host on the next deploy. The host also needs `WORKOS_API_KEY` in `/etc/tinyassets/env` (Dashboard → API Keys, `sk_...`), which is what checks the password; no workflow syncs it, and without it the door answers `503 password_check_unconfigured` and the canary says so in its report. The door still requires the canary's real password, which WorkOS checks server-side, and it is pinned to that user id, so a leaked key alone signs in nobody and the key can never reach another account. Answering approvals needs the interactive owner cookie, which this door deliberately does not issue, so the canary's `approval` row is advisory until a probe can hold that proof without a browser. |
 
 ## Isolation production refusal acceptance (2026-10-10)
 
@@ -89,16 +90,6 @@ Optional, same concern: swap `STRIPE_SECRET_KEY` for a restricted `rk_live_` key
 to Checkout, Subscriptions and webhook reads. The daemon must still hold a Stripe key.
 
 ---
-
-## Creator revenue share: decide F1–F14 and get counsel on the token questions (2026-10-01)
-
-**Why:** `openspec/changes/creator-revenue-share/` designs paying creators a share of
-paid subscriptions in TINY. Phase A (attribution, shadow dollar ledger, metrics, no
-money) waits only on your approval and the parameter answers in design §10. Mainnet
-payout waits on counsel's answers to design §9: securities and token-promotion optics,
-money transmission, creator tax reporting, Stripe, Google Play and Apple policy,
-jurisdictions, privacy, unclaimed balances. Nothing pays out until you sign each
-monthly batch yourself.
 
 ## Decide: do pre-#4287 automations get grandfathered, or does every recurring job hold? (2026-10-03)
 

@@ -22,6 +22,7 @@ _CONFIG = {
     "TINYASSETS_AUTO_SHIP_RUBRIC_MODE": "gate mode",
     "TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE": "gate mode",
     "TINYASSETS_MCP_CANARY_URL": "public endpoint",
+    "TINYASSETS_CANARY_USER_ID": "which account the canary door may sign in; an id, not a proof",
     "TINYASSETS_ONBOARDING_APP": "feature flag",
     "UNIVERSE_SERVER_AUTH": "auth mode, not credential material",
     "UNIVERSE_SERVER_DEV_USER": "local operator name",
@@ -118,6 +119,7 @@ def test_daemon_auth_inventory_has_only_the_audited_readers():
         "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY": set(),
         "TINYASSETS_APP_INGRESS_HMAC_KEY": set(),
         "TINYASSETS_WIKI_CANARY_TOKEN": {"auth/wiki_canary.py"},
+        "TINYASSETS_CANARY_DOOR_KEY": {"onboarding/canary_sign_in.py"},
         "TINYASSETS_SESSION_SEAL_KEY": {"onboarding/session_store.py", "universe_server.py"},
     }
     for name, readers in expected.items():

@@ -101,7 +101,6 @@ class Store:
 def _walk_bytes(
     root: Path, *, exclude_top: frozenset[str] = frozenset(),
     _seen: set[tuple[int, int]] | None = None,
-    _exclude_owner: bool = False,
 ) -> int:
     """Logical bytes of regular files under ``root``. Symlinks are not followed
     and a hard-linked file is counted once. Missing root is 0 bytes."""
@@ -118,8 +117,7 @@ def _walk_bytes(
         directory, top = stack.pop()
         with os.scandir(directory) as entries:
             for entry in entries:
-                if top and (entry.name in exclude_top or (_exclude_owner
-                        and _owner_content_name(entry.name))):
+                if top and entry.name in exclude_top:
                     continue
                 try:
                     st = entry.stat(follow_symlinks=False)
@@ -143,12 +141,6 @@ def _walk_bytes(
     return total
 
 
-def _owner_content_name(name):
-    from tinyassets.role_content import _owner_entry
-
-    return _owner_entry(name)
-
-
 def _center_bytes(root: Path, *, scope: str, exclude_top=frozenset()):
     from tinyassets.broker.owner_identities import OWNER_ID_FIRST, OWNER_ID_LAST
     from tinyassets.storage import data_dir
@@ -166,12 +158,64 @@ def _center_bytes(root: Path, *, scope: str, exclude_top=frozenset()):
             raise PermissionError('storage center is outside the admitted data root')
         target = root / 'workspaces' if scope == 'workspaces' else root
         return _walk_bytes(target, exclude_top=exclude_top)
-    from tinyassets.role_storage import measure
+    return _box_center_bytes(root, scope=scope, exclude_top=exclude_top)
 
-    owned = measure(root, scope)
-    if scope == 'workspaces':
-        return owned
-    return owned + _walk_bytes(root, exclude_top=exclude_top, _exclude_owner=True)
+
+def _box_center_bytes(root: Path, *, scope: str, exclude_top=frozenset()) -> int:
+    """Logical bytes of a command center read through its owner's box.
+
+    A runtime center lives in the owner's box, never on a daemon path: the
+    measure binds a read-only measurement session on the owner's handle and
+    sums regular-file sizes page by page. ``exclude_top`` names top-level
+    entries that are the platform's.
+    """
+    import hashlib
+
+    from tinyassets.agent_loop.served_chat import configured_box_provider
+    from tinyassets.boxes.provider import BoxNotFound
+    from tinyassets.universe_owner import owner_of
+
+    provider, _ = configured_box_provider()
+    if provider is None:
+        raise PermissionError('owner storage measure requires the owner box provider')
+    center = root.name
+    owner = owner_of(root.parent, center)
+    if not owner:
+        return 0
+    handle = provider.bind(center, account_id=owner,
+                           turn_id=hashlib.sha256(('storage-measure:' + center).encode())
+                           .hexdigest())
+    top = '/cc/workspaces' if scope == 'workspaces' else '/cc'
+    pending = [top]
+    total = 0
+    entries = 0
+    linked = set()
+    while pending:
+        directory = pending.pop()
+        cursor = None
+        while True:
+            try:
+                page = provider.list(handle, directory, cursor=cursor)
+            except (FileNotFoundError, BoxNotFound):
+                break
+            for item in page.entries:
+                entries += 1
+                if entries > 1_000_000 or item.name in ('', '.', '..') or '/' in item.name:
+                    raise PermissionError('owner storage measure exceeds its bound')
+                if directory == top and item.name in exclude_top:
+                    continue
+                if item.kind == 'dir':
+                    pending.append(directory + '/' + item.name)
+                elif item.kind == 'file':
+                    if item.links > 1:
+                        if item.inode in linked:
+                            continue
+                        linked.add(item.inode)
+                    total += max(0, item.size)
+            if page.next_cursor is None:
+                break
+            cursor = page.next_cursor
+    return total
 
 
 def _universe_files(base: Path, universe_id: str) -> int:

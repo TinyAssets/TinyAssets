@@ -2,16 +2,22 @@
 
 import asyncio
 import contextlib
+import re
 import sqlite3
 
 from tinyassets import rpc_frames as rf
+from tinyassets.boxes.network import EgressRefused, _checked_addresses, _destination
 from tinyassets.broker.box_admission import resolve
-from tinyassets.universe_egress import EgressRefused, _checked_addresses, _destination
+
+#: Kept in step with ``engine_mcp_http``; the broker imports no daemon module.
+BOX_ENGINE_HOST = "engine.tinyassets.box"
+ENGINE_SOCKET_DIR = ".engine-mcp"
 
 
 class PublicEgress:
-    def __init__(self, identities):
+    def __init__(self, identities, data_root=None):
         self.identities = identities
+        self.data_root = data_root
         self.active = {}
 
     async def serve(self, reader, writer, document):
@@ -35,17 +41,28 @@ class PublicEgress:
             if len(head) > 16384:
                 raise EgressRefused("proxy header exceeds bound")
             host, port, first = _destination(head)
-            addresses = await asyncio.wait_for(
-                asyncio.to_thread(_checked_addresses, host, port), 10)
-            async with asyncio.timeout(15):
-                for address in addresses:
-                    try:
-                        incoming, upstream = await asyncio.open_connection(address, port)
-                        break
-                    except OSError:
-                        continue
-                else:
-                    raise EgressRefused("destination unavailable")
+            if host == BOX_ENGINE_HOST:
+                # The owner's own engine route (its command center's socket),
+                # never another center's and never the daemon's TCP listener.
+                center = document.get("center")
+                if (self.data_root is None or not isinstance(center, str)
+                        or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", center)):
+                    raise EgressRefused("engine route is not admitted for this box")
+                async with asyncio.timeout(15):
+                    incoming, upstream = await asyncio.open_unix_connection(
+                        str(self.data_root / ENGINE_SOCKET_DIR / f"{center}.sock"))
+            else:
+                addresses = await asyncio.wait_for(
+                    asyncio.to_thread(_checked_addresses, host, port), 10)
+                async with asyncio.timeout(15):
+                    for address in addresses:
+                        try:
+                            incoming, upstream = await asyncio.open_connection(address, port)
+                            break
+                        except OSError:
+                            continue
+                    else:
+                        raise EgressRefused("destination unavailable")
             if first is None:
                 writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
                 await asyncio.wait_for(writer.drain(), 30)

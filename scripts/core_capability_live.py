@@ -1,4 +1,4 @@
-"""Dedicated-owner observations: alert-only; rollback requires paired image proof."""
+"""Dedicated-owner observations; a failed platform row fails the step (deploy rolls back)."""
 
 from __future__ import annotations
 
@@ -65,35 +65,41 @@ def passed(report, capability, observation):
 
 
 async def login(config, http):
-    """Normal interactive owner login, including the protected approval cookie."""
-    from playwright.async_api import async_playwright
+    """Sign in through the canary-only door with the shared key and the real password.
 
-    async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch()
+    AuthKit's hosted page shows a headless browser a human check, and defeating
+    one is never an option, so the deployment pins this one synthetic account
+    and authenticates its password with WorkOS server-side
+    (``tinyassets/onboarding/canary_sign_in.py``). What comes back is the
+    ordinary session ``/mcp`` and ``/app`` accept. No protected approval cookie
+    is issued, by design — see ``exercise``.
+    """
+    response = await http.post(
+        ORIGIN + "/app/canary-sign-in",
+        json={"key": config["door_key"], "email": config["email"], "password": config["password"]},
+    )
+    if response.status_code != 200:
+        # The door answers bounded codes only, and gives every failed proof the
+        # same one so it cannot be used as an oracle: which proof failed is in
+        # the daemon log. Neither the door nor this prints a value.
         try:
-            context = await browser.new_context()
-            page = await context.new_page()
-            await page.goto(ORIGIN + "/app/owner-sign-in?app=1")
-            await page.locator("input[type=email]").fill(config["email"])
-            await page.get_by_role("button", name=re.compile("^continue$", re.I)).click()
-            await page.locator("input[type=password]").fill(config["password"])
-            await page.get_by_role("button", name=re.compile("^(sign in|continue)$", re.I)).click()
-            await page.wait_for_url(ORIGIN + "/app**", timeout=60000)
-            for cookie in await context.cookies(ORIGIN):
-                http.cookies.set(
-                    cookie["name"], cookie["value"], domain=cookie["domain"], path=cookie["path"]
-                )
-            if not http.cookies.get("__Host-ta-owner"):
-                raise ProbeFailure("owner callback did not issue its protected session")
-        finally:
-            await browser.close()
-    response = await http.post(ORIGIN + "/app/token", json={"grant_type": "refresh_token"})
-    response.raise_for_status()
-    token = response.json()["access_token"]
+            code = str(response.json().get("error", ""))[:64]
+        except ValueError:
+            code = ""
+        raise ProbeFailure(
+            f"canary sign-in refused (HTTP {response.status_code} {code}); "
+            "the daemon log names the reason"
+        )
+    token = str(response.json().get("access_token", ""))
+    if not token:
+        raise ProbeFailure("canary sign-in returned no session")
     http.headers["Authorization"] = "Bearer " + token
     me = await http.get(ORIGIN + "/app/me")
     me.raise_for_status()
-    if me.json().get("universe_id") != config["universe_id"]:
+    home = me.json().get("universe_id", "")
+    # The canary repairs whatever account it signs in to, so it must be the
+    # dedicated one: secrets naming any other owner stop here, before a write.
+    if not home or home != config.get("universe_id"):
         raise ProbeFailure("signed-in home differs from dedicated canary home")
     return token
 
@@ -189,41 +195,30 @@ async def exercise(config, http, token, report):
                 raise ProbeFailure(name + " refused: " + failure_code(code))
             return value
 
+        # Imported here: core_capability_image.py mounts this file without the package.
+        from scripts.core_canary_provision import ProvisionError, provision
+
+        report["active_capability"] = "canary_setup"
+        try:
+            await provision(config, http, ORIGIN, call)
+        except (ProvisionError, ProbeFailure) as exc:
+            report["provision_error"] = str(exc)
+            raise
+        for code in config.get("provision_warnings", ()):
+            report["warnings"].append(dict(capability="canary_setup", code=code))
         report["active_capability"] = "public_mcp"
         await call("read_graph", target="status", graph_id=universe)
         passed(report, "public_mcp", {"url": ORIGIN + "/mcp", "authenticated_tool": "read_graph"})
 
-        # Repeatable protected approval on the already configured synthetic intake.
-        report["active_capability"] = "approval"
-        ask = await call(
-            "write_graph",
-            target="connection",
-            operation="request_from_user",
-            graph_id=universe,
-            payload_json=json.dumps(
-                dict(
-                    kind="Approval",
-                    title="Synthetic canary " + nonce,
-                    body="Approve the synthetic canary intake only.",
-                    fields=[],
-                    action=dict(
-                        type="grant_patch_intake", receiver_id=config["intake_receiver_id"]
-                    ),
-                )
-            ),
+        # Answering an approval needs the protected owner cookie, and the
+        # canary door does not issue one: that cookie is the interactive,
+        # browser-bound session, and minting it from a shared key would hand
+        # out approval authority on less proof than a real user gives. The row
+        # stays advisory (model_dependent below) until a probe can hold that
+        # proof without a browser.
+        report["capabilities"].append(
+            dict(capability="approval", status="failed", code="not_exercised")
         )
-        request_id = ask.get("request_id") or ask.get("request", {}).get("request_id")
-        if not request_id:
-            raise ProbeFailure("approval request was not created")
-        answer = await http.post(
-            ORIGIN + "/app/approvals/answer",
-            json=dict(universe_id=universe, request_id=request_id, values={}),
-        )
-        answer.raise_for_status()
-        decision = answer.json()
-        if decision.get("status") != "answered" or decision.get("decision") != "allowed":
-            raise ProbeFailure("protected approval was not answered")
-        passed(report, "approval", {"request_id": request_id, "decision": "allowed"})
 
         async def model_probe():
             if report.get("direct_observations"):
@@ -300,27 +295,12 @@ async def exercise(config, http, token, report):
                 raise ProbeFailure("streamed chat evidence is missing")
             passed(report, "chat_stream", {"sse_reply_received": True, "nonce": nonce})
 
-        report["active_capability"] = "patch_request"
-        delivery_result = await call(
-            "write_graph",
-            target="patch_request",
-            operation="send",
-            graph_id=universe,
-            payload_json=json.dumps(
-                {"title": "Synthetic canary " + nonce, "details": "Synthetic verification " + nonce}
-            ),
+        # Public /mcp has no patch_request door, and the only receiver is the
+        # deployment's real intake, so the canary never files one. The row
+        # stays advisory (model_dependent below) until a record-only door exists.
+        report["capabilities"].append(
+            dict(capability="patch_request", status="failed", code="not_exercised")
         )
-        delivery_id = delivery_result.get("delivery_id", "")
-        if not delivery_id:
-            raise ProbeFailure("patch request returned no delivery id")
-        delivery = await call("read_graph", target="delivery", graph_id=universe, query=delivery_id)
-        if (
-            delivery.get("delivery_id") != delivery_id
-            or delivery.get("receiver_id") != config["intake_receiver_id"]
-            or float(delivery.get("accepted_at", 0)) < time.time() - 180
-        ):
-            raise ProbeFailure("patch request has no fresh durable delivery to the canary intake")
-        passed(report, "patch_request", {"delivery_id": delivery_id})
 
         # The founder installs this ordinary, private echo branch once. It is
         # read back before execution; the canary never trusts an arbitrary preset result.
@@ -406,7 +386,9 @@ async def exercise(config, http, token, report):
             await direct_tools(client, config, report, nonce, scratch)
         # Model output is an advisory observation even when it claims a tool
         # failed. Keep its missing/invalid evidence out of rollback selection.
-        report["model_dependent"] = ["chat_stream"]
+        # `approval` rides the same list: it is not observed at all (above), so
+        # its row must never select a rollback either.
+        report["model_dependent"] = ["chat_stream", "patch_request", "approval"]
         if not report.get("direct_observations"):
             report["model_dependent"] += [
                 "read", "write", "edit", "bash", "read_image", "ta", "connected_service"
@@ -426,25 +408,10 @@ async def exercise(config, http, token, report):
 async def run(report):
     import httpx
 
-    raw = os.environ.get("TINYASSETS_CORE_CANARY_CONFIG", "")
-    if not raw:
-        report["configuration_missing"] = True
-        return
-    try:
-        config = json.loads(raw)
-        required = (
-            "email",
-            "password",
-            "universe_id",
-            "connection_id",
-            "service_path",
-            "service_hmac_key",
-            "intake_receiver_id",
-            "branch_id",
-        )
-        if any(not isinstance(config.get(key), str) or not config[key] for key in required):
-            raise ValueError("incomplete")
-    except (ValueError, AttributeError):
+    from scripts.core_canary_provision import credentials
+
+    config = credentials()
+    if config is None:
         report["configuration_missing"] = True
         return
     async with httpx.AsyncClient(
@@ -496,12 +463,16 @@ def main(argv: list[str] | None = None) -> int:
     # A missing dedicated owner means the probe never ran. That is a loud
     # warning, not a rollback: deploy_fail_safe already refused a data-moving
     # deploy before the swap, and an ordinary deploy continues. Once the canary
-    # is provisioned, a red public canary still fails the deploy and rolls
-    # back. Probed rows stay advisory: model, provider and rate errors do not
-    # say the previous image would fare better.
+    # is provisioned, a failed platform row or a crashed probe fails the step,
+    # and deploy-prod rolls back to the previous image: this canary is the
+    # post-deploy acceptance (founder ruling, #4657). Model-dependent rows stay
+    # warnings: a provider error does not say the previous image would fare
+    # better. The scheduled uptime run keeps alerting only (continue-on-error).
     for row in report.get("warnings", []) + report.get("failures", []):
         print("::warning::core canary " + row["capability"] + ": " + row["code"])
-    return 0
+    if report.get("probe_error"):
+        print("::error::core canary probe crashed: " + report["probe_error"])
+    return 1 if report.get("failures") or report.get("probe_error") else 0
 
 
 async def collect():
@@ -524,6 +495,8 @@ async def collect():
             return report
         except Exception as exc:
             report["probe_error"] = type(exc).__name__
+            if isinstance(exc, ProbeFailure):
+                report["probe_error"] += ": " + str(exc)
         if report.get("configuration_missing"):
             # Not an observation and not a fabricated capability failure.
             # deploy_fail_safe refuses the data-moving cases before the swap.

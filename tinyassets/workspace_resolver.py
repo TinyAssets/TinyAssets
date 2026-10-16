@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
@@ -121,14 +122,17 @@ class ProvisionManifests:
 
 
 def read_provision_manifests(
-    repo_fd: int, *, python_path: str | None = None, node: bool = False,
+    repo_fd: int | None = None, *, python_path: str | None = None, node: bool = False,
+    reader: Callable[[str, int], bytes] | None = None,
 ) -> ProvisionManifests:
-    """Extract only bounded regular manifests through the caller's held handle.
+    """Extract only bounded regular manifests from the checkout.
 
-    This reads no credentials and starts no process or network operation. The
-    returned canonical plans, not the original checkout files, feed staging.
-    A failure never returns a partial plan. The caller retains descriptor
-    ownership and must check provisioning consent before invoking this reader.
+    ``reader(path, bound)`` reads one regular file beneath the checkout (the
+    admitted owner box's file API); ``repo_fd`` is the held-descriptor form for
+    a local checkout. This reads no credentials and starts no process or
+    network operation. The returned canonical plans, not the original checkout
+    files, feed staging. A failure never returns a partial plan. The caller
+    must check provisioning consent before invoking this reader.
     """
     from tinyassets import workspace_fs
     from tinyassets.workspace_provision import (
@@ -143,9 +147,15 @@ def read_provision_manifests(
     if python_path is not None and (not isinstance(python_path, str) or not python_path):
         raise ValueError("python provisioning must name a manifest")
 
+    if (reader is None) == (repo_fd is None):
+        raise ValueError("provisioning manifests need exactly one reader")
+
     def read(path: str, bound: int, *, lockfile: bool = False) -> str:
         try:
-            data = workspace_fs.read_regular_file_beneath(repo_fd, path, max_bytes=bound)
+            if reader is not None:
+                data = reader(path, bound)
+            else:
+                data = workspace_fs.read_regular_file_beneath(repo_fd, path, max_bytes=bound)
         except FileNotFoundError:
             reason = "missing_lockfile" if lockfile else "not_regular_file"
             raise ProvisionRefused(reason, "required manifest is unavailable") from None

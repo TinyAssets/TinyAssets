@@ -1,6 +1,5 @@
 """Storage layer for gate_event — real-world outcome attestation.
 
-Spec: openspec/specs/paid-market-economy/spec.md §gate_event.
 
 Functions:
   attest_gate_event   — create a new gate event with N citation links

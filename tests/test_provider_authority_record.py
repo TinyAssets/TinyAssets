@@ -81,9 +81,12 @@ def test_an_unreadable_record_fails_closed(tmp_path):
 
 
 def test_a_missing_home_gets_defaults_and_is_never_created(tmp_path):
-    ghost = tmp_path / "u-gone"
+    # A retired home whose whole tree is gone: nothing admits it, and reading
+    # its authority must not bring any of it back.
+    ghost = tmp_path / "retired" / "u-gone"
     assert load_universe_config(ghost).allowed_providers is None
     assert not ghost.exists()
+    assert not ghost.parent.exists()
 
 
 def test_the_assignment_writer_puts_authority_in_the_record_and_strips_config(tmp_path):

@@ -1028,9 +1028,24 @@ def test_the_blocked_summary_tells_a_human_exactly_what_to_do(tmp_path: Path) ->
     assert "FIRST two non-blank lines" in summary
     assert "FIRST three non-blank lines" in summary
     assert "MOVE IT UP" in summary, "a refused honest receipt needs the recovery step"
-    # Both complaints at once: an undeclared release-critical PR also hears about
-    # the label, instead of discovering it on the next round.
-    assert "infra-change" in summary
+    # The label is no longer a second manual step: the guard adds it once the
+    # receipt passes, so the unreceipted summary must not ask for it.
+    assert "infra-change" not in summary
+
+
+def test_scope_guard_labels_only_after_the_receipt_passes() -> None:
+    text = POLICY_WORKFLOW.read_text(encoding="utf-8")
+    receipt = text.index("if ! python scripts/drain_review_gate.py --blocking-review")
+    label = text.index("repos/${REPO}/issues/${PR}/labels")
+    assert receipt < label, "the label may only be applied after the receipt check"
+    recheck = text.index('[ "$CURRENT_HEAD" != "$HEAD_OID" ]')
+    post = text[text.index("if ! gh api -X POST", recheck):text.index("# Honesty note")]
+    failed_write = post[:post.index("\n          fi\n")]
+    assert "exit 1" in failed_write, "a failed label write must fail closed"
+    assert "pull-requests: write" in text
+    # The label lands on the PR, not a commit: re-read the head right before
+    # the POST so a newer, unreceipted head is never labelled.
+    assert receipt < recheck < label
 
 
 def test_scope_guard_wires_the_blocking_review_decision() -> None:

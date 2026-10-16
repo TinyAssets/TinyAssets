@@ -112,7 +112,6 @@ class TrayApp:
     TIER_NAMES: tuple[str, ...] = (
         "external_requests",
         "goal_pool",
-        "paid_bids",
         "opportunistic",
     )
 

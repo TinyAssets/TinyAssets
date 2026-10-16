@@ -37,6 +37,7 @@ import os
 import signal
 import sqlite3
 import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -130,6 +131,17 @@ class BoxHostState:
             )
             conn.execute(
                 "UPDATE ops SET state = 'unknown_after_restore' WHERE state = 'running'"
+            )
+            # Private CLI writeback lives only in the departed host process.
+            # Its durable receipt remains for same-id diagnosis, but it can no
+            # longer hold this credential lease against every future call.
+            conn.execute(
+                "UPDATE ops SET outcome=json_set(outcome, '$.cli_ack', json('true'), "
+                "'$.cli_lost', json('true')) WHERE incarnation < ? "
+                "AND json_extract(outcome, '$.cli_lease') IS NOT NULL "
+                "AND coalesce(json_extract(outcome, '$.cli_restore_hold'), 0)=0 "
+                "AND coalesce(json_extract(outcome, '$.cli_ack'), 0)=0",
+                (self.incarnation,),
             )
 
     def close(self) -> None:
@@ -305,6 +317,30 @@ class BoxHostState:
             conn.execute("UPDATE ops SET outcome=json_set(outcome, '$.cli_ack', json('true')) "
                          "WHERE command_center_id=? AND op_id=? AND state='done'",
                          (owner, op_id))
+
+    def sweep_cli(self, *, now: float | None = None) -> tuple[str, ...]:
+        """Retire abandoned private results after their bounded recovery window."""
+        current = time.time() if now is None else now
+        with self._lock, self._conn() as conn:
+            rows = conn.execute(
+                "SELECT e.exec_id FROM execs e JOIN ops o ON "
+                "o.command_center_id=e.command_center_id AND o.op_id=e.op_id "
+                "WHERE o.state='done' AND json_extract(o.outcome, '$.cli_lease') IS NOT NULL "
+                "AND coalesce(json_extract(o.outcome, '$.cli_restore_hold'), 0)=0 "
+                "AND coalesce(json_extract(o.outcome, '$.cli_ack'), 0)=0 "
+                "AND json_extract(o.outcome, '$.cli_deadline') <= ?",
+                (current,),
+            ).fetchall()
+            conn.execute(
+                "UPDATE ops SET outcome=json_set(outcome, '$.cli_ack', json('true'), "
+                "'$.cli_lost', json('true')) WHERE state='done' "
+                "AND json_extract(outcome, '$.cli_lease') IS NOT NULL "
+                "AND coalesce(json_extract(outcome, '$.cli_restore_hold'), 0)=0 "
+                "AND coalesce(json_extract(outcome, '$.cli_ack'), 0)=0 "
+                "AND json_extract(outcome, '$.cli_deadline') <= ?",
+                (current,),
+            )
+        return tuple(row[0] for row in rows)
 
     def update(self, cc: str, op_id: str, outcome: dict[str, Any]) -> None:
         """Attach progress to an operation still running under this incarnation."""

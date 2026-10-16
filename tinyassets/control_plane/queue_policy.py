@@ -9,10 +9,8 @@ Priority scoring starts with the minimum viable tier model:
           + recency_decay(queued_at)
           + user_boost(priority_weight)
 
-Deferred terms (``bid``, ``goal_affinity``, ``cost_penalty``) are
-zero. Their coefficients sit in :class:`DispatcherConfig` so later
-market and goal-affinity work can wire them in without re-shaping
-``score_task``.
+Goal-affinity and cost coefficients remain part of the existing read policy.
+Retired paid-bid configuration is ignored; historical requests are not rewritten.
 
 The policy reads the v2 queue only and does not claim or start tasks.
 """
@@ -38,7 +36,6 @@ _DEFAULT_TIER_WEIGHTS: dict[str, float] = {
     "owner_queued": 80.0,
     "user_request": 60.0,
     "goal_pool": 40.0,
-    "paid_bid": 50.0,
     "opportunistic": 10.0,
 }
 
@@ -47,15 +44,12 @@ _DEFAULT_TIER_WEIGHTS: dict[str, float] = {
 class DispatcherConfig:
     accept_external_requests: bool = True
     accept_goal_pool: bool = False
-    accept_paid_bids: bool = False
     allow_opportunistic: bool = False
     tier_weights: dict[str, float] = field(
         default_factory=lambda: dict(_DEFAULT_TIER_WEIGHTS),
     )
     recency_half_life_seconds: float = 86400.0
     pickup_signal_term_cap: float = 5.0
-    bid_coefficient: float = 0.0
-    bid_term_cap: float = 30.0
     goal_affinity_coefficient: float = 0.0
     cost_penalty_coefficient: float = 0.0
     served_llm_type: str = ""
@@ -74,8 +68,6 @@ class DispatcherConfig:
             return self.accept_external_requests
         if trigger_source == "goal_pool":
             return self.accept_goal_pool
-        if trigger_source == "paid_bid":
-            return self.accept_paid_bids
         if trigger_source == "opportunistic":
             return self.allow_opportunistic
         return False
@@ -92,9 +84,6 @@ class DispatcherConfig:
             "goal_pool": (
                 "live" if self.accept_goal_pool else "stubbed"
             ),
-            "paid_bid": (
-                "live" if self.accept_paid_bids else "disabled"
-            ),
             "opportunistic": (
                 "live" if self.allow_opportunistic else "stubbed"
             ),
@@ -103,18 +92,12 @@ class DispatcherConfig:
 
 
 
-def paid_market_enabled() -> bool:
-    """Read ``TINYASSETS_PAID_MARKET``. Default OFF."""
-    value = os.environ.get("TINYASSETS_PAID_MARKET", "off")
-    return value.strip().lower() in {"on", "1", "true", "yes"}
-
-
 def get_request_type_priorities() -> list[str]:
     """Read ``TINYASSETS_REQUEST_TYPE_PRIORITIES``.
 
     Returns request types selected for operational queue reads. No worker claims
     them. Empty list means no read filter.
-    Format: comma-separated, e.g. ``bug_investigation,paid_market,branch_run``.
+    Format: comma-separated, e.g. ``bug_investigation,branch_run``.
     """
     raw = os.environ.get("TINYASSETS_REQUEST_TYPE_PRIORITIES", "").strip()
     if not raw:
@@ -172,14 +155,10 @@ def score_task(
         config.pickup_signal_term_cap,
     )
 
-    # Paid-bid term, capped to prevent a high bid from swamping the
-    # host_request tier.
-    raw_bid_term = config.bid_coefficient * float(task.bid)
-    bid_term = min(raw_bid_term, config.bid_term_cap)
     goal_term = config.goal_affinity_coefficient  # coefficient only; no signal
     cost_term = -config.cost_penalty_coefficient
 
-    return tier + recency + boost + pickup_signal + bid_term + goal_term + cost_term
+    return tier + recency + boost + pickup_signal + goal_term + cost_term
 
 
 def load_dispatcher_config(universe_path: Path) -> DispatcherConfig:
@@ -191,11 +170,6 @@ def load_dispatcher_config(universe_path: Path) -> DispatcherConfig:
     """
     cfg_path = Path(universe_path) / "dispatcher_config.yaml"
     if not cfg_path.exists():
-        # Flag-on + no config means paid market defaults enabled.
-        if paid_market_enabled():
-            return DispatcherConfig(
-                bid_coefficient=1.0, accept_paid_bids=True,
-            )
         return DispatcherConfig()
     try:
         import yaml  # local import: dispatcher is hot-path-adjacent
@@ -218,9 +192,8 @@ def load_dispatcher_config(universe_path: Path) -> DispatcherConfig:
     kwargs: dict[str, Any] = {}
     for key in (
         "accept_external_requests", "accept_goal_pool",
-        "accept_paid_bids", "allow_opportunistic",
-        "recency_half_life_seconds", "bid_coefficient",
-        "bid_term_cap",
+        "allow_opportunistic",
+        "recency_half_life_seconds",
         "goal_affinity_coefficient", "cost_penalty_coefficient",
         "served_llm_type",
         "active_daemon_id",
@@ -232,20 +205,12 @@ def load_dispatcher_config(universe_path: Path) -> DispatcherConfig:
     if "tier_weights" in data and isinstance(data["tier_weights"], dict):
         weights = dict(_DEFAULT_TIER_WEIGHTS)
         for k, v in data["tier_weights"].items():
+            if k not in _DEFAULT_TIER_WEIGHTS:
+                continue
             try:
                 weights[k] = float(v)
             except (TypeError, ValueError):
                 continue
         kwargs["tier_weights"] = weights
-
-    # If the paid-market flag is on and the YAML didn't pin
-    # values, default ``bid_coefficient`` to 1.0 and enable paid_bid
-    # acceptance. Explicit YAML values win — allows ``bid_coefficient: 0.0``
-    # to keep paid scoring neutral even under flag-on.
-    if paid_market_enabled():
-        if "bid_coefficient" not in data:
-            kwargs["bid_coefficient"] = 1.0
-        if "accept_paid_bids" not in data:
-            kwargs["accept_paid_bids"] = True
 
     return DispatcherConfig(**kwargs)

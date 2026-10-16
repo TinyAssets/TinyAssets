@@ -155,7 +155,7 @@ def _sandbox_workspace_mount(
     Falls back to the path when there is no descriptor: Windows, the
     tests-only launcher, or a sink that has not published one.
     """
-    from tinyassets.node_sandbox import WorkspaceLimits, WorkspaceMount
+    from tinyassets.boxes.node import WorkspaceLimits, WorkspaceMount
 
     bind_source = getattr(mount, "bind_source", "")
     if not isinstance(bind_source, str) or not bind_source:
@@ -1684,17 +1684,6 @@ def _build_prompt_template_node(
                 node_id=node.node_id,
             )
 
-        # Defense-in-depth: if a subprocess provider leaked a bwrap failure
-        # into the response text instead of raising, catch it here so the
-        # garbage never propagates into state (hard-rule #8 fail-loudly).
-        try:
-            from tinyassets.providers.base import check_bwrap_failure
-            check_bwrap_failure(response)
-        except _SandboxUnavailableError:
-            raise
-        except Exception:  # noqa: BLE001 — import/probe errors must not block runs
-            pass
-
         if event_sink is not None:
             try:
                 _meta_detail = {}
@@ -2305,7 +2294,7 @@ def _build_source_code_node(
     src = node.source_code
     timeout_s = float(node.timeout_seconds or 300.0)
     if workspace_node:
-        from tinyassets.node_sandbox import MAX_WORKSPACE_TIMEOUT_SECONDS
+        from tinyassets.boxes.node import MAX_WORKSPACE_TIMEOUT_SECONDS
 
         # The DECLARED value, not the defaulted one: `or 300.0` above reads a
         # zero as "unset", and a workspace node has to say how long it may hold
@@ -2330,7 +2319,7 @@ def _build_source_code_node(
     strict_inputs = bool(getattr(node, "strict_input_isolation", True))
 
     def _fn_body(state: dict[str, Any]) -> dict[str, Any]:
-        from tinyassets.node_sandbox import NodeSandbox
+        from tinyassets.boxes.node import NodeSandbox
 
         if event_sink is not None:
             try:
@@ -3699,8 +3688,8 @@ def _wrap_with_effects(
         delta = inner_fn(state)
         if not isinstance(delta, dict):
             return delta
+        from tinyassets.boxes.node import _cancel_requested
         from tinyassets.effectors import EffectFailedError, dispatch_node_effects
-        from tinyassets.node_sandbox import _cancel_requested
 
         if should_cancel is not None and _cancel_requested(should_cancel):
             raise NodeCancelledError(

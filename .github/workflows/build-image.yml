@@ -43,6 +43,7 @@ on:
       - 'models/**'
       - 'scripts/mcp_public_canary.py'
       - 'scripts/core_capability_live.py'
+      - 'scripts/core_canary_provision.py'
       - 'scripts/core_capability_alert.py'
       - '.github/actions/core-capability-canary/**'
       # The app is the second public surface, and deploy-prod.yml runs this as a
@@ -60,7 +61,6 @@ on:
       # Other Dockerfile COPY sources.
       - 'scripts/_canary_common.py'
       - 'scripts/codex_cli_smoke.py'
-      - 'scripts/workspace_bwrap_oracle.py'
       - 'scripts/check_privileged_chain.py'
       # Host inputs: installed by install-host-services.yml (the RUNTIME_FILES
       # of deploy/install-host-uptime-services.sh, the deploy fence) or, for

@@ -1,6 +1,6 @@
 """Tests for gate-event leaderboard — rank branches by attributed gate events.
 
-Spec: openspec/specs/paid-market-economy/spec.md §gate-based leaderboard.
+Spec: openspec/specs/evaluation-outcomes-and-attribution/spec.md §gate-based leaderboard.
 """
 
 from __future__ import annotations

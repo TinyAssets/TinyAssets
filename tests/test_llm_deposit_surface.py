@@ -215,12 +215,14 @@ def test_browser_code_cannot_create_first_claude_connection(base):
     assert not _owners_table_exists(base)
 
 
-def test_owner_deposits_codex_materializes_auth_json(base: Path) -> None:
+def test_owner_deposits_codex_materializes_auth_json(base: Path, _owner_box_double) -> None:
+    from tinyassets.boxes.provider import ExecLimits
+    from tinyassets.control_plane.binding import SessionBinding
     from tinyassets.credential_vault import (
         adopt_llm_subscription_custody,
         load_credential_vault,
     )
-    from tinyassets.external_agents.home import Custody, materialize
+    from tinyassets.external_agents.home import BoxCustody, materialize
     from tinyassets.external_agents.registry import resolve
     from tinyassets.providers.native_discovery import _custody
     from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
@@ -253,9 +255,14 @@ def test_owner_deposits_codex_materializes_auth_json(base: Path) -> None:
             conn, universe_dir=udir, owner_user_id="founder",
             universe_id=udir.name, service="codex")
         conn.commit()
-    reference = _custody(base, udir, "founder", "codex")
+    # Custody resolves only through the owner's admitted box binding.
+    handle = _owner_box_double.bind_under(udir.parent, udir.name, account_id="founder",
+                                          turn_id="deposit-materialize")
+    binding = SessionBinding(_owner_box_double, handle, ExecLimits(), udir)
+    assert binding.handle.account_id == "founder"
+    reference = _custody(base, udir, "founder", "codex", binding=binding)
     assert reference is not None
-    assert materialize(Custody(udir, "founder", reference),
+    assert materialize(BoxCustody(udir, "founder", reference, binding),
                        resolve("codex").row["auth"]) == {
                            "auth.json": auth_json.encode("utf-8")}
     assert not (udir / ".credentials" / "codex").exists()

@@ -13,8 +13,12 @@ from tinyassets.boxes.provider import BoxError, BoxOperationRefused, box_relpath
 def validate_config(config):
     if (not isinstance(config, dict) or set(config) != {
         "home_dir", "workdir", "auth_files", "nonce", "catalogue_rewrite", "requested_model",
-        "custody"
+        "custody", "env_from_file"
     } or not isinstance(config["home_dir"], str)
+        or not isinstance(config["env_from_file"], dict)
+        or len(config["env_from_file"]) > 8
+        or any(not isinstance(k, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", k)
+               or v not in config["auth_files"] for k, v in config["env_from_file"].items())
         or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", config["home_dir"])
         or not isinstance(config["workdir"], str)
         or not re.fullmatch(r"/agent-home/jobs/[a-f0-9]{32}", config["workdir"])

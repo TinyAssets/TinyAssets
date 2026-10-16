@@ -83,10 +83,12 @@ rollback_box() {
                 log "CRITICAL: failed to restore original box tree ${name}"
         fi
     done
-    if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
-            "${BOX_STORE_DIR}" "${BOX_STORE_DIR}" \
-            "${VOLUME_DIR}/.broker/state/owner-identities.db"; then
-        log "CRITICAL: failed to restore original box quota limits"
+    if [[ "${quota_restore:-0}" == 1 ]]; then
+        if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
+                "${BOX_STORE_DIR}" "${BOX_STORE_DIR}" \
+                "${VOLUME_DIR}/.broker/state/owner-identities.db"; then
+            log "CRITICAL: failed to restore original box quota limits"
+        fi
     fi
     rmdir -- "$BOX_OLD" 2>/dev/null || true
     BOX_SWAP_ACTIVE=0
@@ -352,6 +354,54 @@ if ! chown --reference="${VOLUME_DIR}" "${STAGE_DIR}" \
 fi
 log "  archive validated and staged at ${STAGE_DIR}"
 
+# A committed owner-box backup is one generation only when its manifest binds
+# the exact data and box bytes. Remote members are downloaded before hashing;
+# a missing manifest is an incomplete backup, never a legacy fallback.
+if ! staged_layout="$(python3 - "${STAGE_DIR}/.layout.json" <<'PY'
+import json
+import pathlib
+import sys
+
+marker = pathlib.Path(sys.argv[1])
+document = json.loads(marker.read_text()) if marker.exists() else {}
+layout = document.get("box_layout", "owner-split")
+if layout not in ("owner-split", "owner-box"):
+    raise SystemExit("unknown staged box layout")
+print(layout)
+PY
+)"; then
+    log "ERROR: staged layout marker is invalid"
+    exit 4
+fi
+if [[ "$staged_layout" == owner-box ]]; then
+    if [[ -z "${BOX_NAME:-}" ]]; then
+        log "ERROR: owner-box generation has no box member"
+        exit 4
+    fi
+    pair_ts="${TAR_NAME#tinyassets-data-}"
+    pair_ts="${pair_ts#tinyassets-snapshot-}"
+    pair_ts="${pair_ts%.tar.gz}"
+    pair_name="tinyassets-pair-${pair_ts}.json"
+    if [[ -n "${BOX_REMOTE}" ]]; then
+        pair_path="${DOWNLOAD_DIR}/${pair_name}"
+        BOX_TAR_PATH="${DOWNLOAD_DIR}/${BOX_NAME}"
+        if ! rclone copyto "${BACKUP_DEST}/${pair_name}" "$pair_path" \
+                || ! rclone copyto "$BOX_REMOTE" "$BOX_TAR_PATH"; then
+            log "ERROR: paired owner-box manifest or member download failed"
+            exit 4
+        fi
+        BOX_REMOTE=""
+    else
+        pair_path="${PAIR_MANIFEST_FILE:-$(dirname "$TAR_PATH")/$pair_name}"
+    fi
+    if [[ -L "$pair_path" || ! -f "$pair_path" ]] \
+            || ! python3 "$(dirname "$(realpath "$0")")/backup-pair.py" verify \
+                "$TAR_PATH" "$BOX_TAR_PATH" "$pair_path"; then
+        log "ERROR: owner-box generation manifest refused the archive pair"
+        exit 4
+    fi
+fi
+
 if [[ -e "${BOX_STORE_DIR}" && -z "${BOX_NAME:-}" && "$ALLOW_PRE_STORE_BACKUP" == 1 ]]; then
     if ! python3 - "${STAGE_DIR}/.layout.json" "${VOLUME_DIR}/.layout.json" <<'PY'
 import json
@@ -398,6 +448,19 @@ if [[ -n "${BOX_NAME:-}" ]]; then
             log "ERROR: box-store extraction failed"
             exit 4
         fi
+    fi
+    quota_restore=0
+    if [[ "$staged_layout" == owner-box ]]; then
+        quota_restore=1
+    else
+        # Older paired backups can carry boxes without a box-layout marker.
+        # Only an empty pre-move box archive can be restored without box_records.
+        for tree in "${BOX_STAGE}"/[0-9]*; do
+            if [[ -e "$tree" || -L "$tree" ]]; then
+                quota_restore=1
+                break
+            fi
+        done
     fi
     REGISTRY="${STAGE_DIR}/.broker/state/owner-identities.db"
     if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
@@ -470,10 +533,15 @@ if [[ -n "${BOX_STAGE}" ]]; then
         box_old_names+=("$name")
     done
     quota_script="$(dirname "$(realpath "$0")")/box-store-quotas.py"
-    if ! python3 "$quota_script" "${BOX_STORE_DIR}" "${BOX_OLD}" \
-            "${VOLUME_DIR}/.broker/state/owner-identities.db" --clear; then
-        log "ERROR: failed to clear retained box project IDs"
-        exit 4
+    # A failed owner-split move may have written box trees before creating
+    # box_records. The staged pre-move archive has no boxes to install, so
+    # retain those trees and their quota state together for rollback/inspection.
+    if [[ "$quota_restore" == 1 ]]; then
+        if ! python3 "$quota_script" "${BOX_STORE_DIR}" "${BOX_OLD}" \
+                "${VOLUME_DIR}/.broker/state/owner-identities.db" --clear; then
+            log "ERROR: failed to clear retained box project IDs"
+            exit 4
+        fi
     fi
     for tree in "${BOX_STAGE}"/[0-9]*; do
         [[ -d "$tree" && ! -L "$tree" ]] || continue
@@ -482,9 +550,11 @@ if [[ -n "${BOX_STAGE}" ]]; then
         mv -- "$tree" "${BOX_STORE_DIR}/"
         box_new_names+=("$name")
     done
-    if ! python3 "$quota_script" "${BOX_STORE_DIR}" "${BOX_STORE_DIR}" "$REGISTRY"; then
-        log "ERROR: box-store quota restoration failed"
-        exit 4
+    if [[ "$quota_restore" == 1 ]]; then
+        if ! python3 "$quota_script" "${BOX_STORE_DIR}" "${BOX_STORE_DIR}" "$REGISTRY"; then
+            log "ERROR: box-store quota restoration failed"
+            exit 4
+        fi
     fi
     rmdir -- "$BOX_STAGE"
 fi

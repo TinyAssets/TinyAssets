@@ -855,7 +855,6 @@ def _workspace_sweep_once(base_path: str | Path, *, claimant: str) -> int:
     reached the outbox (a crash between the two writes of an older code path),
     then process every claimable entry."""
     from tinyassets import workspace_pool
-    from tinyassets.workspace_fs import RealPoolFilesystem
 
     db = runs_db_path(base_path)
     with _connect(base_path) as conn:
@@ -941,7 +940,7 @@ def _workspace_sweep_once(base_path: str | Path, *, claimant: str) -> int:
         orphaned_locks = list(orphaned_locks) + [(r,) for r in releasable]
         for run_id in {r[0] for r in orphaned_leases} | {r[0] for r in orphaned_locks}:
             _enqueue_workspace_terminal(conn, base_path, run_id)
-    done = workspace_pool.periodic_sweep(db, fs=RealPoolFilesystem(), claimant=claimant)
+    done = workspace_pool.periodic_sweep(db, fs=_workspace_pool_fs(base_path), claimant=claimant)
     # A pass that released a lock is exactly when the next waiter's turn comes;
     # a pass that released nothing is the backstop for a missed nomination.
     try:
@@ -1145,6 +1144,12 @@ def _ensure_scratch_root(base: Path) -> Path:
     return scratch_pool_root(base)
 
 
+def _workspace_pool_fs(base_path: str | Path):
+    from tinyassets.workspace_fs import BoxPoolFilesystem
+
+    return BoxPoolFilesystem(Path(base_path).parent)
+
+
 def ensure_workspace_reconciled(
     base_path: str | Path,
     *,
@@ -1156,7 +1161,6 @@ def ensure_workspace_reconciled(
     earlier process (the admission barrier of the scratch-storage spec) and
     start the periodic sweeper. Returns True the first time, False after."""
     from tinyassets import workspace_pool
-    from tinyassets.workspace_fs import RealPoolFilesystem
 
     key = (os.getpid(), str(Path(base_path).resolve()))
     with _WORKSPACE_RECONCILE_LOCK:
@@ -1170,7 +1174,7 @@ def ensure_workspace_reconciled(
         with _connect(base_path) as conn:
             workspace_pool.ensure_schema(conn)
         done = workspace_pool.startup_sweep(
-            db, fs=RealPoolFilesystem(), claimant=f"startup:{os.getpid()}",
+            db, fs=_workspace_pool_fs(base_path), claimant=f"startup:{os.getpid()}",
         )
         if done:
             logger.info("workspace startup sweep finished %d outbox entries", done)
@@ -4224,6 +4228,10 @@ def _prepare_run(
     editable definition. A capture failure raises ``AdmissionEnvelopeError``
     carrying the reserved ``run_id`` so the caller can refuse to dispatch.
     """
+    if branch.branch_def_id.startswith("activities::"):
+        raise PermissionError(
+            "The Activities workflow was retired; start an activity through the "
+            "agent session instead. The workflow definition remains available as history.")
     initialize_runs_db(base_path)
     run_id = create_run(
         base_path,

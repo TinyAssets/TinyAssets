@@ -43,7 +43,7 @@ def main():
                    "HOME": "/home/owner/.agent-home", "TMPDIR": "/tmp",
                    "PLAYWRIGHT_BROWSERS_PATH": "/opt/ms-playwright",
                    **request["env"]}
-    from tinyassets.universe_egress import FORWARDER, PROXY_ENV
+    from tinyassets.boxes.network import FORWARDER, PROXY_ENV
 
     environment.update(PROXY_ENV)
     environment["TINYASSETS_BOX_CENTER"] = path.split("/", 1)[0]

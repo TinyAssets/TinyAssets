@@ -58,13 +58,24 @@ else
 fi
 ''')
     _shim(bin_dir, "xfs_freeze", 'echo "$1" >> "$TEST_COMMAND_LOG"\n')
-    _shim(bin_dir, "xfs_quota", '''
+    _shim(bin_dir, "xfs_quota", r'''
 echo "$*" >> "$TEST_COMMAND_LOG"
 if [[ "${FAIL_RESTORED_QUOTA:-0}" == 1 &&
       "$*" == *"project -s -p ${BOX_STORE_DIR}/${TEST_UID} "* &&
       ! -e "$TEST_QUOTA_FAIL_MARKER" ]]; then
     touch "$TEST_QUOTA_FAIL_MARKER"
     exit 1
+fi
+command="$3"
+if [[ "$command" =~ ^project\ -([sC])\ -p\ (.+)\ ([0-9]+)$ ]]; then
+    project="${BASH_REMATCH[3]}"
+    if [[ "${BASH_REMATCH[1]}" == C ]]; then project=0; fi
+    printf '%s|%s\n' "${BASH_REMATCH[2]}" "$project" > "$TEST_PROJECT_STATE"
+elif [[ "$command" =~ ^limit\ -p\ bhard=([0-9]+)k\ ([0-9]+)$ ]]; then
+    printf '%s %s\n' "${BASH_REMATCH[2]}" "${BASH_REMATCH[1]}" > "$TEST_LIMIT_STATE"
+elif [[ "$command" == "report -p -n" && -f "$TEST_LIMIT_STATE" ]]; then
+    read -r project limit < "$TEST_LIMIT_STATE"
+    printf '#%s 0 0 %s 0\n' "$project" "$limit"
 fi
 ''')
     _shim(bin_dir, "systemctl", 'echo "$*" >> "$TEST_COMMAND_LOG"\n')
@@ -91,9 +102,19 @@ esac
     # permanent-UID chown, not tar, SQLite, quota validation or swap/rollback.
     # Actual cross-UID ownership remains covered by the separate root proof.
     python_shim = bin_dir / "python3"
-    python_shim.write_text("#!" + sys.executable + "\n" + r'''import os, runpy, sys
+    python_shim.write_text("#!" + sys.executable + "\n" + r'''import functools, os, runpy, sys
 from pathlib import Path
 if sys.argv[1].endswith("box-store-quotas.py"):
+    sys.path.insert(0, str(Path(sys.argv[1]).resolve().parents[1]))
+    from deploy import box_project_readback as readback
+
+    def recorded_project(path):
+        root, project = Path(os.environ["TEST_PROJECT_STATE"]).read_text().strip().rsplit("|", 1)
+        assert Path(path).resolve().is_relative_to(Path(root).resolve())
+        return int(project), bool(int(project) and Path(path).is_dir())
+
+    readback.verify_tree = functools.partial(readback.verify_tree, reader=recorded_project)
+    readback.verify_owner = functools.partial(readback.verify_owner, reader=recorded_project)
     original = os.chown
     def mapped_chown(path, uid, gid, **kwargs):
         assert uid == gid == 300001
@@ -112,7 +133,9 @@ else:
            "BOX_STORE_DIR": str(store), "BACKUP_VOLUME": "test-volume",
            "BACKUP_DEST": str(remote), "BACKUP_LOG": str(tmp_path / "backup.log"),
            "GH_TOKEN": "", "TEST_UID": str(uid),
-           "TEST_QUOTA_FAIL_MARKER": str(tmp_path / "quota-failed")}
+           "TEST_QUOTA_FAIL_MARKER": str(tmp_path / "quota-failed"),
+           "TEST_PROJECT_STATE": str(tmp_path / "project-state"),
+           "TEST_LIMIT_STATE": str(tmp_path / "limit-state")}
     backup = subprocess.run(["bash", str(ROOT / "deploy/backup.sh")], env=env,
                             capture_output=True, text=True)
     assert backup.returncode == 0, backup.stdout + backup.stderr
@@ -220,7 +243,9 @@ else:
         capture_output=True, text=True,
     )
     assert staged_owner_box.returncode == 4, staged_owner_box.stdout + staged_owner_box.stderr
-    assert "layout marker" in staged_owner_box.stdout
+    # A staged owner-box generation is refused before the pre-store fallback is
+    # considered: it is never restorable without its paired box member.
+    assert "owner-box generation has no box member" in staged_owner_box.stdout
     assert log.read_text().count("stop boxhostd.service") == stopped_before
     assert (volume / "record.txt").read_text() == "current"
 

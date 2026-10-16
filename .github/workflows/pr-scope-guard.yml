@@ -9,9 +9,10 @@ name: PR scope guard
 # DIFF SCOPE caught it. With auto-merge enabled, that PR would have shipped
 # changes to the production deploy workflow under the banner of an auth fix.
 #
-# So: a PR that touches release-critical infrastructure must say so explicitly,
-# via the `infra-change` label. This is a scope-declaration gate, not a security
-# control — see the honesty note at the bottom of this file.
+# So: a PR that touches release-critical infrastructure carries the
+# `infra-change` label, which this guard adds itself once the head's receipt
+# passes. The receipt, not the label, is the control — see the honesty note
+# at the bottom of this file.
 #
 # Since 2026-09-26 the exact-head receipt this guard already demanded on
 # gate-defining and authority paths has to be a PUBLISHED APPROVAL, not a
@@ -56,7 +57,9 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+  # write only to add the infra-change label after the receipt check passes;
+  # PR code is never checked out or run.
+  pull-requests: write
 
 concurrency:
   # A merge_group event has no pull_request number. Without the head_ref
@@ -194,9 +197,7 @@ jobs:
           TOTAL="$(printf '%s\n' "$CHANGED" | sed '/^$/d' | wc -l | tr -d ' ')"
 
           # Paths no PR may touch at all (scripts/check_forbidden_pr_paths.py).
-          # Checked FIRST, and on purpose, even though the receipt check below
-          # deliberately reports its own complaint together with the label one:
-          # fixing this is mechanical and takes seconds, and the fix is a PUSH,
+          # Checked FIRST, and on purpose: fixing this is mechanical and takes seconds, and the fix is a PUSH,
           # which voids a head-pinned receipt anyway. Telling the author now
           # means they fix it and get stamped once; bundling it with the receipt
           # failure would have them get stamped and then void it.
@@ -379,19 +380,6 @@ jobs:
               echo "change (the tree-diff hash), so a conflict-free rebase does not"
               echo "need a new receipt. Any real edit to the code does. A"
               echo "\`Drain-Review-Diff:\` receipt states that hash explicitly."
-              # Both complaints at once. The receipt is checked before the label
-              # declaration below, so reporting only this one sends a legitimate
-              # PR round the loop twice: stamp, still red, then add the label.
-              if [ "$HIT_COUNT" -gt 0 ]; then
-                case ",${LABELS}," in
-                  *,infra-change,*) ;;
-                  *)
-                    echo ""
-                    echo "This PR also needs the \`infra-change\` label:"
-                    echo "${HIT_COUNT} release-critical file(s) are undeclared."
-                    ;;
-                esac
-              fi
             } >> "$GITHUB_STEP_SUMMARY"
             echo "scope guard: BLOCKED — no Drain-Review receipt for head ${HEAD_OID}${DIFF_KEY:+ / diff key ${DIFF_KEY}}"
             cat "$RUNNER_TEMP/receipt-why.txt" || true
@@ -462,18 +450,26 @@ jobs:
               ;;
           esac
 
+          # The receipt check above already passed for this head, so the
+          # declaration is applied here rather than by hand. A failed label
+          # write fails closed: the PR stays blocked until a rerun labels it.
+          # The POST labels the PR, not a commit, so refuse if a newer,
+          # unreceipted head arrived after this run's receipt check.
+          CURRENT_HEAD="$(gh api "repos/${REPO}/pulls/${PR}" --jq .head.sha)" || CURRENT_HEAD=""
+          if [ "$CURRENT_HEAD" != "$HEAD_OID" ]; then
+            echo "scope guard: BLOCKED — PR head moved from ${HEAD_OID} to ${CURRENT_HEAD:-unknown}; the new head's run decides the label"
+            exit 1
+          fi
+          if ! gh api -X POST "repos/${REPO}/issues/${PR}/labels" \
+              -f 'labels[]=infra-change' >/dev/null; then
+            echo "::error::could not add the infra-change label; rerun this check"
+            echo "scope guard: BLOCKED — receipted, but the infra-change label could not be added"
+            exit 1
+          fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Blocked.** This PR changes release-critical files without declaring it." >> "$GITHUB_STEP_SUMMARY"
-          echo "If the change is intended, add the \`infra-change\` label." >> "$GITHUB_STEP_SUMMARY"
-          echo "If it is NOT intended, the branch is probably carrying an unmerged" >> "$GITHUB_STEP_SUMMARY"
-          echo "lineage — rebase onto the target branch so the diff shows only your work." >> "$GITHUB_STEP_SUMMARY"
-
-          printf '%s\n' "$HITS" | while IFS= read -r f; do
-            [ -n "$f" ] && echo "::error file=${f}::release-critical path changed without the infra-change label"
-          done
-
-          echo "scope guard: BLOCKED — ${HIT_COUNT} release-critical file(s), no infra-change label"
-          exit 1
+          echo "Receipted: the \`infra-change\` label was added automatically for ${HIT_COUNT} release-critical file(s)." >> "$GITHUB_STEP_SUMMARY"
+          echo "scope guard: ${HIT_COUNT} release-critical file(s), receipted; infra-change label added"
+          exit 0
 
 # Honesty note
 # ------------

@@ -77,7 +77,6 @@ def test_get_status_activity_log_bytes_nonzero(tmp_path, monkeypatch):
     _cfg = _minimal_cfg()
     with (
         patch("tinyassets.control_plane.queue_policy.load_dispatcher_config", return_value=_cfg),
-        patch("tinyassets.control_plane.queue_policy.paid_market_enabled", return_value=False),
         patch("tinyassets.api.helpers._default_universe", return_value=uid),
         patch("tinyassets.api.helpers._universe_dir", return_value=udir),
     ):
@@ -101,7 +100,6 @@ def test_get_status_universe_outputs_bytes_nonzero(tmp_path, monkeypatch):
     _cfg = _minimal_cfg()
     with (
         patch("tinyassets.control_plane.queue_policy.load_dispatcher_config", return_value=_cfg),
-        patch("tinyassets.control_plane.queue_policy.paid_market_enabled", return_value=False),
         patch("tinyassets.api.helpers._default_universe", return_value=uid),
         patch("tinyassets.api.helpers._universe_dir", return_value=udir),
     ):
@@ -134,7 +132,6 @@ def test_get_status_checkpoint_db_bytes_nonzero_and_cap_current(
     _cfg = _minimal_cfg()
     with (
         patch("tinyassets.control_plane.queue_policy.load_dispatcher_config", return_value=_cfg),
-        patch("tinyassets.control_plane.queue_policy.paid_market_enabled", return_value=False),
         patch("tinyassets.api.helpers._default_universe", return_value=uid),
         patch("tinyassets.api.helpers._universe_dir", return_value=udir),
     ):
@@ -157,7 +154,6 @@ def test_get_status_activity_log_path_points_into_udir(tmp_path, monkeypatch):
     _cfg = _minimal_cfg()
     with (
         patch("tinyassets.control_plane.queue_policy.load_dispatcher_config", return_value=_cfg),
-        patch("tinyassets.control_plane.queue_policy.paid_market_enabled", return_value=False),
         patch("tinyassets.api.helpers._default_universe", return_value=uid),
         patch("tinyassets.api.helpers._universe_dir", return_value=udir),
     ):
@@ -186,7 +182,6 @@ def test_get_status_missing_log_and_output_still_reports_zero_not_error(tmp_path
     _cfg = _minimal_cfg()
     with (
         patch("tinyassets.control_plane.queue_policy.load_dispatcher_config", return_value=_cfg),
-        patch("tinyassets.control_plane.queue_policy.paid_market_enabled", return_value=False),
         patch("tinyassets.api.helpers._default_universe", return_value=uid),
         patch("tinyassets.api.helpers._universe_dir", return_value=udir),
     ):
@@ -210,7 +205,6 @@ def _minimal_cfg():
     cfg.served_llm_type = ""
     cfg.accept_external_requests = False
     cfg.accept_goal_pool = False
-    cfg.accept_paid_bids = False
     cfg.allow_opportunistic = True
     cfg.tier_status_map.return_value = {}
     return cfg

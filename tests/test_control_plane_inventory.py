@@ -144,24 +144,6 @@ def test_no_timer_is_classified_as_living_in_a_box():
     assert [site for site, (cls, _n) in inventory.SITES.items() if cls == inventory.BOX] == []
 
 
-def test_jailed_processes_cannot_outlive_their_call(tmp_path, monkeypatch):
-    """The four-tool jail (built on ``provider_jail.jail_argv``, which provider
-    CLIs share) and the code-node jail (``_bwrap_argv``) die with the platform
-    process that started the call, in their own pid namespace: nothing a
-    command center runs can keep a timer."""
-    from tinyassets import universe_tools
-    from tinyassets.node_sandbox import _bwrap_argv
-    from tinyassets.providers import provider_jail
-
-    universe = tmp_path / "data" / "cc-jail"
-    universe.mkdir(parents=True)
-    monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
-    tool = universe_tools.tool_jail_argv(universe, ["/bin/true"], agent_id="main")
-    node = _bwrap_argv(bwrap_path="/usr/bin/bwrap")
-    for argv in (tool, node):
-        assert "--die-with-parent" in argv
-        assert "--unshare-all" in argv
-
 
 def test_the_scheduler_package_imports_nothing_from_the_jail_side():
     """The trigger table and tick are control-plane code: they must not reach

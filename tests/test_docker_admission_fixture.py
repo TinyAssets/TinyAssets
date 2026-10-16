@@ -55,8 +55,10 @@ def test_docker_ci_preserves_unmodified_refusal_and_authenticated_protocol():
     assert "--mount" not in refusal
     assert "-p " not in refusal
     assert 'test "$EXIT_CODE" = 78' in refusal
-    # Owner split: PID1 refuses an unmigrated volume before the app loads.
-    assert "startup refused: the data volume is not migrated.*run ta-migrate" in refusal
+    # Owner box: PID1 refuses an unmigrated volume before the app loads, and
+    # the smoke checks that refusal in the container's own log.
+    assert ("grep -q 'startup refused: the data volume is not migrated' "
+            '"$RUNNER_TEMP/unadmitted.log"') in refusal
     assert "tinyassets-daemon-layout2-ci:/data" in refusal
     assert "--cap-add SETPCAP" in refusal and "--user 0:0" in refusal
     assert "timeout 60 docker wait" in refusal

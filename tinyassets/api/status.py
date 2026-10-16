@@ -1135,7 +1135,6 @@ def get_status(
         from tinyassets.control_plane.queue_policy import (
             DispatcherConfig,
             load_dispatcher_config,
-            paid_market_enabled,
         )
         cfg: DispatcherConfig = load_dispatcher_config(udir)
     except Exception as exc:
@@ -1159,9 +1158,7 @@ def get_status(
         "served_llm_type": served_llm_type or "any",
         "accept_external_requests": cfg.accept_external_requests,
         "accept_goal_pool": cfg.accept_goal_pool,
-        "accept_paid_bids": cfg.accept_paid_bids,
         "allow_opportunistic": cfg.allow_opportunistic,
-        "paid_market_flag_on": paid_market_enabled(),
         "tier_status_map": cfg.tier_status_map(),
     }
 
@@ -1428,13 +1425,12 @@ def get_status(
     except Exception:  # noqa: BLE001 — best-effort observability
         pass
 
-    # sandbox_status: probe bwrap availability once per process (cached).
-    # Never raises — a probe error shows as bwrap_available=False with reason.
+    # sandbox_status: whether this process serves owner boxes. Never raises.
     try:
         from tinyassets.providers.base import get_sandbox_status
         sandbox_status = get_sandbox_status()
     except Exception as exc:  # noqa: BLE001 — best-effort observability
-        sandbox_status = {"bwrap_available": False, "reason": f"probe_error: {exc}"}
+        sandbox_status = {"box_available": False, "reason": f"probe_error: {exc}"}
 
     # BUG-027 — probe required static data files so operators can see which
     # files are absent in the cloud image without waiting for ASP to fail.

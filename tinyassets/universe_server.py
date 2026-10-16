@@ -32,7 +32,6 @@ import contextlib
 import json
 import logging
 import math
-import os
 import re
 import threading
 import uuid
@@ -78,6 +77,7 @@ from tinyassets.command_center_names import (
     public_response,
     verbatim,
 )
+from tinyassets.control_plane.registration import install_profile_tool
 from tinyassets.engine_read_views import compact_model_options
 from tinyassets.mcp_schema_utils import describe_signature
 from tinyassets.mcp_tool_annotations import annotations_for
@@ -521,7 +521,7 @@ def _register_structured_tool(fn, *, tags, name=None):
         meta={"securitySchemes": _oauth_security_schemes()},
         output_schema=None,
     )
-    mcp.add_tool(tool)
+    install_profile_tool(mcp, tool)
     return tool
 
 
@@ -594,7 +594,7 @@ _LANDING_HTML = """<!doctype html>
 
 <p>This is the public surface of a local-first platform for building
 custom multi-step AI workflows &mdash; typed state, registered nodes,
-evaluation hooks, iteration loops, paid-market bid/claim mechanics.
+evaluation hooks and iteration loops.
 The engine is domain-agnostic.</p>
 
 <p>If you arrived here looking for an MCP connector, the live endpoint
@@ -2828,11 +2828,11 @@ def _served_failure_code(exc: BaseException) -> str:
     from tinyassets.conversation_failure import FAILURE_CODES
     from tinyassets.exceptions import (
         ProviderAuthorityHeldError,
+        ProviderConfinementError,
         SelectedModelUnavailableError,
         WorkModelExhaustedError,
     )
     from tinyassets.providers.model_pins import ModelPinError
-    from tinyassets.providers.provider_jail import ProviderConfinementError
     from tinyassets.providers.served_model_plan import NO_ELIGIBLE_MODEL
 
     try:
@@ -4429,29 +4429,6 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
     return app
 
 
-def _serve_configs(app, host: str, port: int, socket_path: str):
-    """Keep TCP defaults; only the additional socket bypasses lifespan."""
-    import uvicorn
-
-    from tinyassets.owner_socket import OwnerSocketMiddleware
-
-    return (
-        uvicorn.Config(app, host=host, port=port,
-                       timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S),
-        uvicorn.Config(OwnerSocketMiddleware(app), uds=socket_path, lifespan="off",
-                       proxy_headers=False,
-                       timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S),
-    )
-
-
-async def _serve_owner_listeners(configs):
-    import asyncio
-
-    import uvicorn
-
-    await asyncio.gather(*(uvicorn.Server(config).serve() for config in configs))
-
-
 def main(
     host: str = "0.0.0.0",
     port: int = 8001,
@@ -4691,18 +4668,10 @@ def main(
         assigned_consumer = AssignedQueueConsumer(assigned_data_dir())
         assigned_consumer.start()
         try:
-            socket_path = os.environ.get("TINYASSETS_OWNER_SOCKET")
-            if socket_path:
-                import asyncio
-
-                asyncio.run(_serve_owner_listeners(
-                    _serve_configs(app, host, port, socket_path)
-                ))
-            else:
-                uvicorn.run(
-                    app, host=host, port=port,
-                    timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
-                )
+            uvicorn.run(
+                app, host=host, port=port,
+                timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
+            )
         finally:
             if assigned_consumer is not None:
                 assigned_consumer.stop()

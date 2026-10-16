@@ -14,7 +14,11 @@ import stat
 import subprocess
 from pathlib import Path
 
-from tinyassets.role_provider_cell import read_config, resolve_executable, safe_environment
+from tinyassets.external_agents.launch_security import (
+    read_config,
+    resolve_executable,
+    safe_environment,
+)
 
 _FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _HOME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
@@ -154,8 +158,14 @@ def cell_main(data_root: str, *, egress: bool, engine: bool, config=None,
         raise ValueError('owner-box CLI requires private writeback and no legacy engine socket')
     if type(config) is not dict or set(config) != {
         'argv', 'env', 'home_dir', 'workdir', 'auth_files', 'writeback', 'nonce',
-        'engine_port', 'catalogue_rewrite', 'requested_model',
+        'engine_port', 'catalogue_rewrite', 'requested_model', 'env_from_file',
     }:
+        raise ValueError('invalid external-agent config')
+    env_from_file = config['env_from_file']
+    if (not isinstance(env_from_file, dict) or len(env_from_file) > 8
+            or any(type(k) is not str or not re.fullmatch('[A-Z][A-Z0-9_]{0,127}', k)
+                   or type(v) is not str or v not in config['auth_files']
+                   for k, v in env_from_file.items())):
         raise ValueError('invalid external-agent config')
     argv, env = config['argv'], config['env']
     name, workdir = config['home_dir'], config['workdir']
@@ -219,6 +229,11 @@ def cell_main(data_root: str, *, egress: bool, engine: bool, config=None,
                 raise ValueError('invalid external-agent credential bytes')
             _file(home + '/' + filename, data)
             written.append(filename)
+            for key, source in env_from_file.items():
+                if source == filename:
+                    if len(data) > 8192:
+                        raise ValueError('leased environment value exceeds its bound')
+                    clean_env[key] = data.decode('utf-8').strip()
         os.chdir(job)
         command = argv
         if rewrite is not None:
@@ -232,7 +247,7 @@ def cell_main(data_root: str, *, egress: bool, engine: bool, config=None,
             command = [*argv, '-c', rewrite['setting'] + '=' +
                        json.dumps(job + '/model-catalog.json')]
         if egress:
-            from tinyassets.universe_egress import FORWARDER, PROXY_ENV
+            from tinyassets.boxes.network import FORWARDER, PROXY_ENV
 
             clean_env.update(PROXY_ENV)
             specs = ['3128=/provider-egress.sock']

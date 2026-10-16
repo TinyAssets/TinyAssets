@@ -49,7 +49,7 @@ def renderer(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     captured = []
 
-    def render(spec, wall_seconds):
+    def render(spec, wall_seconds, **_):
         captured.append(spec)
         return {"png": _png()}
 
@@ -154,7 +154,7 @@ def test_finished_publish_retries_resolution_without_republishing(home, monkeypa
     request_id = ask["request_id"]
     renders = []
 
-    def render_after_finish(*args):
+    def render_after_finish(*args, **_):
         pin = packages.pin_for_request(home, universe_id=UNIVERSE, request_id=request_id)
         assert pin["state"] == "activated", "Rendering must not hold the publication claim"
         renders.append(pin["progress"]["agent_definition_id"])
@@ -307,7 +307,7 @@ def test_approval_returns_before_render_and_receipt_wakes_readers(home, monkeypa
     entered, release = threading.Event(), threading.Event()
     wakes = []
 
-    def render(*args):
+    def render(*args, **_):
         entered.set()
         assert release.wait(5), "Approval blocked on the renderer"
         return {"png": _png()}

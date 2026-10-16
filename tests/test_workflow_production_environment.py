@@ -40,6 +40,14 @@ PRODUCTION_SECRETS = (
     "DO_SSH_USER",
     "DIGITALOCEAN_TOKEN",
     "DO_API_TOKEN",
+    # The canary signs in and repairs its own account, so a branch run must
+    # never see it.
+    "TINYASSETS_CANARY_EMAIL",
+    "TINYASSETS_CANARY_PASSWORD",
+    "TINYASSETS_CANARY_HMAC_KEY",
+    # Half the proof the canary-only sign-in door needs; the deployment holds
+    # the other copy. A branch run must never see it.
+    "TINYASSETS_CANARY_DOOR_KEY",
 )
 
 # Secrets a job may read WITHOUT `environment: production`. A branch dispatch
@@ -52,10 +60,6 @@ NON_PRODUCTION_SECRETS: dict[str, str] = {
     "TINYASSETS_WIKI_CANARY_TOKEN": (
         "bearer for the read-only `canary` service principal; the daemon 403s anything "
         "beyond get_status / read_graph status (docs/reference/environment-variables.md)"
-    ),
-    "TINYASSETS_CORE_CANARY_CONFIG": (
-        "sign-in of the dedicated synthetic canary owner with no founder data behind it "
-        "(docs/host-actions.md, one-time core-canary setup)"
     ),
     "PUSHOVER_APP_TOKEN": "send-only notification credential",
     "PUSHOVER_USER_KEY": "send-only notification recipient",
@@ -117,6 +121,7 @@ _KNOWN_PRODUCTION_WORKFLOWS = {
     "install-host-services.yml",
     "p0-outage-triage.yml",
     "restart-daemon.yml",
+    "uptime-canary.yml",
 }
 
 

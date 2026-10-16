@@ -145,7 +145,7 @@ def test_recovery_override_fences_writers_and_fixed_name_sidecars():
     assert set(services) == default_profile, (
         "recovery override must fence exactly the default-profile services"
     )
-    assert set(services) == {"daemon", "cloudflared", "logs"}
+    assert set(services) == {"daemon", "broker", "cloudflared", "logs"}
     assert all(service.get("restart") == "no" for service in services.values())
 
 
@@ -259,7 +259,11 @@ def test_canary_step_only_probes_canonical():
     steps = _steps(_load())
     core = next(s for s in steps if s.get("id") == "core_canary")
     assert core["uses"] == "./.github/actions/core-capability-canary"
-    assert "if" not in core and not core.get("continue-on-error")
+    # Only a canary that was ready before the deploy can fail it (and roll back).
+    assert "if" not in core
+    assert core["continue-on-error"] == (
+        "${{ steps.core_canary_provision.outputs.provisioned != '1' }}"
+    )
     provision = next(s for s in steps if s.get("name") == "Verify core canary is provisioned")
     assert provision.get("id") == "core_canary_provision"
     assert "verify_core_canary_provision.py" in provision["run"]
@@ -267,19 +271,96 @@ def test_canary_step_only_probes_canonical():
     names = [step.get("name") for step in steps]
     assert steps.index(provision) < names.index("Prepare data volume root")
     deploy = next(s for s in steps if s.get("id") == "deploy")
-    assert (
-        "CORE_CANARY_PROVISIONED='${{ steps.core_canary_provision.outputs.provisioned }}'"
-        in deploy["run"]
-    )
+    # The fail-safe reads the resolved gate: the real result, or a founder
+    # waiver on the first attempt of a manual run from exactly main.
+    assert "CORE_CANARY_PROVISIONED='${{ steps.canary_gate.outputs.provisioned }}'" in deploy["run"]
+    gate = next(s for s in steps if s.get("id") == "canary_gate")
+    assert steps.index(provision) < steps.index(gate) < steps.index(deploy)
+    for exact in ('[ "$GITHUB_REF" = "refs/heads/main" ]', '[ "$GITHUB_RUN_ATTEMPT" = "1" ]',
+                  '[ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]', '[ "$WAIVER" = "true" ]'):
+        assert exact in gate["run"]
+    waiver = _load()[True]["workflow_dispatch"]["inputs"]["founder_canary_waiver"]
+    assert waiver["type"] == "boolean" and waiver["default"] is False
     public = next(s for s in steps if s.get("id") == "canary")
     assert "https://tinyassets.io/mcp --assert-handles" in public["run"]
     assert not public.get("continue-on-error")
     assert not next(s for s in steps if s.get("id") == "app_probe").get("continue-on-error")
     assert not any(s.get("id") == "core_regression" for s in steps)
     deploy = next(i for i, s in enumerate(steps) if s.get("id") == "deploy")
-    repair = next(i for i, s in enumerate(steps) if s.get("id") == "content_repair")
-    # The canary observes the deployed, repaired tree, before the blocking probes.
-    assert deploy < repair < steps.index(core) < steps.index(public)
+    # The canary observes the deployed tree, before the blocking probes.
+    assert deploy < steps.index(core) < steps.index(public)
+
+
+_DOOR_STEP = "Sync the canary sign-in door into /etc/tinyassets/env"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash to execute the step")
+@pytest.mark.parametrize(
+    "key,user_id,want",
+    [
+        ("k" * 48, "user_01CANARY", "set-pair"),
+        ("", "user_01CANARY", "delete"),
+        ("k" * 48, "", "delete"),
+        ("", "", "delete"),
+    ],
+)
+def test_the_door_step_installs_the_pair_or_removes_it(tmp_path, key, user_id, want):
+    """Revocation is this step: deleting the GitHub secret must close the door.
+
+    Leaving the host copy when the secret is gone kept /app/canary-sign-in live
+    with the value being revoked (Codex review, 2026-10-15).
+    """
+    step = _step_named(_load(), _DOOR_STEP)
+    stub = tmp_path / "ssh"
+    # LF endings: a CRLF script breaks bash on a Windows checkout. The stub
+    # drains stdin so the `printf | ssh` pipeline cannot die of SIGPIPE.
+    stub.write_bytes(
+        b"#!/usr/bin/env bash\ncat > payload.txt\nprintf '%s\\n' \"${!#}\" >> remote.txt\n"
+    )
+    stub.chmod(0o755)
+    script = tmp_path / "step.sh"
+    prelude = (
+        'export DO_SSH_USER=deployer\nexport DO_DROPLET_HOST=host.invalid\n'
+        f'export TINYASSETS_CANARY_DOOR_KEY={key}\n'
+        f'export TINYASSETS_CANARY_USER_ID={user_id}\n'
+        'export PATH="$(pwd):$PATH"\n'
+    )
+    script.write_bytes((prelude + str(step.get("run", ""))).encode())
+    proc = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", script.name],
+        cwd=tmp_path, capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    remote = (tmp_path / "remote.txt").read_text(encoding="utf-8")
+    assert f"install-tinyassets-env.sh {want} " in remote, remote
+    assert "TINYASSETS_CANARY_DOOR_KEY TINYASSETS_CANARY_USER_ID" in remote
+    if want == "delete":
+        assert "::warning::canary sign-in door not configured" in proc.stdout
+    else:
+        # One atomic write, both values, in the order the helper reads them.
+        assert (tmp_path / "payload.txt").read_text(encoding="utf-8") == f"{key}\n{user_id}\n"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash to execute the step")
+def test_the_door_step_refuses_a_short_key_instead_of_installing_it(tmp_path):
+    step = _step_named(_load(), _DOOR_STEP)
+    stub = tmp_path / "ssh"
+    stub.write_bytes(b"#!/usr/bin/env bash\ncat > payload.txt\nprintf 'reached\\n' >> remote.txt\n")
+    stub.chmod(0o755)
+    script = tmp_path / "step.sh"
+    script.write_bytes((
+        'export DO_SSH_USER=deployer\nexport DO_DROPLET_HOST=host.invalid\n'
+        'export TINYASSETS_CANARY_DOOR_KEY=short\n'
+        'export TINYASSETS_CANARY_USER_ID=user_01CANARY\n'
+        'export PATH="$(pwd):$PATH"\n'
+    ) .encode() + str(step.get("run", "")).encode())
+    proc = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", script.name],
+        cwd=tmp_path, capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == 1
+    assert "under 32 bytes" in proc.stdout
+    assert not (tmp_path / "remote.txt").exists()
 
 
 def test_access_gate_step_present():
@@ -433,7 +514,8 @@ def test_rollback_step_present():
     assert (
         rollback["if"] == "${{ failure() && steps.deploy.outputs.rc == '0' && "
         "(steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure' "
-        "|| steps.core_canary.outcome == 'failure') }}"
+        "|| (steps.core_canary.outcome == 'failure' "
+        "&& steps.core_canary_provision.outputs.provisioned == '1')) }}"
     )
     assert "--restore-bundle" in rollback["run"]
     assert rollback["env"]["PREV_IMAGE"] == "${{ steps.capture.outputs.prev_image }}"
@@ -1190,3 +1272,30 @@ def test_compose_declares_no_host_run_worker_fleet():
     for name, service in compose["services"].items():
         env = service.get("environment") or {}
         assert "TINYASSETS_UNIVERSE" not in env, name
+
+
+def _gate_value(tmp_path, **env):
+    gate = next(s for s in _steps(_load()) if s.get("id") == "canary_gate")
+    out = tmp_path / "out"
+    full = {**os.environ, "GITHUB_OUTPUT": str(out), **env}
+    subprocess.run(["bash", "-c", gate["run"]], env=full, check=True)
+    return out.read_text().strip()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="bash step; runs-in=linux-ci")
+@pytest.mark.parametrize("env,expected", [
+    (dict(PROVISIONED="1", WAIVER="false", GITHUB_EVENT_NAME="workflow_run",
+          GITHUB_REF="refs/heads/main", GITHUB_RUN_ATTEMPT="1"), "1"),
+    (dict(PROVISIONED="0", WAIVER="true", GITHUB_EVENT_NAME="workflow_dispatch",
+          GITHUB_REF="refs/heads/main", GITHUB_RUN_ATTEMPT="1"), "1"),
+    (dict(PROVISIONED="0", WAIVER="true", GITHUB_EVENT_NAME="workflow_dispatch",
+          GITHUB_REF="refs/heads/Main", GITHUB_RUN_ATTEMPT="1"), "0"),
+    (dict(PROVISIONED="0", WAIVER="true", GITHUB_EVENT_NAME="workflow_dispatch",
+          GITHUB_REF="refs/heads/main", GITHUB_RUN_ATTEMPT="2"), "0"),
+    (dict(PROVISIONED="0", WAIVER="true", GITHUB_EVENT_NAME="workflow_run",
+          GITHUB_REF="refs/heads/main", GITHUB_RUN_ATTEMPT="1"), "0"),
+    (dict(PROVISIONED="0", WAIVER="false", GITHUB_EVENT_NAME="workflow_dispatch",
+          GITHUB_REF="refs/heads/main", GITHUB_RUN_ATTEMPT="1"), "0"),
+])
+def test_canary_gate_waiver_is_exact(tmp_path, env, expected):
+    assert _gate_value(tmp_path, **env) == f"provisioned={expected}"

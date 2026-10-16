@@ -72,6 +72,16 @@ TINYASSETS_MCP_CANARY_URL=https://tinyassets.io/mcp
 #   python -c "import secrets; print(secrets.token_hex(32))"
 TINYASSETS_WIKI_CANARY_TOKEN=
 
+# The deploy canary's own sign-in door (tinyassets/onboarding/canary_sign_in.py).
+# BOTH names are required or the route 404s. The key is 32+ random bytes and
+# the SAME value as the GitHub Actions secret of the same name; the user id is
+# the WorkOS `user_...` id of the dedicated synthetic owner, and it is the only
+# account the door can ever sign in. A caller must also present that account's
+# real password, which WorkOS checks. No founder or user account belongs here.
+#   python -c "import secrets; print(secrets.token_hex(32))"
+TINYASSETS_CANARY_DOOR_KEY=
+TINYASSETS_CANARY_USER_ID=
+
 # Optional daemon credentials documented in docs/reference/environment-variables.md.
 # Include even unset names here so the Compose-derived child-env inventory test
 # covers installations that enable billing, persistent sessions or owner push.

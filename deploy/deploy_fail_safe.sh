@@ -364,8 +364,8 @@ layout_marker_path() {
   [ -n "$dir" ] || return 1
   printf '%s/.layout.json' "$dir"
 }
-layout_allows_candidate() {  # $1 = marker path; $2 = immutable candidate image
-  local marker="$1" candidate="$2" dir supported
+layout_allows_candidate() {  # $1 = marker path; $2 = immutable candidate image; $3 = 1 for a forward deploy that may apply the box move
+  local marker="$1" candidate="$2" cutover="${3:-0}" dir supported
   # Query the pulled candidate's own declaration, never the host checkout or
   # the running image. No data mount: this probe must not run a migration.
   supported="$(timeout 90 docker run --rm --memory=512m --memory-swap=512m --network=none \
@@ -375,7 +375,7 @@ layout_allows_candidate() {  # $1 = marker path; $2 = immutable candidate image
   (
     exec 8>>"$dir/.layout.lock" || exit 1
     flock -s -n 8 || exit 1
-    python3 - "$marker" "$supported" <<'CANDIDATE_LAYOUT_PY'
+    python3 - "$marker" "$supported" "$cutover" <<'CANDIDATE_LAYOUT_PY'
 import json
 import sys
 
@@ -395,9 +395,17 @@ try:
         doc = {"layout": 1, "state": "stable"}
 except (OSError, ValueError):
     sys.exit(1)
+# On a forward deploy only, an owner-box candidate on stable owner-split data
+# is the cutover itself: it passes here and the box-move step decides, behind
+# its own gates (provisioned canary, idle turns, fresh verified backup), whether
+# to apply it. A restore bundle or a rollback never moves data, so it must
+# serve the marker's layout as it stands.
+cutover = sys.argv[3] == "1"
+box = doc.get("box_layout", "owner-split") if isinstance(doc, dict) else None
 ok = (isinstance(doc, dict) and type(doc.get("layout")) is int
       and doc["layout"] in layouts and doc.get("state") == "stable"
-      and doc.get("box_layout", "owner-split") in boxes)
+      and (box in boxes
+           or (cutover and box == "owner-split" and "owner-box" in boxes)))
 sys.exit(0 if ok else 1)
 CANDIDATE_LAYOUT_PY
   )
@@ -1004,6 +1012,10 @@ elif "${TINYASSETS_IMAGE" not in image_lines[0]:
     )
 
 expected_services = {"daemon", "cloudflared", "logs"}
+if "broker" in services:
+    # The owner-box bundle runs the credential broker as its own unprivileged
+    # service. It is admitted only in this exact shape.
+    expected_services.add("broker")
 if set(services) != expected_services:
     problems.append(
         "default service set is %s, expected %s"
@@ -1020,6 +1032,7 @@ for service, container in (
     ("daemon", "tinyassets-daemon"),
     ("cloudflared", "tinyassets-tunnel"),
     ("logs", "tinyassets-logs"),
+    *((("broker", "tinyassets-broker"),) if "broker" in services else ()),
 ):
     got = svc(service).get("container_name")
     if got != container:
@@ -1034,6 +1047,14 @@ if image != expect_image:
         "daemon.image resolved to %r; it must interpolate ${TINYASSETS_IMAGE} "
         "(candidate %r)" % (image, expect_image)
     )
+if "broker" in services:
+    broker = svc("broker")
+    if broker.get("image") != expect_image:
+        problems.append("broker.image must be the candidate daemon image")
+    if broker.get("user") != "1002:1002" or broker.get("cap_drop") != ["ALL"]:
+        problems.append("broker must run as 1002:1002 with every capability dropped")
+    if "no-new-privileges=true" not in (broker.get("security_opt") or []):
+        problems.append("broker must set no-new-privileges=true")
 
 # The sidecars carry no ${TINYASSETS_IMAGE}, so nothing above constrains them at
 # all: an arbitrary or unpinned cloudflared/vector image passed every check
@@ -1500,7 +1521,9 @@ log "candidate image loads cleanly"
 # Normal and explicit bundle deploys check the image they will start. An
 # automatic rollback checks the previous image again after the failed boot.
 LAYOUT_MARKER="$(layout_marker_path)" || LAYOUT_MARKER=""
-if [ -z "$LAYOUT_MARKER" ] || ! layout_allows_candidate "$LAYOUT_MARKER" "$NEW_IMAGE"; then
+LAYOUT_CUTOVER=1
+[ "$RESTORE_BUNDLE" != "1" ] || LAYOUT_CUTOVER=0
+if [ -z "$LAYOUT_MARKER" ] || ! layout_allows_candidate "$LAYOUT_MARKER" "$NEW_IMAGE" "$LAYOUT_CUTOVER"; then
   err "data layout check failed before converging ${NEW_IMAGE}: incompatible or unreadable candidate/layout, unfinished or locked migration; prod untouched"
   echo "deploy_result=layout_refused"
   exit 1
@@ -1929,25 +1952,31 @@ case "$MIGRATION_RC" in
 esac
 rm -f "$MIGRATION_DETAIL_FILE"
 
-# --- 3d. layout census, and the one-shot move only for an owner-box candidate
+# --- 3d. layout census and owner-box cutover
 # The census always runs on a forward deploy, as root against a read-only
 # mount, and the log carries counts per layout. The move decision is this
 # census, never the agent-files binding count printed above. An owner-split
 # candidate does not apply the cutover: only rc 10 (stable owner-split) continues.
 # rc 4 (no marker) and rc 3 (unreadable, unstable, or unrecognized) refuse.
-# rc 0 on that candidate is a conflict. An owner-box candidate applies only on
-# rc 10, after a fresh verified snapshot taken for that move, then restarts
-# boxhostd on the committed layout. After apply begins, a failure needs that
-# paired restore.
+# rc 0 on that candidate is a conflict. An owner-box candidate applies on
+# rc 10 after a fresh verified paired snapshot: either the one-shot box move
+# or the one-time legacy Activities cutover within an already committed box layout.
 box_migration_container() {  # $1 = check|apply, then module arguments
   local posture=(--user 0)
   local data_mount="tinyassets-data:/data:ro"
   local extra=()
   if [ "$1" = "apply" ]; then
-    posture=(--user 0 --cap-add CHOWN --cap-add FOWNER \
+    local store_device
+    store_device="$(findmnt --mountpoint /var/lib/boxhostd/owners -no SOURCE)" || return 1
+    if [[ "$store_device" != /dev/* || ! -b "$store_device" ]]; then
+      err "box migration: owner store has no block device: ${store_device}"
+      return 1
+    fi
+    posture=(--user 0 --cap-add CHOWN --cap-add FOWNER --cap-add FSETID \
       --cap-add DAC_OVERRIDE --cap-add SYS_ADMIN)
     data_mount="tinyassets-data:/data"
     extra=(-v "${MIGRATION_BACKUP_DIR}:/backup:ro" \
+      --device "${store_device}:${store_device}:r" \
       --mount type=bind,src=/var/lib/boxhostd/owners,dst=/box-store)
   fi
   timeout "$MIGRATION_TIMEOUT" docker run --rm --cap-drop ALL ${posture[@]+"${posture[@]}"} \
@@ -1986,7 +2015,7 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
           # Apply runs only after every gate has passed in this run: a
           # provisioned canary, an in-flight probe that proved idle (and is
           # proved again inside the snapshot, so the drain cannot cut a turn),
-          # a stable owner-split census, and a fresh verified backup.
+          # a stable layout census, and a fresh verified paired backup.
           if [ "$CORE_CANARY_PROVISIONED" != "1" ]; then
             migration_refused "check=core_canary_not_provisioned move=box_layout_pending"
           fi
@@ -1996,11 +2025,13 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
           if [ "$box_probe_rc" -ne 10 ]; then
             migration_refused "check=box_layout_probe move=box_layout_pending rc=${box_probe_rc}"
           fi
-          stop_for_verified_snapshot 1
+          if [ -z "$MIGRATION_SNAPSHOT" ]; then
+            stop_for_verified_snapshot 1
+          fi
           if [ "$TURNS_IDLE_PROVED" != "1" ] || [ -z "$MIGRATION_SNAPSHOT" ]; then
             migration_refused "check=backup_verify move=box_layout_pending snapshot=${MIGRATION_SNAPSHOT:-unset}"
           fi
-          log "box layout: one-shot move using fresh snapshot ${MIGRATION_SNAPSHOT} (census, not the agent-files binding count)"
+          log "box layout: applying one-time box or activity cutover using fresh snapshot ${MIGRATION_SNAPSHOT} (census, not the agent-files binding count)"
           box_backup="tinyassets-box-store-${MIGRATION_SNAPSHOT#tinyassets-snapshot-}"
           box_apply="$(box_migration_container apply /data --store /box-store \
             --backup "/backup/${MIGRATION_SNAPSHOT}" \

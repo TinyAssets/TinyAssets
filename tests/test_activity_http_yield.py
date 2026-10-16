@@ -3,7 +3,8 @@
 import asyncio
 import json
 import sqlite3
-from contextlib import asynccontextmanager, contextmanager
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -14,7 +15,6 @@ from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.inference_usage_helpers import synthetic_stream
 from tests.test_run_provider_session import _branch, _run_branch
 from tinyassets import activity_runner, agent_activities, engine_mcp_server, shared_self
-from tinyassets.foreground_run_provider import _ForegroundRunProviderSession
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 from tinyassets.providers.base import ModelConfig, ProviderResponse, UniverseContext
@@ -23,8 +23,51 @@ from tinyassets.storage.provider_work_authority import db_path
 from tinyassets.workflow_agent import WorkAgentAdapter
 
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
+@pytest.fixture(autouse=True)
+def run_cancel_ledger(tmp_path):
+    from tinyassets.runs import initialize_runs_db
+
+    initialize_runs_db(tmp_path)
+
+
 http_wire = workflow_tests.http_wire
 work_agent = workflow_tests.work_agent
+
+
+def test_queued_activity_takes_its_own_provider_slot(tmp_path, monkeypatch):
+    from tinyassets import provider_admission as admission
+    from tinyassets import runs
+    from tinyassets.api import permissions
+    from tinyassets.control_plane import activity_session
+
+    monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "3")
+    admission.reset_for_tests()
+    record = {
+        "activity_id": "activity-1", "runner_generation": 1, "runner_token": "",
+        "status": agent_activities.IN_PROGRESS, "owner_principal": "owner-1",
+        "session_key": "session-1",
+    }
+    monkeypatch.setattr(agent_activities, "get", lambda *args: record)
+    monkeypatch.setattr(agent_activities, "bind_run", lambda *args: True)
+    monkeypatch.setattr(permissions, "owner_run_identity", lambda *args: nullcontext(True))
+    monkeypatch.setattr(runs, "create_run", lambda *args, **kwargs: "run-1")
+    futures = []
+    monkeypatch.setattr(runs, "_track_future", lambda _run_id, future: futures.append(future))
+
+    def activity_worker(*args):
+        # call_sync enters this scope before its own provider admission.
+        with admission.blocking_provider_child():
+            with admission.provider_slot(parent_slot=admission.blocking_parent_slot()):
+                return admission.admission_snapshot()["live"]
+
+    monkeypatch.setattr(activity_session, "execute", activity_worker)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        monkeypatch.setattr(runs, "_get_executor", lambda **kwargs: executor)
+        with admission.provider_slot() as parent:
+            assert activity_session.enqueue(tmp_path, "universe-1", record, 1) == "run-1"
+            assert futures[0].result(timeout=5) == 2
+            assert not parent.lent
+    assert admission.admission_snapshot()["live"] == 0
 
 
 @pytest.mark.parametrize("batched_tool", [False, True])
@@ -40,15 +83,21 @@ def test_http_activity_yield_stops_tools_and_inference_and_releases_claim(
     )
     aid = record["activity_id"]
     generation = agent_activities.claim(universe, aid, replaceable=lambda _: False)
-    prepare = _ForegroundRunProviderSession.prepare
+    from tinyassets import runs
+    from tinyassets.control_plane.activity_session import enqueue
+
     run_ids = []
 
-    def bind_before_start(session, **kwargs):
-        prepare(session, **kwargs)
-        run_ids.append(kwargs["run_id"])
-        assert agent_activities.bind_run(universe, aid, generation, kwargs["run_id"])
+    def enqueue_activity(base, **kwargs):
+        from tinyassets.foreground_run_provider import close_foreground_run_provider
 
-    monkeypatch.setattr(_ForegroundRunProviderSession, "prepare", bind_before_start)
+        close_foreground_run_provider(kwargs.get("provider_call"))
+        run_id = enqueue(base, universe.name, record, generation)
+        assert run_id
+        run_ids.append(run_id)
+        return SimpleNamespace(run_id=run_id, status="queued", output={}, error=None)
+
+    monkeypatch.setattr(runs, "execute_branch_async", enqueue_activity)
     shared_turn = shared_self.prepare_shared_self_turn
 
     def prepare_activity(*args, activity, agent):
@@ -110,13 +159,12 @@ def test_http_activity_yield_stops_tools_and_inference_and_releases_claim(
 
     work_agent.after_tool = yield_after_ask
     branch = _branch(node_count=1)
-    branch.branch_def_id = activity_runner.branch_def_id(universe.name)
     branch.node_defs[0].tools_allowed = ["universe_self"]
     branch.node_defs[0].llm_policy = {"preferred": {"model": "synthetic-model"},
                                     "fallback_chain": []}
     result = _run_branch(tmp_path, monkeypatch, authenticate_request, branch,
                          open_provider=True, model_access=ModelAccess("discovered"))[0]
-    assert result["terminal_status"] == "completed", result
+    assert result["terminal_status"] == "cancelled", result
     assert len(work_agent.wires) == 1 and len(work_agent.tools) == 1 and work_agent.closed
     turn = work_agent.latest()
     assert len(turn.rounds) == 1 and turn.rounds[0].tools[0].state == "completed"
@@ -201,6 +249,9 @@ def _live_activity_adapter(tmp_path, *, name, with_binding=True):
     staging and re-authorization all succeed, so a round reaches
     ``_LaunchRecorder`` unless the adapter itself refuses it.
     """
+    from tinyassets.runs import initialize_runs_db
+
+    initialize_runs_db(tmp_path)
     universe = tmp_path / name
     universe.mkdir(exist_ok=True)
     record = agent_activities.create(

@@ -9,7 +9,11 @@ import os
 import sqlite3
 import stat
 import subprocess
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from deploy.box_project_readback import verify_owner, verify_tree  # noqa: E402
 
 
 def reapply(store: Path, trees: Path, registry: Path, *, clear: bool = False) -> None:
@@ -51,12 +55,14 @@ def reapply(store: Path, trees: Path, registry: Path, *, clear: bool = False) ->
         else:
             command = f"project -s -p {tree} {project}"
         subprocess.run(["xfs_quota", "-x", "-c", command, str(store)], check=True)
+        if clear:
+            verify_tree(tree, 0, False)
         if not clear:
             subprocess.run(
                 ["xfs_quota", "-x", "-c", f"limit -p bhard={limit // 1024}k {project}", str(store)],
                 check=True,
             )
-    subprocess.run(["xfs_quota", "-x", "-c", "report -p -n", str(store)], check=True)
+            verify_owner(store, tree, project, limit)
 
 
 def fence_restore(current: Path, staged: Path) -> None:
@@ -120,7 +126,8 @@ def fence_restore(current: Path, staged: Path) -> None:
             target.execute("UPDATE ops SET state='unknown_after_restore'")
             # A newer CLI CAS may not exist in the restored credential store.
             # Never spend that custody pin again based on its old acknowledgement.
-            target.execute("UPDATE ops SET outcome=json_set(outcome, '$.cli_ack', json('false')) "
+            target.execute("UPDATE ops SET outcome=json_set(outcome, '$.cli_ack', json('false'), "
+                           "'$.cli_restore_hold', json('true')) "
                            "WHERE json_extract(outcome, '$.cli_lease') IS NOT NULL")
             incarnation = live.execute("SELECT v FROM host WHERE k='incarnation'").fetchone()[0]
             target.execute("UPDATE host SET v=MAX(v,?)+1 WHERE k='incarnation'", (incarnation,))

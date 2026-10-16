@@ -118,7 +118,7 @@ jobs:
           docker logs tinyassets-daemon-unadmitted-ci > "$RUNNER_TEMP/unadmitted.log" 2>&1
           cat "$RUNNER_TEMP/unadmitted.log"
           test "$EXIT_CODE" = 78
-          grep -q 'startup refused: the data volume is not migrated.*run ta-migrate' "$RUNNER_TEMP/unadmitted.log"
+          grep -q 'startup refused: the data volume is not migrated' "$RUNNER_TEMP/unadmitted.log"
           if grep -q 'Uvicorn running on' "$RUNNER_TEMP/unadmitted.log"; then
             echo "::error::Unadmitted image started a listener"
             exit 1

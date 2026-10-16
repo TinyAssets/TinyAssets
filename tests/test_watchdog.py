@@ -524,3 +524,22 @@ def test_the_watchdog_unit_creates_the_lock_as_root():
     text = (_SCRIPTS.parent / "deploy" / "tinyassets-watchdog.service").read_text(
         encoding="utf-8")
     assert "ExecStartPre=+/usr/bin/touch /var/lock/tinyassets-host-mutation.lock" in text
+
+
+def test_probe_is_liveness_only(tmp_path, monkeypatch):
+    """The loopback probe cannot pass the public challenge check; liveness only."""
+    import subprocess as sp
+
+    import scripts.watchdog as wd
+
+    script = tmp_path / "canary.py"
+    script.write_text("", encoding="utf-8")
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        return sp.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(wd.subprocess, "run", fake_run)
+    assert wd._probe(script, "http://127.0.0.1:8001/mcp", 5.0) == (True, "green")
+    assert "--pulse-only" in seen["argv"]

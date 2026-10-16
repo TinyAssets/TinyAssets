@@ -133,6 +133,7 @@ class BoxLauncher:
         nonce = hashlib.sha256(self.operation_id.encode()).hexdigest()[:32]
         cli = {"home_dir": auth["home_dir"], "workdir": workdir,
                "auth_files": auth_files, "nonce": nonce,
+               "env_from_file": dict(auth.get("env_from_file") or {}),
                "catalogue_rewrite": catalogue_rewrite, "requested_model": requested_model,
                "custody": hashlib.sha256((auth["service"] + "\0" +
                    self.custody.reference.reference_digest).encode()).hexdigest()}
@@ -144,7 +145,7 @@ class BoxLauncher:
         return proc
 
     async def close(self, proc):
-        from tinyassets.role_external_agent import AuthWriteback
+        from tinyassets.external_agents.writeback import AuthWriteback
 
         if proc not in self.processes:
             raise BoxAuthError("foreign CLI process")

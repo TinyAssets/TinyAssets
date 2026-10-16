@@ -333,7 +333,7 @@ def _preview_publication(uid: str, actor: str, definition_id: str) -> dict[str, 
                    if c.get("kind") == "tinyassets.app-ui.v1"), None)
     if screen is None:
         return {"error": "app_ui_not_found"}
-    report = ui_preview.preview_public_component(screen)
+    report = ui_preview.preview_public_component(screen, universe_dir=_universe_dir(uid))
     name = "publication-" + hashlib.sha256(definition_id.encode()).hexdigest()[:32]
     report["screenshot"] = ui_preview.write_preview(_universe_dir(uid), name, report.pop("png"))
     return report

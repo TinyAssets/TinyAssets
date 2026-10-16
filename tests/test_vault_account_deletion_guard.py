@@ -24,7 +24,14 @@ RECORD = {"credential_type": "http", "service": "model:openrouter",
 
 
 @pytest.fixture
-def home(tmp_path):
+def data_root(tmp_path, monkeypatch):
+    # Production deletes on the one data root; the owner box binds there.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    return tmp_path
+
+
+@pytest.fixture
+def home(tmp_path, data_root):
     universe = tmp_path / HOME
     universe.mkdir()
     set_founder_home(tmp_path, founder_sub=OWNER, universe_id=HOME, platform_generated=True)

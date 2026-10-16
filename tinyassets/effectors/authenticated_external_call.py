@@ -925,9 +925,9 @@ def _read_connection_context(
         return None, None, "no_universe_authority"
     try:
         if principal in (f'universe:{universe_id}', f'command_center:{universe_id}'):
-            from tinyassets.role_scope import owner_principal
+            from tinyassets.broker.owner_identities import admitted_owner
 
-            principal = owner_principal(Path(data_root) / universe_id, actor=principal)
+            principal = admitted_owner(Path(data_root).resolve(), center=universe_id)
         grant, resource, _incarnation = authorized_connection(
             Path(data_root), principal=principal, command_center=universe_id,
             grant_id=grant_id, connection_id=connection_id)

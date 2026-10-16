@@ -112,8 +112,11 @@ class BoxExecutor:
     def handle(self) -> Any:
         return self._handle
 
-    def _start(self, op_id: str, argv: Sequence[str], stdin: bytes | None) -> Any:
+    def _start(self, op_id: str, argv: Sequence[str], stdin: bytes | None,
+               env: Mapping[str, str] | None = None) -> Any:
         kwargs: dict[str, Any] = {"cwd": self._cwd, "limits": self._limits}
+        if env:
+            kwargs["env"] = dict(env)
         if self.ta_bridge is not None and op_id in self._ta_executions:
             from tinyassets.ta_capabilities import MAX_REQUEST
 
@@ -270,7 +273,8 @@ class BoxExecutor:
         return bytes(output)
 
     async def run(self, op_id: str, argv: Sequence[str], *, stdin: bytes | None = None,
-                  wall_seconds: float, output_bytes: int = OUTPUT_BYTES) -> ExecOutcome:
+                  wall_seconds: float, output_bytes: int = OUTPUT_BYTES,
+                  env: Mapping[str, str] | None = None) -> ExecOutcome:
         """One execution; a timeout or a cancelled turn kills it in the box.
 
         Every blocking provider call runs on a thread of its own, never a
@@ -281,7 +285,7 @@ class BoxExecutor:
         """
         if not isinstance(op_id, str) or not op_id:
             raise ValueError("an op_id is required")
-        launch = _Launch(self, op_id, argv, stdin)
+        launch = _Launch(self, op_id, argv, stdin, env)
         try:
             exec_id = await _wait(launch.future)
         except asyncio.CancelledError:
@@ -363,16 +367,17 @@ class _Launch:
     """
 
     def __init__(self, executor: BoxExecutor, op_id: str, argv: Sequence[str],
-                 stdin: bytes | None) -> None:
+                 stdin: bytes | None, env: Mapping[str, str] | None = None) -> None:
         self._executor = executor
         self._lock = threading.Lock()
         self._abandoned = False
         self._exec_id: Any = None
         self._started = False
-        self.future = _in_thread(self._run, op_id, argv, stdin, slots=_BOX_CALL_SLOTS)
+        self.future = _in_thread(self._run, op_id, argv, stdin, env, slots=_BOX_CALL_SLOTS)
 
-    def _run(self, op_id: str, argv: Sequence[str], stdin: bytes | None) -> Any:
-        exec_id = self._executor._start(op_id, argv, stdin)
+    def _run(self, op_id: str, argv: Sequence[str], stdin: bytes | None,
+             env: Mapping[str, str] | None) -> Any:
+        exec_id = self._executor._start(op_id, argv, stdin, env)
         with self._lock:
             self._started, self._exec_id = True, exec_id
             abandoned = self._abandoned
@@ -580,7 +585,8 @@ class BoxTools:
             return _failed(outcome, DEFAULT_WALL_SECONDS, OUTPUT_BYTES)
         return f"edited {target}"
 
-    async def bash(self, op_id: str, command: str, timeout: float = 0) -> str:
+    async def bash(self, op_id: str, command: str, timeout: float = 0, *,
+                   env: Mapping[str, str] | None = None) -> str:
         if not (command or "").strip():
             return "error: a command is required"
         wall = float(timeout) if timeout and float(timeout) > 0 else DEFAULT_WALL_SECONDS
@@ -596,7 +602,7 @@ class BoxTools:
             argv, stdin = worker_argv(command, root=self._root, execution=op_id,
                                       extensions=extensions)
             self._exec._ta_executions.add(op_id)
-        outcome = await self._exec.run(op_id, argv, stdin=stdin, wall_seconds=wall)
+        outcome = await self._exec.run(op_id, argv, stdin=stdin, wall_seconds=wall, env=env)
         body = _text(outcome.output)
         if body and not body.endswith("\n"):
             body += "\n"

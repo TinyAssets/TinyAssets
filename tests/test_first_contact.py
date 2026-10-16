@@ -1206,7 +1206,9 @@ def test_unreadable_vault_never_claims_the_credential_is_missing(
 
     _login("founder-1")
     uid = _create_via_action(data_dir, monkeypatch)
-    credential_vault_path(data_dir / uid).write_text("{not json", encoding="utf-8")
+    vault = credential_vault_path(data_dir / uid)
+    vault.parent.mkdir(parents=True, exist_ok=True)
+    vault.write_text("{not json", encoding="utf-8")
     _engine_raises(monkeypatch, _exhausted())
 
     out = json.loads(converse(message="Hello"))

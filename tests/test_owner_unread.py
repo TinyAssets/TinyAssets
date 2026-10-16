@@ -92,10 +92,14 @@ def test_derived_pending_asks_use_the_same_durable_receipts(tmp_path, status):
 
 
 @pytest.mark.parametrize("rebind", [True, False])
-def test_account_deletion_removes_former_home_receipts_and_preserves_other_owner(tmp_path, rebind):
+def test_account_deletion_removes_former_home_receipts_and_preserves_other_owner(
+        tmp_path, rebind, monkeypatch):
     from tests.test_account_deletion import HOME_A, HOME_B, A, B, _seed_user
     from tinyassets.account_deletion import delete_account
     from tinyassets.storage import DB_FILENAME
+
+    # The owner box that deletion destroys is admitted on the data root.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
     for owner, home in ((A, HOME_A), (B, HOME_B)):
         root = _seed_user(tmp_path, owner, home)

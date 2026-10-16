@@ -347,8 +347,8 @@ def test_provider_spawn_sites_own_their_family_through_one_module():
     owned = (root / "providers/owned_process.py").read_text(
         encoding="utf-8", errors="replace",
     )
-    # The spawn point signals nothing: a provider runs in its owner's cell and
-    # teardown is revocation through the mapper's lifetime channel.
+    # The spawn point signals nothing: a provider runs in its owner's box and
+    # teardown is cancellation of that box execution, settled exactly once.
     signals = [
         node for node in ast.walk(ast.parse(owned))
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
@@ -356,12 +356,14 @@ def test_provider_spawn_sites_own_their_family_through_one_module():
         and getattr(node.func.value, "id", "") == "os"
     ]
     assert signals == [], "owned_process gained a direct signal"
-    assert "from tinyassets.role_provider_execution import spawn" in owned
-    assert "self.cell.revoke()" in owned
-    assert "self.cell.wait(timeout)" in owned
+    assert "from tinyassets.control_plane.native_launch import launcher" in owned
+    assert ("self._process.provider.cancel(self._process.handle, self._process.ident)"
+            in owned)
+    assert "await self._launch.close(self._process)" in owned
 
     # The contrast that made the original omission a defect, kept as evidence.
-    for owner in ("node_sandbox.py", "workspace_git.py"):
+    # (A code node now runs in the owner box, which owns its tree.)
+    for owner in ("workspace_git.py",):
         source = (root / owner).read_text(encoding="utf-8", errors="replace")
         assert any(token in source for token in group_tokens), (
             f"{owner} lost its process-group spawn -- that is its own "

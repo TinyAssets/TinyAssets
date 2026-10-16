@@ -31,21 +31,22 @@ def _write(base: Path, document) -> None:
 def test_a_fresh_data_dir_gets_the_layout_this_code_writes(tmp_path):
     # The marker also records the one-way moves this data has had, so a fresh
     # root is "already moved" -- it never had platform state in the wrong place.
+    # A root this image initialises is an owner-box root: it serves no other.
     moved = {"consents_outside_command_centers": "done"}
-    assert layout.check(tmp_path) == {"layout": 2, "state": "stable", "moves": moved}
-    assert json.loads((tmp_path / layout.MARKER).read_text(encoding="utf-8")) == {
-        "layout": 2, "state": "stable", "moves": moved,
-    }
+    fresh = {"layout": 2, "state": "stable", "box_layout": "owner-box", "moves": moved}
+    assert layout.check(tmp_path) == fresh
+    assert json.loads((tmp_path / layout.MARKER).read_text(encoding="utf-8")) == fresh
     # Idempotent, including the move: a second admission re-reads "done" and
     # does not run it again.
-    assert layout.check(tmp_path) == {"layout": 2, "state": "stable", "moves": moved}
+    assert layout.check(tmp_path) == fresh
 
 
 @pytest.mark.parametrize("document,reason", [
     ({"layout": 1, "state": "migrating"}, "did not finish"),
     ({"layout": 3, "state": "stable"}, "understands"),
     ({"state": "stable"}, "understands"),
-    ({"layout": 2, "state": "stable", "box_layout": "owner-box"}, "box_layout"),
+    ({"layout": 2, "state": "stable", "box_layout": "owner-split"}, "box_layout"),
+    ({"layout": 2, "state": "stable"}, "box_layout"),
     ("{not json", "not valid JSON"),
     ("[1]", "not a JSON object"),
 ])
@@ -149,6 +150,36 @@ def test_candidate_guard_rejects_old_image_after_owner_box_commit(tmp_path):
     assert subprocess.run(["bash", "-c", program], env=env, check=False).returncode != 0
     _write(tmp_path, {"layout": 2, "state": "stable"})
     assert subprocess.run(["bash", "-c", program], env=env, check=False).returncode == 0
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="fail-safe guard uses bash and flock; owner=c6-owner-box runs-in=linux-ci",
+)
+@pytest.mark.parametrize("cutover,allowed", [("1", True), ("0", False), ("", False)])
+def test_owner_box_image_passes_on_owner_split_only_for_a_forward_cutover(
+    tmp_path, cutover, allowed
+):
+    """A forward deploy reaches the gated box move; a restore or rollback never
+    moves data, so an owner-box-only image must not start on owner-split data."""
+    script = (REPO / "deploy" / "deploy_fail_safe.sh").read_text(encoding="utf-8")
+    match = re.search(r"^layout_allows_candidate\(\) \{.*?^\}\n", script, re.S | re.M)
+    assert match
+    docker = tmp_path / "docker"
+    docker.write_text(
+        '#!/bin/sh\nprintf \'%s\\n\' \'{"layouts":[1,2],"boxes":["owner-box"]}\'\n',
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    marker = tmp_path / layout.MARKER
+    _write(tmp_path, {"layout": 2, "state": "stable", "box_layout": "owner-split"})
+    call = f'layout_allows_candidate "{marker}" candidate {cutover}'.rstrip()
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+    result = subprocess.run(["bash", "-c", match.group(0) + call + "\n"], env=env, check=False)
+    assert (result.returncode == 0) is allowed
+    _write(tmp_path, {"layout": 2, "state": "migrating", "box_layout": "owner-split"})
+    result = subprocess.run(["bash", "-c", match.group(0) + call + "\n"], env=env, check=False)
+    assert result.returncode != 0
 
 
 def _bash_has_python3() -> bool:
@@ -292,7 +323,7 @@ def test_delayed_start_does_not_wait_for_admitted_process_lifetime(
     import threading
 
     if existing_marker:
-        _write(tmp_path, {"layout": 1, "state": "stable"})
+        _write(tmp_path, {"layout": 1, "state": "stable", "box_layout": "owner-box"})
     released, resume, finished = (threading.Event() for _ in range(3))
     real_unlock = layout._unlock
     errors = []

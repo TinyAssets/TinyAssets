@@ -325,6 +325,7 @@ RUN /opt/venv/bin/playwright install --with-deps --only-shell chromium &&\
     ls -d /opt/ms-playwright/chromium_headless_shell-*
 
 COPY --from=builder /build/tinyassets /app/tinyassets
+COPY deploy/box_project_readback.py /app/deploy/box_project_readback.py
 COPY --from=builder /build/domains /app/domains
 COPY --from=builder /build/pyproject.toml /app/pyproject.toml
 # Install the actual package metadata and entry points against /app. Dependencies
@@ -351,31 +352,14 @@ COPY models/ /app/models/
 COPY scripts/mcp_public_canary.py /app/scripts/mcp_public_canary.py
 COPY scripts/_canary_common.py /app/scripts/_canary_common.py
 
-# The workspace jail's acceptance proofs. They assert Linux-only, bwrap-only
-# behaviour that no developer box and no CI runner can answer, so they run
-# INSIDE the deployed container after a deploy:
-#
-#     docker exec <daemon> python /app/scripts/workspace_bwrap_oracle.py
-#
-# Shipped rather than copied in on the day: an acceptance check you have to
-# `docker cp` before you can run it is one that gets skipped. Stdlib-only and
-# read-only against a temp root under /tmp; it never touches /data.
-COPY scripts/workspace_bwrap_oracle.py /app/scripts/workspace_bwrap_oracle.py
-# Owner split (openspec/changes/per-role-uid-split). Every file on PID1's
-# privileged execution and import chain is root-owned 0555 outside /data, and
-# ta-chain.py verifies the whole chain (ancestors and link targets included)
-# before the bootstrap trusts it. ta-migrate.py is the one-time volume migration
-# (docs/ops/owner-split-cutover-runbook.md); the service never runs it.
+# The owner-box runtime (ADR-022): the daemon container starts unprivileged
+# as uid 1001 and serves only from owner boxes through boxhostd; the image
+# ships no launcher, mapper or cell. Every file on the entry and import chain
+# is root-owned 0555 outside /data, and ta-chain.py verifies the whole chain
+# (ancestors and link targets included) before the entry trusts it.
 COPY deploy/docker-entrypoint.sh /usr/local/libexec/ta-entry.sh
 COPY deploy/box_daemon_entry.py /usr/local/libexec/ta-box-entry.py
 COPY scripts/check_privileged_chain.py /usr/local/libexec/ta-chain.py
-COPY deploy/role_launcher.py /usr/local/libexec/ta-launch.py
-COPY deploy/role_owner_launcher.py /usr/local/libexec/ta-owner-launch.py
-COPY deploy/role_decoder.py /usr/local/libexec/ta-decoder.py
-COPY deploy/role_git.py /usr/local/libexec/ta-git.py
-COPY deploy/role_provision.py /usr/local/libexec/ta-provision.py
-COPY deploy/role_admission_contract.py /usr/local/libexec/ta-admission-contract.py
-COPY deploy/role_migrate.py /usr/local/libexec/ta-migrate.py
 COPY deploy/broker_main.py /app/broker_main.py
 
 ARG TINYASSETS_BUILD_SHA=unknown
@@ -401,11 +385,7 @@ RUN mkdir -p /data /home/tinyassets /var/lib/ta-broker /run/tinyassets-roles/bro
     chown -R root:root /app && \
     chmod -R a-w,a+rX /app && \
     chmod 0555 /app/broker_main.py /usr/local/libexec/ta-entry.sh \
-        /usr/local/libexec/ta-box-entry.py \
-        /usr/local/libexec/ta-chain.py /usr/local/libexec/ta-launch.py \
-        /usr/local/libexec/ta-owner-launch.py /usr/local/libexec/ta-decoder.py \
-        /usr/local/libexec/ta-git.py /usr/local/libexec/ta-provision.py /usr/local/libexec/ta-admission-contract.py \
-        /usr/local/libexec/ta-migrate.py && \
+        /usr/local/libexec/ta-box-entry.py /usr/local/libexec/ta-chain.py && \
     /opt/venv/bin/python -I -S -B /usr/local/libexec/ta-chain.py
 
 USER tinyassets
@@ -417,6 +397,6 @@ EXPOSE 8001
 # CMD in place.
 ENTRYPOINT ["/usr/local/libexec/ta-entry.sh"]
 
-# The marker selects one serving path. Before the P2b cutover this execs the
-# existing launcher; after it, only the unprivileged owner-box frontend runs.
+# The marker admits one serving path: the unprivileged owner-box frontend on a
+# committed owner-box layout. Anything else refuses loudly (exit 78).
 CMD ["/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-box-entry.py"]

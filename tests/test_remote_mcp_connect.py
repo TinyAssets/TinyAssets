@@ -121,7 +121,6 @@ def _backend(base, agent="main"):
 
 def _ta(monkeypatch, service, *argv):
     monkeypatch.setattr(ta_cli, "remote", lambda message: asyncio.run(service.dispatch(message)))
-    monkeypatch.setattr(ta_cli, "extensions", lambda _roots: {})
     return ta_cli.main(list(argv))
 
 

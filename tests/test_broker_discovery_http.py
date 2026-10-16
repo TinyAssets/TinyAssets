@@ -27,10 +27,10 @@ URL = "https://models.example.com/catalogue"
 
 @pytest.fixture
 def discovery(broker, tmp_path, monkeypatch):  # noqa: F811 - imported pytest fixture
-    from tinyassets import role_modes
+    from tinyassets.boxes import layout as box_layout
 
     # Same-uid protocol fixture; production-image probes use real gid 1102.
-    monkeypatch.setattr(role_modes, "BROKER_READ_GID", os.getgid())
+    monkeypatch.setattr(box_layout, "BROKER_READ_GID", os.getgid())
     path = tmp_path / "private" / "outbound.db"
     ledger = ConnectionLedger(path, data_root=tmp_path)
     ledger.create_connection(

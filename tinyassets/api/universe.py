@@ -71,7 +71,6 @@ from tinyassets.api.helpers import (
 from tinyassets.catalog import list_unreconciled_writes
 from tinyassets.ids import new_universe_id
 from tinyassets.ingestion.canon_io import iter_canon_files, read_canon_bytes, safe_canon_path
-from tinyassets.role_center_admission import ensure_center_dir as _ensure_center_dir
 from tinyassets.storage_accounting import StorageRefused
 from tinyassets.universe_bundle import seed_okf_bundle
 from tinyassets.universe_files import (
@@ -2866,20 +2865,6 @@ def _action_daemon_memory_status(
     return json.dumps(result, default=str)
 
 
-def _action_treasury_status(
-    universe_id: str = "",
-    limit: Any = 10,
-    **_kwargs: Any,
-) -> str:
-    from tinyassets.treasury import treasury_status
-
-    uid = _request_universe(universe_id)
-    try:
-        result = treasury_status(_base_path(), limit=int(limit))
-    except (ValueError, TypeError) as exc:
-        return json.dumps({"universe_id": uid, "error": str(exc)})
-    result["universe_id"] = uid
-    return json.dumps(result, default=str)
 
 
 # ---------------------------------------------------------------------------
@@ -2903,22 +2888,18 @@ def _non_public_goal_ids() -> set[str]:
 # Per-caller reasonable limits (R14 response-size). Overridable via `limit`.
 _OVERVIEW_DEFAULT_LIMITS = {
     "queue_top": 20,
-    "bids_top": 20,
-    "settlements_recent": 10,
     "gates_recent": 10,
     "activity_tail": 30,
 }
 # Absolute cap even when `limit=full` — prevents pathological responses.
 _OVERVIEW_ABSOLUTE_CAP = {
     "queue_top": 500,
-    "bids_top": 500,
-    "settlements_recent": 500,
     "gates_recent": 200,
     "activity_tail": 1000,
 }
 
 # R14 serialized-byte cap. Per-field caps above are necessary but not
-# sufficient: a dense queue + long activity_tail + many bids can still
+# sufficient: a dense queue + long activity_tail can still
 # blow past Claude.ai token limits even with each field individually
 # bounded. If the serialized response exceeds this threshold, trim in
 # priority order (see _OVERVIEW_TRIM_ORDER). Gates + dispatcher +
@@ -2929,15 +2910,13 @@ DAEMON_OVERVIEW_MAX_BYTES = 32_768
 # Trim priority when the byte cap fires. Each entry is
 # ``(key, subkey, keep_side)``:
 # - ``key``: top-level response field.
-# - ``subkey``: nested key (e.g. ``response["bids"]["recent"]``) or
+# - ``subkey``: nested key (e.g. ``response["queue"]["top"]``) or
 #   None for top-level lists.
 # - ``keep_side``: "head" keeps the front of the list (sorted
 #   descending — top-N); "tail" keeps the back (chronological —
 #   latest entries).
 _OVERVIEW_TRIM_ORDER = (
     ("activity_tail", None, "tail"),
-    ("settlements", "recent", "head"),
-    ("bids", "recent", "head"),
     ("queue", "top", "head"),
 )
 
@@ -3020,7 +2999,7 @@ def _action_daemon_overview(
 ) -> str:
     """Aggregated read-through per preflight §4.1 #1 (Phase H).
 
-    Composes queue + subscriptions + bids + settlements + gates +
+    Composes queue + gates +
     activity tail + run state into one response. 1s TTL cache keyed
     on (universe_id, limit, integrity-visibility class) keeps hot-path
     cost bounded without replaying admin-only diagnostics to readers.
@@ -3062,10 +3041,7 @@ def _action_daemon_overview(
             "config": {
                 "accept_external_requests": cfg.accept_external_requests,
                 "accept_goal_pool": cfg.accept_goal_pool,
-                "accept_paid_bids": cfg.accept_paid_bids,
                 "allow_opportunistic": cfg.allow_opportunistic,
-                "bid_coefficient": cfg.bid_coefficient,
-                "bid_term_cap": cfg.bid_term_cap,
             },
         }
     except Exception as exc:  # noqa: BLE001
@@ -3168,12 +3144,11 @@ def _action_daemon_overview(
 
 
 _VALID_TIER_KEYS = frozenset({
-    "external_requests", "goal_pool", "paid_bids", "opportunistic",
+    "external_requests", "goal_pool", "opportunistic",
 })
 _TIER_KEY_TO_CONFIG_FIELD = {
     "external_requests": "accept_external_requests",
     "goal_pool": "accept_goal_pool",
-    "paid_bids": "accept_paid_bids",
     "opportunistic": "allow_opportunistic",
 }
 
@@ -3225,7 +3200,6 @@ def _action_set_tier_config(
     existing[field_name] = bool(enabled)
 
     try:
-        _ensure_center_dir(udir)
         write_data_path(
             cfg_path,
             _yaml.safe_dump(existing, sort_keys=True, default_flow_style=False),
@@ -3326,7 +3300,6 @@ def _action_give_direction(
                 return json.dumps({"error": "anchor_json must be a JSON object."})
             anchor = parsed_anchor
 
-        _ensure_center_dir(udir)
         note = _add_note(
             udir,
             source="user",
@@ -3604,7 +3577,6 @@ def _action_set_premise(universe_id: str = "", text: str = "", **_kwargs: Any) -
         return json.dumps({"error": "Premise text cannot be empty."})
     text = _normalize_escaped_text(text)
     try:
-        _ensure_center_dir(udir)
         soul = write_universe_soul(
             udir, purpose=text, lineage="created-from-premise",
         )
@@ -4135,7 +4107,6 @@ def _action_control_daemon(
 
     if action == "pause":
         try:
-            _ensure_center_dir(udir)
             write_data_path(pause_path, datetime.now(timezone.utc).isoformat())
             return json.dumps({
                 "universe_id": uid,
@@ -4512,7 +4483,7 @@ def _action_create_universe(
     if udir.exists() and (udir / "soul.md").is_file():
         return json.dumps({"error": f"Command center '{uid}' already exists."})
 
-    from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
+    from tinyassets.boxes.layout import UNIVERSE_SIDECARS_DIR
 
     seed_sidecar_preexisted = (udir.parent / UNIVERSE_SIDECARS_DIR / udir.name).exists()
     founder = ""
@@ -4551,7 +4522,7 @@ def _action_create_universe(
         grant_universe_ownership(base, universe_id=uid, owner_id=founder)
 
         # Reserve, label, publish, log, bind; usable only once bound.
-        from tinyassets.role_center_admission import admit_center
+        from tinyassets.boxes.lifecycle import admit_center
 
         admit_center(base, principal=founder, center=uid)
         normalized_text = _normalize_escaped_text(text) if text.strip() else ""
@@ -5346,7 +5317,6 @@ UNIVERSE_ACTIONS: dict[str, Any] = {
     "daemon_memory_review": _action_daemon_memory_review,
     "daemon_memory_promote": _action_daemon_memory_promote,
     "daemon_memory_status": _action_daemon_memory_status,
-    "treasury_status": _action_treasury_status,
     "set_tier_config": _action_set_tier_config,
 }
 
@@ -5409,7 +5379,6 @@ def _universe_impl(
     inputs_json: str = "",
     node_def_id: str = "",
     required_llm_type: str = "",
-    bid: float = 0.0,
     tier: str = "",
     enabled: bool = False,
     tag: str = "",
@@ -5486,7 +5455,6 @@ def _universe_impl(
         "inputs_json": inputs_json,
         "node_def_id": node_def_id,
         "required_llm_type": required_llm_type,
-        "bid": bid,
         "tier": tier,
         "enabled": enabled,
         "tag": tag,

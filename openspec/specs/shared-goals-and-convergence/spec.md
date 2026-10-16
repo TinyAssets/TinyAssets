@@ -356,44 +356,6 @@ The system SHALL rank each Branch under a Goal by its highest active claim whose
 - **WHEN** a Goal has a custom selector Branch and either outcome-leaderboard surface is invoked
 - **THEN** the system computes the result from current ladder order and active claims without dispatching the selector
 
-### Requirement: Gate bonus attachment is paid-market-gated and node-only
-The system SHALL make gate-bonus attachment available only while both `GATES_ENABLED` and `TINYASSETS_PAID_MARKET=on` are enabled. `gates action=stake_bonus` MUST target an existing, active, currently unstaked claim, require a positive integer `bonus_stake` and non-empty `node_id`, and accept only `attachment_scope=node`; `attachment_scope=branch` and every other scope SHALL be rejected. Only the recorded claim owner or configured host identity SHALL be allowed to attach a bonus, and the immutable bonus staker recorded on the claim SHALL remain the claim owner even when the host initiates attachment. The stored `bonus_refund_after` timestamp SHALL be attachment metadata only; this surface SHALL NOT schedule or execute automatic expiry processing. Monetary release, refund, treasury allocation, and settlement behavior remain owned by the paid-market capability.
-
-#### Scenario: Eligible node attachment records bonus metadata
-- **WHEN** the claim owner or configured host submits a positive integer stake and non-empty node ID for an active unstaked claim while both flags are enabled
-- **THEN** the system records a node-scoped bonus, immutable claim-owner staker identity, node ID, and refund-after timestamp on the claim
-
-#### Scenario: Paid-market flag disables bonus attachment
-- **WHEN** `stake_bonus` is invoked while gates are enabled but `TINYASSETS_PAID_MARKET` is not `on`
-- **THEN** the system returns `status=not_available` without attaching a bonus
-
-#### Scenario: Branch attachment is not implemented
-- **WHEN** `stake_bonus` is invoked with `attachment_scope=branch`
-- **THEN** the system rejects the request and records no bonus attachment
-
-#### Scenario: Refund-after metadata does not trigger expiry
-- **WHEN** a node-scoped bonus has a stored `bonus_refund_after` timestamp
-- **THEN** the gate attachment surface retains the timestamp as metadata and does not automatically unstake, refund, release, or otherwise settle the bonus when that time passes
-
-### Requirement: Gate bonus resolution is single-winner but has current stranded states
-The gate surface SHALL allow only the immutable recorded staker to unstake an active bonus and SHALL allow the Goal owner, configured host, or an actor holding `retract_gate_claim` to release it with caller-supplied verdict `pass`, `fail`, or `skip` plus a non-empty `node_last_claimer`. It MUST clear the claim's active stake with a compare-and-swap transition before applying the paid-market settlement, so concurrent unstake or release attempts cannot settle the same stake twice. A pass SHALL delegate payout to the node's last claimer through the paid-market ledger, while fail or skip SHALL delegate refund to the immutable staker. The handler SHALL NOT invoke an evaluator to establish the supplied verdict. As built, a retracted staked claim rejects both unstake and release, and no automatic refund-after worker resolves that stranded attachment.
-
-#### Scenario: Concurrent resolution has one winner
-- **WHEN** two callers race to unstake or release the same active bonus
-- **THEN** exactly one compare-and-swap clears and settles the stake and the other observes that no active bonus remains
-
-#### Scenario: Passing release delegates payout to the node claimer
-- **WHEN** an authorized releaser supplies verdict `pass` and a node last-claimer for an active bonus
-- **THEN** the gate surface clears the attachment and delegates paid-market release to that node claimer under the ledger's settlement policy
-
-#### Scenario: Failing or skipped release refunds the immutable staker
-- **WHEN** an authorized releaser supplies verdict `fail` or `skip` and the required node last-claimer field
-- **THEN** the gate surface clears the attachment and delegates refund to the immutable recorded staker even though the node last-claimer value is unused for that refund
-
-#### Scenario: Retracted staked claims can remain stranded
-- **WHEN** a claim is retracted while it still carries an active bonus
-- **THEN** current unstake and release handlers reject resolution and no refund-after worker automatically clears or settles the attachment
-
 ### Requirement: ChatGPT Goal aliases normalize to the canonical Goal actions
 The Goal dispatch surface SHALL accept exactly four compatibility action names—`list_workflow_goals`, `search_workflow_goals`, `get_workflow_goal`, and `propose_workflow_goal`—and normalize them respectively to `list`, `search`, `get`, and `propose` before handler dispatch. The available-action catalog SHALL include both canonical actions and these aliases, and an alias SHALL inherit the canonical handler's validation, authorization, attribution, and response behavior rather than define a second implementation.
 

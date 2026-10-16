@@ -51,7 +51,7 @@ from typing import Any
 
 import yaml
 
-from tinyassets.boxes.provider import BoxError
+from tinyassets.boxes.provider import BoxError, BoxPathError
 from tinyassets.universe_files import (
     list_universe_dir,
     list_universe_entries,
@@ -452,10 +452,12 @@ def list_agent_files(universe_dir: Path, *, owner: str,
         directory = agent_directory(slug)
         try:
             entries = set(list_universe_dir(universe_dir, directory))
+        except BoxPathError:
+            continue  # A file or a link named like an agent is not one.
         except BoxError:
             raise
         except OSError:
-            continue  # A file or a link named like an agent is not one.
+            continue
         if not entries & {INSTRUCTIONS_FILE, SETTINGS_FILE}:
             continue
         agent = _agent_file(universe_dir, slug)

@@ -9,7 +9,6 @@ Naming: TinyAssets is the platform and the brand. A chatbot connected over MCP r
 Canonical surfaces:
 
 - Site: https://tinyassets.io
-- Token contract addresses: https://tinyassets.io/token/
 - Web app (sign in, connect a subscription, talk): https://tinyassets.io/app
 - MCP connector endpoint (the only public endpoint): https://tinyassets.io/mcp
 - Android app (closed test on Google Play, invited accounts): https://play.google.com/apps/testing/io.tinyassets.app

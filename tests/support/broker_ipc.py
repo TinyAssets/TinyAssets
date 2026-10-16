@@ -37,7 +37,7 @@ def discovery(in_process_broker, broker, tmp_path, monkeypatch):  # noqa: F811
     Takes ``in_process_broker`` so its own ``get_supervisor`` patch is applied
     after the autouse double's and is the one the test sees.
     """
-    from tinyassets import role_modes
+    from tinyassets.boxes import layout as role_modes
 
     # Same-uid protocol fixture; production-image probes use real gid 1102.
     monkeypatch.setattr(role_modes, "BROKER_READ_GID", os.getgid())

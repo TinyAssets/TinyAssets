@@ -4,7 +4,7 @@ import stat
 
 import pytest
 
-from tinyassets import role_modes
+from tinyassets.boxes import layout as role_modes
 from tinyassets.process_liveness import ALIVE, hold_liveness, owner_state
 from tinyassets.singleton_lock import release_singleton_lock
 

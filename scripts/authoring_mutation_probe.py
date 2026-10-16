@@ -225,7 +225,7 @@ MUTATIONS: list[tuple[str, str, str, str, list[str]]] = [
         "isolation-honesty",
         "tinyassets/authoring/sandbox.py",
         '        "os_isolated": False,',
-        '        "os_isolated": bool(probe.get("bwrap_available")),',
+        '        "os_isolated": bool(probe.get("box_available")),',
         [f"{SANDBOX}::test_positive_host_probe_cannot_admit_authoring_os_isolation"],
     ),
     (

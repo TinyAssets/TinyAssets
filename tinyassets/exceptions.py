@@ -395,3 +395,18 @@ class StorageCapExceeded(FantasyAuthorError):
     either handle the raise (e.g. rotate older artifacts first) or
     propagate it to operator paging.
     """
+
+
+class ProviderConfinementError(ProviderAuthorityHeldError):
+    """A provider launch was refused before anything ran: no admitted owner box.
+
+    Raised BEFORE any process exists, so it is never evidence about the
+    provider or its credential: the router re-raises it without a cooldown and
+    releases what it reserved. A subclass of :class:`ProviderAuthorityHeldError`
+    because that is the contract every caller already honours for "this call
+    may not run here": it is never folded into a fallback response.
+    """
+
+    failure_class = "provider_confinement_unavailable"
+    #: Every raise starts with this, so a stored error string stays classifiable.
+    MESSAGE = "provider launch refused: it cannot be confined to its owner box"
