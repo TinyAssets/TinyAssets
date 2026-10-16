@@ -43,10 +43,14 @@ class _Box:
         return SimpleNamespace(kind="file") if self.present else None
 
 
-def test_pause_action_controls_scheduler_dispatch(center, monkeypatch):
+@pytest.mark.parametrize("fresh", [False, True])
+def test_pause_action_controls_scheduler_dispatch(center, monkeypatch, fresh):
+    """``fresh``: an admitted center whose host stub does not exist yet."""
     import tinyassets.api.universe as api
     import tinyassets.automations as automations
 
+    if fresh:
+        center.rmdir()
     monkeypatch.setattr(api, "_request_universe", lambda _uid: center.name)
     monkeypatch.setattr(api, "_universe_dir", lambda _uid: center)
     monkeypatch.setattr(automations, "due_automations", lambda *a, **k: [
@@ -73,6 +77,7 @@ def test_pause_action_controls_scheduler_dispatch(center, monkeypatch):
                         lambda: (box, None))
 
     assert json.loads(_action_control_daemon(center.name, "pause"))["status"] == "signal_written"
+    assert center.is_dir() and (center / ".pause").is_file()
     assert consumer._submit_due_automations([center.name], None)[0] == 0
     assert recorder.count == 0
     assert json.loads(_action_control_daemon(center.name, "resume"))["status"] == "resumed"
@@ -120,6 +125,82 @@ def test_first_contact_uses_only_box_soul(center, monkeypatch):
     (center / "soul.md").write_text("stale host copy")
     box.present = False
     assert not home_is_complete(center.parent, center.name)
+
+
+def test_fresh_admitted_center_first_contact_sees_its_box_soul(center, monkeypatch):
+    import tinyassets.daemon_server as server
+
+    center.rmdir()
+    monkeypatch.setattr(server, "get_founder_home", lambda *a: center.name)
+    box = _Box(present=True)
+    monkeypatch.setattr("tinyassets.agent_loop.served_chat.configured_box_provider",
+                        lambda: (box, None))
+    assert home_is_complete(center.parent, center.name)
+    assert not center.exists()
+
+
+def test_unadmitted_center_has_no_soul_and_creates_nothing(center, monkeypatch):
+    from tinyassets.broker.owner_identities import CenterUnadmitted
+    from tinyassets.universe_soul import effect_authority_from_soul, soul_present
+
+    def refuse(root, *, center):
+        raise CenterUnadmitted(center)
+
+    monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner", refuse)
+    ghost = center.parent / "ghost"
+    assert not soul_present(ghost)
+    assert effect_authority_from_soul(ghost) == ()
+    assert json.loads(_action_control_daemon_for(ghost, monkeypatch, "pause"))["error"]
+    assert not ghost.exists()
+
+
+def _action_control_daemon_for(udir, monkeypatch, text):
+    import tinyassets.api.universe as api
+
+    monkeypatch.setattr(api, "_request_universe", lambda _uid: udir.name)
+    monkeypatch.setattr(api, "_universe_dir", lambda _uid: udir)
+    return _action_control_daemon(udir.name, text)
+
+
+def test_admitted_center_without_stub_enforces_box_soul_authority(center, monkeypatch, tmp_path):
+    """A stub absent during a move or restore must not erase the box soul's
+    declared authority, and an unreadable box must fail closed."""
+    from tinyassets.boxes.local import LocalBoxProvider
+    from tinyassets.universe_soul import (
+        UniverseSoul,
+        effect_authority_from_soul,
+        render_soul_markdown,
+    )
+
+    provider = LocalBoxProvider(boxes_root=tmp_path / "boxes", state_dir=tmp_path / "state",
+                                owner_of=lambda _center: "owner", allow_unisolated=True)
+    try:
+        handle = provider.bind(center.name, account_id="owner")
+        text = render_soul_markdown(UniverseSoul(
+            name="Box soul", effect_authority=("authenticated_external_call:github",)))
+        provider.write(handle, "seed-soul", "/cc/soul.md", text.encode(),
+                       max_bytes=len(text.encode()))
+        monkeypatch.setattr("tinyassets.agent_loop.served_chat.configured_box_provider",
+                            lambda: (provider, None))
+        center.rmdir()
+        assert effect_authority_from_soul(center) == ("authenticated_external_call:github",)
+
+        class Broken:
+            def bind(self, *a, **k):
+                return handle
+
+            def read(self, *a, **k):
+                raise OSError("box unavailable")
+
+            def stat(self, *a, **k):
+                raise OSError("box unavailable")
+
+        monkeypatch.setattr("tinyassets.agent_loop.served_chat.configured_box_provider",
+                            lambda: (Broken(), None))
+        with pytest.raises(OSError, match="failing closed"):
+            effect_authority_from_soul(center)
+    finally:
+        provider.close()
 
 
 def test_pinned_soul_reads_a_box_only_soul_without_a_session(center, monkeypatch, tmp_path):

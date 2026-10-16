@@ -32,4 +32,7 @@ def admit_center(data_root: str | Path, *, principal: str, center: str) -> int:
                            turn_id=f"center-admission-{generation}")
     if handle.command_center_id != center or handle.account_id != principal:
         raise RuntimeError("box host returned another center admission")
+    from tinyassets.center_platform_files import ensure_host_stub
+
+    ensure_host_stub(Path(data_root) / center)
     return generation

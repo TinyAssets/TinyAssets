@@ -13,26 +13,27 @@ class UnadmittedCenter(BoxAuthError):
     """No proven center to read; presence probes may report absent."""
 
 
-class MissingCenter(UnadmittedCenter):
-    """The center has no host stub at all: nothing exists to read."""
-
-
 def _access(universe_dir: Path):
     from tinyassets.agent_loop.served_chat import configured_box_provider
     from tinyassets.broker.owner_identities import CenterUnadmitted, admitted_owner
-    from tinyassets.center_platform_files import _directory
     from tinyassets.control_plane.binding import current_binding
 
     center = center_from_path(universe_dir)
     root = Path(os.path.abspath(universe_dir))
     # Preserve the caller's authority key: never resolve the final component.
-    # A bind may materialize a local box. Open the stub with O_NOFOLLOW before
-    # either the session-binding fast path or a broker/provider bind.
+    # Existence is broker admission, not the host stub, which may lag it; the
+    # admission check precedes any bind, so nothing materializes for an
+    # unproven center. A stub that IS there must be a real directory, never a
+    # link to another center.
+    from tinyassets.center_platform_files import _directory
+
     try:
         with _directory(root):
-            pass
-    except FileNotFoundError as exc:
-        raise MissingCenter(f"command center {center!r} has no host stub") from exc
+            pass  # opened without following: a link or non-directory refuses here
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise BoxAuthError(f"command center {center!r} host stub is not a directory") from exc
     binding = current_binding()
     if binding is not None and binding.universe_dir == root:
         binding.validate(binding.handle.account_id, root)

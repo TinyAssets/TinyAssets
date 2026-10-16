@@ -4107,7 +4107,10 @@ def _action_control_daemon(
     action = text.strip().lower()
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
-    if not udir.is_dir():
+    from tinyassets.center_platform_files import center_admitted
+
+    # Existence is broker admission; a fresh center's host stub may not exist yet.
+    if not center_admitted(udir):
         return json.dumps({"error": f"Command center '{uid}' not found."})
 
     if action == "pause":

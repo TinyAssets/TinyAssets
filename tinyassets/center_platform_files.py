@@ -41,9 +41,66 @@ def center_from_path(universe_dir: Path, *, base_path: Path | None = None) -> st
     return center
 
 
+def center_admitted(universe_dir: Path) -> bool:
+    """Whether the broker admits this center: the one truth of existence.
+
+    The host stub is platform scratch beside the box and may lag admission
+    (a fresh center, or a stub briefly absent during a move or restore).
+    """
+    from tinyassets.broker.owner_identities import CenterUnadmitted, admitted_owner
+
+    path = Path(universe_dir)
+    center = center_from_path(path)
+    try:
+        admitted_owner(Path(os.path.abspath(path.parent)), center=center)
+    except (PermissionError, CenterUnadmitted):
+        return False
+    return True
+
+
+def ensure_host_stub(universe_dir: Path) -> None:
+    """Create an admitted center's host stub; refuse a link or non-directory.
+
+    The one stub creator: admission calls it, and so does a host platform
+    write for an admitted center whose stub is missing.
+    """
+    path = Path(universe_dir)
+    center = center_from_path(path)
+    if fs._POSIX:
+        parent = fs.open_dir_nofollow(path.parent.absolute())
+        try:
+            try:
+                os.mkdir(center, 0o700, dir_fd=parent)
+            except FileExistsError:
+                pass
+            os.close(fs.open_subdir_nofollow(parent, center))  # refuses a link
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+        return
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        path.mkdir(mode=0o700)
+        return
+    if (stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0)
+            or not stat.S_ISDIR(info.st_mode)):
+        raise OSError(f"host center stub is not a directory: {path}")
+
+
 def _path(universe_dir: Path, name: str) -> Path:
     center_from_path(universe_dir)
     return Path(universe_dir) / name
+
+
+def _ensure_admitted_stub(universe_dir: Path) -> None:
+    """A host write for an admitted center restores a missing stub first."""
+    try:
+        Path(universe_dir).lstat()
+    except FileNotFoundError:
+        if not center_admitted(universe_dir):
+            raise
+        ensure_host_stub(universe_dir)
 
 
 @contextmanager
@@ -100,6 +157,7 @@ def _write(universe_dir: Path, name: str, data: bytes, *, append: bool = False) 
 
 def _write_chunks(universe_dir: Path, name: str, chunks, *, append: bool = False) -> None:
     """Append, or atomically replace, ``name`` from an iterable of byte chunks."""
+    _ensure_admitted_stub(universe_dir)
     if fs._POSIX:
         with _directory(universe_dir) as directory:
             try:

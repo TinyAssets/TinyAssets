@@ -392,15 +392,15 @@ def effect_authority_from_soul(universe_dir: Path) -> tuple[str, ...]:
     if soul is not None:
         return soul.effect_authority
     # The same box reader distinguishes absence from an unreadable existing soul.
-    from tinyassets.owner_box_reads import MissingCenter, box_stat
+    from tinyassets.owner_box_reads import UnadmittedCenter, box_stat
 
     try:
         if box_stat(universe_dir, SOUL_FILENAME) is None:
             return ()
-    except MissingCenter:
-        return ()  # no center exists at all, so it declares nothing
+    except UnadmittedCenter:
+        return ()  # the broker admits no such center, so it declares nothing
     except OSError:
-        pass  # refused admission or box error: absence unproven -> fail closed below
+        pass  # admitted but the box is unreadable: absence unproven -> fail closed
     raise OSError(
         "soul file exists but could not be read; failing closed for "
         "effect-authority resolution"
