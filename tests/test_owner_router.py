@@ -15,6 +15,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -245,6 +246,35 @@ def test_sse_first_chunk_and_disconnect_are_streamed(router, boxes):
     while not (boxes.roots["alice"] / "stream-closed").exists() and time.monotonic() < deadline:
         time.sleep(.01)
     assert (boxes.roots["alice"] / "stream-closed").read_text() == "closed"
+
+
+def test_shared_owner_session_authenticates_and_carries_protected_view_proof(router):
+    from tinyassets.onboarding import app_config, owner_sessions
+
+    cookie = "private-session-cookie"
+    identity = Identity(user_id="alice", username="alice", capabilities=["read", "list"])
+    with owner_sessions.store() as db:
+        db.execute("INSERT INTO owner_sessions VALUES (?,?,?)",
+                   (owner_sessions.hashed(cookie), json.dumps(asdict(identity)), time.time() + 60))
+    resource = urlsplit(app_config()["resource"])
+    headers = {"cookie": owner_sessions.COOKIE + "=" + cookie,
+               "origin": resource.scheme + "://" + resource.netloc}
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=router),
+                                     base_url="http://test") as client:
+            response = await client.post("/app/api/file", headers=headers,
+                                         json={"graph_id": "cc-alice", "path": "hello.txt"})
+            assert response.status_code == 200, response.text
+            assert response.text == "alice private data"
+            response = await client.post("/app/test-session", headers=headers, json={})
+            assert response.status_code == 200, response.text
+            assert response.json() == {"owner": "alice"}
+            refused = await client.post("/app/api/file", headers=headers | {
+                "origin": "https://foreign.example"}, json={})
+            assert refused.status_code == 401
+
+    asyncio.run(exercise())
 
 
 def test_hook_delivery_reaches_token_owners_real_socket(router, tmp_path, monkeypatch):

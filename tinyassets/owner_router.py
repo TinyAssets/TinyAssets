@@ -20,6 +20,12 @@ from starlette.responses import JSONResponse
 _HOP = {b"connection", b"keep-alive", b"proxy-authenticate", b"proxy-authorization",
         b"te", b"trailer", b"transfer-encoding", b"upgrade"}
 _TRUSTED = {b"x-owner", b"x-box-secret", b"x-owner-identity"}
+_SHARED_APP = {
+    "/app", "/app/client-error", "/app/token", "/app/native-sign-in",
+    "/app/owner-sign-in", "/app/owner-sign-in/complete", "/app/canary-sign-in",
+    "/app/oauth/client-metadata.json", "/app/ui-frame", "/app/sw.js",
+}
+_SHARED_APP_PREFIXES = ("/app/billing/", "/app/run/", "/app/m/", "/app/model-callback/")
 
 
 def hook_token(path: str) -> str | None:
@@ -33,8 +39,10 @@ def hook_token(path: str) -> str | None:
 
 def forwarded_path(path: str) -> bool:
     """Owner doors are removed from the shared route table, not shadowed."""
+    if path.startswith("/app/"):
+        return path not in _SHARED_APP and not path.startswith(_SHARED_APP_PREFIXES)
     return (path in {"/mcp", "/mcp/", "/mcp/events", "/api"}
-            or path.startswith(("/app/api/", "/api/", "/hooks/inbound/", "/mcp/hooks/")))
+            or path.startswith(("/api/", "/hooks/inbound/", "/mcp/hooks/")))
 
 
 @dataclass(frozen=True)
@@ -83,6 +91,17 @@ class OwnerRouter:
         if identity is None:
             return await JSONResponse({"error": "not_found"}, status_code=404)(
                 scope, receive, send)
+        if scope["path"].startswith("/app/"):
+            from tinyassets.onboarding.owner_sessions import COOKIE, lookup
+
+            session = await run_in_threadpool(lookup, Request(scope).cookies.get(COOKIE, ""))
+            if session is not None:
+                # Protected-view proof is shared session state; its consumer in
+                # the box retains the existing exact-origin/expiry checks.
+                from dataclasses import replace
+
+                identity = replace(identity, metadata={**identity.metadata,
+                                                       "router_owner_session": session})
         try:
             route = await run_in_threadpool(self.resolver, identity.user_id)
         except LookupError:

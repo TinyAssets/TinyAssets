@@ -9,9 +9,9 @@ import pytest
 from starlette.testclient import TestClient
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.owner_app_fixture import create_owner_app as create_streamable_http_app
 from tinyassets.auth.middleware import set_provider
 from tinyassets.auth.provider import DevAuthProvider, OptionalOAuthProvider
-from tinyassets.universe_server import create_streamable_http_app
 
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
 

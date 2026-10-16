@@ -95,7 +95,16 @@ def require(request, *, owner=None, optional=False):
     origin = urlsplit(app_config()["resource"])
     if request.headers.get("origin") != f"{origin.scheme}://{origin.netloc}":
         raise PermissionError("Exact protected origin required.")
-    session = lookup(getattr(request, "cookies", {}).get(COOKIE, ""))
+    from tinyassets.auth.middleware import current_identity_or_none
+    from tinyassets.owner_runtime import current
+
+    identity = current_identity_or_none()
+    if current() is not None:
+        session = identity.metadata.get("router_owner_session") if identity is not None else None
+        if session is not None and session["expires_at"] <= time.time():
+            session = None
+    else:
+        session = lookup(getattr(request, "cookies", {}).get(COOKIE, ""))
     if session is None and optional:
         return None
     if session is None:

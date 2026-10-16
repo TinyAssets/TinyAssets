@@ -32,6 +32,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.owner_app_fixture import create_owner_app
 from tests.test_agent_native_journal import begin_native
 from tests.test_agent_turn_journal import (
     begin,
@@ -595,7 +596,7 @@ def test_the_serving_lifespan_settles_the_orphan_before_anything_can_read_it(
     monkeypatch.setattr(us, "start_scheduler_for_serving", lambda: True)
     monkeypatch.setattr(us, "stop_scheduler_for_serving", lambda: None)
 
-    with TestClient(us.create_streamable_http_app()):
+    with TestClient(create_owner_app()):
         pass
 
     assert journal.get("owner", "home", turn.turn_id).state == "held_native_unknown"

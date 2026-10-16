@@ -11,6 +11,7 @@ from starlette.testclient import TestClient
 
 from tests.fixtures.deploy_ingress_process import FixtureAuth, policy, provision
 from tests.fixtures.deploy_traffic_acceptance import SCOPE, SEND_ID
+from tests.owner_app_fixture import create_owner_app
 from tinyassets.ingress import AppAcceptance
 from tinyassets.storage import db_path
 
@@ -31,14 +32,13 @@ def headers(mode="accept-v1", token="fixture-token"):
 
 @pytest.fixture
 def rig(tmp_path, monkeypatch):
-    from tinyassets import universe_server
 
     provision(tmp_path)
     monkeypatch.setattr("tinyassets.auth.middleware._provider", FixtureAuth())
     monkeypatch.setattr("tinyassets.origin_admission.cached_process_is_cloud_admitted",
                         lambda: True)
     adapter = AppAcceptance(tmp_path / "runtime", tmp_path / "ingress", admission_policy=policy)
-    app = universe_server.create_streamable_http_app(ingress=adapter)
+    app = create_owner_app(ingress=adapter)
     # No lifespan: no execution owners, reconciliation or schedulers in ingress.
     return TestClient(app), adapter, tmp_path
 
@@ -122,12 +122,11 @@ def test_auth_size_and_disk_errors_never_acknowledge(rig, monkeypatch):
 
 
 def test_disabled_adapter_and_legacy_passthrough(rig):
-    from tinyassets import universe_server
 
     async def probe(request):
         return Response(status_code=204)
 
-    app = universe_server.create_streamable_http_app()
+    app = create_owner_app()
     app.routes.insert(0, Route("/fixture-probe", probe))
     client = TestClient(app)
     assert client.post("/mcp", content=wire(), headers=headers()).status_code == 503

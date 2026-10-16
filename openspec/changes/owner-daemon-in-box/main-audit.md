@@ -2,7 +2,7 @@
 
 ## Slice 2 implementation follow-up (2026-10-16)
 
-The authenticated router now forwards the owner door, MCP transport, REST owner
+The authenticated router now forwards owner-facing app routes, MCP transport, REST owner
 handlers and inbound hooks through one streaming Unix HTTP proxy. Its only box
 lookup is the fenced broker `OWNER_BOX_ROUTE` operation; reservations without a
 live admission refuse. The broker persists and rotates per-box secrets, and

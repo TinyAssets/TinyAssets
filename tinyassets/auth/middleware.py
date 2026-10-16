@@ -1260,7 +1260,34 @@ class AuthContextMiddleware:
             # to the run by the handler from the hook row, never from this request.
             is_hook_route = _inbound_hooks_enabled() and _is_inbound_hook_path(path)
             if trusted is None and not canary_authorized and not is_hook_route:
-                auth_middleware(token)
+                session_identity = None
+                if self.router and not token and path.startswith("/app/"):
+                    from starlette.concurrency import run_in_threadpool
+                    from starlette.requests import Request
+
+                    from tinyassets.onboarding import owner_sessions
+                    from tinyassets.owner_router import forwarded_path
+
+                    if forwarded_path(path):
+                        request = Request(scope)
+                        if method in {"GET", "HEAD"}:
+                            session = await run_in_threadpool(
+                                owner_sessions.lookup,
+                                request.cookies.get(owner_sessions.COOKIE, ""))
+                        else:
+                            try:
+                                session = await run_in_threadpool(
+                                    owner_sessions.require, request, optional=True)
+                            except PermissionError:
+                                session = None
+                        if session is not None:
+                            session_identity = Identity(**json.loads(session["identity_json"]))
+                if session_identity is not None:
+                    _current_identity.set(session_identity)
+                    _current_bearer_present.set(True)
+                    _current_request_boundary_id.set(f"request_boundary_{secrets.token_hex(32)}")
+                else:
+                    auth_middleware(token)
             identity = _current_identity.get()
             if (not self.router and identity is not None
                     and identity.metadata.get("outside_origin") is not None

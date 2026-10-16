@@ -52,9 +52,17 @@ def main():
         return JSONResponse({"owner": current_identity().user_id,
                              "payload": (await request.body()).decode()}, status_code=202)
 
+    async def protected_session(request):
+        from tinyassets.auth.middleware import current_identity
+        from tinyassets.onboarding.owner_sessions import require
+
+        proof = require(request, owner=current_identity().user_id)
+        return JSONResponse({"owner": json.loads(proof["identity_json"])["user_id"]})
+
     # Transport probes supplement the production file/MCP/REST handlers above.
     app.routes.insert(0, Route("/app/api/test-stream", stream, methods=["GET"]))
     app.routes.insert(0, Route("/hooks/inbound/{token}", delivery, methods=["POST"]))
+    app.routes.insert(0, Route("/app/test-session", protected_session, methods=["POST"]))
     # Use the real MCP transport lifespan; no model calls or host services needed.
     uvicorn.run(app, uds=str(socket), log_level="warning")
 

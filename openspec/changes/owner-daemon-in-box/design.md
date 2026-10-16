@@ -67,10 +67,11 @@ adding a check in shared code.
 - **Socket.** The single `resolve_box` seam uses `TINYASSETS_BOXES_RUN/<broker uid>/app.sock` (default `/run/boxhostd`); slice 4 adds waking there without changing route handlers.
 - **Secret.** Admission mints a 256-bit per-owner secret in the broker's private identity database; explicit rotation replaces it, and owner startup requires `--secret-file`, whose value is checked with `hmac.compare_digest` on every request.
 - **Identity.** The router replaces caller-supplied `X-Owner`, `X-Box-Secret` and `X-Owner-Identity`; the last carries the existing authenticated identity and capability metadata, while public bearer/cookie credentials are removed before forwarding.
+- **Sessions.** Existing protected-owner cookies resolve only through the router session map; cookie-authenticated mutations retain exact-origin JSON admission, and the verified protected-view proof travels with the authenticated identity for box-local consumers.
 - **Placement.** Router authentication resolves credentials only; MCP payload checks, outside capability admission and connection receipts run inside the owner daemon, and router logging never buffers owner payloads.
 - **Hook map.** The router's `.hook-owners.sqlite3` contains only token digests and owners; the migration seeds existing digests and slice 3 supplies box publication/revocation over the shared-state broker seam, while payload/delivery rows remain inside the box.
 - **Startup.** The shared entrypoint no longer starts owner recovery, engine endpoints, ticks or storage initialization and refuses direct SSE/stdio serving; owner recovery moved into the existing owner lifespan.
-- **Routes.** `/app/api/*`, `/api` and descendants, MCP transport `/mcp[/]` and `/mcp/events`, and `/hooks/inbound/<token>` (plus the existing `/mcp/hooks/<token>`) share the forwarder; discovery, sign-in/OAuth, pulse, published listing reads and billing retain router handlers.
+- **Routes.** All owner-facing `/app/*` routes (including `/app/api/*`, home, chat, uploads and preferences), `/api` and descendants, MCP transport `/mcp[/]` and `/mcp/events`, and `/hooks/inbound/<token>` (plus the existing `/mcp/hooks/<token>`) share the forwarder; discovery, sign-in/OAuth, pulse, published listing reads and billing retain router handlers.
 
 ## D3. Lifecycle (boxhostd)
 

@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.owner_app_fixture import create_owner_app
 from tinyassets import runs, workspace_pool
 
 GIB = 1024 ** 3
@@ -675,7 +676,7 @@ def test_http_application_lifespan_stops_workspace_sweepers(
 
     monkeypatch.setattr(universe_server, "stop_workspace_sweepers_for_serving", _stop)
 
-    with TestClient(universe_server.create_streamable_http_app()):
+    with TestClient(create_owner_app()):
         lifecycle.append("serving")
 
     assert lifecycle == [
