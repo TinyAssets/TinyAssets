@@ -205,6 +205,33 @@ def read_ledger(universe_dir: Path) -> bytes | None:
     return _read(universe_dir, LEDGER)
 
 
+def iter_ledger_lines(universe_dir: Path):
+    """Scan any size ledger with at most one bounded row in memory.
+
+    The caller holds the ledger lock. Keep the descriptor pinned and refuse
+    links/special files just as the bounded whole-file reader does.
+    """
+    try:
+        if fs._POSIX:
+            with _directory(universe_dir) as directory:
+                fd = os.open(LEDGER, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+                             | os.O_NONBLOCK, dir_fd=directory)
+        else:
+            path = _lstat_nofollow_windows(
+                Path(universe_dir).parent, f"{center_from_path(universe_dir)}/{LEDGER}")
+            fd = os.open(path, os.O_RDONLY | os.O_BINARY)
+    except FileNotFoundError:
+        return
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise OSError("invalid host ledger")
+        while line := stream.readline(16 * 1024 * 1024 + 1):
+            if len(line) > 16 * 1024 * 1024:
+                raise OSError("host ledger row exceeds 16 MiB")
+            yield line
+
+
 def write_ledger(universe_dir: Path, data: bytes, *, append: bool = False) -> None:
     _write(universe_dir, LEDGER, data, append=append)
 

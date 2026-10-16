@@ -59,6 +59,12 @@ class TestBasePath:
 # ---------------------------------------------------------------------------
 
 class TestUniverseDir:
+    @pytest.mark.parametrize("name", ["", ".", "..", "a/../b", "a/b", "a\\b"])
+    def test_authority_key_cannot_be_normalized(self, tmp_path, monkeypatch, name):
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        with pytest.raises(ValueError, match="Invalid universe_id"):
+            _universe_dir(name)
+
     def test_returns_child_of_base(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         result = _universe_dir("my-universe")

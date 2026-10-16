@@ -34,6 +34,7 @@ from tinyassets.api.helpers import (
     _scoped_wiki_root,
     _universe_dir,
     _wiki_drafts_dir,
+    _wiki_file_stat,
     _wiki_pages_dir,
     _wiki_root,
 )
@@ -243,7 +244,7 @@ def _resolve_page(name: str) -> Path | None:
         for public_root in (_wiki_pages_dir(), _wiki_drafts_dir()):
             if not candidate.is_relative_to(public_root):
                 continue
-            return candidate if candidate.is_file() else None
+            return candidate if _wiki_file_stat(candidate) is not None else None
         return None
 
     clean = name.removesuffix(".md")
@@ -254,12 +255,12 @@ def _resolve_page(name: str) -> Path | None:
     }
     if clean.lower() in specials:
         p = specials[clean.lower()]
-        return p if p.exists() else None
+        return p if _wiki_file_stat(p) is not None else None
 
     for base_dir in [_wiki_pages_dir(), _wiki_drafts_dir()]:
         for sub in _WIKI_CATEGORIES:
             fp = base_dir / sub / (clean + ".md")
-            if fp.exists():
+            if _wiki_file_stat(fp) is not None:
                 return fp
 
     needle = clean.lower().replace("-", "").replace("_", "").replace(" ", "")
@@ -334,7 +335,10 @@ def _page_updated_at(path: Path, meta: dict[str, str]) -> datetime:
     parsed = _parse_wiki_timestamp(meta.get("updated", ""))
     if parsed is not None:
         return parsed
-    return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    info = _wiki_file_stat(path)
+    if info is None:
+        raise FileNotFoundError(path)
+    return datetime.fromtimestamp(info.mtime, tz=timezone.utc)
 
 
 def _wiki_read_terms(
@@ -2775,12 +2779,12 @@ def wiki(
             ),
         })
 
-    # Task #6 — scaffold the tree on first call so fresh deploys
-    # (empty /data/wiki) don't error on read/list/search/lint. Idempotent.
+    # Reads must work without a session binding and must never create content.
 
     center_scoped = bool(target_universe_id)
     try:
-        _ensure_wiki_scaffold(wiki_root, center_scoped=center_scoped)
+        if action in WIKI_WRITE_ACTIONS:
+            _ensure_wiki_scaffold(wiki_root, center_scoped=center_scoped)
     except UniverseFileError as exc:
         # UniverseFileError is an OSError. A command-center root that
         # admission has not published is not a permissions failure, and
@@ -2814,6 +2818,8 @@ def wiki(
     else:
         wiki_present = wiki_root.is_dir()
     if not wiki_present:
+        if action == "read" and page:
+            return json.dumps({"error": f"Page not found: {page}"})
         return json.dumps({
             "error": f"Wiki not found at {wiki_root}.",
             "hint": (

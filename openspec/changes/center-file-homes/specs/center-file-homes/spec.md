@@ -49,3 +49,13 @@ Host helpers SHALL accept the caller's universe path/base, validate a single saf
 #### Scenario: Worker uses an explicit base
 - **WHEN** a worker uses a base other than global data_dir
 - **THEN** pause and heartbeat operations use the worker's base; missing centers do not fail reads.
+
+#### Scenario: A host center stub links to another center
+- **WHEN** a request names A whose host stub links to B
+- **THEN** box reads and host writes refuse before binding; the authorization key is never resolved into B.
+
+### Requirement: Reads do not scaffold
+Page reads SHALL use box content without a session binding and SHALL NOT scaffold or write. An absent page or wiki SHALL return a clean not-found response. Inspect SHALL route notes through the box and report a refused notes field as null with an unavailable reason while preserving the rest of the response.
+
+### Requirement: Ledger growth does not block recording
+Recording SHALL check duplicate IDs across the entire ledger with bounded memory, independent of total file size. IDs before any tail window SHALL remain protected.

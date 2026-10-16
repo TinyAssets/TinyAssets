@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -43,6 +44,7 @@ _WIKI_ROOT_OVERRIDE: ContextVar[Path | None] = ContextVar(
     "workflow_wiki_root_override",
     default=None,
 )
+_WIKI_CENTER: ContextVar[Path | None] = ContextVar("wiki_center", default=None)
 
 
 def _base_path() -> Path:
@@ -59,11 +61,23 @@ def _base_path() -> Path:
 
 
 def _universe_dir(universe_id: str) -> Path:
-    """Resolve a specific universe directory with path-traversal guard."""
+    """Keep the requested authority key; refuse traversal and linked centers."""
+    from tinyassets.center_platform_files import _center
+
     base = _base_path()
-    result = (base / universe_id).resolve()
-    if not result.is_relative_to(base):
+    try:
+        _center(universe_id)
+    except ValueError as exc:
+        raise ValueError(f"Invalid universe_id: {universe_id}") from exc
+    result = base / universe_id
+    if result.name != universe_id or result.parent != base:
         raise ValueError(f"Invalid universe_id: {universe_id}")
+    try:
+        info = result.lstat()
+    except FileNotFoundError:
+        return result
+    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
+        raise ValueError(f"Invalid universe_id: {universe_id}: linked center")
     return result
 
 
@@ -281,7 +295,17 @@ def _read_text(path: Path, default: str = "", *, errors: str = "strict") -> str:
         return _read_platform_text(path, default, errors)
     from tinyassets.universe_files import is_data_path, read_data_path
 
-    if is_data_path(path):
+    if (center := _WIKI_CENTER.get()) is not None:
+        from tinyassets.owner_box_reads import box_read
+
+        try:
+            data = box_read(center, path.relative_to(center).as_posix(),
+                            max_bytes=MAX_UNIVERSE_FILE_BYTES)
+        except FileNotFoundError:
+            return default
+        except OSError as exc:
+            raise UniverseFileError(str(exc)) from exc
+    elif is_data_path(path):
         # Under the data dir: walked from the data root, so a wiki ROOT that
         # is (or was swapped for) a link is refused too, not just a page.
         data = read_data_path(path, max_bytes=MAX_UNIVERSE_FILE_BYTES)
@@ -340,10 +364,12 @@ def _scoped_wiki_root(root: Path, *, center_scoped: bool = False) -> Iterator[No
     if linked:
         raise UniverseFileError(f"the wiki root {root.name!r} is a link; nothing was opened")
     token = _WIKI_ROOT_OVERRIDE.set(root if root.is_absolute() else root.absolute())
+    center_token = _WIKI_CENTER.set(root.parent if center_scoped else None)
     try:
         yield
     finally:
         _WIKI_ROOT_OVERRIDE.reset(token)
+        _WIKI_CENTER.reset(center_token)
 
 
 def _wiki_pages_dir() -> Path:
@@ -356,11 +382,49 @@ def _wiki_drafts_dir() -> Path:
 
 def _find_all_pages(directory: Path) -> list[Path]:
     """Recursively find all .md files under a directory."""
+    if (center := _WIKI_CENTER.get()) is not None:
+        from tinyassets.owner_box_reads import box_list, box_stat
+
+        relative = directory.relative_to(center).as_posix()
+        info = box_stat(center, relative)
+        if info is None or info.kind != "dir":
+            return []
+        pending, pages = [relative], []
+        while pending:
+            folder = pending.pop()
+            for entry in box_list(center, folder):
+                child = f"{folder}/{entry.name}"
+                if entry.kind == "dir":
+                    pending.append(child)
+                elif entry.kind == "file" and entry.name.endswith(".md"):
+                    pages.append(center / child)
+        return sorted(pages)
     if not directory.is_dir():
         return []
     return sorted(
         p for p in directory.rglob("*.md") if not p.is_symlink() and p.is_file()
     )
+
+
+def _wiki_file_stat(path: Path):
+    """File metadata from the scoped box, or the shared host wiki."""
+    from tinyassets.boxes.provider import FileStat
+
+    if (center := _WIKI_CENTER.get()) is not None:
+        from tinyassets.owner_box_reads import box_stat
+
+        info = box_stat(center, path.relative_to(center).as_posix())
+        if info is not None and info.kind not in {"file", "dir"}:
+            from tinyassets.universe_files import UniverseFileError
+
+            raise UniverseFileError(f"wiki page {path.name!r} is not a regular file")
+        return info if info is not None and info.kind == "file" else None
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        return None
+    return FileStat(str(path), "file", info.st_size, info.st_mtime) \
+        if stat.S_ISREG(info.st_mode) else None
 
 
 __all__ = [

@@ -455,18 +455,15 @@ class TestWikiLint:
 class TestWikiDispatch:
 
     def test_wiki_missing_root_auto_scaffolds(self, monkeypatch, tmp_path):
-        """Post-Task-#6: a nonexistent wiki root auto-scaffolds on first
-        call and returns the empty-wiki list rather than an error.
-
-        Pre-#6 contract was ``{"error": "Wiki not found at ..."}``. The
-        droplet-seeding task flipped this so fresh deploys (empty
-        ``/data/wiki``) don't face a broken read path — the scaffold
-        writes pages/, drafts/, raw/, log/, plus anchor ``index.md`` /
-        ``WIKI.md`` / ``log.md`` files.
-        """
+        """Only a write dispatch scaffolds; subsequent reads see the empty tree."""
         root = tmp_path / "nonexistent"
         assert not root.exists()
         monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(root))
+        missing = json.loads(wiki("list"))
+        assert "Wiki not found" in missing["error"]
+        assert not root.exists()
+        # Even an incomplete write request initializes its destination.
+        assert "error" in json.loads(wiki("write"))
         result = json.loads(wiki("list"))
         assert "error" not in result, (
             f"wiki list errored instead of auto-scaffolding: {result!r}"

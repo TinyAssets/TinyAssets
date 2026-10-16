@@ -1,77 +1,56 @@
-# Center file homes: round 3
+# Center file homes: round 4
 
-## Reader map
+All changes remain uncommitted on `conv/c6-host-box-split`. The incoming
+`box_read_yaml` / `BoxConfigInvalid` queue-policy fix and its regression remain intact.
 
-| Readers | Authoritative home and identity |
-|---|---|
-| Pause, supervisor heartbeats, auto-ship ledger/lock | HOST via `center_platform_files`, anchored to the caller's path; missing center reads empty. |
-| Soul/presence, branch loop dependencies, file browser, brain/package/prompt/canon/output/config/wiki readers | BOX via `owner_box_reads`: matching admitted session, otherwise broker `admitted_owner`; no actor or `universe_owner` threading. Missing admission/stub never binds or materializes a box. |
-| Dispatcher configuration, activity log, status snapshot and their metadata | BOX; `.runtime_status.json` remains HOST. Single-center refusals propagate or return explicit error envelopes. |
-| Universe listing | No box operations; box-derived fields are null with `unavailable_reason` directing the caller to inspect/status. |
-| Branch dependency scan | Per-center refusal is explicit (`loop_branch_def_id: null`, `unavailable_reason`); scanning continues and deletion remains blocked. |
+## Findings and proof
 
-`boxes/layout.py` owns the disjoint file-home sets; the guard includes the shared box helpers. Existing authorization/visibility gates remain separate from admission. Story/knowledge database readers, migration, account deletion, OKF and deployment are outside this lane.
+| Item | Change | Regression |
+|---|---|---|
+| 0 | Inventory classifies dispatcher configuration and status as user content; both original cases and all other assertions remain. | `test_command_center_inventory.py` classification and read-only inventory tests |
+| 1 | `_universe_dir` validates the requested name lexically and refuses a linked final component. `_access` opens the stub without following links before either binding path; host writes retain the descriptor-based guard. | `test_owner_box_read_routes.py::test_linked_center_refused_before_any_box_bind_or_read` and `test_linked_center_control_daemon_never_writes_target` (ACL dispatch for pause/status/premise/inspect); helper traversal tests |
+| 2 | Reads never scaffold. Scoped page lookup, contents, enumeration and metadata use the owner box without a session binding. Missing pages retain the page-not-found response. | `test_read_page_without_binding_reads_box_and_never_scaffolds`; original `test_wiki_missing_root_auto_scaffolds` now exercises write-triggered scaffolding and asserts reads write nothing |
+| 3 | Notes use the box; a refused notes field becomes null with a field-specific unavailable reason. The AST heuristic catches literal MOVED names in host-wrapper arguments, including joined paths. The remaining activity-log wrapper in `api/runs.py` is box-routed. | `test_inspect_notes_use_box_and_isolate_unavailable_field`; `test_indirect_host_reads_are_rejected` |
+| 4 | Recording streams bounded rows through a pinned, link-refusing descriptor instead of reading the whole ledger. Duplicate detection covers all historical IDs, not just the tail. | `test_record_streams_past_old_size_cap_and_rejects_old_and_new_duplicates` (18+ MiB ledger, old and newly appended IDs) |
+
+The notes test separately proves an unbound notes read and inspect's field-level
+refusal handling. Other legacy inspect reads still require a session binding
+(`api/universe.py:1173`, `work_targets.json`); those names are outside the MOVED set.
+The ledger scan bounds each row to 16 MiB; existing whole-ledger read/update bounds
+are unchanged. Unbound engine hook middleware now skips hooks when there is no
+center/actor destination, preserving the real server's retired-name refusal.
 
 ## Final validation
 
-One final Linux invocation: **1,578 passed, 0 failed, 0 errors, 0 skipped** across 49 files (328.24 seconds). Three existing `record_property`/JUnit-format warnings in `test_converse_turn_cost.py`.
+One final Linux invocation across **80 files: 2,662 passed, 0 failed, 0 errors,
+0 skipped**, in 408.55 seconds. Seven warnings: six LanceDB deprecations and one
+request-budget finalizer warning about an unavailable accounting broker.
 
-```text
-python scripts/linux_oracle.py --out .pytest_cache/r3-final -- -q <files.txt entries> --tb=short --junitxml=/out/results.xml
+The selection includes all 43 test files changed against `origin/main`, every
+`read_page` match, and the affected helper, scheduler, hook and bounded-read tests:
+
+```powershell
+$tests = @(git diff origin/main --name-only -- 'tests/test_*.py')
+$tests += @(rg -l 'read_page' tests --glob 'test_*.py' | ForEach-Object { $_.Replace('\', '/') })
+$tests += @(
+    'tests/test_control_plane_inventory.py', 'tests/test_command_center_inventory.py',
+    'tests/test_api_helpers.py', 'tests/test_api_runs.py',
+    'tests/test_private_by_default.py', 'tests/test_auto_ship_ledger.py',
+    'tests/test_a_universe_needs_an_owner.py', 'tests/test_connector_bounded_reads.py',
+    'tests/test_first_contact.py', 'tests/test_storage_utilization_universe.py',
+    'tests/test_supervisor_liveness.py', 'tests/test_queue_policy_retired_market.py',
+    'tests/test_remote_box_extensions.py', 'tests/test_universe_file_reads_are_bounded.py'
+)
+$tests = @($tests | Sort-Object -Unique)
+python scripts/linux_oracle.py -- -q --no-header -p no:cacheprovider @tests
 ```
 
-The exact selection is `.pytest_cache/r3-final/files.txt`; JUnit is `.pytest_cache/r3-final/results.xml`. It includes all 40 test files touched relative to origin/main, the five reported failures, all center-file tests, owner-box routes, and tests referencing listing/liveness or queue policy. No full suite was run.
+`python -m ruff check` on every changed Python file against `origin/main` passes.
+`git diff --check` passes.
 
-All changed Python files (relative to origin/main) pass `python -m ruff check`. `git diff --check` and `openspec validate center-file-homes --strict` pass. Changes remain uncommitted on `conv/c6-host-box-split`.
-
-| Test file | Passed / failed |
-|---|---:|
-| `test_a_universe_needs_an_owner.py` | 52 / 0 |
-| `test_api_status.py` | 16 / 0 |
-| `test_api_universe.py` | 9 / 0 |
-| `test_assigned_queue_consumer_live_worker.py` | 3 / 0 |
-| `test_auto_ship_health_status.py` | 4 / 0 |
-| `test_auto_ship_ledger.py` | 47 / 0 |
-| `test_automation_live_context.py` | 30 / 0 |
-| `test_branch_delete_is_first_class.py` | 27 / 0 |
-| `test_canon_containment_sites.py` | 22 / 0 |
-| `test_canon_io.py` | 25 / 0 |
-| `test_center_file_home_guard.py` | 224 / 0 |
-| `test_center_file_homes.py` | 7 / 0 |
-| `test_command_center_packages.py` | 123 / 0 |
-| `test_connect_skill.py` | 4 / 0 |
-| `test_converse_turn_cost.py` | 13 / 0 |
-| `test_daemon_dashboard.py` | 17 / 0 |
-| `test_engine_mcp_server.py` | 81 / 0 |
-| `test_first_contact.py` | 58 / 0 |
-| `test_inspect_cross_surface_hint.py` | 6 / 0 |
-| `test_interlocutor_tier.py` | 98 / 0 |
-| `test_loop_telemetry.py` | 10 / 0 |
-| `test_onboarding_note.py` | 14 / 0 |
-| `test_owner_box_read_routes.py` | 17 / 0 |
-| `test_owner_box_reads.py` | 25 / 0 |
-| `test_owner_content_writers.py` | 21 / 0 |
-| `test_owner_door_import_boundary.py` | 7 / 0 |
-| `test_permission_decisions.py` | 3 / 0 |
-| `test_platform_reads_refuse_links.py` | 26 / 0 |
-| `test_private_by_default.py` | 60 / 0 |
-| `test_queue_policy_retired_market.py` | 2 / 0 |
-| `test_served_systems_guidance.py` | 6 / 0 |
-| `test_share_after_publish_skill.py` | 3 / 0 |
-| `test_soul_edit.py` | 24 / 0 |
-| `test_starter_muse_package.py` | 20 / 0 |
-| `test_storage_utilization_universe.py` | 8 / 0 |
-| `test_supervisor_liveness.py` | 13 / 0 |
-| `test_turn_continuity.py` | 9 / 0 |
-| `test_turn_request_economy.py` | 35 / 0 |
-| `test_universe_list_observability.py` | 8 / 0 |
-| `test_universe_nodes.py` | 157 / 0 |
-| `test_universe_path_io_guard.py` | 5 / 0 |
-| `test_universe_self_model.py` | 7 / 0 |
-| `test_universe_server_isolation.py` | 56 / 0 |
-| `test_universe_server_ledger.py` | 20 / 0 |
-| `test_universe_server_telemetry.py` | 37 / 0 |
-| `test_universe_server_word_count.py` | 8 / 0 |
-| `test_universe_tools.py` | 28 / 0 |
-| `test_universe_visibility.py` | 72 / 0 |
-| `test_wiki_write_back_effector.py` | 11 / 0 |
+`test_hygiene_gate.py --base origin/main --head HEAD --body <saved PR body>` exits 0:
+`tests added 42, removed 7, tampering findings 7, product lines added 1026`.
+This checks committed history, not these working-tree edits. Round 4 retains every
+existing test name and assertion and adds no skip/skipif; the two classification
+expectations change as requested. Inventory assertion count stays 136; the wiki
+test file increases from 114 to 117. No stash was used.

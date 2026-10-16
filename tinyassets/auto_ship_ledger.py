@@ -52,12 +52,13 @@ from tinyassets.center_platform_files import (
     LEDGER_LOCK as LOCK_FILENAME,  # noqa: F401 - public compatibility export
 )
 from tinyassets.center_platform_files import (
-    ledger_path as _host_ledger_path,
-)
-from tinyassets.center_platform_files import (
+    iter_ledger_lines,
     open_ledger_lock,
     read_ledger,
     write_ledger,
+)
+from tinyassets.center_platform_files import (
+    ledger_path as _host_ledger_path,
 )
 
 #: Valid ``ship_status`` values across Phase 1-3 (§10).
@@ -246,8 +247,11 @@ def _read_raw(lp: Path) -> list[dict]:
     data = read_ledger(lp.parent)
     if data is None:
         return []
-    rows: list[dict] = []
-    for lineno, line in enumerate(data.decode("utf-8").splitlines(), start=1):
+    return list(_parse_rows(lp, data.splitlines()))
+
+
+def _parse_rows(lp: Path, lines) -> Iterator[dict]:
+    for lineno, line in enumerate(lines, start=1):
         line = line.strip()
         if not line:
             continue
@@ -261,8 +265,7 @@ def _read_raw(lp: Path) -> list[dict]:
             raise RuntimeError(
                 f"Ledger row at {lp}:{lineno} is not a JSON object"
             )
-        rows.append(row)
-    return rows
+        yield row
 
 
 def _write_raw(lp: Path, rows: list[dict]) -> None:
@@ -406,9 +409,8 @@ def record_attempt(universe_path: Path, attempt: ShipAttempt) -> None:
     if missing.
 
     Raises ``ValueError`` on invalid ``ship_status`` or duplicate
-    ``ship_attempt_id``. Duplicate detection is by full read so the
-    ledger can be modest (~1k rows) before the read becomes a
-    bottleneck; at that point graduate to sqlite.
+    ``ship_attempt_id``. Duplicate detection streams bounded rows across the
+    entire ledger, so old IDs remain protected without a whole-file size cap.
     """
     if attempt.ship_status not in VALID_SHIP_STATUSES:
         raise ValueError(
@@ -424,13 +426,13 @@ def record_attempt(universe_path: Path, attempt: ShipAttempt) -> None:
 
     lp = ledger_path(universe_path)
     with _file_lock(universe_path):
-        raw = _read_raw(lp)
-        for row in raw:
-            if row.get("ship_attempt_id") == attempt.ship_attempt_id:
-                raise ValueError(
-                    f"ship_attempt_id {attempt.ship_attempt_id!r} already "
-                    f"recorded — use update_attempt to mutate"
-                )
+        with contextlib.closing(iter_ledger_lines(lp.parent)) as lines:
+            for row in _parse_rows(lp, lines):
+                if row.get("ship_attempt_id") == attempt.ship_attempt_id:
+                    raise ValueError(
+                        f"ship_attempt_id {attempt.ship_attempt_id!r} already "
+                        f"recorded — use update_attempt to mutate"
+                    )
         write_ledger(lp.parent,
                      (json.dumps(attempt.to_dict(), default=str) + '\n').encode(),
                      append=True)

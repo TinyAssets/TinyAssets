@@ -32,7 +32,7 @@ OTHER = "u-01ky3zh1arr8qth8jee7zx63pq"
     ("soul.md", USER), ("soul_versions", USER), ("config.yaml", USER),
     ("AGENTS.md", USER), ("skills", USER), ("notes.json", USER),
     ("workspace", USER), ("workspaces", USER), (".agent-workspace", USER),
-    ("soul.edit.md", PLATFORM), ("dispatcher_config.yaml", PLATFORM),
+    ("soul.edit.md", PLATFORM), ("dispatcher_config.yaml", USER),
     (".soul.lock", PLATFORM), (".provider-assignment-admission.lock", PLATFORM),
     # nobody writes a bare .lock as a home entry -- its creator puts it inside a
     # credential snapshot directory, so at the top level it is unknown
@@ -186,7 +186,7 @@ def test_the_inventory_finds_what_the_cutover_must_change_and_writes_nothing(tmp
     assert _digest(tmp_path) == before
     home = report["homes"][HOME]
     assert "soul.md" in home["user"] and "config.yaml" in home["user"]
-    assert "soul.edit.md" in home["platform"] and "status.json" in home["platform"]
+    assert "soul.edit.md" in home["platform"] and "status.json" in home["user"]
     assert home["unclassified"] == ["mystery.bin"]
     assert home["config_authority"] == ["engine_assignment_state", "allowed_providers"]
     db = report["sqlite"][".tinyassets.db"]

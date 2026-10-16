@@ -1,7 +1,10 @@
 """AST heuristic: literal center file names joined to paths at box and host sinks.
 
-This intentionally catches direct calls and one ``path / 'name'`` expression,
-not aliases or dynamic names. Existing mixed names need an explicit reason and
+This catches direct calls, ``path / 'name'`` expressions, and literal arguments
+to the host-reading wrappers in api/helpers.py and api/universe.py (including
+calls from other modules). It does not follow variable aliases or dynamic names.
+The explicit wrapper set must grow when a host reader is added.
+Existing mixed names need an explicit reason and
 must be removed from KNOWN_MIXED as soon as either use disappears.
 """
 
@@ -31,6 +34,7 @@ HOST_METHODS = {
     "write_text", "write_bytes", "unlink", "glob", "stat", "lstat",
     "replace", "mkdir", "rglob", "iterdir",
 }
+HOST_HELPERS = {"_read_json", "_read_text", "_read_platform_text"}
 KNOWN_MIXED: dict[str, str] = {
     "log.md": "Existing journal and owner-content paths share this leaf name.",
 }
@@ -94,6 +98,12 @@ def _uses(tree: ast.AST, relative: str) -> tuple[set[str], set[str], list[str]]:
             if not _exempt(relative):
                 errors.extend(f"{relative}:{node.lineno}: host moved path {name!r}"
                               for name in names if host_center_moved(name))
+        if call_name in HOST_HELPERS:
+            names = set().union(*(_strings(arg) for arg in args))
+            hosted.update(filter(_file_name, names))
+            if not _exempt(relative):
+                errors.extend(f"{relative}:{node.lineno}: indirect host moved path {name!r}"
+                              for name in names if host_center_moved(name.split("/", 1)[0]))
     return boxed, hosted, errors
 
 
@@ -130,6 +140,14 @@ def test_moved_name_host_sinks_are_rejected(name, operation):
 def test_host_names_are_rejected_at_box_helpers(name):
     source = f"read_universe_text(root, {name!r})"
     assert _uses(ast.parse(source), "reader.py")[2]
+
+
+@pytest.mark.parametrize("name", sorted(HOST_CENTER_MOVED))
+@pytest.mark.parametrize("helper", sorted(HOST_HELPERS))
+@pytest.mark.parametrize("argument", ["{name}", "root / {name}"])
+def test_indirect_host_reads_are_rejected(name, helper, argument):
+    source = f"{helper}({argument.format(name=repr(name))})"
+    assert _uses(ast.parse(source), "api/universe.py")[2]
 
 
 @pytest.mark.parametrize("relative", sorted(EXEMPT) + ["okf/seed.py"])

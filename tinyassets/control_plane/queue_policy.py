@@ -168,14 +168,15 @@ def load_dispatcher_config(universe_path: Path) -> DispatcherConfig:
     file or missing keys silently fall back to defaults; the config is
     optional.
     """
-    from tinyassets.owner_box_reads import box_read
-    from tinyassets.universe_files import MAX_CONFIG_BYTES, load_untrusted_yaml
+    from tinyassets.owner_box_reads import BoxConfigInvalid, UnadmittedCenter, box_read_yaml
 
     try:
-        raw = box_read(Path(universe_path), "dispatcher_config.yaml", max_bytes=MAX_CONFIG_BYTES)
-    except FileNotFoundError:
+        data = box_read_yaml(Path(universe_path), "dispatcher_config.yaml") or {}
+    except UnadmittedCenter:
         return DispatcherConfig()
-    data = load_untrusted_yaml(raw.decode("utf-8"), max_bytes=MAX_CONFIG_BYTES) or {}
+    except BoxConfigInvalid as exc:
+        logger.warning("%s; using DispatcherConfig defaults", exc)
+        return DispatcherConfig()
     if not isinstance(data, dict):
         return DispatcherConfig()
 

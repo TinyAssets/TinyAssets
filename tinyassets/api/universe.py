@@ -1927,7 +1927,12 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
         )
 
     # Notes summary
-    notes = _read_json(udir / "notes.json")
+    try:
+        notes = _box_json(udir, "notes.json")
+    except (OSError, RuntimeError) as exc:
+        notes = None
+        result["recent_notes"] = None
+        result.setdefault("unavailable_reason", {})["recent_notes"] = str(exc)
     if notes and isinstance(notes, list):
         recent = notes[-5:]
         result["recent_notes"] = [

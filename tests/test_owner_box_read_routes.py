@@ -64,6 +64,128 @@ def test_owner_file_browser_reads_box(home, monkeypatch):
     assert reads.read_file(universe_id=center.name, path="notes/stale.txt")["error"] == "not_found"
 
 
+@pytest.mark.parametrize("relpath", ["status.json", "soul.md"])
+@pytest.mark.parametrize("session", [False, True])
+def test_linked_center_refused_before_any_box_bind_or_read(home, monkeypatch, relpath, session):
+    from tinyassets.boxes.provider import BoxHandle, ExecLimits
+    from tinyassets.control_plane.binding import SessionBinding, use_binding
+    from tinyassets.owner_box_reads import box_exists, box_read
+
+    center, put = home
+    put(relpath, b"B secret")
+    alias = center.parent / "cc-alias"
+    alias.symlink_to(center, target_is_directory=True)
+    monkeypatch.setattr("tinyassets.agent_loop.served_chat.configured_box_provider",
+                        lambda: pytest.fail("linked center reached provider"))
+    monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner",
+                        lambda *a, **k: pytest.fail("linked center reached admission"))
+    binding = SessionBinding(None, BoxHandle(alias.name, "acct-a", 1, "test"),
+                             ExecLimits(), alias) if session else None
+    with use_binding(binding):
+        with pytest.raises(OSError):
+            box_read(alias, relpath, max_bytes=100)
+        with pytest.raises(OSError):
+            box_exists(alias, relpath)
+
+
+@pytest.mark.parametrize("action,text", [("control_daemon", "pause"),
+                                        ("control_daemon", "status"),
+                                        ("read_premise", ""), ("inspect", "")])
+def test_linked_center_control_daemon_never_writes_target(home, monkeypatch, action, text):
+    from tinyassets.api import universe as api
+    from tinyassets.center_platform_files import set_paused
+
+    center, _put = home
+    alias = center.parent / "cc-alias"
+    alias.symlink_to(center, target_is_directory=True)
+    authorized = []
+
+    def allows(uid, **kwargs):
+        authorized.append(uid)
+        return uid == alias.name
+
+    monkeypatch.setattr(api.permissions, "universe_access_allows", allows)
+    monkeypatch.setattr(api, "_dispatch_scope_error", lambda *a, **k: None)
+    monkeypatch.setattr("tinyassets.agent_loop.served_chat.configured_box_provider",
+                        lambda: pytest.fail("authorized alias reached B's box"))
+    with pytest.raises(ValueError, match="linked center"):
+        api._universe_impl(action, universe_id=alias.name, text=text)
+    assert authorized == [alias.name]
+    with pytest.raises(OSError):
+        set_paused(alias, "must not reach B")
+    assert not (center / ".pause").exists()
+    assert alias.is_symlink()
+
+
+@pytest.mark.parametrize("present", [False, True])
+def test_read_page_without_binding_reads_box_and_never_scaffolds(home, monkeypatch, present):
+    import json
+
+    from tinyassets.api import visibility
+    from tinyassets.control_plane.binding import current_binding
+    from tinyassets.universe_server import read_page
+
+    center, put = home
+    if present:
+        put("wiki/pages/notes/box.md", b"# Box page\nReadable without a session")
+    monkeypatch.setattr(visibility, "visibility_permits", lambda *a: True)
+    monkeypatch.setattr("tinyassets.api.wiki._ensure_wiki_scaffold",
+                        lambda *a, **k: pytest.fail("read attempted scaffolding"))
+    from tinyassets.agent_loop.served_chat import configured_box_provider
+
+    provider, _ = configured_box_provider()
+    monkeypatch.setattr(provider, "write", lambda *a, **k: pytest.fail("read wrote box"))
+    before = sorted(p.relative_to(center) for p in center.rglob("*"))
+    assert current_binding() is None
+    result = json.loads(read_page(page="pages/notes/box.md", command_center_id=center.name))
+    if present:
+        assert "error" not in result
+        assert "Readable without a session" in result["content"]
+    else:
+        assert "not found" in result["error"].lower()
+        assert "scaffold" not in result["error"].lower()
+    assert sorted(p.relative_to(center) for p in center.rglob("*")) == before
+
+
+@pytest.mark.parametrize("refused", [False, True])
+def test_inspect_notes_use_box_and_isolate_unavailable_field(admitted_home, monkeypatch, refused):
+    import json
+
+    from tinyassets.api import universe as api
+    from tinyassets.api import visibility
+    from tinyassets.control_plane.binding import use_binding
+    from tinyassets.daemon_server import set_founder_home
+    from tinyassets.owner_box_reads import box_read
+
+    center, put = admitted_home
+    set_founder_home(center.parent, founder_sub="acct-a", universe_id=center.name)
+    put("notes.json", b'[{"text":"box note"}]')
+    (center / "notes.json").write_text('[{"text":"stale host note"}]')
+    # The notes reader itself needs no session; inspect also has unrelated
+    # legacy reads which still use the admitted session.
+    with use_binding(None):
+        assert api._box_json(center, "notes.json") == [{"text": "box note"}]
+    monkeypatch.setattr(visibility, "visibility_permits", lambda *a: True)
+    monkeypatch.setattr(visibility, "declared_level_name", lambda *a: "public")
+    if refused:
+        def read(root, path, **kwargs):
+            if path == "notes.json":
+                raise PermissionError("notes box unavailable")
+            return box_read(root, path, **kwargs)
+        monkeypatch.setattr("tinyassets.owner_box_reads.box_read", read)
+        with pytest.raises(OSError, match="notes box unavailable"):
+            api._box_json(center, "notes.json")
+    result = json.loads(api._action_inspect_universe(center.name))
+    assert result.get("universe_id") == center.name, result
+    assert "daemon" in result and "cross_surface_hint" in result
+    assert "stale host note" not in json.dumps(result)
+    if refused:
+        assert result["recent_notes"] is None
+        assert "notes box unavailable" in result["unavailable_reason"]["recent_notes"]
+    else:
+        assert result["recent_notes"][0]["text"] == "box note"
+
+
 def test_automation_brain_reads_box(home):
     from tinyassets.automation_context import _brain
 
@@ -303,6 +425,14 @@ def test_box_pages_and_read_bound(home):
     assert len(box_list(center, "notes", limit=201)) == 201
     with pytest.raises(OSError, match="bound"):
         box_read(center, "notes/000.md", max_bytes=3)
+
+
+def test_a_malformed_box_dispatcher_config_falls_back_to_defaults(admitted_home):
+    from tinyassets.control_plane.queue_policy import DispatcherConfig, load_dispatcher_config
+
+    center, put = admitted_home
+    put("dispatcher_config.yaml", b"a: &anchor 1\nb: *anchor\n")
+    assert load_dispatcher_config(center) == DispatcherConfig()
 
 
 def test_operational_files_read_box_and_ignore_host(admitted_home, monkeypatch):

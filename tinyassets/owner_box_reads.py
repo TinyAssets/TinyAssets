@@ -21,7 +21,9 @@ def _access(universe_dir: Path):
 
     center = center_from_path(universe_dir)
     root = Path(os.path.abspath(universe_dir))
-    # A bind may materialize a local box. Prove the host stub before any bind.
+    # Preserve the caller's authority key: never resolve the final component.
+    # A bind may materialize a local box. Open the stub with O_NOFOLLOW before
+    # either the session-binding fast path or a broker/provider bind.
     try:
         with _directory(root):
             pass
@@ -75,6 +77,24 @@ def box_read(universe_dir: Path, relpath: str, *,
     if binding is not None and binding.handle is handle:
         binding.check_read(result.generation)
     return result.data
+
+
+class BoxConfigInvalid(ValueError):
+    """An owner config file in the box is not bounded, safe YAML."""
+
+
+def box_read_yaml(universe_dir: Path, relpath: str) -> object | None:
+    """Bounded, alias-free YAML from the box; None when the file is absent."""
+    from tinyassets.universe_files import MAX_CONFIG_BYTES, UniverseFileError, load_untrusted_yaml
+
+    try:
+        raw = box_read(universe_dir, relpath, max_bytes=MAX_CONFIG_BYTES)
+    except FileNotFoundError:
+        return None
+    try:
+        return load_untrusted_yaml(raw.decode("utf-8"), max_bytes=MAX_CONFIG_BYTES)
+    except (UniverseFileError, UnicodeDecodeError) as exc:
+        raise BoxConfigInvalid(f"{relpath}: {exc}") from exc
 
 
 def box_list(universe_dir: Path, relpath: str, *,

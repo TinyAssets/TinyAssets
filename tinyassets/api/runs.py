@@ -45,7 +45,6 @@ if TYPE_CHECKING:  # advice-only; the class itself is computed in providers.diag
 
 from tinyassets.api.helpers import (
     _base_path,
-    _read_text,
     _request_universe,
     _universe_dir,
 )
@@ -2388,7 +2387,9 @@ def _action_get_memory_scope_status(kwargs: dict[str, Any]) -> str:
             action="get_memory_scope_status", surface="extensions",
         ))
     udir = _universe_dir(universe_id)
-    log_content = _read_text(udir / "activity.log")
+    from tinyassets.api.universe import _box_text
+
+    log_content = _box_text(udir, "activity.log")
     mismatch_lines: list[str] = []
     if log_content:
         for line in log_content.strip().splitlines():
