@@ -532,6 +532,12 @@ def refresh_deposited_subscriptions(
     launching: str = "",
 ) -> None:
     """Refresh owner-deposited inline documents before a launch."""
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        if launching:
+            raise PermissionError("subscription CLIs require broker_endpoint auth in owner mode")
+        return  # Owner mode has no local subscription sources to refresh.
     from tinyassets.credential_vault import (
         clear_refresh_rejected,
         load_credential_vault,

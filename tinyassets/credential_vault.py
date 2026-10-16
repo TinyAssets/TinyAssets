@@ -157,6 +157,10 @@ def credential_vault_path(universe_dir: str | Path) -> Path:
 
 def _credential_root(universe: Path) -> Path:
     """Platform custody of a command center's credentials: outside its box."""
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        raise PermissionError("raw credential custody is unavailable in owner mode")
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", universe.name):
         raise ValueError("invalid credential command center")
     return universe.parent / ".platform" / "credential-vaults" / universe.name

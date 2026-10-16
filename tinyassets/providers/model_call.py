@@ -103,6 +103,12 @@ def _dispatch_args(request: ModelCall, parent: Parent) -> tuple[Any, ModelContex
     if router is None:
         raise RuntimeError("No provider router is available for this model call")
     context = request.context
+    from tinyassets.owner_runtime import broker_egress, current
+
+    if current() is not None:
+        # Resolve the mandatory transport before local provider preparation.
+        # The actual source/grant and model bytes use the executor's OPEN stream.
+        broker_egress()
     universe = context.universe_context
     if universe is None or universe.universe_dir is None:
         raise ProviderAuthorityHeldError(

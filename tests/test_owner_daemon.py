@@ -26,15 +26,25 @@ reader = model.reader
 served = model.served
 agent = model.agent
 _real_engine_client = model.engine_tool_client._make_client
+_real_resolve_proxy = model.ApiKeyHttpProvider._resolve_proxy
 
 
 @pytest.fixture(autouse=True)
-def _owner_box_double():
-    """These tests exercise the real local mode, never the shared box double."""
+def _owner_box_double(monkeypatch):
+    """Seed existing fixtures before startup; then use the real local mode."""
+    from tests.support.box_double import install
+    from tinyassets.control_plane import binding
+
+    real = binding.file_binding
+    double = install(monkeypatch)
+    try:
+        yield SimpleNamespace(double=double, file_binding=real)
+    finally:
+        double.close()
 
 
 @pytest.fixture
-def owner_mode(tmp_path, monkeypatch):
+def owner_mode(tmp_path, monkeypatch, agent, in_process_broker, _owner_box_double):
     from tinyassets.api import runs as api_runs
 
     # The real lifespan now owns boot recovery. Its process-lifetime lock must
@@ -62,9 +72,75 @@ def owner_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(socket.socket, "connect_ex", guarded(real_connect_ex))
     with tempfile.TemporaryDirectory(prefix="taod-") as directory:
         # WHOAMI must not call any admission/broker method: bind fixed the identity.
-        relay = OwnerRelays(Path(directory), None)
+        import sqlite3
+
+        from tinyassets.boxes import relay as relay_module
+        from tinyassets.broker.server import BOX_HOST
+
+        live = in_process_broker.supervisor_for(tmp_path)
+        live.server._roles = {os.getuid(): BOX_HOST}
+        live.server._data_root = tmp_path
+        from tinyassets.storage.outbound_connections import CredentialBlindBroker, UpstreamStream
+
+        secret = "synthetic-broker-only-chat-credential"
+
+        def network(**kwargs):
+            assert kwargs["credential"] == secret
+            kwargs["on_connect"](None)
+            document = kwargs["request"]
+            agent.wires.append((kwargs["verb"], document))
+            learning = any(message.get("content") == model.universe_intelligence._LEARNING_SYSTEM
+                           for message in document["body"]["messages"])
+            use_tool = (not learning and len(agent.wires) <= agent.requested_rounds
+                        and document["body"].get("tool_choice") != "none")
+            message = {"role": "assistant", "content": "{}" if learning else
+                       None if use_tool else "finished exact answer"}
+            if use_tool:
+                message["tool_calls"] = [{"id": "wire-id", "type": "function", "function": {
+                    "name": agent.tool_call[0], "arguments": agent.tool_call[1]}}]
+            body = json.dumps({"model": "actual-answer-model", "choices": [{
+                "message": message, "finish_reason": "tool_calls" if use_tool else "stop"}]})
+            return UpstreamStream.complete({"status": 200, "headers": {}, "body": body}, ())
+
+        def dispatch_for(owner, center, grant, resource):
+            return CredentialBlindBroker(
+                live._dispatchers.ledger_for(owner), resolve_credential=lambda *_: secret,
+                network_request=network).dispatch
+
+        live.server._dispatch_for = dispatch_for
+        monkeypatch.setattr(model.ApiKeyHttpProvider, "_resolve_proxy", _real_resolve_proxy)
+        uid = live.identities.owner_machine("owner")
+        with sqlite3.connect(live.identities.path) as db:
+            db.execute("CREATE TABLE IF NOT EXISTS box_records (principal TEXT PRIMARY KEY, "
+                       "machine INTEGER, project_id INTEGER, bhard_bytes INTEGER)")
+            db.execute("INSERT OR REPLACE INTO box_records VALUES (?, ?, ?, ?)",
+                       ("owner", uid, uid, 1024**3))
+        # Seed the published-only store, as the cutover will; owner operational
+        # state remains in tmp_path and is never read by this shared query.
+        from tinyassets.storage import db_path
+        published = tmp_path / ".published"
+        published.mkdir()
+        with sqlite3.connect(db_path(tmp_path)) as source:
+            with sqlite3.connect(db_path(published)) as destination:
+                source.backup(destination)
+
+        class Admission:
+            broker_socket = live.socket_path
+
+            def grant(self, owner, center, purpose):
+                assert live.identities.admitted_owner(center) == owner
+                return SimpleNamespace(uid=os.getuid())
+
+            def authorize(self, grant, center):
+                return live.identities.admitted_owner(center) == "owner"
+
+        monkeypatch.setattr(relay_module, "peer", lambda sock: (os.getpid(), 1002, 1002))
+        relay = OwnerRelays(Path(directory), Admission())
         path = relay.bind("owner", os.getuid())
         runtime = owner_runtime.start(tmp_path, path)
+        from tinyassets.control_plane import binding
+
+        monkeypatch.setattr(binding, "file_binding", _owner_box_double.file_binding)
         try:
             yield SimpleNamespace(runtime=runtime, directory=Path(directory), relay=path)
         finally:
@@ -78,7 +154,7 @@ def owner_mode(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def rig(owner_mode, tmp_path, monkeypatch):
+def rig(tmp_path, monkeypatch):
     from tinyassets import daemon_server, provider_serving_binding
 
     home = daemon_server.get_founder_home

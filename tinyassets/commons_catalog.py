@@ -930,6 +930,17 @@ def get_definition(
     *,
     include_catalogue: bool = False,
 ) -> dict[str, Any] | None:
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        from tinyassets.broker.owner_reads import remote
+
+        return remote("definition", definition_id=definition_id,
+                      include_catalogue=include_catalogue)
+    return _get_definition(base_path, definition_id, include_catalogue=include_catalogue)
+
+
+def _get_definition(base_path, definition_id, *, include_catalogue=False):
     with _agent_connect(base_path) as conn:
         row = _read_definition_row(conn, (definition_id or "").strip())
         if row is None:
@@ -952,6 +963,19 @@ def list_definitions(
     limit: int = 30,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
+    from tinyassets.owner_runtime import current
+
+    args = dict(query=query, tags=tags, exclude_tags=exclude_tags,
+                author_id=author_id, limit=limit, offset=offset)
+    if current() is not None:
+        from tinyassets.broker.owner_reads import remote
+
+        return remote("catalog", **args)
+    return _list_definitions(base_path, **args)
+
+
+def _list_definitions(base_path, *, query="", tags=(), exclude_tags=(), author_id="",
+                      limit=30, offset=0):
     if type(offset) is not int or offset < 0:
         raise AgentValidationError("offset must be a non-negative integer")
     matched = 0

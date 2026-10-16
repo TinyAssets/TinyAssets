@@ -259,6 +259,12 @@ class ApiKeyHttpProvider(BaseProvider):
         )
 
         universe_id, grant_id = universe_dir.name, self._definition.ref
+        from tinyassets.owner_runtime import current
+
+        if current() is not None:
+            from tinyassets.owner_channel import request
+
+            request(universe_id, {"op": "MODEL_SOURCE", "definition": self._definition.as_dict()})
         principal = getattr(config, "invocation_owner_user_id", "")
         if (not isinstance(principal, str) or not principal
                 or self._definition.owner_user_id != principal

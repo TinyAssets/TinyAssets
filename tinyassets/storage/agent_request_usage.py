@@ -185,7 +185,10 @@ def resolve_inference_usage(base, owner, universe, ledger, resource, grant_id, v
         from tinyassets.providers.definition import _verified_definition
 
         try:
-            definitions = read_definitions(store.base, universe)
+            from tinyassets.broker.owner_sources import BOX_REQUEST, read
+
+            definitions = (read(ledger, universe) if BOX_REQUEST.get()
+                           else read_definitions(store.base, universe))
         except FileNotFoundError:
             definitions = ()
         except (OSError, ValueError, TypeError) as exc:
@@ -246,6 +249,7 @@ class UsageStore:
                     conn.commit()
 
     def create(self, budget):
+        from tinyassets.owner_runtime import current
         from tinyassets.process_liveness import owner_token
 
         usage_id = secrets.token_hex(16)
@@ -254,9 +258,15 @@ class UsageStore:
             "deadline", "max_tokens", "max_cost_microunits",
         )}
         scope = (budget.owner, budget.universe, usage_id)
-        token = owner_token(self.base, broker_readable=self._remote)
-        parent_token = "request_" + usage_id
-        lease = ParentUsageLease(self.base, parent_token, broker_readable=self._remote)
+        if current() is not None and self._remote:
+            from tinyassets.owner_channel import UsageLease
+
+            lease = UsageLease(budget.universe, usage_id)
+            token, parent_token = lease.owner_token, lease.token
+        else:
+            token = owner_token(self.base, broker_readable=self._remote)
+            parent_token = "request_" + usage_id
+            lease = ParentUsageLease(self.base, parent_token, broker_readable=self._remote)
         try:
             if self._remote:
                 self._rpc(scope, "create", policy=policy, failures=budget._failures,
@@ -467,7 +477,15 @@ class UsageStore:
                 raise ValueError("source or model mismatch")
             from tinyassets.broker.provider_metadata import read_definitions
 
-            rows = read_definitions(self.base, scope[1])
+            with self._connection() as conn:
+                row = conn.execute(f"SELECT owner_token FROM agent_request_usage WHERE {_SCOPE}",
+                                   scope).fetchone()
+            if row is not None and row[0].startswith("box_"):
+                from tinyassets.broker.owner_sources import read
+
+                rows = read(self._ledger, scope[1])
+            else:
+                rows = read_definitions(self.base, scope[1])
             definition = next(_verified_definition(row, expect_universe=scope[1])
                               for row in rows
                               if row.get("id") == attempt.source_ref.removeprefix("api_key_http:"))

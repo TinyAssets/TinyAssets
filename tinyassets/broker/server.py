@@ -164,6 +164,7 @@ class BrokerServer:
         self._roles = dict(roles)
         self._uid_of = uid_of
         self._owner_identities = owner_identities
+        self._data_root = data_root
         self._policy_store = policy_store
         self._provision_box = provision_box
         from tinyassets.broker.public_egress import PublicEgress
@@ -248,6 +249,7 @@ class _Connection:
         self._queue: asyncio.Queue[bytes] = asyncio.Queue(MAX_QUEUED_FRAMES)
         self._closed = threading.Event()
         self._key = id(self)
+        self._usage_leases = []
 
     async def pump(self) -> None:
         while True:
@@ -332,21 +334,80 @@ class _Connection:
 
     async def _connection_op(self, op: str, doc: dict[str, Any]) -> None:
         if self._role == BOX_HOST:
-            if op not in {"BOX_ADMISSION", "BOX_CHANNEL"}:
+            if op not in {"BOX_ADMISSION", "BOX_CHANNEL", "BOX_SHARED"}:
                 raise rf.FrameError("box host channel is read-only admission")
             from tinyassets.broker.box_admission import resolve
 
             try:
-                answer = await asyncio.to_thread(resolve, self._server._owner_identities,
-                                                 {**doc, "op": "BOX_ADMISSION"})
-                if op == "BOX_CHANNEL":
+                if op == "BOX_SHARED":
+                    await asyncio.to_thread(self._server._owner_identities.box_route,
+                                            doc["principal"])
+                    answer = {"op": "BOX_ADMITTED"}
+                else:
+                    answer = await asyncio.to_thread(resolve, self._server._owner_identities,
+                                                     {**doc, "op": "BOX_ADMISSION"})
+                if op in {"BOX_CHANNEL", "BOX_SHARED"}:
                     self._box_owner, self._box_center = doc["principal"], doc["center"]
                     self._role = BOX
             except Exception:  # no authority or broker data on a refusal
                 answer = {"op": "BOX_REFUSED"}
             await self.send_async(rf.control(rf.CONNECTION, answer))
             return
-        if self._role != OWNER:
+        if self._role == BOX:
+            if op == "BOX_IDENTITY":
+                self._box_scope(doc)
+                await self.send_async(rf.control(rf.CONNECTION, {
+                    "op": "BOX_RESULT", "result": {"principal": self._box_owner}}))
+                return
+            if op == "OWNER_POLICY":
+                if doc.get("action") not in {"read", "receipts", "classify", "decide", "proposal"}:
+                    raise rf.FrameError("protected policy changes require the shared door")
+                doc = {**doc, "principal": self._box_owner}
+                if doc["action"] in {"classify", "decide", "proposal"}:
+                    self._box_scope({})
+                    if doc["action"] == "decide":
+                        doc["request"] = {**doc["request"], "center": self._box_center}
+                    else:
+                        doc["center"] = self._box_center
+                answer = await asyncio.to_thread(self._owner_policy, doc)
+                await self.send_async(rf.control(rf.CONNECTION, answer))
+                return
+            if op == "BOX_PING" and self._usage_leases:
+                await self.send_async(rf.control(rf.CONNECTION, {"op": "BOX_PONG"}))
+                return
+            if op == "BOX_READ":
+                from tinyassets.broker.owner_reads import read
+
+                try:
+                    result = await asyncio.to_thread(
+                        read, self._server._data_root, self._box_owner, doc)
+                    answer = {"op": "BOX_RESULT", "result": result}
+                    rf.control(rf.CONNECTION, answer)
+                except Exception:
+                    answer = {"op": "BOX_REFUSED"}
+                await self.send_async(rf.control(rf.CONNECTION, answer))
+                return
+            if op == "USAGE_LEASE":
+                await self._usage_lease(doc)
+                return
+            if op == "MODEL_SOURCE":
+                from tinyassets.broker.owner_sources import publish
+
+                try:
+                    doc = self._box_scope(doc)
+                    result = await asyncio.to_thread(
+                        publish, self._server._ledger_for(self._box_owner),
+                        self._box_owner, self._box_center, doc["definition"])
+                    answer = {"op": "BOX_RESULT", "result": result}
+                except Exception:
+                    answer = {"op": "BOX_REFUSED"}
+                await self.send_async(rf.control(rf.CONNECTION, answer))
+                return
+            if op not in {"LEDGER_QUERY", "CONNECTION_CATALOG", "USAGE", "HTTP_CONNECT",
+                          "CAPABILITY", "DISCONNECT", "STATUS"}:
+                raise rf.FrameError("operation is not available on the box channel")
+            doc = self._box_scope(doc)
+        elif self._role != OWNER:
             raise rf.FrameError("only the owner channel may send connection operations")
         if op == "OWNER_IDENTITY":
             answer = await asyncio.to_thread(self._owner_identity, doc)
@@ -406,6 +467,41 @@ class _Connection:
             await self.send_async(rf.control(rf.CONNECTION, {
                 "op": "STATUS_IS", "op_id": doc.get("op_id"), "state": state,
                 "side_effect_state": effect}))
+
+    def _box_scope(self, doc):
+        # The socket selected this scope. Guest identity fields grant nothing.
+        if (not getattr(self, "_box_center", None)
+                or doc.get("principal", self._box_owner) != self._box_owner
+                or doc.get("command_center", self._box_center) != self._box_center
+                or self._server._owner_identities.admitted_owner(self._box_center)
+                != self._box_owner):
+            raise rf.FrameError("retired box admission")
+        return {**doc, "principal": self._box_owner, "command_center": self._box_center,
+                "generation": self._server._fence.generation,
+                "token": self._server._fence.token}
+
+    async def _usage_lease(self, doc):
+        import secrets
+
+        from tinyassets.process_liveness import hold_liveness
+
+        self._box_scope(doc)
+        usage_id = doc.get("usage_id")
+        if (self._usage_leases or set(doc) != {"op", "usage_id"}
+                or not isinstance(usage_id, str) or len(usage_id) != 32
+                or any(c not in "0123456789abcdef" for c in usage_id)):
+            raise rf.FrameError("invalid box usage lease")
+        ledger = self._server._ledger_for(self._box_owner)
+        token, parent = "box_" + secrets.token_hex(16), "request_" + usage_id
+        try:
+            for name in (token, parent):
+                self._usage_leases.append(await asyncio.to_thread(
+                    hold_liveness, ledger._data_root, name))
+            await self.send_async(rf.control(rf.CONNECTION, {
+                "op": "BOX_RESULT", "result": {"owner_token": token, "parent_token": parent}}))
+        except Exception:
+            self.abandon()
+            raise
 
     def _owner_identity(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.owner_identities import validate_principal
@@ -771,18 +867,7 @@ class _Connection:
 
     async def _open(self, stream_id: int, doc: dict[str, Any]) -> None:
         if self._role == BOX:
-            # Identity and fence originate in the admitted host channel, never
-            # in guest JSON. No connection-level policy writes are exposed.
-            if not getattr(self, "_box_owner", None):
-                raise rf.FrameError("box channel has no host admission")
-            if (doc.get("principal", self._box_owner) != self._box_owner
-                    or doc.get("command_center", self._box_center) != self._box_center
-                    or self._server._owner_identities.admitted_owner(self._box_center)
-                    != self._box_owner):
-                raise rf.FrameError("foreign or retired box namespace")
-            doc = {**doc, "principal": self._box_owner, "command_center": self._box_center,
-                   "generation": self._server._fence.generation,
-                   "token": self._server._fence.token}
+            doc = self._box_scope(doc)
         principal, command_center = doc.get("principal"), doc.get("command_center")
         op_id = doc.get("op_id")
 
@@ -982,6 +1067,9 @@ class _Connection:
     def _run(self, stream: _Stream, dispatch: Callable[..., Any], grant_id: str, verb: str,
              request: dict[str, Any], idle_s: Any, inference_usage=None,
              refresh_enabled: bool = False) -> None:
+        from tinyassets.broker.owner_sources import BOX_REQUEST
+
+        box_token = BOX_REQUEST.set(self._role == BOX)
         outcome, error_class, extra = "failed", "ProxyRequestError", {}
         try:
             if stream.cancelled:
@@ -1054,6 +1142,7 @@ class _Connection:
                 # The operation's state: may_have_sent was durable, so unknown.
                 "side_effect_state": "unknown" if stream.marked else "none", **extra,
             }), stream, final=True)
+            BOX_REQUEST.reset(box_token)
 
     def _pump_body(self, stream: _Stream, upstream: Any) -> None:
         buffered = bytearray()
@@ -1094,6 +1183,11 @@ class _Connection:
     def abandon(self) -> None:
         """The peer went away: stop queueing, cancel every stream it owned."""
         self._closed.set()
+        from tinyassets.singleton_lock import release_singleton_lock
+
+        for lease in self._usage_leases:
+            release_singleton_lock(lease)
+        self._usage_leases.clear()
         with self._server._streams_lock:
             mine = [s for (key, _), s in self._server._streams.items() if key == self._key]
         for stream in mine:

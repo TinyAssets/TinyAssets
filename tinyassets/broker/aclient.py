@@ -119,9 +119,22 @@ class AsyncBrokerClient:
             from tinyassets.storage.outbound_connections import ProxyRequestError
 
             try:
+                from tinyassets.owner_runtime import broker_egress, current
+
+                owner_mode = current() is not None
                 self._reader, self._writer = await asyncio.open_unix_connection(
-                    os.fspath(self._path))
-                if self._verify_peer is not None:
+                    os.fspath(broker_egress().socket_path if owner_mode else self._path))
+                if owner_mode:
+                    self._writer.write(rf.control(rf.CONNECTION, {
+                        "op": "BOX_CONNECT", "center": self._command_center}))
+                    await self._writer.drain()
+                    answer = await rf.read_frame(self._reader)
+                    if (answer is None or answer.stream != rf.CONNECTION
+                            or answer.control() != {"op": "BOX_CONNECTED"}):
+                        self._writer.close()
+                        self._reader = self._writer = None
+                        raise PermissionError("owner broker channel refused")
+                elif self._verify_peer is not None:
                     try:
                         self._verify_peer(self._writer.get_extra_info("socket"))
                     except BaseException:
@@ -179,10 +192,11 @@ class AsyncBrokerClient:
                      request: dict[str, Any], op_id: str,
                      idle_s: float | None = None,
                      inference_usage: dict[str, Any] | None = None) -> AsyncIterator[_Stream]:
+        from tinyassets.owner_runtime import current
         from tinyassets.storage.outbound_connections import AmbiguousProxyOutcome
 
         refresh = (await asyncio.to_thread(self._refresh_factory, grant_id, connection_id)
-                   if self._refresh_factory is not None else None)
+                   if self._refresh_factory is not None and current() is None else None)
         await self._connect()
         generation, token = self._fence()
         stream = _Stream(self, next(self._ids), refresh)

@@ -1,5 +1,31 @@
 # Main vs the clean per-user-instance shape: read-only audit
 
+## Slice 3 implementation follow-up (2026-10-16)
+
+Owner-mode model and authenticated HTTP calls now acquire the admitted relay,
+use the broker's existing grant/policy/accounting operations and stream over
+`OPEN`. Source descriptors and allocation liveness live at the broker; no
+broker operation needs a box-private file. Plan and published-catalog reads
+use `BOX_SHARED`. D3 decisions in `design.md` record the protocol choices.
+
+Focused Linux validation: **95 passed** across the new owner-egress tests,
+owner daemon app/MCP chat tests, broker server, upstream streaming and usage
+IPC tests. This includes a fresh box subprocess model call, secret absence
+in its environment and data root, an authenticated effector, revoked grants,
+lost accounting-channel liveness, missing broker refusal and socket/HTTP
+refusal. Ruff and `git diff --check` pass. No tests were retired or skipped.
+
+Cutover work remains outside this slice: boxhostd supplies the relay mount,
+sanitized environment and null network namespace; slice 6 seeds the shared
+billing/published stores. The shared Stripe webhook/checkout writer and
+commons publishing must be wired to those stores before cutover (these reads
+do not migrate either writer). Provider CLIs refuse pending broker-endpoint
+authentication; daemon-side subscription/credential refresh is disabled, with
+no vault fallback. The founder's slice 7 unported-feature report must include
+these remaining writer and authentication paths.
+
+CI-selected chunk results will be recorded after the implementation commit.
+
 ## Slice 2 implementation follow-up (2026-10-16)
 
 The authenticated router now forwards owner-facing app routes, MCP transport, REST owner

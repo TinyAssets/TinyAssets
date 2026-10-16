@@ -322,6 +322,12 @@ def owner_identity(data_root: Path, *, principal: str, allocate: bool = False) -
 def admitted_owner(data_root: Path, *, center: str) -> str:
     """Read the mapper's owner binding through authenticated broker IPC."""
     validate_center(center)
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        from tinyassets.owner_channel import request
+
+        return request(center, {"op": "BOX_IDENTITY"})["principal"]
     answer = _owner_request(data_root, {'op': 'ADMITTED_OWNER', 'center': center})
     if set(answer) != {'op', 'principal'} or answer['op'] != 'ADMITTED_OWNER_IS':
         raise PermissionError('center owner admission refused')

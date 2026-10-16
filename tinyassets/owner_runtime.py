@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import socket
+import sys
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ class OwnerRuntime:
     root: Path
     pid: int
     tools: object
+    relay: Path | None = None
 
 
 _runtime: OwnerRuntime | None = None
@@ -35,6 +37,15 @@ def start(data: Path, relay: Path) -> OwnerRuntime:
     global _runtime
     if _runtime is not None:
         raise RuntimeError("owner runtime is already initialized")
+    # A misconfigured launcher must fail before constructing any owner app.
+    # Values are never included in the error. The image's static environment
+    # and the null netns remain boxhostd's startup contract.
+    if any(value and (name.upper().endswith(("_API_KEY", "_ACCESS_TOKEN", "_REFRESH_TOKEN",
+                                             "_SECRET_KEY", "_CLIENT_SECRET"))
+                      or name.upper() in {"ANTHROPIC_AUTH_TOKEN", "STRIPE_SECRET",
+                                          "OPENAI_API_KEY", "ANTHROPIC_API_KEY"})
+           for name, value in os.environ.items()):
+        raise PermissionError("owner daemon environment contains a raw credential")
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
         channel.settimeout(5)
         channel.connect(str(relay))
@@ -56,13 +67,61 @@ def start(data: Path, relay: Path) -> OwnerRuntime:
     os.environ["TINYASSETS_DATA_DIR"] = str(root)
     os.environ["TINYASSETS_ENGINE_MCP_TOOLS"] = "1"
     os.environ["TINYASSETS_ONBOARDING_APP"] = "1"
-    _runtime = OwnerRuntime(doc["principal"], doc["uid"], root, os.getpid(), tools)
+    _runtime = OwnerRuntime(doc["principal"], doc["uid"], root, os.getpid(), tools,
+                            Path(relay).resolve())
+    install_outbound_guard()
     return _runtime
 
 
-def broker_egress(*args, **kwargs):
-    """Slice 3 installs model/connection egress over the admitted box channel."""
-    raise NotImplementedError("owner daemon broker egress is not installed")
+def broker_egress():
+    """Transport acquisition, never a host supervisor or a credential lease."""
+    from tinyassets.owner_channel import OwnerChannel
+
+    runtime = current()
+    if runtime is None or runtime.relay is None:
+        raise RuntimeError("owner broker channel is unavailable")
+    return OwnerChannel(runtime.relay)
+
+
+_guard_installed = False
+
+
+def install_outbound_guard():
+    """One socket audit seam for SDKs, HTTP libraries and raw Python sockets.
+
+    The box's null netns is the boundary for native code and child processes.
+    Loopback is the local engine transport; AF_UNIX is the mounted box channel.
+    """
+    global _guard_installed
+    if not _guard_installed:
+        sys.addaudithook(_outbound_audit)
+        _guard_installed = True
+
+
+def _outbound_audit(event, args):
+    if event not in {"socket.connect", "socket.sendto", "socket.sendmsg",
+                     "socket.getaddrinfo", "socket.gethostbyname"} or _runtime is None:
+        return
+    import ipaddress
+
+    if event in {"socket.getaddrinfo", "socket.gethostbyname"}:
+        host = args[0]
+    else:
+        sock = args[0]
+        if sock.family == socket.AF_UNIX:
+            return
+        address = args[-1]
+        if not isinstance(address, tuple) or not address:
+            raise PermissionError("owner mode requires broker egress")
+        host = address[0]
+    if host in {"localhost", b"localhost"}:
+        return
+    try:
+        if ipaddress.ip_address(host).is_loopback:
+            return
+    except ValueError:
+        pass
+    raise PermissionError("owner mode requires broker egress")
 
 
 @contextmanager

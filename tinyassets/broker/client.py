@@ -97,6 +97,22 @@ class BrokerClient:
         self._refresh_factory = refresh_factory
         self._lock = threading.Lock()
 
+    @staticmethod
+    def _owner_mode():
+        from tinyassets.owner_runtime import current
+
+        return current() is not None
+
+    def _connect(self, sock):
+        from tinyassets.owner_runtime import current
+
+        if current() is not None:
+            from tinyassets.owner_channel import connect
+
+            connect(sock, self._command_center)
+        else:
+            sock.connect(os.fspath(self._path))
+
     def ledger_query(self, *, query: str, grant_id: str,
                      connection_id: str = "") -> dict[str, Any]:
         """One named, read-only operation; never retry through a local ledger."""
@@ -111,8 +127,8 @@ class BrokerClient:
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
             try:
-                sock.connect(os.fspath(self._path))
-                if self._verify_peer is not None:
+                self._connect(sock)
+                if self._verify_peer is not None and not self._owner_mode():
                     self._verify_peer(sock)
                 sock.sendall(rf.control(rf.CONNECTION, document))
                 frame = rf.read_frame_blocking(sock)
@@ -141,8 +157,8 @@ class BrokerClient:
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
             try:
-                sock.connect(os.fspath(self._path))
-                if self._verify_peer is not None:
+                self._connect(sock)
+                if self._verify_peer is not None and not self._owner_mode():
                     self._verify_peer(sock)
                 sock.sendall(rf.control(rf.CONNECTION, wire))
                 frame = rf.read_frame_blocking(sock)
@@ -169,8 +185,8 @@ class BrokerClient:
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
             try:
-                sock.connect(os.fspath(self._path))
-                if self._verify_peer is not None:
+                self._connect(sock)
+                if self._verify_peer is not None and not self._owner_mode():
                     self._verify_peer(sock)
                 sock.sendall(rf.control(rf.CONNECTION, wire))
                 frame = rf.read_frame_blocking(sock)
@@ -201,8 +217,8 @@ class BrokerClient:
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
             try:
-                sock.connect(os.fspath(self._path))
-                if self._verify_peer is not None:
+                self._connect(sock)
+                if self._verify_peer is not None and not self._owner_mode():
                     self._verify_peer(sock)
                 sock.sendall(rf.control(rf.CONNECTION, wire))
                 frame = rf.read_frame_blocking(sock)
@@ -233,8 +249,8 @@ class BrokerClient:
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
             try:
-                sock.connect(os.fspath(self._path))
-                if self._verify_peer is not None:
+                self._connect(sock)
+                if self._verify_peer is not None and not self._owner_mode():
                     self._verify_peer(sock)
                 sock.sendall(rf.control(rf.CONNECTION, wire))
                 frame = rf.read_frame_blocking(sock)
@@ -268,8 +284,8 @@ class BrokerClient:
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
             try:
-                sock.connect(os.fspath(self._path))
-                if self._verify_peer is not None:
+                self._connect(sock)
+                if self._verify_peer is not None and not self._owner_mode():
                     self._verify_peer(sock)
                 sock.sendall(rf.control(rf.CONNECTION, wire))
                 frame = rf.read_frame_blocking(sock)
@@ -304,8 +320,8 @@ class BrokerClient:
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
             try:
-                sock.connect(os.fspath(self._path))
-                if self._verify_peer is not None:
+                self._connect(sock)
+                if self._verify_peer is not None and not self._owner_mode():
                     self._verify_peer(sock)
                 sock.sendall(rf.control(rf.CONNECTION, wire))
                 frame = rf.read_frame_blocking(sock)
@@ -340,7 +356,7 @@ class BrokerClient:
                 policy_agent: str | None = None,
                 policy_task_id: str | None = None) -> dict[str, Any]:
         refresh = (self._refresh_factory(grant_id, connection_id)
-                   if self._refresh_factory is not None else None)
+                   if self._refresh_factory is not None and not self._owner_mode() else None)
         generation, token = self._fence()
         open_doc = {
             "op": "OPEN", "op_id": op_id, "generation": generation, "token": token,
@@ -367,11 +383,11 @@ class BrokerClient:
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
             try:
-                sock.connect(os.fspath(self._path))
+                self._connect(sock)
             except OSError:
                 # Nothing was sent: the broker never saw this request.
                 raise ProxyRequestError("the credential broker is unavailable") from None
-            if self._verify_peer is not None:
+            if self._verify_peer is not None and not self._owner_mode():
                 self._verify_peer(sock)  # before sending any owner-channel factor
             try:
                 head, body, end = self._exchange(sock, open_doc, refresh=refresh)
@@ -440,7 +456,10 @@ def owner_policy_operation(data_root: Path, owner: str, action: str,
     supervisor = get_supervisor(data_root)
     if supervisor is None:
         raise ProxyRequestError("owner policy broker unavailable")
-    client = BrokerClient(supervisor.socket_path, principal=owner, command_center="",
+    center = fields.get("center", "")
+    if action == "decide":
+        center = fields.get("request", {}).get("center", "")
+    client = BrokerClient(supervisor.socket_path, principal=owner, command_center=center,
                           fence=supervisor.fence, verify_peer=supervisor.verify_broker,
                           timeout=30)
     return client.owner_policy(action, **fields)
