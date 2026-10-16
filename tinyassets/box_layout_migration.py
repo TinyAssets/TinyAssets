@@ -387,7 +387,8 @@ def _copy(source: Path, target: Path, uid: int, *, extra_excludes=()) -> None:
         check=True, capture_output=True, text=True,
     )
     if result.stdout.strip():
-        raise RuntimeError(f"rsync checksum differs for {source}")
+        raise RuntimeError(
+            f"rsync verification differs for {source}: {result.stdout.strip()[:2000]}")
 
 
 def _copy_credentials(source: Path, target: Path) -> None:
@@ -419,7 +420,8 @@ def _copy_credentials(source: Path, target: Path) -> None:
         check=True, capture_output=True, text=True,
     )
     if result.stdout.strip():
-        raise RuntimeError(f"credential checksum differs for {source}")
+        raise RuntimeError(
+            f"credential verification differs for {source}: {result.stdout.strip()[:2000]}")
 
 
 def _xfs_quota(store: Path, command: str) -> str:
