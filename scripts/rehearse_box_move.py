@@ -159,6 +159,10 @@ assert 'knowledge_shape' not in marker
 with sqlite3.connect(data / '.broker/state/owner-identities.db') as db:
     assert db.execute("SELECT 1 FROM sqlite_master WHERE name='box_records'").fetchone() is None
 assert (data / 'command-center/odd name ü\nline.txt').read_text() == 'owner=alice\n'
+with sqlite3.connect(data / 'command-center/.project_memory.db') as db:
+    assert db.execute('SELECT count(*) FROM project_memory').fetchone() == (1,)
+with sqlite3.connect(data / 'command-center/knowledge.db') as db:
+    assert db.execute('SELECT count(*) FROM entities').fetchone() == (1,)
 assert not (store / '300001').exists()
 retained = list(store.glob('.tinyassets-box-restore-old.*/300001/command-center/state.sqlite'))
 assert len(retained) == 1, retained
@@ -842,6 +846,13 @@ bash /rehearsal-deploy/backup-restore.sh
                                                'dst=/box-store,readonly',
                                     '--entrypoint', 'python', image, '-c', VERIFY_COMMIT)
             print('[rehearsal] restored ' + restored_modes.stdout.strip())
+            restored_knowledge = docker('run', '--rm', '--user', '0', '--network', 'none',
+                                        '-v', f"{names['data']}:/data:ro",
+                                        '--mount', f'type=bind,src={store_path},'
+                                                   'dst=/box-store,readonly',
+                                        '--entrypoint', 'python', image,
+                                        '-c', KNOWLEDGE_VERIFY)
+            print('[rehearsal] restored ' + restored_knowledge.stdout.strip())
             cleared = docker('run', '--rm', '--user', '0', '--network', 'none',
                              '--mount', f'type=bind,src={store_path},dst=/box-store,readonly',
                              '--entrypoint', 'python', image, '-c', QUOTA_READBACK, 'clear')
