@@ -519,7 +519,7 @@ def _owner_move_preconditions(
     for owner in plan:
         for center in owner.centers:
             _check_credential_sources(data / center)
-    from tinyassets.okf.box_cutover import _FILES, _VECTOR_DIRS, _source_path
+    from tinyassets.okf.box_cutover import _FILES, _VECTOR_DIRS, preflight_center
 
     # These namespace and path checks need no snapshot or writes, so reject
     # them while the daemon can still continue serving the old layout.
@@ -528,8 +528,7 @@ def _owner_move_preconditions(
             raise RuntimeError(f"unassigned host knowledge source: {filename}")
     for owner in plan:
         for center in owner.centers:
-            for name in _FILES:
-                _source_path(data / center, name)
+            preflight_center(data / center)
     if any(entry.name != "lost+found" for entry in store.iterdir()):
         raise RuntimeError("box store must be empty before the one-shot move")
     custody_root = data / ".platform" / "credential-vaults"
@@ -567,13 +566,27 @@ def _open_layout_lock(data: Path, access: int) -> int:
     return fd
 
 
+def _convert_knowledge_center(
+    source: Path, tree: Path, destination: Path, owner: str, uid: int,
+) -> dict:
+    from tinyassets.okf.box_cutover import chown_projection, commit_center, prepare_center
+
+    # The bounded deploy tmpfs holds one center's DB and vector snapshots.
+    # Release them before the next center is prepared.
+    with tempfile.TemporaryDirectory(prefix="owner-box-knowledge-") as scratch:
+        snapshots = Path(scratch)
+        knowledge = prepare_center(source, snapshots, owner=owner)
+        result = commit_center(knowledge, tree, snapshots / ("state-" + source.name))
+        chown_projection(destination, uid)
+        return result
+
+
 def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
     import fcntl
 
     if os.geteuid() != 0:
         raise PermissionError("box layout apply requires the one-shot root container")
     lock = _open_layout_lock(data, os.O_RDWR)
-    scratch = None
     knowledge_status = {}
     owner_plan = []
     try:
@@ -640,27 +653,14 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
                 destination.mkdir(mode=0o700)
                 os.chown(destination, owner.uid, owner.uid)
                 _copy(data / center, destination, owner.uid)
-                from tinyassets.okf.box_cutover import chown_projection, commit_center
-
                 try:
-                    scratch = tempfile.TemporaryDirectory(prefix="owner-box-knowledge-")
-                    snapshots = Path(scratch.name)
-                    knowledge = prepare_center(
-                        data / center, snapshots, owner=owner.principal
+                    result = _convert_knowledge_center(
+                        data / center, tree, destination, owner.principal, owner.uid,
                     )
-                    knowledge_status[center]["status"] = "censused"
-                    result = commit_center(
-                        knowledge, tree, snapshots / ("state-" + center)
-                    )
-                    chown_projection(destination, owner.uid)
                     knowledge_status[center] = result
                 except Exception as exc:
                     knowledge_status[center]["status"] = "failed: " + str(exc)
                     raise
-                finally:
-                    if scratch is not None:
-                        scratch.cleanup()
-                        scratch = None
             agent_home = data / ".platform" / "owners" / str(owner.uid) / "agent-home"
             if agent_home.exists():
                 if not agent_home.is_dir() or agent_home.is_symlink():
@@ -726,8 +726,6 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
             print(json.dumps({"knowledge_owners": owner_status,
                               "knowledge_centers": knowledge_status}, sort_keys=True),
                   flush=True)
-        if scratch is not None:
-            scratch.cleanup()
         os.close(lock)
 
 

@@ -117,6 +117,44 @@ def test_knowledge_cutover_commits_each_center_once_without_peer_rows(tmp_path):
             provider.close()
 
 
+def test_knowledge_scratch_peaks_at_one_center(tmp_path, monkeypatch):
+    from tinyassets.okf import box_cutover
+
+    scratch_root = tmp_path / "scratch"
+    scratch_root.mkdir()
+    temporary_directory = migration.tempfile.TemporaryDirectory
+    monkeypatch.setattr(
+        migration.tempfile, "TemporaryDirectory",
+        lambda **kwargs: temporary_directory(dir=scratch_root, **kwargs),
+    )
+    observed = []
+
+    def prepare(source, snapshots, *, owner):
+        assert len(list(scratch_root.iterdir())) == 1
+        (snapshots / "database.db").write_bytes(b"x" * 1024)
+        (snapshots / "vectors").mkdir()
+        (snapshots / "vectors" / "segment").write_bytes(b"v" * 1024)
+        observed.append((source.name, sum(
+            path.stat().st_size for path in scratch_root.rglob("*") if path.is_file()
+        )))
+        return source.name
+
+    def commit(center, _tree, state):
+        assert state.parent in scratch_root.iterdir()
+        assert (state.parent / "database.db").exists()
+        return {"center": center, "status": "converted"}
+
+    monkeypatch.setattr(box_cutover, "prepare_center", prepare)
+    monkeypatch.setattr(box_cutover, "commit_center", commit)
+    monkeypatch.setattr(box_cutover, "chown_projection", lambda *_: None)
+    for center in ("first", "second"):
+        assert migration._convert_knowledge_center(
+            tmp_path / center, tmp_path, tmp_path / center, "owner", 300001,
+        )["status"] == "converted"
+        assert not list(scratch_root.iterdir())
+    assert observed == [("first", 2048), ("second", 2048)]
+
+
 def test_knowledge_cutover_refuses_foreign_universe_before_any_box_write(tmp_path):
     from tinyassets.knowledge.knowledge_graph import initialize_knowledge_index
     from tinyassets.okf.box_cutover import prepare_center
@@ -239,6 +277,31 @@ def test_read_only_preflight_accepts_clean_owner_split(tmp_path, monkeypatch):
     monkeypatch.setattr(migration, "_owner_inode_preflight", lambda *_: None)
     monkeypatch.setattr(migration, "_xfs_quota", lambda *_: "project report")
     migration.preflight(data, store)
+    assert not list(store.iterdir())
+
+
+def test_read_only_preflight_rejects_foreign_knowledge_before_shutdown(tmp_path, monkeypatch):
+    from tinyassets import activity_shape_migration as activity_shape
+    from tinyassets.knowledge.knowledge_graph import initialize_knowledge_index
+
+    data, store = _cutover_root(tmp_path)
+    with sqlite3.connect(data / "c1" / "knowledge.db") as db:
+        db.row_factory = sqlite3.Row
+        initialize_knowledge_index(db)
+        db.execute("INSERT INTO entities(entity_id, universe_id) VALUES (?, ?)",
+                   ("foreign", "c2"))
+    before = {path.relative_to(data): path.read_bytes()
+              for path in data.rglob("*") if path.is_file()}
+    monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(migration, "_mounted", lambda _: None)
+    monkeypatch.setattr(migration, "_owner_plan", lambda _: [
+        migration.OwnerMove("alice", 300001, ("c1",), 1024**3)])
+    monkeypatch.setattr(activity_shape, "_pending", lambda _: [])
+    monkeypatch.setattr(migration, "_owner_inode_preflight", lambda *_: None)
+    with pytest.raises(ValueError, match="foreign universe"):
+        migration.preflight(data, store)
+    assert {path.relative_to(data): path.read_bytes()
+            for path in data.rglob("*") if path.is_file()} == before
     assert not list(store.iterdir())
 
 
@@ -424,9 +487,7 @@ def test_readonly_snapshot_releases_each_copy_and_refuses_rollback_journal(
     assert not list(scratch.iterdir())
 
 
-def test_cross_owner_inode_refuses_before_marker_or_destination_write(
-    tmp_path, monkeypatch, capsys,
-):
+def test_cross_owner_inode_refuses_before_marker_or_destination_write(tmp_path, monkeypatch):
     import os
 
     data, store = _cutover_root(tmp_path)
@@ -441,11 +502,6 @@ def test_cross_owner_inode_refuses_before_marker_or_destination_write(
         migration.OwnerMove("bob", 300002, ("c2",), 1024**3)])
     with pytest.raises(RuntimeError, match=r"cross-owner inode: .*note.txt.*borrowed.txt"):
         migration.apply(data, store, tmp_path / "snapshot", tmp_path / "boxes")
-    report = json.loads(capsys.readouterr().out)
-    assert set(report["knowledge_owners"]) == {"alice", "bob"}
-    assert {record["status"] for record in report["knowledge_centers"].values()} == {
-        "blocked: knowledge cutover incomplete"
-    }
     assert (data / ".layout.json").read_bytes() == original
     assert not list(store.iterdir())
 

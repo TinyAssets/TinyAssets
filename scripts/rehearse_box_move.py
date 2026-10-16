@@ -191,12 +191,13 @@ from tinyassets.boxes.local import LocalBoxProvider
 from tinyassets.okf.box_cutover import _FILES
 from tinyassets.okf.bundle import KnowledgeBundle
 from tinyassets.okf.records import SourceRecords, source_census
+from tinyassets.sqlite_readonly import readonly_db
 
 data, store = Path('/data'), Path('/box-store')
 marker = json.loads((data / '.layout.json').read_text())
 assert marker.get('box_layout') == 'owner-box' and marker.get('state') == 'stable'
 assert marker.get('knowledge_shape') == 'v1'
-with sqlite3.connect(data / '.broker/state/owner-identities.db') as db:
+with readonly_db(data / '.broker/state/owner-identities.db') as db:
     records = db.execute('SELECT principal, machine FROM box_records').fetchall()
 owners = [SimpleNamespace(principal=principal, uid=machine,
                           centers=tuple(path.name for path in

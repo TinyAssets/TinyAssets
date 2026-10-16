@@ -220,6 +220,68 @@ def _source_path(center: Path, name: str) -> Path | None:
     return path
 
 
+def preflight_center(source: Path) -> None:
+    """Reject knowledge source errors that can be established without writes."""
+    from tinyassets.sqlite_readonly import readonly_db
+
+    center = source.name
+    admitted_universes = {center}
+    registry = source / ".tinyassets.db"
+    if registry.exists() or registry.is_symlink():
+        if registry.is_symlink() or not stat.S_ISREG(registry.lstat().st_mode):
+            raise InvalidBundle(f"{center}: invalid daemon registry")
+        with readonly_db(registry) as db:
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='universes'").fetchone():
+                for (universe,) in db.execute("SELECT universe_id FROM universes"):
+                    root = source / universe
+                    if not root.is_dir() or root.is_symlink() or root.parent != source:
+                        raise InvalidBundle(f"{center}: invalid registered universe")
+                    admitted_universes.add(universe)
+    for name in _FILES:
+        path = _source_path(source, name)
+        if path is None:
+            continue
+        with readonly_db(path) as db:
+            tables = {
+                row[1]: row[2] for row in db.execute("PRAGMA table_list")
+                if row[0] == "main" and not row[1].startswith("sqlite_")
+            }
+            expected = set(_COLUMNS[name])
+            normal = {table for table, kind in tables.items() if kind == "table"}
+            if normal != expected:
+                raise InvalidBundle(
+                    f"{center}: {name} tables differ: {sorted(normal ^ expected)}"
+                )
+            if any(kind not in ("table", "virtual", "shadow") for kind in tables.values()):
+                raise InvalidBundle(f"{center}: unclassified {name} table")
+            for table, column in _COLUMNS[name].items():
+                quoted_table = '"' + table.replace('"', '""') + '"'
+                quoted_column = '"' + column.replace('"', '""') + '"'
+                for (value,) in db.execute(
+                    f"SELECT DISTINCT {quoted_column} FROM {quoted_table}"
+                ):
+                    if name in ("episodic", "knowledge", "promises", "versions"):
+                        if value is None and name == "knowledge":
+                            continue
+                        if value not in admitted_universes:
+                            raise InvalidBundle(
+                                f"{center}: {name}.{table} has a foreign universe scope"
+                            )
+                        if path.parent != source and value != path.parent.name:
+                            raise InvalidBundle(
+                                f"{center}: {name}.{table} differs from its universe root"
+                            )
+    for parent in (source, *source.iterdir()):
+        if not parent.is_dir() or parent.is_symlink():
+            continue
+        for name in _VECTOR_DIRS:
+            path = parent / name
+            if path.exists() or path.is_symlink():
+                if path.is_symlink() or not path.is_dir():
+                    raise InvalidBundle(f"{center}: invalid vector directory {path}")
+                _tree_digest(path)
+
+
 @dataclass(frozen=True)
 class CenterKnowledge:
     owner: str
