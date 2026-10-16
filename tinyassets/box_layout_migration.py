@@ -23,6 +23,7 @@ from pathlib import Path, PurePosixPath
 from deploy.box_project_readback import verify_owner, verify_tree
 from tinyassets import storage_layout
 from tinyassets.broker.owner_identities import OWNER_ID_FIRST, OWNER_ID_LAST
+from tinyassets.sqlite_readonly import readonly_db, readonly_snapshot
 from tinyassets.universe_owner import account_type_of
 from tinyassets.usage_policy import limits_for
 
@@ -94,8 +95,7 @@ def layout_census(data: Path) -> dict:
         identity_error = "identity database unreadable"
     elif present:
         try:
-            uri = identity_db.resolve().as_uri() + "?mode=ro"
-            with sqlite3.connect(uri, uri=True) as db:
+            with readonly_db(identity_db) as db:
                 row = db.execute("SELECT COUNT(*) FROM owner_identities").fetchone()
             counts["owner-split"]["admitted_owners"] = int(row[0]) if row else 0
         except sqlite3.Error as exc:
@@ -217,9 +217,9 @@ def _verified_pair(data_backup: Path, box_backup: Path) -> None:
     _verified_archive(box_backup)
 
 
-def _owner_plan(data: Path) -> list[OwnerMove]:
+def _owner_plan(data: Path, *, readonly: bool = False) -> list[OwnerMove]:
     identity_db = data / ".broker" / "state" / "owner-identities.db"
-    with sqlite3.connect(f"file:{identity_db}?mode=ro", uri=True) as db:
+    with readonly_db(identity_db) as db:
         identities = dict(db.execute(
             "SELECT principal, machine_id FROM owner_identities"
         ))
@@ -259,7 +259,10 @@ def _owner_plan(data: Path) -> list[OwnerMove]:
             if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 1001
                     or info.st_gid != uid):
                 raise RuntimeError(f"noncanonical owner center {center}")
-        quota = int(limits_for(account_type_of(data, principal)).storage_bytes)
+        account = account_type_of(
+            data, principal, db_reader=readonly_db if readonly else None,
+        )
+        quota = int(limits_for(account).storage_bytes)
         quota = (quota // 1024) * 1024
         if quota <= 0:
             raise RuntimeError("owner quota is not positive")
@@ -281,7 +284,7 @@ def _boxed_activity_roots(data: Path, store: Path) -> tuple[dict[str, Path], dic
     from tinyassets.activity_shape_migration import _centers, _pending
 
     identity_db = data / ".broker" / "state" / "owner-identities.db"
-    with sqlite3.connect(f"{identity_db.resolve().as_uri()}?mode=ro", uri=True) as db:
+    with readonly_db(identity_db) as db:
         records = dict(db.execute("SELECT principal, machine FROM box_records"))
     centers = _centers(data)
     by_owner: dict[str, list[str]] = {}
@@ -464,7 +467,9 @@ def _xfs_quota(store: Path, command: str) -> str:
     return result.stdout
 
 
-def _owner_move_preconditions(data: Path, store: Path, marker: dict) -> list[OwnerMove] | None:
+def _owner_move_preconditions(
+    data: Path, store: Path, marker: dict, *, readonly: bool = False,
+) -> list[OwnerMove] | None:
     """Read-only checks shared by the live preflight and locked apply."""
     _mounted(store)
     if marker.get("box_layout") == "owner-box":
@@ -476,7 +481,7 @@ def _owner_move_preconditions(data: Path, store: Path, marker: dict) -> list[Own
         return None
     if marker.get("box_layout", "owner-split") != "owner-split":
         raise RuntimeError("one-shot box migration requires owner-split")
-    plan = _owner_plan(data)
+    plan = _owner_plan(data, readonly=True) if readonly else _owner_plan(data)
     from tinyassets.activity_shape_migration import _pending
 
     admitted_centers = {center for owner in plan for center in owner.centers}
@@ -498,7 +503,7 @@ def _owner_move_preconditions(data: Path, store: Path, marker: dict) -> list[Own
     if journal.exists() or journal.is_symlink():
         raise RuntimeError("boxhost journal already exists")
     identity_db = data / ".broker" / "state" / "owner-identities.db"
-    with sqlite3.connect(f"{identity_db.resolve().as_uri()}?mode=ro", uri=True) as db:
+    with readonly_db(identity_db) as db:
         if db.execute("SELECT 1 FROM sqlite_master WHERE name='box_records'").fetchone():
             raise RuntimeError("box records already exist")
     if not _xfs_quota(store, "report -p -n").strip():
@@ -511,7 +516,8 @@ def preflight(data: Path, store: Path) -> None:
         raise PermissionError("box layout preflight requires the one-shot root container")
     lock = _open_layout_lock(data, os.O_RDONLY)
     os.close(lock)
-    _owner_move_preconditions(data, store, _marker(data))
+    with readonly_snapshot():
+        _owner_move_preconditions(data, store, _marker(data), readonly=True)
 
 
 def _open_layout_lock(data: Path, access: int) -> int:

@@ -15,6 +15,7 @@ from pathlib import Path
 
 from tinyassets import agent_activities as activities
 from tinyassets import runs
+from tinyassets.sqlite_readonly import readonly_db
 from tinyassets.storage import DB_FILENAME
 
 REASON = "Legacy Activities work could not be carried into the new agent session"
@@ -30,6 +31,11 @@ DEFAULT_PROMPT = (
 @contextmanager
 def _db(path: Path, *, write: bool = False):
     mode = "rw" if write else "ro"
+    if not write:
+        with readonly_db(path) as conn:
+            conn.row_factory = sqlite3.Row
+            yield conn
+        return
     conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode={mode}", uri=True)
     conn.row_factory = sqlite3.Row
     try:

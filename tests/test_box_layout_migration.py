@@ -8,11 +8,13 @@ import socket
 import sqlite3
 import stat
 import subprocess
+import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
 
 from tinyassets import box_layout_migration as migration
+from tinyassets.usage_policy import AccountType, limits_for
 
 
 def _archive(path: Path, data: bytes) -> None:
@@ -75,7 +77,7 @@ def test_read_only_preflight_refuses_without_changing_the_layout(tmp_path, monke
     data, store = _cutover_root(tmp_path)
     original = (data / ".layout.json").read_bytes()
     monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(migration, "_owner_plan", lambda _: [
+    monkeypatch.setattr(migration, "_owner_plan", lambda _, **_kwargs: [
         migration.OwnerMove("alice", 300001, ("c1",), 1024**3)])
     monkeypatch.setattr(activity_shape, "_pending", lambda _: [])
     monkeypatch.setattr(migration, "_mounted", lambda _: None)
@@ -107,13 +109,116 @@ def test_read_only_preflight_accepts_clean_owner_split(tmp_path, monkeypatch):
     data, store = _cutover_root(tmp_path)
     monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
     monkeypatch.setattr(migration, "_mounted", lambda _: None)
-    monkeypatch.setattr(migration, "_owner_plan", lambda _: [
+    monkeypatch.setattr(migration, "_owner_plan", lambda _, **_kwargs: [
         migration.OwnerMove("alice", 300001, ("c1",), 1024**3)])
     monkeypatch.setattr(activity_shape, "_pending", lambda _: [])
     monkeypatch.setattr(migration, "_owner_inode_preflight", lambda *_: None)
     monkeypatch.setattr(migration, "_xfs_quota", lambda *_: "project report")
     migration.preflight(data, store)
     assert not list(store.iterdir())
+
+
+@pytest.mark.skipif(os.name != "posix", reason="read-only WAL exercise runs on Linux")
+@pytest.mark.parametrize("live_writer", [False, True])
+def test_preflight_reads_wal_without_writing_data(tmp_path, monkeypatch, live_writer):
+    data, store = _cutover_root(tmp_path)
+    identity = data / ".broker/state/owner-identities.db"
+    author = data / ".tinyassets.db"
+    tier = data / "c1/.subscription_state.db"
+    statements = {
+        identity: (
+            "CREATE TABLE owner_identities (principal TEXT, machine_id INTEGER);"
+            "CREATE TABLE center_admissions (generation INTEGER, event TEXT, "
+            "principal TEXT, center TEXT, machine INTEGER);"
+            "INSERT INTO owner_identities VALUES ('alice', 300001);"
+            "INSERT INTO center_admissions VALUES (1, 'admit', 'alice', 'c1', 300001);"
+        ),
+        author: (
+            "CREATE TABLE founder_home (founder_sub TEXT, universe_id TEXT);"
+            "CREATE TABLE branch_definitions (branch_def_id TEXT);"
+            "INSERT INTO founder_home VALUES ('alice', 'c1');"
+        ),
+        tier: (
+            "CREATE TABLE subscription_meta (key TEXT, value TEXT);"
+            "INSERT INTO subscription_meta VALUES ('tier', 'paid');"
+        ),
+    }
+    writer = None
+    try:
+        if live_writer:
+            child = (
+                "import sqlite3, sys; connections=[]; "
+                "\nfor index in range(1, len(sys.argv), 2):\n"
+                " db=sqlite3.connect(sys.argv[index]); "
+                "db.execute('PRAGMA journal_mode=WAL'); "
+                "db.execute('PRAGMA wal_autocheckpoint=0'); "
+                "db.executescript(sys.argv[index+1]); connections.append(db)\n"
+                "print('ready', flush=True); sys.stdin.readline()"
+            )
+            arguments = [item for path, sql in statements.items() for item in (str(path), sql)]
+            writer = subprocess.Popen(  # noqa: S603 -- isolated local SQLite fixture
+                [sys.executable, "-u", "-c", child, *arguments],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True,
+            )
+            assert writer.stdout is not None
+            assert writer.stdout.readline() == "ready\n"
+            for path in statements:
+                assert path.with_name(path.name + "-shm").is_file()
+        else:
+            for path, sql in statements.items():
+                # Abrupt exit leaves committed WAL frames; remove the stale index
+                # as on a quiescent archive restored without its -shm sidecar.
+                child = (
+                    "import os, sqlite3, sys; "
+                    "db=sqlite3.connect(sys.argv[1]); "
+                    "db.execute('PRAGMA journal_mode=WAL'); "
+                    "db.execute('PRAGMA wal_autocheckpoint=0'); "
+                    "db.executescript(sys.argv[2]); os._exit(0)"
+                )
+                subprocess.run([sys.executable, "-c", child, str(path), sql], check=True)
+                path.with_name(path.name + "-shm").unlink()
+                assert path.with_name(path.name + "-wal").is_file()
+        original = {p.relative_to(data): p.read_bytes() for p in data.rglob("*") if p.is_file()}
+        modes = {p: stat.S_IMODE(p.stat().st_mode) for p in (data, *data.rglob("*"))}
+        for path in modes:
+            path.chmod(0o444 if path.is_file() else 0o555)
+        real_lstat = Path.lstat
+
+        def owner_lstat(path):
+            info = real_lstat(path)
+            if path == data / "c1":
+                return os.stat_result((
+                    info.st_mode, info.st_ino, info.st_dev, info.st_nlink,
+                    1001, 300001, info.st_size, info.st_atime, info.st_mtime, info.st_ctime,
+                ))
+            return info
+
+        monkeypatch.setattr(Path, "lstat", owner_lstat)
+        monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
+        monkeypatch.setattr(migration, "_mounted", lambda _: None)
+        monkeypatch.setattr(migration, "_owner_inode_preflight", lambda *_: None)
+        monkeypatch.setattr(migration, "_xfs_quota", lambda *_: "project report")
+        plan = migration._owner_plan(data, readonly=True)
+        assert plan[0].quota == limits_for(AccountType.SUBSCRIPTION).storage_bytes
+        migration.preflight(data, store)
+        after = {p.relative_to(data): p.read_bytes() for p in data.rglob("*") if p.is_file()}
+        assert after == original
+    finally:
+        if "modes" in locals():
+            for path, mode in modes.items():
+                path.chmod(mode)
+        if writer is not None:
+            writer.communicate(input="\n", timeout=10)
+
+
+def test_preflight_refuses_unreadable_founder_home(tmp_path):
+    data, _ = _cutover_root(tmp_path)
+    from tinyassets.sqlite_readonly import readonly_db
+    from tinyassets.universe_owner import account_type_of
+
+    with pytest.raises(FileNotFoundError):
+        account_type_of(data, "alice", db_reader=readonly_db)
 
 
 def test_cross_owner_inode_refuses_before_marker_or_destination_write(tmp_path, monkeypatch):

@@ -19,6 +19,7 @@ import signal
 import subprocess
 import sys
 import tarfile
+import time
 import uuid
 from pathlib import Path
 
@@ -82,6 +83,12 @@ home = data / '.platform/owners/300001/agent-home'
 home.mkdir(parents=True)
 (home / 'session notes.txt').write_text('agent home')
 
+from tinyassets.daemon_server import set_founder_home
+set_founder_home(data, founder_sub='alice', universe_id='command-center')
+with sqlite3.connect(data / 'command-center/.subscription_state.db') as db:
+    db.execute('CREATE TABLE subscription_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+    db.execute("INSERT INTO subscription_meta VALUES ('tier', 'paid')")
+
 with tarfile.open(backup / os.environ['DATA_ARCHIVE'], 'w:gz') as archive:
     archive.add(data, arcname='_data')
 with tarfile.open(backup / os.environ['BOX_ARCHIVE'], 'w:gz') as archive:
@@ -98,12 +105,13 @@ for name in (os.environ['DATA_ARCHIVE'], os.environ['BOX_ARCHIVE']):
 VERIFY_COMMIT = r'''
 import json, os, sqlite3
 from pathlib import Path
+from tinyassets.sqlite_readonly import readonly_db
 
 data, store = Path('/data'), Path('/box-store')
 marker = json.loads((data / '.layout.json').read_text())
 assert marker['box_layout'] == 'owner-box' and marker['state'] == 'stable'
 assert marker['activity_shape'] == 'v1'
-with sqlite3.connect(data / '.broker/state/owner-identities.db') as db:
+with readonly_db(data / '.broker/state/owner-identities.db') as db:
     records = db.execute('SELECT principal,machine,project_id FROM box_records '
                          'ORDER BY machine').fetchall()
 assert records == [('alice', 300001, 300001), ('bob', 300002, 300002),
@@ -124,7 +132,7 @@ for principal, uid, center in (
             ('sticky', 0o1777), ('setuid-tool', 0o4750)):
         assert (source / relative).stat().st_mode & 0o7777 == expected
         assert (moved / relative).stat().st_mode & 0o7777 == expected
-    with sqlite3.connect(moved / 'state.sqlite') as db:
+    with readonly_db(moved / 'state.sqlite') as db:
         assert db.execute('SELECT name FROM events').fetchone() == (principal,)
 assert (data / '.platform/credential-vaults/command-center/.credential-vault.json'
         ).read_text() == 'private credential'
@@ -136,11 +144,12 @@ print('owner-box marker, three records, SQLite, bytes, links, credentials and ag
 VERIFY_RESTORE = r'''
 import json, sqlite3
 from pathlib import Path
+from tinyassets.sqlite_readonly import readonly_db
 
 data, store = Path('/parent/_data'), Path('/box-store')
 marker = json.loads((data / '.layout.json').read_text())
 assert marker['box_layout'] == 'owner-split' and marker['state'] == 'stable'
-with sqlite3.connect(data / '.broker/state/owner-identities.db') as db:
+with readonly_db(data / '.broker/state/owner-identities.db') as db:
     assert db.execute("SELECT 1 FROM sqlite_master WHERE name='box_records'").fetchone() is None
 assert (data / 'command-center/odd name ü\nline.txt').read_text() == 'owner=alice\n'
 assert not (store / '300001').exists()
@@ -153,19 +162,63 @@ ARCHIVE_PLAN = r'''
 import json
 from pathlib import Path
 from tinyassets.box_layout_migration import _owner_plan
+from tinyassets.sqlite_readonly import readonly_snapshot
 
-print(json.dumps([{'uid': owner.uid, 'centers': list(owner.centers), 'quota': owner.quota}
-                  for owner in _owner_plan(Path('/data'))]))
+with readonly_snapshot():
+    print(json.dumps([{'uid': owner.uid, 'centers': list(owner.centers), 'quota': owner.quota}
+                      for owner in _owner_plan(Path('/data'), readonly=True)]))
+'''
+
+QUIESCE_SHM = r'''
+from pathlib import Path
+
+root = Path('/data')
+for sidecar in root.rglob('*-shm'):
+    assert sidecar.is_file() and not sidecar.is_symlink(), sidecar
+    sidecar.unlink()
+assert not list(root.rglob('*-shm'))
+print('quiescent SQLite volume has no shared-memory sidecars: PASS')
+'''
+
+LIVE_WRITER = r'''
+import sqlite3, time
+from pathlib import Path
+
+connections = []
+for path in (Path('/data/.broker/state/owner-identities.db'),
+             Path('/data/.tinyassets.db'),
+             Path('/data/command-center/.subscription_state.db')):
+    db = sqlite3.connect(path)
+    db.execute('PRAGMA journal_mode=WAL')
+    db.execute('PRAGMA wal_autocheckpoint=0')
+    db.execute('PRAGMA user_version=1')
+    connections.append(db)
+Path('/backup/writer-ready').touch()
+while True:
+    time.sleep(1)
+'''
+
+DATA_DIGEST = r'''
+import hashlib
+from pathlib import Path
+
+root = Path('/data')
+digest = hashlib.sha256()
+for path in sorted(item for item in root.rglob('*') if item.is_file()):
+    digest.update(str(path.relative_to(root)).encode())
+    digest.update(hashlib.sha256(path.read_bytes()).digest())
+print(digest.hexdigest())
 '''
 
 QUOTA_READBACK = r'''
 import json, sqlite3, sys
 from pathlib import Path
 from deploy.box_project_readback import verify_owner, verify_tree
+from tinyassets.sqlite_readonly import readonly_db
 
 store = Path('/box-store')
 if sys.argv[1] == 'set':
-    with sqlite3.connect('/data/.broker/state/owner-identities.db') as db:
+    with readonly_db(Path('/data/.broker/state/owner-identities.db')) as db:
         rows = db.execute('SELECT machine,project_id,bhard_bytes FROM box_records').fetchall()
     assert rows, 'no owner box records'
     for uid, project, limit in rows:
@@ -190,14 +243,16 @@ ARCHIVE_REPORT = r'''
 import json, os, sqlite3, subprocess, sys
 from pathlib import Path
 from tinyassets.box_layout_migration import _owner_plan
+from tinyassets.sqlite_readonly import readonly_db, readonly_snapshot
 
 data, store = Path('/data'), Path('/box-store')
 mode = sys.argv[1]
-plan = _owner_plan(data)
+with readonly_snapshot():
+    plan = _owner_plan(data, readonly=True)
 success = True
 if mode == 'commit':
     marker = json.loads((data / '.layout.json').read_text())
-    with sqlite3.connect(data / '.broker/state/owner-identities.db') as db:
+    with readonly_db(data / '.broker/state/owner-identities.db') as db:
         records = {row[0]: row[1:] for row in db.execute(
             'SELECT principal, machine, project_id FROM box_records')}
     if (marker.get('box_layout') != 'owner-box' or marker.get('state') != 'stable'
@@ -271,10 +326,11 @@ wrapper.chmod(0o755)
 ARCHIVE_RESTORE_CHECK = r'''
 import json, sqlite3, sys
 from pathlib import Path
+from tinyassets.sqlite_readonly import readonly_db
 
 data, store = Path('/parent/_data'), Path('/box-store')
 marker = json.loads((data / '.layout.json').read_text())
-with sqlite3.connect(data / '.broker/state/owner-identities.db') as db:
+with readonly_db(data / '.broker/state/owner-identities.db') as db:
     box_records = db.execute("SELECT 1 FROM sqlite_master WHERE name='box_records'").fetchone()
 retained = [path for path in store.glob('.tinyassets-box-restore-old.*/[0-9]*')
             if path.is_dir()]
@@ -298,6 +354,20 @@ def run(*argv: str, check: bool = True) -> subprocess.CompletedProcess[str]:
 
 def docker(*argv: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     return run('docker', *argv, check=check)
+
+
+def preflight_args(data_volume: str, store_path: str, device: str, image: str) -> tuple[str, ...]:
+    """The exact deploy preflight container posture, against disposable volumes."""
+    return ('--rm', '--cap-drop', 'ALL', '--user', '0',
+            '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SYS_ADMIN',
+            '--security-opt', 'no-new-privileges=true', '--network', 'none',
+            '--memory=1g', '--memory-swap=1g',
+            '-v', f'{data_volume}:/data:ro',
+            '--device', f'{device}:{device}:r',
+            '--mount', f'type=bind,src={store_path},dst=/box-store,readonly',
+            '--entrypoint', 'python', image, '-B', '-m',
+            'tinyassets.box_layout_migration', 'preflight',
+            '/data', '--store', '/box-store')
 
 
 def volume_path(name: str) -> str:
@@ -407,6 +477,10 @@ def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int
                            DATA_ARCHIVE, BOX_ARCHIVE, check=False)
         if staged.returncode:
             raise RuntimeError(f'archive staging: FAIL (rc={staged.returncode})')
+        quiesced = container('--rm', '--user', '0', '--network', 'none',
+                             '-v', f"{names['data']}:/data", '--entrypoint',
+                             'python', image, '-c', QUIESCE_SHM)
+        print('[rehearsal] ' + quiesced.stdout.strip())
         probe = container('--rm', '--user', '0', '--network', 'none',
                           '-v', f"{names['data']}:/data:ro", '--entrypoint', 'python', image,
                           '-B', '-m', 'tinyassets.box_layout_migration', 'check', '/data',
@@ -435,18 +509,8 @@ def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int
                       '--mount', f'type=bind,src={store_path},dst=/box-store',
                       '--entrypoint', 'mkdir', image, '-p',
                       f'/box-store/{owners[0]["uid"]}')
-        preflight = container('--rm', '--cap-drop', 'ALL', '--user', '0',
-                              '--cap-add', 'CHOWN', '--cap-add', 'FOWNER',
-                              '--cap-add', 'FSETID', '--cap-add', 'DAC_OVERRIDE',
-                              '--cap-add', 'SYS_ADMIN', '--security-opt',
-                              'no-new-privileges=true', '--network', 'none',
-                              '--memory=1g', '--memory-swap=1g',
-                              '-v', f"{names['data']}:/data:ro",
-                              '--device', f'{device}:{device}:r', '--mount',
-                              f'type=bind,src={store_path},dst=/box-store,readonly',
-                              '--entrypoint', 'python', image, '-B', '-m',
-                              'tinyassets.box_layout_migration', 'preflight',
-                              '/data', '--store', '/box-store', check=False)
+        preflight = container(*preflight_args(names['data'], store_path, device, image),
+                              check=False)
         if leftover_owner_tree:
             assert preflight.returncode == 3 and 'box store must be empty' in preflight.stderr, (
                 preflight.stdout + preflight.stderr)
@@ -601,6 +665,8 @@ def rehearsal(image: str, *, fail: bool, leftover_owner_tree: bool = False) -> N
     names = {kind: f"{prefix}-{kind}" for kind in ('image', 'store', 'parent', 'data', 'backup')}
     created: list[str] = []
     mounted = False
+    writer_name = f'{prefix}-writer'
+    writer_started = False
     try:
         for kind in ('image', 'store', 'parent', 'backup'):
             docker('volume', 'create', names[kind])
@@ -634,6 +700,34 @@ def rehearsal(image: str, *, fail: bool, leftover_owner_tree: bool = False) -> N
         docker('run', '--rm', '--user', '0', '--network', 'none',
                '-v', f"{names['data']}:/data", '-v', f"{names['backup']}:/backup",
                *fixture_env, '--entrypoint', 'python', image, '-c', FIXTURE)
+        docker('run', '-d', '--rm', '--name', writer_name, '--user', '0',
+               '--network', 'none', '-v', f"{names['data']}:/data",
+               '-v', f"{names['backup']}:/backup", '--entrypoint', 'python',
+               image, '-c', LIVE_WRITER)
+        writer_started = True
+        for _ in range(50):
+            ready = docker('exec', writer_name, 'test', '-f', '/backup/writer-ready',
+                           check=False)
+            if ready.returncode == 0:
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError('live WAL writer failed to become ready')
+        digest_args = ('run', '--rm', '--user', '0', '--network', 'none',
+                       '-v', f"{names['data']}:/data:ro", '--entrypoint',
+                       'python', image, '-c', DATA_DIGEST)
+        before = docker(*digest_args).stdout.strip()
+        live = docker('run', *preflight_args(names['data'], store_path, device, image),
+                      check=False)
+        assert live.returncode == 0, live.stdout + live.stderr
+        assert docker(*digest_args).stdout.strip() == before
+        print('[rehearsal] live WAL writer, read-only preflight, unchanged data: PASS')
+        docker('stop', writer_name)
+        writer_started = False
+        quiesced = docker('run', '--rm', '--user', '0', '--network', 'none',
+                          '-v', f"{names['data']}:/data", '--entrypoint',
+                          'python', image, '-c', QUIESCE_SHM)
+        print('[rehearsal] ' + quiesced.stdout.strip())
         probe = docker('run', '--rm', '--user', '0', '--network', 'none',
                        '-v', f"{names['data']}:/data:ro", '--entrypoint', 'python', image,
                        '-B', '-m', 'tinyassets.box_layout_migration', 'check', '/data',
@@ -648,18 +742,10 @@ def rehearsal(image: str, *, fail: bool, leftover_owner_tree: bool = False) -> N
             docker('run', '--rm', '--user', '0',
                    '--mount', f'type=bind,src={store_path},dst=/box-store',
                    '--entrypoint', 'mkdir', image, '-p', '/box-store/300001')
-        preflight = docker('run', '--rm', '--cap-drop', 'ALL', '--user', '0',
-                           '--cap-add', 'CHOWN', '--cap-add', 'FOWNER',
-                           '--cap-add', 'FSETID', '--cap-add', 'DAC_OVERRIDE',
-                           '--cap-add', 'SYS_ADMIN', '--security-opt',
-                           'no-new-privileges=true', '--network', 'none',
-                           '--memory=1g', '--memory-swap=1g',
-                           '-v', f"{names['data']}:/data:ro",
-                           '--device', f'{device}:{device}:r', '--mount',
-                           f'type=bind,src={store_path},dst=/box-store,readonly',
-                           '--entrypoint', 'python', image, '-B', '-m',
-                           'tinyassets.box_layout_migration', 'preflight',
-                           '/data', '--store', '/box-store', check=False)
+        before = docker(*digest_args).stdout.strip()
+        preflight = docker('run', *preflight_args(names['data'], store_path, device, image),
+                           check=False)
+        assert docker(*digest_args).stdout.strip() == before
         if leftover_owner_tree:
             assert preflight.returncode == 3 and 'box store must be empty' in preflight.stderr, (
                 preflight.stdout + preflight.stderr)
@@ -810,6 +896,8 @@ bash /rehearsal-deploy/backup-restore.sh
                              '--entrypoint', 'python', image, '-c', QUOTA_READBACK, 'clear')
             print('[rehearsal] ' + cleared.stdout.strip())
     finally:
+        if writer_started:
+            docker('rm', '-f', writer_name, check=False)
         if mounted:
             unmount = docker('run', '--rm', '--privileged', '--pid=host', '--user', '0',
                              '--entrypoint', 'nsenter', image, '-t', '1', '-m', 'umount',
