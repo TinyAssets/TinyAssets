@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from deploy.box_project_readback import verify_owner, verify_tree
 from tinyassets import storage_layout
 from tinyassets.broker.owner_identities import OWNER_ID_FIRST, OWNER_ID_LAST
 from tinyassets.universe_owner import account_type_of
@@ -498,9 +499,8 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
             tree = store / str(owner.uid)
             tree.mkdir(mode=0o700)
             os.chown(tree, owner.uid, owner.uid)
-            setup = _xfs_quota(store, f"project -s -p {tree} {owner.uid}")
-            if f"Setting up project {owner.uid} " not in setup:
-                raise RuntimeError(f"xfs_quota did not establish project {owner.uid}")
+            _xfs_quota(store, f"project -s -p {tree} {owner.uid}")
+            verify_tree(tree, owner.uid, True)
             _xfs_quota(store, f"limit -p bhard={owner.quota // 1024}k {owner.uid}")
             for center in owner.centers:
                 _copy_credentials(data / center, custody_root / center)
@@ -528,6 +528,7 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
                 )
                 _copy(agent_home, destination, owner.uid,
                       extra_excludes=auth_paths)
+            verify_owner(store, tree, owner.uid, owner.quota)
         broker_state = data / ".broker" / "state"
         with sqlite3.connect(broker_state / "owner-identities.db") as db:
             db.execute("PRAGMA synchronous=FULL")

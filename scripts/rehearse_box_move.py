@@ -139,8 +139,29 @@ import json
 from pathlib import Path
 from tinyassets.box_layout_migration import _owner_plan
 
-print(json.dumps([{'uid': owner.uid, 'centers': list(owner.centers)}
+print(json.dumps([{'uid': owner.uid, 'centers': list(owner.centers), 'quota': owner.quota}
                   for owner in _owner_plan(Path('/data'))]))
+'''
+
+QUOTA_READBACK = r'''
+import sqlite3, sys
+from pathlib import Path
+from deploy.box_project_readback import verify_owner, verify_tree
+
+store = Path('/box-store')
+if sys.argv[1] == 'set':
+    with sqlite3.connect('/data/.broker/state/owner-identities.db') as db:
+        rows = db.execute('SELECT machine,project_id,bhard_bytes FROM box_records').fetchall()
+    assert rows, 'no owner box records'
+    for uid, project, limit in rows:
+        verify_owner(store, store / str(uid), project, limit)
+        print(f'owner={uid} inode_project_and_hard_limit=PASS')
+else:
+    retained = sorted(store.glob('.tinyassets-box-restore-old.*/[0-9]*'))
+    assert retained, 'no retained owner trees'
+    for tree in retained:
+        verify_tree(tree, 0, False)
+        print(f'owner={tree.name} retained_project_cleared=PASS')
 '''
 
 ARCHIVE_REPORT = r'''
@@ -427,17 +448,14 @@ def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int
         if not fail:
             quotas = container('--rm', '--cap-drop', 'ALL', '--user', '0',
                                '--cap-add', 'SYS_ADMIN', '--device', f'{device}:{device}:r',
-                               '--network', 'none',
+                               '--network', 'none', '-v', f"{names['data']}:/data:ro",
                                '--mount', f'type=bind,src={store_path},dst=/box-store',
-                               '--entrypoint', 'xfs_quota', image, '-x', '-c',
-                               'report -p -n', '/box-store', check=False)
-            for owner in owners:
-                uid = str(owner['uid'])
-                good = (quotas.returncode == 0 and not quotas.stderr
-                        and re.search(rf'(?m)^\s*#?{re.escape(uid)}\s+', quotas.stdout))
-                print(f'owner={uid} project_quota={"PASS" if good else "FAIL"}')
-                if not good:
-                    raise RuntimeError(f'owner={uid} project quota: FAIL')
+                               '--entrypoint', 'python', image, '-c', QUOTA_READBACK, 'set',
+                               check=False)
+            print(quotas.stdout, end='')
+            if quotas.returncode:
+                raise RuntimeError(f'owner project read-back: FAIL (rc={quotas.returncode}) '
+                                   + quotas.stderr)
 
         if fail:
             shim = r'''set -eu
@@ -471,6 +489,14 @@ bash /rehearsal-deploy/backup-restore.sh
             print(checked.stdout, end='')
             if checked.returncode:
                 raise RuntimeError(f'restore verification: FAIL (rc={checked.returncode})')
+            cleared = container('--rm', '--user', '0', '--network', 'none',
+                                '--mount', f'type=bind,src={store_path},dst=/box-store,readonly',
+                                '--entrypoint', 'python', image, '-c', QUOTA_READBACK, 'clear',
+                                check=False)
+            print(cleared.stdout, end='')
+            if cleared.returncode:
+                raise RuntimeError(f'retained project read-back: FAIL (rc={cleared.returncode}) '
+                                   + cleared.stderr)
             compared = container('--rm', '--user', '0', '--network', 'none',
                                  '-v', f"{names['parent']}:/parent:ro",
                                  '-v', f"{names['backup']}:/backup:ro",
@@ -601,17 +627,18 @@ bash /rehearsal-deploy/backup-restore.sh
                               '--mount', f'type=bind,src={store_path},dst=/box-store',
                               '--entrypoint', 'python', image, '-c', VERIFY_RESTORE)
             print('[rehearsal] ' + verified.stdout.strip())
+            cleared = docker('run', '--rm', '--user', '0', '--network', 'none',
+                             '--mount', f'type=bind,src={store_path},dst=/box-store,readonly',
+                             '--entrypoint', 'python', image, '-c', QUOTA_READBACK, 'clear')
+            print('[rehearsal] ' + cleared.stdout.strip())
         else:
             assert apply.returncode == 0, apply.stdout + apply.stderr
             quotas = docker('run', '--rm', '--cap-drop', 'ALL', '--user', '0',
                             '--cap-add', 'SYS_ADMIN', '--device', f'{device}:{device}:r',
-                            '--network', 'none',
+                            '--network', 'none', '-v', f"{names['data']}:/data:ro",
                             '--mount', f'type=bind,src={store_path},dst=/box-store',
-                            '--entrypoint', 'xfs_quota', image, '-x', '-c',
-                            'report -p -n', '/box-store')
-            assert not quotas.stderr, quotas.stderr
-            assert all(uid in quotas.stdout for uid in ('300001', '300002', '300003')), (
-                quotas.stdout)
+                            '--entrypoint', 'python', image, '-c', QUOTA_READBACK, 'set')
+            print('[rehearsal] ' + quotas.stdout.strip())
             verified = docker('run', '--rm', '--user', '0', '--network', 'none',
                               '-v', f"{names['data']}:/data",
                               '--mount', f'type=bind,src={store_path},dst=/box-store',

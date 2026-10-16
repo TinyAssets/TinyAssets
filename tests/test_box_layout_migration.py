@@ -84,6 +84,8 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
     monkeypatch.setattr(migration, "_xfs_quota", lambda _store, command:
                         f"Setting up project {command.rsplit(' ', 1)[-1]} "
                         if command.startswith("project ") else "")
+    monkeypatch.setattr(migration, "verify_tree", lambda *args: None)
+    monkeypatch.setattr(migration, "verify_owner", lambda *args: None)
 
     def copy(source, target, uid):
         if copy_fails:
@@ -255,6 +257,8 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
     monkeypatch.setattr(migration, "_xfs_quota", lambda _store, command:
                         f"Setting up project {command.rsplit(' ', 1)[-1]} "
                         if command.startswith("project ") else "")
+    monkeypatch.setattr(migration, "verify_tree", lambda *args: None)
+    monkeypatch.setattr(migration, "verify_owner", lambda *args: None)
     from tinyassets import activity_shape_migration as activity_shape
 
     monkeypatch.setattr(activity_shape, "_pending", lambda _: ["home"])
