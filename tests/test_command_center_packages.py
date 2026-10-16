@@ -942,7 +942,6 @@ def test_a_bare_opaque_run_is_listed_for_review_not_dropped():
     assert ccp.review_note(data) == ccp.N_OPAQUE
 
 
-@pytest.mark.skipif(os.name != "posix", reason="LocalBoxProvider needs POSIX")
 def test_the_founders_private_grounding_never_travels(tmp_path):
     """``orgchart.md`` shipped in a published package (post-merge review of #4315).
 
@@ -978,7 +977,6 @@ def test_the_founders_private_grounding_never_travels(tmp_path):
         assert any(row["path"] == name for row in excluded)
 
 
-@pytest.mark.skipif(os.name != "posix", reason="LocalBoxProvider needs POSIX")
 def test_the_published_roster_agents_identity_still_travels(tmp_path):
     """``identity.md`` is a brain file AND a harness root file, and the harness
     set travels on purpose: ``destination`` remaps those into
@@ -1000,7 +998,6 @@ def test_the_published_roster_agents_identity_still_travels(tmp_path):
     assert ccp.destination("identity.md", "alice-village") == "agents/alice-village/identity.md"
 
 
-@pytest.mark.skipif(os.name != "posix", reason="LocalBoxProvider needs POSIX")
 def test_the_publishers_own_request_queue_never_travels(tmp_path):
     """``requests.json`` shipped too, and it is not inert on arrival.
 
@@ -1034,7 +1031,6 @@ def test_identity_travels_and_memory_travels_only_when_named(tmp_path):
                         memory_items={ccp.MEMORY_FILE: ["m_abc"]})[0] is not None
 
 
-@pytest.mark.skipif(os.name != "posix", reason="LocalBoxProvider needs POSIX")
 def test_an_unlisted_root_file_stays_home(tmp_path):
     """The root is an ALLOWLIST, which is the whole point of this change.
 
@@ -1122,7 +1118,6 @@ def test_the_platform_folders_are_denied_from_their_writers_constants(tmp_path):
     assert ccp.dir_exclusion("data") is None
 
 
-@pytest.mark.skipif(os.name != "posix", reason="LocalBoxProvider needs POSIX")
 def test_the_owners_uploads_stay_home(tmp_path):
     """``canon/`` holds uploads. Private by default (host decision 2026-10-03):
     an upload can be anything personal, and Hard Rule 9 makes it authoritative
@@ -1154,7 +1149,6 @@ def test_the_owners_uploads_stay_home(tmp_path):
     assert any(row["reason"] == ccp.R_UPLOADS for row in excluded)
 
 
-@pytest.mark.skipif(os.name != "posix", reason="LocalBoxProvider needs POSIX")
 def test_a_discarded_work_target_does_not_travel(tmp_path):
     """The P1 the review found, as a writer-to-package regression.
 
@@ -1178,7 +1172,6 @@ def test_a_discarded_work_target_does_not_travel(tmp_path):
     assert secret not in b"".join(files.values()).decode("utf-8", "replace")
 
 
-@pytest.mark.skipif(os.name != "posix", reason="LocalBoxProvider needs POSIX")
 def test_the_listing_the_owner_reads_is_the_bundle_that_ships(tmp_path):
     """Every kind that travelled before this change still travels, and the
     paths the owner confirms against are the paths and BYTES in the blob.
