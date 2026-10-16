@@ -6,6 +6,31 @@ import sys
 from tinyassets.engine_endpoint import EngineEndpoint, current_server, grant_key
 
 
+def test_shared_registration_preserves_pinned_profile_and_private_transport():
+    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
+
+    endpoint = EngineEndpoint("alice", "a", "a-secret", "a-key")
+
+    async def check():
+        tools = {tool.name: tool for tool in await endpoint.module.mcp.list_tools(
+            run_middleware=False,
+        )}
+        assert set(tools) == set(BACKEND_ENGINE_CAPABILITIES)
+        assert "converse" not in tools
+        assert "graph_id" not in tools["read_graph"].parameters["properties"]
+        assert "graph_id" not in tools["write_graph"].parameters["properties"]
+        assert "command_center_id" not in tools["get_status"].parameters["properties"]
+        templates = await endpoint.module.mcp.list_resource_templates()
+        assert [str(template.uri_template) for template in templates] == [
+            "ta-bridge://request/{payload}",
+        ]
+
+    try:
+        asyncio.run(check())
+    finally:
+        endpoint.close()
+
+
 def test_concurrent_endpoint_identity_and_key_are_request_local():
     before = dict(os.environ)
     endpoints = [EngineEndpoint("alice", "a", "a-secret", "a-key"),

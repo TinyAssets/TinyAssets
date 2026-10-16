@@ -350,6 +350,15 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
     monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
     monkeypatch.setattr(migration, "_mounted", lambda *args: None)
     monkeypatch.setattr(migration.subprocess, "run", run)
+    from tinyassets import activity_shape_migration as activity_shape
+
+    monkeypatch.setattr(activity_shape, "_pending", lambda _: ["home"])
+
+    def convert_before_copy(_data, roots):
+        assert roots == {"home": data / "home"}
+        (roots["home"] / "Activities.md").write_text("Owner activity instructions")
+
+    monkeypatch.setattr(activity_shape, "convert", convert_before_copy)
     data_backup = tmp_path / "tinyassets-snapshot-2026-10-15T00-00-00Z.tar.gz"
     box_backup = tmp_path / "tinyassets-box-store-2026-10-15T00-00-00Z.tar.gz"
     _archive(data_backup, b"data snapshot")
@@ -358,10 +367,13 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
     migration.apply(data, store, data_backup, box_backup)
 
     assert (store / "300001" / "home" / "note.txt").read_text() == "owner sentence"
+    assert (store / "300001" / "home" / "Activities.md").read_text() == (
+        "Owner activity instructions")
     assert (data / "home" / "note.txt").read_text() == "owner sentence"
     marker = json.loads((data / ".layout.json").read_text())
     assert marker["box_layout"] == "owner-box"
     assert marker["state"] == "stable"
+    assert marker["activity_shape"] == "v1"
     moved = migration.layout_census(data)
     assert moved["box_layout"] == "owner-box"
     assert moved["pending"] is False

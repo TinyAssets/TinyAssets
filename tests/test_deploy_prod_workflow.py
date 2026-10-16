@@ -271,10 +271,16 @@ def test_canary_step_only_probes_canonical():
     names = [step.get("name") for step in steps]
     assert steps.index(provision) < names.index("Prepare data volume root")
     deploy = next(s for s in steps if s.get("id") == "deploy")
-    assert (
-        "CORE_CANARY_PROVISIONED='${{ steps.core_canary_provision.outputs.provisioned }}'"
-        in deploy["run"]
-    )
+    # The fail-safe reads the resolved gate: the real result, or a founder
+    # waiver on the first attempt of a manual run from exactly main.
+    assert "CORE_CANARY_PROVISIONED='${{ steps.canary_gate.outputs.provisioned }}'" in deploy["run"]
+    gate = next(s for s in steps if s.get("id") == "canary_gate")
+    assert steps.index(provision) < steps.index(gate) < steps.index(deploy)
+    for exact in ('[ "$GITHUB_REF" = "refs/heads/main" ]', '[ "$GITHUB_RUN_ATTEMPT" = "1" ]',
+                  '[ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]', '[ "$WAIVER" = "true" ]'):
+        assert exact in gate["run"]
+    waiver = _load()[True]["workflow_dispatch"]["inputs"]["founder_canary_waiver"]
+    assert waiver["type"] == "boolean" and waiver["default"] is False
     public = next(s for s in steps if s.get("id") == "canary")
     assert "https://tinyassets.io/mcp --assert-handles" in public["run"]
     assert not public.get("continue-on-error")
@@ -1194,3 +1200,30 @@ def test_compose_declares_no_host_run_worker_fleet():
     for name, service in compose["services"].items():
         env = service.get("environment") or {}
         assert "TINYASSETS_UNIVERSE" not in env, name
+
+
+def _gate_value(tmp_path, **env):
+    gate = next(s for s in _steps(_load()) if s.get("id") == "canary_gate")
+    out = tmp_path / "out"
+    full = {**os.environ, "GITHUB_OUTPUT": str(out), **env}
+    subprocess.run(["bash", "-c", gate["run"]], env=full, check=True)
+    return out.read_text().strip()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="bash step; runs-in=linux-ci")
+@pytest.mark.parametrize("env,expected", [
+    (dict(PROVISIONED="1", WAIVER="false", GITHUB_EVENT_NAME="workflow_run",
+          GITHUB_REF="refs/heads/main", GITHUB_RUN_ATTEMPT="1"), "1"),
+    (dict(PROVISIONED="0", WAIVER="true", GITHUB_EVENT_NAME="workflow_dispatch",
+          GITHUB_REF="refs/heads/main", GITHUB_RUN_ATTEMPT="1"), "1"),
+    (dict(PROVISIONED="0", WAIVER="true", GITHUB_EVENT_NAME="workflow_dispatch",
+          GITHUB_REF="refs/heads/Main", GITHUB_RUN_ATTEMPT="1"), "0"),
+    (dict(PROVISIONED="0", WAIVER="true", GITHUB_EVENT_NAME="workflow_dispatch",
+          GITHUB_REF="refs/heads/main", GITHUB_RUN_ATTEMPT="2"), "0"),
+    (dict(PROVISIONED="0", WAIVER="true", GITHUB_EVENT_NAME="workflow_run",
+          GITHUB_REF="refs/heads/main", GITHUB_RUN_ATTEMPT="1"), "0"),
+    (dict(PROVISIONED="0", WAIVER="false", GITHUB_EVENT_NAME="workflow_dispatch",
+          GITHUB_REF="refs/heads/main", GITHUB_RUN_ATTEMPT="1"), "0"),
+])
+def test_canary_gate_waiver_is_exact(tmp_path, env, expected):
+    assert _gate_value(tmp_path, **env) == f"provisioned={expected}"

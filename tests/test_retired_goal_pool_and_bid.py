@@ -2,8 +2,7 @@
 
 #4845 removed the goal-pool producer, the node-bid producer, and the bid
 actions. This fails if either returns on a surface that would make them
-live again. ``TINYASSETS_PAID_MARKET`` is not in this list: escrow and
-gate bonuses still read it.
+live again.
 """
 
 from __future__ import annotations

@@ -201,6 +201,9 @@ class _ForegroundRunProviderSession:
         self._branch_version_id = ""
         self._branch_digest = ""
         self._branch_snapshot: dict[str, Any] | None = None
+        self._activity_binding = None
+        self._activity_record: dict[str, Any] | None = None
+        self._activity_subject: ExecutionSubject | None = None
         self._provider = ""
         self._receipt: ProviderUniverseWorkReceipt | None = None
         self._claim: ProviderWorkExecutionClaim | None = None
@@ -275,6 +278,11 @@ class _ForegroundRunProviderSession:
         )
         if not all(exact):
             raise PermissionError("foreground run state or immutable subject changed")
+        if self._activity_binding is not None:
+            if (record.get("owner_user_id") != self._principal_id
+                    or record.get("queue_universe_id") != self._universe_id):
+                raise PermissionError("activity run ownership changed")
+            self._activity_binding.check()
 
     @property
     def bound_run_id(self) -> str:
@@ -337,6 +345,41 @@ class _ForegroundRunProviderSession:
             raise
         except Exception as exc:
             raise _held_authority_error(exc) from exc
+
+    def prepare_activity(self, *, run_id: str, activity_id: str, generation: int) -> dict:
+        """Bind a committed activity generation, without a stored workflow."""
+        from tinyassets import agent_activities
+        from tinyassets.activity_runner import ActivityRunBinding
+
+        if self._run_id:
+            raise PermissionError("this provider session is already bound to a run")
+        record = agent_activities.get(self._universe_dir, activity_id)
+        if (record is None or record["owner_principal"] != self._principal_id
+                or record["runner_generation"] != generation or record["runner_token"] != run_id):
+            raise PermissionError("activity admission identity changed")
+        binding = ActivityRunBinding(self._universe_dir, activity_id, generation, run_id)
+        binding.check()
+        self._validate_founder_home()
+        self._run_id = run_id
+        # This is an admission plan, not an executable graph or a branch row.
+        self._branch_snapshot = {
+            "author": self._principal_id,
+            "activity": {key: record[key] for key in (
+                "activity_id", "agent_id", "runner_generation", "title", "brief")},
+            "node_defs": [{"node_id": "agent", "model_hint": "writer",
+                           "prompt_template": record["brief"] or record["title"],
+                           "tools_allowed": ["agent"]}],
+        }
+        self._branch_digest = _content_digest(self._branch_snapshot)
+        self._activity_binding = binding
+        self._activity_record = record
+        self._activity_subject = ExecutionSubject(
+            kind=ExecutionSubjectKind.AGENT_ACTIVITY,
+            ref=f"{activity_id}:{generation}:{run_id}", digest=self._branch_digest,
+        )
+        self._validate_run(allowed_statuses={"running"})
+        self._request_budget.link("run", run_id)
+        return record
 
     def _admit(self) -> None:
         from tinyassets.exceptions import ProviderAuthorityHeldError
@@ -438,8 +481,9 @@ class _ForegroundRunProviderSession:
                 work_item_id=self._run_id, binding_id=None, binding_generation=None,
                 binding_digest=None, binding_revocation_generation=None,
                 principal_id=self._principal_id, actor_id=f"universe:{self._universe_id}",
-                universe_id=self._universe_id, branch_def_id=self._branch_def_id,
-                branch_version_id=subject_ref, provider=None,
+                universe_id=self._universe_id,
+                branch_def_id=None if self._activity_subject else self._branch_def_id,
+                branch_version_id=None if self._activity_subject else subject_ref, provider=None,
                 credential_reference_digest=None, assignment_generation=1,
                 assignment_digest=digest, executor_class=_admitted_cloud_class(),
                 allowed_operations=(RUN_GRAPH_OPERATION,), allowed_roles=roles,
@@ -448,7 +492,7 @@ class _ForegroundRunProviderSession:
                 expires_at=(datetime.now(timezone.utc) + timedelta(hours=1))
                 .isoformat().replace("+00:00", "Z"),
                 created_at=store.timestamp(),
-                execution_subject=ExecutionSubject(
+                execution_subject=self._activity_subject or ExecutionSubject(
                     kind=ExecutionSubjectKind.BRANCH_VERSION, ref=subject_ref,
                     digest=self._branch_digest,
                 ),
@@ -525,7 +569,8 @@ class _ForegroundRunProviderSession:
             receipt.actor_id == f"universe:{self._universe_id}",
             receipt.universe_id == self._universe_id,
             receipt.work_item_id == self._run_id,
-            receipt.branch_def_id == self._branch_def_id,
+            receipt.branch_def_id == (None if self._activity_subject else self._branch_def_id),
+            self._activity_subject is None or receipt.execution_subject == self._activity_subject,
             receipt.execution_subject is not None,
             receipt.execution_subject is not None
             and receipt.execution_subject.digest == self._branch_digest,
@@ -774,20 +819,9 @@ class _ForegroundRunProviderSession:
             node_key=getattr(config, "agent_node_key", ""),
         )
         if node is not None:
-            from tinyassets import activity_runner
-
-            # A run of the universe's Activities branch continues the activity
-            # whose record names this run -- found by run id, never from inputs
-            # -- and an unlinked one is refused here, before the agent acts.
-            activity = (
-                activity_runner.linked_activity(
-                    self._base_path, self._universe_id, self._run_id)
-                if activity_runner.is_activities_branch(
-                    self._branch_snapshot, self._universe_id)
-                else None
-            )
             from tinyassets.control_plane import session
 
+            activity = self._activity_record
             response_observer = kwargs.pop("response_observer", None)
             metadata_observer = kwargs.pop("_metadata_observer", None)
             if role != "writer" or kwargs:

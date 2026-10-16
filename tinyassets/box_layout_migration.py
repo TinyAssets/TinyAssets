@@ -8,7 +8,6 @@ there is deliberately no resume, startup hook, or reverse move.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import json
 import os
@@ -167,17 +166,25 @@ def layout_census(data: Path) -> dict:
 
 
 def check(data: Path) -> int:
-    """Print a census, then 0 (owner-box), 10 (stable owner-split), 4 (no marker) or 3."""
+    """Print a census; 10 also covers the one-time Activities cutover."""
     census = layout_census(data)
-    print(json.dumps(census, sort_keys=True))
     layout = census["box_layout"]
     state = census["marker_state"]
+    activity_pending = []
+    if layout == "owner-box" and state == "stable":
+        from tinyassets.activity_shape_migration import _pending
+
+        if _marker(data).get("activity_shape") != "v1":
+            activity_pending = _pending(data)
+            census["pending"] = bool(activity_pending)
+    census["activity_shape_pending"] = activity_pending
+    print(json.dumps(census, sort_keys=True))
     if layout == "absent":
         return ABSENT
     if state != "stable" or layout not in ("owner-split", "owner-box"):
         return UNREADABLE
     if layout == "owner-box":
-        return 0
+        return PENDING if activity_pending else 0
     return PENDING
 
 
@@ -269,6 +276,38 @@ def _owner_plan(data: Path) -> list[OwnerMove]:
     return plan
 
 
+def _boxed_activity_roots(data: Path, store: Path) -> tuple[dict[str, Path], dict[str, str]]:
+    """Resolve each owner's centers independently through committed box records."""
+    from tinyassets.activity_shape_migration import _centers, _pending
+
+    identity_db = data / ".broker" / "state" / "owner-identities.db"
+    with sqlite3.connect(f"{identity_db.resolve().as_uri()}?mode=ro", uri=True) as db:
+        records = dict(db.execute("SELECT principal, machine FROM box_records"))
+    centers = _centers(data)
+    by_owner: dict[str, list[str]] = {}
+    for center in _pending(data):
+        if not _CENTER.fullmatch(center) or center not in centers:
+            raise RuntimeError(f"activity center has no admitted owner: {center}")
+        by_owner.setdefault(centers[center], []).append(center)
+    roots = {}
+    failures = {}
+    for owner, owner_centers in by_owner.items():
+        uid = records.get(owner)
+        if type(uid) is not int or not OWNER_ID_FIRST <= uid <= OWNER_ID_LAST:
+            reason = "Activities conversion refused: owner has no box record"
+        else:
+            owner_roots = {center: store / str(uid) / center for center in owner_centers}
+            absent = [center for center, root in owner_roots.items()
+                      if root.is_symlink() or not root.is_dir()]
+            reason = (f"Activities conversion refused: owner box is absent: {absent[0]}"
+                      if absent else "")
+        if reason:
+            failures.update({center: reason for center in owner_centers})
+        else:
+            roots.update(owner_roots)
+    return roots, failures
+
+
 def _mounted(store: Path) -> None:
     result = subprocess.run(
         ["findmnt", "--mountpoint", str(store), "-no", "FSTYPE,OPTIONS"],
@@ -322,14 +361,16 @@ def _atomic_json(path: Path, value: dict) -> None:
             os.fsync(stream.fileno())
         if path.exists():
             info = path.stat()
-            os.chown(temporary, info.st_uid, info.st_gid)
+            if hasattr(os, "chown"):
+                os.chown(temporary, info.st_uid, info.st_gid)
             os.chmod(temporary, stat.S_IMODE(info.st_mode))
         os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        if hasattr(os, "O_DIRECTORY"):
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -383,10 +424,10 @@ def _copy_credentials(source: Path, target: Path) -> None:
 
 
 def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
+    import fcntl
+
     if os.geteuid() != 0:
         raise PermissionError("box layout apply requires the one-shot root container")
-    _verified_pair(data_backup, box_backup)
-    _mounted(store)
     lock = os.open(data / storage_layout.LOCK, os.O_RDWR | os.O_NOFOLLOW)
     scratch = None
     knowledge_status = {}
@@ -394,6 +435,27 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
     try:
         fcntl.flock(lock, fcntl.LOCK_EX)
         marker = _marker(data)
+        if marker.get("box_layout") == "owner-box" and marker.get("activity_shape") == "v1":
+            return
+        _verified_pair(data_backup, box_backup)
+        _mounted(store)
+        from tinyassets.activity_shape_migration import _pending, convert
+
+        if marker.get("box_layout") == "owner-box":
+            if not _pending(data):
+                raise RuntimeError("owner-box has no pending activity conversion")
+            roots, failures = _boxed_activity_roots(data, store)
+            _atomic_json(storage_layout.marker_path(data), {
+                **marker, "state": "migrating", "migration": "owner-box",
+            })
+            convert(data, roots, unavailable=failures)
+            for center, reason in sorted(failures.items()):
+                print(f"box layout activity cutover ended work for {center}: {reason}",
+                      file=sys.stderr)
+            _atomic_json(storage_layout.marker_path(data), {
+                **marker, "state": "stable", "activity_shape": "v1",
+            })
+            return
         if marker.get("box_layout", "owner-split") != "owner-split":
             raise RuntimeError("one-shot box migration requires owner-split")
         plan = _owner_plan(data)
@@ -402,6 +464,10 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
             center: {"owner": owner.principal, "status": "pending"}
             for owner in plan for center in owner.centers
         }
+        pending_activities = _pending(data)
+        admitted_centers = {center for owner in plan for center in owner.centers}
+        if set(pending_activities) - admitted_centers:
+            raise RuntimeError("activity center has no admitted owner")
         _owner_inode_preflight(data, plan)
         from tinyassets.okf.box_cutover import _FILES, _VECTOR_DIRS, prepare_center
 
@@ -436,6 +502,8 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
         _atomic_json(storage_layout.marker_path(data), {
             **marker, "state": "migrating", "migration": "owner-box",
         })
+        if pending_activities:
+            convert(data, {center: data / center for center in pending_activities})
         from tinyassets.boxes.layout import BROKER_READ_GID
 
         custody_root.parent.mkdir(mode=0o711, exist_ok=True)
@@ -514,6 +582,7 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
         os.chmod(journal / "boxhost.db", 0o600)
         _atomic_json(storage_layout.marker_path(data), {
             **marker, "box_layout": "owner-box", "state": "stable",
+            "activity_shape": "v1",
         })
     finally:
         if owner_plan:

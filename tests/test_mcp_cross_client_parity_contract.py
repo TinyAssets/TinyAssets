@@ -24,13 +24,11 @@ def _read(rel_path: str) -> str:
 def test_all_mcp_server_surfaces_register_tools_through_structured_adapter() -> None:
     """ChatGPT and Claude must see the same text + structuredContent shape."""
     failures: list[str] = []
+    registration = _read("tinyassets/control_plane/registration.py")
+    if registration.count("server.add_tool(tool)") != 1:
+        failures.append("control_plane/registration.py: expected one tool installation boundary")
     for rel_path in MCP_SERVER_SURFACES:
         text = _read(rel_path)
-        registration_lines = [
-            (lineno, line.strip())
-            for lineno, line in enumerate(text.splitlines(), 1)
-            if ".tool(" in line or ".add_tool(" in line
-        ]
 
         if "def _register_structured_tool" not in text:
             failures.append(f"{rel_path}: missing _register_structured_tool")
@@ -43,12 +41,7 @@ def test_all_mcp_server_surfaces_register_tools_through_structured_adapter() -> 
             failures.append(f"{rel_path}: adapter does not wrap with _structured_return")
         if "fn(*args, **kwargs)" not in text:
             failures.append(f"{rel_path}: adapter does not wrap the handler's own result")
-        if len(registration_lines) != 1:
-            calls = ", ".join(
-                f"L{lineno}: {line}" for lineno, line in registration_lines
-            )
-            failures.append(
-                f"{rel_path}: expected one adapter registration call, found {calls}"
-            )
+        if "install_profile_tool(mcp, tool)" not in text:
+            failures.append(f"{rel_path}: adapter does not use the shared registration boundary")
 
     assert failures == []

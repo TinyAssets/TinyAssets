@@ -19,20 +19,12 @@
 # codex auth delivery, image revision label, compose sync; the unsafe-fence
 # recovery path, whose KEEP stands). Triage source: 2026-08-27-full-tests-
 # permanently-red and the concerns it links.
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_expired_partial_owned_recovery_is_stopped_removed_and_replaced
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_partial_target_removal_empty_replay_refuses_off_volume_name
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_partial_target_removal_replay_refuses_full_volume_fleet
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_partial_target_removal_replays_after_interrupted_subset
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_preflight_refuses_mismatched_restored_recovery_provenance_before_mutation
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_prepare_refuses_recovery_handoff_drift_without_removal[foreign_project]
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_prepare_refuses_recovery_handoff_drift_without_removal[restart_policy]
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_prepare_refuses_recovery_handoff_drift_without_removal[running]
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_prepare_replays_partial_recovery_removal_after_durable_intent
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_receipt_store_requires_one_shared_volume_and_data_relative_override
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_recover_unsafe_refuses_unproved_partial_canonical_target[off_volume]
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_recover_unsafe_replaces_proved_partial_canonical_target
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_recover_unsafe_requires_complete_saved_restart_policies_before_wal
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_refence_rejects_extra_volume_consumer_without_mutation
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_safe_fleet_requires_exact_five_exact_digest_revision_and_no_old_ids
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_unexpired_stopped_partial_recovery_lease_is_not_stolen
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_unsafe_cleanup_without_receipt_resolution_never_claims_fenced

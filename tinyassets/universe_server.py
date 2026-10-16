@@ -77,6 +77,7 @@ from tinyassets.command_center_names import (
     public_response,
     verbatim,
 )
+from tinyassets.control_plane.registration import install_profile_tool
 from tinyassets.engine_read_views import compact_model_options
 from tinyassets.mcp_schema_utils import describe_signature
 from tinyassets.mcp_tool_annotations import annotations_for
@@ -520,7 +521,7 @@ def _register_structured_tool(fn, *, tags, name=None):
         meta={"securitySchemes": _oauth_security_schemes()},
         output_schema=None,
     )
-    mcp.add_tool(tool)
+    install_profile_tool(mcp, tool)
     return tool
 
 
@@ -593,7 +594,7 @@ _LANDING_HTML = """<!doctype html>
 
 <p>This is the public surface of a local-first platform for building
 custom multi-step AI workflows &mdash; typed state, registered nodes,
-evaluation hooks, iteration loops, paid-market bid/claim mechanics.
+evaluation hooks and iteration loops.
 The engine is domain-agnostic.</p>
 
 <p>If you arrived here looking for an MCP connector, the live endpoint

@@ -60,7 +60,7 @@ PLATFORM_NAMES = frozenset({
     "branch_tasks_archive.json", "auto_ship_attempts.jsonl",
     "bid_execution_log.json", "enrichment_signals.json", "worldbuild_signals.json",
     "platform-expected-instance.json", "uptime-probe", "executions", "runs",
-    "reviews", "settlements", "discarded_targets", "archived",
+    "reviews", "discarded_targets", "archived",
     "app_refresh_sessions", "import", "import-verify", "verify",
     # stores
     "lancedb",

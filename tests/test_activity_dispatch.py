@@ -1,15 +1,7 @@
-"""Harness D2a: the Activities branch, the runner adapter and the dispatcher.
-
-Design D3/D4 (change ``universe-agent-activities``): an activity runs as runs of
-the owner-authored Activities branch; a run continues an activity only when
-the record names it; the dispatcher settles ended runs, resumes interrupted
-ones, and never replaces a live run.
-"""
+"""Durable activity dispatch settles, resumes and fences one live run."""
 from __future__ import annotations
 
-import contextlib
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -219,131 +211,6 @@ def test_dispatch_all_reaches_every_universe_with_a_store(monkeypatch, tmp_path)
 # -- the start barrier -------------------------------------------------------------
 
 
-def test_only_a_run_the_record_names_continues_an_activity(universe):
-    aid = _new(universe)
-    generation = acts.claim(universe, aid, replaceable=lambda r: False)
-    acts.bind_run(universe, aid, generation, "run-legit")
-    record = runner.linked_activity(universe.parent, universe.name, "run-legit", wait_s=0)
-    assert record["activity_id"] == aid
-    with pytest.raises(PermissionError, match="activity_run_unlinked"):
-        runner.linked_activity(universe.parent, universe.name, "run-forged", wait_s=0)
-
-
-def test_the_barrier_is_keyed_on_the_activities_branch():
-    assert runner.is_activities_branch({"branch_def_id": "activities::u-alpha"}, "u-alpha")
-    assert not runner.is_activities_branch({"branch_def_id": "activities::u-beta"}, "u-alpha")
-    assert not runner.is_activities_branch({"branch_def_id": "branch::u-alpha::x"}, "u-alpha")
-
-
-# -- the Activities branch (harness layer) ----------------------------------------
-
-
-def test_the_branch_is_seeded_owner_authored_with_one_agent_node(tmp_path):
-    branch = runner.ensure_branch(tmp_path, "u-alpha", OWNER)
-    assert branch.branch_def_id == "activities::u-alpha" and branch.author == OWNER
-    assert branch.visibility == "private"
-    assert [n.tools_allowed for n in branch.node_defs] == [["agent"]]
-    again = runner.ensure_branch(tmp_path, "u-alpha", OWNER)
-    assert again.to_dict() == branch.to_dict()
-
-
-def test_an_edited_branch_without_an_agent_node_is_refused_with_the_fix(tmp_path):
-    from tinyassets.daemon_server import save_branch_definition
-
-    branch = runner.ensure_branch(tmp_path, "u-alpha", OWNER)
-    edited = branch.to_dict()
-    edited["node_defs"][0]["tools_allowed"] = []
-    save_branch_definition(tmp_path, branch_def=edited)
-    with pytest.raises(runner.ActivityBranchInvalid) as refused:
-        runner.ensure_branch(tmp_path, "u-alpha", OWNER)
-    assert refused.value.kind == "activity_branch_invalid"
-    assert "delete the workflow" in str(refused.value)
-
-
-def test_an_owner_edit_to_the_instructions_is_kept(tmp_path):
-    from tinyassets.daemon_server import save_branch_definition
-
-    branch = runner.ensure_branch(tmp_path, "u-alpha", OWNER).to_dict()
-    branch["node_defs"][0]["prompt_template"] = "Work quietly. {title}: {brief}"
-    save_branch_definition(tmp_path, branch_def=branch)
-    kept = runner.ensure_branch(tmp_path, "u-alpha", OWNER)
-    assert kept.node_defs[0].prompt_template == "Work quietly. {title}: {brief}"
-
-
-# -- the runner's start recipe -----------------------------------------------------
-
-
-def test_start_uses_the_automation_recipe_and_binds_the_run(monkeypatch, universe):
-    from tinyassets import automations, runs
-    from tinyassets.api import permissions
-
-    calls = {}
-
-    @contextlib.contextmanager
-    def identity(base, uid, owner):
-        calls["identity"] = (uid, owner)
-        yield True
-
-    monkeypatch.setattr(permissions, "owner_run_identity", identity)
-    monkeypatch.setattr(automations, "_bind_automation_provider_call",
-                        lambda base, who: ("bound", who.owner_principal_id))
-    monkeypatch.setattr(automations, "_authority_guard", lambda base, who: "guard")
-
-    def execute(base, **kwargs):
-        calls["run"] = kwargs
-        return SimpleNamespace(run_id="run-9", status="queued")
-
-    monkeypatch.setattr(runs, "execute_branch_async", execute)
-    aid = _new(universe)
-    record = acts.get(universe, aid)
-    generation = acts.claim(universe, aid, replaceable=lambda r: False)
-    assert runner.start(universe.parent, universe.name, record, generation) == "run-9"
-    assert calls["identity"] == ("u-alpha", OWNER)
-    run = calls["run"]
-    assert run["actor"] == "universe:u-alpha" and run["owner_user_id"] == OWNER
-    assert run["provider_call"] == ("bound", OWNER) and run["on_node_status"] == "guard"
-    assert run["inputs"] == {"title": record["title"], "brief": record["brief"]}
-    assert acts.get(universe, aid)["runner_token"] == "run-9"
-
-
-def test_a_start_that_loses_its_claim_cancels_the_run(monkeypatch, universe):
-    from tinyassets import automations, runs
-    from tinyassets.api import permissions
-
-    monkeypatch.setattr(permissions, "owner_run_identity",
-                        contextlib.contextmanager(lambda *a: (yield True)))
-    monkeypatch.setattr(automations, "_bind_automation_provider_call", lambda *a: None)
-    monkeypatch.setattr(automations, "_authority_guard", lambda *a: None)
-    monkeypatch.setattr(runs, "execute_branch_async",
-                        lambda base, **kw: SimpleNamespace(run_id="run-late", status="queued"))
-    cancelled = []
-    monkeypatch.setattr(runs, "request_cancel", lambda base, run_id: cancelled.append(run_id))
-    aid = _new(universe)
-    stale = acts.claim(universe, aid, replaceable=lambda r: False, now=1000.0)
-    acts.claim(universe, aid, replaceable=lambda r: False,
-               now=1000.0 + acts.UNBOUND_GRACE_S + 1)  # a newer claim
-    runner.start(universe.parent, universe.name, acts.get(universe, aid), stale)
-    assert cancelled == ["run-late"]
-    assert acts.get(universe, aid)["runner_token"] == ""
-
-
-def test_start_refuses_when_the_owner_no_longer_owns_the_universe(monkeypatch, universe):
-    from tinyassets import automations, runs
-    from tinyassets.api import permissions
-
-    monkeypatch.setattr(permissions, "owner_run_identity",
-                        contextlib.contextmanager(lambda *a: (yield False)))
-    monkeypatch.setattr(automations, "_bind_automation_provider_call", lambda *a: None)
-    monkeypatch.setattr(automations, "_authority_guard", lambda *a: None)
-    monkeypatch.setattr(runs, "execute_branch_async",
-                        lambda *a, **kw: pytest.fail("an unbound owner must never start a run"))
-    aid = _new(universe)
-    generation = acts.claim(universe, aid, replaceable=lambda r: False)
-    with pytest.raises(acts.ActivityRefused) as refused:
-        runner.start(universe.parent, universe.name, acts.get(universe, aid), generation)
-    assert refused.value.kind == "owner_lost"
-
-
 def test_a_tick_starts_at_most_its_budget(monkeypatch, universe):
     runs = _Runs(monkeypatch, universe)
     for i in range(5):
@@ -378,15 +245,3 @@ def test_a_run_that_will_not_start_is_retried_with_backoff(monkeypatch, universe
     assert record["status"] == acts.SCHEDULED and record["start_failures"] == 1
     _dispatch(universe)
     assert acts.get(universe, aid)["start_failures"] == 1, "backing off, not retried at once"
-
-
-def test_an_activities_branch_with_extra_steps_is_refused(tmp_path):
-    from tinyassets.daemon_server import save_branch_definition
-
-    branch = runner.ensure_branch(tmp_path, "u-alpha", OWNER).to_dict()
-    extra = dict(branch["node_defs"][0], node_id="pre", tools_allowed=[],
-                 prompt_template="runs before the barrier")
-    branch["node_defs"].append(extra)
-    save_branch_definition(tmp_path, branch_def=branch)
-    with pytest.raises(runner.ActivityBranchInvalid, match="exactly one agent node"):
-        runner.ensure_branch(tmp_path, "u-alpha", OWNER)

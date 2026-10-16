@@ -2137,81 +2137,6 @@ def _action_resume_run(kwargs: dict[str, Any]) -> str:
     })
 
 
-def _action_estimate_run_cost(kwargs: dict[str, Any]) -> str:
-    """Estimate cost and time for running a branch before dispatch.
-
-    Returns a structured estimate so the chatbot can narrate cost/time
-    framing before the user commits to a paid-market bid or free-queue
-    wait. Read-only — no provider calls, no writes.
-
-    Confidence levels:
-    - "low": branch has never been run (estimate from node declarations).
-    - "medium": 1-4 prior completed runs exist (use average).
-    - "high": 5+ prior completed runs exist (use median of sample).
-    """
-    from tinyassets.branches import BranchDefinition
-    from tinyassets.daemon_server import get_branch_definition
-    from tinyassets.runs import RUN_STATUS_COMPLETED, list_runs
-
-    bid = kwargs.get("branch_def_id", "").strip()
-    if not bid:
-        return json.dumps({"error": "branch_def_id is required."})
-
-    try:
-        source_dict = get_branch_definition(_base_path(), branch_def_id=bid)
-    except Exception:
-        return json.dumps({"error": f"Branch '{bid}' not found."})
-
-    branch = BranchDefinition.from_dict(source_dict)
-    node_count = len(branch.node_defs)
-
-    # Per-node cost heuristic: roughly 0.01 credits per node for a
-    # prompt-template node (LLM call), 0.001 for a code node (exec only).
-    # These are illustrative baseline defaults — real pricing depends on
-    # the provider bid the user sets at dispatch time (paid_market model).
-    credits_per_node: dict[str, float] = {}
-    for n in branch.node_defs:
-        if n.prompt_template:
-            credits_per_node[n.node_id] = 0.01
-        else:
-            credits_per_node[n.node_id] = 0.001
-
-    estimated_paid_market_credits = round(sum(credits_per_node.values()), 4)
-
-    # Confidence: check prior completed run history.
-    try:
-        prior_runs = list_runs(
-            _base_path(), branch_def_id=bid, status=RUN_STATUS_COMPLETED,
-        )
-    except Exception:
-        prior_runs = []
-
-    run_count = len(prior_runs)
-    if run_count == 0:
-        confidence = "low"
-    elif run_count < 5:
-        confidence = "medium"
-    else:
-        confidence = "high"
-
-    # Build a chatbot-quotable basis string.
-    llm_nodes = sum(1 for n in branch.node_defs if n.prompt_template)
-    code_nodes = node_count - llm_nodes
-    basis_parts = [
-        f"{node_count} node(s) total: {llm_nodes} LLM node(s) at ~0.01 credits each, "
-        f"{code_nodes} code/other node(s) at ~0.001 credits each.",
-        f"Confidence: {confidence} ({run_count} prior completed run(s)).",
-    ]
-    basis = " ".join(basis_parts)
-
-    return json.dumps({
-        "branch_def_id": bid,
-        "node_count": node_count,
-        "estimated_paid_market_credits": estimated_paid_market_credits,
-        "confidence": confidence,
-        "basis": basis,
-        "prior_run_count": run_count,
-    })
 
 
 
@@ -2789,7 +2714,6 @@ _RUN_ACTIONS: dict[str, Any] = {
     "get_run_output": _action_get_run_output,
     "attach_existing_child_run": _action_attach_existing_child_run,
     "resume_run": _action_resume_run,
-    "estimate_run_cost": _action_estimate_run_cost,
     "query_runs": _action_query_runs,
     "record_run_receipt": _action_record_run_receipt,
     "list_run_receipts": _action_list_run_receipts,

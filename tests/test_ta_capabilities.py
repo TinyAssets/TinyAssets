@@ -79,7 +79,7 @@ def test_engine_platform_refusal_and_validation_text_is_preserved(tmp_path, monk
                                 '{"tools": [], "tools": []}', "duplicate_tools"],
                          ids=["malformed", "wrong_shape", "oversized", "duplicate_keys",
                               "duplicate_tools"])
-def test_bad_extension_is_reported_without_breaking_other_capabilities(
+def test_workspace_manifests_cannot_change_catalog(
     tmp_path, monkeypatch, capsys, bad,
 ):
     tool = {"name": "hello", "description": "Hello", "arguments": {"type": "object"}}
@@ -99,11 +99,10 @@ def test_bad_extension_is_reported_without_breaking_other_capabilities(
 
     monkeypatch.setattr(ta_cli, "remote", remote)
     found = ta_cli.main(["search"])
-    assert {item["name"] for item in found} == {"read_graph", "ext:shared:good:hello"}
+    assert {item["name"] for item in found} == {"read_graph"}
     assert ta_cli.main(["read_graph", "--json", "{}"]) == {"ok": True}
-    assert ta_cli.main(["describe", "ext:shared:good:hello"])["arguments"] == tool["arguments"]
     captured = capsys.readouterr()
-    assert "skipped extension" in captured.err and "bad" in captured.err
+    assert captured.err == ""
     assert captured.out == ""
 
 
@@ -142,7 +141,6 @@ def test_platform_search_describe_and_call_share_the_catalog(monkeypatch, tmp_pa
     service = backend(tmp_path, platform=[{"name": "read_graph", "description": "Read graphs",
                                           "arguments": schema}], call=handler)
     monkeypatch.setattr(ta_cli, "remote", lambda msg: invoke(service, **msg))
-    monkeypatch.setattr(ta_cli, "extensions", lambda _roots: {})
     assert ta_cli.main(["search", "graphs"]) == [
         {"name": "read_graph", "description": "Read graphs"}]
     assert ta_cli.main(["describe", "read_graph"])["arguments"] == schema

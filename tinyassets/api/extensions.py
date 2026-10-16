@@ -61,7 +61,6 @@ from tinyassets.api.extensions_leaderboard_actions import _LEADERBOARD_ACTIONS
 from tinyassets.api.helpers import _base_path, _read_json
 from tinyassets.api.market import (
     _ATTRIBUTION_ACTIONS,
-    _ESCROW_ACTIONS,
     _GATE_EVENT_ACTIONS,
     _OUTCOME_ACTIONS,
 )
@@ -81,6 +80,11 @@ from tinyassets.handoffs.service import _HANDOFF_ACTIONS
 from tinyassets.phase_vocab import VALID_PHASES, normalize_phase
 
 logger = logging.getLogger(__name__)
+
+_RETIRED_PAID_ACTIONS = frozenset({
+    "escrow_lock", "escrow_release", "escrow_refund", "escrow_inspect",
+    "escrow_fund", "escrow_balance", "escrow_set_wallet", "escrow_withdraw",
+})
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -399,16 +403,6 @@ def _extensions_impl(
     parent_version_id: str = "",
     child_run_id: str = "",
     notes: str = "",
-    lock_id: str = "",
-    escrow_amount: int = 0,
-    escrow_currency: str = "MicroToken",
-    escrow_recipient_id: str = "",
-    escrow_evidence: str = "",
-    escrow_reason: str = "",
-    escrow_staker_id: str = "",
-    escrow_wallet_address: str = "",
-    escrow_chain_id: int = 0,
-    escrow_idempotency_key: str = "",
     event_id: str = "",
     event_type: str = "",
     event_date: str = "",
@@ -454,6 +448,12 @@ def _extensions_impl(
     output_offset: int = 0,
     output_max_chars: int = 8192,
 ) -> str:
+    if action in _RETIRED_PAID_ACTIONS:
+        return json.dumps({
+            "status": "rejected",
+            "error": f"Action '{action}' was retired with the paid market.",
+        })
+
     if action == "get_action_scope_status":
         from tinyassets.auth.provider import action_scope_audit
 
@@ -646,24 +646,6 @@ def _extensions_impl(
             "limit": limit,
         }
         return messaging_handler(messaging_kwargs)
-
-    # ── Escrow ─────────────────────────────────────────────────────────────
-    escrow_handler = _ESCROW_ACTIONS.get(action)
-    if escrow_handler is not None:
-        escrow_kwargs: dict[str, Any] = {
-            "node_id": node_id,
-            "lock_id": lock_id,
-            "amount": escrow_amount,
-            "currency": escrow_currency,
-            "recipient_id": escrow_recipient_id,
-            "evidence": escrow_evidence,
-            "reason": escrow_reason,
-            "staker_id": escrow_staker_id,
-            "wallet_address": escrow_wallet_address,
-            "chain_id": escrow_chain_id,
-            "idempotency_key": escrow_idempotency_key,
-        }
-        return escrow_handler(escrow_kwargs)
 
     # ── Gate events (real-world outcome attestation) ───────────────────────
     gate_event_handler = _GATE_EVENT_ACTIONS.get(action)
@@ -895,7 +877,7 @@ def _extensions_impl(
             "run_branch", "get_run", "list_runs",
             "stream_run", "wait_for_run", "cancel_run", "get_run_output",
             "attach_existing_child_run",
-            "resume_run", "estimate_run_cost", "query_runs",
+            "resume_run", "query_runs",
             "get_action_scope_status",
             "judge_run", "list_judgments", "compare_runs",
             "suggest_node_edit", "get_node_output",
@@ -905,8 +887,6 @@ def _extensions_impl(
             "messaging_send", "messaging_receive", "messaging_ack",
             "publish_version", "get_branch_version", "list_branch_versions",
             "fork_tree",
-            "escrow_lock", "escrow_release", "escrow_refund", "escrow_inspect",
-            "escrow_fund", "escrow_balance", "escrow_set_wallet", "escrow_withdraw",
             "attest_gate_event", "verify_gate_event", "dispute_gate_event",
             "retract_gate_event", "get_gate_event", "list_gate_events",
             "subscribe_branch", "unsubscribe_branch", "list_scheduler_subscriptions",

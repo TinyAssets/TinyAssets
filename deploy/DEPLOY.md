@@ -36,7 +36,7 @@ Via DigitalOcean Control Panel (or `doctl` CLI):
 1. **Droplets → Create Droplet**.
 2. **Region:** NYC / SFO / AMS / FRA — pick the one lowest-latency to your Cloudflare edge (typically your user base region).
 3. **Image:** Marketplace or Distributions → **Debian 12**.
-4. **Size:** Basic → Regular SSD → **$6/mo tier** (1 vCPU, 1 GB RAM, 25 GB SSD) minimum. Upgrade to $12/mo (2 GB RAM) if you expect paid-market concurrency on day one.
+4. **Size:** Basic → Regular SSD → **$6/mo tier** (1 vCPU, 1 GB RAM, 25 GB SSD) minimum.
 5. **Authentication:** SSH Key → select your registered key. Do NOT enable password auth.
 6. **Firewall:** attach or create:
    - Inbound: SSH (22) from your admin IP only, ICMP open.
