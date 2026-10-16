@@ -55,6 +55,9 @@ def data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         json.dumps({"provenance": FOREIGN}), encoding="utf-8")
     (bravo / "canon" / "sources" / "upload.md").write_text(FOREIGN, encoding="utf-8")
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    from tests.conftest import own_universe
+
+    own_universe(base, "u-alpha", "u-bravo")
     monkeypatch.setattr(us, "_request_universe", lambda _uid: "u-alpha")
     return base
 

@@ -40,15 +40,9 @@ async def handle_file(request):
 
     def read():
         with identity_context(identity):
-            owned = files._owner_universe(args["graph_id"])
-            rel = files._relative(args["path"])
-            if not isinstance(owned, tuple) or not rel:
-                return None
-            uid, folder = owned
-            try:
-                return files._read(folder.parent, uid, files._logical(folder, rel))
-            except OSError:
-                return None
+            return files.read_whole_file(
+                universe_id=args["graph_id"], path=args["path"],
+            )
 
     data = await run_in_threadpool(read)
     if data is None:

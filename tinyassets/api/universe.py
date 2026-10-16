@@ -1115,34 +1115,40 @@ def _compute_word_count_from_files(
     Returns `(0, {"source": "none"})` when there's no output directory
     yet — callers should treat that distinctly from "0 words written".
     """
-    out_dir = udir / "output"
+    from tinyassets.owner_box_reads import box_list, box_read, box_stat
+
+    owner = _center_owner(udir)
     sample: dict[str, Any] = {"scenes": 0, "source": "none"}
-    if not out_dir.is_dir():
+    info = box_stat(udir, "output", owner=owner)
+    if info is None or info.kind != "dir":
         return 0, sample
 
     total = 0
     scenes = 0
     try:
-        for path in out_dir.rglob("*.md"):
-            if not path.is_file():
-                continue
-            name = path.name
-            # Skip index files; only prose counts. Scene files are
-            # scene-*.md; chapter-*.md is a chapter-level wrapper we don't
-            # want to double-count if both exist. Count anything under
-            # output/ that looks like prose.
-            if name.startswith(".") or name in {"INDEX.md", "progress.md"}:
-                continue
-            try:
-                raw_md = read_data_path(path, max_bytes=MAX_PLATFORM_FILE_BYTES)
-                text = raw_md.decode("utf-8", "replace") if raw_md else ""
-            except OSError:
-                continue
-            total += len(text.split())
-            if name.startswith("scene-"):
-                scenes += 1
+        pending = ["output"]
+        while pending:
+            directory = pending.pop()
+            for entry in box_list(udir, directory, owner=owner):
+                if entry.kind == "dir":
+                    pending.append(f"{directory}/{entry.name}")
+                    continue
+                if entry.kind != "file" or not entry.name.endswith(".md"):
+                    continue
+                name = entry.name
+                # Skip index files and count prose in output/.
+                if name.startswith(".") or name in {"INDEX.md", "progress.md"}:
+                    continue
+                try:
+                    raw_md = box_read(udir, f"{directory}/{name}", owner=owner,
+                                      max_bytes=MAX_PLATFORM_FILE_BYTES)
+                except OSError:
+                    continue
+                total += len(raw_md.decode("utf-8", "replace").split())
+                if name.startswith("scene-"):
+                    scenes += 1
     except OSError as exc:
-        logger.debug("word_count walk failed at %s: %s", out_dir, exc)
+        logger.debug("word_count walk failed at %s/output: %s", udir, exc)
         return 0, {"scenes": 0, "source": "error"}
 
     sample = {"scenes": scenes, "source": "output_files"}
@@ -1957,9 +1963,11 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
         ]
 
     # Output files
-    output_dir = udir / "output"
-    if output_dir.is_dir():
-        result["output_files"] = _list_output_tree(output_dir)
+    from tinyassets.owner_box_reads import box_stat
+
+    if (info := box_stat(udir, "output", owner=_center_owner(udir))) is not None \
+            and info.kind == "dir":
+        result["output_files"] = _list_output_tree(udir, owner=_center_owner(udir))
 
     # Activity tail
     activity = _read_text(udir / "activity.log")
@@ -2011,18 +2019,22 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
     return json.dumps(result, default=str)
 
 
-def _list_output_tree(output_dir: Path, max_depth: int = 3) -> list[str]:
+def _list_output_tree(udir: Path, *, owner: str, max_depth: int = 3) -> list[str]:
     """Walk the output directory and return relative paths."""
+    from tinyassets.owner_box_reads import box_list
+
     files = []
-    for root, dirs, filenames in os.walk(output_dir):
-        depth = len(Path(root).relative_to(output_dir).parts)
+    pending = [("output", 0)]
+    while pending:
+        directory, depth = pending.pop()
         if depth >= max_depth:
-            dirs.clear()
             continue
-        for f in sorted(filenames):
-            rel = Path(root, f).relative_to(output_dir)
-            if not f.startswith("."):
-                files.append(str(rel))
+        for entry in sorted(box_list(udir, directory, owner=owner), key=lambda e: e.name):
+            rel = f"{directory[7:]}/{entry.name}" if directory != "output" else entry.name
+            if entry.kind == "dir":
+                pending.append((f"{directory}/{entry.name}", depth + 1))
+            elif entry.kind == "file" and not entry.name.startswith("."):
+                files.append(rel)
     return files[:50]
 
 
@@ -3841,18 +3853,22 @@ def _action_list_canon(
     udir = _universe_dir(uid)
     canon_dir = udir / "canon"
 
-    if not canon_dir.is_dir():
+    from tinyassets.owner_box_reads import box_stat
+
+    owner = _center_owner(udir)
+    info = box_stat(udir, "canon", owner=owner)
+    if info is None or info.kind != "dir":
         return json.dumps({"universe_id": uid, "canon_files": [], "note": "No canon directory."})
 
     files = []
-    # Enumeration is routed through ``iter_canon_files`` so each entry is
-    # resolved + contained before ``stat``; a symlinked canon file escaping
-    # canon_dir is skipped. Dotfiles (markers, manifests, meta sidecars) are
-    # excluded from the listing.
-    for f in iter_canon_files(canon_dir, include_hidden=False):
+    # Enumerate box regular files; metadata and bytes come from the same home.
+    for f in iter_canon_files(canon_dir, include_hidden=False, owner=owner):
+        info = box_stat(udir, f"canon/{f.name}", owner=owner)
+        if info is None or info.kind != "file":
+            continue
         entry: dict[str, Any] = {
             "filename": f.name,
-            "size_bytes": f.stat().st_size,
+            "size_bytes": info.size,
         }
         # Check for provenance metadata. ``f.name`` is a contained basename,
         # so the sidecar still resolves under canon_dir; contain it anyway.
@@ -3867,18 +3883,15 @@ def _action_list_canon(
 
 
 def _canon_json(canon_dir: Path, name: str) -> dict[str, Any]:
-    """A canon dotfile (meta sidecar, manifest) as a dict; ``{}`` when absent
-    or not a JSON object.
+    """A box canon sidecar as a dict; absence or invalid JSON is ``{}``.
 
-    Read by its LEXICAL path with no link followed: ``safe_canon_path``
-    resolves against the resolved canon dir, which a ``canon -> /data/<other>``
-    link moves, so a sidecar read through it would return another universe's
-    provenance. A refused read raises rather than reading as ``{}``.
+    A refused read raises, so unreadable provenance never looks absent.
     """
     if "/" in name or "\\" in name or name in ("", ".", ".."):
         return {}
-    raw = read_data_path(canon_dir / name, max_bytes=MAX_PLATFORM_FILE_BYTES)
-    if raw is None:
+    try:
+        raw = read_canon_bytes(canon_dir, name, owner=_center_owner(canon_dir.parent))
+    except FileNotFoundError:
         return {}
     try:
         data = json.loads(raw.decode("utf-8"))
@@ -3901,7 +3914,12 @@ def _source_file_entry(
     manifest: dict[str, Any],
     raw: bytes | None = None,
 ) -> dict[str, Any]:
-    stat = path.stat()
+    from tinyassets.owner_box_reads import box_stat
+
+    stat = box_stat(canon_dir.parent, "canon/" + path.relative_to(canon_dir).as_posix(),
+                    owner=_center_owner(canon_dir.parent))
+    if stat is None or stat.kind != "file":
+        raise FileNotFoundError(str(path))
     meta = _source_sidecar_meta(canon_dir, path.name)
     manifest_entry = manifest.get(path.name, {})
     if not isinstance(manifest_entry, dict):
@@ -3915,9 +3933,9 @@ def _source_file_entry(
     entry: dict[str, Any] = {
         "filename": path.name,
         "source_path": f"sources/{path.name}",
-        "size_bytes": stat.st_size,
+        "size_bytes": stat.size,
         "modified_at": datetime.fromtimestamp(
-            stat.st_mtime, tz=timezone.utc,
+            stat.mtime, tz=timezone.utc,
         ).isoformat(),
         "sha256": current_sha,
         "provenance": meta.get("provenance", ""),
@@ -3945,9 +3963,11 @@ def _action_list_sources(
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     canon_dir = udir / "canon"
-    sources_dir = canon_dir / "sources"
+    from tinyassets.owner_box_reads import box_stat
 
-    if not sources_dir.is_dir():
+    owner = _center_owner(udir)
+    info = box_stat(udir, "canon/sources", owner=owner)
+    if info is None or info.kind != "dir":
         return json.dumps({
             "universe_id": uid,
             "source_files": [],
@@ -3957,15 +3977,10 @@ def _action_list_sources(
 
     manifest = _manifest_data(canon_dir)
     source_files: list[dict[str, Any]] = []
-    # Enumeration is routed through ``iter_canon_files`` with the canon ROOT as
-    # the containment root and ``subdir="sources"`` as the listing target, so
-    # the ``sources/`` dir is itself resolved + contained first. A *symlinked*
-    # ``sources/`` (or a symlinked source file inside it) that escapes canon is
-    # rejected; rooting containment at ``sources/`` directly would let a
-    # symlinked subdir become its own trusted root.
+    # The box provider refuses linked parents and enumeration skips linked leaves.
     try:
         for path in iter_canon_files(
-            canon_dir, subdir="sources", include_hidden=False
+            canon_dir, subdir="sources", include_hidden=False, owner=owner
         ):
             source_files.append(_source_file_entry(path, canon_dir, manifest))
     except OSError as exc:
@@ -4004,12 +4019,13 @@ def _action_read_source(
     # containment check against ``canon_dir``; a ``../`` traversal or a
     # symlinked ``sources/`` / source entry that escapes canon is rejected.
     try:
-        target = safe_canon_path(
-            canon_dir, f"sources/{safe_name}", kind="source file"
-        )
-    except ValueError:
+        from tinyassets.owner_box_reads import box_stat
+
+        target = canon_dir / "sources" / safe_name
+        info = box_stat(udir, f"canon/sources/{safe_name}", owner=_center_owner(udir))
+    except (ValueError, OSError):
         return json.dumps({"error": "Path traversal not allowed."})
-    if not target.is_file():
+    if info is None or info.kind != "file":
         return json.dumps({
             "error": f"Source file '{safe_name}' not found.",
             "hint": (
@@ -4018,7 +4034,8 @@ def _action_read_source(
         })
 
     try:
-        raw = read_canon_bytes(canon_dir, f"sources/{safe_name}", kind="source file")
+        raw = read_canon_bytes(canon_dir, f"sources/{safe_name}", kind="source file",
+                               owner=_center_owner(udir))
         content = raw.decode("utf-8")
         manifest = _manifest_data(canon_dir)
         entry = _source_file_entry(target, canon_dir, manifest, raw=raw)
@@ -4081,17 +4098,20 @@ def _action_read_canon(
     # Resolve + contain before any ``is_file`` / read so a symlinked canon
     # file whose target lives outside canon_dir is rejected, not read.
     try:
-        target = safe_canon_path(canon_dir, safe_name, kind="canon file")
-    except ValueError:
+        from tinyassets.owner_box_reads import box_stat
+
+        info = box_stat(udir, f"canon/{safe_name}", owner=_center_owner(udir))
+    except (ValueError, OSError):
         return json.dumps({"error": "Path traversal not allowed."})
-    if not target.is_file():
+    if info is None or info.kind != "file":
         return json.dumps({
             "error": f"Canon file '{safe_name}' not found.",
             "hint": "Canon enumeration is not exposed by the advertised handles.",
         })
 
     try:
-        raw = read_canon_bytes(canon_dir, safe_name, kind="canon file")
+        raw = read_canon_bytes(canon_dir, safe_name, kind="canon file",
+                               owner=_center_owner(udir))
         content = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
         entry: dict[str, Any] = {
             "universe_id": uid,
@@ -4736,8 +4756,11 @@ def universe_has_assigned_engine(universe_dir: str | Path) -> bool:
     ):
         return True
 
-    config_file = Path(universe_dir) / "config.yaml"
-    if config_file.exists() and not _config_yaml_is_parseable(config_file):
+    from tinyassets.owner_box_reads import box_exists
+
+    owner = _center_owner(Path(universe_dir))
+    if box_exists(Path(universe_dir), "config.yaml", owner=owner) \
+            and not _config_yaml_is_parseable(Path(universe_dir), owner=owner):
         logger.warning(
             "command center config unreadable for %s; not treating as engine-less",
             universe_dir,
@@ -4747,7 +4770,7 @@ def universe_has_assigned_engine(universe_dir: str | Path) -> bool:
     from tinyassets.config import load_universe_config
 
     try:
-        engine_source = load_universe_config(Path(universe_dir)).engine_source
+        engine_source = load_universe_config(Path(universe_dir), owner=owner).engine_source
     except Exception:  # noqa: BLE001 - unreadable config is not proof of absence
         logger.warning(
             "command center config unreadable for %s; not treating as engine-less",
@@ -4762,7 +4785,7 @@ def universe_has_assigned_engine(universe_dir: str | Path) -> bool:
     return str(engine_source or "").strip() != _DEFAULT_ENGINE_SOURCE
 
 
-def _config_yaml_is_parseable(config_file: Path) -> bool:
+def _config_yaml_is_parseable(universe_dir: Path, *, owner: str) -> bool:
     """True when ``config.yaml`` actually parses.
 
     Codex ADAPT round 2 (2026-07-25): ``load_universe_config`` deliberately
@@ -4778,7 +4801,10 @@ def _config_yaml_is_parseable(config_file: Path) -> bool:
     except ImportError:
         return False
     try:
-        raw = read_data_path(config_file, max_bytes=MAX_CONFIG_BYTES)
+        from tinyassets.owner_box_reads import box_read
+
+        raw = box_read(universe_dir, "config.yaml", owner=owner,
+                       max_bytes=MAX_CONFIG_BYTES)
         if raw is None:
             return False
         load_untrusted_yaml(raw.decode("utf-8"))

@@ -19,6 +19,7 @@ import json
 import re
 from pathlib import Path
 
+from tests.support.owner_reads import owner_read
 from tinyassets import automations, graph_compiler, universe_tools
 from tinyassets.engine_mcp_server import (
     SERVED_TOOL_CHAPTERS,
@@ -54,7 +55,7 @@ def test_every_founder_turn_says_where_long_running_work_belongs(tmp_path) -> No
     from tinyassets.starter_skills import starter_agent_files
 
     prompt = _flat(starter_agent_files()["skills/starter-workspace/SKILL.md"])
-    assert "ta search" in universe_tools.harness_prompt(tmp_path)
+    assert "ta search" in owner_read(universe_tools.harness_prompt, tmp_path)
     assert "workflows and automations in this command center" in prompt
     assert "never a service hosted elsewhere" in prompt
     assert f"write_graph.{CHAPTER}" in prompt

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.support.owner_reads import owner_read
 from tinyassets.starter_skills import MUSE_SKILL_NAMES, starter_agent_files
 from tinyassets.universe_tools import skill_index
 
@@ -39,7 +40,7 @@ def goal(status="active", **extra):
 
 
 def test_bundle_index_assets_and_no_resident_prompt_growth(package):
-    indexed = dict(skill_index(package))
+    indexed = dict(owner_read(skill_index, package))
     for name in MUSE_SKILL_NAMES:
         assert indexed[f"starter-{name}"]
     files = starter_agent_files()

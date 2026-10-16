@@ -1,10 +1,12 @@
 """Real temporary SQLite/file tests; no model-output simulation."""
 import importlib.util
+import os
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location(
     "automation_context", Path(__file__).parents[1] / "tinyassets/automation_context.py"
@@ -20,6 +22,15 @@ class AutomationContextTests(unittest.TestCase):
         self.base = Path(self.tmp.name)
         self.root = self.base / "u-owner"
         self.root.mkdir()
+        env = patch.dict(os.environ, {"TINYASSETS_DATA_DIR": str(self.base)})
+        env.start()
+        self.addCleanup(env.stop)
+        from tinyassets.daemon_server import _connect, initialize_author_server
+        from tinyassets.universe_owner import record_creation
+
+        initialize_author_server(self.base)
+        with _connect(self.base) as conn:
+            record_creation(conn, universe_id=self.root.name, owner_id="owner")
         self.auto = SimpleNamespace(
             universe_id="u-owner", automation_id="a-owner", owner_principal_id="owner",
             branch_def_id="b-owner", last_run_id="",

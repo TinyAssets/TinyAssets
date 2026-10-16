@@ -5,6 +5,7 @@ import pytest
 
 from tests import test_agent_node as harness
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.support.owner_reads import owner_read
 from tests.test_command_center_packages import (
     OWNER,
     UNIVERSE,
@@ -27,9 +28,9 @@ def test_share_skill_is_seeded_indexed_and_never_overwrites_edits(tmp_path, monk
     home = tmp_path / "new"
     seed_okf_bundle(home)
     assert (home / SHARE_SKILL_PATH).read_text(encoding="utf-8") == share_skill()
-    assert "share-after-publish" in dict(universe_tools.skill_index(home))
+    assert "share-after-publish" in dict(owner_read(universe_tools.skill_index, home))
     # The index names the skill; the prompt states where a named skill lives.
-    prompt = universe_tools.harness_prompt(home)
+    prompt = owner_read(universe_tools.harness_prompt, home)
     assert "`share-after-publish`" in prompt and "skills/<name>/SKILL.md" in prompt
     write_universe_file(home, SHARE_SKILL_PATH, b"My own sharing recipe")
     seed_okf_bundle(home)
@@ -40,13 +41,13 @@ def test_existing_owner_can_copy_or_delete_share_skill(tmp_path):
     chapter = engine_mcp_server._handbook_read("write_graph.share-after-publish")
     fetched = json.loads(chapter)["text"]
     assert fetched == share_skill()
-    assert universe_tools.skill_index(tmp_path) == []
+    assert owner_read(universe_tools.skill_index, tmp_path) == []
     write_universe_file(tmp_path, SHARE_SKILL_PATH, fetched.encode())
-    assert "share-after-publish" in dict(universe_tools.skill_index(tmp_path))
+    assert "share-after-publish" in dict(owner_read(universe_tools.skill_index, tmp_path))
     (tmp_path / SHARE_SKILL_PATH).unlink()
     engine_mcp_server._handbook_read("write_graph.share-after-publish")
-    assert universe_tools.skill_index(tmp_path) == []
-    assert "`share-after-publish`" not in universe_tools.harness_prompt(tmp_path)
+    assert owner_read(universe_tools.skill_index, tmp_path) == []
+    assert "`share-after-publish`" not in owner_read(universe_tools.harness_prompt, tmp_path)
 
 
 @pytest.mark.usefixtures("cloud_runtime")

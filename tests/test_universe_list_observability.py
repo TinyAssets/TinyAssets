@@ -56,10 +56,12 @@ def _declare_public(base, uid, udir):
     zero ACL rows is PUBLIC and that is the state under test here.
     """
     from tinyassets.api.visibility import set_universe_visibility
-    from tinyassets.daemon_server import ensure_universe_registered, set_founder_home
+    from tinyassets.daemon_server import ensure_universe_registered
 
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
-    set_founder_home(base, founder_sub=f"test-owner::{uid}", universe_id=uid)
+    from tests.conftest import own_universe
+
+    own_universe(base, uid)
     set_universe_visibility(uid, "public", source="owner")
 
 

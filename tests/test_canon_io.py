@@ -30,6 +30,11 @@ from tinyassets.ingestion.canon_io import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _box_data_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path.parent))
+
+
 def _make_symlink(link: Path, target: Path) -> None:
     """Create a symlink or skip the test if the OS forbids it (Windows priv)."""
     try:
@@ -102,7 +107,7 @@ class TestReadWriteHelpers:
         secret = tmp_path / "secret.md"
         secret.write_text("TOP SECRET", encoding="utf-8")
         _make_symlink(canon / "link.md", secret)
-        with pytest.raises(ValueError):
+        with pytest.raises(OSError):
             read_canon_text(canon, "link.md")
 
     def test_write_canon_text_inside(self, tmp_path):

@@ -6,6 +6,7 @@ import pytest
 
 from tests import test_agent_node as harness
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.support.owner_reads import owner_read
 from tinyassets import engine_mcp_server, ta_cli, universe_tools
 from tinyassets.starter_skills import CONNECT_SKILL_PATH, connect_skill
 from tinyassets.universe_bundle import seed_okf_bundle
@@ -21,12 +22,13 @@ def test_new_account_connect_skill_is_indexed_and_owner_editable(tmp_path, monke
     home = tmp_path / "u-new"
     seed_okf_bundle(home)
     assert (home / CONNECT_SKILL_PATH).read_text(encoding="utf-8") == connect_skill()
-    assert "connect" in dict(universe_tools.skill_index(home))
-    assert "`connect`:" in universe_tools.harness_prompt(home)
+    assert "connect" in dict(owner_read(universe_tools.skill_index, home))
+    assert "`connect`:" in owner_read(universe_tools.harness_prompt, home)
     edited = connect_skill().replace(
         "Connect any service, platform, API or remote MCP server", "My connection recipe")
     write_universe_file(home, CONNECT_SKILL_PATH, edited.encode("utf-8"))
-    assert dict(universe_tools.skill_index(home))["connect"].startswith("My connection recipe")
+    description = dict(owner_read(universe_tools.skill_index, home))["connect"]
+    assert description.startswith("My connection recipe")
     seed_okf_bundle(home)
     assert (home / CONNECT_SKILL_PATH).read_text(encoding="utf-8") == edited
 
@@ -36,13 +38,13 @@ def test_existing_account_can_copy_skill_without_implicit_install(tmp_path):
     home.mkdir()
     fetched = json.loads(engine_mcp_server._handbook_read("write_graph.connect"))["text"]
     assert fetched == connect_skill()
-    assert universe_tools.skill_index(home) == []
+    assert owner_read(universe_tools.skill_index, home) == []
     # The normal file-writing path installs it; reads never recreate a deletion.
     write_universe_file(home, CONNECT_SKILL_PATH, fetched.encode("utf-8"))
-    assert "connect" in dict(universe_tools.skill_index(home))
+    assert "connect" in dict(owner_read(universe_tools.skill_index, home))
     (home / CONNECT_SKILL_PATH).unlink()
-    assert universe_tools.skill_index(home) == []
-    assert CONNECT_SKILL_PATH not in universe_tools.harness_prompt(home)
+    assert owner_read(universe_tools.skill_index, home) == []
+    assert CONNECT_SKILL_PATH not in owner_read(universe_tools.harness_prompt, home)
 
 
 def test_ta_search_connect_discovers_the_skill_and_request_tool(monkeypatch, tmp_path):

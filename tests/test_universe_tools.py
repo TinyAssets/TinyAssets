@@ -26,10 +26,41 @@ posix_only = pytest.mark.skipif(os.name != "posix", reason="POSIX descriptors an
 FOUR = ("read", "write", "edit", "bash")
 
 
+@pytest.fixture(autouse=True)
+def _box_data_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path / "data"))
+
+
 def _universe(tmp_path: Path, name: str = "u-alpha") -> Path:
     path = tmp_path / "data" / name
     path.mkdir(parents=True)
     return path
+
+
+def _boxed(universe: Path, operation):
+    from unittest.mock import patch
+
+    from tinyassets.boxes.local import LocalBoxProvider
+    from tinyassets.boxes.provider import ExecLimits
+    from tinyassets.control_plane.binding import SessionBinding, use_binding
+
+    provider = LocalBoxProvider(boxes_root=universe.parent / "test-boxes",
+                                state_dir=universe.parent / "test-box-state",
+                                owner_of=lambda _center: "owner", allow_unisolated=True)
+    try:
+        handle = provider.bind(universe.name, account_id="owner", turn_id="boxed-test")
+        for index, path in enumerate(p for p in universe.rglob("*")
+                                     if p.is_file() and not p.is_symlink()):
+            provider.write(handle, f"seed-{index}",
+                           "/cc/" + path.relative_to(universe).as_posix(),
+                           path.read_bytes(), max_bytes=path.stat().st_size or 1)
+        with patch.dict(os.environ, {"TINYASSETS_DATA_DIR": str(universe.parent)}), \
+                patch("tinyassets.agent_loop.served_chat.configured_box_provider",
+                      return_value=(provider, None)), \
+                use_binding(SessionBinding(provider, handle, ExecLimits(), universe)):
+            return operation(universe, owner="owner")
+    finally:
+        provider.close()
 
 
 # ── the tool list and where it is served ────────────────────────────────────
@@ -117,6 +148,12 @@ def test_another_user_cannot_drive_the_tools_over_someone_elses_universe(
     (root / "u-a" / "founder.md").write_text("A's private founder notes", encoding="utf-8")
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
     seed_engine_authority(root, actor="actor-a", graph="u-a")
+    from tinyassets.daemon_server import _connect, initialize_author_server
+    from tinyassets.universe_owner import record_creation
+
+    initialize_author_server(root)
+    with _connect(root) as conn:
+        record_creation(conn, universe_id="u-a", owner_id="actor-a")
     seed_engine_authority(root, actor="actor-b", graph="u-b")
     s = _bind_engine(monkeypatch, root, actor="actor-b", graph="u-a")
     for out in _call_all_four(s):
@@ -154,7 +191,7 @@ def test_skill_index_lists_name_and_description_only(tmp_path):
     (universe / "skills" / "standup" / "SKILL.md").write_text(_SKILL, encoding="utf-8")
     (universe / "skills" / "nodesc").mkdir()
     (universe / "skills" / "nodesc" / "SKILL.md").write_text("no frontmatter", encoding="utf-8")
-    prompt = universe_tools.harness_prompt(universe)
+    prompt = _boxed(universe, universe_tools.harness_prompt)
     assert "- `standup`: When my founder says standup" in prompt
     assert "Three bullets" not in prompt, "the body is read on demand, not preloaded"
     assert "nodesc" not in prompt
@@ -168,7 +205,7 @@ def test_a_skill_file_symlinked_elsewhere_is_never_read_into_the_prompt(tmp_path
     (universe / "skills" / "stolen").mkdir(parents=True)
     (universe / "skills" / "stolen" / "SKILL.md").symlink_to(foreign)
     (universe / "skills" / "linkdir").symlink_to(foreign.parent, target_is_directory=True)
-    assert universe_tools.skill_index(universe) == []
+    assert _boxed(universe, universe_tools.skill_index) == []
 
 
 # ── untrusted universe files: the shared safe reader and skill parse ─────────
@@ -218,7 +255,7 @@ def test_skill_index_leaves_out_a_bad_skill_without_breaking(tmp_path):
     (universe / "skills" / "bomb" / "SKILL.md").write_text(
         "---\ndescription: &a [*a]\n---\n", encoding="utf-8",
     )
-    names = {name for name, _ in universe_tools.skill_index(universe)}
+    names = {name for name, _ in _boxed(universe, universe_tools.skill_index)}
     assert "good" in names  # the turn still gets the working skills
 
 
@@ -308,6 +345,12 @@ def test_only_a_founder_turn_with_the_tools_is_shown_the_folder_and_skills(
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
     seed_engine_authority(root, actor="actor-a", graph="u-a")
+    from tinyassets.daemon_server import _connect, initialize_author_server
+    from tinyassets.universe_owner import record_creation
+
+    initialize_author_server(root)
+    with _connect(root) as conn:
+        record_creation(conn, universe_id="u-a", owner_id="actor-a")
 
     founder = _founder_turn(monkeypatch, root, "u-a", "hi", founder=True)
     assert "/u is the workspace. Use read/write/edit/bash." in founder

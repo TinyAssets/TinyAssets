@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from tinyassets.conversation_failure import failure_column_sql, project_failure_row
+from tinyassets.owner_box_reads import box_read, box_stat
 
 CONTEXT_REF = {"$automation_context": "v1"}
 MAX_CONTEXT_BYTES = 1024 * 1024
@@ -28,15 +29,20 @@ def _contained(root: Path, path: Path) -> Path:
     return resolved
 
 
-def _brain(root: Path) -> dict[str, Any]:
+def _brain(root: Path, *, owner: str) -> dict[str, Any]:
+    if not isinstance(owner, str) or not owner.strip():
+        raise ValueError("automation_context_owner_required")
     result = {}
     for name in BRAIN_FILES:
-        path = _contained(root, root / name)
-        if not path.exists():
+        info = box_stat(root, name, owner=owner)
+        if info is not None and info.kind == "link":
+            raise ValueError("automation_context_path_outside_universe")
+        if info is None or info.kind != "file":
             result[name] = {"available": False}
             continue
-        with path.open("rb") as stream:
-            data = stream.read(MAX_BRAIN_FILE_BYTES + 1)
+        if info.size > MAX_BRAIN_FILE_BYTES:
+            raise ValueError("automation_context_brain_too_large")
+        data = box_read(root, name, owner=owner, max_bytes=MAX_BRAIN_FILE_BYTES + 1)
         if len(data) > MAX_BRAIN_FILE_BYTES:
             raise ValueError("automation_context_brain_too_large")
         result[name] = {"available": True, "text": data.decode("utf-8")}
@@ -209,7 +215,7 @@ def resolve_automation_inputs(
         "observed_at": observed_at,
         "universe_id": uid,
         "automation_id": automation.automation_id,
-        "brain": _brain(root),
+        "brain": _brain(root, owner=automation.owner_principal_id),
         "conversation": _conversation(root, getattr(automation, "owner_principal_id", "")),
         "previous_run": previous,
         "last_completed_run": completed,

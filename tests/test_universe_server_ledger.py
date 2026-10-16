@@ -77,6 +77,9 @@ def universe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     # UNIVERSE_SERVER_USER used to decide who a write belonged to, which meant
     # identity was a string anyone could set; the ledger now records whoever is
     # bound.
+    from tests.conftest import own_universe
+
+    own_universe(base, uid)
     _authenticate_ledger_submitter(uid, monkeypatch)
     return uid
 

@@ -108,13 +108,15 @@ def _authenticate(user_id: str) -> None:
     auth_middleware("ok")
 
 
-def _make_universe(base: Path, uid: str, *, level: str | None = None) -> Path:
+def _make_universe(
+    base: Path, uid: str, *, level: str | None = None, owner_id: str | None = None,
+) -> Path:
     """A registered universe with a seeded OKF bundle and a founder fact."""
     udir = base / uid
     udir.mkdir(parents=True, exist_ok=True)
     from tests.conftest import own_universe
     # A universe needs an OWNER to be readable at all (2026-09-02).
-    own_universe(udir.parent, udir.name)
+    own_universe(udir.parent, udir.name, owner_id=owner_id)
     seed_okf_bundle(udir, purpose="To help my founder bring their projects to life.")
     (udir / "founder.md").write_text(
         f"# Founder\nMy founder is {FOUNDER_FACT}.", encoding="utf-8"
@@ -496,7 +498,7 @@ class TestEntrypointBindsTier:
         import tinyassets.universe_server as us
         from tinyassets.api import helpers, permissions
 
-        _make_universe(base, "u-own", level="public")
+        _make_universe(base, "u-own", level="public", owner_id="founder-1")
         _authenticate("founder-1")
         grant_universe_access(
             base, universe_id="u-own", actor_id="founder-1", permission="admin"

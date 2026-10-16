@@ -22,7 +22,7 @@ from tinyassets.enrichment_signals import (
     load_enrichment_signals,
     write_enrichment_signals,
 )
-from tinyassets.ingestion.canon_io import read_canon_text, safe_canon_path
+from tinyassets.ingestion.canon_io import read_canon_text
 from tinyassets.notes import add_note
 
 logger = logging.getLogger(__name__)
@@ -1018,16 +1018,20 @@ def _manifest_entry_needs_synthesis(
         attempts = 0
     if attempts >= SYNTHESIS_RETRY_LIMIT:
         return False
-    # ``source_path`` is a manifest-supplied (untrusted) value. Resolve + contain
-    # it against the canon ROOT before the ``is_file`` stat so a crafted
-    # ``../`` source_path or a symlinked source cannot probe outside canon.
-    try:
-        target = safe_canon_path(
-            universe_dir / "canon", source_path, kind="source file"
-        )
-    except ValueError:
+    # Validate the untrusted manifest-relative path before probing the box.
+    # The provider refuses linked parents and reports linked leaves as links.
+    from tinyassets.owner_box_reads import box_stat
+    from tinyassets.universe_owner import owner_of
+
+    parts = source_path.split("/")
+    if (not parts or any(part in {"", ".", ".."} or "\\" in part for part in parts)
+            or source_path.startswith("/")):
         return False
-    return target.is_file()
+    owner = owner_of(universe_dir.parent, universe_dir.name)
+    if not owner:
+        raise RuntimeError(f"command center {universe_dir.name!r} has no owner for canon access")
+    info = box_stat(universe_dir, f"canon/{source_path}", owner=owner)
+    return info is not None and info.kind == "file"
 
 
 def _synthesis_signal_from_manifest(

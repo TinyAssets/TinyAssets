@@ -14,6 +14,8 @@ from tinyassets.api.universe import _action_control_daemon, _worker_liveness
 from tinyassets.auto_ship_ledger import ShipAttempt, read_attempts, record_attempt
 from tinyassets.control_plane.tick import AssignedQueueConsumer
 
+pytestmark = pytest.mark.role_split
+
 
 @pytest.fixture
 def center(tmp_path: Path, monkeypatch):
@@ -35,7 +37,7 @@ class _Box:
         return SimpleNamespace(command_center_id=center, account_id=account_id)
 
     def stat(self, handle, name):
-        assert name == "soul.md"
+        assert name == "/cc/soul.md"
         return SimpleNamespace(kind="file") if self.present else None
 
 

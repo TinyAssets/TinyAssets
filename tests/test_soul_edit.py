@@ -20,11 +20,22 @@ from tinyassets.universe_bundle import seed_okf_bundle
 
 
 @pytest.fixture
-def universe(tmp_path: Path) -> Path:
+def universe(tmp_path: Path, monkeypatch) -> Path:
     udir = tmp_path / "u-test"
     udir.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    _record_owner(tmp_path, udir.name, "test-owner")
     seed_okf_bundle(udir)
     return udir
+
+
+def _record_owner(base, center, owner):
+    from tinyassets.daemon_server import _connect, initialize_author_server
+    from tinyassets.universe_owner import record_creation
+
+    initialize_author_server(base)
+    with _connect(base) as conn:
+        record_creation(conn, universe_id=center, owner_id=owner)
 
 
 def _frontmatter_value(path: Path, key: str) -> str:
@@ -388,6 +399,7 @@ def test_mcp_soul_edit_action_learns_and_ledgers(tmp_path, monkeypatch):
     udir.mkdir()
     seed_okf_bundle(udir)
     _login_founder(base, "u-home")
+    _record_owner(base, "u-home", "founder-1")
 
     from tinyassets.api import universe as universe_api
 

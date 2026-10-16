@@ -14,17 +14,17 @@ that tries to leave the folder all return one ``not_found`` envelope, so the
 read cannot be used to learn whether a universe or a path exists.
 
 Paths never leave the folder: every component is checked, and the reads go
-through ``tinyassets.universe_files``, which opens each component without
-following a link.
+through the owner box provider, which refuses links at the file boundary.
 """
 
 from __future__ import annotations
 
 import base64
-import os
-import stat
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+from tinyassets.owner_box_reads import box_list, box_read, box_stat
+from tinyassets.universe_files import MAX_UNIVERSE_FILE_BYTES
 
 #: One read returns at most this many bytes; the caller pages with next_offset.
 MAX_READ_BYTES = 262_144
@@ -35,10 +35,10 @@ MAX_LIST_ENTRIES = 500
 _NOT_FOUND = {"error": "not_found", "resource": "command_center_file"}
 
 
-def _owner_universe(universe_id: str) -> tuple[str, Path] | None:
-    """``(uid, folder)`` when the caller holds admin on this universe, else None."""
+def _owner_universe(universe_id: str) -> tuple[str, Path, str] | None:
+    """``(uid, folder, actor)`` when the caller holds admin, else None."""
     from tinyassets.api import permissions
-    from tinyassets.api.helpers import _base_path, _request_universe, _universe_dir
+    from tinyassets.api.helpers import _base_path, _request_universe
     from tinyassets.daemon_server import list_universe_acl
     from tinyassets.principals import named_principal
 
@@ -56,125 +56,23 @@ def _owner_universe(universe_id: str) -> tuple[str, Path] | None:
         return None
     if not any(r.get("actor_id") == actor and r.get("permission") == "admin" for r in rows):
         return None
-    try:
-        folder = _universe_dir(uid)
-    except ValueError:
+    if Path(uid).name != uid or uid.startswith(".") or "/" in uid or "\\" in uid:
         return None
-    # NOT ``folder.is_dir()``: _universe_dir resolves the path, and resolving
-    # strips a link at the universe root itself (astra round 2, P1: an owned
-    # root junction to another universe served that universe's files). The
-    # anchored open below refuses the root when it is a link.
-    if folder.name != uid:
-        return None
-    return uid, Path(_base_path()) / uid
+    return uid, Path(_base_path()) / uid, actor
 
 
-# ---------------------------------------------------------------------------
-# Anchored traversal. Production is Linux: the data directory is opened once,
-# the universe root beneath it with O_NOFOLLOW, and every further component with
-# openat(O_NOFOLLOW) relative to the descriptor above it. Entries are stat()ed
-# through the directory descriptor, never by path, so a directory swapped for a
-# link after it was opened changes nothing this read sees (astra round 2, P1).
-# Windows has no openat: there, a reparse point anywhere on the path -- the
-# universe root included -- refuses the read. Windows hosts are single-tenant
-# trays, so the residual race there crosses no user.
-# ---------------------------------------------------------------------------
+def _list(folder: Path, rel: str, owner: str) -> tuple[list[str], list[dict[str, Any]]]:
+    items = sorted(box_list(folder, rel, owner=owner), key=lambda item: item.name)
+    entries = [
+        {"name": item.name, "kind": item.kind, **(
+            {"size_bytes": item.size} if item.kind == "file" else {})}
+        for item in items if item.kind in {"file", "dir"}
+    ]
+    return [item.name for item in items], entries[:MAX_LIST_ENTRIES]
 
 
-def _open_universe_dir(base: Path, uid: str, rel: str) -> int:
-    """POSIX: a descriptor for ``base/uid/rel``, no component a link."""
-    from tinyassets import workspace_fs as fs
-
-    base_fd = os.open(str(base), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        current = fs.open_subdir_nofollow(base_fd, uid)
-    finally:
-        os.close(base_fd)
-    try:
-        for part in (rel.split("/") if rel else []):
-            child = fs.open_subdir_nofollow(current, part)
-            os.close(current)
-            current = child
-    except BaseException:
-        os.close(current)
-        raise
-    return current
-
-
-def _windows_path_is_clean(base: Path, uid: str, rel: str) -> Path:
-    """Windows: the path, after refusing a reparse point at ANY component."""
-    from tinyassets.universe_files import UniverseFileError
-
-    current = base
-    for part in [uid, *(rel.split("/") if rel else [])]:
-        current = current / part
-        info = os.lstat(current)
-        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
-            raise UniverseFileError(f"{part!r} is a link; command center files are read link-free")
-    return current
-
-
-def _entry(name: str, info: os.stat_result) -> dict[str, Any] | None:
-    # A link is never followed and never listed; a Windows junction lstat()s as
-    # a directory and only its reparse tag says what it is.
-    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
-        return None
-    if stat.S_ISREG(info.st_mode):
-        return {"name": name, "kind": "file", "size_bytes": info.st_size}
-    if stat.S_ISDIR(info.st_mode):
-        return {"name": name, "kind": "dir"}
-    return None
-
-
-def _list(base: Path, uid: str, rel: str) -> tuple[list[str], list[dict[str, Any]]]:
-    from tinyassets import workspace_fs as fs
-
-    entries: list[dict[str, Any]] = []
-    if fs._POSIX:
-        fd = _open_universe_dir(base, uid, rel)
-        try:
-            names = sorted(os.listdir(fd))
-            for name in names:
-                if len(entries) >= MAX_LIST_ENTRIES:
-                    break
-                try:
-                    info = os.stat(name, dir_fd=fd, follow_symlinks=False)
-                except OSError:
-                    continue
-                entry = _entry(name, info)
-                if entry is not None:
-                    entries.append(entry)
-        finally:
-            os.close(fd)
-        return names, entries
-    directory = _windows_path_is_clean(base, uid, rel)
-    names = sorted(entry.name for entry in os.scandir(directory))
-    for name in names:
-        if len(entries) >= MAX_LIST_ENTRIES:
-            break
-        try:
-            info = os.lstat(directory / name)
-        except OSError:
-            continue
-        entry = _entry(name, info)
-        if entry is not None:
-            entries.append(entry)
-    return names, entries
-
-
-def _read(base: Path, uid: str, rel: str) -> bytes:
-    from tinyassets import workspace_fs as fs
-    from tinyassets.universe_files import MAX_UNIVERSE_FILE_BYTES, read_universe_file
-
-    if fs._POSIX:
-        fd = _open_universe_dir(base, uid, "")
-        try:
-            return fs.read_regular_file_beneath(fd, rel, max_bytes=MAX_UNIVERSE_FILE_BYTES)
-        finally:
-            os.close(fd)
-    # The root is checked here; every component below it by the shared reader.
-    _windows_path_is_clean(base, uid, "")
-    return read_universe_file(base / uid, rel)
+def _read(folder: Path, rel: str, owner: str) -> bytes:
+    return box_read(folder, rel, owner=owner, max_bytes=MAX_UNIVERSE_FILE_BYTES)
 
 
 def _relative(raw: str) -> str | None:
@@ -204,19 +102,11 @@ def _relative(raw: str) -> str | None:
     return str(PurePosixPath(text))
 
 
-def _logical(folder: Path, rel: str) -> str:
-    """Where ``rel`` lives in the agent's ``/u`` (harness W2).
-
-    The agent's ``/u`` is its workspace with the universe's visible root
-    entries bound over it at their own names. So a path whose first name is a
-    root entry is the root's; any other names the workspace, where the
-    agent's new files land (gpt-6-astra on #4194: a file written to
-    ``/u/PLAN.md`` read back as missing).
-    """
+def _logical(folder: Path, rel: str, owner: str) -> str:
     from tinyassets.universe_tools import WORKSPACE_DIR
 
     first = rel.split("/", 1)[0]
-    if not first or first.startswith(".") or os.path.lexists(folder / first):
+    if not first or first.startswith(".") or box_stat(folder, first, owner=owner):
         return rel
     return f"{WORKSPACE_DIR}/{rel}"
 
@@ -226,10 +116,10 @@ def list_files(*, universe_id: str = "", path: str = "") -> dict[str, Any]:
     rel = _relative(path)
     if owned is None or rel is None:
         return dict(_NOT_FOUND)
-    uid, folder = owned
-    rel = _logical(folder, rel)
+    uid, folder, owner = owned
     try:
-        names, entries = _list(folder.parent, uid, rel)
+        rel = _logical(folder, rel, owner)
+        names, entries = _list(folder, rel, owner)
     except OSError:
         return dict(_NOT_FOUND)
     return {
@@ -251,10 +141,10 @@ def read_file(
         return {"error": "file_offset must be a non-negative integer"}
     if type(count) is not int or not 1 <= count <= MAX_READ_BYTES:
         return {"error": f"file_max_bytes must be between 1 and {MAX_READ_BYTES}"}
-    uid, folder = owned
-    rel = _logical(folder, rel)
+    uid, folder, owner = owned
     try:
-        data = _read(folder.parent, uid, rel)
+        rel = _logical(folder, rel, owner)
+        data = _read(folder, rel, owner)
     except OSError:
         return dict(_NOT_FOUND)
     total = len(data)
@@ -302,13 +192,12 @@ def read_whole_file(*, universe_id: str = "", path: str = "") -> bytes | None:
     """
     owned = _owner_universe(universe_id)
     rel = _relative(path)
-    # _owner_universe answers a not-found DOCUMENT when the folder cannot be
-    # resolved; only a (uid, folder) pair is an admission.
+    # Only the owner gate's tuple is an admission.
     if not isinstance(owned, tuple) or not rel:
         return None
-    uid, folder = owned
+    uid, folder, owner = owned
     try:
-        return _read(folder.parent, uid, rel)
+        return _read(folder, _logical(folder, rel, owner), owner)
     except OSError:
         return None
 

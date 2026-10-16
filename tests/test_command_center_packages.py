@@ -49,6 +49,32 @@ def _pin_data_dir(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
 
+def _boxed(universe: Path, operation, **kwargs):
+    """Seed the test's authored files into the real owner box before the read."""
+    from unittest.mock import patch
+
+    from tinyassets.boxes.local import LocalBoxProvider
+    from tinyassets.boxes.provider import ExecLimits
+    from tinyassets.control_plane.binding import SessionBinding, use_binding
+
+    provider = LocalBoxProvider(boxes_root=universe.parent / "test-boxes",
+                                state_dir=universe.parent / "test-box-state",
+                                owner_of=lambda _center: "owner", allow_unisolated=True)
+    try:
+        handle = provider.bind(universe.name, account_id="owner", turn_id="boxed-test")
+        for index, path in enumerate(p for p in universe.rglob("*") if p.is_file()):
+            provider.write(handle, f"seed-{index}",
+                           "/cc/" + path.relative_to(universe).as_posix(),
+                           path.read_bytes(), max_bytes=path.stat().st_size or 1)
+        with patch.dict(os.environ, {"TINYASSETS_DATA_DIR": str(universe.parent)}), \
+                patch("tinyassets.agent_loop.served_chat.configured_box_provider",
+                      return_value=(provider, None)), \
+                use_binding(SessionBinding(provider, handle, ExecLimits(), universe)):
+            return operation(universe, owner="owner", **kwargs)
+    finally:
+        provider.close()
+
+
 def _write(folder: Path, rel: str, data: str | bytes) -> None:
     path = folder / rel
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -916,6 +942,7 @@ def test_a_bare_opaque_run_is_listed_for_review_not_dropped():
     assert ccp.review_note(data) == ccp.N_OPAQUE
 
 
+@pytest.mark.skipif(os.name != "posix", reason="LocalBoxProvider needs POSIX")
 def test_the_founders_private_grounding_never_travels(tmp_path):
     """``orgchart.md`` shipped in a published package (post-merge review of #4315).
 
@@ -944,13 +971,14 @@ def test_the_founders_private_grounding_never_travels(tmp_path):
     # root file stays home by design (test_an_unlisted_root_file_stays_home).
     _write(universe, "notes/keep.md", "a shareable note\n")
 
-    files, excluded = ccp.collect(universe, exclude=[], memory_items={})
+    files, excluded = _boxed(universe, ccp.collect, exclude=[], memory_items={})
     assert "notes/keep.md" in files
     for name in ("orgchart.md", "origin.md", "body.md"):
         assert name not in files
         assert any(row["path"] == name for row in excluded)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="LocalBoxProvider needs POSIX")
 def test_the_published_roster_agents_identity_still_travels(tmp_path):
     """``identity.md`` is a brain file AND a harness root file, and the harness
     set travels on purpose: ``destination`` remaps those into
@@ -967,11 +995,12 @@ def test_the_published_roster_agents_identity_still_travels(tmp_path):
     universe.mkdir()
     (universe / "identity.md").write_text("I am the village keeper.\n", encoding="utf-8")
 
-    files, _excluded = ccp.collect(universe, exclude=[], memory_items={})
+    files, _excluded = _boxed(universe, ccp.collect, exclude=[], memory_items={})
     assert "identity.md" in files
     assert ccp.destination("identity.md", "alice-village") == "agents/alice-village/identity.md"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="LocalBoxProvider needs POSIX")
 def test_the_publishers_own_request_queue_never_travels(tmp_path):
     """``requests.json`` shipped too, and it is not inert on arrival.
 
@@ -990,7 +1019,7 @@ def test_the_publishers_own_request_queue_never_travels(tmp_path):
         encoding="utf-8")
     _write(universe, "notes/keep.md", "a shareable note\n")
 
-    files, excluded = ccp.collect(universe, exclude=[], memory_items={})
+    files, excluded = _boxed(universe, ccp.collect, exclude=[], memory_items={})
     assert "notes/keep.md" in files
     assert REQUESTS_FILENAME not in files
     assert any(row["path"] == REQUESTS_FILENAME for row in excluded)
@@ -1005,6 +1034,7 @@ def test_identity_travels_and_memory_travels_only_when_named(tmp_path):
                         memory_items={ccp.MEMORY_FILE: ["m_abc"]})[0] is not None
 
 
+@pytest.mark.skipif(os.name != "posix", reason="LocalBoxProvider needs POSIX")
 def test_an_unlisted_root_file_stays_home(tmp_path):
     """The root is an ALLOWLIST, which is the whole point of this change.
 
@@ -1019,7 +1049,7 @@ def test_an_unlisted_root_file_stays_home(tmp_path):
         _write(universe, name, "content\n")
     _write(universe, "notes/keep.md", "a shareable note\n")
 
-    files, excluded = ccp.collect(universe, exclude=[], memory_items={})
+    files, excluded = _boxed(universe, ccp.collect, exclude=[], memory_items={})
     assert "notes/keep.md" in files, "a user's own folder still travels"
     for name in ("README.md", "surprise.yaml", "a-feature-nobody-wrote-yet.json"):
         assert name not in files, name
@@ -1092,6 +1122,7 @@ def test_the_platform_folders_are_denied_from_their_writers_constants(tmp_path):
     assert ccp.dir_exclusion("data") is None
 
 
+@pytest.mark.skipif(os.name != "posix", reason="LocalBoxProvider needs POSIX")
 def test_the_owners_uploads_stay_home(tmp_path):
     """``canon/`` holds uploads. Private by default (host decision 2026-10-03):
     an upload can be anything personal, and Hard Rule 9 makes it authoritative
@@ -1116,13 +1147,14 @@ def test_the_owners_uploads_stay_home(tmp_path):
     _write(universe, f"{CANON_DIRNAME}/index.json", '{"sources": 1}')
     _write(universe, "notes/keep.md", "a shareable note\n")
 
-    files, excluded = ccp.collect(universe, exclude=[], memory_items={})
+    files, excluded = _boxed(universe, ccp.collect, exclude=[], memory_items={})
     assert "notes/keep.md" in files
     assert not [p for p in files if p.startswith(CANON_DIRNAME)]
     assert secret not in b"".join(files.values()).decode("utf-8", "replace")
     assert any(row["reason"] == ccp.R_UPLOADS for row in excluded)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="LocalBoxProvider needs POSIX")
 def test_a_discarded_work_target_does_not_travel(tmp_path):
     """The P1 the review found, as a writer-to-package regression.
 
@@ -1140,12 +1172,13 @@ def test_a_discarded_work_target_does_not_travel(tmp_path):
            '{"title": "' + secret + '"}')
     _write(universe, "notes/keep.md", "a shareable note\n")
 
-    files, _excluded = ccp.collect(universe, exclude=[], memory_items={})
+    files, _excluded = _boxed(universe, ccp.collect, exclude=[], memory_items={})
     assert "notes/keep.md" in files
     assert not [p for p in files if p.startswith(ARTIFACTS_DIRNAME)]
     assert secret not in b"".join(files.values()).decode("utf-8", "replace")
 
 
+@pytest.mark.skipif(os.name != "posix", reason="LocalBoxProvider needs POSIX")
 def test_the_listing_the_owner_reads_is_the_bundle_that_ships(tmp_path):
     """Every kind that travelled before this change still travels, and the
     paths the owner confirms against are the paths and BYTES in the blob.
@@ -1164,8 +1197,7 @@ def test_the_listing_the_owner_reads_is_the_bundle_that_ships(tmp_path):
     # An excluded control, so the comparison is not vacuous.
     _write(universe, "founder.md", "Alice lives on Elm Street.\n")
 
-    built = ccp.build_publish_package(
-        universe, name="GTM Village", description="A village",
+    built = _boxed(universe, ccp.build_publish_package, name="GTM Village", description="A village",
         options={"exclude": [], "memory_items": {}}, branch_rows=[],
         workflows=[], ui="", automations=[])
 

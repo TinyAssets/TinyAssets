@@ -4,6 +4,7 @@ from contextlib import closing
 
 import pytest
 
+from tests.support.owner_reads import owner_read
 from tinyassets import universe_tools
 from tinyassets.conversation_memory import Msg, format_history
 from tinyassets.conversation_retrieval import read_conversation_page
@@ -15,7 +16,7 @@ def test_workspace_exports_visible_on_fresh_turn(tmp_path):
     original = b'month,interest,principal\n1,2166.67,361.60\n'
     (exports / 'mortgage.csv').write_bytes(original)
     for _ in range(2):
-        prompt = universe_tools.harness_prompt(tmp_path)
+        prompt = owner_read(universe_tools.harness_prompt, tmp_path)
         assert 'exports/mortgage.csv' in prompt
         assert '.agent-workspace' not in prompt
         assert (exports / 'mortgage.csv').read_bytes() == original
@@ -30,7 +31,7 @@ def test_workspace_root_overlay_and_hidden_files(tmp_path):
     (tmp_path / 'notes').mkdir()
     (tmp_path / 'notes/visible.txt').touch()
     (tmp_path / '.secret-platform').touch()
-    text = universe_tools.harness_prompt(tmp_path)
+    text = owner_read(universe_tools.harness_prompt, tmp_path)
     assert 'notes/visible.txt' in text
     assert 'shadowed.txt' not in text
     assert '.my-project/plan.txt' in text
@@ -54,7 +55,7 @@ def test_workspace_inventory_does_not_follow_links(tmp_path, at_root):
         if getattr(exc, 'winerror', None) == 1314:
             pytest.skip('Windows symlink privilege unavailable; runs-in=Linux-oracle')
         raise
-    assert 'private.txt' not in universe_tools.harness_prompt(root)
+    assert 'private.txt' not in owner_read(universe_tools.harness_prompt, root)
 
 
 @pytest.fixture

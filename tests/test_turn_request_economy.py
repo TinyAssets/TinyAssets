@@ -6,7 +6,8 @@ from time import monotonic
 import pytest
 
 from tests import test_interactive_http_agent as http
-from tinyassets import universe_files, universe_intelligence, universe_tools
+from tests.support.owner_reads import owner_read
+from tinyassets import owner_box_reads, universe_intelligence, universe_tools
 from tinyassets.daemon_server import get_founder_home
 
 rig = http.rig
@@ -48,7 +49,7 @@ def test_folder_paths_sizes_sort_and_two_levels(tmp_path):
     (tmp_path / "prompts/z.txt").write_text("prompt")
     (tmp_path / "workflows/x/deeper").mkdir()
     (tmp_path / "workflows/x/deeper/hidden.txt").write_text("hidden")
-    text = universe_tools.harness_prompt(tmp_path).split(HEADING)[1]
+    text = owner_read(universe_tools.harness_prompt, tmp_path).split(HEADING)[1]
     assert "notes/a.md (2.0 KB)" in text
     assert "workflows/x/index.html (1.0 KB)" in text
     assert "prompts/z.txt" in text
@@ -61,7 +62,7 @@ def test_folder_listing_is_bounded(tmp_path):
     (tmp_path / "notes").mkdir()
     for n in range(100):
         (tmp_path / f"notes/{n:03}.md").touch()
-    text = universe_tools.harness_prompt(tmp_path).split(HEADING)[1]
+    text = owner_read(universe_tools.harness_prompt, tmp_path).split(HEADING)[1]
     assert len([line for line in text.splitlines() if line.startswith("- ")]) == 40
     assert "60 more entries; `bash ls` shows them" in text
 
@@ -86,7 +87,7 @@ def test_depth_two_inventory_bounds_scan_work_and_output(tmp_path, monkeypatch,
 
     monkeypatch.setattr(_owner_box_double, "list", counted_list, raising=False)
     started = monotonic()
-    text = universe_tools._folder_section(tmp_path)
+    text = owner_read(universe_tools._folder_section, tmp_path)
     assert monotonic() - started < 2
     assert seen == 200
     lines = text.split(HEADING)[1].strip().splitlines()
@@ -111,22 +112,22 @@ def test_external_symlink_is_not_followed_or_listed(tmp_path, directory):
         if getattr(exc, "winerror", None) == 1314:
             pytest.skip("Windows process lacks symlink privilege; requires Linux oracle")
         raise
-    text = universe_tools.harness_prompt(root)
+    text = owner_read(universe_tools.harness_prompt, root)
     assert "notes/a.md" in text
     assert "link" not in text and "secret.txt" not in text and "foreign" not in text
 
 
 def test_unreadable_directory_omits_entire_section(tmp_path, monkeypatch):
     seed(tmp_path)
-    original = universe_files.list_universe_entries
+    original = owner_box_reads.box_list
 
     def unreadable(root, path, **kwargs):
         if path == "workflows/x":
             raise PermissionError("unreadable")
         return original(root, path, **kwargs)
 
-    monkeypatch.setattr(universe_files, "list_universe_entries", unreadable)
-    assert HEADING not in universe_tools.harness_prompt(tmp_path)
+    monkeypatch.setattr(owner_box_reads, "box_list", unreadable)
+    assert HEADING not in owner_read(universe_tools.harness_prompt, tmp_path)
 
 
 def test_resident_batching_and_direct_ui_install(tmp_path):

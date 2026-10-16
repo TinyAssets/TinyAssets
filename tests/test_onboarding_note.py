@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from tests.support.owner_reads import owner_read
 from tinyassets.onboarding_note import _MAX_ONBOARDING_BYTES, agent_identity, onboarding_note
 from tinyassets.universe_intelligence import read_operating_instructions
 from tinyassets.universe_tools import harness_prompt
@@ -25,7 +26,7 @@ def test_seeded_universe_gets_one_short_instruction(tmp_path):
                  "how often I report", "identity.md", "## Responsibility", "ask_first",
                  "automation", "only my owner"):
         assert text in note
-    assert note not in harness_prompt(tmp_path)
+    assert note not in owner_read(harness_prompt, tmp_path)
     from tinyassets.starter_skills import starter_agent_files
     files = starter_agent_files()
     assert "starter-onboarding" in files["starter/hooks.md"]
@@ -36,7 +37,7 @@ def test_note_disappears_after_files_are_written(tmp_path):
     _onboard(tmp_path)
     assert agent_identity(tmp_path) == ("Lumen", "Own the weekly report.")
     assert onboarding_note(tmp_path) == ""
-    assert "## Onboarding" not in harness_prompt(tmp_path)
+    assert "## Onboarding" not in owner_read(harness_prompt, tmp_path)
 
 
 @pytest.mark.parametrize("filename,body", [
@@ -82,12 +83,12 @@ def test_skill_listing_keeps_the_onboarding_note(tmp_path):
     (skill / "SKILL.md").write_text(
         "---\nname: report\ndescription: Write reports\n---\n", encoding="utf-8",
     )
-    assert "Write reports" in harness_prompt(tmp_path)
-    assert onboarding_note(tmp_path) not in harness_prompt(tmp_path)
-    assert "Read matching skills" in harness_prompt(tmp_path)
+    assert "Write reports" in owner_read(harness_prompt, tmp_path)
+    assert onboarding_note(tmp_path) not in owner_read(harness_prompt, tmp_path)
+    assert "Read matching skills" in owner_read(harness_prompt, tmp_path)
     _onboard(tmp_path)
-    assert "Write reports" in harness_prompt(tmp_path)
-    assert "## Onboarding" not in harness_prompt(tmp_path)
+    assert "Write reports" in owner_read(harness_prompt, tmp_path)
+    assert "## Onboarding" not in owner_read(harness_prompt, tmp_path)
 
 
 def test_resident_tool_description_budget_still_passes():
@@ -108,14 +109,14 @@ def test_onboarding_and_current_folder_evidence_survive_together(tmp_path, has_s
         (skill / "SKILL.md").write_text(
             "---\nname: report\ndescription: Write reports\n---\n", encoding="utf-8",
         )
-    prompt = harness_prompt(tmp_path)
+    prompt = owner_read(harness_prompt, tmp_path)
     assert onboarding_note(tmp_path) not in prompt
     assert "Read matching skills" in prompt
     assert "notes/current.md" in prompt
     assert "## What is in my folder now" in prompt
     assert ("Write reports" if has_skill else "(none yet)") in prompt
     _onboard(tmp_path)
-    prompt = harness_prompt(tmp_path)
+    prompt = owner_read(harness_prompt, tmp_path)
     assert "## Onboarding" not in prompt
     assert "notes/current.md" in prompt
     assert ("Write reports" if has_skill else "(none yet)") in prompt

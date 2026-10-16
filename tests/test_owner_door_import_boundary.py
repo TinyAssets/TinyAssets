@@ -157,6 +157,9 @@ _RUNTIME_PROBE = r"""
 import json, os, sys, tempfile
 base = tempfile.mkdtemp()
 os.environ["TINYASSETS_DATA_DIR"] = base
+from pytest import MonkeyPatch
+from tests.support.box_double import install
+box = install(MonkeyPatch())
 from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity
 from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
@@ -182,6 +185,10 @@ print(json.dumps(sorted(m for m in sys.modules if m in %s)))
 def test_exercising_the_owner_reads_never_loads_the_ceiling():
     """The static walk covers what is imported; this covers what is LOADED while
     the owner door's reads actually run, through every lazy import they take."""
+    if sys.platform == "win32":
+        import pytest
+
+        pytest.skip("the subprocess box provider requires POSIX")
     probe = _RUNTIME_PROBE % json.dumps(sorted(
         {"tinyassets.engine_result_bounds", "tinyassets.engine_read_views"}))
     run = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,

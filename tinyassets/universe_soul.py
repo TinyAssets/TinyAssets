@@ -7,9 +7,7 @@ mirror while introducing ``soul.md`` as the durable universe-intent artifact.
 from __future__ import annotations
 
 import hashlib
-import os
 import re
-import stat
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -105,29 +103,10 @@ def legacy_premise_path(universe_dir: Path) -> Path:
 
 
 def soul_present(universe_dir: Path, *, owner: str) -> bool:
-    """Check the owner's box, with an admitted session or a host provider bind."""
-    from tinyassets.agent_loop.served_chat import configured_box_provider
-    from tinyassets.control_plane.binding import current_binding, file_binding
+    """Check the owner's box for its soul."""
+    from tinyassets.owner_box_reads import box_stat
 
-    root = Path(universe_dir)
-    try:
-        if not stat.S_ISDIR(root.lstat().st_mode):
-            return False
-    except FileNotFoundError:
-        return False
-    admitted = current_binding()
-    if admitted is not None and admitted.universe_dir == Path(os.path.abspath(root)):
-        binding = file_binding(root)
-        if binding is not None:
-            binding.validate(owner, root)
-            info = binding.provider.stat(binding.handle, SOUL_FILENAME)
-            return info is not None and info.kind == "file"
-    provider, _ = configured_box_provider()
-    if provider is None:
-        raise RuntimeError("owner box provider is unavailable for soul presence")
-    handle = provider.bind(root.name, account_id=owner,
-                           turn_id=f"soul-presence:{owner}:{root.name}")
-    info = provider.stat(handle, SOUL_FILENAME)
+    info = box_stat(universe_dir, SOUL_FILENAME, owner=owner)
     return info is not None and info.kind == "file"
 
 

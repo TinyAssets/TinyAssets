@@ -321,7 +321,7 @@ def _wiki_root() -> Path:
 
 
 @contextmanager
-def _scoped_wiki_root(root: Path) -> Iterator[None]:
+def _scoped_wiki_root(root: Path, *, owner: str | None = None) -> Iterator[None]:
     """Temporarily route wiki helpers to an explicit wiki root.
 
     Never ``resolve()``: a universe's ``wiki -> /data/<other>/wiki`` link would
@@ -330,7 +330,14 @@ def _scoped_wiki_root(root: Path) -> Iterator[None]:
     """
     from tinyassets.universe_files import UniverseFileError
 
-    if root.is_symlink():
+    if owner is not None:
+        from tinyassets.owner_box_reads import box_stat
+
+        info = box_stat(root.parent, "wiki", owner=owner)
+        linked = info is not None and info.kind == "link"
+    else:
+        linked = root.is_symlink()
+    if linked:
         raise UniverseFileError(f"the wiki root {root.name!r} is a link; nothing was opened")
     token = _WIKI_ROOT_OVERRIDE.set(root if root.is_absolute() else root.absolute())
     try:

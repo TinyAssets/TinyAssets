@@ -37,6 +37,7 @@ from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
 from tests import test_interactive_http_agent as integration
 from tests.inference_usage_helpers import accounting_resolver
+from tests.support.owner_reads import owner_read
 from tinyassets import daemon_server, engine_tool_client, universe_intelligence
 from tinyassets.api import interlocutor
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
@@ -139,7 +140,7 @@ def test_whole_stock_resident_payload_per_adapter(
 
     def resident():
         return (
-            _prompt(root, "stock") + "\n\n" + universe_tools.harness_prompt(root)
+            _prompt(root, "stock") + "\n\n" + owner_read(universe_tools.harness_prompt, root)
             + universe_tools.command_center_summary(root, "test-owner::stock")
             + "\n\n" + universe_intelligence._turn_input_method_context("typed")
         )

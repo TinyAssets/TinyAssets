@@ -1327,8 +1327,14 @@ def get_status(
                 "bytes": path_size_bytes(udir / "activity.log"),
                 "path": str(udir / "activity.log"),
             }
+            from tinyassets.owner_box_reads import box_tree_size
+            from tinyassets.universe_owner import owner_of
+
+            owner = owner_of(udir.parent, udir.name)
+            if not owner:
+                raise RuntimeError(f"command center {udir.name!r} has no owner for output access")
             storage_utilization["per_subsystem"]["universe_outputs"] = {
-                "bytes": path_size_bytes(udir / "output"),
+                "bytes": box_tree_size(udir, "output", owner=owner),
                 "path": str(udir / "output"),
             }
             try:

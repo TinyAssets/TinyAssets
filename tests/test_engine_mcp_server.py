@@ -375,7 +375,7 @@ def _seed_brain_universe(monkeypatch, tmp_path, uid="u-brain"):
     from tests.conftest import own_universe
     # A universe needs an OWNER to be readable at all (2026-09-02): the
     # persona assembler refuses content on a universe nobody owns.
-    own_universe(tmp_path, uid)
+    own_universe(tmp_path, uid, owner_id="sub-brain")
     monkeypatch.setattr(s, "_ACTOR_ID", "sub-brain")
     monkeypatch.setattr(s, "_GRAPH_ID", uid)
     mock_engine_admission(monkeypatch, {uid})

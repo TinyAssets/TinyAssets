@@ -10,22 +10,18 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from tinyassets import workspace_fs as fs
+from tinyassets.boxes.layout import (
+    LEDGER,
+    LEDGER_LOCK,
+    PAUSE,
+    WORKER_HEARTBEAT,
+    host_center_entry,
+)
+from tinyassets.boxes.layout import (
+    WORKER_HEARTBEAT_PATTERN as WORKER_HEARTBEAT_PATTERN,
+)
 from tinyassets.storage import data_dir
 from tinyassets.universe_files import _lstat_nofollow_windows, _windows_parent
-
-PAUSE = ".pause"
-WORKER_HEARTBEAT = ".worker_supervisor.json"
-WORKER_HEARTBEAT_PATTERN = ".worker_supervisor.<id>.json"
-LEDGER = "auto_ship_attempts.jsonl"
-LEDGER_LOCK = ".auto_ship_attempts.jsonl.lock"
-CENTER_FILE_HOMES: dict[str, str] = {
-    PAUSE: "host",
-    WORKER_HEARTBEAT: "host",
-    WORKER_HEARTBEAT_PATTERN: "host",
-    LEDGER: "host",
-    LEDGER_LOCK: "host",
-    "soul.md": "box",
-}
 
 
 def _center(center: str) -> str:
@@ -174,9 +170,8 @@ def read_worker_heartbeats(center: str, *, max_bytes: int) -> dict[str, bytes]:
     else:
         root = _lstat_nofollow_windows(Path(data_dir()), _center(center))
         names = os.listdir(root)
-    valid = [name for name in names if name == WORKER_HEARTBEAT or (
-        name.startswith(".worker_supervisor.") and name.endswith(".json")
-        and len(name) > len(".worker_supervisor..json"))]
+    valid = [name for name in names
+             if name.startswith(".worker_supervisor.") and host_center_entry(name)]
     return {name: data for name in sorted(valid)
             if (data := _read(center, name, max_bytes=max_bytes)) is not None}
 

@@ -6,6 +6,8 @@ import json
 import sqlite3
 from types import SimpleNamespace
 
+import pytest
+
 from tinyassets.api.wiki import _ensure_wiki_scaffold
 from tinyassets.branches import NodeDefinition
 from tinyassets.effectors import (
@@ -23,6 +25,11 @@ from tinyassets.storage.external_write_receipts import (
     receipts_db_path,
     try_reserve_receipt,
 )
+
+
+@pytest.fixture(autouse=True)
+def _box_data_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path.parent))
 
 
 def _wiki_env(tmp_path):

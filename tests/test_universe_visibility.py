@@ -124,10 +124,11 @@ def _own(base: Path, *names: str) -> None:
     with zero ACL rows is PUBLIC, and flipping these fixtures to private would
     change what every gate below is asserting.
     """
-    from tinyassets.daemon_server import set_founder_home
 
     for name in names:
-        set_founder_home(base, founder_sub=f"test-owner::{name}", universe_id=name)
+        from tests.conftest import own_universe
+
+        own_universe(base, name)
 
 
 def _make_universe(base: Path, uid: str, *, level: str | None = None) -> Path:
@@ -602,7 +603,8 @@ class TestBackfill:
     right about preserving behaviour and wrong about what the behaviour was:
     `public_read`'s own column default is 1, so the derivation declared every
     legacy directory and every maintenance bucket `public`
-    (observed live 2026-09-02; see openspec/changes/archive/2026-09-30-private-by-default-universes/).
+    (observed live 2026-09-02; see the archived
+    `2026-09-30-private-by-default-universes` change).
     Per the founder, 2026-09-26, the platform declares nothing open on an owner's
     behalf. The original test's narrow true case — a universe whose `public_read`
     is already False is declared private — is kept below as

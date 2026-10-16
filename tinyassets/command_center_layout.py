@@ -18,11 +18,10 @@ from __future__ import annotations
 
 import re
 
-from tinyassets.center_platform_files import (
-    LEDGER,
-    LEDGER_LOCK,
-    PAUSE,
-    WORKER_HEARTBEAT,
+from tinyassets.boxes.layout import (
+    HOST_CENTER_ENTRIES,
+    HOST_CENTER_MOVED,
+    host_center_entry,
 )
 from tinyassets.retired_home_entries import (
     PLATFORM_LOCK_NAMES as RETIRED_PLATFORM_LOCK_NAMES,
@@ -35,75 +34,30 @@ USER = "user"
 PLATFORM = "platform"
 
 #: Agent- or person-written content (exact entry names in a home).
-USER_NAMES = frozenset({
-    # brain and harness (AGENT_BRAIN_FILES / AGENT_HARNESS_DIRS)
-    "AGENTS.md", "soul.md", "soul_versions", "voice.md", "identity.md", "founder.md",
-    "MEMORY.md", "settings.yaml",
-    "origin.md", "body.md", "orgchart.md", "projects.md", "goals.md", "index.md",
-    "log.md", "skills", "prompts", "extensions", "workflows", "bin", "notes",
-    "notes.json", "wiki",
-    # agent-editable settings; its authority fields move out (design E6)
-    "config.yaml",
-    # content the agent or a run wrote, uploads, permanent workspaces:
-    # `workspace` includes historical uploads, and `.agent-workspace` is the
-    # agent's own (provider_jail.py AGENT_WORKSPACE_DIR;
-    # storage_accounting calls it user bytes, harness W2)
-    "workspace", "workspaces", ".agent-workspace",
-    "canon", "output", "artifacts", "PROGRAM.md", "progress.md",
+USER_NAMES = HOST_CENTER_MOVED | frozenset({
+    "voice.md", "projects.md", "goals.md", "index.md", "log.md", "bin",
+    "workspace", "workspaces", "artifacts", "PROGRAM.md", "progress.md",
     "design-proposals", "feature-requests", "patch-requests",
-    # fiction-domain brain data the agent maintains
     "timeline.json", "promises.json", "facts.json", "characters.json",
 })
 
-#: State the daemon trusts (exact entry names in a home).
-PLATFORM_NAMES = frozenset({
-    # trusted policies
-    "soul.edit.md", "dispatcher_config.yaml",
-    # records, ledgers, status, assignment and routing
-    "activity.log", "status.json", "universe.json", "work_targets.json",
-    "ledger.json", "provider_definitions.json", "hard_priorities.json",
-    "requests.json", "branch_tasks.json",
-    "branch_tasks_archive.json", "auto_ship_attempts.jsonl", LEDGER,
-    "bid_execution_log.json", "enrichment_signals.json", "worldbuild_signals.json",
-    "platform-expected-instance.json", "uptime-probe", "executions", "runs",
-    "reviews", "discarded_targets", "archived",
-    "app_refresh_sessions", "import", "import-verify", "verify",
-    # stores
-    "lancedb",
-    # the provider authority record the tool jail never maps
-    # (provider_authority.py _DIR / write_record)
-    ".provider-authority",
-    # credentials and runtime
-    ".credentials", ".credentials.json", ".credential-vault.json", ".oauth-refresh", ".runtime",
-    ".runtime_status.json", ".engine_mcp_config.json", ".engine_mcp_http_routes.json",
-    PAUSE, ".agent-sessions", ".consumer_liveness", ".quarantine",
-    ".workspace-staging", ".authoring_blobs",
-    # the queue consumer's heartbeat (api/universe.py _WORKER_SUPERVISOR_FILENAME,
-    # control_plane/tick.py SUPERVISOR_HEARTBEAT_FILENAME)
-    WORKER_HEARTBEAT,
+#: Additional historical entries used by the inventory/cutover classifier.
+#: Current host and moved entries are defined only by boxes.layout.
+PLATFORM_NAMES = frozenset(name for name in HOST_CENTER_ENTRIES
+                           if not name.endswith((".db", ".lock"))) | frozenset({
+    "soul.edit.md", "universe.json", "work_targets.json", "ledger.json",
+    "hard_priorities.json", "requests.json", "branch_tasks.json",
+    "branch_tasks_archive.json", "bid_execution_log.json", "enrichment_signals.json",
+    "worldbuild_signals.json", "platform-expected-instance.json", "uptime-probe",
+    "executions", "runs", "reviews", "discarded_targets", "archived",
+    "app_refresh_sessions", "import", "import-verify", "verify", "lancedb",
+    ".credentials", ".credentials.json", ".credential-vault.json",
+    ".agent-sessions", ".consumer_liveness", ".quarantine", ".authoring_blobs",
 }) | RETIRED_PLATFORM_NAMES
 
-#: storage_accounting.UNIVERSE_ENTRIES; rules/steering in ROOT_ENTRIES.
-PLATFORM_DB_NAMES: frozenset[str] = frozenset({
-    ".conversation_memory.db", ".conversation_attention.db", ".subscription_state.db",
-    ".pending_requests.db", ".usage_ledger.db", ".wiki_write_back_destination_markers.db",
-    ".authoring.db", ".effector_consents.db", ".external_write_receipts.db",
-    ".idempotency.db", "rules.db", "steering.db",
-})
-
-#: Locks written as entries OF a home: admission, soul, and auto-ship. Retired
-#: lock names stay classified through retired_home_entries so existing owner
-#: data stays intelligible.
-#: Bare lock is NOT here: its creator puts it
-#: inside a credential snapshot directory beside auth.json (credential_vault.py),
-#: so a home holding one at the top level is something nobody writes, and stays
-#: unknown. (Spelled without a path join on purpose -- test_storage_registry
-#: _complete scrapes this directory's source for `dir / "<dotted name>"` and
-#: would read the example as a real on-disk name nobody accounts for.)
-PLATFORM_LOCK_NAMES: frozenset[str] = frozenset({
-    ".provider-assignment-admission.lock", ".soul.lock",
-    LEDGER_LOCK,
-}) | RETIRED_PLATFORM_LOCK_NAMES
+PLATFORM_DB_NAMES = frozenset(name for name in HOST_CENTER_ENTRIES if name.endswith(".db"))
+PLATFORM_LOCK_NAMES = (frozenset(name for name in HOST_CENTER_ENTRIES if name.endswith(".lock"))
+                       | RETIRED_PLATFORM_LOCK_NAMES)
 
 VERBATIM_EXEMPT_NAMES: frozenset[str] = frozenset({
     "workspace", "workspaces", ".agent-workspace", "output", "artifacts", "canon",
@@ -126,14 +80,6 @@ _DB_PATTERNS = tuple(
     for name in PLATFORM_DB_NAMES
 )
 
-#: The ONE name family with a creator that mints the middle segment per worker:
-#: ``_WORKER_SUPERVISOR_PREFIX`` + an assignment key + ``_WORKER_SUPERVISOR_SUFFIX``
-#: (api/universe.py). Production holds hundreds of these; an exact-name table
-#: cannot enumerate a minted key, so the pattern is the provenance.
-_MINTED_PATTERNS = (re.compile(
-    re.escape(WORKER_HEARTBEAT.removesuffix(".json")) + r"\.[^.][^/\\]*\.json"
-),)
-
 #: Authority fields that must leave the agent-editable config.yaml (#4263 D8a):
 #: config.py:60-66 and the routing ceiling the router enforces.
 CONFIG_AUTHORITY_FIELDS = (
@@ -146,10 +92,10 @@ CONFIG_AUTHORITY_FIELDS = (
 
 def classify(name: str) -> str | None:
     """``user``, ``platform``, or ``None`` when this table does not know it."""
-    if name in PLATFORM_NAMES or name in PLATFORM_LOCK_NAMES:
+    if host_center_entry(name) or name in PLATFORM_NAMES or name in PLATFORM_LOCK_NAMES:
         return PLATFORM
     if name in USER_NAMES:
         return USER
-    if any(pattern.fullmatch(name) for pattern in _DB_PATTERNS + _MINTED_PATTERNS):
+    if any(pattern.fullmatch(name) for pattern in _DB_PATTERNS):
         return PLATFORM
     return None

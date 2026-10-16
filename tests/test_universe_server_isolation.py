@@ -101,9 +101,10 @@ def _own(base: Path, uid: str) -> None:
     asserts hangs on "a universe with zero ACL rows is public", and seeding a
     grant would make every fixture here private.
     """
-    from tinyassets.daemon_server import set_founder_home
 
-    set_founder_home(base, founder_sub=f"test-owner::{uid}", universe_id=uid)
+    from tests.conftest import own_universe
+
+    own_universe(base, uid)
 
 
 def _make_universe(base: Path, uid: str) -> Path:

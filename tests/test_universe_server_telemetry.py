@@ -87,14 +87,16 @@ def _make_universe(
 
 def _declare_public(base: Path, uid: str, udir: Path) -> None:
     from tinyassets.api.visibility import set_universe_visibility
-    from tinyassets.daemon_server import ensure_universe_registered, set_founder_home
+    from tinyassets.daemon_server import ensure_universe_registered
 
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
     # An OWNER is what makes the directory a universe (2026-09-02: a folder on
     # disk is not one -- tests/test_a_universe_needs_an_owner.py). A
     # `founder_home` binding rather than an ACL grant, because a universe with
     # zero ACL rows is PUBLIC and that is the state these tests assert.
-    set_founder_home(base, founder_sub=f"test-owner::{uid}", universe_id=uid)
+    from tests.conftest import own_universe
+
+    own_universe(base, uid)
     set_universe_visibility(uid, "public", source="owner")
 
 

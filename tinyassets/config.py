@@ -134,7 +134,7 @@ CONFIG_ABSENT = object()
 
 
 def _read_config_document(
-    universe_path: str | Path, *, absent: object = None,
+    universe_path: str | Path, *, absent: object = None, owner: str | None = None,
 ) -> object:
     """The parsed ``config.yaml``, *absent* when there is none, or ``OSError``.
 
@@ -153,7 +153,13 @@ def _read_config_document(
     )
 
     try:
-        raw = read_universe_text(universe_path, "config.yaml", max_bytes=MAX_CONFIG_BYTES)
+        if owner is None:
+            raw = read_universe_text(universe_path, "config.yaml", max_bytes=MAX_CONFIG_BYTES)
+        else:
+            from tinyassets.owner_box_reads import box_read
+
+            raw = box_read(Path(universe_path), "config.yaml", owner=owner,
+                           max_bytes=MAX_CONFIG_BYTES).decode("utf-8")
     except FileNotFoundError:
         return absent
     return load_untrusted_yaml(raw, max_bytes=MAX_CONFIG_BYTES)
@@ -163,7 +169,7 @@ def _read_config_document(
 UNREADABLE = object()
 
 
-def load_universe_config(universe_path: str | Path) -> UniverseConfig:
+def load_universe_config(universe_path: str | Path, *, owner: str | None = None) -> UniverseConfig:
     """Load config.yaml, with authority read only from the platform record.
 
     The preference fields come from ``config.yaml``. The authority fields
@@ -174,12 +180,14 @@ def load_universe_config(universe_path: str | Path) -> UniverseConfig:
 
     from tinyassets.provider_authority import AUTHORITY_FIELDS, authority_for
 
-    preferences, data = _load_preferences(universe_path)
+    preferences, data = _load_preferences(universe_path, owner=owner)
     authority = authority_for(universe_path, data)
     return replace(preferences, **{name: authority[name] for name in AUTHORITY_FIELDS})
 
 
-def _load_preferences(universe_path: str | Path) -> tuple[UniverseConfig, Any]:
+def _load_preferences(
+    universe_path: str | Path, *, owner: str | None = None,
+) -> tuple[UniverseConfig, Any]:
     """The preference half of ``config.yaml`` (authority stripped), and its raw data.
 
     Returns ``(config, data)``: ``config`` has defaults for missing fields (and is
@@ -189,7 +197,7 @@ def _load_preferences(universe_path: str | Path) -> tuple[UniverseConfig, Any]:
     migration then waits rather than record defaults over a real assignment).
     """
     try:
-        data = _read_config_document(universe_path)
+        data = _read_config_document(universe_path, owner=owner)
     except ImportError:
         logger.warning(
             "PyYAML not installed; cannot read config.yaml. "

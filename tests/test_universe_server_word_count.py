@@ -27,7 +27,17 @@ def universe_base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    _record_owner(base, "u")
     return base
+
+
+def _record_owner(base: Path, uid: str) -> None:
+    from tinyassets.daemon_server import _connect, initialize_author_server
+    from tinyassets.universe_owner import record_creation
+
+    initialize_author_server(base)
+    with _connect(base) as conn:
+        record_creation(conn, universe_id=uid, owner_id="test-owner")
 
 
 def _make_scene(
@@ -54,6 +64,7 @@ def _declare_public(base: Path, uid: str, udir: Path) -> None:
     # `founder_home` binding rather than an ACL grant, because a universe with
     # zero ACL rows is PUBLIC and that is the state these tests assert.
     set_founder_home(base, founder_sub=f"test-owner::{uid}", universe_id=uid)
+    _record_owner(base, uid)
     set_universe_visibility(uid, "public", source="owner")
 
 

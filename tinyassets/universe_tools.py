@@ -20,7 +20,6 @@ import asyncio
 import contextlib
 import logging
 import re
-import stat
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
@@ -272,19 +271,20 @@ def _skill_description(raw: bytes) -> str:
     return description
 
 
-def skill_index(universe_dir: Path) -> list[tuple[str, str]]:
+def skill_index(universe_dir: Path, *, owner: str) -> list[tuple[str, str]]:
     """``(name, description)`` for each ``skills/<name>/SKILL.md``.
 
     Read by the daemon through the one safe reader
-    (:mod:`tinyassets.universe_files`): the directory is listed and each file
+    (:mod:`tinyassets.owner_box_reads`): the directory is listed and each file
     opened without following a link, each read is bounded, and a skill whose
     file is a link, is over its bound or fails to parse is left out -- never
     read into the prompt, never an error in the turn.
     """
-    from tinyassets.universe_files import list_universe_dir, read_universe_file
+    from tinyassets.owner_box_reads import box_list, box_read
 
     try:
-        names = list_universe_dir(universe_dir, SKILLS_DIR)
+        names = [entry.name for entry in box_list(universe_dir, SKILLS_DIR, owner=owner)
+                 if entry.kind == "dir"]
     except (OSError, NotImplementedError):
         return []
     skills: list[tuple[str, str]] = []
@@ -294,9 +294,8 @@ def skill_index(universe_dir: Path) -> list[tuple[str, str]]:
         if not _SKILL_NAME.match(name):
             continue
         try:
-            raw = read_universe_file(
-                universe_dir, f"{SKILLS_DIR}/{name}/SKILL.md", max_bytes=_MAX_SKILL_FILE_BYTES,
-            )
+            raw = box_read(universe_dir, f"{SKILLS_DIR}/{name}/SKILL.md",
+                           owner=owner, max_bytes=_MAX_SKILL_FILE_BYTES)
             description = _skill_description(raw)
         except (OSError, NotImplementedError, RecursionError, ValueError):
             continue
@@ -312,44 +311,43 @@ _HARNESS_HEAD = (
 )
 
 
-def _folder_section(universe_dir: Path) -> str:
+def _folder_section(universe_dir: Path, *, owner: str) -> str:
     """Two levels of metadata through the same no-follow reader as skills."""
-    from tinyassets.universe_files import list_universe_entries
+    from tinyassets.owner_box_reads import box_list, box_stat
 
     lines: list[str] = []
     remaining = 200
 
     def read(directory: str) -> list:
         nonlocal remaining
-        entries = list_universe_entries(universe_dir, directory, limit=remaining)
+        entries = box_list(universe_dir, directory, owner=owner, limit=remaining)
         remaining -= len(entries)
         return entries
 
     def visit(directory: str, depth: int, entries: list, *, prefix: str = "") -> None:
-        for name, info in entries:
-            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
+        for info in entries:
+            name = info.name
+            if info.kind == "link":
                 continue
             path = f"{directory}/{name}" if directory else name
             if prefix and not directory and not name.startswith("."):
                 # The tool jail overlays visible root entries on the workspace.
-                # lstat reads metadata only and never follows a planted link.
+                # Box stat reads metadata only and never follows a planted link.
                 try:
-                    overlay = (universe_dir / name).lstat()
-                except FileNotFoundError:
+                    overlay = box_stat(universe_dir, name, owner=owner)
+                except OSError:
                     pass
                 else:
-                    if (not getattr(overlay, "st_reparse_tag", 0)
-                            and (stat.S_ISDIR(overlay.st_mode)
-                                 or stat.S_ISREG(overlay.st_mode))):
+                    if overlay is not None and overlay.kind in {"dir", "file"}:
                         continue
             # Escape unusual names so a filename cannot inject extra prompt lines.
             shown = path.encode("unicode_escape").decode("ascii")
-            if stat.S_ISDIR(info.st_mode):
+            if info.kind == "dir":
                 lines.append(f"- {shown}/")
                 if depth < 2 and remaining:
                     visit(path, depth + 1, read(prefix + path), prefix=prefix)
-            elif stat.S_ISREG(info.st_mode):
-                lines.append(f"- {shown} ({info.st_size / 1024:.1f} KB)")
+            elif info.kind == "file":
+                lines.append(f"- {shown} ({info.size / 1024:.1f} KB)")
 
     try:
         for directory in ("notes", "prompts", "workflows"):
@@ -417,14 +415,14 @@ def command_center_summary(universe_dir: Path, owner: str) -> str:
         return ""
 
 
-def harness_prompt(universe_dir: Path) -> str:
+def harness_prompt(universe_dir: Path, *, owner: str) -> str:
     """The four tools, skill index and bounded current folder inventory.
 
     Runs in the shared daemon on every founder turn, so a bad skill folder
     never breaks the turn; an unreadable inventory is omitted.
     """
     try:
-        skills = skill_index(universe_dir)
+        skills = skill_index(universe_dir, owner=owner)
     except (OSError, RecursionError, ValueError):
         skills = []
     lines = [
@@ -432,4 +430,4 @@ def harness_prompt(universe_dir: Path) -> str:
         for name, description in skills
     ]
     return (_HARNESS_HEAD + "\n".join(lines or ["(none yet)"])
-            + _folder_section(universe_dir))
+            + _folder_section(universe_dir, owner=owner))

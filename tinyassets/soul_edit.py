@@ -20,7 +20,6 @@ import hashlib
 import logging
 import os
 import re
-import stat
 import sys
 import time
 from collections.abc import Iterable, Iterator
@@ -89,22 +88,14 @@ def _render(meta: dict[str, Any], body: str) -> str:
 
 
 def assert_contained(root: Path, path: Path) -> None:
-    """Refuse a path that escapes ``root`` through a symlinked component.
+    """Validate the logical slot; the box provider enforces link containment."""
+    from tinyassets.boxes.provider import BoxPathError, box_relpath
 
-    ``os.path.realpath`` resolves EVERY symlink in the path (the file itself AND
-    any parent directory, e.g. a ``soul_versions`` symlinked to an external dir),
-    so requiring both the path and its parent to resolve inside ``root`` closes
-    symlink write-escape and read-through-disclosure across the soul-edit sinks
-    (Codex brain-loop re-review 2026-08-22). Hardlinks (which share no distinct
-    path) are handled separately by the per-file link-count guard + atomic writes.
-    """
-    root_r = os.path.realpath(root)
-    prefix = root_r + os.sep
-    for candidate in (os.path.realpath(path), os.path.realpath(Path(path).parent)):
-        if candidate != root_r and not candidate.startswith(prefix):
-            raise SoulEditError(
-                f"path escapes the command center via a symlinked component: {path}"
-            )
+    try:
+        relative = Path(path).relative_to(root).as_posix()
+        box_relpath(f"/cc/{relative}")
+    except (ValueError, BoxPathError) as exc:
+        raise SoulEditError(f"path escapes the command center: {path}") from exc
 
 
 def _atomic_write_text(
@@ -330,39 +321,27 @@ def apply_soul_edit(
         # Pass 1 — read current state + compare-and-swap check. All checks run
         # before any write, so a mismatch leaves the bundle untouched.
         parsed: dict[str, tuple[dict[str, Any], str]] = {}
-        udir_resolved = universe_dir.resolve()
+        from tinyassets.owner_box_reads import binding_owner, box_list
+
+        owner = binding_owner(universe_dir)
+        entries = {entry.name: entry for entry in box_list(universe_dir, "", owner=owner)}
+        versions = entries.get(SOUL_VERSIONS_DIR)
+        if versions is not None and versions.kind != "dir":
+            raise SoulEditError("soul_versions is not a plain box directory")
         for filename in changes:
             path = universe_dir / filename
-            # Inode-safety (Codex brain-loop review 2026-08-22): validate the
-            # resolved FILE OBJECT, not just the filename string. A governed file
-            # that is a SYMLINK, or a HARDLINK aliasing another inode (e.g.
-            # identity.md hardlinked to soul.md or to an external file), would let
-            # a whitelisted write mutate a NON-governed target — overwriting the
-            # soul's executable frontmatter (loop_branch_def_id / effect_authority)
-            # or a file outside the universe. That is a control-plane bypass, so
-            # refuse rather than write THROUGH the aliased path. Requires a planted
-            # link (crafted/restored/compromised universe), but the boundary must
-            # survive that.
-            try:
-                st = os.lstat(path)
-            except OSError as exc:
-                raise SoulEditError(
-                    f"governed file missing on disk: {filename}"
-                ) from exc
-            if stat.S_ISLNK(st.st_mode):
+            assert_contained(universe_dir, path)
+            info = entries.get(filename)
+            if info is None:
+                raise SoulEditError(f"governed file missing in box: {filename}")
+            if info.kind == "link":
                 raise SoulEditError(
                     f"governed file is a symlink, refusing to write: {filename}"
                 )
-            if st.st_nlink > 1:
+            if info.links > 1:
                 raise SoulEditError(
-                    f"governed file is hardlinked (nlink={st.st_nlink}); refusing "
+                    f"governed file is hardlinked (nlink={info.links}); refusing "
                     f"to write through an aliased inode: {filename}"
-                )
-            resolved = path.resolve()
-            if resolved != udir_resolved / filename:
-                raise SoulEditError(
-                    f"governed file resolves outside its command center slot, refusing: "
-                    f"{filename}"
                 )
             try:
                 raw = read_universe_text(universe_dir, filename, max_bytes=MAX_BRAIN_FILE_BYTES)
@@ -403,6 +382,7 @@ def apply_soul_edit(
             context=context,
             summary=log_entry,
             stamp=now,
+            owner=owner,
         )
 
     return {
@@ -438,6 +418,7 @@ def _write_edit_snapshot(
     context: str,
     summary: str,
     stamp: str,
+    owner: str,
 ) -> str:
     """Write a self-describing snapshot of this edit and index it.
 
@@ -446,18 +427,23 @@ def _write_edit_snapshot(
     snapshots because each records its own event.
     """
     versions_dir = universe_dir / SOUL_VERSIONS_DIR
-    # Refuse a soul_versions symlinked to an external dir BEFORE any fs op
-    # (parent-directory symlink write-escape — Codex re-review). realpath of a
-    # not-yet-created dir stays inside the universe; a symlink resolves out and is
-    # refused.
     assert_contained(universe_dir, versions_dir)
     # The owner-content writer creates missing parents. A daemon mkdir here
     # poisons owner-measure before the snapshot can even be published.
-    existing = sorted(versions_dir.glob("[0-9][0-9][0-9][0-9].md"))
+    from tinyassets.owner_box_reads import box_list
+
+    try:
+        existing = sorted(entry.name for entry in box_list(
+            universe_dir, SOUL_VERSIONS_DIR, owner=owner,
+        ) if re.fullmatch(r"[0-9]{4}\.md", entry.name))
+    except FileNotFoundError:
+        existing = []
+    except OSError as exc:
+        raise SoulEditError("soul_versions listing refused") from exc
     next_number = 1
     if existing:
         try:
-            next_number = int(existing[-1].stem) + 1
+            next_number = int(existing[-1][:-3]) + 1
         except ValueError:
             next_number = len(existing) + 1
 

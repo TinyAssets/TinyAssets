@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import own_universe
+
 
 def _canon_with_escape(tmp_path: Path) -> tuple[Path, Path]:
     """Build canon/ with one legit file and one symlink to an external secret.
@@ -260,6 +262,7 @@ def _setup_universe(tmp_path, monkeypatch):
     uid = "test_universe"
     udir = tmp_path / uid
     (udir / "canon").mkdir(parents=True)
+    own_universe(tmp_path, uid)
     return uid, udir
 
 
@@ -427,6 +430,7 @@ def test_work_targets_manifest_read_rejects_symlink(tmp_path):
     from tinyassets import work_targets
 
     universe_dir = tmp_path / "u1"
+    own_universe(tmp_path, "u1")
     canon = universe_dir / "canon"
     canon.mkdir(parents=True)
     secret_manifest = tmp_path / "secret_manifest.json"
@@ -449,6 +453,7 @@ def test_work_targets_manifest_read_legit_still_works(tmp_path):
     from tinyassets import work_targets
 
     universe_dir = tmp_path / "u1"
+    own_universe(tmp_path, "u1")
     sources = universe_dir / "canon" / "sources"
     sources.mkdir(parents=True)
     (sources / "doc.txt").write_text("body", encoding="utf-8")
@@ -476,6 +481,7 @@ def test_work_targets_needs_synthesis_rejects_traversal_source_path(tmp_path):
     from tinyassets import work_targets
 
     universe_dir = tmp_path / "u1"
+    own_universe(tmp_path, "u1")
     (universe_dir / "canon").mkdir(parents=True)
     (tmp_path / "outside.txt").write_text("OUTSIDE", encoding="utf-8")
     entry = {
@@ -493,6 +499,7 @@ def test_work_targets_needs_synthesis_legit_source_path(tmp_path):
     from tinyassets import work_targets
 
     universe_dir = tmp_path / "u1"
+    own_universe(tmp_path, "u1")
     sources = universe_dir / "canon" / "sources"
     sources.mkdir(parents=True)
     (sources / "doc.txt").write_text("body", encoding="utf-8")

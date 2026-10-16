@@ -135,7 +135,7 @@ def _write_reserved_wiki_canary(content: str) -> str:
     })
 
 
-def _ensure_wiki_scaffold(wiki_root: Path) -> None:
+def _ensure_wiki_scaffold(wiki_root: Path, *, owner: str | None = None) -> None:
     """Ensure the wiki tree exists so read/list/search don't error on a
     fresh deploy (Task #6 — post-scrub droplet boot has an empty
     `/data/wiki`).
@@ -183,7 +183,13 @@ def _ensure_wiki_scaffold(wiki_root: Path) -> None:
     }
     for name, body in anchors.items():
         path = wiki_root / name
-        if not path.exists():
+        if owner is not None:
+            from tinyassets.owner_box_reads import box_exists
+
+            present = box_exists(wiki_root.parent, f"wiki/{name}", owner=owner)
+        else:
+            present = path.exists()
+        if not present:
             write_data_path(path, body)
 
 
@@ -2599,10 +2605,13 @@ def _wiki_root_for_universe(universe_id: str) -> Path:
         return _wiki_root()
     if "/" in uid or "\\" in uid or uid.startswith("."):
         raise ValueError(f"Invalid universe_id: {universe_id}")
-    root = _universe_dir(uid) / "wiki"
-    # Never resolve: ``wiki -> /data/<other>/wiki`` would hand back the other
-    # universe's wiki after this universe was authorized.
-    if root.is_symlink():
+    from tinyassets.api.universe import _center_owner
+    from tinyassets.owner_box_reads import box_stat
+
+    center = _universe_dir(uid)
+    root = center / "wiki"
+    info = box_stat(center, "wiki", owner=_center_owner(center))
+    if info is not None and info.kind == "link":
         from tinyassets.universe_files import UniverseFileError
 
         raise UniverseFileError(f"universe {uid!r} wiki is a link; nothing was opened")
@@ -2628,8 +2637,11 @@ def write_universe_canon(
     first-party for its own universe. Returns the :func:`_wiki_write` JSON string.
     """
     wiki_root = _wiki_root_for_universe(universe_id)
-    _ensure_wiki_scaffold(wiki_root)
-    with _scoped_wiki_root(wiki_root):
+    from tinyassets.api.universe import _center_owner
+
+    owner = _center_owner(wiki_root.parent) if universe_id.strip() else None
+    _ensure_wiki_scaffold(wiki_root, owner=owner)
+    with _scoped_wiki_root(wiki_root, owner=owner):
         return _wiki_write(
             category=category,
             filename=filename,
@@ -2767,8 +2779,11 @@ def wiki(
 
     # Task #6 — scaffold the tree on first call so fresh deploys
     # (empty /data/wiki) don't error on read/list/search/lint. Idempotent.
+    from tinyassets.api.universe import _center_owner
+
+    owner = _center_owner(wiki_root.parent) if target_universe_id else None
     try:
-        _ensure_wiki_scaffold(wiki_root)
+        _ensure_wiki_scaffold(wiki_root, owner=owner)
     except UniverseFileError as exc:
         # UniverseFileError is an OSError. A command-center root that
         # admission has not published is not a permissions failure, and
@@ -2794,7 +2809,14 @@ def wiki(
             ),
         })
 
-    if not wiki_root.is_dir():
+    if target_universe_id:
+        from tinyassets.owner_box_reads import box_stat
+
+        info = box_stat(wiki_root.parent, "wiki", owner=owner)
+        wiki_present = info is not None and info.kind == "dir"
+    else:
+        wiki_present = wiki_root.is_dir()
+    if not wiki_present:
         return json.dumps({
             "error": f"Wiki not found at {wiki_root}.",
             "hint": (
@@ -2802,7 +2824,7 @@ def wiki(
             ),
         })
 
-    with _scoped_wiki_root(wiki_root):
+    with _scoped_wiki_root(wiki_root, owner=owner):
         dispatch = WIKI_ACTIONS
         handler = dispatch.get(action)
         if handler is None:

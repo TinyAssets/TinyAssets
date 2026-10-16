@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def model_setup_state(base: Path, *, universe: Path, uid: str, owner: str) -> str:
-    """Read local readiness and setup presence; never discover, bind or enable.
+    """Read stored readiness and box setup presence without enabling a model.
 
     Exceptions remain unavailable to the caller, never evidence of empty state.
     This does not prove upstream sign-in, account quota or model eligibility.
@@ -52,10 +52,12 @@ def model_setup_state(base: Path, *, universe: Path, uid: str, owner: str) -> st
     if any(record.get("credential_type") == "http"
            and str(record.get("service", "")).startswith("model:") for record in records):
         return "recovery"
-    config_file = universe / "config.yaml"
-    if config_file.exists():
-        if not _config_yaml_is_parseable(config_file):
+    from tinyassets.owner_box_reads import box_exists
+
+    if box_exists(universe, "config.yaml", owner=owner):
+        if not _config_yaml_is_parseable(universe, owner=owner):
             raise ValueError("model setup configuration unavailable")
-        if str(load_universe_config(universe).engine_source or "").strip() != "byo_api_key":
+        source = load_universe_config(universe, owner=owner).engine_source
+        if str(source or "").strip() != "byo_api_key":
             return "recovery"
     return "empty"

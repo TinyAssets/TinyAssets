@@ -16,6 +16,8 @@ def _call_inspect(universe_id="test-u"):
         patch("tinyassets.api.universe._request_universe", return_value=universe_id),
         patch("tinyassets.api.universe._universe_dir", return_value=fake_udir),
         patch.object(Path, "is_dir", return_value=True),
+        patch("tinyassets.api.universe._center_owner", return_value="test-owner"),
+        patch("tinyassets.owner_box_reads.box_stat", return_value=None),
         patch("tinyassets.api.visibility.visibility_permits", return_value=True),
         # inspect also requires an ownership row to name the universe (a
         # directory on disk is not one, 2026-09-02). This file's subject is the
