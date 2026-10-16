@@ -591,3 +591,6 @@ class TestFullPipeline:
         state.update(draft(state))
         result = commit(state)
         assert result["verdict"] in ("accept", "second_draft", "revert")
+
+
+pytestmark = pytest.mark.usefixtures("canonical_runtime")

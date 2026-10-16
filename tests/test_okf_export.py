@@ -1,11 +1,25 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from tinyassets.wiki.okf_export import export_universe_okf_bundle
+from tinyassets.wiki.okf_export import render_okf_files
+
+
+def render_fixture(wiki_root, bundle_dir):
+    files, report = render_okf_files({
+        p.relative_to(wiki_root).as_posix(): p.read_bytes()
+        for p in wiki_root.rglob("*.md")
+    })
+    for path, data in files.items():
+        target = bundle_dir / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    return report
 
 
 def _split_frontmatter(text: str) -> tuple[dict[str, str], str]:
@@ -82,9 +96,9 @@ def fixture_wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path,
 def test_export_universe_okf_bundle_exports_curated_pages_only(
     fixture_wiki: tuple[Path, Path],
 ) -> None:
-    _, bundle_dir = fixture_wiki
+    wiki_root, bundle_dir = fixture_wiki
 
-    report = export_universe_okf_bundle("alpha", bundle_dir)
+    report = render_fixture(wiki_root, bundle_dir)
 
     json.dumps(report)
     assert report["conformant"] is True
@@ -101,9 +115,9 @@ def test_export_universe_okf_bundle_exports_curated_pages_only(
 def test_export_converts_wikilinks_to_absolute_okf_links_and_flags_unresolved(
     fixture_wiki: tuple[Path, Path],
 ) -> None:
-    _, bundle_dir = fixture_wiki
+    wiki_root, bundle_dir = fixture_wiki
 
-    report = export_universe_okf_bundle("alpha", bundle_dir)
+    report = render_fixture(wiki_root, bundle_dir)
     body = (bundle_dir / "concepts" / "alpha.md").read_text(encoding="utf-8")
 
     assert "[related](/concepts/related.md)" in body
@@ -120,9 +134,9 @@ def test_export_converts_wikilinks_to_absolute_okf_links_and_flags_unresolved(
 def test_export_guarantees_type_title_timestamp_and_workflow_keys(
     fixture_wiki: tuple[Path, Path],
 ) -> None:
-    _, bundle_dir = fixture_wiki
+    wiki_root, bundle_dir = fixture_wiki
 
-    export_universe_okf_bundle("alpha", bundle_dir)
+    render_fixture(wiki_root, bundle_dir)
     alpha_meta, _ = _split_frontmatter(
         (bundle_dir / "concepts" / "alpha.md").read_text(encoding="utf-8")
     )
@@ -145,9 +159,9 @@ def test_export_guarantees_type_title_timestamp_and_workflow_keys(
 
 
 def test_reserved_files_follow_okf_structure(fixture_wiki: tuple[Path, Path]) -> None:
-    _, bundle_dir = fixture_wiki
+    wiki_root, bundle_dir = fixture_wiki
 
-    report = export_universe_okf_bundle("alpha", bundle_dir)
+    report = render_fixture(wiki_root, bundle_dir)
     index_text = (bundle_dir / "index.md").read_text(encoding="utf-8")
     log_text = (bundle_dir / "log.md").read_text(encoding="utf-8")
 
@@ -162,3 +176,29 @@ def test_reserved_files_follow_okf_structure(fixture_wiki: tuple[Path, Path]) ->
         "index.md": {"okf_version": "0.1", "valid": True},
         "log.md": {"valid": True},
     }
+
+
+@pytest.mark.parametrize(("body", "title"), [
+    (b"\n\n  # First heading  \n# Second heading\n", "First heading"),
+    (b"## Not H1\n#No whitespace\n\t#\tA title\r\n", "A title"),
+    (b"#\nThis is body, not a title\n", "Fallback Name"),
+    (b"#   \nThis is body, not a title\n", "Fallback Name"),
+])
+def test_heading_fallback_reads_one_line_at_a_time(body, title):
+    _, report = render_okf_files({"pages/fallback-name.md": body})
+    assert report["concepts"][0]["title"] == title
+
+
+def test_large_no_heading_wiki_conversion_finishes_within_deadline():
+    # A subprocess bounds the test itself if a multiline backtracking scan is
+    # reintroduced. Newline-heavy and single-line whitespace both lack an H1.
+    subprocess.run([
+        sys.executable, "-c",
+        "from tinyassets.wiki.okf_export import render_okf_files\n"
+        "for whitespace in (b'\\n', b' '):\n"
+        "    files, report = render_okf_files({\n"
+        "        'pages/no-heading.md': whitespace * (8 * 1024 * 1024)})\n"
+        "    assert report['concepts'][0]['title'] == 'No Heading'\n"
+        "    assert report['conformant']\n"
+        "    assert b'title: No Heading' in files['no-heading.md']\n",
+    ], check=True, timeout=10)

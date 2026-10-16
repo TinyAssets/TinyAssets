@@ -271,10 +271,9 @@ def test_a_link_at_the_old_name_is_set_aside_not_followed(data: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_staging_a_home_for_deletion_takes_its_sidecar_with_it(data: Path):
-    """Moving a store OUT of the home puts it where the deletion sweep does not
-    walk. A deleted account's consent records left on disk is retained user
-    data, so the sidecar is staged into the same directory the home is.
+def test_platform_staging_retains_sidecar_without_bypassing_box_destruction(data: Path):
+    """Only authenticated box destruction can remove owner bytes. Platform
+    consent sidecars still enter the deletion sweep even outside the box.
     """
     from tinyassets.account_deletion import _stage_home
 
@@ -288,10 +287,9 @@ def test_staging_a_home_for_deletion_takes_its_sidecar_with_it(data: Path):
     staged = _stage_home(data, "u-alpha")
 
     assert staged is not None
-    assert not cc.exists()
+    assert (cc / "note.md").read_text(encoding="utf-8") == "mine\n"
     assert not sidecar.exists(), "the sidecar survived staging"
-    # Both are inside the one staged directory, so one rmtree removes both.
-    assert (staged / "home" / "note.md").exists()
+    assert not (staged / "home").exists()
     assert (staged / "sidecar" / ".effector_consents.db").exists()
 
 

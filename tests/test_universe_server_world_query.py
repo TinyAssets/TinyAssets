@@ -6,11 +6,9 @@ Root cause: `_query_world_db` was pointing `characters -> entities` inside
 `story.db`, but `entities` lives in `knowledge.db`, and the real character
 data is in `story.db::character_states`.
 
-The fix consults a SOURCES table that lists (db_filename, table_name) pairs
-in priority order. First table with rows wins. A table that exists but is
-empty is still preferred over falling off the end (so callers see "no rows"
-instead of "missing table"). Tables that don't exist in any candidate DB
-return a diagnostic that lists everything checked.
+The routing consults story.db and admitted canonical knowledge records in
+priority order. First table with rows wins; an empty reviewed table still
+returns an empty result instead of a missing-table diagnostic.
 """
 
 from __future__ import annotations
@@ -88,8 +86,8 @@ def test_facts_routes_to_extracted_facts_in_story_db(
     assert out["source"] == "story.db::extracted_facts"
 
 
-def test_facts_falls_back_to_knowledge_db_when_story_db_empty(
-    universe_base: Path,
+def test_facts_falls_back_to_canonical_knowledge_when_story_db_empty(
+    universe_base: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """If commit-pipeline extracted_facts exists but is empty AND the KG
     facts table has rows, we prefer the KG data. This is the reason for
@@ -98,10 +96,9 @@ def test_facts_falls_back_to_knowledge_db_when_story_db_empty(
     udir = universe_base / "u"
     udir.mkdir()
     _make_table(udir / "story.db", "extracted_facts", ["fact_text"], [])
-    _make_table(
-        udir / "knowledge.db", "facts",
-        ["fact_text"], [("KG fact 1",), ("KG fact 2",)],
-    )
+    monkeypatch.setattr(us, "_canonical_world_rows", lambda uid, table: [
+        {"text": "KG fact 1"}, {"text": "KG fact 2"},
+    ])
 
     out = json.loads(us._action_query_world(
         universe_id="u", query_type="facts",
@@ -111,15 +108,14 @@ def test_facts_falls_back_to_knowledge_db_when_story_db_empty(
 
 
 def test_characters_falls_back_to_knowledge_entities_when_story_empty(
-    universe_base: Path,
+    universe_base: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     udir = universe_base / "u"
     udir.mkdir()
     _make_table(udir / "story.db", "character_states", ["name"], [])
-    _make_table(
-        udir / "knowledge.db", "entities",
-        ["name", "type"], [("Kaela", "character")],
-    )
+    monkeypatch.setattr(us, "_canonical_world_rows", lambda uid, table: [
+        {"name": "Kaela", "type": "character"},
+    ])
 
     out = json.loads(us._action_query_world(
         universe_id="u", query_type="characters",
@@ -129,7 +125,7 @@ def test_characters_falls_back_to_knowledge_entities_when_story_empty(
 
 
 def test_empty_table_returns_empty_results_not_missing_error(
-    universe_base: Path,
+    universe_base: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """If the table exists in the primary store but is empty AND no
     fallback has data, we return zero rows with a note — never the old
@@ -138,6 +134,7 @@ def test_empty_table_returns_empty_results_not_missing_error(
     udir = universe_base / "u"
     udir.mkdir()
     _make_table(udir / "story.db", "character_states", ["name"], [])
+    monkeypatch.setattr(us, "_canonical_world_rows", lambda uid, table: [])
 
     out = json.loads(us._action_query_world(
         universe_id="u", query_type="characters",
@@ -147,23 +144,20 @@ def test_empty_table_returns_empty_results_not_missing_error(
     assert "not found" not in (out.get("note") or "")
 
 
-def test_missing_db_for_query_type_reports_what_was_checked(
-    universe_base: Path,
+def test_missing_story_db_uses_empty_canonical_table(
+    universe_base: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Diagnostic: when no candidate DB/table pair is present, we tell
-    the user exactly which locations were probed. Old behavior said
-    'Table X not found' — unhelpful because it hid the alternatives.
-    """
+    """The reviewed canonical table exists even when story.db does not."""
     udir = universe_base / "u"
     udir.mkdir()
+    monkeypatch.setattr(us, "_canonical_world_rows", lambda uid, table: [])
 
     out = json.loads(us._action_query_world(
         universe_id="u", query_type="characters",
     ))
     assert out["count"] == 0
-    assert "Checked:" in (out.get("note") or "")
-    assert "story.db::character_states" in out["note"]
-    assert "knowledge.db::entities" in out["note"]
+    assert out["source"] == "knowledge.db::entities"
+    assert "no rows yet" in out["note"]
 
 
 def test_timeline_reports_no_store_yet(universe_base: Path) -> None:

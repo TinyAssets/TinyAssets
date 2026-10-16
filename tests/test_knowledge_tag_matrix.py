@@ -140,8 +140,14 @@ def test_manual_tag_construction_accepts_single_string():
     assert query.shape_tags == ("protocol",)
 
 
-def test_knowledge_graph_persists_fact_tags(tmp_path):
-    kg = KnowledgeGraph(tmp_path / "kg.db")
+def test_knowledge_graph_persists_fact_tags(canonical_source, tmp_path):
+    kg = KnowledgeGraph(
+        canonical_source(
+            "knowledge",
+            key=tmp_path / "kg.db",
+            namespaces=[None, "world", "u1", "test", "test-universe", "universe-A"],
+        )
+    )
     try:
         scope = MemoryScope(universe_id="u1")
         tags = KnowledgeTags(

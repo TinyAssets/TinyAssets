@@ -10,6 +10,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -71,6 +72,167 @@ def _cutover_root(tmp_path: Path) -> tuple[Path, Path]:
     return data, store
 
 
+def test_knowledge_cutover_commits_each_center_once_without_peer_rows(tmp_path):
+    from tinyassets.boxes.local import LocalBoxProvider
+    from tinyassets.memory.project import PROJECT_SCHEMA
+    from tinyassets.okf.box_cutover import commit_center, prepare_center
+    from tinyassets.okf.bundle import KnowledgeBundle
+    from tinyassets.okf.records import SourceRecords
+
+    source = tmp_path / "source"
+    tree = tmp_path / "boxes"
+    snapshots = tmp_path / "snapshots"
+    state = tmp_path / "state"
+    for root in (source, tree, snapshots, state):
+        root.mkdir()
+    for center, owner, value in (("a", "alice", "Alice's note"),
+                                 ("b", "bob", "Bob's note")):
+        (source / center).mkdir()
+        (source / center / "universe-one").mkdir()
+        with sqlite3.connect(source / center / ".tinyassets.db") as db:
+            db.execute("CREATE TABLE universes(universe_id TEXT PRIMARY KEY)")
+            db.execute("INSERT INTO universes VALUES ('universe-one')")
+        (tree / center).mkdir()
+        with sqlite3.connect(source / center / ".project_memory.db") as db:
+            db.executescript(PROJECT_SCHEMA)
+            db.execute("INSERT INTO project_memory VALUES (?,?,?,?,?,?)",
+                       ("same-opaque-project", "note", value, "now", "writer", 1))
+        plan = prepare_center(source / center, snapshots, owner=owner)
+        first = commit_center(plan, tree, state)
+        assert first["status"] == "converted"
+        assert commit_center(plan, tree, state)["status"] == "already-converted"
+        provider = LocalBoxProvider(
+            boxes_root=tree, state_dir=state,
+            owner_of={"a": "alice", "b": "bob"}.get, allow_unisolated=True,
+        )
+        try:
+            bundle = KnowledgeBundle(provider, provider.bind(center, account_id=owner))
+            snapshot = bundle.snapshot()
+            rows = SourceRecords(bundle, "project").rows(snapshot)["project_memory"]
+            assert [row["value"] for row in rows.values()] == [value]
+            from tinyassets.okf.records import source_census
+
+            assert "universe-one" in source_census(snapshot, "knowledge")["tables"][
+                "facts"]["scope"]["universe_id"]
+        finally:
+            provider.close()
+
+
+def test_knowledge_scratch_peaks_at_one_center(tmp_path, monkeypatch):
+    from tinyassets.okf import box_cutover
+
+    scratch_root = tmp_path / "scratch"
+    scratch_root.mkdir()
+    temporary_directory = migration.tempfile.TemporaryDirectory
+    monkeypatch.setattr(
+        migration.tempfile, "TemporaryDirectory",
+        lambda **kwargs: temporary_directory(dir=scratch_root, **kwargs),
+    )
+    observed = []
+
+    def prepare(source, snapshots, *, owner):
+        assert len(list(scratch_root.iterdir())) == 1
+        (snapshots / "database.db").write_bytes(b"x" * 1024)
+        (snapshots / "vectors").mkdir()
+        (snapshots / "vectors" / "segment").write_bytes(b"v" * 1024)
+        observed.append((source.name, sum(
+            path.stat().st_size for path in scratch_root.rglob("*") if path.is_file()
+        )))
+        return source.name
+
+    def commit(center, _tree, state):
+        assert state.parent in scratch_root.iterdir()
+        assert (state.parent / "database.db").exists()
+        return {"center": center, "status": "converted"}
+
+    monkeypatch.setattr(box_cutover, "prepare_center", prepare)
+    monkeypatch.setattr(box_cutover, "commit_center", commit)
+    monkeypatch.setattr(box_cutover, "chown_projection", lambda *_: None)
+    for center in ("first", "second"):
+        assert migration._convert_knowledge_center(
+            tmp_path / center, tmp_path, tmp_path / center, "owner", 300001,
+        )["status"] == "converted"
+        assert not list(scratch_root.iterdir())
+    assert observed == [("first", 2048), ("second", 2048)]
+
+
+def test_knowledge_cutover_refuses_foreign_universe_before_any_box_write(tmp_path):
+    from tinyassets.knowledge.knowledge_graph import initialize_knowledge_index
+    from tinyassets.okf.box_cutover import prepare_center
+    from tinyassets.okf.bundle import InvalidBundle
+
+    center = tmp_path / "a"
+    center.mkdir()
+    with sqlite3.connect(center / "knowledge.db") as db:
+        db.row_factory = sqlite3.Row
+        initialize_knowledge_index(db)
+        db.execute("INSERT INTO entities(entity_id, universe_id) VALUES (?, ?)",
+                   ("someone-else", "b"))
+    snapshots = tmp_path / "snapshots"
+    snapshots.mkdir()
+    with pytest.raises(InvalidBundle, match="foreign universe"):
+        prepare_center(center, snapshots, owner="alice")
+
+
+def test_legacy_source_lookup_ignores_dot_directories_for_every_store(tmp_path):
+    from tinyassets.okf.box_cutover import _FILES, _source_path
+    from tinyassets.okf.bundle import InvalidBundle
+
+    center = tmp_path / "home"
+    workspace = center / ".agent-workspace"
+    universe = center / "universe-one"
+    workspace.mkdir(parents=True)
+    universe.mkdir()
+    for name, filename in _FILES.items():
+        root_store = center / filename
+        root_store.write_bytes(b"root")
+        (workspace / filename).touch()
+        assert _source_path(center, name) == root_store
+        universe_store = universe / filename
+        universe_store.write_bytes(b"second")
+        with pytest.raises(InvalidBundle, match=f"multiple {name} databases"):
+            _source_path(center, name)
+        universe_store.unlink()
+        root_store.unlink()
+
+
+def test_knowledge_cutover_retains_vector_prose_as_owner_record(tmp_path):
+    from tinyassets.okf.box_cutover import commit_center, prepare_center
+    from tinyassets.retrieval.vector_store import VectorStore, reset_db
+
+    source = tmp_path / "source"
+    tree = tmp_path / "tree"
+    snapshots = tmp_path / "snapshots"
+    for root in (source, tree, snapshots):
+        root.mkdir()
+    (source / "a").mkdir()
+    (tree / "a").mkdir()
+    reset_db()
+    try:
+        vectors = VectorStore(str(source / "a" / "lancedb"), embedding_dim=3)
+        vectors.index([{"chunk_id": "one", "text": "Private owner prose",
+                        "embedding": [0.5, 0.25, 0.125], "scene_id": "s",
+                        "chapter_number": 1}],)
+        plan = prepare_center(source / "a", snapshots, owner="alice")
+        assert [entry.body for entry in plan.vector_entries] == ["Private owner prose"]
+        assert plan.vector_entries[0].metadata["fields"]["embedding"] == [
+            "list", [["real", 0.5.hex()], ["real", 0.25.hex()], ["real", 0.125.hex()]]
+        ]
+        receipt = commit_center(plan, tree, tmp_path / "state")
+        assert receipt["vector_rows"] == 1
+        vectors.index([{"chunk_id": "foreign", "text": "Someone else's prose",
+                        "embedding": [1.0, 0.0, 0.0], "scene_id": "s",
+                        "chapter_number": 1, "universe_id": "b"}])
+        foreign_snapshots = tmp_path / "foreign-snapshots"
+        foreign_snapshots.mkdir()
+        from tinyassets.okf.bundle import InvalidBundle
+
+        with pytest.raises(InvalidBundle, match="foreign universe"):
+            prepare_center(source / "a", foreign_snapshots, owner="alice")
+    finally:
+        reset_db()
+
+
 @pytest.mark.parametrize("refusal", ["store", "mount", "inode", "quota"])
 def test_read_only_preflight_refuses_without_changing_the_layout(tmp_path, monkeypatch, refusal):
     from tinyassets import activity_shape_migration as activity_shape
@@ -116,6 +278,31 @@ def test_read_only_preflight_accepts_clean_owner_split(tmp_path, monkeypatch):
     monkeypatch.setattr(migration, "_owner_inode_preflight", lambda *_: None)
     monkeypatch.setattr(migration, "_xfs_quota", lambda *_: "project report")
     migration.preflight(data, store)
+    assert not list(store.iterdir())
+
+
+def test_read_only_preflight_rejects_foreign_knowledge_before_shutdown(tmp_path, monkeypatch):
+    from tinyassets import activity_shape_migration as activity_shape
+    from tinyassets.knowledge.knowledge_graph import initialize_knowledge_index
+
+    data, store = _cutover_root(tmp_path)
+    with sqlite3.connect(data / "c1" / "knowledge.db") as db:
+        db.row_factory = sqlite3.Row
+        initialize_knowledge_index(db)
+        db.execute("INSERT INTO entities(entity_id, universe_id) VALUES (?, ?)",
+                   ("foreign", "c2"))
+    before = {path.relative_to(data): path.read_bytes()
+              for path in data.rglob("*") if path.is_file()}
+    monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(migration, "_mounted", lambda _: None)
+    monkeypatch.setattr(migration, "_owner_plan", lambda _: [
+        migration.OwnerMove("alice", 300001, ("c1",), 1024**3)])
+    monkeypatch.setattr(activity_shape, "_pending", lambda _: [])
+    monkeypatch.setattr(migration, "_owner_inode_preflight", lambda *_: None)
+    with pytest.raises(ValueError, match="foreign universe"):
+        migration.preflight(data, store)
+    assert {path.relative_to(data): path.read_bytes()
+            for path in data.rglob("*") if path.is_file()} == before
     assert not list(store.iterdir())
 
 
@@ -360,6 +547,25 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
     tmp_path, monkeypatch, copy_fails,
 ):
     data, store = _cutover_root(tmp_path)
+    with sqlite3.connect(data / "c1" / ".subscription_state.db") as db:
+        db.execute("CREATE TABLE subscription_meta (key TEXT PRIMARY KEY, value TEXT)")
+        db.execute("INSERT INTO subscription_meta VALUES ('tier', 'paid')")
+    with sqlite3.connect(data / "c1" / ".runs.db") as db:
+        db.execute("CREATE TABLE platform_run (id TEXT)")
+        db.execute("INSERT INTO platform_run VALUES ('kept')")
+    (data / "c1" / ".runtime").mkdir()
+    (data / "c1" / ".runtime" / "existing").write_text("host runtime")
+    (data / "c1" / "provider_definitions.json").write_text("[]")
+    (data / "c1" / ".oauth-refresh").mkdir()
+    (data / "c1" / ".soul.lock").touch()
+    (data / "c1" / "dispatcher_config.yaml").write_text(
+        "allow_opportunistic: false\n")
+    (data / "c1" / ".workspace-staging").mkdir()
+    from tinyassets.knowledge.knowledge_graph import initialize_knowledge_index
+
+    with sqlite3.connect(data / "c1" / "knowledge.db") as db:
+        db.row_factory = sqlite3.Row
+        initialize_knowledge_index(db)
     monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
     monkeypatch.setattr(migration.os, "chown", lambda *args: None)
     monkeypatch.setattr(migration, "_verified_pair", lambda *args: None)
@@ -382,6 +588,7 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
         if copy_fails:
             raise OSError("copy failed after the move began")
         (target / "note.txt").write_bytes((source / "note.txt").read_bytes())
+        (target / "knowledge.db").write_bytes((source / "knowledge.db").read_bytes())
 
     monkeypatch.setattr(migration, "_copy", copy)
     arguments = (data, store, tmp_path / "data.tar.gz", tmp_path / "box.tar.gz")
@@ -397,12 +604,77 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
     else:
         assert marker["state"] == "stable"
         assert marker["box_layout"] == "owner-box"
+        assert marker["knowledge_shape"] == "v1"
         assert (store / "300001" / "c1" / "note.txt").read_text() == "owner content"
         with sqlite3.connect(data / ".broker" / "state" / "owner-identities.db") as db:
             assert db.execute("SELECT principal, machine FROM box_records").fetchall() == [
                 ("person", 300001)
             ]
-    assert (data / "c1" / "note.txt").read_text() == "owner content"
+        from tinyassets import account_deletion
+        from tinyassets.account_deletion import delete_account
+        from tinyassets.agent_loop import served_chat
+        from tinyassets.agent_sessions import native_store
+        from tinyassets.api import helpers
+        from tinyassets.api.branches import _resolve_udir
+        from tinyassets.boxes.local import LocalBoxProvider
+        from tinyassets.control_plane.queue_policy import load_dispatcher_config
+        from tinyassets.credential_refresh import file_lock, lock_path
+        from tinyassets.daemon_server import grant_universe_access, set_founder_home
+        from tinyassets.providers import definition as provider_definition
+        from tinyassets.soul_edit import _soul_lock
+        from tinyassets.universe_owner import account_type_of
+        from tinyassets.workspace_staging import sweep
+
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data))
+        set_founder_home(data, founder_sub="person", universe_id="c1")
+        grant_universe_access(data, universe_id="c1", actor_id="person",
+                              permission="admin", granted_by="person")
+        assert account_type_of(data, "person") == AccountType.SUBSCRIPTION
+        assert helpers._default_universe() == "c1"
+        assert _resolve_udir() == data / "c1"
+        assert (data / "c1" / ".runtime" / "existing").read_text() == "host runtime"
+        assert provider_definition._load("c1") == []
+        refresh = lock_path(data / "c1", "credential")
+        with file_lock(refresh, deadline=time.monotonic() + 5):
+            assert refresh.parent == data / "c1" / ".oauth-refresh"
+        with _soul_lock(data / "c1"):
+            assert (data / "c1" / ".soul.lock").is_file()
+        assert load_dispatcher_config(data / "c1").allow_opportunistic is False
+        assert str(data / "c1" / ".workspace-staging") in sweep(data / "c1").roots
+        assert native_store(data / "c1", "codex").is_dir()
+        with sqlite3.connect(data / "c1" / ".runs.db") as db:
+            assert db.execute("SELECT id FROM platform_run").fetchone() == ("kept",)
+        assert {p.name for p in (data / "c1").iterdir()} == {
+            "note.txt", ".subscription_state.db", ".runs.db", ".runtime",
+            "provider_definitions.json", ".oauth-refresh", ".soul.lock",
+            "dispatcher_config.yaml", ".workspace-staging",
+        }
+        assert not (data / "c1" / "knowledge.db").exists()
+        provider = LocalBoxProvider(
+            boxes_root=store / "300001", state_dir=tmp_path / "delete-state",
+            owner_of=lambda center: "person" if center == "c1" else None,
+            allow_unisolated=True,
+        )
+        monkeypatch.setattr(served_chat, "configured_box_provider", lambda: (provider, None))
+        def destroy_box(_root, center, *, principal):
+            operation = "account-delete-" + hashlib.sha256(
+                (principal + "\0" + center).encode()
+            ).hexdigest()
+            return provider.destroy(provider.bind(center, account_id=principal), operation)
+
+        monkeypatch.setattr(account_deletion, "_destroy_owner_box", destroy_box)
+        try:
+            receipt = delete_account(data, founder_sub="person",
+                                     delete_identity=lambda _: "deleted")
+            assert receipt["unfinished_phases"] == []
+            assert not (store / "300001" / "c1").exists()
+            assert not (data / "c1").exists()
+        finally:
+            provider.close()
+    if copy_fails:
+        assert (data / "c1" / "note.txt").read_text() == "owner content"
+    else:
+        assert not (data / "c1").exists()  # account deletion staged and removed the stub
 
 
 def test_census_reports_each_layout_and_does_not_invent_a_zero(tmp_path):
@@ -423,9 +695,31 @@ def test_census_reports_each_layout_and_does_not_invent_a_zero(tmp_path):
     assert migration.check(data) == migration.PENDING
     (data / ".layout.json").write_text(
         '{"layout": 2, "state": "stable", "box_layout": "owner-box"}')
+    assert migration.check(data) == migration.UNREADABLE
+    assert migration.layout_census(data)["pending"] is None
+    (data / ".layout.json").write_text(
+        '{"layout": 2, "state": "stable", "box_layout": "owner-box", '
+        '"knowledge_shape": "v1"}')
     assert migration.check(data) == 0
     (data / ".layout.json").write_text("{")
     assert migration.check(data) == migration.UNREADABLE
+
+
+def test_apply_refuses_boxed_layout_without_knowledge_receipt(tmp_path, monkeypatch):
+    data, store = _cutover_root(tmp_path)
+    (data / ".layout.json").write_text(
+        '{"layout": 2, "state": "stable", "box_layout": "owner-box", '
+        '"activity_shape": "v1"}'
+    )
+    before = (data / ".layout.json").read_bytes()
+    monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(migration, "_verified_pair", lambda *args: None)
+    monkeypatch.setattr(migration, "_mounted", lambda *args: None)
+
+    with pytest.raises(RuntimeError, match="predates the one-pass knowledge"):
+        migration.apply(data, store, tmp_path / "data-backup", tmp_path / "box-backup")
+    assert (data / ".layout.json").read_bytes() == before
+    assert not list(store.iterdir())
 
 
 def _identities(path: Path, principal: str, uid: int, center: str) -> None:
@@ -465,12 +759,22 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
     censuses are not a skip: check refuses them instead of reporting owner-box.
     """
     from tinyassets.agent_file_migration import pending
+    from tinyassets.knowledge.knowledge_graph import initialize_knowledge_index
 
     data = tmp_path / "data"
     store = tmp_path / "owners"
     center = data / "home"
     center.mkdir(parents=True)
     (center / "note.txt").write_text("owner sentence")
+    with sqlite3.connect(center / "knowledge.db") as db:
+        db.row_factory = sqlite3.Row
+        initialize_knowledge_index(db)
+        db.execute("INSERT INTO entities(entity_id, universe_id) VALUES (?, ?)",
+                   ("root-entity", "home"))
+        db.execute("INSERT INTO facts(fact_id, text, universe_id) VALUES (?, ?, ?)",
+                   ("root-fact", "The tower is bone.", "home"))
+    (center / ".agent-workspace").mkdir()
+    (center / ".agent-workspace" / "knowledge.db").touch()
     (data / ".layout.json").write_text(json.dumps({
         "layout": 2, "state": "stable", "box_layout": "owner-split",
     }))
@@ -569,13 +873,47 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
     migration.apply(data, store, data_backup, box_backup)
 
     assert (store / "300001" / "home" / "note.txt").read_text() == "owner sentence"
+    assert (store / "300001" / "home" / ".agent-workspace" / "knowledge.db").stat().st_size == 0
+    with sqlite3.connect(store / "300001" / "home" / "knowledge.db") as db:
+        assert db.execute("SELECT entity_id FROM entities").fetchall() == [("root-entity",)]
+    from tinyassets.boxes.local import LocalBoxProvider
+    from tinyassets.okf.bundle import KnowledgeBundle
+    from tinyassets.okf.records import SourceRecords
+
+    provider = LocalBoxProvider(
+        boxes_root=store / "300001", state_dir=tmp_path / "state",
+        owner_of=lambda name: "person" if name == "home" else None,
+        allow_unisolated=True,
+    )
+    try:
+        bundle = KnowledgeBundle(provider, provider.bind("home", account_id="person"))
+        entities = SourceRecords(bundle, "knowledge").rows(bundle.snapshot())["entities"]
+        assert [row["entity_id"] for row in entities.values()] == ["root-entity"]
+        from tinyassets.agent_loop import served_chat
+        from tinyassets.api import engine_helpers, universe
+
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data))
+        monkeypatch.setattr(served_chat, "configured_box_provider", lambda: (provider, None))
+        monkeypatch.setattr(engine_helpers, "_current_actor", lambda: "person")
+        assert not (data / "home" / "knowledge.db").exists()
+        world = json.loads(universe._action_query_world(universe_id="home"))
+        assert world["source"] == "knowledge.db::facts"
+        assert [row["text"] for row in world["results"]] == ["The tower is bone."]
+        filtered = json.loads(universe._action_query_world(
+            universe_id="home", filter_text="no match",
+        ))
+        assert filtered["results"] == []
+    finally:
+        provider.close()
     assert (store / "300001" / "home" / "Activities.md").read_text() == (
         "Owner activity instructions")
-    assert (data / "home" / "note.txt").read_text() == "owner sentence"
+    assert (data / "home").is_dir()
+    assert {entry.name for entry in (data / "home").iterdir()} == {"note.txt"}
     marker = json.loads((data / ".layout.json").read_text())
     assert marker["box_layout"] == "owner-box"
     assert marker["state"] == "stable"
     assert marker["activity_shape"] == "v1"
+    assert marker["knowledge_shape"] == "v1"
     moved = migration.layout_census(data)
     assert moved["box_layout"] == "owner-box"
     assert moved["pending"] is False
@@ -635,6 +973,40 @@ def test_guest_copy_omits_persistent_credential_sources(tmp_path):
     assert (guest / "note.txt").read_text() == "owner content"
     assert all(not (guest / name).exists() for name in migration._CREDENTIAL_ENTRIES)
     assert not (guest / ".runtime").exists()
+
+
+def test_host_center_coordination_files_stay_out_of_box(tmp_path, monkeypatch):
+    from tinyassets.boxes.layout import host_center_entry
+
+    source, guest = tmp_path / "center", tmp_path / "guest"
+    source.mkdir()
+    guest.mkdir()
+    host_files = (
+        ".worker_supervisor.json", ".worker_supervisor.assignment.json",
+        "auto_ship_attempts.jsonl", ".auto_ship_attempts.jsonl",
+        ".auto_ship_attempts.jsonl.lock",
+    )
+    for name in host_files:
+        (source / name).write_text("host state")
+        assert host_center_entry(name)
+    (source / "owner-note.txt").write_text("owner state")
+    assert not host_center_entry("owner-note.txt")
+
+    commands = []
+
+    def capture(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(migration.subprocess, "run", capture)
+    migration._copy(source, guest, os.getuid())
+
+    assert len(commands) == 2
+    for command in commands:
+        excludes = {arg.removeprefix("--exclude=/") for arg in command
+                    if arg.startswith("--exclude=/")}
+        assert ".worker_supervisor*.json" in excludes
+        assert set(host_files[2:]) <= excludes
 
 
 @pytest.mark.skipif(

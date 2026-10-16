@@ -978,19 +978,13 @@ def build_manifest(*, profile: str, name: str, description: str, files: dict[str
                    workflows: list[dict[str, Any]], ui: str, automations: list[dict[str, Any]],
                    connections: list[str]) -> dict[str, Any]:
     """``command-center.json``: one manifest for every profile (§4.17, D1)."""
-    return {
-        "format_version": FORMAT_VERSION,
-        "profile": profile,
-        "name": name,
-        "description": description,
-        "agents": agents_in(files),
-        "files": [{"path": p, "size": len(b), "sha256": hashlib.sha256(b).hexdigest()}
-                  for p, b in sorted(files.items())],
-        "workflows": workflows,
-        "ui": ui,
-        "automations": automations,
-        "needs": {"model": model_need(files), "connections": connections},
-    }
+    from tinyassets.okf.manifest import build_manifest as serialize
+
+    return serialize(
+        profile=profile, name=name, description=description, files=files,
+        agents=agents_in(files), workflows=workflows, ui=ui, automations=automations,
+        model=model_need(files), connections=connections,
+    )
 
 
 def build_blob(manifest: dict[str, Any], files: dict[str, bytes]) -> bytes:
@@ -1154,6 +1148,15 @@ CREATE TABLE IF NOT EXISTS pins (
     PRIMARY KEY (universe_id, pin_id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pins_request ON pins(universe_id, request_id);
+CREATE TABLE IF NOT EXISTS bundle_imports (
+    import_id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    command_center_id TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    blob_sha256 TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state = 'quarantined'),
+    created_at REAL NOT NULL
+);
 """
 
 
@@ -1235,13 +1238,16 @@ def store_blob(base_path: str | Path, *, author_id: str, blob: bytes) -> str:
 
     sha = hashlib.sha256(blob).hexdigest()
     path = _blob_path(base_path, sha)
-    if not path.exists():
-        # The platform's one link-free writer: atomic temp + rename.
-        write_data_path(path, blob, make_parents=True)
     with _db(base_path) as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO blobs (author_id, blob_sha256, size_bytes, created_at) "
-            "VALUES (?, ?, ?, ?)", (author_id, sha, len(blob), time.time()))
+        with conn:
+            # Serialize file creation and ownership with private-import erasure.
+            # A peer cannot record ownership after its only file was removed.
+            conn.execute("BEGIN IMMEDIATE")
+            if not path.exists():
+                write_data_path(path, blob, make_parents=True)
+            conn.execute(
+                "INSERT OR IGNORE INTO blobs (author_id, blob_sha256, size_bytes, created_at) "
+                "VALUES (?, ?, ?, ?)", (author_id, sha, len(blob), time.time()))
     return sha
 
 
@@ -1259,6 +1265,122 @@ def read_blob(base_path: str | Path, sha256: str) -> bytes:
     if hashlib.sha256(data).hexdigest() != sha256:
         raise PackageError("this package's content does not match its id")
     return data
+
+
+def quarantine_import(base_path, *, owner, command_center, epoch, bundle):
+    """Retain validated import bytes in existing package custody, without activation."""
+    import secrets
+
+    from tinyassets import storage_accounting
+    from tinyassets.okf.transfer import MANIFEST
+    from tinyassets.storage import _connect as author_connection
+    from tinyassets.storage.current_home import check_principal_not_deleted
+
+    manifest = json.loads(bundle.files[MANIFEST])
+    blob = build_blob(manifest, {p: b for p, b in bundle.files.items() if p != MANIFEST})
+    if len(blob) > MAX_PACKAGE_BYTES:
+        raise PackageError("Private import exceeds the package custody byte bound")
+    from tinyassets.okf.import_activation import validate_custody_blob
+
+    # Validate the exact stored representation before reserving quota or adding
+    # custody. Alternate ZIP codecs must not produce an unreviewable receipt.
+    validate_custody_blob(blob)
+    sha = hashlib.sha256(blob).hexdigest()
+    # Schema work finishes before acquiring deletion's canonical writer fence.
+    with _db(base_path) as conn:
+        already_owned = blob_owned(base_path, owner, sha)
+        if not already_owned and conn.execute(
+            "SELECT 1 FROM bundle_imports WHERE owner_id=? AND blob_sha256=? LIMIT 1",
+            (owner, sha),
+        ).fetchone() is not None and _retained_blob_size(base_path, sha) is not None:
+            # Interrupted custody already occupies this owner's pool. Reconcile
+            # even an expired reservation before admitting a zero-byte retry.
+            storage_accounting.measure(base_path, owner, "packages")
+            already_owned = True
+        reservation = storage_accounting.reserve(
+            base_path, account_id=owner, scope_id=owner, store="packages",
+            nbytes=0 if already_owned else len(blob),
+        )
+        custody_started = False
+        try:
+            with author_connection(base_path) as author:
+                author.execute("BEGIN IMMEDIATE")
+                check_principal_not_deleted(author, owner)
+                import_id = "import_" + secrets.token_urlsafe(24)
+                # _db is autocommit: make the owner-scoped erasure inventory
+                # durable BEFORE any bytes can land. If storage fails or this
+                # process stops, retain the inert quarantine record for retry
+                # or account erasure, including when no blob ownership row
+                # was committed. No receipt is returned until custody succeeds.
+                conn.execute(
+                    "INSERT INTO bundle_imports VALUES (?,?,?,?,?,'quarantined',?)",
+                    (import_id, owner, command_center, epoch, sha, time.time()),
+                )
+                custody_started = True
+                store_blob(base_path, author_id=owner, blob=blob)
+        except BaseException as error:
+            if not custody_started:
+                storage_accounting.release(reservation)
+            else:
+                # A failed ownership INSERT may follow a successful file write.
+                # Retain the reservation until measurement accounts for those
+                # bytes; only proven absence warrants a zero-byte commitment.
+                retained = reservation.bytes
+                try:
+                    if _retained_blob_size(base_path, sha) is None:
+                        retained = 0
+                except (OSError, PackageError) as read_error:
+                    error.add_note(f"Retained import bytes could not be verified: {read_error}")
+                try:
+                    storage_accounting.commit(reservation, retained)
+                except Exception as accounting_error:  # noqa: BLE001 -- retain the original failure
+                    # Leave the reservation in place if the ledger is unavailable.
+                    # Its expiry scan also measures durable import inventory.
+                    error.add_note(f"Import reservation could not be settled: {accounting_error}")
+            raise
+        storage_accounting.commit(reservation)
+    return {"import_id": import_id, "state": "quarantined", "sha256": sha}
+
+
+def erase_private_imports(base_path, *, owner):
+    """Erase private import custody; retain peer-owned or published content.
+
+    Account deletion has already tombstoned this owner. Keep quarantine rows
+    until each physical removal finishes so an interrupted erasure can retry.
+    The package writer lock excludes concurrent creation of a peer reference.
+    """
+    from tinyassets.universe_files import unlink_data_path
+
+    with _db(base_path) as conn:
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            candidates = conn.execute(
+                "SELECT DISTINCT blob_sha256 FROM bundle_imports WHERE owner_id=?", (owner,),
+            ).fetchall()
+            for row in candidates:
+                sha = row[0]
+                published = conn.execute(
+                    "SELECT 1 FROM package_versions WHERE blob_sha256=? LIMIT 1", (sha,),
+                ).fetchone()
+                if published:
+                    continue
+                peer = conn.execute(
+                    "SELECT 1 FROM blobs WHERE blob_sha256=? AND author_id<>? LIMIT 1",
+                    (sha, owner),
+                ).fetchone()
+                if peer is None:
+                    peer = conn.execute(
+                        "SELECT 1 FROM bundle_imports WHERE blob_sha256=? AND owner_id<>? LIMIT 1",
+                        (sha, owner),
+                    ).fetchone()
+                if peer is None:
+                    try:
+                        unlink_data_path(_blob_path(base_path, sha))
+                    except FileNotFoundError:
+                        pass
+                conn.execute("DELETE FROM blobs WHERE author_id=? AND blob_sha256=?", (owner, sha))
+            conn.execute("DELETE FROM bundle_imports WHERE owner_id=?", (owner,))
+    return len(candidates)
 
 
 def record_version(base_path: str | Path, *, author_id: str, name: str, version: int,
@@ -1295,6 +1417,16 @@ def drop_version(base_path: str | Path, *, author_id: str, name: str, version: i
             "AND definition_id = ''", (author_id, name, version))
 
 
+def _retained_blob_size(base_path, sha):
+    """A verified custody file's bytes, or None for actual absence only."""
+    data = read_data_path(_blob_path(base_path, sha), max_bytes=MAX_PACKAGE_BYTES)
+    if data is None:
+        return None
+    if len(data) > MAX_PACKAGE_BYTES or hashlib.sha256(data).hexdigest() != sha:
+        raise PackageError("retained import content does not match its id or byte bound")
+    return len(data)
+
+
 def measure_packages(base_path: str | Path, actors: list[str]) -> int:
     """The ``packages`` store: every blob these principals own, listed or not."""
     path = store_dir(base_path) / _DB
@@ -1303,14 +1435,30 @@ def measure_packages(base_path: str | Path, actors: list[str]) -> int:
     marks = ",".join("?" * len(actors))
     conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=30)
     try:
+        # One metadata snapshot prevents a concurrent ownership INSERT from
+        # counting the same owner's bytes as both owned and interrupted custody.
+        conn.execute("BEGIN")
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "blobs" not in tables:
+            return 0
         row = conn.execute(
             f"SELECT SUM(size_bytes) FROM blobs WHERE author_id IN ({marks})",
             tuple(actors)).fetchone()
-    except sqlite3.OperationalError:
-        return 0
+        size = int(row[0] or 0)
+        if "bundle_imports" in tables:
+            pending = conn.execute(
+                "SELECT DISTINCT owner_id, blob_sha256 FROM bundle_imports AS i "
+                f"WHERE owner_id IN ({marks}) AND NOT EXISTS ("
+                "SELECT 1 FROM blobs AS b WHERE b.author_id=i.owner_id "
+                "AND b.blob_sha256=i.blob_sha256)", tuple(actors),
+            ).fetchall()
+            for _, sha in pending:
+                retained = _retained_blob_size(base_path, sha)
+                if retained is not None:
+                    size += retained
+        return size
     finally:
         conn.close()
-    return int(row[0] or 0)
 
 
 def pin(base_path: str | Path, *, universe_id: str, kind: str, agent: str, digest: str,

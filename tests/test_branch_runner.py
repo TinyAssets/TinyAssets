@@ -92,6 +92,9 @@ def runner_env(tmp_path, monkeypatch, authenticate_request):
         universe_id=RUNNER_UNIVERSE,
         platform_generated=True,
     )
+    from tinyassets.okf.box_cutover import initialize_empty_center
+
+    initialize_empty_center(owner="tester", center=RUNNER_UNIVERSE, source=udir)
 
     from tinyassets import universe_server as us
     provider_calls = importlib.import_module("tinyassets.providers.model_call")

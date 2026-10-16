@@ -1326,7 +1326,7 @@ def test_failed_two_pass_owner_tree_keeps_the_binding_and_retry_resumes(
     assert {"owner_tree", "root_rows", "identity"} <= set(receipt["unfinished_phases"])
     # Only this principal's own sign-in can resume pass one, so it survives.
     assert identities == [] and receipt["identity"] == "deferred:owner_tree"
-    assert receipt["home_deletion_pending"] is True  # the box still holds the tree
+    assert receipt["home_deletion_pending"] is True
     assert not receipt["home_removed"] and receipt["home_staged_path"] == ""
     assert (two_users / HOME_A).is_dir() and not (two_users / ".deleting").exists()
     assert get_founder_home(two_users, A) == HOME_A
@@ -1343,3 +1343,15 @@ def test_failed_two_pass_owner_tree_keeps_the_binding_and_retry_resumes(
     assert retry["home_removed"] and not retry["unfinished_phases"]
     assert not (two_users / HOME_A).exists() and not get_founder_home(two_users, A)
     assert (two_users / HOME_B / "soul.md").exists()
+
+
+def test_delete_committed_owner_with_residual_host_copy(two_users):
+    """A prior committed box move may still have its pre-move host copy."""
+    receipt = delete_account(two_users, founder_sub=A,
+                             cancel_billing=lambda _: "cancelled",
+                             delete_identity=lambda _: "deleted")
+    assert receipt["unfinished_phases"] == []
+    assert receipt["home_removed"] is True
+    assert not (two_users / HOME_A).exists()
+    assert not (two_users / ".deleting" / HOME_A).exists()
+    assert (two_users / HOME_B / "memory" / "notes.md").read_text() == "private"

@@ -1,0 +1,872 @@
+#!/usr/bin/env python3
+"""Run an exported command center locally (POSIX, Python 3.11+, no account).
+
+This is owner-controlled host code, not a sandbox. Review imported code before
+running it. Bash has your host privileges; each command asks by default.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime
+import fcntl
+import hashlib
+import json
+import os
+import re
+import secrets
+import selectors
+import signal
+import subprocess
+import sys
+import time
+import urllib.parse
+import urllib.request
+import zoneinfo
+from pathlib import Path, PurePosixPath
+
+TOOLS = [
+    {"type": "function", "function": {
+        "name": name, "description": description,
+        "parameters": {"type": "object", "properties": {
+            key: {"type": "string"} for key in keys
+        }, "required": keys, "additionalProperties": False},
+    }}
+    for name, description, keys in (
+        ("read", "Read a UTF-8 file relative to the export root.", ["path"]),
+        ("write", "Replace a UTF-8 file relative to the export root.", ["path", "content"]),
+        ("edit", "Replace one unique exact text occurrence in a file.", ["path", "old", "new"]),
+        ("bash", "Run a shell command with the owner's configured consent.", ["command"]),
+    )
+]
+MAX_FILE_BYTES = 1024 * 1024
+MAX_COMMAND_BYTES = 64 * 1024
+COMMAND_SECONDS = 120
+BEHAVIOURS = ("do", "do_if_preapproved", "ask_first", "hand_off")
+ACTION_CLASSES = {
+    "workspace.files", "workspace.shell", "workspace.workflows", "shell.egress",
+    "app.read", "app.write", "people.message", "commons.publish", "share", "spend",
+    "browser.action", "money.move", "security.change", "access.grant",
+}
+
+
+class LocalTools:
+    def __init__(self, root: Path, *, approve=None, agent="main", classify=None, handoff=None):
+        if os.name != "posix":
+            raise RuntimeError("This runner currently requires POSIX file-descriptor operations")
+        self.root = root.resolve(strict=True)
+        self.approve = approve or self._ask
+        self.classify = classify or self._classify
+        self.handoff = handoff or self._handoff
+        try:
+            rules = json.loads(self.read("run/rules.json"))
+        except FileNotFoundError:
+            rules = {}
+        if not isinstance(rules, dict) or set(rules) - {"bash"}:
+            raise ValueError("run/rules.json supports only a bash policy")
+        self.bash_policy = rules.get("bash", "ask")
+        if self.bash_policy not in ("ask", "allow", "deny"):
+            raise ValueError("bash policy must be ask, allow or deny")
+        has_policy = True
+        try:
+            policy = json.loads(self.read(f"agents/{agent}/rules.json"))
+        except FileNotFoundError:
+            policy = None
+            has_policy = False
+        if not has_policy:
+            try:
+                self.read("command-center.json")
+            except FileNotFoundError:
+                pass
+            else:
+                raise ValueError("Exported agent policy is missing")
+        self.behaviours = {}
+        if has_policy:
+            if (not isinstance(policy, dict) or set(policy) != {"schema_version", "behaviours"}
+                    or type(policy["schema_version"]) is not int or policy["schema_version"] != 1
+                    or not isinstance(policy["behaviours"], dict)
+                    or set(policy["behaviours"]) != ACTION_CLASSES
+                    or any(value not in BEHAVIOURS for value in policy["behaviours"].values())):
+                raise ValueError("Invalid portable agent policy")
+            self.behaviours = policy["behaviours"]
+
+    @staticmethod
+    def _ask(command):
+        if not sys.stdin.isatty():
+            return False
+        try:
+            return input("Allow this local action with your host privileges?\n"
+                         + json.dumps(command) + "\nType yes: ") == "yes"
+        except (EOFError, KeyboardInterrupt):
+            return False
+
+    @staticmethod
+    def _classify(command):
+        if not sys.stdin.isatty():
+            return None
+        try:
+            answer = input("Review the command and select ALL action classes it performs.\n"
+                           + json.dumps(command) + "\n" + ", ".join(sorted(ACTION_CLASSES))
+                           + "\nComma-separated classes (blank refuses): ")
+        except (EOFError, KeyboardInterrupt):
+            return None
+        return {part.strip() for part in answer.split(",") if part.strip()}
+
+    @staticmethod
+    def _handoff(action):
+        if not sys.stdin.isatty():
+            return "Refused: hand-off needs the local owner"
+        try:
+            result = input("Perform this action yourself if appropriate; the agent will not run it.\n"
+                           + json.dumps(action)
+                           + "\nDescribe the result to send to the model, without credentials"
+                           + " (blank refuses): ")
+        except (EOFError, KeyboardInterrupt):
+            return "Refused: hand-off was not completed"
+        if not result or len(result.encode()) > MAX_FILE_BYTES:
+            return "Refused: hand-off needs a bounded owner result"
+        return "Owner-reported result (agent did not execute): " + result
+
+    def _parent(self, path, *, writing=False):
+        if not isinstance(path, str) or not path or "\\" in path or "\x00" in path:
+            raise ValueError("Use a relative POSIX file path")
+        parts = path.split("/")
+        if any(part in ("", ".", "..") for part in parts):
+            raise ValueError("Use a relative POSIX file path without traversal")
+        if any(p.lower() in (".env", ".git", ".ssh", ".aws", ".credentials")
+               or p.lower().startswith((".env.", ".credential-vault")) for p in parts):
+            raise PermissionError("Credential and repository-private files are excluded")
+        policy_file = (len(parts) == 3 and parts[0].casefold() == "agents"
+                       and parts[2].casefold() in ("rules.json", "settings.yaml"))
+        if writing and (parts[0].casefold() in ("run", ".run-state") or policy_file
+                        or path.casefold() in ("command-center.json", "automations.json")):
+            raise PermissionError("Runner policy, code and manifest are read-only to tools")
+        fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for part in parts[:-1]:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                os.close(fd)
+                fd = child
+            return fd, parts[-1]
+        except BaseException:
+            os.close(fd)
+            raise
+
+    def read(self, path):
+        parent, name = self._parent(path)
+        try:
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+            with os.fdopen(fd, "rb") as stream:
+                import stat
+                metadata = os.fstat(stream.fileno())
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                    raise ValueError("Only unlinked regular files are readable")
+                data = stream.read(MAX_FILE_BYTES + 1)
+            if len(data) > MAX_FILE_BYTES:
+                raise ValueError("File exceeds the local tool read limit")
+            return data.decode("utf-8")
+        finally:
+            os.close(parent)
+
+    def write(self, path, content):
+        data = content.encode("utf-8")
+        if len(data) > MAX_FILE_BYTES:
+            raise ValueError("File exceeds the local tool write limit")
+        parent, name = self._parent(path, writing=True)
+        temporary = ".runner-" + secrets.token_hex(12)
+        try:
+            import stat
+            try:
+                existing = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError:
+                existing = None
+            if existing and (not stat.S_ISREG(existing.st_mode) or existing.st_nlink != 1):
+                raise ValueError("Only unlinked regular files can be replaced")
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
+            os.fsync(parent)
+            return "Written"
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=parent)
+            except FileNotFoundError:
+                pass
+            os.close(parent)
+
+    def edit(self, path, old, new):
+        current = self.read(path)
+        if not old or current.count(old) != 1:
+            raise ValueError("old must identify exactly one nonempty occurrence")
+        return self.write(path, current.replace(old, new, 1))
+
+    def bash(self, command):
+        if self.bash_policy == "deny":
+            return "Refused: command lacks owner consent"
+        behavior = self.behaviours.get("workspace.shell", "do")
+        if behavior == "hand_off":
+            return self.handoff("workspace.shell: " + command)
+        # A host shell has no broker to classify its effects. Only the local
+        # owner may narrow the applicable classes; model tool arguments cannot.
+        if any(value != "do" for key, value in self.behaviours.items()
+               if key != "workspace.shell"):
+            classes = self.classify(command)
+            if (not isinstance(classes, set) or not classes or not classes <= ACTION_CLASSES
+                    or not all(isinstance(action, str) for action in classes)):
+                return "Refused: shell effects need local owner classification"
+            classes = classes | {"workspace.shell"}
+            behavior = max((self.behaviours[action] for action in classes), key=BEHAVIOURS.index)
+            if behavior == "hand_off":
+                return self.handoff(", ".join(sorted(classes)) + ": " + command)
+        if ((self.bash_policy == "ask" or behavior != "do") and not self.approve(command)):
+            return "Refused: command lacks owner consent"
+        process = subprocess.Popen(["bash", "-lc", command], cwd=self.root,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   start_new_session=True)
+        output = bytearray()
+        stopped = None
+        deadline = time.monotonic() + COMMAND_SECONDS
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        stopped = "timeout"
+                        break
+                    if not selector.select(remaining):
+                        continue
+                    chunk = os.read(process.stdout.fileno(), 8192)
+                    if not chunk:
+                        break
+                    available = MAX_COMMAND_BYTES - len(output)
+                    output.extend(chunk[:available])
+                    if len(chunk) > available:
+                        stopped = "output_limit"
+                        break
+                if stopped is None:
+                    try:
+                        process.wait(timeout=max(0, deadline - time.monotonic()))
+                    except subprocess.TimeoutExpired:
+                        stopped = "timeout"
+        finally:
+            # Also stop background descendants when their shell has exited.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.stdout.close()
+            process.wait()
+        return json.dumps({"exit_code": process.returncode, "stopped": stopped,
+                           "output": output.decode("utf-8", errors="replace")})
+
+    def call(self, name, arguments):
+        schemas = {tool["function"]["name"]: tool["function"]["parameters"] for tool in TOOLS}
+        if name not in schemas:
+            raise ValueError("Unknown tool")
+        if (not isinstance(arguments, dict) or set(arguments) != set(schemas[name]["required"])
+                or not all(isinstance(value, str) for value in arguments.values())):
+            raise ValueError("Tool arguments must match the declared string fields")
+        if name != "bash":
+            behavior = self.behaviours.get("workspace.files", "do")
+            action = f"{name} {json.dumps(arguments, ensure_ascii=False)}"
+            if behavior == "hand_off":
+                return self.handoff("workspace.files: " + action)
+            if behavior != "do" and not self.approve(action):
+                return "Refused: file action lacks owner consent"
+        return getattr(self, name)(**arguments)
+
+
+def complete(base_url, model, messages, *, api_key=""):
+    parsed = urllib.parse.urlsplit(base_url)
+    if (parsed.scheme not in ("http", "https") or not parsed.netloc
+            or parsed.query or parsed.fragment):
+        raise ValueError("MODEL_BASE_URL must be an HTTP(S) API base URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Use MODEL_API_KEY, not credentials in the URL")
+    if parsed.scheme != "https" and parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
+        raise ValueError("Remote model endpoints require HTTPS")
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = "Bearer " + api_key
+    request = urllib.request.Request(base_url.rstrip("/") + "/chat/completions",
+        data=json.dumps({"model": model, "messages": messages, "tools": TOOLS}).encode(),
+        headers=headers)
+
+    # Do not forward authorization to a redirect target chosen by a server.
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+
+    with urllib.request.build_opener(NoRedirect).open(request, timeout=120) as response:
+        body = response.read(4 * MAX_FILE_BYTES + 1)
+    if len(body) > 4 * MAX_FILE_BYTES:
+        raise ValueError("Model response exceeds the local runner limit")
+    return json.loads(body)["choices"][0]["message"]
+
+
+def run(root, message, *, agent="main", model_call, max_calls=20, approve=None,
+        classify=None, handoff=None):
+    if not agent or len(PurePosixPath(agent).parts) != 1 or agent in (".", ".."):
+        raise ValueError("agent must be one directory name")
+    if not 1 <= max_calls <= 100:
+        raise ValueError("max_calls must be between 1 and 100")
+    tools = LocalTools(Path(root), approve=approve, agent=agent, classify=classify, handoff=handoff)
+    instructions = tools.read(f"agents/{agent}/AGENTS.md")
+    context = f"Your harness is in agents/{agent}/. File paths are relative to the export root.\n"
+    if tools.behaviours:
+        context += "Owner action rules: " + json.dumps(tools.behaviours, sort_keys=True) + "\n"
+        context += "Preapprovals are not portable. Ask for fresh local permission.\n"
+    messages = [{"role": "system", "content": context + instructions},
+                {"role": "user", "content": message}]
+    for _ in range(max_calls):
+        answer = model_call(messages)
+        if not isinstance(answer, dict) or answer.get("role") != "assistant":
+            raise ValueError("Expected an assistant model response")
+        calls = answer.get("tool_calls")
+        if not calls:
+            if not isinstance(answer.get("content"), str):
+                raise ValueError("Expected a final text response")
+            return answer["content"]
+        if not isinstance(calls, list) or not 1 <= len(calls) <= 32:
+            raise ValueError("Expected a bounded tool call list")
+        messages.append(answer)
+        for call in calls:
+            if (not isinstance(call, dict) or call.get("type") != "function"
+                    or not isinstance(call.get("id"), str) or not call["id"]):
+                raise ValueError("Malformed tool call")
+            try:
+                function = call["function"]
+                output = tools.call(function["name"], json.loads(function["arguments"]))
+            except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError) as exc:
+                output = f"Tool failed: {type(exc).__name__}: {exc}"
+            messages.append({"role": "tool", "tool_call_id": call["id"], "content": output})
+    raise RuntimeError("Model-call limit reached; the task is unfinished")
+
+
+def _model_key(name):
+    fields = ("MODEL_BASE_URL", "MODEL_NAME", "MODEL_API_KEY")
+    if name in fields:
+        return True
+    if not name.startswith("AGENT_"):
+        return False
+    number, separator, field = name[6:].partition("_")
+    return bool(separator and number.isascii() and number.isdigit()
+                and 1 <= len(number) <= 4 and number[0] != "0" and field in fields)
+
+
+def local_environment(root):
+    """Read owner configuration as data; never source it or mutate process env."""
+    import stat
+
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            fd = os.open(".env", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        except FileNotFoundError:
+            return {}
+        with os.fdopen(fd, "rb") as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError(".env must be an unlinked regular file")
+            raw = source.read(64 * 1024 + 1)
+    finally:
+        os.close(directory)
+    if len(raw) > 64 * 1024:
+        raise ValueError(".env exceeds 64 KiB")
+    result = {}
+    for line in raw.decode("utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, separator, value = line.partition("=")
+        name, value = name.strip(), value.strip()
+        if not separator or not _model_key(name) or name in result:
+            raise ValueError(".env needs unique declared model variables")
+        if value.startswith('"'):
+            value = json.loads(value)
+        elif value.startswith("'"):
+            if len(value) < 2 or not value.endswith("'"):
+                raise ValueError("Invalid quoted .env value")
+            value = value[1:-1]
+        if not isinstance(value, str) or any(ord(char) < 32 for char in value):
+            raise ValueError(".env values must be single-line strings")
+        result[name] = value
+    return result
+
+
+def model_environment(root, agent):
+    """Resolve only declared local model variables; never mix endpoint secrets."""
+    tools = LocalTools(Path(root), agent=agent)
+    environment = local_environment(tools.root)
+    process = {key: value for key, value in os.environ.items() if _model_key(key)}
+    for key, value in process.items():
+        if key.endswith("MODEL_BASE_URL") and value != environment.get(key):
+            # Credentials belong to the endpoint configured with them. A process
+            # override may supply its own key (including an explicit empty key).
+            environment.pop(key.removesuffix("MODEL_BASE_URL") + "MODEL_API_KEY", None)
+    environment.update(process)
+    try:
+        manifest = json.loads(tools.read("command-center.json"))
+    except FileNotFoundError:
+        manifest = {}
+    if not isinstance(manifest, dict):
+        raise ValueError("Invalid command-center manifest")
+    roster = manifest.get("roster", [])
+    if not isinstance(roster, list) or any(not isinstance(row, dict) for row in roster):
+        raise ValueError("Invalid command-center roster")
+    rows = [row for row in roster if row.get("agent") == agent]
+    if len(rows) > 1 or (roster and not rows):
+        raise ValueError("Agent must name one exported roster entry")
+    prefix = rows[0].get("model_env", "") if rows else ""
+    if not isinstance(prefix, str) or (prefix and (not prefix.startswith("AGENT_")
+                   or not prefix[6:].isascii() or not prefix[6:].isdigit()
+                   or not 1 <= len(prefix[6:]) <= 4 or prefix[6] == "0")):
+        raise ValueError("Invalid local model environment reference")
+    fields = ("MODEL_BASE_URL", "MODEL_NAME", "MODEL_API_KEY")
+    values = [environment.get(f"{prefix}_{field}", "") for field in fields] if prefix else []
+    selected_prefix = prefix + "_" if any(values) else ""
+    if (process.get(selected_prefix + "MODEL_API_KEY")
+            and not process.get(selected_prefix + "MODEL_BASE_URL")):
+        raise ValueError("A process model key requires its process endpoint")
+    if any(values):
+        if not values[0] or not values[1]:
+            raise ValueError("Set the agent's MODEL_BASE_URL and MODEL_NAME together")
+        return tuple(values)
+    return (environment.get("MODEL_BASE_URL") or "http://localhost:11434/v1",
+            environment.get("MODEL_NAME", ""), environment.get("MODEL_API_KEY", ""))
+
+
+def workflow_plan(root, path, inputs):
+    """Validate the entire supported graph before the first model/effect call."""
+    if (not isinstance(path, str) or not path.startswith("workflows/exported/")
+            or not path.endswith(".json") or not isinstance(inputs, dict)):
+        raise ValueError("Workflow needs a portable path and object inputs")
+    raw = LocalTools(Path(root)).read(path)
+    document = _schedule_json(raw)
+    if (not isinstance(document, dict) or document.get("kind") != "tinyassets.workflow.v1"
+            or set(document) != {"kind", "id", "definition"}
+            or path != "workflows/exported/" + document["id"] + ".json"):
+        raise ValueError("Invalid portable workflow document")
+    definition = document["definition"]
+    if (not isinstance(definition, dict) or set(definition) - {
+        "name", "description", "domain_id", "tags", "skills", "node_defs", "state_schema",
+        "concurrency_budget", "graph", "entry_point", "model_reference",
+    }):
+        raise ValueError("Invalid portable workflow definition")
+    graph, nodes = definition.get("graph", {}), definition.get("node_defs", [])
+    if (not isinstance(graph, dict) or not isinstance(nodes, list) or not 1 <= len(nodes) <= 100
+            or set(graph) - {"nodes", "edges", "conditional_edges", "entry_point", "io_manifest"}
+            or graph.get("conditional_edges") or definition.get("skills")
+            or graph.get("io_manifest")):
+        raise ValueError("Local workflows require a linear prompt graph without hosted effects")
+    by_id, steps, links = {}, {}, {}
+    defaults = {}
+    for field in definition.get("state_schema", []):
+        if (not isinstance(field, dict) or not isinstance(field.get("name"), str)
+                or not field["name"].isidentifier() or field.get("reducer", "overwrite") != "overwrite"
+                or field.get("type", "any") != "str"):
+            raise ValueError("Local workflow state requires explicit str overwrite fields")
+        if "default_value" in field and field["default_value"] is not None:
+            defaults[field["name"]] = field["default_value"]
+    state = {**defaults, **inputs}
+    if len(json.dumps(state, allow_nan=False).encode()) > MAX_FILE_BYTES:
+        raise ValueError("Workflow inputs exceed the local bound")
+    if any(not isinstance(key, str) or not key.isidentifier() for key in state):
+        raise ValueError("Workflow input keys must be identifiers")
+    allowed = {"node_id", "display_name", "description", "phase", "input_keys", "output_keys",
+               "prompt_template", "model_hint", "strict_input_isolation",
+               "retry_policy"}
+    for node in nodes:
+        if (not isinstance(node, dict) or not isinstance(node.get("node_id"), str)
+                or node["node_id"] in by_id
+                or any(value not in (None, "", False, [], {})
+                       for key, value in node.items() if key not in allowed)
+                or not isinstance(node.get("prompt_template"), str)
+                or not node["prompt_template"]
+                or (node.get("retry_policy") or {}).get("max_retries", 0) != 0):
+            raise ValueError("Unsupported workflow node; no code, tools, child runs or effects execute")
+        for key in ("input_keys", "output_keys"):
+            values = node.get(key, [])
+            if (not isinstance(values, list) or len(set(values)) != len(values)
+                    or any(not isinstance(v, str) or not v.isidentifier() for v in values)):
+                raise ValueError("Workflow state keys must be unique identifiers")
+        if len(node.get("output_keys", [])) != 1:
+            raise ValueError("Local prompt nodes need exactly one explicit text output")
+        by_id[node["node_id"]] = node
+    for ref in graph.get("nodes", []):
+        if (not isinstance(ref, dict) or ref.get("node_def_id") not in by_id
+                or not isinstance(ref.get("id"), str) or ref["id"] in steps):
+            raise ValueError("Invalid workflow node reference")
+        steps[ref["id"]] = by_id[ref["node_def_id"]]
+    for edge in graph.get("edges", []):
+        if (not isinstance(edge, dict) or edge.get("from") not in steps
+                or edge["from"] in links or edge.get("to") not in {*steps, "__end__", "END"}):
+            raise ValueError("Local workflows require a linear graph without fan-out")
+        links[edge["from"]] = edge["to"]
+    current = definition.get("entry_point")
+    ordered, visited, available = [], set(), set(state)
+    while current not in (None, "__end__", "END"):
+        if current not in steps or current in visited:
+            raise ValueError("Invalid or cyclic workflow graph")
+        visited.add(current)
+        node = steps[current]
+        template = re.sub(r"{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}", r"{\1}",
+                          node["prompt_template"])
+        wanted = set(re.findall(r"(?<!\\){([a-zA-Z_][a-zA-Z0-9_]*)}", template))
+        permitted = (set(node.get("input_keys", [])) | set(defaults)
+                     if node.get("strict_input_isolation", True) else available)
+        if not wanted <= available or not wanted <= permitted:
+            raise ValueError("Workflow prompt references missing or undeclared input")
+        ordered.append((node, template))
+        available.update(node["output_keys"])
+        current = links.get(current)
+    if visited != set(steps) or {node["node_id"] for node, _ in ordered} != set(by_id):
+        raise ValueError("Workflow has unreachable or unused nodes")
+    return ordered, state, hashlib.sha256(raw.encode()).hexdigest()
+
+
+def workflow(root, path, inputs, *, agent="main", model_call, approve=None, expected_digest=None,
+             handoff=None):
+    ordered, state, digest = workflow_plan(root, path, inputs)
+    if expected_digest is not None and digest != expected_digest:
+        raise ValueError("Workflow configuration changed before execution")
+    tools = LocalTools(Path(root), agent=agent, approve=approve, handoff=handoff)
+    behavior = tools.behaviours.get("workspace.workflows", "do")
+    if behavior == "hand_off":
+        result = tools.handoff("workspace.workflows: " + path + " inputs=" + json.dumps(inputs))
+        if result.startswith("Refused:"):
+            raise PermissionError(result)
+        return {"owner_handoff": result}
+    if behavior != "do" and not tools.approve("Run workflow " + path):
+        raise PermissionError("Workflow lacks fresh local owner consent")
+    for node, template in ordered:
+        prompt = re.sub(r"(?<!\\){([a-zA-Z_][a-zA-Z0-9_]*)}",
+                        lambda match: str(state[match.group(1)]), template)
+        prompt = re.sub(r"\\{([a-zA-Z_][a-zA-Z0-9_]*)\\}", r"{\1}", prompt)
+        answer = model_call([{"role": "user", "content": prompt}])
+        if (not isinstance(answer, dict) or answer.get("role") != "assistant"
+                or answer.get("tool_calls") or not isinstance(answer.get("content"), str)):
+            raise ValueError("Workflow prompt nodes require a final text response without tools")
+        state[node["output_keys"][0]] = answer["content"]
+        if len(json.dumps(state).encode()) > MAX_FILE_BYTES:
+            raise ValueError("Workflow state exceeds the local bound")
+    return state
+
+
+def _instant(value):
+    if not isinstance(value, str):
+        raise ValueError("Schedule instants must be ISO timestamps with offsets")
+    moment = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if moment.tzinfo is None:
+        raise ValueError("Schedule instants need an explicit UTC offset")
+    return moment.timestamp()
+
+
+def _cron(expression):
+    """Numeric five-field cron; all fields match, as in the hosted scheduler."""
+    if not isinstance(expression, str) or len(expression) > 256:
+        raise ValueError("Invalid local cron expression")
+    fields = expression.split()
+    if len(fields) != 5:
+        raise ValueError("Cron needs minute hour day month weekday")
+    result = []
+    for token, (lo, hi) in zip(fields, ((0, 59), (0, 23), (1, 31), (1, 12), (0, 6))):
+        values = set()
+        for part in token.split(","):
+            item, separator, stride = part.partition("/")
+            step = int(stride) if separator else 1
+            if step < 1 or step > hi + 1:
+                raise ValueError("Invalid cron step")
+            if item == "*":
+                start, end = lo, hi
+            elif "-" in item:
+                first, last = item.split("-", 1)
+                start, end = int(first), int(last)
+            else:
+                if separator:
+                    raise ValueError("Cron steps require a range or wildcard")
+                start = end = int(item)
+            if not lo <= start <= end <= hi:
+                raise ValueError("Cron field outside its range")
+            values.update(range(start, end + 1, step))
+        result.append(values)
+    return result
+
+
+def schedules(root):
+    """Read data only: no imported code, expressions or platform bindings."""
+    raw = LocalTools(root).read("automations.json")
+    document = _schedule_json(raw)
+    if (not isinstance(document, dict) or set(document) != {"schema_version", "automations"}
+            or type(document["schema_version"]) is not int or document["schema_version"] != 1
+            or not isinstance(document["automations"], list)
+            or len(document["automations"]) > 100):
+        raise ValueError("Invalid local schedule document")
+    seen = set()
+    workflow_digests = []
+    for row in document["automations"]:
+        if (not isinstance(row, dict)
+                or set(row) not in ({"id", "agent", "message", "enabled", "trigger"},
+                                   {"id", "agent", "name", "workflow", "inputs", "enabled",
+                                    "trigger", "overlap"})
+                or type(row["enabled"]) is not bool):
+            raise ValueError("Invalid local schedule entry")
+        for field in ("id", "agent"):
+            value = row[field]
+            if (not isinstance(value, str) or not 1 <= len(value) <= 100
+                    or value in (".", "..") or not value.isascii()
+                    or any(not (char.isalnum() or char in "-_.") for char in value)):
+                raise ValueError("Schedule identifiers must be simple local names")
+        if row["id"] in seen:
+            raise ValueError("Schedule identifiers must be unique")
+        seen.add(row["id"])
+        if "workflow" in row:
+            if (not isinstance(row["name"], str) or not isinstance(row["inputs"], dict)
+                    or not isinstance(row["workflow"], str)
+                    or row["overlap"] not in ("queue", "skip", "parallel")):
+                raise ValueError("Invalid workflow schedule")
+            if row["enabled"]:
+                if row["overlap"] == "parallel":
+                    raise ValueError("Local schedules do not support parallel overlap")
+                row["_workflow_digest"] = workflow_plan(root, row["workflow"], row["inputs"])[2]
+                workflow_digests.append(row["_workflow_digest"])
+        elif not isinstance(row["message"], str) or not 1 <= len(row["message"]) <= 64 * 1024:
+            raise ValueError("Schedule message must be bounded nonempty text")
+        trigger = row["trigger"]
+        if not isinstance(trigger, dict):
+            raise ValueError("Invalid local schedule trigger")
+        kind = trigger.get("kind")
+        if kind == "interval" and set(trigger) == {"kind", "seconds", "start_at"}:
+            if type(trigger["seconds"]) is not int or not 60 <= trigger["seconds"] <= 31536000:
+                raise ValueError("Local intervals must be between one minute and one year")
+            _instant(trigger["start_at"])
+        elif kind == "once" and set(trigger) == {"kind", "at"}:
+            _instant(trigger["at"])
+        elif kind == "cron" and set(trigger) == {"kind", "expression", "timezone"}:
+            _cron(trigger["expression"])
+            if not isinstance(trigger["timezone"], str):
+                raise ValueError("Cron needs an IANA time zone")
+            zoneinfo.ZoneInfo(trigger["timezone"])
+        elif (kind == "event" and set(trigger) == {"kind", "event_type", "event_filter"}
+              and "workflow" in row and not row["enabled"]):
+            if not isinstance(trigger["event_type"], str) or not isinstance(
+                    trigger["event_filter"], dict):
+                raise ValueError("Invalid disabled event schedule")
+        else:
+            raise ValueError("Unsupported local schedule trigger; no hosted fallback")
+    digest = raw + "".join(workflow_digests)
+    return document["automations"], hashlib.sha256(digest.encode()).hexdigest()
+
+
+def _schedule_json(raw):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("Duplicate schedule data key")
+            result[key] = value
+        return result
+    return json.loads(raw, object_pairs_hook=unique)
+
+
+def due_slot(row, now, previous):
+    """No offline backlog: execute only the present minute's slot."""
+    if not row["enabled"]:
+        return None
+    trigger, local = row["trigger"], ""
+    if trigger["kind"] == "cron":
+        moment = datetime.datetime.fromtimestamp(now, zoneinfo.ZoneInfo(trigger["timezone"]))
+        values = (moment.minute, moment.hour, moment.day, moment.month, (moment.weekday() + 1) % 7)
+        if not all(value in field for value, field in zip(values, _cron(trigger["expression"]))):
+            return None
+        local = moment.strftime("%Y-%m-%dT%H:%M")
+        due = int(now // 60) * 60
+    elif trigger["kind"] == "interval":
+        start = _instant(trigger["start_at"])
+        if now < start:
+            return None
+        due = start + int((now - start) // trigger["seconds"]) * trigger["seconds"]
+    else:
+        due = _instant(trigger["at"])
+    if not 0 <= now - due < 60:
+        return None
+    if previous and (due <= previous["due"] or (local and local <= previous["local"])):
+        return None
+    return {"due": due, "local": local, "status": "claimed"}
+
+
+class ScheduleState:
+    """One local scheduler; fsynced claims survive process death without replay."""
+    def __init__(self, root):
+        import stat
+
+        parent = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        self.directory = self.lock = None
+        try:
+            try:
+                os.mkdir(".run-state", mode=0o700, dir_fd=parent)
+                os.fsync(parent)
+            except FileExistsError:
+                pass
+            self.directory = os.open(".run-state", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                     dir_fd=parent)
+            self.lock = os.open("schedule.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                0o600, dir_fd=self.directory)
+            info = os.fstat(self.lock)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError("Schedule lock must be an unlinked regular file")
+            fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BaseException:
+            self.close()
+            raise
+        finally:
+            os.close(parent)
+
+    def close(self):
+        for name in ("lock", "directory"):
+            descriptor = getattr(self, name)
+            if descriptor is not None:
+                os.close(descriptor)
+                setattr(self, name, None)
+
+    def load(self):
+        import stat
+
+        fd = os.open("schedules.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     dir_fd=self.directory)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError("Schedule state must be an unlinked regular file")
+            raw = stream.read(MAX_FILE_BYTES + 1)
+        if len(raw) > MAX_FILE_BYTES:
+            raise ValueError("Schedule state exceeds its bound")
+        return _schedule_json(raw)
+
+    def save(self, document):
+        import stat
+
+        raw = json.dumps(document, sort_keys=True, allow_nan=False).encode()
+        if len(raw) > MAX_FILE_BYTES:
+            raise ValueError("Schedule state exceeds its bound")
+        try:
+            info = os.stat("schedules.json", dir_fd=self.directory, follow_symlinks=False)
+        except FileNotFoundError:
+            info = None
+        if info and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
+            raise ValueError("Schedule state must be an unlinked regular file")
+        name = ".schedule-" + secrets.token_hex(12)
+        try:
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=self.directory)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(name, "schedules.json", src_dir_fd=self.directory, dst_dir_fd=self.directory)
+            os.fsync(self.directory)
+        finally:
+            try:
+                os.unlink(name, dir_fd=self.directory)
+            except FileNotFoundError:
+                pass
+
+
+def schedule(root, *, enabled=False, once=False, turn=None, clock=time.time, pause=time.sleep):
+    if not enabled:
+        raise ValueError("Schedules require the separate --enable flag")
+    root = Path(root).resolve(strict=True)
+    rows, digest = schedules(root)
+    state = ScheduleState(root)
+    try:
+        try:
+            ledger = state.load()
+        except FileNotFoundError:
+            ledger = {"configuration": digest, "attempts": {}}
+        if (not isinstance(ledger, dict) or set(ledger) != {"configuration", "attempts"}
+                or not isinstance(ledger["attempts"], dict)):
+            raise ValueError("Invalid local schedule state; inspect before restarting")
+        if ledger["configuration"] != digest:
+            raise ValueError("Schedule configuration changed; inspect and reset local state")
+        if not set(ledger["attempts"]) <= {row["id"] for row in rows}:
+            raise ValueError("Schedule state contains an unknown identifier")
+        for attempt in ledger["attempts"].values():
+            if (not isinstance(attempt, dict) or set(attempt) != {"due", "local", "status"}
+                    or type(attempt["due"]) not in (int, float)
+                    or not -1e15 < attempt["due"] < 1e15
+                    or not isinstance(attempt["local"], str)
+                    or attempt["status"] not in ("claimed", "completed")):
+                raise ValueError("Invalid local schedule attempt")
+            if attempt["status"] == "claimed":
+                raise RuntimeError("Uncertain previous schedule attempt; inspect before resetting state")
+        if turn is None:
+            def turn(row):
+                endpoint, model, key = model_environment(root, row["agent"])
+                if not model:
+                    raise ValueError("Set the scheduled agent's model before enabling schedules")
+                def call(messages):
+                    return complete(endpoint, model, messages, api_key=key)
+                if "workflow" in row:
+                    return workflow(root, row["workflow"], row["inputs"], agent=row["agent"],
+                                    model_call=call, expected_digest=row["_workflow_digest"])
+                return run(root, row["message"], agent=row["agent"], model_call=call)
+        while True:
+            if schedules(root)[1] != digest:
+                raise ValueError("Schedule configuration changed; stop and review before restarting")
+            for row in rows:
+                slot = due_slot(row, clock(), ledger["attempts"].get(row["id"]))
+                if slot is None:
+                    continue
+                if schedules(root)[1] != digest:
+                    raise ValueError("Schedule configuration changed before the next turn")
+                ledger["attempts"][row["id"]] = slot
+                state.save(ledger)  # durable claim always precedes model or tool effects
+                result = turn(row)  # any failure leaves an uncertain durable claim
+                slot["status"] = "completed"
+                state.save(ledger)
+                print(result, flush=True)
+            if once:
+                return
+            pause(15)
+    finally:
+        state.close()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("message", nargs="?")
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
+    parser.add_argument("--agent", default="main")
+    parser.add_argument("--max-calls", type=int, default=20)
+    parser.add_argument("--schedule", action="store_true")
+    parser.add_argument("--enable", action="store_true")
+    parser.add_argument("--once", action="store_true", help="Check the current schedule slot once")
+    parser.add_argument("--workflow", help="Run a reviewed portable linear prompt workflow")
+    parser.add_argument("--inputs", default="{}", help="Workflow inputs as a JSON object")
+    args = parser.parse_args()
+    if args.schedule:
+        if args.message or args.workflow or args.inputs != "{}" or not args.enable:
+            parser.error("Use --schedule --enable without a chat message")
+        schedule(args.root, enabled=True, once=args.once)
+        return
+    if args.enable or args.once or (not args.message and not args.workflow):
+        parser.error("Chat needs a message; schedule flags require --schedule")
+    if args.workflow and args.message or args.inputs != "{}" and not args.workflow:
+        parser.error("Use --workflow with --inputs and without a chat message")
+    endpoint, model, api_key = model_environment(args.root, args.agent)
+    if not model:
+        parser.error("Set MODEL_NAME and MODEL_BASE_URL for your own endpoint")
+    def model_call(messages):
+        return complete(endpoint, model, messages, api_key=api_key)
+    if args.workflow:
+        print(json.dumps(workflow(args.root, args.workflow, _schedule_json(args.inputs),
+                                  agent=args.agent, model_call=model_call)))
+    else:
+        print(run(args.root, args.message, agent=args.agent, model_call=model_call,
+                  max_calls=args.max_calls))
+
+
+if __name__ == "__main__":
+    main()

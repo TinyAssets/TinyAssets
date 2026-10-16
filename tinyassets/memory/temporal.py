@@ -11,11 +11,12 @@ the same entity/attribute with overlapping validity periods.
 from __future__ import annotations
 
 import logging
-import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Optional
+
+from tinyassets.okf.records import SourceRecords
+from tinyassets.okf.sql_index import CanonicalConnection, canonical_methods
 
 logger = logging.getLogger(__name__)
 
@@ -131,24 +132,23 @@ class TemporalFact:
         )
 
 
+@canonical_methods
 class TemporalFactStore:
-    """SQLite-backed store for temporal facts.
+    """Canonical owner-box store for temporal facts.
 
     Supports temporal queries: "what was true at time T?" and "when did
     this attribute change?"
 
     Parameters
     ----------
-    db_path : str | Path
-        Path to SQLite database. Use ":memory:" for tests.
+    source : SourceRecords
+        Explicitly admitted, reviewed canonical owner-box records.
     """
 
-    def __init__(self, db_path: str | Path = ":memory:") -> None:
-        self._db_path = str(db_path)
-        self._conn = sqlite3.connect(self._db_path)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.executescript(_TEMPORAL_SCHEMA)
-        logger.debug("TemporalFactStore initialized: %s", self._db_path)
+    def __init__(self, source: SourceRecords) -> None:
+        self._conn = CanonicalConnection(
+            source, "temporal", lambda db: db.executescript(_TEMPORAL_SCHEMA)
+        )
 
     def close(self) -> None:
         """Close the database connection."""
@@ -494,6 +494,7 @@ class TemporalIndex:
     def __init__(self) -> None:
         """Initialize an empty index."""
         # entity -> sorted list of (valid_from, valid_until, fact_id)
+        self._store: TemporalFactStore | None = None
         self._entity_timeline: dict[str, list[tuple[str, str, str]]] = {}
         # branch_id -> set of (entity, attribute) with conflicts
         self._conflicts_by_branch: dict[str | None, set[tuple[str, str]]] = {}
@@ -508,6 +509,7 @@ class TemporalIndex:
         store : TemporalFactStore
             The store to index.
         """
+        self._store = store
         self._entity_timeline.clear()
         self._conflicts_by_branch.clear()
         self._last_modified.clear()
@@ -519,7 +521,8 @@ class TemporalIndex:
             FROM temporal_facts
             ORDER BY entity, asserted_at DESC
         """
-        rows = store._conn.execute(query).fetchall()
+        with store._conn.transaction():
+            rows = store._conn.execute(query).fetchall()
 
         for entity, valid_from, valid_until, fact_id, asserted_at in rows:
             # Add to timeline (coalesce None to boundary values for sorting).
@@ -552,6 +555,8 @@ class TemporalIndex:
         set[str]
             Entity names with recent activity.
         """
+        if self._store is not None:
+            self.rebuild_from_store(self._store)
         return {
             entity
             for entity, last_ts in self._last_modified.items()

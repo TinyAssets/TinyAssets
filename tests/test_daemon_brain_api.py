@@ -20,15 +20,18 @@ def _create_daemon(base: Path) -> dict:
 
 
 def test_daemon_memory_actions_capture_search_review_and_promote(
-    tmp_path: Path,
+    canonical_daemon, tmp_path: Path,
     monkeypatch,
 ) -> None:
     daemon = _create_daemon(tmp_path)
+    source = canonical_daemon(tmp_path)
+    monkeypatch.setattr(universe_api, "_daemon_memory_source", lambda _: source)
     monkeypatch.setattr(universe_api, "_base_path", lambda: tmp_path)
 
     capture = json.loads(universe_api._universe_impl(
         action="daemon_memory_capture",
         inputs_json=json.dumps({
+            "request_id": "daemon-test-1",
             "daemon_id": daemon["daemon_id"],
             "content": "Always verify provider_call reaches child prompt nodes.",
             "memory_kind": "failure_mode",
@@ -56,6 +59,7 @@ def test_daemon_memory_actions_capture_search_review_and_promote(
     accepted = json.loads(universe_api._universe_impl(
         action="daemon_memory_review",
         inputs_json=json.dumps({
+            "request_id": "daemon-test-4",
             "daemon_id": daemon["daemon_id"],
             "entry_id": entry_id,
             "decision": "accept",
@@ -75,6 +79,7 @@ def test_daemon_memory_actions_capture_search_review_and_promote(
         action="daemon_memory_promote",
         text="Provider-call propagation is a stable child-run lesson.",
         inputs_json=json.dumps({
+            "request_id": "daemon-test-6",
             "daemon_id": daemon["daemon_id"],
             "entry_ids": [entry_id],
         }),
@@ -96,15 +101,18 @@ def test_daemon_memory_actions_capture_search_review_and_promote(
 
 
 def test_daemon_memory_review_can_supersede_entries(
-    tmp_path: Path,
+    canonical_daemon, tmp_path: Path,
     monkeypatch,
 ) -> None:
     daemon = _create_daemon(tmp_path)
+    source = canonical_daemon(tmp_path)
+    monkeypatch.setattr(universe_api, "_daemon_memory_source", lambda _: source)
     monkeypatch.setattr(universe_api, "_base_path", lambda: tmp_path)
 
     first = json.loads(universe_api._universe_impl(
         action="daemon_memory_capture",
         inputs_json=json.dumps({
+            "request_id": "daemon-test-2",
             "daemon_id": daemon["daemon_id"],
             "content": "Old lesson: child runs always use mock providers.",
             "memory_kind": "failure_mode",
@@ -117,6 +125,7 @@ def test_daemon_memory_review_can_supersede_entries(
     second = json.loads(universe_api._universe_impl(
         action="daemon_memory_capture",
         inputs_json=json.dumps({
+            "request_id": "daemon-test-3",
             "daemon_id": daemon["daemon_id"],
             "content": "New lesson: child runs use threaded provider_call.",
             "memory_kind": "failure_mode",
@@ -130,6 +139,7 @@ def test_daemon_memory_review_can_supersede_entries(
     reviewed = json.loads(universe_api._universe_impl(
         action="daemon_memory_review",
         inputs_json=json.dumps({
+            "request_id": "daemon-test-5",
             "daemon_id": daemon["daemon_id"],
             "entry_id": first["entry_id"],
             "decision": "supersede",

@@ -2639,6 +2639,11 @@ def _daemon_memory_inputs(
     return data, resolved_daemon_id, None
 
 
+def _daemon_memory_source(center):
+    from tinyassets.api.runtime_ops import _canonical_source
+    return _canonical_source({"universe_id": center}, "daemon")
+
+
 def _action_daemon_memory_capture(
     universe_id: str = "",
     inputs_json: str = "",
@@ -2650,7 +2655,7 @@ def _action_daemon_memory_capture(
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.daemon_brain import capture_daemon_memory
 
-    uid = _request_universe(universe_id)
+    uid = str(universe_id or "").strip()
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
@@ -2662,9 +2667,15 @@ def _action_daemon_memory_capture(
         data.get("temporal_bounds") if isinstance(data.get("temporal_bounds"), dict)
         else None
     )
+    request_id = _kwargs.get("request_id") or data.get("request_id")
+    if not isinstance(request_id, str) or not request_id.strip():
+        return json.dumps({"error": "Daemon memory mutations require a stable request_id."})
     try:
+        source = _daemon_memory_source(uid)
+        uid = source.bundle.scope[0]
         entry = capture_daemon_memory(
-            _base_path(),
+            source,
+            operation_id=request_id,
             daemon_id=daemon_id,
             content=content,
             memory_kind=str(data.get("memory_kind") or "semantic"),
@@ -2705,7 +2716,7 @@ def _action_daemon_memory_search(
 ) -> str:
     from tinyassets.daemon_brain import search_daemon_memory
 
-    uid = _request_universe(universe_id)
+    uid = str(universe_id or "").strip()
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
@@ -2713,8 +2724,10 @@ def _action_daemon_memory_search(
         return json.dumps({"universe_id": uid, "error": err})
     query = str(data.get("query") or text or filter_text or "").strip()
     try:
+        source = _daemon_memory_source(uid)
+        uid = source.bundle.scope[0]
         result = search_daemon_memory(
-            _base_path(),
+            source,
             daemon_id=daemon_id,
             query=query,
             limit=int(data.get("limit", limit)),
@@ -2742,15 +2755,17 @@ def _action_daemon_memory_list(
 ) -> str:
     from tinyassets.daemon_brain import list_daemon_memory
 
-    uid = _request_universe(universe_id)
+    uid = str(universe_id or "").strip()
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
     if err:
         return json.dumps({"universe_id": uid, "error": err})
     try:
+        source = _daemon_memory_source(uid)
+        uid = source.bundle.scope[0]
         result = list_daemon_memory(
-            _base_path(),
+            source,
             daemon_id=daemon_id,
             limit=int(data.get("limit", limit)),
             include_superseded=_as_bool(data.get("include_superseded", False)),
@@ -2774,7 +2789,7 @@ def _action_daemon_memory_review(
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.daemon_brain import review_daemon_memory
 
-    uid = _request_universe(universe_id)
+    uid = str(universe_id or "").strip()
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
@@ -2784,9 +2799,15 @@ def _action_daemon_memory_review(
     if not entry_id:
         return json.dumps({"universe_id": uid, "error": "entry_id is required."})
     metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else None
+    request_id = _kwargs.get("request_id") or data.get("request_id")
+    if not isinstance(request_id, str) or not request_id.strip():
+        return json.dumps({"error": "Daemon memory mutations require a stable request_id."})
     try:
+        source = _daemon_memory_source(uid)
+        uid = source.bundle.scope[0]
         result = review_daemon_memory(
-            _base_path(),
+            source,
+            operation_id=request_id,
             daemon_id=daemon_id,
             entry_id=entry_id,
             decision=str(data.get("decision") or text or ""),
@@ -2815,7 +2836,7 @@ def _action_daemon_memory_promote(
 ) -> str:
     from tinyassets.daemon_brain import promote_daemon_memory_to_wiki
 
-    uid = _request_universe(universe_id)
+    uid = str(universe_id or "").strip()
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
@@ -2825,9 +2846,15 @@ def _action_daemon_memory_promote(
     summary = str(data.get("summary") or text or "").strip()
     target_rel_path = str(data.get("target_rel_path") or "pages/brain/review.md")
     metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else None
+    request_id = _kwargs.get("request_id") or data.get("request_id")
+    if not isinstance(request_id, str) or not request_id.strip():
+        return json.dumps({"error": "Daemon memory mutations require a stable request_id."})
     try:
+        source = _daemon_memory_source(uid)
+        uid = source.bundle.scope[0]
         result = promote_daemon_memory_to_wiki(
-            _base_path(),
+            source,
+            operation_id=request_id,
             daemon_id=daemon_id,
             entry_ids=entry_ids or [],
             summary=summary,
@@ -2851,14 +2878,16 @@ def _action_daemon_memory_status(
 ) -> str:
     from tinyassets.daemon_brain import memory_observability_status
 
-    uid = _request_universe(universe_id)
+    uid = str(universe_id or "").strip()
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
     if err:
         return json.dumps({"universe_id": uid, "error": err})
     try:
-        result = memory_observability_status(_base_path(), daemon_id=daemon_id)
+        source = _daemon_memory_source(uid)
+        uid = source.bundle.scope[0]
+        result = memory_observability_status(source, daemon_id=daemon_id)
     except (KeyError, ValueError, TypeError) as exc:
         return json.dumps({"universe_id": uid, "error": str(exc)})
     result["universe_id"] = uid
@@ -3365,19 +3394,30 @@ def _action_query_world(
     }, default=str)
 
 
+def _canonical_world_rows(uid: str, table: str) -> list[dict[str, Any]]:
+    """Read the admitted owner's migrated knowledge records."""
+    from tinyassets.api.engine_helpers import _current_actor
+    from tinyassets.okf.records import SourceRecords
+    from tinyassets.okf.sql_index import reviewed_rows
+
+    source = SourceRecords.bind(owner=_current_actor(), center=uid, source="knowledge")
+    rows = reviewed_rows(source, source.snapshot())
+    return list(rows[table].values())
+
+
 def _query_world_db(
     udir: Path, uid: str, query_type: str, filter_text: str, limit: int,
 ) -> str:
     """Query the SQLite world-state stores.
 
-    World state is split across two DBs today:
+    World state is split across two sources today:
       - story.db       — extracted_facts, character_states, promises
                          (written by the commit pipeline)
-      - knowledge.db   — entities, facts, edges, communities
-                         (written by the KG pipeline)
+      - canonical knowledge records — entities, facts, edges, communities
+                         (migrated from knowledge.db)
 
-    A single `query_type` may live in either DB. We probe known candidate
-    (db, table) pairs in priority order and return the first one that
+    A single `query_type` may live in either source. We probe known candidate
+    (source, table) pairs in priority order and return the first one that
     contains data. This is the source-of-truth routing — previous versions
     of this function pointed `characters -> entities` in story.db, which
     never existed and surfaced to users as "entities table missing". The
@@ -3423,12 +3463,23 @@ def _query_world_db(
     import sqlite3
 
     # Pick the first (db, table) pair that exists. Prefer ones with data.
-    chosen: tuple[str, str] | None = None
-    fallback_empty: tuple[str, str] | None = None
+    chosen: tuple[str, str, list[dict[str, Any]] | None] | None = None
+    fallback_empty: tuple[str, str, list[dict[str, Any]] | None] | None = None
     checked: list[str] = []
     for dbname, table in candidates:
-        db_path = udir / dbname
         checked.append(f"{dbname}::{table}")
+        if dbname == "knowledge.db":
+            # The one-pass cutover removes this host file. The bound box owns
+            # its records; never treat an absent host copy as an empty graph.
+            rows = _canonical_world_rows(uid, table)
+            candidate = (dbname, table, rows)
+            if rows:
+                chosen = candidate
+                break
+            if fallback_empty is None:
+                fallback_empty = candidate
+            continue
+        db_path = udir / dbname
         if not db_path.exists():
             continue
         try:
@@ -3450,10 +3501,10 @@ def _query_world_db(
         except sqlite3.Error:
             continue
         if has_rows:
-            chosen = (dbname, table)
+            chosen = (dbname, table, None)
             break
         if fallback_empty is None:
-            fallback_empty = (dbname, table)
+            fallback_empty = (dbname, table, None)
 
     if chosen is None and fallback_empty is None:
         return json.dumps({
@@ -3467,7 +3518,25 @@ def _query_world_db(
             ),
         })
 
-    dbname, table = chosen or fallback_empty  # type: ignore[misc]
+    dbname, table, canonical_rows = chosen or fallback_empty  # type: ignore[misc]
+    if canonical_rows is not None:
+        if filter_text:
+            needle = filter_text.casefold()
+            canonical_rows = [
+                row for row in canonical_rows
+                if any(needle in str(value).casefold() for value in row.values())
+            ]
+        rows = canonical_rows[:limit]
+        response: dict[str, Any] = {
+            "universe_id": uid,
+            "query_type": query_type,
+            "results": rows,
+            "count": len(rows),
+            "source": f"{dbname}::{table}",
+        }
+        if not rows and chosen is None:
+            response["note"] = f"Table '{table}' has no rows yet."
+        return json.dumps(response, default=str)
     db_path = udir / dbname
 
     try:
@@ -4525,6 +4594,9 @@ def _action_create_universe(
         from tinyassets.boxes.lifecycle import admit_center
 
         admit_center(base, principal=founder, center=uid)
+        from tinyassets.okf.box_cutover import initialize_empty_center
+
+        initialize_empty_center(owner=founder, center=uid, source=udir)
         normalized_text = _normalize_escaped_text(text) if text.strip() else ""
         loop_branch_def_id = str(branch_def_id or "").strip()
         # universe-creation D4/D5: seed the linked OKF soul bundle. Creation

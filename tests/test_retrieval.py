@@ -49,8 +49,14 @@ def clean_lancedb():
 
 
 @pytest.fixture
-def tmp_kg(tmp_path):
-    kg = KnowledgeGraph(str(tmp_path / "test.db"))
+def tmp_kg(canonical_source, tmp_path):
+    kg = KnowledgeGraph(
+        canonical_source(
+            "knowledge",
+            key=str(tmp_path / "test.db"),
+            namespaces=[None, "world", "u1", "test", "test-universe", "universe-A"],
+        )
+    )
     # Add some entities and edges
     for eid in ["ryn", "kael", "ashwater"]:
         kg.add_entity(
@@ -532,18 +538,10 @@ class TestAgenticSearchPolicy:
             def close(self):
                 pass
 
-        monkeypatch.setattr(
-            "tinyassets.knowledge.knowledge_graph.KnowledgeGraph",
-            lambda *a, **kw: _FakeKG(),
-        )
-        monkeypatch.setattr(
-            "domains.fantasy_daemon.phases._paths.resolve_kg_path",
-            lambda state: "/tmp/fake.db",
-        )
-        # Clear the runtime singletons so run_phase_retrieval falls
-        # through to construct a fresh KG/router.
+        # This router unit test receives an explicitly supplied graph; host paths
+        # cannot create a canonical graph on demand.
         from tinyassets import runtime_singletons as runtime
-        monkeypatch.setattr(runtime, "knowledge_graph", None)
+        monkeypatch.setitem(runtime.__dict__, "knowledge_graph", _FakeKG())
 
         state = {
             "universe_id": "universe-A",

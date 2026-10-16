@@ -71,6 +71,7 @@ def _boxed(data: Path, store: Path, owners: dict[str, tuple[str, int]]):
     (data / ".layout.lock").touch()
     (data / ".layout.json").write_text(json.dumps({
         "layout": 2, "state": "stable", "box_layout": "owner-box",
+        "knowledge_shape": "v1",
     }))
 
 

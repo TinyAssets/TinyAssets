@@ -19,6 +19,17 @@ FENCED: dict[str, str] = {
     "tinyassets/storage/agent_turn_journal.py": "agent_turn_journal",
 }
 
+#: SQL statements below update disposable indexes; CanonicalConnection commits
+#: their diffs through the owner's epoch-fenced BoxProvider. No disk SQLite authority.
+CANONICAL_INDEXES: frozenset[str] = frozenset({
+    "tinyassets/okf/sql_index.py",
+    "tinyassets/daemon_brain.py",
+    "tinyassets/knowledge/knowledge_graph.py",
+    "tinyassets/memory/promises.py",
+    "tinyassets/memory/temporal.py",
+    "tinyassets/memory/versioning.py",
+})
+
 #: The lease and fence machinery itself: it writes the lease store and fence
 #: rows, which is what everything else is fenced BY.
 INFRASTRUCTURE: frozenset[str] = frozenset({
@@ -30,6 +41,8 @@ INFRASTRUCTURE: frozenset[str] = frozenset({
 #: (today's deploy shape); each must move to :data:`FENCED` before C2.
 FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/account_deletion.py",
+    # Offline fresh-copy restore only; retain in cutover review, never a live fallback.
+    "tinyassets/okf/restore.py",
     "tinyassets/agent_activities.py",
     "tinyassets/agent_activity.py",
     "tinyassets/agent_file_migration.py",
@@ -77,7 +90,6 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/conversation_store.py",
     "tinyassets/credential_vault.py",
     "tinyassets/commons_catalog.py",
-    "tinyassets/daemon_brain.py",
     "tinyassets/daemon_server.py",
     "tinyassets/effectors/wiki_write_back.py",
     "tinyassets/engine_admissions.py",
@@ -85,12 +97,7 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/handoffs/store.py",
     "tinyassets/harness_history.py",
     "tinyassets/idempotency.py",
-    "tinyassets/knowledge/knowledge_graph.py",
     "tinyassets/memory/episodic.py",
-    "tinyassets/memory/project.py",
-    "tinyassets/memory/promises.py",
-    "tinyassets/memory/temporal.py",
-    "tinyassets/memory/versioning.py",
     "tinyassets/mcp_events.py",
     "tinyassets/node_eval.py",
     "tinyassets/onboarding/hosted_model_auth.py",

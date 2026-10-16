@@ -23,10 +23,16 @@ from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
 
 
 @pytest.fixture
-def temp_kg(tmp_path):
+def temp_kg(canonical_source, tmp_path):
     """Create a temporary KnowledgeGraph backed by a temp SQLite file."""
     db_path = tmp_path / "test_kg.db"
-    kg = KnowledgeGraph(db_path=str(db_path))
+    kg = KnowledgeGraph(
+        source=canonical_source(
+            "knowledge",
+            key=str(db_path),
+            namespaces=[None, "world", "u1", "test", "test-universe", "universe-A"],
+        )
+    )
     yield kg
     kg.close()
 
@@ -221,12 +227,13 @@ class TestCommitKGIntegration:
             f"Expected 'corin' or 'ashka' in entity_ids, got: {entity_ids}"
         )
 
-    def test_kg_none_skips_extraction(self, tmp_story_db):
+    def test_kg_none_skips_extraction(self, tmp_story_db, canonical_runtime, monkeypatch):
         """When runtime.knowledge_graph is None, entity indexing is skipped."""
         from domains.fantasy_daemon.phases.commit import commit
         from tinyassets import runtime_singletons as runtime
 
-        assert runtime.knowledge_graph is None
+        assert runtime.knowledge_graph is canonical_runtime.get("knowledge_graph")
+        monkeypatch.setitem(runtime.__dict__, "knowledge_graph", None)
 
         state = _build_commit_state(tmp_story_db)
 
@@ -287,3 +294,6 @@ def _build_commit_state(db_path: str) -> dict:
         "quality_debt": [],
         "verdict": "",
     }
+
+
+pytestmark = pytest.mark.usefixtures("canonical_runtime")

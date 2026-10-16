@@ -174,10 +174,6 @@ PINNED: dict[str, list[str]] = {
         "_write_exclusive_snapshot_file: os.open()",
         "load_credential_vault: .read_text()",
     ],
-    "tinyassets/daemon_brain.py": [
-        "_promote_daemon_memory_to_wiki: .open()",
-        "_promote_daemon_memory_to_wiki: .write_text()",
-    ],
     "tinyassets/daemon_memory.py": [
         "_read_section: .read_text()",
     ],
@@ -352,12 +348,6 @@ PINNED: dict[str, list[str]] = {
         # not hand back. Opened O_NOFOLLOW.
         "_host_slot: os.open()",
         # Linux /proc, not a data path at all: reaping the render's strays.
-    ],
-    "tinyassets/wiki/okf_export.py": [
-        "_conformance_report: .read_text()",
-        "_write_index: .write_text()",
-        "_write_log: .write_text()",
-        "export_okf_bundle: .write_text()",
     ],
     "tinyassets/workspace_family.py": [
         "try_family_fence: os.open()",

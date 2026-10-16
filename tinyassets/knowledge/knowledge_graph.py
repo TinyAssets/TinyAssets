@@ -1,7 +1,7 @@
-"""Knowledge graph core -- SQLite persistence + igraph construction.
+"""Knowledge graph core -- canonical records with disposable graph indexes.
 
-Entities and edges are persisted in SQLite.  An igraph.Graph is built
-on demand from the stored relationships for Leiden clustering and
+Entities and edges live in the owner knowledge bundle. An igraph.Graph is built
+on demand from a coherent disposable SQL index for Leiden clustering and
 HippoRAG (Personalized PageRank).
 """
 
@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from pathlib import Path
 from typing import Any, Sequence
 
 import igraph as ig
@@ -21,6 +20,8 @@ from tinyassets.knowledge.models import (
 )
 from tinyassets.knowledge.tag_matrix import KnowledgeTags, knowledge_tags_from_mapping
 from tinyassets.memory.scoping import MemoryScope
+from tinyassets.okf.records import SourceRecords
+from tinyassets.okf.sql_index import CanonicalConnection, canonical_methods
 
 # Memory-scope Stage 2b: shared helpers for injecting scope column
 # values into the INSERT/UPSERT fragments. The columns are identical
@@ -123,6 +124,7 @@ def _attach_row_tags(target: Any, row: sqlite3.Row) -> None:
     )
 
 
+@canonical_methods
 class KnowledgeGraph:
     """SQLite-backed knowledge graph with igraph construction.
 
@@ -132,18 +134,9 @@ class KnowledgeGraph:
         Path to the SQLite database file.  Created if it doesn't exist.
     """
 
-    def __init__(self, db_path: str | Path = "") -> None:
-        if not db_path:
-            raise ValueError(
-                "KnowledgeGraph requires an explicit db_path. "
-                "CWD-relative defaults cause cross-universe contamination."
-            )
-        self._db_path = str(db_path)
-        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self._db_path)
-        self._conn.execute("PRAGMA journal_mode=WAL;")
-        self._conn.row_factory = sqlite3.Row
-        self._init_schema()
+    def __init__(self, source: SourceRecords) -> None:
+        self._conn = CanonicalConnection(source, "knowledge", initialize_knowledge_index,
+                                         row_factory=sqlite3.Row)
 
     # ------------------------------------------------------------------
     # Schema
@@ -275,32 +268,9 @@ class KnowledgeGraph:
         self._conn.commit()
 
     def migrate_scope_columns(self, universe_id: str) -> int:
-        """Backfill ``universe_id`` on existing rows that have NULL.
+        from tinyassets.okf.bundle import InvalidBundle
 
-        Stage 2a migration per design-note §4: existing databases
-        predate the scope columns. New installs get NULL on every
-        row; the caller (usually `fantasy_author/__main__.py` on
-        daemon boot) passes the universe_id derived from the parent
-        directory so pre-existing canon becomes universe-scoped.
-
-        Returns the total number of rows updated across all scoped
-        tables. Idempotent — rows whose ``universe_id`` already
-        matches are untouched.
-        """
-        if not universe_id:
-            raise ValueError(
-                "migrate_scope_columns requires a non-empty universe_id."
-            )
-        total = 0
-        for table in self._SCOPED_TABLES:
-            cursor = self._conn.execute(
-                f"UPDATE {table} SET universe_id = ? "
-                f"WHERE universe_id IS NULL",
-                (universe_id,),
-            )
-            total += cursor.rowcount
-        self._conn.commit()
-        return total
+        raise InvalidBundle("Namespace reassignment requires reviewed snapshot migration")
 
     # ------------------------------------------------------------------
     # Entity CRUD
@@ -807,6 +777,10 @@ class KnowledgeGraph:
             res = c.resolution if hasattr(c, "resolution") else c.get("resolution", 1.0)
             summary = c.summary if hasattr(c, "summary") else c.get("summary", "")
             for eid in entities:
+                if self._conn.forgotten("communities", {
+                    "community_id": cid, "entity_id": eid,
+                }):
+                    continue
                 self._conn.execute(
                     "INSERT OR REPLACE INTO communities "
                     "(community_id, entity_id, resolution, summary) "
@@ -839,3 +813,10 @@ class KnowledgeGraph:
     def close(self) -> None:
         """Close the SQLite connection."""
         self._conn.close()
+
+
+def initialize_knowledge_index(conn):
+    """Build only repository-owned schema; canonical metadata never supplies DDL."""
+    view = object.__new__(KnowledgeGraph)
+    view._conn = conn
+    view._init_schema()

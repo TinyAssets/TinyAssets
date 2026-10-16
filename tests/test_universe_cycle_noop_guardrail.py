@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from domains.fantasy_daemon.phases.universe_cycle import (
     _MAX_CYCLE_NOOP_STREAK,
     universe_cycle,
@@ -170,3 +172,6 @@ def test_already_stopped_cycle_does_not_clobber_idle_reason(tmp_path: Path) -> N
     # Still stopped, but the reason wasn't overwritten
     assert state["health"]["stopped"] is True
     assert state["health"]["idle_reason"] == "api_stop"
+
+
+pytestmark = pytest.mark.usefixtures("canonical_runtime")

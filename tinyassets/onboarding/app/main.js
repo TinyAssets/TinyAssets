@@ -5288,6 +5288,8 @@
     setStatusLine(""); renderWorking();
   }
   function clearAccountScopedState(){
+    const transferDialog=$("command-center-transfer");
+    if(transferDialog && typeof transferDialog.close==="function") transferDialog.close();
     if(typeof CredentialRequests!=="undefined")CredentialRequests.clear();
     if(typeof invalidateChatCloudPrefs==="function") invalidateChatCloudPrefs();
     queueScope=""; queueOwner="";
@@ -7124,6 +7126,18 @@
     $("btn-apps").addEventListener("click", ()=>showApps());
     $("btn-apps-back").addEventListener("click", ()=>showView("chat"));
     $("btn-account").addEventListener("click", showAccount);
+    $("btn-transfer").addEventListener("click", async()=>{
+      const epoch=MCP._loginEpoch, owner=queueOwner, home=queueScope;
+      const current=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&home===queueScope;
+      try{
+        const transfer=await import("__TA_TRANSFER_URL__");
+        if(!current()) return;
+        transfer.openTransfer({commandCenter:home,isCurrent:current,
+          request:body=>fetch("/app/api/transfer",{method:"POST",credentials:"same-origin",
+            headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+            body:JSON.stringify(body)})});
+      }catch(e){ if(current()) $("profile-status").textContent="Transfer could not open. Refresh and try again."; }
+    });
     $("btn-account-back").addEventListener("click", leaveAccount);
     $("delete-confirm").addEventListener("input",(e)=>{ $("btn-delete-account").disabled = e.target.value.trim()!=="DELETE"; });
     $("btn-delete-account").addEventListener("click", deleteAccount);

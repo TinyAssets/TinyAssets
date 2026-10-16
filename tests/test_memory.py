@@ -88,23 +88,23 @@ class TestCoreMemory:
 
 
 class TestEpisodicMemory:
-    def _make_episodic(self) -> EpisodicMemory:
+    def _make_episodic(self, canonical_source) -> EpisodicMemory:
         return EpisodicMemory(
-            db_path=":memory:",
+            source=canonical_source("episodic", key=":memory:", namespaces=["test"]),
             universe_id="test",
             window_chapters=3,
         )
 
-    def test_store_and_get_summary(self):
-        ep = self._make_episodic()
+    def test_store_and_get_summary(self, canonical_source):
+        ep = self._make_episodic(canonical_source)
         ep.store_summary(1, 1, 1, "Ryn enters the forest.", 50)
         recent = ep.get_recent(chapter=1, k=5)
         assert len(recent) == 1
         assert recent[0].summary == "Ryn enters the forest."
         assert recent[0].word_count == 50
 
-    def test_get_recent_ordering(self):
-        ep = self._make_episodic()
+    def test_get_recent_ordering(self, canonical_source):
+        ep = self._make_episodic(canonical_source)
         ep.store_summary(1, 1, 1, "Scene 1", 10)
         ep.store_summary(1, 1, 2, "Scene 2", 20)
         ep.store_summary(1, 2, 1, "Scene 3", 30)
@@ -113,15 +113,15 @@ class TestEpisodicMemory:
         assert recent[0].chapter_number == 2
         assert recent[1].chapter_number == 1
 
-    def test_get_recent_limit(self):
-        ep = self._make_episodic()
+    def test_get_recent_limit(self, canonical_source):
+        ep = self._make_episodic(canonical_source)
         for i in range(10):
             ep.store_summary(1, i + 1, 1, f"Scene {i}", 10)
         recent = ep.get_recent(chapter=10, k=3)
         assert len(recent) == 3
 
-    def test_store_fact_and_increment(self):
-        ep = self._make_episodic()
+    def test_store_fact_and_increment(self, canonical_source):
+        ep = self._make_episodic(canonical_source)
         ep.store_fact("f1", "Ryn", "has blue eyes", "b1c1s1")
         ep.store_fact("f1", "Ryn", "has blue eyes", "b1c2s1")
         facts = ep.get_facts_for_entity("Ryn")
@@ -129,8 +129,8 @@ class TestEpisodicMemory:
         assert facts[0]["evidence_count"] == 2
         assert len(facts[0]["source_scenes"]) == 2
 
-    def test_get_promotable_facts(self):
-        ep = self._make_episodic()
+    def test_get_promotable_facts(self, canonical_source):
+        ep = self._make_episodic(canonical_source)
         ep.store_fact("f1", "Ryn", "has blue eyes", "s1")
         ep.store_fact("f1", "Ryn", "has blue eyes", "s2")
         ep.store_fact("f1", "Ryn", "has blue eyes", "s3")
@@ -139,8 +139,8 @@ class TestEpisodicMemory:
         assert len(promotable) == 1
         assert promotable[0]["fact_id"] == "f1"
 
-    def test_mark_promoted(self):
-        ep = self._make_episodic()
+    def test_mark_promoted(self, canonical_source):
+        ep = self._make_episodic(canonical_source)
         ep.store_fact("f1", "Ryn", "has blue eyes", "s1")
         ep.store_fact("f1", "Ryn", "has blue eyes", "s2")
         ep.store_fact("f1", "Ryn", "has blue eyes", "s3")
@@ -149,23 +149,23 @@ class TestEpisodicMemory:
         promotable = ep.get_promotable_facts(threshold=3)
         assert len(promotable) == 0
 
-    def test_store_and_query_observations(self):
-        ep = self._make_episodic()
+    def test_store_and_query_observations(self, canonical_source):
+        ep = self._make_episodic(canonical_source)
         ep.store_observation("pacing", "too slow", "b1c1s1")
         ep.store_observation("pacing", "needs tension", "b1c1s2")
         obs = ep.get_observations_by_dimension("pacing")
         assert len(obs) == 2
         assert ep.count_observations("pacing") == 2
 
-    def test_store_and_query_reflections(self):
-        ep = self._make_episodic()
+    def test_store_and_query_reflections(self, canonical_source):
+        ep = self._make_episodic(canonical_source)
         ep.store_reflection(1, 2, "voice was off", "focus on voice next time")
         refs = ep.get_recent_reflections(k=5)
         assert len(refs) == 1
         assert refs[0]["critique"] == "voice was off"
 
-    def test_evict_old_summaries(self):
-        ep = self._make_episodic()
+    def test_evict_old_summaries(self, canonical_source):
+        ep = self._make_episodic(canonical_source)
         for ch in range(1, 11):
             ep.store_summary(1, ch, 1, f"Chapter {ch}", 100)
         # Window is 3, current chapter 10 => evict chapters < 7.
@@ -174,16 +174,16 @@ class TestEpisodicMemory:
         remaining = ep.get_recent(chapter=10, k=100)
         assert len(remaining) == 4  # chapters 7-10
 
-    def test_upsert_summary(self):
-        ep = self._make_episodic()
+    def test_upsert_summary(self, canonical_source):
+        ep = self._make_episodic(canonical_source)
         ep.store_summary(1, 1, 1, "Version 1", 50)
         ep.store_summary(1, 1, 1, "Version 2", 60)
         recent = ep.get_recent(chapter=1, k=5)
         assert len(recent) == 1
         assert recent[0].summary == "Version 2"
 
-    def test_store_episode_summary_keeps_generic_rows_domain_neutral(self):
-        ep = self._make_episodic()
+    def test_store_episode_summary_keeps_generic_rows_domain_neutral(self, canonical_source):
+        ep = self._make_episodic(canonical_source)
         ep.store_episode_summary(
             episode_id="research-session-1",
             sequence_number=7,
@@ -206,8 +206,8 @@ class TestEpisodicMemory:
         ).fetchone()
         assert row == (None, None, None)
 
-    def test_legacy_summary_call_records_fantasy_domain_payload(self):
-        ep = self._make_episodic()
+    def test_legacy_summary_call_records_fantasy_domain_payload(self, canonical_source):
+        ep = self._make_episodic(canonical_source)
         ep.store_summary(1, 2, 3, "Fantasy scene summary.", 90)
 
         row = ep._conn.execute(
@@ -231,8 +231,10 @@ class TestEpisodicMemory:
 
 
 class TestPromotionGates:
-    def test_fact_promotion(self):
-        ep = EpisodicMemory(":memory:", "test")
+    def test_fact_promotion(self, canonical_source):
+        ep = EpisodicMemory(
+            canonical_source("episodic", key=":memory:", namespaces=["test"]), "test"
+        )
         ep.store_fact("f1", "Ryn", "blue eyes", "s1")
         ep.store_fact("f1", "Ryn", "blue eyes", "s2")
         ep.store_fact("f1", "Ryn", "blue eyes", "s3")
@@ -242,8 +244,10 @@ class TestPromotionGates:
         assert len(result.promoted_facts) == 1
         assert result.promoted_facts[0]["fact_id"] == "f1"
 
-    def test_no_promotion_below_threshold(self):
-        ep = EpisodicMemory(":memory:", "test")
+    def test_no_promotion_below_threshold(self, canonical_source):
+        ep = EpisodicMemory(
+            canonical_source("episodic", key=":memory:", namespaces=["test"]), "test"
+        )
         ep.store_fact("f1", "Ryn", "blue eyes", "s1")
         ep.store_fact("f1", "Ryn", "blue eyes", "s2")
 
@@ -251,8 +255,10 @@ class TestPromotionGates:
         result = gates.run(ep)
         assert len(result.promoted_facts) == 0
 
-    def test_style_rule_promotion(self):
-        ep = EpisodicMemory(":memory:", "test")
+    def test_style_rule_promotion(self, canonical_source):
+        ep = EpisodicMemory(
+            canonical_source("episodic", key=":memory:", namespaces=["test"]), "test"
+        )
         ep.store_observation("pacing", "too slow", "s1")
         ep.store_observation("pacing", "needs momentum", "s2")
         ep.store_observation("pacing", "flat", "s3")
@@ -262,13 +268,15 @@ class TestPromotionGates:
         assert len(result.promoted_style_rules) == 1
         assert result.promoted_style_rules[0]["dimension"] == "pacing"
 
-    def test_asp_rule_candidate(self):
+    def test_asp_rule_candidate(self, canonical_source):
         violations = [
             {"rule": "no_teleport", "details": "scene 1"},
             {"rule": "no_teleport", "details": "scene 2"},
             {"rule": "no_teleport", "details": "scene 3"},
         ]
-        ep = EpisodicMemory(":memory:", "test")
+        ep = EpisodicMemory(
+            canonical_source("episodic", key=":memory:", namespaces=["test"]), "test"
+        )
         gates = PromotionGates(violation_threshold=3)
         result = gates.run(ep, violations=violations)
         assert len(result.asp_rule_candidates) == 1
@@ -281,8 +289,10 @@ class TestPromotionGates:
 
 
 class TestReflexionEngine:
-    def test_reflect_generates_result(self):
-        ep = EpisodicMemory(":memory:", "test")
+    def test_reflect_generates_result(self, canonical_source):
+        ep = EpisodicMemory(
+            canonical_source("episodic", key=":memory:", namespaces=["test"]), "test"
+        )
         engine = ReflexionEngine(episodic=ep)
 
         state = {
@@ -300,8 +310,10 @@ class TestReflexionEngine:
         assert "voice inconsistent" in result.critique
         assert "Reflection on" in result.reflection
 
-    def test_reflect_stores_in_episodic(self):
-        ep = EpisodicMemory(":memory:", "test")
+    def test_reflect_stores_in_episodic(self, canonical_source):
+        ep = EpisodicMemory(
+            canonical_source("episodic", key=":memory:", namespaces=["test"]), "test"
+        )
         engine = ReflexionEngine(episodic=ep)
 
         state = {"book_number": 1, "chapter_number": 1, "scene_number": 1, "quality_trace": []}
@@ -330,8 +342,11 @@ class TestReflexionEngine:
 
 
 class TestMemoryManager:
-    def _make_manager(self) -> MemoryManager:
-        return MemoryManager(universe_id="test", db_path=":memory:")
+    def _make_manager(self, canonical_source) -> MemoryManager:
+        return MemoryManager(
+            universe_id="test",
+            source=canonical_source("episodic", key=":memory:", namespaces=["test"]),
+        )
 
     def _make_state(self, **overrides) -> dict:
         base = {
@@ -368,8 +383,8 @@ class TestMemoryManager:
         base.update(overrides)
         return base
 
-    def test_assemble_orient(self):
-        mgr = self._make_manager()
+    def test_assemble_orient(self, canonical_source):
+        mgr = self._make_manager(canonical_source)
         state = self._make_state()
         ctx = mgr.assemble_context(ORIENT, state)
         assert ctx.phase == ORIENT
@@ -377,8 +392,8 @@ class TestMemoryManager:
         assert "active_promises" in ctx
         assert "recent_reflections" in ctx
 
-    def test_assemble_plan(self):
-        mgr = self._make_manager()
+    def test_assemble_plan(self, canonical_source):
+        mgr = self._make_manager(canonical_source)
         state = self._make_state()
         ctx = mgr.assemble_context(PLAN, state)
         assert ctx.phase == PLAN
@@ -387,24 +402,24 @@ class TestMemoryManager:
         assert "orient_warnings" in ctx
         assert "style_rules" in ctx
 
-    def test_assemble_draft(self):
-        mgr = self._make_manager()
+    def test_assemble_draft(self, canonical_source):
+        mgr = self._make_manager(canonical_source)
         state = self._make_state()
         ctx = mgr.assemble_context(DRAFT, state)
         assert ctx.phase == DRAFT
         assert "recent_prose" in ctx
         assert "beat_sheet" in ctx
 
-    def test_assemble_evaluate(self):
-        mgr = self._make_manager()
+    def test_assemble_evaluate(self, canonical_source):
+        mgr = self._make_manager(canonical_source)
         state = self._make_state()
         ctx = mgr.assemble_context(EVALUATE, state)
         assert ctx.phase == EVALUATE
         assert "draft_text" in ctx
         assert "canon_facts" in ctx
 
-    def test_store_scene_result(self):
-        mgr = self._make_manager()
+    def test_store_scene_result(self, canonical_source):
+        mgr = self._make_manager(canonical_source)
         state = self._make_state(
             extracted_facts=[
                 {"fact_id": "f1", "entity": "Ryn", "text": "has blue eyes"}
@@ -427,8 +442,8 @@ class TestMemoryManager:
         obs = mgr.episodic.get_observations_by_dimension("pacing")
         assert len(obs) == 1
 
-    def test_run_promotion_gates(self):
-        mgr = self._make_manager()
+    def test_run_promotion_gates(self, canonical_source):
+        mgr = self._make_manager(canonical_source)
         # Build up evidence.
         for i in range(3):
             mgr.episodic.store_fact("f1", "Ryn", "blue eyes", f"s{i}")
@@ -436,22 +451,22 @@ class TestMemoryManager:
         result = mgr.run_promotion_gates()
         assert len(result.promoted_facts) == 1
 
-    def test_run_reflexion(self):
-        mgr = self._make_manager()
+    def test_run_reflexion(self, canonical_source):
+        mgr = self._make_manager(canonical_source)
         state = self._make_state()
         feedback = [{"verdict": "revert", "rationale": "bad pacing"}]
         result = mgr.run_reflexion(state, judge_feedback=feedback)
         assert isinstance(result, ReflexionResult)
         assert "pacing" in result.critique
 
-    def test_evict_old_data(self):
-        mgr = self._make_manager()
+    def test_evict_old_data(self, canonical_source):
+        mgr = self._make_manager(canonical_source)
         for ch in range(1, 11):
             mgr.episodic.store_summary(1, ch, 1, f"ch{ch}", 100)
         evicted = mgr.evict_old_data(current_chapter=10)
         assert evicted > 0
 
-    def test_close(self):
-        mgr = self._make_manager()
+    def test_close(self, canonical_source):
+        mgr = self._make_manager(canonical_source)
         mgr.close()
         # Should not raise on double close.

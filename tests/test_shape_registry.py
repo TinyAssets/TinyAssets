@@ -473,3 +473,38 @@ def test_git_added_uses_the_pr_diff_not_untracked_files():
         patch.object(check_shapes.subprocess, "run", side_effect=git_diff_only),
     ):
         assert check_shapes.git_added() == {"tinyassets/new.py"}
+
+
+def test_export_runtime_is_one_isolated_stdlib_artifact(tmp_path):
+    runner = tmp_path / check_shapes.EXPORT_RUNTIME
+    runner.parent.mkdir(parents=True)
+    runner.write_text("import urllib.request\ndef turn(model_call): return model_call([])\n")
+    assert check_shapes.export_runtime_problems(tmp_path) == []
+    assert not any(check_shapes.registered_path(check_shapes.EXPORT_RUNTIME, path)
+                   for path in check_shapes.SHAPES["S1"].paths)
+    runner.write_text("from tinyassets.providers import router\n")
+    assert check_shapes.export_runtime_problems(tmp_path)
+    runner.write_text("from . import other_runner\n")
+    assert check_shapes.export_runtime_problems(tmp_path)
+    runner.write_text("loader = __import__\nloader('tinyassets')\n")
+    assert check_shapes.export_runtime_problems(tmp_path)
+    runner.write_text("import json\n")
+    hosted = tmp_path / "tinyassets" / "caller.py"
+    hosted.parent.mkdir(exist_ok=True)
+    hosted.write_text('path = "tinyassets/okf/assets/agent.py.txt"\n')
+    assert any("hosted caller" in p for p in check_shapes.export_runtime_problems(tmp_path))
+
+
+def test_export_serializer_can_only_read_inert_resource_bytes(tmp_path):
+    runner = tmp_path / check_shapes.EXPORT_RUNTIME
+    runner.parent.mkdir(parents=True)
+    runner.write_text("import json\n")
+    serializer = tmp_path / "tinyassets/okf/export_assets.py"
+    serializer.write_text(
+        "from importlib.resources import files\n"
+        "def generated_files():\n"
+        "    return files('tinyassets.okf').joinpath('assets', 'agent.py.txt').read_bytes()\n"
+    )
+    assert check_shapes.export_runtime_problems(tmp_path) == []
+    serializer.write_text("import runpy\nrunpy.run_path('agent.py.txt')\n")
+    assert check_shapes.export_runtime_problems(tmp_path)

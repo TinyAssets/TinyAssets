@@ -1476,7 +1476,8 @@ def get_status(
     # compaction, or any autonomous scheduling decision.
     try:
         from tinyassets.daemon_brain import open_brain_status_surface
-        open_brain = open_brain_status_surface(_base_path())
+        from tinyassets.memory.runtime import current_memory
+        open_brain = open_brain_status_surface(current_memory().source("daemon"))
     except Exception as exc:  # noqa: BLE001 — best-effort observability
         open_brain = {
             "error": "compute_failed",

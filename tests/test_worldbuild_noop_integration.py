@@ -29,12 +29,16 @@ from __future__ import annotations
 import importlib
 from typing import Any
 
+import pytest
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 
 from domains.fantasy_daemon.graphs.universe import should_continue_universe
 from domains.fantasy_daemon.phases.universe_cycle import universe_cycle
 from domains.fantasy_daemon.state.universe_state import UniverseState
+
+pytestmark = pytest.mark.usefixtures("canonical_runtime")
+
 
 # The parent package's __init__ re-exports the `worldbuild` function
 # under the same name, shadowing the submodule. `importlib` gets us

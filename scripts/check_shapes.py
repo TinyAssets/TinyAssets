@@ -14,6 +14,61 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parent.parent
 REGISTRY = ROOT / "docs/architecture.md"
+EXPORT_RUNTIME = "tinyassets/okf/assets/agent.py.txt"
+# ADR-018's account-free local runner is shipped as bytes, never a hosted caller.
+# This is one exact artifact, not a directory allowance or an S1 ceiling change.
+EXPORT_STDLIB = frozenset({
+    "__future__", "argparse", "json", "os", "secrets", "selectors", "signal",
+    "subprocess", "sys", "time", "urllib.parse", "urllib.request", "pathlib", "stat",
+    "datetime", "zoneinfo", "fcntl", "hashlib", "re",
+})
+
+
+def export_runtime_problems(root: Path) -> list[str]:
+    path = root / EXPORT_RUNTIME
+    if not path.exists():
+        return []
+    problems = []
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return ["export-runtime: runner must be parseable Python"]
+    for node in ast.walk(tree):
+        modules = []
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            modules = [node.module if not node.level else "relative-import"]
+        if any(module not in EXPORT_STDLIB for module in modules):
+            problems.append("export-runtime: only declared standard-library imports are allowed")
+        if isinstance(node, ast.Name) and node.id in {"__import__", "exec", "eval", "compile"}:
+            problems.append("export-runtime: dynamic Python loading is not allowed")
+    # This is package data, not an importable Python module. The one serializer
+    # reads it as bytes; hosted code must never load it as Python.
+    for hosted in files("tinyassets/**/*.py", root):
+        source = hosted.read_text(encoding="utf-8")
+        if hosted.relative_to(root).as_posix() == "tinyassets/okf/export_assets.py":
+            tree = ast.parse(source)
+            allowed_calls = {
+                "files", "files('tinyassets.okf').joinpath",
+                "files('tinyassets.okf').joinpath('assets', 'agent.py.txt').read_bytes",
+                "_README.encode",
+            }
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import) or (
+                    isinstance(node, ast.ImportFrom)
+                    and (node.module != "importlib.resources" or node.level
+                         or [(a.name, a.asname) for a in node.names] != [("files", None)])
+                ):
+                    problems.append("export-runtime: serializer imports only the resource reader")
+                if isinstance(node, ast.Call) and ast.unparse(node.func) not in allowed_calls:
+                    problems.append("export-runtime: serializer must only read fixed asset bytes")
+            continue
+        if any(marker in source for marker in (
+            "agent.py.txt", "command-center/run", "command_center.run",
+        )):
+            problems.append(f"export-runtime: hosted caller {hosted.relative_to(root)}")
+    return sorted(set(problems))
 
 
 @dataclass(frozen=True)
@@ -686,6 +741,10 @@ def _merge_base(root: Path) -> str | None:
                 return _related_merge_base(root, borrowed)
             except subprocess.CalledProcessError:
                 return borrowed
+    # The local oracle copies a linked worktree into /work. Its /src/.git is a
+    # worktree pointer, so the snapshot has no accessible upstream history.
+    if root == Path("/work") and _CHECKOUT_GIT.is_file():
+        return None
     if _on_actions():
         raise RuntimeError("shape guard needs main history; fetch-depth must be 0")
     return None  # linux_oracle constructs a single-commit snapshot repository
@@ -775,6 +834,8 @@ def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
     problems: list[str] = []
     problems.extend(control_plane_policy_problems(root))
     problems.extend(dead_entry_problems(root))
+    export_problems = export_runtime_problems(root)
+    problems.extend(export_problems)
     rows = registry_rows((root / "docs/architecture.md").read_text(encoding="utf-8"))
     missing = sorted(rows.keys() - SHAPES.keys())
     extra = sorted(SHAPES.keys() - rows.keys())
@@ -822,6 +883,8 @@ def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
             continue
         source = path.read_text(encoding="utf-8", errors="replace")
         for shape_id, pattern in ENTRY_SYMBOLS.items():
+            if shape_id == "S1" and rel == EXPORT_RUNTIME and not export_problems:
+                continue
             if not any(registered_path(rel, glob) for glob in SHAPES[shape_id].paths) and re.search(
                 pattern, source
             ):

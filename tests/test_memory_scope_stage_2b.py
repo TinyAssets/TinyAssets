@@ -48,8 +48,14 @@ from tinyassets.memory.scoping import MemoryScope
 
 
 @pytest.fixture
-def kg(tmp_path):
-    return KnowledgeGraph(db_path=tmp_path / "kg.db")
+def kg(canonical_source, tmp_path):
+    return KnowledgeGraph(
+        source=canonical_source(
+            "knowledge",
+            key=tmp_path / "kg.db",
+            namespaces=[None, "world", "u1", "test", "test-universe", "universe-A"],
+        )
+    )
 
 
 def _entity(entity_id: str) -> GraphEntity:
@@ -293,7 +299,8 @@ def test_episodic_migration_non_destructive_on_legacy_rows(tmp_path):
 
     # Open via EpisodicMemory — the __init__ migration should run and
     # leave all 4 legacy rows untouched.
-    store = EpisodicMemory(db_path=str(db), universe_id="world")
+    from tests.support.legacy_memory_snapshot import offline_consumer
+    store = offline_consumer(EpisodicMemory, db, universe_id="world")
     try:
         # Every table now has the three new columns.
         for table in ("scene_summaries", "episodic_facts",
@@ -339,16 +346,20 @@ def test_episodic_migration_non_destructive_on_legacy_rows(tmp_path):
         store.close()
 
 
-def test_episodic_migration_is_idempotent(tmp_path):
+def test_episodic_migration_is_idempotent(canonical_source, tmp_path):
     """Running EpisodicMemory twice on the same DB does not double-add columns."""
     db = tmp_path / "episodic.db"
-    first = EpisodicMemory(db_path=str(db), universe_id="world")
+    first = EpisodicMemory(
+        source=canonical_source("episodic", key=str(db), namespaces=["world"]), universe_id="world"
+    )
     first.store_summary(1, 1, 1, "First summary.", word_count=42)
     first.close()
 
     # Second open re-runs the migration path; ALTER TABLE should be a
     # no-op because the columns exist.
-    second = EpisodicMemory(db_path=str(db), universe_id="world")
+    second = EpisodicMemory(
+        source=canonical_source("episodic", key=str(db), namespaces=["world"]), universe_id="world"
+    )
     try:
         row = second._conn.execute(
             "SELECT summary, word_count FROM scene_summaries "
@@ -477,8 +488,11 @@ def test_episodic_neutral_migration_backup_and_rollback(tmp_path, monkeypatch):
         restored.close()
 
 
-def test_episodic_no_bleed_check_flags_non_fantasy_coordinates(tmp_path):
-    store = EpisodicMemory(db_path=str(tmp_path / "e.db"), universe_id="world")
+def test_episodic_no_bleed_check_flags_non_fantasy_coordinates(canonical_source, tmp_path):
+    store = EpisodicMemory(
+        source=canonical_source("episodic", key=str(tmp_path / "e.db"), namespaces=["world"]),
+        universe_id="world",
+    )
     try:
         store.store_episode_summary(
             episode_id="research-session-1",
@@ -486,21 +500,24 @@ def test_episodic_no_bleed_check_flags_non_fantasy_coordinates(tmp_path):
             summary="Generic research summary.",
             domain_id="research_probe",
         )
-        store._conn.execute(
-            "UPDATE scene_summaries SET book_number = 1 WHERE domain_id = ?",
-            ("research_probe",),
-        )
-        store._conn.commit()
+        with store._conn.transaction():
+            store._conn.execute(
+                "UPDATE scene_summaries SET book_number = 1 WHERE domain_id = ?",
+                ("research_probe",),
+            )
 
-        violations = check_episodic_no_bleed(store._conn)
+        violations = check_episodic_no_bleed(store._conn._db)
         assert any("scene_summaries" in violation for violation in violations)
         assert any("research_probe" in violation for violation in violations)
     finally:
         store.close()
 
 
-def test_episodic_store_summary_with_scope(tmp_path):
-    store = EpisodicMemory(db_path=str(tmp_path / "e.db"), universe_id="world")
+def test_episodic_store_summary_with_scope(canonical_source, tmp_path):
+    store = EpisodicMemory(
+        source=canonical_source("episodic", key=str(tmp_path / "e.db"), namespaces=["world"]),
+        universe_id="world",
+    )
     try:
         scope = MemoryScope(
             universe_id="world",
@@ -521,8 +538,11 @@ def test_episodic_store_summary_with_scope(tmp_path):
         store.close()
 
 
-def test_episodic_store_fact_with_scope_new_row(tmp_path):
-    store = EpisodicMemory(db_path=str(tmp_path / "e.db"), universe_id="world")
+def test_episodic_store_fact_with_scope_new_row(canonical_source, tmp_path):
+    store = EpisodicMemory(
+        source=canonical_source("episodic", key=str(tmp_path / "e.db"), namespaces=["world"]),
+        universe_id="world",
+    )
     try:
         scope = MemoryScope(universe_id="world", branch_id="dev")
         store.store_fact("f-new", "ryn", "content", scope=scope)
@@ -536,11 +556,14 @@ def test_episodic_store_fact_with_scope_new_row(tmp_path):
         store.close()
 
 
-def test_episodic_store_fact_increment_does_not_rewrite_scope(tmp_path):
+def test_episodic_store_fact_increment_does_not_rewrite_scope(canonical_source, tmp_path):
     """Existing fact + new evidence call does NOT overwrite the
     original scope columns — Stage 2b defers re-tagging semantics to 2c.
     """
-    store = EpisodicMemory(db_path=str(tmp_path / "e.db"), universe_id="world")
+    store = EpisodicMemory(
+        source=canonical_source("episodic", key=str(tmp_path / "e.db"), namespaces=["world"]),
+        universe_id="world",
+    )
     try:
         original = MemoryScope(universe_id="world", branch_id="main")
         store.store_fact("f-inc", "ryn", "content", scope=original)
@@ -557,8 +580,11 @@ def test_episodic_store_fact_increment_does_not_rewrite_scope(tmp_path):
         store.close()
 
 
-def test_episodic_store_observation_with_scope(tmp_path):
-    store = EpisodicMemory(db_path=str(tmp_path / "e.db"), universe_id="world")
+def test_episodic_store_observation_with_scope(canonical_source, tmp_path):
+    store = EpisodicMemory(
+        source=canonical_source("episodic", key=str(tmp_path / "e.db"), namespaces=["world"]),
+        universe_id="world",
+    )
     try:
         scope = MemoryScope(universe_id="world", user_id="alice")
         store.store_observation("voice", "Spare prose.", scope=scope)
@@ -570,8 +596,11 @@ def test_episodic_store_observation_with_scope(tmp_path):
         store.close()
 
 
-def test_episodic_store_reflection_with_scope(tmp_path):
-    store = EpisodicMemory(db_path=str(tmp_path / "e.db"), universe_id="world")
+def test_episodic_store_reflection_with_scope(canonical_source, tmp_path):
+    store = EpisodicMemory(
+        source=canonical_source("episodic", key=str(tmp_path / "e.db"), namespaces=["world"]),
+        universe_id="world",
+    )
     try:
         scope = MemoryScope(universe_id="world", goal_id="book-2")
         store.store_reflection(1, 1, "critique", "reflection", scope=scope)
@@ -583,9 +612,12 @@ def test_episodic_store_reflection_with_scope(tmp_path):
         store.close()
 
 
-def test_episodic_store_without_scope_still_writes_null(tmp_path):
+def test_episodic_store_without_scope_still_writes_null(canonical_source, tmp_path):
     """Backward compat: pre-2b callers that don't pass scope still work."""
-    store = EpisodicMemory(db_path=str(tmp_path / "e.db"), universe_id="world")
+    store = EpisodicMemory(
+        source=canonical_source("episodic", key=str(tmp_path / "e.db"), namespaces=["world"]),
+        universe_id="world",
+    )
     try:
         store.store_summary(1, 1, 1, "Summary.", word_count=10)
         row = store._conn.execute(

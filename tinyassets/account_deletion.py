@@ -126,6 +126,7 @@ OWNER_ONLY_TABLES = MappingProxyType({
     "api_keys": "owner",
     "api_key_request_counts": "owner",
     "pins": "owner_id",
+    "bundle_imports": "owner_id",
     "universe_app_ui": "owner_user_id",
     "owner_view_receipts": "owner_user_id",
     "command_center_adoptions": "owner_id",
@@ -298,14 +299,19 @@ def _rmdir_if_empty(path: Path) -> None:
 
 def _home_dir(root: Path, home: str) -> Path:
     """The home directory inside ``root`` — refuses traversal and odd names."""
-    candidate = (root / home).resolve(strict=False)
+    from tinyassets.boxes.layout import host_center_stub
+
+    try:
+        candidate = host_center_stub(root, home).resolve(strict=False)
+    except ValueError as exc:
+        raise AccountDeletionError("home path escapes the data root") from exc
     if candidate.parent != root or candidate.name != home:
         raise AccountDeletionError("home path escapes the data root")
     return candidate
 
 
 def _stage_home(root: Path, home: str) -> Path | None:
-    """Stage separate home/sidecar children in a platform-owned container.
+    """Stage residual host copy and platform sidecars after box destruction.
 
     The deterministic container survives a crash between renames; retry moves
     only the remaining sources. No destination lies inside user-owned content.
@@ -314,13 +320,14 @@ def _stage_home(root: Path, home: str) -> Path | None:
     from tinyassets.boxes.layout import UNIVERSE_SIDECARS_DIR
     from tinyassets.credential_vault import _credential_root
 
-    target = _home_dir(root, home)
+    target = _home_dir(root, home)  # validate without treating it as owner storage
     sidecar = root / UNIVERSE_SIDECARS_DIR / home
     custody = _credential_root(target)
     staging = root / _STAGING_DIR
     staged = staging / home
-    # Platform credential custody lives outside the box; it goes with the account.
-    sources = ((target, staged / "home"), (sidecar, staged / "sidecar"),
+    # The platform stub (or a legacy host copy) is this owner's host state.
+    # Journal it with the sidecars after the owner box has been destroyed.
+    sources = ((target, staged / "legacy"), (sidecar, staged / "sidecar"),
                (custody, staged / "credentials"))
     # Check every parent and source before the first rename. A symlink must
     # never redirect staging or removal into another account's directory.
@@ -775,6 +782,12 @@ def _delete_satellite_rows(
     if path == runs_db_path(path.parent):
         from tinyassets.run_file_erasure import erase_owner_files
         erase_owner_files(path.parent, owner_id=principal)
+    from tinyassets.command_center_packages import database_path, erase_private_imports
+
+    if path == database_path(path.parent.parent):
+        removed = erase_private_imports(path.parent.parent, owner=principal)
+        if removed:
+            counts[f"{label}.private_imports"] = removed
     conn = sqlite3.connect(str(path), timeout=30.0)
     try:
         conn.execute("PRAGMA busy_timeout = 30000")
@@ -1002,13 +1015,14 @@ def pending_deletions(base_path: str | Path) -> list[dict[str, Any]]:
 
 
 def _destroy_owner_box(root: Path, home: str, *, principal: str):
-    """C12's destruction-only admission and stable receipt contract."""
+    """C6 destruction-only admission, with no ordinary-bind or filesystem fallback."""
     from tinyassets.agent_loop.served_chat import configured_box_provider
     from tinyassets.boxes.provider import DestroyReceipt
 
     provider, _ = configured_box_provider()
     if provider is None or not callable(getattr(provider, "bind_for_destroy", None)):
         raise AccountDeletionError("authenticated owner destruction is unavailable")
+    # Stable across request retries, process restart and placement fencing.
     op_id = "account-delete-" + hashlib.sha256(
         (principal + "\x00" + home).encode("utf-8")
     ).hexdigest()
@@ -1019,25 +1033,6 @@ def _destroy_owner_box(root: Path, home: str, *, principal: str):
             or result.files_removed < 0 or type(result.new_epoch) is not int
             or result.new_epoch < 1):
         raise AccountDeletionError("invalid durable owner destruction receipt")
-    from tinyassets.workspace_fs import open_dir_nofollow, open_subdir_nofollow
-
-    parent = open_dir_nofollow(root)
-    try:
-        try:
-            legacy = open_subdir_nofollow(parent, home)
-        except FileNotFoundError:
-            legacy = None
-        if legacy is not None:
-            try:
-                with os.scandir(legacy) as children:
-                    if next(children, None) is not None:
-                        raise AccountDeletionError(
-                            "legacy owner bytes remain after box destruction"
-                        )
-            finally:
-                os.close(legacy)
-    finally:
-        os.close(parent)
     return result
 
 
@@ -1102,6 +1097,9 @@ def delete_account(
                 write_tombstone(root, principal)
     else:
         write_tombstone(root, principal)
+    from tinyassets.owner_door.transfer import clear_owner_previews
+
+    clear_owner_previews(principal)
     blob_sessions = _authoring_session_ids(root, principal)
 
     failures: list[str] = []
@@ -1121,10 +1119,11 @@ def delete_account(
         with _connect(root) as conn:
             _delete_root_rows(conn, principal=principal, home=home, counts=counts)
 
-    def _owner_tree():
-        return _destroy_owner_box(root, home, principal=principal)
-
-    destroyed = _phase("owner_tree", _owner_tree) if home else None
+    # Tombstoned principals may only obtain C6's destruction-only handle.
+    # Keep the binding until its journalled receipt is verified.
+    destroyed = _phase(
+        "owner_tree", lambda: _destroy_owner_box(root, home, principal=principal)
+    ) if home else None
     owner_tree_failed = "owner_tree" in failures
 
     def _broker_rows() -> None:
@@ -1135,13 +1134,13 @@ def delete_account(
 
     _phase("broker_egress", _broker_rows)
 
-    # After the two-pass deletion only the sidecar remains to stage.
+    # Owner bytes are gone only after the durable receipt; stage platform sidecars.
     staged = _phase(
         "home_staging", lambda: _stage_home(root, home)
     ) if home and not owner_tree_failed else None
     staging_failed = "home_staging" in failures
     if owner_tree_failed:
-        # Keep the binding: a retry resumes pass one under the same intent.
+        # Keep the binding: a retry asks for the same durable destroy operation.
         failures.append("root_rows")
     elif staging_failed:
         # Keep the home binding so a retry can finish the deterministic staging
@@ -1217,8 +1216,8 @@ def delete_account(
         billing = _phase(
             "billing", lambda: (cancel_billing or cancel_stripe_billing)(home)
         ) or "error"
-    # A failed two-pass deletion resumes only under this principal's own
-    # authenticated identity, so the sign-in identity outlives it.
+    # A failed box destruction resumes under this principal's authenticated
+    # identity, so the sign-in identity outlives it.
     identity = "deferred:owner_tree" if owner_tree_failed else _phase(
         "identity", lambda: (delete_identity or delete_workos_user)(principal)
     ) or "error"
@@ -1249,6 +1248,7 @@ def delete_account(
             "files_removed": destroyed.files_removed, "new_epoch": destroyed.new_epoch,
         }
     if owner_tree_failed:
+        # A missing response cannot establish whether the host already removed bytes.
         receipt["home_deletion_pending"] = True
     if failures:
         receipt["host_receipt_path"] = _write_unfinished_receipt(root, receipt)

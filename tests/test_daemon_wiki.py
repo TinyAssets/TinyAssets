@@ -100,8 +100,11 @@ def test_record_daemon_signal_rejects_soulless_daemon(tmp_path) -> None:
         )
 
 
-def test_read_daemon_wiki_context_includes_schema_index_and_signals(tmp_path) -> None:
+def test_read_daemon_wiki_context_includes_schema_index_and_signals(
+    tmp_path, canonical_daemon,
+) -> None:
     daemon = _soul_daemon(tmp_path)
+    canonical_daemon(tmp_path)
     root = daemon_wiki.daemon_wiki_root(tmp_path, daemon["daemon_id"])
     (root / "pages" / "brain" / "blocked-patterns.md").write_text(
         "---\n"

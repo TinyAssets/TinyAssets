@@ -136,11 +136,17 @@ def test_list_universe_acl_ordered_by_granted_at(base_path):
 # ─── KG scope columns ────────────────────────────────────────────────
 
 
-def test_kg_schema_adds_scope_columns(tmp_path):
+def test_kg_schema_adds_scope_columns(canonical_source, tmp_path):
     from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
 
     db_path = tmp_path / "kg.db"
-    kg = KnowledgeGraph(db_path=str(db_path))
+    kg = KnowledgeGraph(
+        source=canonical_source(
+            "knowledge",
+            key=str(db_path),
+            namespaces=[None, "world", "u1", "test", "test-universe", "universe-A"],
+        )
+    )
     cur = kg._conn.execute("PRAGMA table_info(entities)")
     cols = {row["name"] for row in cur}
     for expected in ("universe_id", "goal_id", "branch_id", "user_id"):
@@ -153,26 +159,41 @@ def test_kg_schema_adds_scope_columns(tmp_path):
             assert expected in cols, f"{table} missing {expected}"
 
 
-def test_kg_migration_is_idempotent(tmp_path):
-    """Re-opening the DB doesn't re-add columns or error."""
+def test_kg_migration_is_idempotent(canonical_source, tmp_path):
+    """A fresh bundle/source rebuilds the index without adding duplicate columns."""
     from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
+    from tinyassets.okf.bundle import KnowledgeBundle
+    from tinyassets.okf.records import SourceRecords
 
-    db_path = tmp_path / "kg.db"
-    KnowledgeGraph(db_path=str(db_path))  # first open = schema create
-    # Second open should be a no-op.
-    kg2 = KnowledgeGraph(db_path=str(db_path))
-    cur = kg2._conn.execute("PRAGMA table_info(entities)")
-    cols = [row["name"] for row in cur]
-    # No duplicate universe_id columns.
-    assert cols.count("universe_id") == 1
+    source = canonical_source(
+        "knowledge", key=tmp_path / "kg.db",
+        namespaces=[None, "world", "u1", "test", "test-universe", "universe-A"],
+    )
+    first = KnowledgeGraph(source)
+    first.close()
+    fresh = SourceRecords(
+        KnowledgeBundle(source.bundle.provider, source.bundle.handle), "knowledge"
+    )
+    reopened = KnowledgeGraph(fresh)
+    try:
+        columns = [row["name"] for row in reopened._conn.execute("PRAGMA table_info(entities)")]
+        assert columns.count("universe_id") == 1
+    finally:
+        reopened.close()
 
 
-def test_kg_migrate_scope_columns_backfills_universe_id(tmp_path):
+def test_kg_scope_reassignment_requires_reviewed_migration(canonical_source, tmp_path):
     from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
     from tinyassets.knowledge.models import GraphEntity
 
     db_path = tmp_path / "kg.db"
-    kg = KnowledgeGraph(db_path=str(db_path))
+    kg = KnowledgeGraph(
+        source=canonical_source(
+            "knowledge",
+            key=str(db_path),
+            namespaces=[None, "world", "u1", "test", "test-universe", "universe-A"],
+        )
+    )
     # Insert an entity pre-migration (universe_id defaults to NULL).
     kg.add_entity(GraphEntity(
         entity_id="e1",
@@ -183,30 +204,38 @@ def test_kg_migrate_scope_columns_backfills_universe_id(tmp_path):
         secret_description="",
         aliases=[],
     ))
-    # Run migration.
-    updated = kg.migrate_scope_columns(universe_id="u-alpha")
-    assert updated >= 1
+    with pytest.raises(ValueError, match="reviewed snapshot migration"):
+        kg.migrate_scope_columns(universe_id="u-alpha")
     row = kg._conn.execute(
         "SELECT universe_id FROM entities WHERE entity_id = 'e1'"
     ).fetchone()
-    assert row["universe_id"] == "u-alpha"
-    # Second migration is idempotent — only NULL rows are touched.
-    second = kg.migrate_scope_columns(universe_id="u-alpha")
-    assert second == 0
+    assert row["universe_id"] is None
 
 
-def test_kg_migrate_requires_universe_id(tmp_path):
+def test_kg_migrate_requires_universe_id(canonical_source, tmp_path):
     from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
 
-    kg = KnowledgeGraph(db_path=str(tmp_path / "kg.db"))
-    with pytest.raises(ValueError, match="non-empty universe_id"):
+    kg = KnowledgeGraph(
+        source=canonical_source(
+            "knowledge",
+            key=str(tmp_path / "kg.db"),
+            namespaces=[None, "world", "u1", "test", "test-universe", "universe-A"],
+        )
+    )
+    with pytest.raises(ValueError, match="reviewed snapshot migration"):
         kg.migrate_scope_columns(universe_id="")
 
 
-def test_kg_scope_index_exists(tmp_path):
+def test_kg_scope_index_exists(canonical_source, tmp_path):
     from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
 
-    kg = KnowledgeGraph(db_path=str(tmp_path / "kg.db"))
+    kg = KnowledgeGraph(
+        source=canonical_source(
+            "knowledge",
+            key=str(tmp_path / "kg.db"),
+            namespaces=[None, "world", "u1", "test", "test-universe", "universe-A"],
+        )
+    )
     names = [
         row["name"] for row in kg._conn.execute(
             "SELECT name FROM sqlite_master WHERE type='index'"

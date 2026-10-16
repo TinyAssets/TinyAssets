@@ -104,13 +104,19 @@ class TestOrientRetrievalIntegration:
         # retrieved_context should be a dict (possibly empty if KG not initialized)
         assert isinstance(result["retrieved_context"], dict)
 
-    def test_orient_populates_retrieved_context_with_kg(self, base_state, tmp_db):
+    def test_orient_populates_retrieved_context_with_kg(self, canonical_source, base_state, tmp_db):
         """When KG has data, retrieved_context should be non-empty."""
         from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
         from tinyassets.knowledge.models import GraphEntity
 
         kg_path = tmp_db + ".kg"
-        kg = KnowledgeGraph(kg_path)
+        kg = KnowledgeGraph(
+            canonical_source(
+                "knowledge",
+                key=kg_path,
+                namespaces=[None, "world", "u1", "test", "test-universe", "universe-A"],
+            )
+        )
         # Add some entity data using the GraphEntity TypedDict
         kg.add_entity(GraphEntity(
             entity_id="Ryn", entity_type="character", access_tier=0,
@@ -122,9 +128,9 @@ class TestOrientRetrievalIntegration:
             public_description="An ancient gate", hidden_description="",
             secret_description="", aliases=[],
         ))
-        kg.close()
-
-        base_state["_kg_path"] = kg_path
+        from tinyassets import runtime_singletons as runtime
+        runtime.knowledge_graph = kg
+        base_state["_kg_path"] = "ignored-legacy-path"
         result = orient(base_state)
 
         ctx = result["retrieved_context"]
@@ -134,6 +140,7 @@ class TestOrientRetrievalIntegration:
             assert "facts" in ctx or "relationships" in ctx or "sources" in ctx
 
         # Cleanup
+        kg.close()
         try:
             os.unlink(kg_path)
         except FileNotFoundError:
@@ -308,7 +315,7 @@ class TestMemoryManagerIntegration:
     """Nodes call MemoryManager.assemble_context when present in state."""
 
     @pytest.fixture(autouse=True)
-    def _isolate_memory_manager(self, monkeypatch):
+    def _isolate_memory_manager(self, monkeypatch, canonical_runtime):
         """Ensure runtime.memory_manager is None before and after each test.
 
         Uses monkeypatch so the global is automatically reverted even if
@@ -1184,13 +1191,19 @@ class TestCharacterUpsert:
 class TestIndexerRegexFallback:
     """Indexer falls back to regex entity extraction when LLM fails."""
 
-    def test_regex_fallback_populates_kg(self, tmp_path):
+    def test_regex_fallback_populates_kg(self, canonical_source, tmp_path):
         """When provider returns empty, regex fallback adds entities to KG."""
         from tinyassets.ingestion.indexer import index_text
         from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
 
         kg_path = str(tmp_path / "knowledge.db")
-        kg = KnowledgeGraph(kg_path)
+        kg = KnowledgeGraph(
+            canonical_source(
+                "knowledge",
+                key=kg_path,
+                namespaces=[None, "world", "u1", "test", "test-universe", "universe-A"],
+            )
+        )
 
         # Provider that always returns empty (simulates exhaustion)
         def empty_provider(prompt, system, role="extract"):
@@ -1209,13 +1222,19 @@ class TestIndexerRegexFallback:
         assert entity is not None
         kg.close()
 
-    def test_regex_fallback_on_invalid_json(self, tmp_path):
+    def test_regex_fallback_on_invalid_json(self, canonical_source, tmp_path):
         """When provider returns non-JSON, regex fallback kicks in."""
         from tinyassets.ingestion.indexer import index_text
         from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
 
         kg_path = str(tmp_path / "knowledge.db")
-        kg = KnowledgeGraph(kg_path)
+        kg = KnowledgeGraph(
+            canonical_source(
+                "knowledge",
+                key=kg_path,
+                namespaces=[None, "world", "u1", "test", "test-universe", "universe-A"],
+            )
+        )
 
         def bad_json_provider(prompt, system, role="extract"):
             return "I found some entities but can't format them as JSON."
@@ -1232,7 +1251,7 @@ class TestIndexerRegexFallback:
         assert entity is not None
         kg.close()
 
-    def test_llm_extraction_works_when_provider_returns_json(self, tmp_path):
+    def test_llm_extraction_works_when_provider_returns_json(self, canonical_source, tmp_path):
         """When provider returns valid JSON, LLM extraction is used."""
         import json
 
@@ -1240,7 +1259,13 @@ class TestIndexerRegexFallback:
         from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
 
         kg_path = str(tmp_path / "knowledge.db")
-        kg = KnowledgeGraph(kg_path)
+        kg = KnowledgeGraph(
+            canonical_source(
+                "knowledge",
+                key=kg_path,
+                namespaces=[None, "world", "u1", "test", "test-universe", "universe-A"],
+            )
+        )
 
         def json_provider(prompt, system, role="extract"):
             return json.dumps({
@@ -1485,3 +1510,6 @@ class TestEditorialVerdict:
 # =====================================================================
 # Tray Mode
 # =====================================================================
+
+
+pytestmark = pytest.mark.usefixtures("canonical_runtime")

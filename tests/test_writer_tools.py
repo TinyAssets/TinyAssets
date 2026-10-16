@@ -154,3 +154,6 @@ class TestOrientNotesConsumption:
         instructions = result.get("workflow_instructions", {})
         assert "workflow_instructions" not in result or "notes" not in instructions
         assert len(list_notes(tmp_path, status="unread")) == 1
+
+
+pytestmark = pytest.mark.usefixtures("canonical_runtime")

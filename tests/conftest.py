@@ -22,7 +22,8 @@ from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
 # The owner-box runtime's test doubles: the in-process broker and the local
 # owner box. Production has no fallback; tests opt out of a double with the
 # ``role_split`` marker when they exercise the real host service.
-pytest_plugins = ("tests.support.broker_double", "tests.support.box_double")
+pytest_plugins = ("tests.support.broker_double", "tests.support.box_double",
+                  "tests.support.canonical_sources")
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 

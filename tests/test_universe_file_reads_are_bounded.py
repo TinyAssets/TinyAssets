@@ -57,11 +57,7 @@ TURN_PATH = (
 #: (module, enclosing function) -> why this read can never be of an
 #: agent-writable universe file. Adding a row needs a reason a reviewer can
 #: check; a row that stops matching fails the test (no dead exemptions).
-ALLOWED = {
-    ("tinyassets/wiki/okf_export.py", "_conformance_report"):
-        "reads the bundle this export just wrote into target_dir, which is refused "
-        "when inside the wiki root; not an agent-written file",
-}
+ALLOWED = {}
 
 _READ_ATTRS = {"read_text", "read_bytes", "open"}
 _YAML_LOADERS = {"load", "safe_load", "full_load", "unsafe_load", "load_all", "safe_load_all"}

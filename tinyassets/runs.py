@@ -646,15 +646,24 @@ def _bind_waiting_run_provider(
     )
 
 
-def _owner_helper_scope(provider_call):
-    """Give nested platform helpers the run's admitted model call."""
-    from contextlib import nullcontext
+def _owner_helper_scope(provider_call, *, owner, center):
+    """Give graph nodes the run's admitted model call and owner memory."""
+    from contextlib import ExitStack
 
+    from tinyassets.memory.runtime import owner_memory_scope
     from tinyassets.providers.model_call import BoundModelCall, owner_model_scope
 
-    if isinstance(provider_call, BoundModelCall):
-        return owner_model_scope(provider_call)
-    return nullcontext()
+    stack = ExitStack()
+    try:
+        if isinstance(provider_call, BoundModelCall):
+            stack.enter_context(owner_model_scope(provider_call))
+        if owner and center:
+            stack.enter_context(owner_memory_scope(owner=owner, center=center,
+                                                   namespace=center))
+        return stack
+    except BaseException:
+        stack.close()
+        raise
 
 
 def _dispatch_waiting_run(base_path: str | Path, run_id: str) -> None:
@@ -4863,7 +4872,8 @@ def _invoke_graph(
             initial_state = seed_initial_state(
                 dict(inputs), getattr(branch, "state_schema", None),
             )
-            with _owner_helper_scope(provider_call):
+            with _owner_helper_scope(provider_call, owner=run_identity["owner_user_id"],
+                                     center=run_universe):
                 result = app.invoke(
                     initial_state,
                     config={
@@ -6726,7 +6736,8 @@ def _invoke_graph_resume(
             # None inputs triggers resume from last checkpoint. The admitted
             # recursion limit rides the same config key _invoke_graph uses, so
             # the resumed segment gets the cap the run was admitted with.
-            with _owner_helper_scope(provider_call):
+            with _owner_helper_scope(provider_call, owner=resume_context.owner_user_id,
+                                     center=resume_context.universe_id):
                 result = app.invoke(
                     None,
                     config={

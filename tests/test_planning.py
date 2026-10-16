@@ -18,7 +18,7 @@ from tinyassets.constraints.constraint_synthesis import ConstraintSynthesis
 from tinyassets.planning.dome_expansion import DOMEExpander
 from tinyassets.planning.htn_planner import HTNPlanner
 
-pytestmark = pytest.mark.usefixtures("connected_fantasy_model")
+pytestmark = pytest.mark.usefixtures("connected_fantasy_model", "canonical_runtime")
 
 # ------------------------------------------------------------------
 # HTN Planner

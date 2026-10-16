@@ -51,9 +51,12 @@ def _oversized_state() -> dict:
 
 
 class TestBreakdownLogging:
-    def test_breakdown_emitted_when_flag_on(self, monkeypatch, caplog):
+    def test_breakdown_emitted_when_flag_on(self, canonical_source, monkeypatch, caplog):
         monkeypatch.setenv("TINYASSETS_DEBUG_CONTEXT", "1")
-        mgr = MemoryManager(universe_id="debug-test", db_path=":memory:")
+        mgr = MemoryManager(
+            universe_id="debug-test",
+            source=canonical_source("episodic", key=":memory:", namespaces=["debug-test"]),
+        )
         state = _oversized_state()
 
         # Irreducible world_state payload → trim cannot reach budget →
@@ -70,9 +73,12 @@ class TestBreakdownLogging:
         assert any("CONTEXT-DEBUG core breakdown" in m for m in messages)
         assert any("CONTEXT-DEBUG bundle breakdown" in m for m in messages)
 
-    def test_breakdown_silent_when_flag_off(self, monkeypatch, caplog):
+    def test_breakdown_silent_when_flag_off(self, canonical_source, monkeypatch, caplog):
         monkeypatch.delenv("TINYASSETS_DEBUG_CONTEXT", raising=False)
-        mgr = MemoryManager(universe_id="debug-test", db_path=":memory:")
+        mgr = MemoryManager(
+            universe_id="debug-test",
+            source=canonical_source("episodic", key=":memory:", namespaces=["debug-test"]),
+        )
         state = _oversized_state()
 
         with caplog.at_level(logging.WARNING, logger="tinyassets.memory.manager"):
@@ -85,9 +91,12 @@ class TestBreakdownLogging:
         assert any("exceeds budget" in m for m in messages)
         assert not any("CONTEXT-DEBUG" in m for m in messages)
 
-    def test_breakdown_not_emitted_when_under_budget(self, monkeypatch, caplog):
+    def test_breakdown_not_emitted_when_under_budget(self, canonical_source, monkeypatch, caplog):
         monkeypatch.setenv("TINYASSETS_DEBUG_CONTEXT", "1")
-        mgr = MemoryManager(universe_id="debug-test", db_path=":memory:")
+        mgr = MemoryManager(
+            universe_id="debug-test",
+            source=canonical_source("episodic", key=":memory:", namespaces=["debug-test"]),
+        )
 
         state = {
             "chapter_number": 1,

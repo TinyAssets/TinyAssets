@@ -79,6 +79,7 @@ PLATFORM_NAMES = frozenset({
 
 #: storage_accounting.UNIVERSE_ENTRIES; rules/steering in ROOT_ENTRIES.
 PLATFORM_DB_NAMES: frozenset[str] = frozenset({
+    "episodic.db", "promises.db", "versions.db", "temporal.db",
     ".conversation_memory.db", ".conversation_attention.db", ".subscription_state.db",
     ".pending_requests.db", ".usage_ledger.db", ".wiki_write_back_destination_markers.db",
     ".authoring.db", ".effector_consents.db", ".external_write_receipts.db",

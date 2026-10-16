@@ -13,8 +13,10 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 
+from tinyassets.boxes.provider import BoxError
 from tinyassets.knowledge.tag_matrix import TagMatrixQuery
 from tinyassets.memory.scoping import MemoryScope
+from tinyassets.okf.bundle import InvalidBundle
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +112,8 @@ def assemble_soul_lens_context(state: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.universe_soul import read_pinned_universe_soul
 
         pinned = read_pinned_universe_soul(universe_dir)
+    except (InvalidBundle, BoxError):
+        raise
     except Exception as exc:
         logger.warning("Failed to read command center soul lens: %s", exc)
         return {}
@@ -128,6 +132,8 @@ def assemble_memory_context(state: dict[str, Any], phase: str) -> dict[str, Any]
         return state.get("memory_context", {})
     try:
         return dict(mgr.assemble_context(phase, state))
+    except (InvalidBundle, BoxError):
+        raise
     except Exception as exc:
         logger.warning("MemoryManager.assemble_context(%s) failed: %s", phase, exc)
         return state.get("memory_context", {})
@@ -172,20 +178,13 @@ def run_phase_retrieval(
     tag_query = _tag_query_from_state(state)
 
     kg = None
-    owns_kg = False
     try:
         from tinyassets import runtime_singletons as runtime
         from tinyassets.retrieval.router import RetrievalRouter
 
         kg = runtime.knowledge_graph
         if kg is None:
-            from domains.fantasy_daemon.phases._paths import resolve_kg_path
-            from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
-
-            kg_path = resolve_kg_path(state)
-            if kg_path:
-                kg = KnowledgeGraph(kg_path)
-                owns_kg = True
+            raise InvalidBundle("Phase retrieval requires an admitted canonical memory session")
 
         vector_store = runtime.vector_store or state.get("_vector_store")
         raptor_tree = runtime.raptor_tree or state.get("_raptor_tree")
@@ -218,9 +217,10 @@ def run_phase_retrieval(
 
         if loop is not None and loop.is_running():
             import concurrent.futures
+            from contextvars import copy_context
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                result = pool.submit(asyncio.run, coro).result()
+                result = pool.submit(copy_context().run, asyncio.run, coro).result()
         else:
             result = asyncio.run(coro)
 
@@ -235,6 +235,8 @@ def run_phase_retrieval(
             "sources": result.sources,
             "token_count": result.token_count,
         }
+    except (InvalidBundle, BoxError):
+        raise
     except Exception as exc:
         logger.warning(
             "Agentic retrieval failed for phase %s, returning empty context: %s",
@@ -242,13 +244,6 @@ def run_phase_retrieval(
             exc,
         )
         return {}
-    finally:
-        if owns_kg and kg is not None:
-            try:
-                kg.close()
-            except Exception:
-                logger.debug("Failed to close temporary knowledge graph", exc_info=True)
-
 
 def _tag_query_from_state(state: dict[str, Any]) -> TagMatrixQuery | None:
     """Derive an optional tag-matrix filter from graph state."""

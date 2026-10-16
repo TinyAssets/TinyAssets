@@ -16,12 +16,14 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from deploy.box_project_readback import verify_owner, verify_tree
 from tinyassets import storage_layout
+from tinyassets.boxes.layout import HOST_CENTER_COPY_EXCLUDES, host_center_moved, host_center_stub
 from tinyassets.broker.owner_identities import OWNER_ID_FIRST, OWNER_ID_LAST
 from tinyassets.sqlite_readonly import readonly_db, readonly_snapshot
 from tinyassets.universe_owner import account_type_of
@@ -34,7 +36,6 @@ MAX_BACKUP_AGE_S = 3600
 _CENTER = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _CREDENTIAL_ENTRIES = (".credential-vault.json", ".credentials", ".credentials.json",
                        ".oauth-refresh")
-_EPHEMERAL_ENTRIES = (".runtime",)
 
 
 @dataclass(frozen=True)
@@ -154,13 +155,15 @@ def layout_census(data: Path) -> dict:
     layout = marker.get("box_layout", "owner-split")
     state = marker.get("state")
     pending = True if layout == "owner-split" and state == "stable" else (
-        False if layout == "owner-box" and state == "stable" else None
+        False if layout == "owner-box" and state == "stable"
+        and marker.get("knowledge_shape") == "v1" else None
     )
     return {
         **base,
         "marker_layout": marker.get("layout"),
         "marker_state": state,
         "box_layout": layout,
+        "knowledge_shape": marker.get("knowledge_shape"),
         "pending": pending,
     }
 
@@ -174,7 +177,14 @@ def check(data: Path) -> int:
     if layout == "owner-box" and state == "stable":
         from tinyassets.activity_shape_migration import _pending
 
-        if _marker(data).get("activity_shape") != "v1":
+        marker = _marker(data)
+        if marker.get("knowledge_shape") != "v1":
+            census["knowledge_shape_error"] = (
+                "owner-box predates the one-pass knowledge conversion"
+            )
+            print(json.dumps(census, sort_keys=True))
+            return UNREADABLE
+        if marker.get("activity_shape") != "v1":
             activity_pending = _pending(data)
             census["pending"] = bool(activity_pending)
     census["activity_shape_pending"] = activity_pending
@@ -405,7 +415,7 @@ def _copy(source: Path, target: Path, uid: int, *, extra_excludes=()) -> None:
         "--chown", f"{uid}:{uid}", f"{source}/", f"{target}/",
     ]
     command[-2:-2] = [f"--exclude=/{name}" for name in
-                      (*_CREDENTIAL_ENTRIES, *_EPHEMERAL_ENTRIES, *extra_excludes)]
+                      (*_CREDENTIAL_ENTRIES, *HOST_CENTER_COPY_EXCLUDES, *extra_excludes)]
     subprocess.run(command, check=True)
     result = subprocess.run(
         [*command[:-2], "--checksum", "--dry-run", "--itemize-changes", *command[-2:]],
@@ -465,6 +475,34 @@ def _xfs_quota(store: Path, command: str) -> str:
     return result.stdout
 
 
+def _retire_host_centers(data: Path, marker: dict) -> None:
+    """Retire copied owner content, retaining each center's platform stub."""
+    from tinyassets.workspace_fs import _remove_beneath, open_dir_nofollow
+
+    centers = marker.get("legacy_centers_pending", [])
+    if not isinstance(centers, list) or any(
+        not isinstance(center, str) or not center or center.startswith(".")
+        or Path(center).name != center or center in (".", "..")
+        for center in centers
+    ):
+        raise RuntimeError("invalid committed host center cleanup list")
+    parent = open_dir_nofollow(data)
+    try:
+        for center in centers:
+            stub = host_center_stub(data, center)
+            child = os.open(stub.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=parent)
+            try:
+                for entry in os.listdir(child):
+                    if host_center_moved(entry):
+                        _remove_beneath(child, entry)
+            finally:
+                os.close(child)
+    finally:
+        os.close(parent)
+    _atomic_json(storage_layout.marker_path(data), {
+        key: value for key, value in marker.items() if key != "legacy_centers_pending"
+    })
 def _owner_move_preconditions(
     data: Path, store: Path, marker: dict,
 ) -> list[OwnerMove] | None:
@@ -489,6 +527,16 @@ def _owner_move_preconditions(
     for owner in plan:
         for center in owner.centers:
             _check_credential_sources(data / center)
+    from tinyassets.okf.box_cutover import _FILES, _VECTOR_DIRS, preflight_center
+
+    # These namespace and path checks need no snapshot or writes, so reject
+    # them while the daemon can still continue serving the old layout.
+    for filename in (*_FILES.values(), *_VECTOR_DIRS):
+        if (data / filename).exists() or (data / filename).is_symlink():
+            raise RuntimeError(f"unassigned host knowledge source: {filename}")
+    for owner in plan:
+        for center in owner.centers:
+            preflight_center(data / center)
     if any(entry.name != "lost+found" for entry in store.iterdir()):
         raise RuntimeError("box store must be empty before the one-shot move")
     custody_root = data / ".platform" / "credential-vaults"
@@ -526,16 +574,39 @@ def _open_layout_lock(data: Path, access: int) -> int:
     return fd
 
 
+def _convert_knowledge_center(
+    source: Path, tree: Path, destination: Path, owner: str, uid: int,
+) -> dict:
+    from tinyassets.okf.box_cutover import chown_projection, commit_center, prepare_center
+
+    # The bounded deploy tmpfs holds one center's DB and vector snapshots.
+    # Release them before the next center is prepared.
+    with tempfile.TemporaryDirectory(prefix="owner-box-knowledge-") as scratch:
+        snapshots = Path(scratch)
+        knowledge = prepare_center(source, snapshots, owner=owner)
+        result = commit_center(knowledge, tree, snapshots / ("state-" + source.name))
+        chown_projection(destination, uid)
+        return result
+
+
 def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
     import fcntl
 
     if os.geteuid() != 0:
         raise PermissionError("box layout apply requires the one-shot root container")
     lock = _open_layout_lock(data, os.O_RDWR)
+    knowledge_status = {}
+    owner_plan = []
     try:
         fcntl.flock(lock, fcntl.LOCK_EX)
         marker = _marker(data)
+        if (marker.get("box_layout") == "owner-box"
+                and marker.get("knowledge_shape") != "v1"):
+            raise RuntimeError("owner-box predates the one-pass knowledge conversion")
         if marker.get("box_layout") == "owner-box" and marker.get("activity_shape") == "v1":
+            if marker.get("legacy_centers_pending"):
+                _verified_pair(data_backup, box_backup)
+                _retire_host_centers(data, marker)
             return
         _verified_pair(data_backup, box_backup)
         plan = _owner_move_preconditions(data, store, marker)
@@ -555,6 +626,11 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
             })
             return
         assert plan is not None
+        owner_plan = plan
+        knowledge_status = {
+            center: {"owner": owner.principal, "status": "pending"}
+            for owner in plan for center in owner.centers
+        }
         pending_activities = _pending(data)
         custody_root = data / ".platform" / "credential-vaults"
         # This is the point of no automatic restart. A failed copy remains
@@ -585,6 +661,14 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
                 destination.mkdir(mode=0o700)
                 os.chown(destination, owner.uid, owner.uid)
                 _copy(data / center, destination, owner.uid)
+                try:
+                    result = _convert_knowledge_center(
+                        data / center, tree, destination, owner.principal, owner.uid,
+                    )
+                    knowledge_status[center] = result
+                except Exception as exc:
+                    knowledge_status[center]["status"] = "failed: " + str(exc)
+                    raise
             agent_home = data / ".platform" / "owners" / str(owner.uid) / "agent-home"
             if agent_home.exists():
                 if not agent_home.is_dir() or agent_home.is_symlink():
@@ -626,9 +710,30 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
         os.chmod(journal / "boxhost.db", 0o600)
         _atomic_json(storage_layout.marker_path(data), {
             **marker, "box_layout": "owner-box", "state": "stable",
-            "activity_shape": "v1",
+            "activity_shape": "v1", "knowledge_shape": "v1",
+            "legacy_centers_pending": [center for owner in plan for center in owner.centers],
         })
+        _retire_host_centers(data, _marker(data))
     finally:
+        if owner_plan:
+            for record in knowledge_status.values():
+                if record["status"] == "pending":
+                    record["status"] = "blocked: knowledge cutover incomplete"
+            owner_status = {
+                owner.principal: {
+                    "centers": list(owner.centers),
+                    "status": ("no-centers" if not owner.centers else
+                               "converted" if all(
+                                   knowledge_status[center]["status"] in
+                                   ("converted", "already-converted")
+                                   for center in owner.centers
+                               ) else "incomplete"),
+                }
+                for owner in owner_plan
+            }
+            print(json.dumps({"knowledge_owners": owner_status,
+                              "knowledge_centers": knowledge_status}, sort_keys=True),
+                  flush=True)
         os.close(lock)
 
 

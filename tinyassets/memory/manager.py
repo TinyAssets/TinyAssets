@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
 from typing import Any
 
 from tinyassets.exceptions import ContextBundleOverflowError
@@ -20,6 +19,7 @@ from tinyassets.memory.core import CoreMemory
 from tinyassets.memory.episodic import EpisodicMemory
 from tinyassets.memory.promotion import PromotionGates, PromotionResult
 from tinyassets.memory.reflexion import ReflexionEngine, ReflexionResult
+from tinyassets.okf.records import SourceRecords
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +70,8 @@ class MemoryManager:
     ----------
     universe_id : str
         Universe namespace.
-    db_path : str | Path
-        Path to SQLite database for episodic memory.
+    source : SourceRecords
+        Explicitly admitted, reviewed canonical owner-box records.
     window_chapters : int
         Sliding window size for episodic memory.
     """
@@ -79,16 +79,18 @@ class MemoryManager:
     def __init__(
         self,
         universe_id: str,
-        db_path: str | Path = ":memory:",
+        source: SourceRecords,
         window_chapters: int = 5,
     ) -> None:
         self.core = CoreMemory(universe_id)
         self.episodic = EpisodicMemory(
-            db_path=db_path,
+            source=source,
             universe_id=universe_id,
             window_chapters=window_chapters,
         )
-        self.archival = ArchivalMemory(universe_id, db_path=str(db_path))
+        self.archival = ArchivalMemory(
+            universe_id, source=SourceRecords(source.bundle, "knowledge")
+        )
         self._promotion = PromotionGates()
         self._reflexion = ReflexionEngine(episodic=self.episodic)
         self._universe_id = universe_id
@@ -96,6 +98,7 @@ class MemoryManager:
     def close(self) -> None:
         """Release resources."""
         self.episodic.close()
+        self.archival._kg.close()
 
     # ------------------------------------------------------------------
     # Primary interface: assemble context for a given phase
