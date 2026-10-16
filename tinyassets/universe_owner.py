@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from pathlib import Path
+from typing import Callable, ContextManager
 
 from tinyassets.principals import named_principal
 from tinyassets.usage_policy import AccountType, account_type
@@ -179,11 +180,15 @@ def unattributed_universes(base_path: str | Path) -> list[str]:
     return sorted(universes - charged)
 
 
-def account_type_of(base_path: str | Path, owner_id: str) -> AccountType:
+def account_type_of(
+    base_path: str | Path, owner_id: str,
+    *, db_reader: Callable[[Path], ContextManager[sqlite3.Connection]] | None = None,
+) -> AccountType:
     """The account's type: the subscription recorded on its HOME universe.
 
-    That is where Stripe checkout already writes it. No home, no account, or an
-    unreadable record all resolve to FREE -- never to the subscription.
+    That is where Stripe checkout already writes it. Normal callers resolve no
+    home, no account, or an unreadable record to FREE. A preflight db_reader
+    preserves missing bindings as FREE but raises on unreadable records.
     """
     # read_tier, not get_tier: get_tier creates the database and leaves its
     # connection to the GC, which on Windows held a handle in the universe dir
@@ -194,6 +199,27 @@ def account_type_of(base_path: str | Path, owner_id: str) -> AccountType:
     owner = named_principal(owner_id)
     if not owner:
         return AccountType.FREE
+    if db_reader is not None:
+        from tinyassets.storage import DB_FILENAME
+        from tinyassets.storage.subscription_state import state_db_path
+
+        # Preflight cannot initialize the author server on its read-only mount.
+        # Its reader propagates unreadable records instead of granting a free quota.
+        with db_reader(Path(base_path) / DB_FILENAME) as conn:
+            row = conn.execute(
+                "SELECT universe_id FROM founder_home WHERE founder_sub = ?", (owner,)
+            ).fetchone()
+        home = str(row[0]) if row and row[0] else ""
+        if not home or Path(home).name != home or home.startswith("."):
+            return AccountType.FREE
+        tier_path = state_db_path(Path(base_path) / home)
+        if not tier_path.is_file():
+            return AccountType.FREE
+        with db_reader(tier_path) as conn:
+            row = conn.execute(
+                "SELECT value FROM subscription_meta WHERE key = 'tier'"
+            ).fetchone()
+        return account_type(str(row[0]) if row else "free")
     try:
         home = get_founder_home(base_path, owner)
     except Exception:  # noqa: BLE001 -- an unreadable binding is free, never paid

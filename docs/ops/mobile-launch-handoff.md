@@ -259,7 +259,7 @@ Local evidence, Windows checkout, 2026-09-03:
 Membership, the explicit App ID, the App Store Connect record, signing/profile/API
 credentials, and all six protected secrets are active. The release workflow produced
 and verified a signed IPA. TestFlight upload is blocked only by Apple's new iOS 26 SDK
-floor and the repository's required cross-family review; the focused local fix selects
+floor and the repository's required adversarial review; the focused local fix selects
 Xcode 26.3 and fails closed if the SDK is not 26.x.
 
 ---
