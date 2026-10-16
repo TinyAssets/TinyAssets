@@ -26,6 +26,18 @@ Nothing deploys until slice 7.
       broker fails.
       D3 decisions and pre-cutover integration limits: `design.md` and
       `main-audit.md`; chunked Linux results and local commits: `main-audit.md`.
+- [ ] 3c. Connection lifecycle at the shared door and broker, provider-agnostic
+      (founder 2026-10-16: "support all connection types ... let users
+      connect any provider, even ones we didn't think of").
+      - What moves: tap-to-connect, OAuth authorize and callback (public and
+        confidential clients, PKCE), API-key deposit, token refresh,
+        disconnect and revoke, all run at the router/broker.
+      - Credentials live only in broker custody. The box sees grants and
+        credential-free source descriptors.
+      - Providers stay data (dialect JSON plus source definitions): no
+        provider-specific code.
+      - Tests: for every auth type that exists today, connect, then a model
+        call from inside a box succeeds, then refresh, then revoke.
 - [ ] 4. boxhostd persistent per-owner sandbox lifecycle: wake, idle sleep,
       crash restart, memory cap, awake cap.
 - [ ] 5. The waker and the next-wake index. Test: a scheduled automation in
