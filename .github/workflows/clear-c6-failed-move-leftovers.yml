@@ -15,7 +15,9 @@ name: Clear C6 failed-move leftovers (one-shot)
 # stop an automatic deploy of main from applying the live box move (the
 # non-empty store refuses it; the full disk fails pull headroom). Deleting them
 # without an explicit hold would arm the next merge to deploy C6 live.
-# This workflow is deleted once it has run.
+# Safe to re-run: it refuses unless the marker parses as stable owner-split,
+# uid 300001 has no box_records row, the store is the XFS mount and no path
+# component is a link. A follow-up PR deletes it right after the run.
 
 on:
   workflow_dispatch:
@@ -35,7 +37,10 @@ concurrency:
 
 jobs:
   clear:
-    if: github.ref == 'refs/heads/main' && inputs.confirm == 'delete-c6-failed-move-leftovers'
+    # The lead dispatches from the founder's account.
+    if: >-
+      github.ref == 'refs/heads/main' && github.actor == 'Jonnyton'
+      && inputs.confirm == 'delete-c6-failed-move-leftovers'
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 15
@@ -77,19 +82,51 @@ jobs:
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
             'sudo flock -w 60 /var/lock/tinyassets-host-mutation.lock bash -s' <<'HOST'
           set -euo pipefail
-          MARKER=/var/lib/docker/volumes/tinyassets-data/_data/.layout.json
-          TREE=/var/lib/boxhostd/owners/300001
-          OLD=/var/lib/docker/volumes/tinyassets-data/.tinyassets-restore-old.YGbAUk
-          test -f "$MARKER" || { echo "refuse: no layout marker"; exit 2; }
-          if grep -q '"box_layout"[[:space:]]*:[[:space:]]*"owner-box"' "$MARKER"; then
-            echo "refuse: production has committed a box move; the owner tree may be live"; exit 2
-          fi
+          VOLUME=/var/lib/docker/volumes/tinyassets-data
+          STORE=/var/lib/boxhostd/owners
+          MARKER="$VOLUME/_data/.layout.json"
+          IDENTITIES="$VOLUME/_data/.broker/state/owner-identities.db"
+          TREE="$STORE/300001"
+          OLD="$VOLUME/.tinyassets-restore-old.YGbAUk"
+          refuse() { echo "refuse: $*"; exit 2; }
+          # Production still serves stable owner-split data: parsed, not grepped.
+          python3 -c 'import json, sys
+          doc = json.load(open(sys.argv[1]))
+          ok = (isinstance(doc, dict) and doc.get("state") == "stable"
+                and doc.get("box_layout", "owner-split") == "owner-split")
+          sys.exit(0 if ok else 1)' "$MARKER" \
+            || refuse "layout marker is not stable owner-split"
+          # A real box always has a box_records row; the leftover never got one.
+          python3 -c 'import sqlite3, sys
+          from pathlib import Path
+          path = Path(sys.argv[1])
+          if not path.exists():
+              sys.exit(0)
+          db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+          table = db.execute("SELECT 1 FROM sqlite_master WHERE name=?", ("box_records",)).fetchone()
+          row = table and db.execute("SELECT 1 FROM box_records WHERE machine=?", (300001,)).fetchone()
+          sys.exit(1 if row else 0)' "$IDENTITIES" \
+            || refuse "uid 300001 has a box_records row; that tree is a real box"
+          # No component of either path may be a link, and each must sit on
+          # the file system it is expected on.
+          [ "$(findmnt -n -o FSTYPE --mountpoint "$STORE")" = xfs ] \
+            || refuse "$STORE is not the XFS box-store mount"
           for target in "$TREE" "$OLD"; do
-            if test -L "$target"; then echo "refuse: $target is a symlink"; exit 2; fi
-            if ! test -d "$target"; then echo "absent (already cleared?): $target"; continue; fi
+            if ! test -e "$target" && ! test -L "$target"; then
+              echo "absent (already cleared?): $target"; continue
+            fi
+            [ "$(realpath -e -- "$target")" = "$target" ] || refuse "$target resolves through a link"
+            test -d "$target" || refuse "$target is not a directory"
             echo "size: $(du -sh --one-file-system "$target" | cut -f1) $target"
           done
-          echo "--- free space before"; df -h / /var/lib/boxhostd/owners
+          if test -d "$TREE"; then
+            [ "$(findmnt -n -o TARGET -T "$TREE")" = "$STORE" ] || refuse "$TREE is not on the box store"
+          fi
+          if test -d "$OLD"; then
+            [ "$(dirname -- "$(realpath -e -- "$OLD")")" = "$VOLUME" ] \
+              || refuse "$OLD is not directly in the tinyassets-data volume"
+          fi
+          echo "--- free space before"; df -h / "$STORE"
           for target in "$TREE" "$OLD"; do
             if test -d "$target" && ! test -L "$target"; then
               rm -rf --one-file-system -- "$target"
