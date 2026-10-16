@@ -43,11 +43,11 @@ HOST_CENTER_ENTRIES = frozenset({
     ".authoring.db", ".idempotency.db", ".conversation_memory.db",
     ".conversation_attention.db", ".effector_consents.db",
     ".effector_consents.db.premigration", ".runs.db", ".automations.db",
-    ".tinyassets.db", "rules.db", "steering.db", "activity.log",
-    "status.json", ".runtime_status.json", ".engine_mcp_config.json",
+    ".tinyassets.db", "rules.db", "steering.db",
+    ".runtime_status.json", ".engine_mcp_config.json",
     ".engine_mcp_http_routes.json", ".provider-authority",
     ".provider-assignment-admission.lock", "provider_definitions.json",
-    ".oauth-refresh", ".soul.lock", "dispatcher_config.yaml",
+    ".oauth-refresh", ".soul.lock",
     ".workspace-staging", "checkpoints.db",
 })
 HOST_CENTER_MOVED = frozenset({
@@ -55,7 +55,7 @@ HOST_CENTER_MOVED = frozenset({
     "agents", "brain", "identity.md", "founder.md", "origin.md", "body.md",
     "orgchart.md", "AGENTS.md", "MEMORY.md", "settings.yaml",
     AGENT_WORKSPACE_DIR, "skills", "prompts", "extensions", "workflows",
-    "notes", "notes.json",
+    "notes", "notes.json", "dispatcher_config.yaml", "activity.log", "status.json",
 })
 assert HOST_CENTER_ENTRIES.isdisjoint(HOST_CENTER_MOVED)
 

@@ -21,6 +21,7 @@ from tinyassets.boxes.layout import (
 
 ROOT = Path(__file__).resolve().parents[1] / "tinyassets"
 BOX_CALLS = {
+    "box_read", "box_stat", "box_list", "box_exists", "box_tree_size",
     "read_universe_file", "read_universe_text", "write_universe_file",
     "unlink_universe_file", "read_data_path", "write_data_path",
     "unlink_data_path", "list_universe_dir", "list_universe_entries",
@@ -145,3 +146,15 @@ def test_layout_patterns_and_disjointness():
             for suffix in ("-wal", "-shm", "-journal"):
                 assert host_center_entry(name + suffix)
     assert not host_center_entry("soul.md")
+
+
+@pytest.mark.parametrize("helper", [
+    "box_read", "box_stat", "box_list", "box_exists", "box_tree_size",
+])
+def test_owner_box_helpers_enforce_file_homes(helper):
+    assert _uses(ast.parse(f'{helper}(root, ".runtime_status.json")'), "reader.py")[2]
+    for name in ("dispatcher_config.yaml", "activity.log", "status.json"):
+        assert host_center_moved(name)
+        assert not host_center_entry(name)
+        assert not _uses(ast.parse(f"{helper}(root, {name!r})"), "reader.py")[2]
+        assert _uses(ast.parse(f"(root / {name!r}).read_bytes()"), "reader.py")[2]

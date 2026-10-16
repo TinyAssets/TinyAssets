@@ -12,4 +12,4 @@ def owner_read(operation, root):
     binding = file_binding(root)
     assert binding is not None
     with use_binding(binding):
-        return operation(root, owner=binding.handle.account_id)
+        return operation(root)

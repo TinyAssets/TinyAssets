@@ -1021,16 +1021,12 @@ def _manifest_entry_needs_synthesis(
     # Validate the untrusted manifest-relative path before probing the box.
     # The provider refuses linked parents and reports linked leaves as links.
     from tinyassets.owner_box_reads import box_stat
-    from tinyassets.universe_owner import owner_of
 
     parts = source_path.split("/")
     if (not parts or any(part in {"", ".", ".."} or "\\" in part for part in parts)
             or source_path.startswith("/")):
         return False
-    owner = owner_of(universe_dir.parent, universe_dir.name)
-    if not owner:
-        raise RuntimeError(f"command center {universe_dir.name!r} has no owner for canon access")
-    info = box_stat(universe_dir, f"canon/{source_path}", owner=owner)
+    info = box_stat(universe_dir, f"canon/{source_path}")
     return info is not None and info.kind == "file"
 
 

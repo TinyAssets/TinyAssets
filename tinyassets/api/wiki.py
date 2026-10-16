@@ -51,19 +51,19 @@ from tinyassets.universe_files import (
 # mirror has been retired). The original four come first for back-compat with
 # existing index headers.
 _WIKI_CATEGORIES = (
-    "projects",    # Tracked project pages (auto-discovered or hand-written)
-    "concepts",    # Ideas, mental models, definitions
-    "people",      # Bios, contacts, collaborators
-    "research",    # LLM-generated research pages, literature, paper drafts
-    "recipes",     # Food recipes and cooking notes
-    "workflows",   # User-built workflows, how-tos, repeatable processes
-    "notes",       # Personal notes, journal entries, scratch thinking
-    "references",        # External references, citations, cheat sheets
-    "plans",             # Plans, proposals, roadmaps
-    "bugs",              # Auto-filed server defects (one file per BUG-NNN, never drafts-gated)
-    "feature-requests",  # Auto-filed feature requests (FEAT-NNN)
-    "design-proposals",  # Auto-filed design proposals (DESIGN-NNN)
-    "patch-requests",    # Auto-filed patch requests (PR-NNN)
+    "projects",   # Tracked project pages (auto-discovered or hand-written)
+    "concepts",   # Ideas, mental models, definitions
+    "people",     # Bios, contacts, collaborators
+    "research",   # LLM-generated research pages, literature, paper drafts
+    "recipes",    # Food recipes and cooking notes
+    "workflows",  # User-built workflows, how-tos, repeatable processes
+    "notes",      # Personal notes, journal entries, scratch thinking
+    "references",       # External references, citations, cheat sheets
+    "plans",            # Plans, proposals, roadmaps
+    "bugs",             # Auto-filed server defects (one file per BUG-NNN, never drafts-gated)
+    "feature-requests", # Auto-filed feature requests (FEAT-NNN)
+    "design-proposals", # Auto-filed design proposals (DESIGN-NNN)
+    "patch-requests",   # Auto-filed patch requests (PR-NNN)
 )
 
 _STOP_WORDS = frozenset(
@@ -135,7 +135,7 @@ def _write_reserved_wiki_canary(content: str) -> str:
     })
 
 
-def _ensure_wiki_scaffold(wiki_root: Path, *, owner: str | None = None) -> None:
+def _ensure_wiki_scaffold(wiki_root: Path, *, center_scoped: bool = False) -> None:
     """Ensure the wiki tree exists so read/list/search don't error on a
     fresh deploy (Task #6 — post-scrub droplet boot has an empty
     `/data/wiki`).
@@ -183,10 +183,10 @@ def _ensure_wiki_scaffold(wiki_root: Path, *, owner: str | None = None) -> None:
     }
     for name, body in anchors.items():
         path = wiki_root / name
-        if owner is not None:
+        if center_scoped:
             from tinyassets.owner_box_reads import box_exists
 
-            present = box_exists(wiki_root.parent, f"wiki/{name}", owner=owner)
+            present = box_exists(wiki_root.parent, f"wiki/{name}")
         else:
             present = path.exists()
         if not present:
@@ -2041,9 +2041,9 @@ _VALID_SEVERITIES = ("critical", "major", "minor", "cosmetic")
 # put (no migration). Default kind="bug" preserves the historical pages/bugs/
 # location and BUG-NNN sequence — backward-compat clean.
 _KIND_ROUTING: dict[str, tuple[str, str]] = {
-    "bug":           (_BUGS_CATEGORY,           "BUG"),
-    "feature":       (_KIND_FEATURES_DIR,       "FEAT"),
-    "design":        (_KIND_DESIGNS_DIR,        "DESIGN"),
+    "bug":           (_BUGS_CATEGORY,          "BUG"),
+    "feature":       (_KIND_FEATURES_DIR,      "FEAT"),
+    "design":        (_KIND_DESIGNS_DIR,       "DESIGN"),
     "patch_request": (_KIND_PATCH_REQUESTS_DIR, "PR"),
 }
 
@@ -2605,12 +2605,11 @@ def _wiki_root_for_universe(universe_id: str) -> Path:
         return _wiki_root()
     if "/" in uid or "\\" in uid or uid.startswith("."):
         raise ValueError(f"Invalid universe_id: {universe_id}")
-    from tinyassets.api.universe import _center_owner
     from tinyassets.owner_box_reads import box_stat
 
     center = _universe_dir(uid)
     root = center / "wiki"
-    info = box_stat(center, "wiki", owner=_center_owner(center))
+    info = box_stat(center, "wiki")
     if info is not None and info.kind == "link":
         from tinyassets.universe_files import UniverseFileError
 
@@ -2637,11 +2636,10 @@ def write_universe_canon(
     first-party for its own universe. Returns the :func:`_wiki_write` JSON string.
     """
     wiki_root = _wiki_root_for_universe(universe_id)
-    from tinyassets.api.universe import _center_owner
 
-    owner = _center_owner(wiki_root.parent) if universe_id.strip() else None
-    _ensure_wiki_scaffold(wiki_root, owner=owner)
-    with _scoped_wiki_root(wiki_root, owner=owner):
+    center_scoped = bool(universe_id.strip())
+    _ensure_wiki_scaffold(wiki_root, center_scoped=center_scoped)
+    with _scoped_wiki_root(wiki_root, center_scoped=center_scoped):
         return _wiki_write(
             category=category,
             filename=filename,
@@ -2731,21 +2729,6 @@ def wiki(
     the @mcp.tool wrapper there.
     """
     target_universe_id = universe_id.strip()
-    try:
-        wiki_root = _wiki_root_for_universe(target_universe_id)
-    except ValueError as exc:
-        # _wiki_root() raises when TINYASSETS_WIKI_PATH holds a Windows path on
-        # a POSIX runtime (2026-04-19 container incident). _universe_dir()
-        # raises for invalid universe identifiers.
-        return json.dumps({
-            "error": str(exc),
-            "hint": (
-                "Unset TINYASSETS_WIKI_PATH to use the platform default, set "
-                "it to a POSIX absolute path like '/data/wiki', or pass a "
-                "safe universe_id without path separators."
-            ),
-        })
-
     # Universe-scoped ACL gate — runs BEFORE scaffolding so a denied call has
     # NO filesystem side effect (it must not create the target universe's wiki
     # dir/anchor files). Covers reads (private-universe visibility via
@@ -2777,13 +2760,27 @@ def wiki(
                 surface="wiki",
             )), target_universe_id)
 
+    try:
+        wiki_root = _wiki_root_for_universe(target_universe_id)
+    except ValueError as exc:
+        # _wiki_root() raises when TINYASSETS_WIKI_PATH holds a Windows path on
+        # a POSIX runtime (2026-04-19 container incident). _universe_dir()
+        # raises for invalid universe identifiers.
+        return json.dumps({
+            "error": str(exc),
+            "hint": (
+                "Unset TINYASSETS_WIKI_PATH to use the platform default, set "
+                "it to a POSIX absolute path like '/data/wiki', or pass a "
+                "safe universe_id without path separators."
+            ),
+        })
+
     # Task #6 — scaffold the tree on first call so fresh deploys
     # (empty /data/wiki) don't error on read/list/search/lint. Idempotent.
-    from tinyassets.api.universe import _center_owner
 
-    owner = _center_owner(wiki_root.parent) if target_universe_id else None
+    center_scoped = bool(target_universe_id)
     try:
-        _ensure_wiki_scaffold(wiki_root, owner=owner)
+        _ensure_wiki_scaffold(wiki_root, center_scoped=center_scoped)
     except UniverseFileError as exc:
         # UniverseFileError is an OSError. A command-center root that
         # admission has not published is not a permissions failure, and
@@ -2812,7 +2809,7 @@ def wiki(
     if target_universe_id:
         from tinyassets.owner_box_reads import box_stat
 
-        info = box_stat(wiki_root.parent, "wiki", owner=owner)
+        info = box_stat(wiki_root.parent, "wiki")
         wiki_present = info is not None and info.kind == "dir"
     else:
         wiki_present = wiki_root.is_dir()
@@ -2824,7 +2821,7 @@ def wiki(
             ),
         })
 
-    with _scoped_wiki_root(wiki_root, owner=owner):
+    with _scoped_wiki_root(wiki_root, center_scoped=center_scoped):
         dispatch = WIKI_ACTIONS
         handler = dispatch.get(action)
         if handler is None:

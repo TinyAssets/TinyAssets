@@ -550,7 +550,7 @@ def _package(uid: str, actor: str, action: dict[str, Any], branches: dict[str, A
             _universe_dir(uid), name=action["name"], description=action["description"],
             options=action["package"], branch_rows=branches, workflows=workflows,
             ui=str(components.get("ui", {}).get("name", "")), automations=automations,
-            bundle_id=bundle_id, owner=actor)
+            bundle_id=bundle_id)
         manifest = built["manifest"]
         component = {
             "kind": PACKAGE_KIND,

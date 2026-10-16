@@ -1,4 +1,4 @@
-"""Bounded owner-content reads through the admitted or configured box provider."""
+"""Bounded platform reads under the center's broker-admitted box identity."""
 
 from __future__ import annotations
 
@@ -9,30 +9,32 @@ from tinyassets.boxes.provider import BoxAuthError, DirEntry, FileStat, box_relp
 from tinyassets.center_platform_files import center_from_path
 
 
-def binding_owner(universe_dir: Path) -> str:
-    """Owner for internal callers already running in an admitted session."""
-    from tinyassets.control_plane.binding import file_binding
-
-    binding = file_binding(universe_dir)
-    if binding is None:
-        raise BoxAuthError("owner content requires an admitted owner")
-    binding.validate(binding.handle.account_id, universe_dir)
-    return binding.handle.account_id
+class UnadmittedCenter(BoxAuthError):
+    """No proven center to read; presence probes may report absent."""
 
 
-def _access(universe_dir: Path, owner: str):
+def _access(universe_dir: Path):
     from tinyassets.agent_loop.served_chat import configured_box_provider
-    from tinyassets.control_plane.binding import current_binding, file_binding
+    from tinyassets.broker.owner_identities import CenterUnadmitted, admitted_owner
+    from tinyassets.center_platform_files import _directory
+    from tinyassets.control_plane.binding import current_binding
 
+    center = center_from_path(universe_dir)
     root = Path(os.path.abspath(universe_dir))
-    if not isinstance(owner, str) or not owner.strip():
-        raise ValueError("owner box read requires an owner")
-    admitted = current_binding()
-    if admitted is not None and admitted.universe_dir == root:
-        binding = file_binding(root)
-        binding.validate(owner, root)
+    # A bind may materialize a local box. Prove the host stub before any bind.
+    try:
+        with _directory(root):
+            pass
+    except FileNotFoundError as exc:
+        raise UnadmittedCenter(f"command center {center!r} has no host stub") from exc
+    binding = current_binding()
+    if binding is not None and binding.universe_dir == root:
+        binding.validate(binding.handle.account_id, root)
         return binding.provider, binding.handle
-    center = center_from_path(root)
+    try:
+        owner = admitted_owner(root.parent, center=center)
+    except (PermissionError, CenterUnadmitted) as exc:
+        raise UnadmittedCenter(f"command center {center!r} is not admitted") from exc
     provider, _ = configured_box_provider()
     if provider is None:
         raise RuntimeError("owner box provider is unavailable")
@@ -47,20 +49,23 @@ def _box_path(relpath: str) -> str:
     return path
 
 
-def box_stat(universe_dir: Path, relpath: str, *, owner: str) -> FileStat | None:
+def box_stat(universe_dir: Path, relpath: str) -> FileStat | None:
     path = _box_path(relpath)
-    provider, handle = _access(universe_dir, owner)
+    provider, handle = _access(universe_dir)
     return provider.stat(handle, path)
 
 
-def box_exists(universe_dir: Path, relpath: str, *, owner: str) -> bool:
-    return box_stat(universe_dir, relpath, owner=owner) is not None
+def box_exists(universe_dir: Path, relpath: str) -> bool:
+    try:
+        return box_stat(universe_dir, relpath) is not None
+    except UnadmittedCenter:
+        return False
 
 
-def box_read(universe_dir: Path, relpath: str, *, owner: str,
+def box_read(universe_dir: Path, relpath: str, *,
              max_bytes: int) -> bytes:
     path = _box_path(relpath)
-    provider, handle = _access(universe_dir, owner)
+    provider, handle = _access(universe_dir)
     result = provider.read(handle, path, max_bytes=max_bytes)
     if result.size > max_bytes or len(result.data) != result.size:
         raise OSError(f"owner box file exceeds {max_bytes}-byte bound or is incomplete: {relpath}")
@@ -72,12 +77,12 @@ def box_read(universe_dir: Path, relpath: str, *, owner: str,
     return result.data
 
 
-def box_list(universe_dir: Path, relpath: str, *, owner: str,
+def box_list(universe_dir: Path, relpath: str, *,
              limit: int | None = None) -> list[DirEntry]:
     path = _box_path(relpath)
     if limit is not None and (type(limit) is not int or limit < 0):
         raise ValueError("box listing limit must be a non-negative integer")
-    provider, handle = _access(universe_dir, owner)
+    provider, handle = _access(universe_dir)
     entries = []
     cursor = None
     seen = set()
@@ -95,9 +100,9 @@ def box_list(universe_dir: Path, relpath: str, *, owner: str,
         cursor = page.next_cursor
 
 
-def box_tree_size(universe_dir: Path, relpath: str, *, owner: str) -> int:
+def box_tree_size(universe_dir: Path, relpath: str) -> int:
     """Sum regular file sizes under a box directory."""
-    info = box_stat(universe_dir, relpath, owner=owner)
+    info = box_stat(universe_dir, relpath)
     if info is None:
         return 0
     if info.kind == "file":
@@ -108,7 +113,7 @@ def box_tree_size(universe_dir: Path, relpath: str, *, owner: str) -> int:
     pending = [relpath]
     while pending:
         directory = pending.pop()
-        for entry in box_list(universe_dir, directory, owner=owner):
+        for entry in box_list(universe_dir, directory):
             if entry.kind == "file":
                 total += entry.size
             elif entry.kind == "dir":

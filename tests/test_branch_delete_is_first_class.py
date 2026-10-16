@@ -586,3 +586,34 @@ def test_served_surface_advertises_delete(monkeypatch, tmp_path):
 
     doc = (inspect.getdoc(s.write_graph) or "").lower()
     assert "delete" in doc and "public" in doc and "depend" in doc
+
+
+def test_dependency_scan_continues_after_one_box_refusal(universe_surface, tmp_path, monkeypatch):
+    from tinyassets.daemon_server import set_founder_home
+    from tinyassets.universe_soul import write_universe_soul
+
+    us, _actor = universe_surface
+    bid = _create(us, "scan-loop")
+    for uid in ("a-refused", "b-loop"):
+        center = tmp_path / uid
+        center.mkdir()
+        set_founder_home(tmp_path, founder_sub=f"test-owner::{uid}", universe_id=uid)
+        write_universe_soul(center, name=uid, purpose="loop", loop_branch_def_id=bid)
+    from tinyassets.broker import owner_identities
+
+    original = owner_identities.admitted_owner
+
+    def admitted(root, *, center):
+        if center == "a-refused":
+            raise PermissionError("not admitted")
+        return original(root, center=center)
+
+    monkeypatch.setattr(owner_identities, "admitted_owner", admitted)
+    out = _delete(us, bid)
+    assert out["error"] == "branch_has_dependents"
+    assert out["dependents"]["universes"] == ["a-refused?", "b-loop"]
+    assert out["dependents"]["unavailable"] == [{
+        "universe_id": "a-refused", "loop_branch_def_id": None,
+        "unavailable_reason": "soul dependency read failed",
+    }]
+    assert bid in _listed(us)

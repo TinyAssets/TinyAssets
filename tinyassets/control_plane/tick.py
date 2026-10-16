@@ -970,7 +970,7 @@ class AssignedQueueConsumer:
             self._automation_runs.add(run_id)
 
     def _paused(self, universe_id: str) -> bool:
-        return is_paused(universe_id)
+        return is_paused(self.base_path / universe_id)
 
     def _record_reason(
         self,
@@ -1091,7 +1091,9 @@ class AssignedQueueConsumer:
                 now + timedelta(seconds=DESCRIPTOR_VALIDITY_SECONDS)
             ).isoformat(),
         }
-        write_worker_heartbeat(universe_id, self.consumer_id, json.dumps(beat).encode())
+        write_worker_heartbeat(
+            self.base_path / universe_id, self.consumer_id, json.dumps(beat).encode(),
+        )
 
     def _retire_fleet_controls(self) -> None:
         """Stop every fleet-era cloud-automation control, with a recorded reason.

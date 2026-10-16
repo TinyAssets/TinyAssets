@@ -823,7 +823,10 @@ def read_graph(
     sent message is not a run binding, and an unbound reference is refused here.
 
     Args:
-        target: What to read: status, graphs, graph, branches (your own workflows
+        target: graphs lists visible command centers. Box-derived fields (soul,
+            premise, word count, phase and activity) are null with unavailable_reason;
+            use graph/status for one center to compute them. Other targets:
+            status, graph, branches (your own workflows
             by name + branch_def_id), goals, goal, runs, run, run_output,
             branch, automations, automation, connections, compute, agents (your own
             agents: main and every agents/<name>/ directory), catalog (the commons

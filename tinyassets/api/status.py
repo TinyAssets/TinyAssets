@@ -982,7 +982,7 @@ def _resolve_entry_universe(universe_id: str) -> tuple[str, bool]:
 
     founder = permissions.current_actor_id()
     home = get_founder_home(base, founder)
-    if home_is_complete(base, home, owner=founder):
+    if home_is_complete(base, home):
         return home, False
     # No home, a stale binding, or a partial dir: status observes but never
     # repairs it. The authenticated conversation entry path does that.
@@ -1130,6 +1130,10 @@ def get_status(
         denial["identity_evidence"] = identity_evidence
         denial["request_identity"] = request_identity
         return json.dumps(denial)
+    from tinyassets.auth.middleware import current_identity
+
+    account_user = current_identity().user_id.strip()
+
     # Load the dispatcher config for the universe.
     try:
         from tinyassets.control_plane.queue_policy import (
@@ -1141,6 +1145,8 @@ def get_status(
         return json.dumps({
             "error": "config_load_failed",
             "detail": str(exc),
+            "caveats": ([f"Command center '{uid}' does not exist on disk."]
+                        if not universe_exists else ["Dispatcher configuration is unavailable."]),
             "universe_id": uid,
             "universe_exists": universe_exists,
             "identity_evidence": identity_evidence,
@@ -1168,42 +1174,38 @@ def get_status(
     last_n_calls: list[dict[str, str]] = []
     last_completed_llm = "unknown"
     total_log_lines = 0
-    log_path = udir / "activity.log"
     log_read_ok = True
-    if log_path.exists():
-        try:
-            from tinyassets.universe_files import MAX_PLATFORM_FILE_BYTES, read_data_path
+    try:
+        from tinyassets.api.universe import _box_text
 
-            content = (
-                read_data_path(log_path, max_bytes=MAX_PLATFORM_FILE_BYTES) or b""
-            ).decode("utf-8").strip()
-            if content:
-                # Lazy-import _parse_activity_line so status startup stays cheap.
-                from tinyassets.api.universe import _parse_activity_line
-                lines = content.splitlines()
-                total_log_lines = len(lines)
-                activity_tail = lines[-20:]
-                # last_n_calls: structured parse of most-recent entries,
-                # newest-first. Reuses _parse_activity_line so the shape
-                # matches get_recent_events (dispatch_evidence idiom).
-                last_n_calls = [
-                    _parse_activity_line(line)
-                    for line in reversed(lines[-10:])
-                ]
-                # Best-effort scan for "llm=" or "provider=" tokens in
-                # recent lines. Legacy format varies; chatbot verifies by
-                # reading the tail itself if this heuristic misses.
-                for line in reversed(lines):
-                    for token in ("llm=", "provider=", "model="):
-                        idx = line.find(token)
-                        if idx >= 0:
-                            rest = line[idx + len(token):].split()[0]
-                            last_completed_llm = rest.rstrip(",;)")
-                            break
-                    if last_completed_llm != "unknown":
+        content = _box_text(udir, "activity.log").strip()
+        if content:
+            # Lazy-import _parse_activity_line so status startup stays cheap.
+            from tinyassets.api.universe import _parse_activity_line
+            lines = content.splitlines()
+            total_log_lines = len(lines)
+            activity_tail = lines[-20:]
+            # last_n_calls: structured parse of most-recent entries,
+            # newest-first. Reuses _parse_activity_line so the shape
+            # matches get_recent_events (dispatch_evidence idiom).
+            last_n_calls = [
+                _parse_activity_line(line)
+                for line in reversed(lines[-10:])
+            ]
+            # Best-effort scan for "llm=" or "provider=" tokens in
+            # recent lines. Legacy format varies; chatbot verifies by
+            # reading the tail itself if this heuristic misses.
+            for line in reversed(lines):
+                for token in ("llm=", "provider=", "model="):
+                    idx = line.find(token)
+                    if idx >= 0:
+                        rest = line[idx + len(token):].split()[0]
+                        last_completed_llm = rest.rstrip(",;)")
                         break
-        except Exception:  # noqa: BLE001 — best-effort evidence
-            log_read_ok = False
+                if last_completed_llm != "unknown":
+                    break
+    except Exception:  # noqa: BLE001 — best-effort evidence
+        log_read_ok = False
 
     # Per-field caveats — chatbot cites only the degenerate keys instead
     # of wrapping every claim in the global caveat list.
@@ -1312,7 +1314,9 @@ def get_status(
     # pressure_level in {warn, critical}; this block never raises so a
     # bad stat call can't break the status probe.
     try:
+        from tinyassets.owner_box_reads import box_tree_size
         from tinyassets.storage import inspect_storage_utilization, path_size_bytes
+
         storage_utilization = inspect_storage_utilization()
         # BUG-032 — activity_log + universe_outputs live inside the universe
         # directory, not at data_dir() root; patch the per-subsystem byte
@@ -1324,17 +1328,11 @@ def get_status(
                 "path": str(udir / "checkpoints.db"),
             }
             storage_utilization["per_subsystem"]["activity_log"] = {
-                "bytes": path_size_bytes(udir / "activity.log"),
+                "bytes": box_tree_size(udir, "activity.log"),
                 "path": str(udir / "activity.log"),
             }
-            from tinyassets.owner_box_reads import box_tree_size
-            from tinyassets.universe_owner import owner_of
-
-            owner = owner_of(udir.parent, udir.name)
-            if not owner:
-                raise RuntimeError(f"command center {udir.name!r} has no owner for output access")
             storage_utilization["per_subsystem"]["universe_outputs"] = {
-                "bytes": box_tree_size(udir, "output", owner=owner),
+                "bytes": box_tree_size(udir, "output"),
                 "path": str(udir / "output"),
             }
             try:
@@ -1362,9 +1360,6 @@ def get_status(
     # Scans the activity.log for any entry within the last 30 days that
     # can be attributed to the current account user. Best-effort; never
     # raises so a log-read error doesn't break the status probe.
-    from tinyassets.auth.middleware import current_identity
-
-    account_user = current_identity().user_id.strip()
     prior_session_ts: str | None = None
     try:
         if activity_tail:

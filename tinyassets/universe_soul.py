@@ -102,16 +102,19 @@ def legacy_premise_path(universe_dir: Path) -> Path:
     return universe_dir / LEGACY_PREMISE_FILENAME
 
 
-def soul_present(universe_dir: Path, *, owner: str) -> bool:
+def soul_present(universe_dir: Path) -> bool:
     """Check the owner's box for its soul."""
-    from tinyassets.owner_box_reads import box_stat
+    from tinyassets.owner_box_reads import UnadmittedCenter, box_stat
 
-    info = box_stat(universe_dir, SOUL_FILENAME, owner=owner)
+    try:
+        info = box_stat(universe_dir, SOUL_FILENAME)
+    except UnadmittedCenter:
+        return False
     return info is not None and info.kind == "file"
 
 
-def has_soul(universe_dir: Path, *, owner: str) -> bool:
-    return soul_present(universe_dir, owner=owner)
+def has_soul(universe_dir: Path) -> bool:
+    return soul_present(universe_dir)
 
 
 def render_soul_markdown(soul: UniverseSoul) -> str:
@@ -166,10 +169,12 @@ def read_universe_soul(universe_dir: Path, *, strict: bool = False) -> UniverseS
     on a refusal, so an update never rebuilds the soul from defaults over a
     file it could not read.
     """
-    from tinyassets.universe_files import read_universe_text
+    from tinyassets.owner_box_reads import box_read
+    from tinyassets.universe_files import MAX_UNIVERSE_FILE_BYTES
 
     try:
-        text = read_universe_text(universe_dir, SOUL_FILENAME)
+        text = box_read(universe_dir, SOUL_FILENAME,
+                        max_bytes=MAX_UNIVERSE_FILE_BYTES).decode("utf-8")
     except FileNotFoundError:
         return None
     except (OSError, UnicodeDecodeError):

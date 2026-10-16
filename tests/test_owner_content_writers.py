@@ -100,7 +100,6 @@ def test_missing_soul_history_is_created_only_by_content_writer(tmp_path, monkey
 
     monkeypatch.setattr(universe_files, 'write_data_path', write)
     soul_edit._write_edit_snapshot(tmp_path, files={'identity.md': 'owner content'},
-        source='test', context='missing history', summary='new history', stamp='now',
-        owner='test-owner')
+        source='test', context='missing history', summary='new history', stamp='now')
     assert calls == [('0001.md', 'exclusive'), ('index.md', 'replace')]
     assert 'owner content' in (tmp_path / 'soul_versions/0001.md').read_text(encoding='utf-8')

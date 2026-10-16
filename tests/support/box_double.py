@@ -265,25 +265,14 @@ def install(monkeypatch):
         return binding
 
     monkeypatch.setattr(binding_module, "file_binding", file_binding)
-    from tinyassets import owner_box_reads
+    def admitted_owner(root, *, center):
+        # Existing directory fixtures model broker-admitted centers. Reads must
+        # never create the directory that proves admission.
+        if not (Path(root) / center).is_dir():
+            raise PermissionError("center owner admission refused")
+        return double.admitted_owner(root, center)
 
-    real_read_access = owner_box_reads._access
-
-    def admitted_read_access(root, owner):
-        # Legacy unit fixtures admit arbitrary temporary centers at the same
-        # seam as universe_files. Preserve the real provider and owner check;
-        # role_split tests exercise configured-provider admission without this
-        # double, including physically separate host and box trees.
-        if binding_module.current_binding() is not None:
-            return real_read_access(root, owner)
-        root = Path(os.path.abspath(root))
-        handle = double.bind_under(root.parent, root.name, account_id=owner,
-                                   turn_id=f"test-platform-read:{owner}:{root.name}")
-        binding = binding_module.SessionBinding(double, handle, ExecLimits(), root)
-        with binding_module.use_binding(binding):
-            return real_read_access(root, owner)
-
-    monkeypatch.setattr(owner_box_reads, "_access", admitted_read_access)
+    monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner", admitted_owner)
     from tinyassets.boxes import lifecycle
 
     def admit_center(data_root, *, principal, center):

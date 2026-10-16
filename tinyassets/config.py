@@ -134,11 +134,11 @@ CONFIG_ABSENT = object()
 
 
 def _read_config_document(
-    universe_path: str | Path, *, absent: object = None, owner: str | None = None,
+    universe_path: str | Path, *, absent: object = None,
 ) -> object:
     """The parsed ``config.yaml``, *absent* when there is none, or ``OSError``.
 
-    Through the one safe reader (:mod:`tinyassets.universe_files`): no link is
+    Through the admitted box reader (:mod:`tinyassets.owner_box_reads`): no link is
     followed, at most ``MAX_CONFIG_BYTES`` is read, and YAML anchors/aliases
     are refused before anything is expanded. The universe folder is untrusted
     input to the daemon since its agent can write it.
@@ -149,17 +149,13 @@ def _read_config_document(
     from tinyassets.universe_files import (
         MAX_CONFIG_BYTES,
         load_untrusted_yaml,
-        read_universe_text,
     )
 
     try:
-        if owner is None:
-            raw = read_universe_text(universe_path, "config.yaml", max_bytes=MAX_CONFIG_BYTES)
-        else:
-            from tinyassets.owner_box_reads import box_read
+        from tinyassets.owner_box_reads import box_read
 
-            raw = box_read(Path(universe_path), "config.yaml", owner=owner,
-                           max_bytes=MAX_CONFIG_BYTES).decode("utf-8")
+        raw = box_read(Path(universe_path), "config.yaml",
+                       max_bytes=MAX_CONFIG_BYTES).decode("utf-8")
     except FileNotFoundError:
         return absent
     return load_untrusted_yaml(raw, max_bytes=MAX_CONFIG_BYTES)
@@ -169,7 +165,7 @@ def _read_config_document(
 UNREADABLE = object()
 
 
-def load_universe_config(universe_path: str | Path, *, owner: str | None = None) -> UniverseConfig:
+def load_universe_config(universe_path: str | Path) -> UniverseConfig:
     """Load config.yaml, with authority read only from the platform record.
 
     The preference fields come from ``config.yaml``. The authority fields
@@ -180,13 +176,13 @@ def load_universe_config(universe_path: str | Path, *, owner: str | None = None)
 
     from tinyassets.provider_authority import AUTHORITY_FIELDS, authority_for
 
-    preferences, data = _load_preferences(universe_path, owner=owner)
+    preferences, data = _load_preferences(universe_path)
     authority = authority_for(universe_path, data)
     return replace(preferences, **{name: authority[name] for name in AUTHORITY_FIELDS})
 
 
 def _load_preferences(
-    universe_path: str | Path, *, owner: str | None = None,
+    universe_path: str | Path,
 ) -> tuple[UniverseConfig, Any]:
     """The preference half of ``config.yaml`` (authority stripped), and its raw data.
 
@@ -197,7 +193,7 @@ def _load_preferences(
     migration then waits rather than record defaults over a real assignment).
     """
     try:
-        data = _read_config_document(universe_path, owner=owner)
+        data = _read_config_document(universe_path)
     except ImportError:
         logger.warning(
             "PyYAML not installed; cannot read config.yaml. "

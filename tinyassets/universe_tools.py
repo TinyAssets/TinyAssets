@@ -271,7 +271,7 @@ def _skill_description(raw: bytes) -> str:
     return description
 
 
-def skill_index(universe_dir: Path, *, owner: str) -> list[tuple[str, str]]:
+def skill_index(universe_dir: Path) -> list[tuple[str, str]]:
     """``(name, description)`` for each ``skills/<name>/SKILL.md``.
 
     Read by the daemon through the one safe reader
@@ -283,7 +283,7 @@ def skill_index(universe_dir: Path, *, owner: str) -> list[tuple[str, str]]:
     from tinyassets.owner_box_reads import box_list, box_read
 
     try:
-        names = [entry.name for entry in box_list(universe_dir, SKILLS_DIR, owner=owner)
+        names = [entry.name for entry in box_list(universe_dir, SKILLS_DIR)
                  if entry.kind == "dir"]
     except (OSError, NotImplementedError):
         return []
@@ -295,7 +295,7 @@ def skill_index(universe_dir: Path, *, owner: str) -> list[tuple[str, str]]:
             continue
         try:
             raw = box_read(universe_dir, f"{SKILLS_DIR}/{name}/SKILL.md",
-                           owner=owner, max_bytes=_MAX_SKILL_FILE_BYTES)
+                            max_bytes=_MAX_SKILL_FILE_BYTES)
             description = _skill_description(raw)
         except (OSError, NotImplementedError, RecursionError, ValueError):
             continue
@@ -311,7 +311,7 @@ _HARNESS_HEAD = (
 )
 
 
-def _folder_section(universe_dir: Path, *, owner: str) -> str:
+def _folder_section(universe_dir: Path) -> str:
     """Two levels of metadata through the same no-follow reader as skills."""
     from tinyassets.owner_box_reads import box_list, box_stat
 
@@ -320,7 +320,7 @@ def _folder_section(universe_dir: Path, *, owner: str) -> str:
 
     def read(directory: str) -> list:
         nonlocal remaining
-        entries = box_list(universe_dir, directory, owner=owner, limit=remaining)
+        entries = box_list(universe_dir, directory, limit=remaining)
         remaining -= len(entries)
         return entries
 
@@ -334,7 +334,7 @@ def _folder_section(universe_dir: Path, *, owner: str) -> str:
                 # The tool jail overlays visible root entries on the workspace.
                 # Box stat reads metadata only and never follows a planted link.
                 try:
-                    overlay = box_stat(universe_dir, name, owner=owner)
+                    overlay = box_stat(universe_dir, name)
                 except OSError:
                     pass
                 else:
@@ -415,14 +415,14 @@ def command_center_summary(universe_dir: Path, owner: str) -> str:
         return ""
 
 
-def harness_prompt(universe_dir: Path, *, owner: str) -> str:
+def harness_prompt(universe_dir: Path) -> str:
     """The four tools, skill index and bounded current folder inventory.
 
     Runs in the shared daemon on every founder turn, so a bad skill folder
     never breaks the turn; an unreadable inventory is omitted.
     """
     try:
-        skills = skill_index(universe_dir, owner=owner)
+        skills = skill_index(universe_dir)
     except (OSError, RecursionError, ValueError):
         skills = []
     lines = [
@@ -430,4 +430,4 @@ def harness_prompt(universe_dir: Path, *, owner: str) -> str:
         for name, description in skills
     ]
     return (_HARNESS_HEAD + "\n".join(lines or ["(none yet)"])
-            + _folder_section(universe_dir, owner=owner))
+            + _folder_section(universe_dir))

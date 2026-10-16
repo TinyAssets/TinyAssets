@@ -678,11 +678,11 @@ def scan_public(value: Any, where: str = "", notes: list[str] | None = None,
 # --------------------------------------------------------------------------- #
 
 
-def _entry_kind(universe_dir: Path, rel: str, *, owner: str) -> str:
+def _entry_kind(universe_dir: Path, rel: str) -> str:
     from tinyassets.owner_box_reads import box_stat
 
     try:
-        info = box_stat(universe_dir, rel, owner=owner)
+        info = box_stat(universe_dir, rel)
     except OSError:
         return "other"
     if info is None:
@@ -692,7 +692,7 @@ def _entry_kind(universe_dir: Path, rel: str, *, owner: str) -> str:
     return "file" if info.kind == "file" else "other"
 
 
-def walk(universe_dir: Path, *, owner: str) -> Iterator[tuple[str, str]]:
+def walk(universe_dir: Path) -> Iterator[tuple[str, str]]:
     """Every entry under the folder as ``(rel, kind)``, never following a link.
 
     Listing goes through the no-follow lister. A never-list folder is reported
@@ -705,7 +705,7 @@ def walk(universe_dir: Path, *, owner: str) -> Iterator[tuple[str, str]]:
         rel_dir = pending.pop()
         try:
             from tinyassets.owner_box_reads import box_list
-            names = [entry.name for entry in box_list(universe_dir, rel_dir, owner=owner)]
+            names = [entry.name for entry in box_list(universe_dir, rel_dir)]
         except OSError:
             continue
         for name in names:
@@ -715,7 +715,7 @@ def walk(universe_dir: Path, *, owner: str) -> Iterator[tuple[str, str]]:
                     f"this command center has over {MAX_WALK_ENTRIES} files and folders; "
                     "leave the large folders out and ask again")
             rel = f"{rel_dir}/{name}" if rel_dir else name
-            kind = _entry_kind(universe_dir, rel, owner=owner)
+            kind = _entry_kind(universe_dir, rel)
             if kind == "dir":
                 if dir_exclusion(rel) or rel.count("/") + 1 >= MAX_DEPTH:
                     yield rel + "/", "skipped-dir"
@@ -881,13 +881,13 @@ def install_review_groups(flagged: list[dict[str, str]]) -> list[dict[str, Any]]
              "shown": by_kind[kind][:REVIEW_SHOWN]} for kind in order]
 
 
-def collect(universe_dir: Path, *, owner: str, exclude: list[str],
+def collect(universe_dir: Path, *, exclude: list[str],
             memory_items: dict[str, list[str]]
             ) -> tuple[dict[str, bytes], list[dict[str, str]]]:
     """The files a ``publish`` package carries, and every entry left out with why."""
     files: dict[str, bytes] = {}
     excluded: list[dict[str, str]] = []
-    for rel, kind in sorted(walk(universe_dir, owner=owner)):
+    for rel, kind in sorted(walk(universe_dir)):
         if kind == "skipped-dir":
             reason = dir_exclusion(rel.rstrip("/")) or R_DEEP
             if reason != R_DOT:
@@ -906,7 +906,7 @@ def collect(universe_dir: Path, *, owner: str, exclude: list[str],
         try:
             check_path(rel)
             from tinyassets.owner_box_reads import box_read
-            data = box_read(universe_dir, rel, owner=owner, max_bytes=MAX_FILE_BYTES)
+            data = box_read(universe_dir, rel, max_bytes=MAX_FILE_BYTES)
         except PackageError:
             excluded.append({"path": rel, "reason": R_UNREADABLE})
             continue
@@ -1005,9 +1005,9 @@ def build_publish_package(universe_dir: Path, *, name: str, description: str,
                            options: dict[str, Any], branch_rows: Any,
                            workflows: list[dict[str, Any]], ui: str,
                            automations: list[dict[str, Any]], bundle_id: str = "",
-                           owner: str) -> dict[str, Any]:
+) -> dict[str, Any]:
     """Everything the ``publish`` ask pins for a package. Reads the folder only."""
-    files, excluded = collect(universe_dir, owner=owner, exclude=options["exclude"],
+    files, excluded = collect(universe_dir, exclude=options["exclude"],
                               memory_items=options["memory_items"])
     flagged = [{"path": p, "note": n} for p, b in sorted(files.items())
                if (n := review_note(b))]
@@ -1576,19 +1576,19 @@ def destination(path: str, agent_slug: str) -> str:
     return path
 
 
-def _exists(universe_dir: Path, rel: str, *, owner: str) -> bool:
+def _exists(universe_dir: Path, rel: str) -> bool:
     from tinyassets.boxes.provider import BoxPathError
     from tinyassets.owner_box_reads import box_exists
 
     try:
-        return box_exists(universe_dir, rel, owner=owner)
+        return box_exists(universe_dir, rel)
     except FileNotFoundError:
         return False
     except BoxPathError:
         return True
 
 
-def _blocked(universe_dir: Path, rel: str, *, owner: str) -> bool:
+def _blocked(universe_dir: Path, rel: str) -> bool:
     """A parent of ``rel`` exists and is not a plain folder (a file or a link)."""
     from tinyassets.boxes.provider import BoxPathError
 
@@ -1596,7 +1596,7 @@ def _blocked(universe_dir: Path, rel: str, *, owner: str) -> bool:
     for i in range(1, len(parts)):
         try:
             from tinyassets.owner_box_reads import box_stat
-            info = box_stat(universe_dir, "/".join(parts[:i]), owner=owner)
+            info = box_stat(universe_dir, "/".join(parts[:i]))
         except FileNotFoundError:
             return False
         except BoxPathError:
@@ -1609,7 +1609,7 @@ def _blocked(universe_dir: Path, rel: str, *, owner: str) -> bool:
 
 
 def plan_install(universe_dir: Path, manifest: dict[str, Any],
-                 files: dict[str, bytes], *, owner: str) -> dict[str, Any]:
+                 files: dict[str, bytes]) -> dict[str, Any]:
     """Every file's destination, and which stay the installer's own.
 
     A destination that already exists, or whose folder is taken by a file or a
@@ -1617,11 +1617,11 @@ def plan_install(universe_dir: Path, manifest: dict[str, Any],
     tree after relocation.
     """
     base = slug(str(manifest.get("name") or "package"))
-    if _blocked(universe_dir, f"agents/{base}", owner=owner):
+    if _blocked(universe_dir, f"agents/{base}"):
         raise PackageError("agents is not a plain box directory")
     agent_slug, n = base, 1
-    while _exists(universe_dir, f"agents/{agent_slug}", owner=owner) or any(
-            _exists(universe_dir, f"agents/{agent_slug}-{a}", owner=owner) for a in manifest.get(
+    while _exists(universe_dir, f"agents/{agent_slug}") or any(
+            _exists(universe_dir, f"agents/{agent_slug}-{a}") for a in manifest.get(
                 "agents") or [] if isinstance(a, str) and a != "main"):
         n += 1
         agent_slug = f"{base}-{n}"
@@ -1630,7 +1630,7 @@ def plan_install(universe_dir: Path, manifest: dict[str, Any],
     land: list[dict[str, str]] = []
     keep: list[str] = []
     for path, dest in mapping.items():
-        if _exists(universe_dir, dest, owner=owner) or _blocked(universe_dir, dest, owner=owner):
+        if _exists(universe_dir, dest) or _blocked(universe_dir, dest):
             keep.append(dest)
         else:
             land.append({"path": path, "to": dest})

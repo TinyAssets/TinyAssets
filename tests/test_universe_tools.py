@@ -58,7 +58,7 @@ def _boxed(universe: Path, operation):
                 patch("tinyassets.agent_loop.served_chat.configured_box_provider",
                       return_value=(provider, None)), \
                 use_binding(SessionBinding(provider, handle, ExecLimits(), universe)):
-            return operation(universe, owner="owner")
+            return operation(universe)
     finally:
         provider.close()
 

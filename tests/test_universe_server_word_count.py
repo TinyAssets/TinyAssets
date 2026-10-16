@@ -189,7 +189,7 @@ def test_control_daemon_status_uses_on_disk_word_count(
     assert out["word_count_sample"]["scenes"] == 1
 
 
-def test_list_surfaces_on_disk_word_count(universe_base: Path) -> None:
+def test_list_defers_word_count_to_single_center_inspect(universe_base: Path) -> None:
     udir_a = universe_base / "alive"
     udir_a.mkdir()
     _make_scene(udir_a, 1, 1, 1, 5)
@@ -200,5 +200,10 @@ def test_list_surfaces_on_disk_word_count(universe_base: Path) -> None:
 
     out = json.loads(us._action_list_universes())
     by_id = {u["id"]: u for u in out["universes"]}
+    assert by_id["alive"]["word_count"] is None
+    assert by_id["empty"]["word_count"] is None
+    assert all("inspect/status" in row["unavailable_reason"] for row in by_id.values())
+    by_id = {uid: json.loads(us._action_inspect_universe(universe_id=uid))["daemon"]
+             for uid in by_id}
     assert by_id["alive"]["word_count"] == 5
     assert by_id["empty"]["word_count"] == 0

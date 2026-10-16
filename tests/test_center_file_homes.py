@@ -24,6 +24,8 @@ def center(tmp_path: Path, monkeypatch):
     path = root / "center"
     path.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
+    monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner",
+                        lambda root, *, center: "owner")
     return path
 
 
@@ -111,13 +113,13 @@ def test_first_contact_uses_only_box_soul(center, monkeypatch):
     monkeypatch.setattr("tinyassets.agent_loop.served_chat.configured_box_provider",
                         lambda: (box, None))
     assert not (center / "soul.md").exists()
-    assert home_is_complete(center.parent, center.name, owner="owner")
+    assert home_is_complete(center.parent, center.name)
     assert ensure_founder_home(center.parent, "owner") == center.name
     assert box.binds and all(entry[1] == "owner" for entry in box.binds)
 
     (center / "soul.md").write_text("stale host copy")
     box.present = False
-    assert not home_is_complete(center.parent, center.name, owner="owner")
+    assert not home_is_complete(center.parent, center.name)
 
 
 def test_soul_presence_uses_admitted_binding(center, monkeypatch):
@@ -131,11 +133,12 @@ def test_soul_presence_uses_admitted_binding(center, monkeypatch):
     monkeypatch.setattr("tinyassets.agent_loop.served_chat.configured_box_provider",
                         lambda: (None, None))
     with use_binding(binding):
-        assert soul_present(center, owner="owner")
+        assert soul_present(center)
+        binding._ended = True
         with pytest.raises(OSError):
-            soul_present(center, owner="another-owner")
+            soul_present(center)
     with pytest.raises(RuntimeError, match="provider is unavailable"):
-        soul_present(center, owner="owner")
+        soul_present(center)
 
 
 def test_host_files_refuse_links_and_bad_center(center):
@@ -151,9 +154,32 @@ def test_host_files_refuse_links_and_bad_center(center):
     except (OSError, NotImplementedError):
         pytest.skip("this host cannot create a symlink")
     with pytest.raises(OSError):
-        set_paused(center.name, "timestamp")
+        set_paused(center, "timestamp")
     assert victim.read_text() == "do not change"
     link.unlink()
     (center / "auto_ship_attempts.jsonl").symlink_to(victim)
     with pytest.raises(OSError):
-        read_ledger(center.name)
+        read_ledger(center)
+
+
+def test_host_helpers_use_caller_base_and_missing_centers_are_empty(center, monkeypatch):
+    from tinyassets.center_platform_files import (
+        center_from_path,
+        is_paused,
+        read_ledger,
+        read_worker_heartbeats,
+        set_paused,
+    )
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(center.parent / "unrelated"))
+    set_paused(center, "now")
+    assert is_paused(center)
+    missing = center.parent / "missing"
+    assert not is_paused(missing)
+    assert read_worker_heartbeats(missing, max_bytes=4096) == {}
+    assert read_ledger(missing) is None
+    assert read_attempts(missing) == []
+    assert not missing.exists()
+    assert center_from_path(center, base_path=center.parent) == center.name
+    with pytest.raises(ValueError, match="outside caller base"):
+        center_from_path(center, base_path=center.parent / "unrelated")

@@ -38,12 +38,12 @@ def _home_dir(base: Path, universe_id: str) -> Path | None:
     return candidate if candidate.parent == root else None
 
 
-def home_is_complete(base: Path, universe_id: str, *, owner: str) -> bool:
+def home_is_complete(base: Path, universe_id: str) -> bool:
     """Return whether a bound home has the canonical completed-seed marker."""
     universe_dir = _home_dir(base, universe_id)
     from tinyassets.universe_soul import soul_present
 
-    return universe_dir is not None and soul_present(universe_dir, owner=owner)
+    return universe_dir is not None and soul_present(universe_dir)
 
 
 def principal_is_deleted(base: Path, founder: str) -> bool:
@@ -89,7 +89,7 @@ def ensure_founder_home(base: Path, founder: str) -> str:
 
     _HOME_FAILURE.set("")
     home = get_founder_home(base, founder)
-    if home_is_complete(base, home, owner=founder):
+    if home_is_complete(base, home):
         return home
 
     # A deleted account does not come back on the next request. The principal's
@@ -147,13 +147,13 @@ def ensure_founder_home(base: Path, founder: str) -> str:
     universe_dir = _home_dir(base, winner)
     if universe_dir is None:
         return _no_home("path")
-    if home_is_complete(base, winner, owner=founder):
+    if home_is_complete(base, winner):
         return winner
 
     from tinyassets.api.universe import _universe_impl
 
     with _HOME_MATERIALIZE_LOCK:
-        if home_is_complete(base, winner, owner=founder):
+        if home_is_complete(base, winner):
             return winner
         # DA4: an incomplete home keeps its root and grant; _universe_impl
         # resumes admission and seeding in place.
@@ -177,6 +177,6 @@ def ensure_founder_home(base: Path, founder: str) -> str:
             from tinyassets.boxes.provider import BoxAuthError
 
             refused = isinstance(exc, BoxAuthError)
-        if not home_is_complete(base, winner, owner=founder):
+        if not home_is_complete(base, winner):
             return _no_home("admission" if refused else "incomplete")
     return winner

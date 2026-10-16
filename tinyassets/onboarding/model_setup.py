@@ -54,10 +54,10 @@ def model_setup_state(base: Path, *, universe: Path, uid: str, owner: str) -> st
         return "recovery"
     from tinyassets.owner_box_reads import box_exists
 
-    if box_exists(universe, "config.yaml", owner=owner):
-        if not _config_yaml_is_parseable(universe, owner=owner):
+    if box_exists(universe, "config.yaml"):
+        if not _config_yaml_is_parseable(universe):
             raise ValueError("model setup configuration unavailable")
-        source = load_universe_config(universe, owner=owner).engine_source
+        source = load_universe_config(universe).engine_source
         if str(source or "").strip() != "byo_api_key":
             return "recovery"
     return "empty"

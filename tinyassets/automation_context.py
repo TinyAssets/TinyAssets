@@ -29,12 +29,10 @@ def _contained(root: Path, path: Path) -> Path:
     return resolved
 
 
-def _brain(root: Path, *, owner: str) -> dict[str, Any]:
-    if not isinstance(owner, str) or not owner.strip():
-        raise ValueError("automation_context_owner_required")
+def _brain(root: Path) -> dict[str, Any]:
     result = {}
     for name in BRAIN_FILES:
-        info = box_stat(root, name, owner=owner)
+        info = box_stat(root, name)
         if info is not None and info.kind == "link":
             raise ValueError("automation_context_path_outside_universe")
         if info is None or info.kind != "file":
@@ -42,7 +40,7 @@ def _brain(root: Path, *, owner: str) -> dict[str, Any]:
             continue
         if info.size > MAX_BRAIN_FILE_BYTES:
             raise ValueError("automation_context_brain_too_large")
-        data = box_read(root, name, owner=owner, max_bytes=MAX_BRAIN_FILE_BYTES + 1)
+        data = box_read(root, name, max_bytes=MAX_BRAIN_FILE_BYTES + 1)
         if len(data) > MAX_BRAIN_FILE_BYTES:
             raise ValueError("automation_context_brain_too_large")
         result[name] = {"available": True, "text": data.decode("utf-8")}
@@ -215,7 +213,7 @@ def resolve_automation_inputs(
         "observed_at": observed_at,
         "universe_id": uid,
         "automation_id": automation.automation_id,
-        "brain": _brain(root, owner=automation.owner_principal_id),
+        "brain": _brain(root),
         "conversation": _conversation(root, getattr(automation, "owner_principal_id", "")),
         "previous_run": previous,
         "last_completed_run": completed,

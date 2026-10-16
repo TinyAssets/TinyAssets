@@ -110,7 +110,7 @@ def _wiki_root_for_universe(universe_dir: Path | None) -> Path | None:
 
 
 def _resolve_target_page(
-    wiki_root: Path, destination: str, *, owner: str,
+    wiki_root: Path, destination: str,
 ) -> tuple[Path | None, str]:
     requested = destination.strip().replace("\\", "/")
     if not requested:
@@ -130,7 +130,7 @@ def _resolve_target_page(
     from tinyassets.owner_box_reads import box_stat
 
     candidate = wiki_root / requested
-    info = box_stat(wiki_root.parent, f"wiki/{requested}", owner=owner)
+    info = box_stat(wiki_root.parent, f"wiki/{requested}")
     if info is None or info.kind != "file":
         return None, f"Page not found: {requested}"
     return candidate, ""
@@ -255,11 +255,11 @@ def _destination_marker_db_path(universe_dir: Path) -> Path:
 def _page_bytes(universe_dir: Path, target: Path) -> bytes:
     """A wiki page's exact bytes, read link-free and bounded from the
     universe's wiki root (the agent writes its own wiki)."""
-    from tinyassets.owner_box_reads import binding_owner, box_read
+    from tinyassets.owner_box_reads import box_read
     from tinyassets.universe_files import MAX_UNIVERSE_FILE_BYTES
 
     return box_read(universe_dir, target.relative_to(universe_dir).as_posix(),
-                    owner=binding_owner(universe_dir), max_bytes=MAX_UNIVERSE_FILE_BYTES)
+                     max_bytes=MAX_UNIVERSE_FILE_BYTES)
 
 
 def _record_destination_marker(
@@ -315,13 +315,12 @@ def _reconcile_destination_marker(
     target: Path,
     destination: str,
     effect_key: str,
-    owner: str,
 ) -> dict[str, Any]:
     """Resolve stale intent from trusted metadata the payload cannot write."""
     try:
         from tinyassets.owner_box_reads import box_stat
 
-        info = box_stat(universe_dir, target.relative_to(universe_dir).as_posix(), owner=owner)
+        info = box_stat(universe_dir, target.relative_to(universe_dir).as_posix())
         if info is None or info.kind != "file":
             return {"status": "unknown"}
         with sqlite3.connect(
@@ -493,11 +492,9 @@ def run_wiki_write_back_effector(
         }
 
     from tinyassets.api.wiki import _ensure_wiki_scaffold, _scoped_wiki_root
-    from tinyassets.owner_box_reads import binding_owner
 
-    owner = binding_owner(universe_dir)
     try:
-        _ensure_wiki_scaffold(wiki_root, owner=owner)
+        _ensure_wiki_scaffold(wiki_root, center_scoped=True)
     except OSError as exc:
         return {
             "error": f"Wiki scaffold failed at {wiki_root}: {exc}",
@@ -507,8 +504,8 @@ def run_wiki_write_back_effector(
             "matched_output_key": matched_key,
         }
 
-    with _scoped_wiki_root(wiki_root, owner=owner):
-        target, destination_error = _resolve_target_page(wiki_root, destination, owner=owner)
+    with _scoped_wiki_root(wiki_root, center_scoped=True):
+        target, destination_error = _resolve_target_page(wiki_root, destination)
         if destination_error or target is None:
             return {
                 "error": destination_error or "Page not found.",
@@ -582,7 +579,6 @@ def run_wiki_write_back_effector(
                     target=target,
                     destination=destination,
                     effect_key=effect_key,
-                    owner=owner,
                 ),
             )
             return {

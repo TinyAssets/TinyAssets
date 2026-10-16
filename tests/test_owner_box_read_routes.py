@@ -21,6 +21,8 @@ def home(tmp_path, monkeypatch):
     center = data / "cc-a"
     center.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data))
+    monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner",
+                        lambda root, *, center: "acct-a")
     provider = LocalBoxProvider(boxes_root=tmp_path / "boxes",
                                 state_dir=tmp_path / "state",
                                 owner_of=lambda _center: "acct-a", allow_unisolated=True)
@@ -68,12 +70,12 @@ def test_automation_brain_reads_box(home):
     center, put = home
     put("identity.md", b"box identity")
     (center / "founder.md").write_text("stale host founder")
-    result = _brain(center, owner="acct-a")
+    result = _brain(center)
     assert result["identity.md"]["text"] == "box identity"
     assert result["founder.md"] == {"available": False}
 
 
-def test_package_stat_and_publish_walk_read_box(home):
+def test_package_stat_and_publish_walk_read_box(home, monkeypatch):
     from tinyassets.boxes.provider import BoxAuthError
     from tinyassets.command_center_packages import _blocked, _exists, plan_install, walk
 
@@ -81,13 +83,15 @@ def test_package_stat_and_publish_walk_read_box(home):
     put("agents/main/identity.md", b"box agent")
     (center / "agents").mkdir()
     (center / "agents" / "stale.md").write_text("stale")
-    assert _exists(center, "agents/main/identity.md", owner="acct-a")
-    assert not _exists(center, "agents/stale.md", owner="acct-a")
-    assert not _blocked(center, "agents/main/identity.md", owner="acct-a")
-    assert ("agents/main/identity.md", "file") in set(walk(center, owner="acct-a"))
-    assert ("agents/stale.md", "file") not in set(walk(center, owner="acct-a"))
+    assert _exists(center, "agents/main/identity.md")
+    assert not _exists(center, "agents/stale.md")
+    assert not _blocked(center, "agents/main/identity.md")
+    assert ("agents/main/identity.md", "file") in set(walk(center))
+    assert ("agents/stale.md", "file") not in set(walk(center))
+    monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner",
+                        lambda root, *, center: "another-owner")
     with pytest.raises(BoxAuthError):
-        plan_install(center, {"name": "package"}, {}, owner="another-owner")
+        plan_install(center, {"name": "package"}, {})
 
 
 def test_install_plan_refuses_blocked_agent_parent(home):
@@ -96,7 +100,7 @@ def test_install_plan_refuses_blocked_agent_parent(home):
     center, put = home
     put("agents", b"occupied by a file")
     with pytest.raises(PackageError, match="plain box directory"):
-        plan_install(center, {"name": "package"}, {}, owner="acct-a")
+        plan_install(center, {"name": "package"}, {})
 
 
 def test_config_presence_and_parse_read_box(home):
@@ -106,12 +110,12 @@ def test_config_presence_and_parse_read_box(home):
 
     center, put = home
     (center / "config.yaml").write_text("broken: [")
-    assert not box_exists(center, "config.yaml", owner="acct-a")
+    assert not box_exists(center, "config.yaml")
     (center / "config.yaml").unlink()
     put("config.yaml", b"engine_source: self_hosted_endpoint\n")
-    assert box_exists(center, "config.yaml", owner="acct-a")
-    assert _config_yaml_is_parseable(center, owner="acct-a")
-    assert load_universe_config(center, owner="acct-a").engine_source == "self_hosted_endpoint"
+    assert box_exists(center, "config.yaml")
+    assert _config_yaml_is_parseable(center)
+    assert load_universe_config(center).engine_source == "self_hosted_endpoint"
 
 
 def test_config_callers_ignore_stale_host_setup(home, monkeypatch):
@@ -149,13 +153,12 @@ def test_output_metrics_and_tree_read_box(home, monkeypatch):
     put("output/book/chapter.md", b"one two three")
     (center / "output").mkdir()
     (center / "output" / "stale.md").write_text("host words")
-    monkeypatch.setattr(api, "_center_owner", lambda _center: "acct-a")
     count, sample = api._compute_word_count_from_files(center)
     assert count == 3 and sample["source"] == "output_files"
-    assert api._list_output_tree(center, owner="acct-a") == ["book/chapter.md"]
-    assert box_tree_size(center, "output", owner="acct-a") == 13
-    assert api._list_output_tree(center, owner="acct-a", max_depth=1) == []
-    assert api._list_output_tree(center, owner="acct-a", max_depth=2) == ["book/chapter.md"]
+    assert api._list_output_tree(center) == ["book/chapter.md"]
+    assert box_tree_size(center, "output") == 13
+    assert api._list_output_tree(center, max_depth=1) == []
+    assert api._list_output_tree(center, max_depth=2) == ["book/chapter.md"]
 
 
 def test_prompt_inventory_overlay_stat_reads_box(home):
@@ -168,7 +171,7 @@ def test_prompt_inventory_overlay_stat_reads_box(home):
     (center / "report.txt").write_text("stale host overlay")
     (center / "notes").mkdir()
     (center / "notes" / "stale.md").write_text("host note")
-    section = _folder_section(center, owner="acct-a")
+    section = _folder_section(center)
     assert "box.md" in section
     assert "stale.md" not in section
     assert "report.txt" in section
@@ -213,7 +216,7 @@ def test_soul_versions_allocate_from_box_only(admitted_home):
     result = apply_soul_edit(center, changes={"identity.md": "After\n"},
                              agent_id="main", source="founder", context="test edit")
     assert result["snapshot"] == "soul_versions/0008.md"
-    assert b"After" in box_read(center, result["snapshot"], owner="acct-a", max_bytes=4096)
+    assert b"After" in box_read(center, result["snapshot"], max_bytes=4096)
     assert not (center / "identity.md").exists()
     assert not (center / "soul_versions" / "0008.md").exists()
 
@@ -232,7 +235,7 @@ def test_soul_edit_rejects_linked_box_versions_before_writing(admitted_home, tmp
     with pytest.raises(SoulEditError, match="plain box directory"):
         apply_soul_edit(center, changes={"identity.md": "After\n"},
                         agent_id="main", source="founder", context="test edit")
-    assert box_read(center, "identity.md", owner="acct-a", max_bytes=4096) == before
+    assert box_read(center, "identity.md", max_bytes=4096) == before
     assert not list(external.iterdir())
 
 
@@ -248,19 +251,18 @@ def test_wiki_destination_and_reconciliation_use_box(admitted_home, monkeypatch)
     stale.write_text("stale host page")
     monkeypatch.setattr(api, "_universe_dir", lambda _uid: center)
     assert api._wiki_root_for_universe(center.name) == center / "wiki"
-    target, error = effector._resolve_target_page(center / "wiki", destination, owner="acct-a")
+    target, error = effector._resolve_target_page(center / "wiki", destination)
     assert not error and target == center / "wiki" / destination
-    assert effector._resolve_target_page(center / "wiki", "pages/notes/stale.md",
-                                         owner="acct-a")[0] is None
+    assert effector._resolve_target_page(center / "wiki", "pages/notes/stale.md")[0] is None
     effector._record_destination_marker(universe_dir=center, target=target,
                                        destination=destination, effect_key="box-effect")
     result = effector._reconcile_destination_marker(
         universe_dir=center, target=target, destination=destination,
-        effect_key="box-effect", owner="acct-a")
+        effect_key="box-effect")
     assert result["status"] == "succeeded"
     assert effector._reconcile_destination_marker(
         universe_dir=center, target=stale, destination=destination,
-        effect_key="box-effect", owner="acct-a")["status"] == "unknown"
+        effect_key="box-effect")["status"] == "unknown"
 
 
 def test_canon_listing_sources_and_work_targets_use_box(home, monkeypatch):
@@ -276,10 +278,10 @@ def test_canon_listing_sources_and_work_targets_use_box(home, monkeypatch):
     (center / "canon" / "sources").mkdir(parents=True)
     (center / "canon" / "stale.md").write_text("stale canon")
     (center / "canon" / "sources" / "stale.txt").write_text("stale source")
-    paths = list(iter_canon_files(center / "canon", recursive=True, owner="acct-a"))
+    paths = list(iter_canon_files(center / "canon", recursive=True))
     assert [p.relative_to(center / "canon").as_posix() for p in paths] == [
         "box.md", "sources/box.txt"]
-    assert read_canon_bytes(center / "canon", "box.md", owner="acct-a") == b"box canon"
+    assert read_canon_bytes(center / "canon", "box.md") == b"box canon"
     monkeypatch.setattr(api, "_request_universe", lambda _uid: center.name)
     monkeypatch.setattr(api, "_universe_dir", lambda _uid: center)
     canon = json.loads(api._action_list_canon(center.name))
@@ -297,7 +299,91 @@ def test_box_pages_and_read_bound(home):
     center, put = home
     for index in range(205):
         put(f"notes/{index:03d}.md", b"data")
-    assert len(box_list(center, "notes", owner="acct-a")) == 205
-    assert len(box_list(center, "notes", owner="acct-a", limit=201)) == 201
+    assert len(box_list(center, "notes")) == 205
+    assert len(box_list(center, "notes", limit=201)) == 201
     with pytest.raises(OSError, match="bound"):
-        box_read(center, "notes/000.md", owner="acct-a", max_bytes=3)
+        box_read(center, "notes/000.md", max_bytes=3)
+
+
+def test_operational_files_read_box_and_ignore_host(admitted_home, monkeypatch):
+    import json
+
+    from tinyassets.api import universe as api
+    from tinyassets.control_plane.queue_policy import load_dispatcher_config
+
+    center, put = admitted_home
+    put("dispatcher_config.yaml", b"allow_opportunistic: false\n")
+    put("activity.log", b"box activity\n")
+    put("status.json", b'{"current_phase": "box-phase"}')
+    (center / "dispatcher_config.yaml").write_text("allow_opportunistic: true\n")
+    (center / "activity.log").write_text("stale host activity\n")
+    (center / "status.json").write_text('{"current_phase": "host-phase"}')
+    monkeypatch.setattr(api, "_request_universe", lambda uid: center.name)
+    monkeypatch.setattr(api, "_universe_dir", lambda uid: center)
+    assert load_dispatcher_config(center).allow_opportunistic is False
+    status = api._box_json(center, "status.json")
+    assert status["current_phase"] == "box-phase"
+    assert api._daemon_liveness(center, status)["phase"] == "box-phase"
+    assert json.loads(api._action_get_activity(center.name))["lines"] == ["box activity"]
+    assert api._file_based_last_activity(center, status) is not None
+
+
+def test_listing_never_contacts_boxes_even_for_unadmitted_centers(home, monkeypatch):
+    import json
+
+    from tinyassets.api import universe as api
+    from tinyassets.api import visibility
+    from tinyassets.daemon_server import set_founder_home
+
+    center, put = home
+    other = center.parent / "unadmitted"
+    other.mkdir()
+    set_founder_home(center.parent, founder_sub="acct-a", universe_id=center.name)
+    set_founder_home(center.parent, founder_sub="acct-b", universe_id=other.name)
+    put("output/scene.md", b"one two three")
+    monkeypatch.setattr(visibility, "visibility_permits", lambda *a: True)
+    monkeypatch.setattr(visibility, "declared_level_name", lambda *a: "public")
+    monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner",
+                        lambda *a, **k: pytest.fail("listing queried admission"))
+    monkeypatch.setattr("tinyassets.owner_box_reads._access",
+                        lambda *a, **k: pytest.fail("listing read a box"))
+    rows = json.loads(api._action_list_universes())["universes"]
+    assert [r["id"] for r in rows] == [center.name, other.name]
+    for row in rows:
+        for field in ("has_premise", "has_soul", "word_count", "phase", "phase_human",
+                      "staleness", "last_activity_at"):
+            assert row[field] is None
+        assert "inspect/status" in row["unavailable_reason"]
+
+
+def test_single_center_operational_refusals_raise(admitted_home, monkeypatch):
+    from tinyassets.api import universe as api
+    from tinyassets.control_plane.queue_policy import load_dispatcher_config
+
+    center, _put = admitted_home
+
+    def denied(*args, **kwargs):
+        raise PermissionError("provider refused")
+
+    monkeypatch.setattr("tinyassets.owner_box_reads._access", denied)
+    for operation in (load_dispatcher_config, api._compute_word_count_from_files):
+        with pytest.raises(PermissionError, match="provider refused"):
+            operation(center)
+    with pytest.raises(PermissionError, match="provider refused"):
+        api._daemon_liveness(center, None)
+
+
+def test_branch_dependency_soul_comes_from_box(home):
+    from tinyassets.api.branches import _branch_dependents
+    from tinyassets.daemon_server import set_founder_home
+    from tinyassets.universe_soul import UniverseSoul, render_soul_markdown
+
+    center, put = home
+    set_founder_home(center.parent, founder_sub="acct-a", universe_id=center.name)
+    put("soul.md", render_soul_markdown(UniverseSoul(loop_branch_def_id="box-loop")).encode())
+    (center / "soul.md").write_text(
+        render_soul_markdown(UniverseSoul(loop_branch_def_id="stale-host-loop")))
+    assert _branch_dependents(str(center.parent), branch_def_id="box-loop", actor="acct-a")[
+        "universes"] == [center.name]
+    assert _branch_dependents(str(center.parent), branch_def_id="stale-host-loop", actor="acct-a")[
+        "universes"] == []

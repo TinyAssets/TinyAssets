@@ -182,9 +182,6 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/desktop/dashboard.py": [
         "_seed_from_output_dir: .read_text()",
     ],
-    "tinyassets/control_plane/queue_policy.py": [
-        "load_dispatcher_config: .read_text()",
-    ],
     "tinyassets/engine_mcp_http.py": [
         "_write_routes: os.open()",
         "_write_routes: os.replace()",

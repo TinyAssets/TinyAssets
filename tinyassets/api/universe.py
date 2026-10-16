@@ -64,14 +64,12 @@ from tinyassets.api import permissions
 from tinyassets.api.helpers import (
     _base_path,
     _read_json,
-    _read_text,
     _request_universe,
     _universe_dir,
 )
 from tinyassets.catalog import list_unreconciled_writes
 from tinyassets.center_platform_files import (
     PAUSE,
-    center_from_path,
     clear_paused,
     is_paused,
     read_worker_heartbeats,
@@ -88,7 +86,6 @@ from tinyassets.universe_files import (
     MAX_CONFIG_BYTES,
     MAX_PLATFORM_FILE_BYTES,
     load_untrusted_yaml,
-    read_data_path,
     write_data_path,
 )
 from tinyassets.universe_soul import (
@@ -821,6 +818,28 @@ _STALE_FRESH_SECONDS = 60 * 60
 _STALE_IDLE_SECONDS = 24 * 60 * 60
 
 
+def _box_text(udir: Path, name: str, *, max_bytes: int = MAX_PLATFORM_FILE_BYTES) -> str:
+    from tinyassets.owner_box_reads import box_read
+
+    try:
+        return box_read(udir, name, max_bytes=max_bytes).decode("utf-8")
+    except FileNotFoundError:
+        return ""
+    except OSError as exc:
+        from tinyassets.universe_files import UniverseFileError
+
+        raise UniverseFileError(str(exc)) from exc
+
+
+def _box_json(udir: Path, name: str) -> Any:
+    try:
+        raw = _box_text(udir, name)
+        return json.loads(raw) if raw else None
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        logger.warning("Failed to parse box file %s/%s: %s", udir.name, name, exc)
+        return None
+
+
 def _file_based_last_activity(
     udir: Path, status: dict[str, Any] | None,
 ) -> datetime | None:
@@ -856,14 +875,19 @@ def _file_based_last_activity(
 
     heartbeat_candidates: list[datetime] = []
 
-    for path in (udir / "activity.log", udir / ".runtime_status.json"):
-        if not path.exists():
-            continue
+    from tinyassets.owner_box_reads import box_stat
+
+    activity = box_stat(udir, "activity.log")
+    if activity is not None:
+        accepted = _safe_epoch_to_datetime(activity.mtime)
+        if accepted is not None:
+            heartbeat_candidates.append(accepted)
+    path = udir / ".runtime_status.json"
+    if path.exists():
         try:
-            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            accepted = _safe_epoch_to_datetime(path.stat().st_mtime)
         except OSError:
-            continue
-        accepted = _reject_future(mtime)
+            accepted = None
         if accepted is not None:
             heartbeat_candidates.append(accepted)
     if heartbeat_candidates:
@@ -886,18 +910,9 @@ def _file_based_last_activity(
             if parsed is not None:
                 return parsed
 
-    status_path = udir / "status.json"
-    if status_path.exists():
-        try:
-            mtime = datetime.fromtimestamp(
-                status_path.stat().st_mtime, tz=timezone.utc,
-            )
-        except OSError:
-            mtime = None
-        if mtime is not None:
-            accepted = _reject_future(mtime)
-            if accepted is not None:
-                return accepted
+    status_info = box_stat(udir, "status.json")
+    if status_info is not None:
+        return _safe_epoch_to_datetime(status_info.mtime)
 
     return None
 
@@ -1117,55 +1132,36 @@ def _compute_word_count_from_files(
     """
     from tinyassets.owner_box_reads import box_list, box_read, box_stat
 
-    owner = _center_owner(udir)
     sample: dict[str, Any] = {"scenes": 0, "source": "none"}
-    info = box_stat(udir, "output", owner=owner)
+    info = box_stat(udir, "output")
     if info is None or info.kind != "dir":
         return 0, sample
 
     total = 0
     scenes = 0
-    try:
-        pending = ["output"]
-        while pending:
-            directory = pending.pop()
-            for entry in box_list(udir, directory, owner=owner):
-                if entry.kind == "dir":
-                    pending.append(f"{directory}/{entry.name}")
-                    continue
-                if entry.kind != "file" or not entry.name.endswith(".md"):
-                    continue
-                name = entry.name
-                # Skip index files and count prose in output/.
-                if name.startswith(".") or name in {"INDEX.md", "progress.md"}:
-                    continue
-                try:
-                    raw_md = box_read(udir, f"{directory}/{name}", owner=owner,
-                                      max_bytes=MAX_PLATFORM_FILE_BYTES)
-                except OSError:
-                    continue
-                total += len(raw_md.decode("utf-8", "replace").split())
-                if name.startswith("scene-"):
-                    scenes += 1
-    except OSError as exc:
-        logger.debug("word_count walk failed at %s/output: %s", udir, exc)
-        return 0, {"scenes": 0, "source": "error"}
+    pending = ["output"]
+    while pending:
+        directory = pending.pop()
+        for entry in box_list(udir, directory):
+            if entry.kind == "dir":
+                pending.append(f"{directory}/{entry.name}")
+                continue
+            if entry.kind != "file" or not entry.name.endswith(".md"):
+                continue
+            name = entry.name
+            if name.startswith(".") or name in {"INDEX.md", "progress.md"}:
+                continue
+            raw_md = box_read(udir, f"{directory}/{name}", max_bytes=MAX_PLATFORM_FILE_BYTES)
+            total += len(raw_md.decode("utf-8", "replace").split())
+            if name.startswith("scene-"):
+                scenes += 1
 
     sample = {"scenes": scenes, "source": "output_files"}
     return total, sample
 
 
-def _center_owner(udir: Path) -> str:
-    from tinyassets.universe_owner import owner_of
-
-    owner = owner_of(udir.parent, udir.name)
-    if not owner:
-        raise RuntimeError(f"command center {udir.name!r} has no owner for soul access")
-    return owner
-
-
 def _daemon_liveness(udir: Path, status: dict[str, Any] | None) -> dict[str, Any]:
-    """Build the shared liveness block used by list, inspect, and status.
+    """Build the liveness block for single-center inspect and status.
 
     Centralizing this shape is the point — every reader surface gets the
     same interpreted fields, so legibility fixes in one place land
@@ -1178,7 +1174,7 @@ def _daemon_liveness(udir: Path, status: dict[str, Any] | None) -> dict[str, Any
     has_work = isinstance(targets, list) and any(
         t.get("lifecycle") == "active" for t in targets if isinstance(t, dict)
     )
-    paused = is_paused(udir.name)
+    paused = is_paused(udir)
     last_activity = _last_activity_at(udir, status)
     staleness = _staleness_bucket(last_activity)
 
@@ -1201,7 +1197,7 @@ def _daemon_liveness(udir: Path, status: dict[str, Any] | None) -> dict[str, Any
         ),
         "is_paused": paused,
         "has_premise": has_premise,
-        "has_soul": has_soul(udir, owner=_center_owner(udir)),
+        "has_soul": has_soul(udir),
         "has_work": has_work,
         "last_activity_at": last_activity,
         "staleness": staleness,
@@ -1311,7 +1307,7 @@ def _worker_liveness(
     writes (openspec/specs/uptime-and-alarms/spec.md). Consumers (the activity
     canary) use it to page on wedge and stay quiet on idle.
     """
-    beats = read_worker_heartbeats(center_from_path(udir), max_bytes=MAX_CONFIG_BYTES)
+    beats = read_worker_heartbeats(udir, max_bytes=MAX_CONFIG_BYTES)
     worker_names = [name for name in beats if name != _WORKER_SUPERVISOR_FILENAME]
     if not worker_names and _WORKER_SUPERVISOR_FILENAME in beats:
         worker_names = [_WORKER_SUPERVISOR_FILENAME]
@@ -1768,19 +1764,15 @@ def _action_list_universes(**_kwargs: Any) -> str:
         if not visibility.visibility_permits(child.name, "discover_existence"):
             hidden_by_visibility += 1
             continue
-        status = _read_json(child / "status.json")
-        liveness = _daemon_liveness(child, status if isinstance(status, dict) else None)
+        # Enumeration never binds a box. Inspect/status compute these fields
+        # for one selected center, after the existing visibility gates.
         info: dict[str, Any] = {
             "id": child.name,
             "visibility": visibility.declared_level_name(child.name),
-            "has_premise": liveness["has_premise"],
-            "has_soul": liveness["has_soul"],
-            "word_count": liveness["word_count"],
-            "phase": liveness["phase"],
-            "phase_human": liveness["phase_human"],
-            "staleness": liveness["staleness"],
-            "last_activity_at": liveness["last_activity_at"],
-            "accept_rate": liveness["accept_rate"],
+            **dict.fromkeys(("has_premise", "has_soul", "word_count", "phase",
+                             "phase_human", "staleness", "last_activity_at")),
+            "unavailable_reason": "box fields are not read in listings; use inspect/status",
+            "accept_rate": _compute_accept_rate_from_db(child)[0],
         }
         universes.append(info)
 
@@ -1901,7 +1893,7 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
     # Daemon liveness block — always present, so downstream readers (humans
     # and chat clients) can always tell whether the daemon is alive, why
     # it's stuck, and whether the premise and work exist.
-    status = _read_json(udir / "status.json")
+    status = _box_json(udir, "status.json")
     liveness = _daemon_liveness(udir, status if isinstance(status, dict) else None)
     result["daemon"] = {
         "phase": liveness["phase"],
@@ -1965,12 +1957,12 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
     # Output files
     from tinyassets.owner_box_reads import box_stat
 
-    if (info := box_stat(udir, "output", owner=_center_owner(udir))) is not None \
+    if (info := box_stat(udir, "output")) is not None \
             and info.kind == "dir":
-        result["output_files"] = _list_output_tree(udir, owner=_center_owner(udir))
+        result["output_files"] = _list_output_tree(udir)
 
     # Activity tail
-    activity = _read_text(udir / "activity.log")
+    activity = _box_text(udir, "activity.log")
     if activity:
         lines = activity.strip().splitlines()
         result["recent_activity"] = lines[-10:]
@@ -2019,7 +2011,7 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
     return json.dumps(result, default=str)
 
 
-def _list_output_tree(udir: Path, *, owner: str, max_depth: int = 3) -> list[str]:
+def _list_output_tree(udir: Path, *, max_depth: int = 3) -> list[str]:
     """Walk the output directory and return relative paths."""
     from tinyassets.owner_box_reads import box_list
 
@@ -2029,7 +2021,7 @@ def _list_output_tree(udir: Path, *, owner: str, max_depth: int = 3) -> list[str
         directory, depth = pending.pop()
         if depth >= max_depth:
             continue
-        for entry in sorted(box_list(udir, directory, owner=owner), key=lambda e: e.name):
+        for entry in sorted(box_list(udir, directory), key=lambda e: e.name):
             rel = f"{directory[7:]}/{entry.name}" if directory != "output" else entry.name
             if entry.kind == "dir":
                 pending.append((f"{directory}/{entry.name}", depth + 1))
@@ -3015,10 +3007,7 @@ def _tail_file_lines(path: Path, n: int) -> list[str]:
     """
     if n <= 0:
         return []
-    raw = read_data_path(path, max_bytes=MAX_PLATFORM_FILE_BYTES)
-    if raw is None:
-        return []
-    return raw.decode("utf-8", "replace").splitlines()[-n:]
+    return _box_text(path.parent, path.name).splitlines()[-n:]
 
 
 def _action_daemon_overview(
@@ -3073,6 +3062,8 @@ def _action_daemon_overview(
                 "allow_opportunistic": cfg.allow_opportunistic,
             },
         }
+    except (OSError, RuntimeError):
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.warning("daemon_overview: dispatcher read failed: %s", exc)
         response["dispatcher"] = {}
@@ -3147,7 +3138,7 @@ def _action_daemon_overview(
 
     # Run state (status.json — best-effort).
     try:
-        status = _read_json(udir / "status.json") or {}
+        status = _box_json(udir, "status.json") or {}
         if isinstance(status, dict):
             response["run_state"] = {
                 "current_phase": status.get("current_phase", ""),
@@ -3159,6 +3150,8 @@ def _action_daemon_overview(
             }
         else:
             response["run_state"] = {}
+    except (OSError, RuntimeError):
+        raise
     except Exception:  # noqa: BLE001
         response["run_state"] = {}
 
@@ -3215,9 +3208,9 @@ def _action_set_tier_config(
     try:
         # Link-free and alias-free: a refusal rejects rather than reading as
         # empty, which the write below would then replace the file with.
-        raw_cfg = read_data_path(cfg_path, max_bytes=MAX_CONFIG_BYTES)
-        if raw_cfg is not None:
-            loaded = load_untrusted_yaml(raw_cfg.decode("utf-8"))
+        raw_cfg = _box_text(udir, "dispatcher_config.yaml", max_bytes=MAX_CONFIG_BYTES)
+        if raw_cfg:
+            loaded = load_untrusted_yaml(raw_cfg)
             if isinstance(loaded, dict):
                 existing = loaded
     except Exception as exc:  # noqa: BLE001
@@ -3855,15 +3848,14 @@ def _action_list_canon(
 
     from tinyassets.owner_box_reads import box_stat
 
-    owner = _center_owner(udir)
-    info = box_stat(udir, "canon", owner=owner)
+    info = box_stat(udir, "canon")
     if info is None or info.kind != "dir":
         return json.dumps({"universe_id": uid, "canon_files": [], "note": "No canon directory."})
 
     files = []
     # Enumerate box regular files; metadata and bytes come from the same home.
-    for f in iter_canon_files(canon_dir, include_hidden=False, owner=owner):
-        info = box_stat(udir, f"canon/{f.name}", owner=owner)
+    for f in iter_canon_files(canon_dir, include_hidden=False):
+        info = box_stat(udir, f"canon/{f.name}")
         if info is None or info.kind != "file":
             continue
         entry: dict[str, Any] = {
@@ -3890,7 +3882,7 @@ def _canon_json(canon_dir: Path, name: str) -> dict[str, Any]:
     if "/" in name or "\\" in name or name in ("", ".", ".."):
         return {}
     try:
-        raw = read_canon_bytes(canon_dir, name, owner=_center_owner(canon_dir.parent))
+        raw = read_canon_bytes(canon_dir, name)
     except FileNotFoundError:
         return {}
     try:
@@ -3916,8 +3908,7 @@ def _source_file_entry(
 ) -> dict[str, Any]:
     from tinyassets.owner_box_reads import box_stat
 
-    stat = box_stat(canon_dir.parent, "canon/" + path.relative_to(canon_dir).as_posix(),
-                    owner=_center_owner(canon_dir.parent))
+    stat = box_stat(canon_dir.parent, "canon/" + path.relative_to(canon_dir).as_posix())
     if stat is None or stat.kind != "file":
         raise FileNotFoundError(str(path))
     meta = _source_sidecar_meta(canon_dir, path.name)
@@ -3965,8 +3956,7 @@ def _action_list_sources(
     canon_dir = udir / "canon"
     from tinyassets.owner_box_reads import box_stat
 
-    owner = _center_owner(udir)
-    info = box_stat(udir, "canon/sources", owner=owner)
+    info = box_stat(udir, "canon/sources")
     if info is None or info.kind != "dir":
         return json.dumps({
             "universe_id": uid,
@@ -3980,7 +3970,7 @@ def _action_list_sources(
     # The box provider refuses linked parents and enumeration skips linked leaves.
     try:
         for path in iter_canon_files(
-            canon_dir, subdir="sources", include_hidden=False, owner=owner
+            canon_dir, subdir="sources", include_hidden=False
         ):
             source_files.append(_source_file_entry(path, canon_dir, manifest))
     except OSError as exc:
@@ -4022,7 +4012,7 @@ def _action_read_source(
         from tinyassets.owner_box_reads import box_stat
 
         target = canon_dir / "sources" / safe_name
-        info = box_stat(udir, f"canon/sources/{safe_name}", owner=_center_owner(udir))
+        info = box_stat(udir, f"canon/sources/{safe_name}")
     except (ValueError, OSError):
         return json.dumps({"error": "Path traversal not allowed."})
     if info is None or info.kind != "file":
@@ -4034,8 +4024,7 @@ def _action_read_source(
         })
 
     try:
-        raw = read_canon_bytes(canon_dir, f"sources/{safe_name}", kind="source file",
-                               owner=_center_owner(udir))
+        raw = read_canon_bytes(canon_dir, f"sources/{safe_name}", kind="source file")
         content = raw.decode("utf-8")
         manifest = _manifest_data(canon_dir)
         entry = _source_file_entry(target, canon_dir, manifest, raw=raw)
@@ -4100,7 +4089,7 @@ def _action_read_canon(
     try:
         from tinyassets.owner_box_reads import box_stat
 
-        info = box_stat(udir, f"canon/{safe_name}", owner=_center_owner(udir))
+        info = box_stat(udir, f"canon/{safe_name}")
     except (ValueError, OSError):
         return json.dumps({"error": "Path traversal not allowed."})
     if info is None or info.kind != "file":
@@ -4110,8 +4099,7 @@ def _action_read_canon(
         })
 
     try:
-        raw = read_canon_bytes(canon_dir, safe_name, kind="canon file",
-                               owner=_center_owner(udir))
+        raw = read_canon_bytes(canon_dir, safe_name, kind="canon file")
         content = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
         entry: dict[str, Any] = {
             "universe_id": uid,
@@ -4142,7 +4130,7 @@ def _action_control_daemon(
 
     if action == "pause":
         try:
-            set_paused(uid, datetime.now(timezone.utc).isoformat())
+            set_paused(udir, datetime.now(timezone.utc).isoformat())
             return json.dumps({
                 "universe_id": uid,
                 "action": "pause",
@@ -4153,7 +4141,7 @@ def _action_control_daemon(
             return json.dumps({"error": f"Failed to write pause signal: {exc}"})
 
     elif action == "resume":
-        if not is_paused(uid):
+        if not is_paused(udir):
             return json.dumps({
                 "universe_id": uid,
                 "action": "resume",
@@ -4161,7 +4149,7 @@ def _action_control_daemon(
                 "note": "Daemon was not paused.",
             })
         try:
-            clear_paused(uid)
+            clear_paused(udir)
             return json.dumps({
                 "universe_id": uid,
                 "action": "resume",
@@ -4172,7 +4160,7 @@ def _action_control_daemon(
             return json.dumps({"error": f"Failed to remove pause: {exc}"})
 
     elif action == "status":
-        status = _read_json(udir / "status.json")
+        status = _box_json(udir, "status.json")
         liveness = _daemon_liveness(
             udir, status if isinstance(status, dict) else None,
         )
@@ -4213,11 +4201,10 @@ def _action_get_activity(
 ) -> str:
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
-    log_path = udir / "activity.log"
 
     limit = min(max(limit, 1), 200)
 
-    content = _read_text(log_path)
+    content = _box_text(udir, "activity.log")
     if not content:
         return json.dumps({
             "universe_id": uid,
@@ -4303,12 +4290,11 @@ def _action_get_recent_events(
     """
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
-    log_path = udir / "activity.log"
 
     limit = min(max(limit, 1), 500)
     caveats: list[str] = []
 
-    content = _read_text(log_path)
+    content = _box_text(udir, "activity.log")
     if not content:
         missing_caveats = [
             "No activity.log found. The daemon may not have run yet "
@@ -4515,7 +4501,7 @@ def _action_create_universe(
     # owner-dynamic-admission DA4: an incomplete root left by a failed create
     # resumes in place (same id); the ownership grant below still refuses
     # another account's id.
-    if udir.exists() and has_soul(udir, owner=permissions.current_actor_id()):
+    if udir.exists() and has_soul(udir):
         return json.dumps({"error": f"Command center '{uid}' already exists."})
 
     from tinyassets.boxes.layout import UNIVERSE_SIDECARS_DIR
@@ -4645,7 +4631,7 @@ def _action_create_universe(
         from tinyassets.daemon_server import get_founder_home, set_founder_home
 
         _home = get_founder_home(base, founder)
-        if not _home or not has_soul(base / _home, owner=founder):
+        if not _home or not has_soul(base / _home):
             set_founder_home(
                 base,
                 founder_sub=founder,
@@ -4758,9 +4744,8 @@ def universe_has_assigned_engine(universe_dir: str | Path) -> bool:
 
     from tinyassets.owner_box_reads import box_exists
 
-    owner = _center_owner(Path(universe_dir))
-    if box_exists(Path(universe_dir), "config.yaml", owner=owner) \
-            and not _config_yaml_is_parseable(Path(universe_dir), owner=owner):
+    if box_exists(Path(universe_dir), "config.yaml") \
+            and not _config_yaml_is_parseable(Path(universe_dir)):
         logger.warning(
             "command center config unreadable for %s; not treating as engine-less",
             universe_dir,
@@ -4770,7 +4755,7 @@ def universe_has_assigned_engine(universe_dir: str | Path) -> bool:
     from tinyassets.config import load_universe_config
 
     try:
-        engine_source = load_universe_config(Path(universe_dir), owner=owner).engine_source
+        engine_source = load_universe_config(Path(universe_dir)).engine_source
     except Exception:  # noqa: BLE001 - unreadable config is not proof of absence
         logger.warning(
             "command center config unreadable for %s; not treating as engine-less",
@@ -4785,7 +4770,7 @@ def universe_has_assigned_engine(universe_dir: str | Path) -> bool:
     return str(engine_source or "").strip() != _DEFAULT_ENGINE_SOURCE
 
 
-def _config_yaml_is_parseable(universe_dir: Path, *, owner: str) -> bool:
+def _config_yaml_is_parseable(universe_dir: Path) -> bool:
     """True when ``config.yaml`` actually parses.
 
     Codex ADAPT round 2 (2026-07-25): ``load_universe_config`` deliberately
@@ -4803,7 +4788,7 @@ def _config_yaml_is_parseable(universe_dir: Path, *, owner: str) -> bool:
     try:
         from tinyassets.owner_box_reads import box_read
 
-        raw = box_read(universe_dir, "config.yaml", owner=owner,
+        raw = box_read(universe_dir, "config.yaml",
                        max_bytes=MAX_CONFIG_BYTES)
         if raw is None:
             return False

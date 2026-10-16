@@ -61,8 +61,8 @@ def _owner_universe(universe_id: str) -> tuple[str, Path, str] | None:
     return uid, Path(_base_path()) / uid, actor
 
 
-def _list(folder: Path, rel: str, owner: str) -> tuple[list[str], list[dict[str, Any]]]:
-    items = sorted(box_list(folder, rel, owner=owner), key=lambda item: item.name)
+def _list(folder: Path, rel: str) -> tuple[list[str], list[dict[str, Any]]]:
+    items = sorted(box_list(folder, rel), key=lambda item: item.name)
     entries = [
         {"name": item.name, "kind": item.kind, **(
             {"size_bytes": item.size} if item.kind == "file" else {})}
@@ -71,8 +71,8 @@ def _list(folder: Path, rel: str, owner: str) -> tuple[list[str], list[dict[str,
     return [item.name for item in items], entries[:MAX_LIST_ENTRIES]
 
 
-def _read(folder: Path, rel: str, owner: str) -> bytes:
-    return box_read(folder, rel, owner=owner, max_bytes=MAX_UNIVERSE_FILE_BYTES)
+def _read(folder: Path, rel: str) -> bytes:
+    return box_read(folder, rel, max_bytes=MAX_UNIVERSE_FILE_BYTES)
 
 
 def _relative(raw: str) -> str | None:
@@ -102,11 +102,11 @@ def _relative(raw: str) -> str | None:
     return str(PurePosixPath(text))
 
 
-def _logical(folder: Path, rel: str, owner: str) -> str:
+def _logical(folder: Path, rel: str) -> str:
     from tinyassets.universe_tools import WORKSPACE_DIR
 
     first = rel.split("/", 1)[0]
-    if not first or first.startswith(".") or box_stat(folder, first, owner=owner):
+    if not first or first.startswith(".") or box_stat(folder, first):
         return rel
     return f"{WORKSPACE_DIR}/{rel}"
 
@@ -116,10 +116,10 @@ def list_files(*, universe_id: str = "", path: str = "") -> dict[str, Any]:
     rel = _relative(path)
     if owned is None or rel is None:
         return dict(_NOT_FOUND)
-    uid, folder, owner = owned
+    uid, folder, _actor = owned
     try:
-        rel = _logical(folder, rel, owner)
-        names, entries = _list(folder, rel, owner)
+        rel = _logical(folder, rel)
+        names, entries = _list(folder, rel)
     except OSError:
         return dict(_NOT_FOUND)
     return {
@@ -141,10 +141,10 @@ def read_file(
         return {"error": "file_offset must be a non-negative integer"}
     if type(count) is not int or not 1 <= count <= MAX_READ_BYTES:
         return {"error": f"file_max_bytes must be between 1 and {MAX_READ_BYTES}"}
-    uid, folder, owner = owned
+    uid, folder, _actor = owned
     try:
-        rel = _logical(folder, rel, owner)
-        data = _read(folder, rel, owner)
+        rel = _logical(folder, rel)
+        data = _read(folder, rel)
     except OSError:
         return dict(_NOT_FOUND)
     total = len(data)
@@ -195,9 +195,9 @@ def read_whole_file(*, universe_id: str = "", path: str = "") -> bytes | None:
     # Only the owner gate's tuple is an admission.
     if not isinstance(owned, tuple) or not rel:
         return None
-    uid, folder, owner = owned
+    uid, folder, _actor = owned
     try:
-        return _read(folder, _logical(folder, rel, owner), owner)
+        return _read(folder, _logical(folder, rel))
     except OSError:
         return None
 

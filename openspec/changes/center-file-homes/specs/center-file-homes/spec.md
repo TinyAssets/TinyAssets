@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Each center file has one authoritative home
-The platform SHALL keep `.pause`, `.worker_supervisor.json`, `.worker_supervisor.<id>.json`, `auto_ship_attempts.jsonl`, and `.auto_ship_attempts.jsonl.lock` at `<data_root>/<center>` on the host. Host access SHALL validate the center and refuse symlinks. The box SHALL own `soul.md`; presence checks SHALL use an admitted binding or the configured owner box provider and SHALL fail when neither can provide access.
+The platform SHALL keep `.pause`, `.worker_supervisor.json`, `.worker_supervisor.<id>.json`, `auto_ship_attempts.jsonl`, and `.auto_ship_attempts.jsonl.lock` at `<data_root>/<center>` on the host. Host access SHALL validate the center and refuse symlinks. The box SHALL own `soul.md`; presence checks SHALL return absent for an unadmitted center or missing host stub without binding or materializing content. Content reads SHALL refuse these centers.
 
 #### Scenario: pause and cap survive box isolation
 - **WHEN** platform scheduling or accounting reads its center state
@@ -19,7 +19,7 @@ The platform SHALL keep `.pause`, `.worker_supervisor.json`, `.worker_supervisor
 - **THEN** the guard fails, without extending the known mixed-name allowlist.
 
 ### Requirement: Platform owner readers use the box
-The platform SHALL list, stat, and read owner content through `owner_box_reads`, using a matching admitted binding validated against the owner or an explicit configured-provider bind. Missing provider configuration SHALL fail loudly. Paths SHALL be validated lexically and containment enforced by the provider, never by resolving stale host owner paths. Paged listings SHALL be consumed correctly.
+The platform SHALL list, stat, and read owner content through `owner_box_reads`, using a matching admitted binding or the broker mapping `admitted_owner(data_root, center=...)` before a configured-provider bind. The requesting actor and `universe_owner` SHALL NOT select box identity; existing ACL/visibility gates SHALL retain authorization. Missing provider configuration SHALL fail loudly. Paths SHALL be validated lexically and containment enforced by the provider, never by resolving stale host owner paths. Paged listings SHALL be consumed correctly.
 
 #### Scenario: Owner content exists only in the box
 - **WHEN** the owner file browser, automation brain reader, package plan or publish walk, soul-version allocator, config check, wiki destination check, canon listing, output metric, or prompt inventory reads content
@@ -28,3 +28,24 @@ The platform SHALL list, stat, and read owner content through `owner_box_reads`,
 #### Scenario: Only stale host content exists
 - **WHEN** any routed reader checks a path absent from the box
 - **THEN** the host copy does not make that content present.
+
+### Requirement: Multi-center surfaces isolate box reads
+Listings SHALL perform no per-center box reads. Box-derived fields SHALL be null with an explicit unavailable reason directing callers to single-center inspect/status. Other multi-center scans SHALL continue after a per-center box refusal and report the affected derived field as unavailable; single-center content reads SHALL raise on refusal.
+
+#### Scenario: Listing includes an unadmitted center
+- **WHEN** a discoverable center lacks broker admission or its provider refuses reads
+- **THEN** the listing still returns every visible center without binding any box.
+
+### Requirement: Writers determine the authoritative home
+`dispatcher_config.yaml`, `activity.log`, and `status.json` SHALL belong to BOX, with platform readers using `owner_box_reads`. `.runtime_status.json` SHALL remain HOST. The branch deletion guard SHALL read soul-declared loop dependencies through the admitted box and expose unreadable dependency scans explicitly.
+
+#### Scenario: Box-only operational state and dependency
+- **WHEN** dispatcher policy, activity, status, or a declared loop exists only in the box
+- **THEN** platform readers observe it and ignore stale host copies.
+
+### Requirement: Host reads use the caller's base
+Host helpers SHALL accept the caller's universe path/base, validate a single safe center component and its parent against that base, and refuse symlinks. Missing host centers SHALL read as not paused, no heartbeats, and an empty ledger.
+
+#### Scenario: Worker uses an explicit base
+- **WHEN** a worker uses a base other than global data_dir
+- **THEN** pause and heartbeat operations use the worker's base; missing centers do not fail reads.

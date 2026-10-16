@@ -913,7 +913,7 @@ def test_control_daemon_status_reports_paused_state(universe_base: Path) -> None
 # ---------------------------------------------------------------------------
 
 
-def test_list_surfaces_telemetry_for_every_universe(universe_base: Path) -> None:
+def test_list_defers_telemetry_to_single_center_inspect(universe_base: Path) -> None:
     _make_universe(
         universe_base, "alive",
         premise="x",
@@ -925,6 +925,13 @@ def test_list_surfaces_telemetry_for_every_universe(universe_base: Path) -> None
     out = json.loads(us._action_list_universes())
     by_id = {u["id"]: u for u in out["universes"]}
 
+    for row in by_id.values():
+        for field in ("has_premise", "has_soul", "word_count", "phase", "phase_human",
+                      "staleness", "last_activity_at"):
+            assert row[field] is None
+        assert "inspect/status" in row["unavailable_reason"]
+    by_id = {uid: json.loads(us._action_inspect_universe(universe_id=uid))["daemon"]
+             for uid in by_id}
     alive = by_id["alive"]
     assert alive["has_premise"] is True
     assert alive["staleness"] == "fresh"

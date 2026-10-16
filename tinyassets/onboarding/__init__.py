@@ -648,7 +648,7 @@ def _read_home(identity: Any, *, raise_errors: bool = False) -> str:
         try:
             base = _base_path()
             home = get_founder_home(base, identity.user_id) or ""
-            return home if home and home_is_complete(base, home, owner=identity.user_id) else ""
+            return home if home and home_is_complete(base, home) else ""
         except Exception:  # noqa: BLE001
             if raise_errors:
                 raise

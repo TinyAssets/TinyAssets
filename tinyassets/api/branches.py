@@ -989,7 +989,7 @@ def _ext_branch_delete(kwargs: dict[str, Any]) -> str:
 
 def _branch_dependents(
     base: str, *, branch_def_id: str, actor: str,
-) -> dict[str, list[str]]:
+) -> dict[str, Any]:
     """Everything that would break if this branch definition vanished, by
     reader (Codex rounds 1 and 2 on the branch-delete change):
 
@@ -1022,7 +1022,7 @@ def _branch_dependents(
     from tinyassets.storage import db_path, webhook_hooks
 
     versions = branch_versions.list_version_ids(base, branch_def_id)
-    out: dict[str, list[str]] = {
+    out: dict[str, Any] = {
         "automations": [], "webhooks": [], "schedules": [], "subscriptions": [],
         "goals": [], "branches": [], "universes": [],
     }
@@ -1093,8 +1093,7 @@ def _branch_dependents(
     out["branches"] = sorted(invokers)
 
     # A universe queues its declared loop branch on every request it admits.
-    from tinyassets.universe_owner import owner_of
-    from tinyassets.universe_soul import read_universe_soul, soul_present
+    from tinyassets.universe_soul import read_universe_soul
 
     loops: list[str] = []
     # Owned only. This names universe ids back to the caller, and an archived
@@ -1113,14 +1112,15 @@ def _branch_dependents(
     except OSError:
         universe_dirs = []
     for udir in sorted(universe_dirs):
-        owner = owner_of(base, udir.name)
-        if not owner or not soul_present(udir, owner=owner):
-            continue
         try:
-            soul = read_universe_soul(udir)
+            soul = read_universe_soul(udir, strict=True)
         except Exception:  # noqa: BLE001 - one unreadable soul must not hide the rest
             logger.exception("could not read %s while checking branch dependents", udir / "soul.md")
             loops.append(f"{udir.name}?")
+            out.setdefault("unavailable", []).append({
+                "universe_id": udir.name, "loop_branch_def_id": None,
+                "unavailable_reason": "soul dependency read failed",
+            })
             continue
         if soul is not None and (soul.loop_branch_def_id or "").strip() == branch_def_id:
             loops.append(udir.name)

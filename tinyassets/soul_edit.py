@@ -321,10 +321,9 @@ def apply_soul_edit(
         # Pass 1 — read current state + compare-and-swap check. All checks run
         # before any write, so a mismatch leaves the bundle untouched.
         parsed: dict[str, tuple[dict[str, Any], str]] = {}
-        from tinyassets.owner_box_reads import binding_owner, box_list
+        from tinyassets.owner_box_reads import box_list
 
-        owner = binding_owner(universe_dir)
-        entries = {entry.name: entry for entry in box_list(universe_dir, "", owner=owner)}
+        entries = {entry.name: entry for entry in box_list(universe_dir, "")}
         versions = entries.get(SOUL_VERSIONS_DIR)
         if versions is not None and versions.kind != "dir":
             raise SoulEditError("soul_versions is not a plain box directory")
@@ -382,7 +381,6 @@ def apply_soul_edit(
             context=context,
             summary=log_entry,
             stamp=now,
-            owner=owner,
         )
 
     return {
@@ -418,7 +416,6 @@ def _write_edit_snapshot(
     context: str,
     summary: str,
     stamp: str,
-    owner: str,
 ) -> str:
     """Write a self-describing snapshot of this edit and index it.
 
@@ -434,7 +431,7 @@ def _write_edit_snapshot(
 
     try:
         existing = sorted(entry.name for entry in box_list(
-            universe_dir, SOUL_VERSIONS_DIR, owner=owner,
+            universe_dir, SOUL_VERSIONS_DIR,
         ) if re.fullmatch(r"[0-9]{4}\.md", entry.name))
     except FileNotFoundError:
         existing = []

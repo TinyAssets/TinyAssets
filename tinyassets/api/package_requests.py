@@ -153,7 +153,7 @@ def _plan(uid: str, action: dict[str, Any]) -> dict[str, Any]:
         raise PermissionError("an authenticated owner is required")
     definition, component, manifest, files = _load(action)
     try:
-        placement = plan_install(_universe_dir(uid), manifest, files, owner=actor)
+        placement = plan_install(_universe_dir(uid), manifest, files)
     except PackageError as exc:
         raise ValueError(f"this package cannot be installed: {exc}") from None
     parts = _components(definition)

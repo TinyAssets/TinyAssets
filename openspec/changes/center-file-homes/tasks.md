@@ -7,4 +7,7 @@
 - [x] Generalize admitted-binding/configured-provider reads and route soul presence.
 - [x] Complete all nine platform reader routes without host content probes.
 - [x] Extend the guard and real LocalBoxProvider box-only/stale-host route coverage.
-- [x] Run touched Windows tests, Linux oracle, Ruff, strict OpenSpec validation, and diff checks; record limitations in validation.md (broader validation is not green).
+- [x] Resolve box identity from admission, remove read-only owner threading, and refuse unproven reads without effects.
+- [x] Make listings box-free, isolate multi-center scan failures, and route operational files and branch dependencies to BOX.
+- [x] Anchor host helpers to caller paths and extend guard/route regressions.
+- [x] Run the required targeted Linux selection, Ruff and diff checks; retain final receipts only.

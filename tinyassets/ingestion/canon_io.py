@@ -52,17 +52,14 @@ def iter_canon_files(
     recursive: bool = False,
     include_hidden: bool = True,
     kind: str = "existing file",
-    owner: str | None = None,
 ) -> Iterator[Path]:
     """Yield logical canon paths from the owner's box, never host metadata.
 
-    Internal pipeline callers inherit their admitted session owner. Platform
-    callers outside a session must supply the recorded owner explicitly.
+    The reader resolves the admitted session or broker-bound owner.
     Links are skipped, including linked subdirectories; results are sorted.
     """
-    from tinyassets.owner_box_reads import binding_owner, box_list, box_stat
+    from tinyassets.owner_box_reads import box_list, box_stat
 
-    owner = owner if owner is not None else binding_owner(canon_dir.parent)
     try:
         start = _canon_relative(subdir) if subdir is not None else ""
     except ValueError:
@@ -75,11 +72,11 @@ def iter_canon_files(
     while pending:
         directory = pending.pop()
         rel = f"canon/{directory}" if directory else "canon"
-        info = box_stat(canon_dir.parent, rel, owner=owner)
+        info = box_stat(canon_dir.parent, rel)
         if info is None or info.kind != "dir":
             continue
         try:
-            entries = box_list(canon_dir.parent, rel, owner=owner)
+            entries = box_list(canon_dir.parent, rel)
         except FileNotFoundError:
             continue
         for entry in entries:
@@ -114,14 +111,13 @@ def read_canon_text(
     *,
     encoding: str = "utf-8",
     kind: str = "existing file",
-    owner: str | None = None,
     **kwargs: object,
 ) -> str:
     """Resolve ``name`` under ``canon_dir`` then ``read_text``.
 
     Raises :class:`ValueError` if ``name`` escapes containment (before any I/O).
     """
-    data = read_canon_bytes(canon_dir, name, kind=kind, owner=owner)
+    data = read_canon_bytes(canon_dir, name, kind=kind)
     text = data.decode(encoding, **kwargs)  # type: ignore[arg-type]
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
@@ -131,14 +127,12 @@ def read_canon_bytes(
     name: str,
     *,
     kind: str = "existing file",
-    owner: str | None = None,
 ) -> bytes:
     """Read bounded bytes from the box; validate the logical canon-relative name."""
-    from tinyassets.owner_box_reads import binding_owner, box_read
+    from tinyassets.owner_box_reads import box_read
 
     relative = _canon_relative(name)
-    owner = owner if owner is not None else binding_owner(canon_dir.parent)
-    return box_read(canon_dir.parent, f"canon/{relative}", owner=owner,
+    return box_read(canon_dir.parent, f"canon/{relative}",
                     max_bytes=MAX_PLATFORM_FILE_BYTES)
 
 

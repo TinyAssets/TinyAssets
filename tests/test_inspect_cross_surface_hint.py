@@ -16,7 +16,8 @@ def _call_inspect(universe_id="test-u"):
         patch("tinyassets.api.universe._request_universe", return_value=universe_id),
         patch("tinyassets.api.universe._universe_dir", return_value=fake_udir),
         patch.object(Path, "is_dir", return_value=True),
-        patch("tinyassets.api.universe._center_owner", return_value="test-owner"),
+        patch("tinyassets.api.universe._box_json", return_value=None),
+        patch("tinyassets.api.universe._box_text", return_value=""),
         patch("tinyassets.owner_box_reads.box_stat", return_value=None),
         patch("tinyassets.api.visibility.visibility_permits", return_value=True),
         # inspect also requires an ownership row to name the universe (a
@@ -29,7 +30,6 @@ def _call_inspect(universe_id="test-u"):
         ),
         patch("tinyassets.api.visibility.declared_level_name", return_value="public"),
         patch("tinyassets.api.universe._read_json", return_value=None),
-        patch("tinyassets.api.universe._read_text", return_value=""),
         patch("tinyassets.api.universe._daemon_liveness", return_value={
             "phase": "idle", "phase_human": "Idle", "is_paused": False,
             "has_premise": False, "has_soul": False, "has_work": False,

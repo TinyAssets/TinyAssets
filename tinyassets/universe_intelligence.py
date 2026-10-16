@@ -1552,7 +1552,7 @@ def converse(
     if turn_config.engine_mcp_enabled:
         from tinyassets.universe_tools import command_center_summary, harness_prompt
 
-        system = (system + "\n\n" + harness_prompt(udir, owner=founder_principal)
+        system = (system + "\n\n" + harness_prompt(udir)
                   + command_center_summary(udir, founder_principal))
     system = system + "\n\n" + _turn_input_method_context(input_method)
     if granted and session_key and turn_config.engine_mcp_enabled:

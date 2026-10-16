@@ -70,7 +70,7 @@ def _boxed(universe: Path, operation, **kwargs):
                 patch("tinyassets.agent_loop.served_chat.configured_box_provider",
                       return_value=(provider, None)), \
                 use_binding(SessionBinding(provider, handle, ExecLimits(), universe)):
-            return operation(universe, owner="owner", **kwargs)
+            return operation(universe, **kwargs)
     finally:
         provider.close()
 
@@ -1066,10 +1066,10 @@ def test_every_platform_written_root_file_stays_home():
     FILENAME`` site are marked.
     """
     platform_root = [
-        "branch_tasks.json",            # branch_tasks.py:36  (the work queue)
-        "branch_tasks_archive.json",    # branch_tasks.py:37
-        "enrichment_signals.json",      # enrichment_signals.py:19
-        "hard_priorities.json",         # work_targets.py:134
+        "branch_tasks.json",           # branch_tasks.py:36  (the work queue)
+        "branch_tasks_archive.json",   # branch_tasks.py:37
+        "enrichment_signals.json",     # enrichment_signals.py:19
+        "hard_priorities.json",        # work_targets.py:134
         "requests.json", "orgchart.md", "onboarding.json", "preferences.json",
         "priorities.yaml", "goals.md", "plan.md", "progress.md", "projects.md",
         "proposals.md", "characters.md", "acquisition_presets.json",
@@ -1282,11 +1282,11 @@ def test_a_kebab_identifier_starting_sk_is_not_a_key(line):
 
 
 @pytest.mark.parametrize("run,expected", [
-    ("Zq8rT2vX9mK4pL7nB3wE6yH1jD5Q", True),        # random, mixed, long
-    ("getVillageSnapshotAdapter2Check", False),     # camelCase identifier
-    ("village_panel_header_title_v2", False),       # snake identifier
-    ("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6", False),    # id-length hex
-    ("Zq8rT2vX9mK4pL7nB3wE", False),                # under the length floor
+    ("Zq8rT2vX9mK4pL7nB3wE6yH1jD5Q", True),       # random, mixed, long
+    ("getVillageSnapshotAdapter2Check", False),    # camelCase identifier
+    ("village_panel_header_title_v2", False),      # snake identifier
+    ("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6", False),   # id-length hex
+    ("Zq8rT2vX9mK4pL7nB3wE", False),               # under the length floor
 ])
 def test_the_suspect_tier_is_key_like_runs_only(run, expected):
     assert ccp.key_like(run) is expected

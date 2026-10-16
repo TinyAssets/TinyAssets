@@ -168,24 +168,14 @@ def load_dispatcher_config(universe_path: Path) -> DispatcherConfig:
     file or missing keys silently fall back to defaults; the config is
     optional.
     """
-    cfg_path = Path(universe_path) / "dispatcher_config.yaml"
-    if not cfg_path.exists():
-        return DispatcherConfig()
+    from tinyassets.owner_box_reads import box_read
+    from tinyassets.universe_files import MAX_CONFIG_BYTES, load_untrusted_yaml
+
     try:
-        import yaml  # local import: dispatcher is hot-path-adjacent
-    except ImportError:
-        logger.warning(
-            "pyyaml not available; using DispatcherConfig defaults "
-            "for %s", universe_path,
-        )
+        raw = box_read(Path(universe_path), "dispatcher_config.yaml", max_bytes=MAX_CONFIG_BYTES)
+    except FileNotFoundError:
         return DispatcherConfig()
-    try:
-        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-    except Exception as exc:  # noqa: BLE001 - broad log+fallback
-        logger.warning(
-            "Failed to read %s: %s; using defaults", cfg_path, exc,
-        )
-        return DispatcherConfig()
+    data = load_untrusted_yaml(raw.decode("utf-8"), max_bytes=MAX_CONFIG_BYTES) or {}
     if not isinstance(data, dict):
         return DispatcherConfig()
 
