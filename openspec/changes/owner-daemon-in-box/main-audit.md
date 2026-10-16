@@ -22,19 +22,17 @@ hook token routing, SSE first-chunk delivery and disconnect cancellation,
 router-only published/sign-in-shell/pulse routes, and the owner-store guard.
 Ruff on changed Python files and `git diff --check` pass. No skips were added.
 
-Test-Removal: retired `test_startup_initializes_before_the_assigned_consumer_starts`
-and `test_main_initialization_failure_does_not_start_worker_or_serve`: the shared
-entrypoint's owner initialization and direct SSE/stdio paths were deleted;
-replacement tests assert no owner initialization and refusal of those transports.
-The owner lifespan's storage-order/failure tests remain. The former admitted
-router lifespan initialization assertion now asserts no owner-state access.
+Test-Removal: retired `test_startup_initializes_before_the_assigned_consumer_starts`: shared owner initialization was deleted; replacement asserts no shared consumer startup, with storage ordering retained in owner-lifespan tests.
 
-Test-Removal: retired `test_both_bearerless_transports_bind_the_local_operator`:
-the shared local-operator serving paths were deleted; both now assert refusal.
-Test-Removal: retired `test_staged_bundle_enumerates_seven_under_simulated_admission`:
-the bundled shared stdio serving path was deleted; the staged artifact now proves refusal even with cloud admission.
-Test-Removal: retired `test_staged_bundle_enumerates_without_credentials`:
-the same deleted stdio path cannot enumerate without credentials; the replacement proves refusal and no server response.
+Test-Removal: retired `test_main_initialization_failure_does_not_start_worker_or_serve`: the shared owner initialization dependency was deleted; replacement proves router startup does not touch owner storage.
+
+Test-Removal: retired `test_admitted_lifespan_reaches_initialization_in_order`: the router lifespan no longer initializes owner state; replacement asserts that boundary, with owner initialization coverage retained.
+
+Test-Removal: retired `test_both_bearerless_transports_bind_the_local_operator`: shared local-operator serving was deleted; both transports now assert refusal.
+
+Test-Removal: retired `test_staged_bundle_enumerates_seven_under_simulated_admission`: shared stdio serving was deleted; the staged artifact proves refusal even with cloud admission.
+
+Test-Removal: retired `test_staged_bundle_enumerates_without_credentials`: shared stdio serving was deleted; the replacement proves refusal and no server response without credentials.
 
 Remaining integration belongs to later slices: boxhostd mounting the socket and
 read-only secret, rotation on start and wake-on-request (4); shared-state broker
@@ -42,7 +40,61 @@ publication/revocation of hook digests and shared credential management from
 boxes (3); seeding shared maps and splitting existing owner stores (6). No
 provisioning, egress, migration or deploy files changed; nothing was pushed.
 
-CI selection and chunk results are recorded below after the local build commit.
+Local implementation commits: `38fae347fb9`, `6e3d9ecb220`, `3acb71ee293`,
+`b68bc5756e5` (the connection-lifetime validation fix).
+No push, provisioning, migration or deploy was performed. The user's explicit
+no-delegation instruction applies to this slice; no peer agent was dispatched.
+
+CI selection used `python scripts/affected_tests.py --base origin/main --pr --out <file>`
+after the local implementation commits, removed CRs and missing paths, then
+`split -l 155`. The original 878 files formed five 155-file chunks and one
+103-file chunk; the final selection contains 888 files, with eight added
+files and then two connection-fix additions run as supplemental chunks. Every invocation used
+`python scripts/linux_oracle.py -- <ordered files> -q --tb=short`.
+Logs and exact ordered lists are under `%TEMP%/owner-s2-validation/`.
+
+| Linux selection | Result |
+| --- | --- |
+| AA, 155 files | 3,348 passed, 4 existing skips |
+| AB, 155 files | 2,711 passed, 2 existing skips after the connection-lifetime fix |
+| AC, 155 files | 3,621 passed, 47 existing skips |
+| AD, 155 files | 3,255 passed, 20 existing skips |
+| AE, 155 files | 2,777 passed, 1 existing skip |
+| AF, 103 files | 2,188 passed, 5 existing skips |
+| Final-selection addition, 8 files | 215 passed, 8 existing skips |
+| Connection-fix selection addition, 2 files | 147 passed |
+| Affected heavy files, 32 files | 1,330 passed |
+| Connection-fix affected heavy files, 7 files | 479 passed |
+| Structural targets, 39 targets | 824 passed on the complete corrected rerun |
+| Focused owner routing/lifecycle | 155 passed; expanded owner-app/session coverage 111 passed |
+| Registry and moved-code regression recheck | 132 passed |
+| Retired transport and owner-tree tests | 83 passed |
+| Connection lifetime and direct callers, 8 files | 217 passed, including the red-to-green real-SQLite regression |
+
+First-pass failures caused by this slice were old assertions about shared
+startup, maintenance source locations, the request-logger constructor and
+retired shared transports; their owner-side/refusal replacements retain the
+relevant coverage. The new hook map and HTTP stream calls also needed entries
+in the existing store/background-call inventories. No skip or skipif was added.
+
+AB first failed in `test_actual_competing_store_writer_is_fenced_until_commit`
+(`.runs.db` case), then errored during setup of
+`test_change_after_reservation_refuses[retire]`: both raised SQLite `unable to
+open database file` in `branch_versions` (2,710 passed and 2 skipped on each run).
+Two comparisons in the identical 155-file order on untouched `origin/main`
+`417f6a4c003db2bfde9cf216cb734eb5e317adc2` each passed 2,711 tests with 2 skips;
+they did **not** reproduce the failure, so this slice claims no baseline exemption.
+The second baseline's sampled descriptor count reached 938 under a 1,024 soft
+limit. Inspection found that version-store transaction contexts did not close
+their SQLite connections. A new real-SQLite regression failed before the fix;
+the scoped operations now close their connections, including setup-error paths,
+while retaining commit/rollback semantics. This necessary validation fix changes
+no storage shape or authorization rule. The complete original AB order then
+passed 2,711 tests with 2 existing skips. Its sampled descriptor count in the
+previously failing section was 100. No observed failure is carried as a baseline
+exemption. Chunk reruns cover the route/lifecycle corrections; the final
+connection fix additionally has the complete AB rerun, its direct-caller and
+affected-heavy runs, and both added selected files recorded above.
 
 ## Slice 1 implementation follow-up (2026-10-16)
 
@@ -54,7 +106,7 @@ startup, and a separate CLI process. Non-loopback connects are forbidden in
 the in-process acceptance run. Model wires use the existing fixture and its
 real in-process broker; no cloud-provenance fixture is used.
 
-Run with `python -m tinyassets.owner_daemon --data <root> --socket <app.sock>`;
+Run with `python -m tinyassets.owner_daemon --data <root> --socket <app.sock> --secret-file <read-only-secret>`;
 `--relay` defaults to the existing `/run/boxhostd/relay.sock` mount.
 
 Linux validation (working tree, no commit or deployment):
