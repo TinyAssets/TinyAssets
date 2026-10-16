@@ -1,5 +1,77 @@
 # Main vs the clean per-user-instance shape: read-only audit
 
+## Slice 1 implementation follow-up (2026-10-16)
+
+The owner entrypoint now serves the existing app with relay-derived admission,
+local file helpers and `OwnerBoxd` tools. Its acceptance test covers the app
+file door, MCP status, a real chat loop writing a file, local bash calling ta
+through the real loopback engine endpoint, pause/resume tick dispatch, refused
+startup, and a separate CLI process. Non-loopback connects are forbidden in
+the in-process acceptance run. Model wires use the existing fixture and its
+real in-process broker; no cloud-provenance fixture is used.
+
+Run with `python -m tinyassets.owner_daemon --data <root> --socket <app.sock>`;
+`--relay` defaults to the existing `/run/boxhostd/relay.sock` mount.
+
+Linux validation (working tree, no commit or deployment):
+
+| Selection batch | Result |
+|---|---|
+| 310 files | 6,811 passed, 5 skipped, 2 failed, 2 setup errors; baseline comparison below |
+| 155 files, first half of the second chunk | 3,348 passed, 61 skipped |
+| 155 files, second half of the second chunk | 2,953 passed, 2 skipped |
+| 66 files | 1,511 passed, 3 skipped |
+| 18 additional affected files | 346 passed |
+| 122 additional affected files | 2,165 passed, 6 skipped |
+
+`affected_tests.py --base origin/main --pr` was run as requested. Because it
+compares committed HEAD, the working-tree and untracked paths were also fed to
+`--changed --pr`: all 826 selected files are covered above. Lists were stripped
+of CRs, missing paths dropped, and split at 310 files. The original second
+310-file process exhausted its 1,024-file-descriptor soft limit before pytest
+could produce a summary; its identical file list passed in the two 155-file
+batches above. No skip or test removal was introduced.
+
+The initial first-chunk failures were SQLite `unable to open database file`
+errors in the browser cases `test_manual_update_read_drops_old_selection_or_account_response[account]`
+and `test_pending_manual_update_cannot_boot_saved_script_during_refresh[closed_dialog]`,
+plus setup for `test_cannot_skip_a_blocked_intermediate_release` and
+`test_completed_copy_registers_actual_provenance_automatically`.
+The three affected files pass in isolation on both this tree and `origin/main`
+(76 passed each). The same full 310-file order against an archive of untouched
+`origin/main` (`417f6a4c003db2bfde9cf216cb734eb5e317adc2`), in the same Linux
+oracle venue, produced 6,809 passed, 5 skipped, 4 failed and 2 setup errors.
+It reproduces the same SQLite failure and the exact blocked-intermediate-release
+setup error; other failing case names vary between runs. This is baseline
+failure evidence, not a claim that the full selection was uniformly green.
+
+Additional Linux checks: 8/8 owner-daemon acceptance tests; 1,295 passes across
+31 affected heavy files; 74 passes in the additional heavy/structural pair;
+224 passes in the focused touched-module run. The structural run found the new
+state directory missing from storage classification and two file-I/O guard
+findings; those were fixed, and the 92-test follow-up (including acceptance)
+passes. Ruff on every changed Python file and `git diff --check` pass.
+
+Retained paths to move or delete in later slices (not ported by this slice):
+
+- Center admission and account deletion still select the shared box provider:
+  `tinyassets/boxes/lifecycle.py:19`, `tinyassets/account_deletion.py:1006`.
+- Native CLI execution/discovery still needs the shared session launch binding:
+  `tinyassets/control_plane/native_launch.py:19`,
+  `tinyassets/providers/owned_process.py:138`,
+  `tinyassets/providers/native_discovery.py:107`. Real credential and model
+  egress remains slice 3; `owner_runtime.broker_egress` names its reserved seam.
+- Workspace execution and lease reclamation still select a remote provider:
+  `tinyassets/workspace_worker.py:202`, `tinyassets/workspace_fs.py:1036`.
+  Wake command probes also retain that path: `tinyassets/wake_conditions.py:115`.
+- The retained scheduler/engine discovery loops still enumerate serving centers
+  from the root database (`tinyassets/control_plane/tick.py:444`,
+  `tinyassets/provider_serving_binding.py:1146`,
+  `tinyassets/engine_mcp_http.py:396`). In owner mode that root contains only
+  this owner's rows; slice 1 adds no owner filter.
+
+The original main audit below is preserved as the pre-change comparison.
+
 Repo: `C:\Users\Jonathan\Projects\wf-isolation-by-box`, HEAD `d31c8293b6a` = origin/main `417f6a4c003` plus one spec-only commit (`openspec/changes/isolation-by-box/`, 4 files, no code). All code citations below are identical on `417f6a4`. Production sha `fa29c95` is not in the local object store, so I could not diff it. Merge order on main (first-parent): C7 #4845 (10-15 00:58), C6 P2b-1..4 (#4947/#4946/#4945/#4944), C6 #4920, C7/C9 binding #4939 (10-15 08:15), C6 prep #5000, **C6 #5043 "delete the owner-cell path"** (10-15), **C10 #4937** (10-16 01:54), C6 #5164, #5166.
 
 Clean shape (report): the shared layer holds only identity, the owner→box map/router, billing, the credential/egress proxy, a next-wake index and published data. The agent loop, history, files, owner DB, schedule rows, pause and owner-data app/MCP logic run inside the box. The shared daemon holds zero host paths to owner data.

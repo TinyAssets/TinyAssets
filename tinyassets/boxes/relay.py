@@ -63,6 +63,11 @@ class OwnerRelays:
                 if first is None or first.kind != rf.CONTROL or first.stream != rf.CONNECTION:
                     raise BoxAuthError("relay requires a bounded center selection")
                 doc = first.control()
+                if doc == {"op": "WHOAMI"}:
+                    guest.sendall(rf.control(rf.CONNECTION, {
+                        "op": "OWNER_IS", "principal": owner, "uid": uid,
+                    }))
+                    return
                 if set(doc) != {"op", "center"} or doc["op"] not in {"BOX_CONNECT", "BOX_PUBLIC"}:
                     raise BoxAuthError("invalid relay operation")
                 center = doc["center"]

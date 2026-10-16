@@ -141,6 +141,10 @@ def start(agent_ref: str, input: str, parent: Parent):
 
 
 def _binding(parent: Parent) -> SessionBinding | None:
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        return None
     from tinyassets.agent_loop.served_chat import configured_box_provider
     from tinyassets.boxes.provider import BoxAuthError
 

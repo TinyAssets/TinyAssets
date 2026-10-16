@@ -696,8 +696,8 @@ def ensure_data_directory(path: Path | str) -> None:
         # A command center's directories live in its owner's box; a write
         # through the admitted handle makes its parents. Nothing is created on
         # a host path for a center, admitted or not.
-        file_binding(root / parts[0])
-        return
+        if file_binding(root / parts[0]) is not None:
+            return
     descriptor = _parent_dir_fd(root, [*parts, 'unused'], create=True)
     os.close(descriptor)
 

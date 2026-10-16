@@ -18,8 +18,8 @@ adding a check in shared code.
 
 ## D1. The owner daemon
 
-- **Process:** the same image and code, with entrypoint `tinyassets
-  owner-daemon --data /home/owner/data --socket /run/owner/app.sock`. It runs
+- **Process:** the same image and code, with entrypoint `python -m tinyassets.owner_daemon
+  --data /home/owner/data --socket /run/owner/app.sock`. It runs
   inside the owner's gVisor box under the owner's uid. `data_dir()` is the
   owner's root. It serves the existing ASGI app (`/app/api/*`,
   `universe_server` MCP routes, `/api` handlers) on the unix socket, not TCP.
@@ -38,19 +38,13 @@ adding a check in shared code.
 
 ### D1 decisions from the slice 1 stop (2026-10-16)
 
-- **Runtime admission.** Today, cloud admission
-  (`platform_runtime_provenance`) comes from DigitalOcean metadata over HTTP.
-  It gates the app lifespan, the tick and provider authority. Inside a box, the
-  verdict comes from the broker instead. boxhostd binds the broker socket only
-  into a box the broker admitted. The owner daemon asks it once at startup
-  (`WHOAMI` → admitted `owner_id`, executor class `owner-box`) and caches the
-  answer as its process admission. With no broker socket, or a refused answer,
-  the daemon refuses to start, as it does today with no cloud verdict. No
-  network is used, and nothing is fixtured as "cloud".
-- **Local tools.** In owner mode, the four tools and `ta` use the existing
-  in-box core (`boxes/boxd.BoxdCore` over the owner root) in-process. That is
-  the same file and exec API with no remote hop, and the `box_tools` →
-  `start_exec` bridge is not used.
+- **Bootstrap.** The per-owner relay accepts first frame `{"op":"WHOAMI"}` without a center and returns `{"op":"OWNER_IS","principal":<bound owner>,"uid":<bound uid>}` from `bind()`, with no broker round trip or request identity; this admits startup as `owner-box`, while `BOX_CONNECT` stays unchanged.
+- **Mode.** Missing or refused relay admission prevents startup; only successful admission installs immutable process-local owner mode; file helpers return no session binding in that mode, and the same app factory and existing request authentication remain in use until slice 2.
+- **Tools.** Local file tools call `OwnerBoxd` in-process with generation/receipt state under `<data>/.owner-boxd`; bash launches locally with bounded output/time and the existing ta receipts and extension delivery over a local socket, without `BoxExecutor` or `start_exec`.
+- **Authority.** Provider-work receipts accept `owner-box` alongside `cloud`; the executor class is derived from process admission, with no request-selected identity.
+- **Egress.** `owner_runtime.broker_egress` is the slice 3 seam; slice 1 tests use the existing synthetic model-wire fixture.
+- **Lifespan.** The existing app lifespan starts and stops the existing owner tick and loopback engine endpoints in owner mode; it needs neither host bootstrap protection nor a second box-facing engine socket.
+- **Defaults.** Admitted owner startup enables the existing app-door and engine-tool flags; sandbox status uses that admission, and storage measurement walks the local owner root.
 - **Loopback.** The `bash`/`ta` engine transport uses loopback TCP inside the
   box's own netns. That is allowed. The rule is no NON-loopback connection.
 

@@ -811,7 +811,7 @@ class _Transaction:
                 (("run_graph",),) if candidate.work_item_kind == "run"
                 else (("background_branch_run",), ("repository_spec_delivery",))
             )
-            or candidate.executor_class != "cloud"
+            or candidate.executor_class not in {"cloud", "owner-box"}
             or candidate.receipt_id != provider_work_receipt_id(
                 universe_id=candidate.universe_id,
                 root=ProviderUniverseWorkRoot(candidate.work_item_kind, candidate.work_item_id),

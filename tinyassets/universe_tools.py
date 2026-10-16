@@ -89,6 +89,12 @@ def _box(universe_dir: Path, agent_id: str) -> tuple[box_tools.BoxTools, str]:
 
     if not agent_id.strip():
         raise UniverseToolError("agent_id is required")
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        from tinyassets.agent_loop.owner_tools import tools_for
+
+        return tools_for(universe_dir)
     binding = current_binding()
     if binding is None:
         raise UniverseToolError("no admitted session owns this command center's box")
@@ -104,16 +110,32 @@ def _run(coroutine):
     return asyncio.run(coroutine)
 
 
+def _operation_id(purpose):
+    from tinyassets.control_plane.binding import current_binding
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        import uuid
+
+        return uuid.uuid4().hex
+    return current_binding().operation_id(purpose)
+
+
 def read_file(universe_dir: Path, path: str, offset: int = 0, limit: int = 0,
               *, agent_id: str) -> str | ToolImage:
     """Up to ``limit`` lines of a file from line ``offset`` (1-based), or, for an
     image path, the image itself (bounded by :mod:`tinyassets.tool_images`)."""
-    from tinyassets.control_plane.binding import current_binding
-
     tools, root = _box(universe_dir, agent_id)
     target = _tool_path(path, root)
-    op = current_binding().operation_id("tool:read")
+    op = _operation_id("tool:read")
     if is_image_path(target):
+        from tinyassets.owner_runtime import current
+
+        if current() is not None:
+            read = tools.read_content(target, MAX_IMAGE_SOURCE_BYTES)
+            if read.size > len(read.data):
+                return "error: image is too large to show"
+            return bound_image(read.data, target, universe_dir=universe_dir)
         return _run(_read_image(tools, op, target, root, universe_dir))
     return _run(tools.read(op, target, offset=offset, limit=limit))
 
@@ -134,7 +156,6 @@ async def _read_image(tools, op: str, target: str, root: str,
 
 def write_file(universe_dir: Path, path: str, content: str, *, agent_id: str) -> str:
     """Create or replace a file, making parent directories."""
-    from tinyassets.control_plane.binding import current_binding
     from tinyassets.research_capability import research_refusal
 
     refusal = research_refusal("write")
@@ -144,13 +165,12 @@ def write_file(universe_dir: Path, path: str, content: str, *, agent_id: str) ->
     target = _tool_path(path, root)
     if len((content or "").encode("utf-8")) > MAX_WRITE_BYTES:
         raise UniverseToolError(f"content is over the {MAX_WRITE_BYTES}-byte write limit")
-    return _run(tools.write(current_binding().operation_id("tool:write"), target, content))
+    return _run(tools.write(_operation_id("tool:write"), target, content))
 
 
 def edit_file(universe_dir: Path, path: str, old_text: str, new_text: str,
               *, agent_id: str) -> str:
     """Replace the one exact occurrence of ``old_text`` with ``new_text``."""
-    from tinyassets.control_plane.binding import current_binding
     from tinyassets.research_capability import research_refusal
 
     refusal = research_refusal("edit")
@@ -160,7 +180,7 @@ def edit_file(universe_dir: Path, path: str, old_text: str, new_text: str,
     target = _tool_path(path, root)
     if not old_text:
         raise UniverseToolError("old_text is required: the exact passage to replace")
-    return _run(tools.edit(current_binding().operation_id("tool:edit"), target,
+    return _run(tools.edit(_operation_id("tool:edit"), target,
                            old_text, new_text))
 
 
@@ -192,7 +212,10 @@ async def _bash(tools, universe_dir: Path, command: str, timeout: float,
     from tinyassets.extension_git import for_launch
 
     binding = current_binding()
-    op = binding.operation_id("tool:bash")
+    from tinyassets.owner_runtime import current
+
+    local = current() is not None
+    op = _operation_id("tool:bash")
     bridge = None
     if ta_dispatch is not None:
         from tinyassets.agent_loop.box_ta import TurnBridge
@@ -210,13 +233,18 @@ async def _bash(tools, universe_dir: Path, command: str, timeout: float,
         async def deliver():
             return await asyncio.to_thread(ExtensionCapabilities(backend).bundle)
 
-        bridge = TurnBridge(
-            owner=binding.handle.account_id, center=universe_dir.name, turn=binding.session_id,
-            handle=binding.handle, database=data_dir() / ".remote-ta-receipts.sqlite3",
-            dispatch=dispatch, deliver=deliver if backend is not None else None,
-            session_id=binding.session_id,
-        )
-        tools._exec.enable_ta(bridge)
+        if local:
+            bridge = tools.enable_ta(
+                dispatch=dispatch, deliver=deliver if backend is not None else None,
+            )
+        else:
+            bridge = TurnBridge(
+                owner=binding.handle.account_id, center=universe_dir.name, turn=binding.session_id,
+                handle=binding.handle, database=data_dir() / ".remote-ta-receipts.sqlite3",
+                dispatch=dispatch, deliver=deliver if backend is not None else None,
+                session_id=binding.session_id,
+            )
+            tools._exec.enable_ta(bridge)
     try:
         with for_launch(getattr(ta_dispatch, "extension_backend", None)) as git_env:
             call = asyncio.ensure_future(tools.bash(op, command, timeout, env=git_env or None))

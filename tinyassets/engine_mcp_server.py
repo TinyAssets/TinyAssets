@@ -4785,7 +4785,9 @@ async def _universe_tool(op, /, **kwargs) -> str:
     try:
         udir = _universe_dir(_GRAPH_ID)
         binding = active_binding(_ACTOR_ID, _GRAPH_ID)
-        if binding is None:
+        from tinyassets.owner_runtime import current
+
+        if binding is None and current() is None:
             return "error: no admitted session owns this command center's box"
         with use_binding(binding):
             result = await asyncio.to_thread(op, udir, **kwargs)
