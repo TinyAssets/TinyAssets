@@ -1,6 +1,7 @@
 """Real owner daemon used by the router transport acceptance suite (Linux)."""
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -10,6 +11,10 @@ from tinyassets.owner_daemon import create_app
 
 
 def main():
+    from tinyassets.platform_secrets import CHILD_FORBIDDEN_ENV, ENGINE_REQUIRED_SECRET_ENV
+
+    for name in CHILD_FORBIDDEN_ENV | ENGINE_REQUIRED_SECRET_ENV.keys():
+        os.environ.pop(name, None)
     root, relay, secret, socket = map(Path, sys.argv[1:])
     app = create_app(data=root, relay=relay, secret_file=secret)
     from tinyassets.daemon_server import grant_universe_ownership, set_founder_home

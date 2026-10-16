@@ -40,6 +40,10 @@ def box(broker, tmp_path, monkeypatch):  # noqa: F811
     from tinyassets.broker.owner_reads import Plans
     from tinyassets.broker.policy import PolicyStore
     from tinyassets.commons_catalog import publish_definition
+    from tinyassets.platform_secrets import CHILD_FORBIDDEN_ENV, ENGINE_REQUIRED_SECRET_ENV
+
+    for name in CHILD_FORBIDDEN_ENV | ENGINE_REQUIRED_SECRET_ENV.keys():
+        monkeypatch.delenv(name, raising=False)
 
     shared, root = tmp_path / "shared", tmp_path / "box"
     shared.mkdir()
@@ -265,6 +269,10 @@ finally:
     result = json.loads(completed.stdout)
     assert result["text"] == "hello through the broker"
     assert SECRET not in completed.stdout
+    from tinyassets.platform_secrets import CHILD_FORBIDDEN_ENV, ENGINE_REQUIRED_SECRET_ENV
+
+    forbidden = CHILD_FORBIDDEN_ENV | ENGINE_REQUIRED_SECRET_ENV.keys()
+    assert not forbidden & result["environment"].keys()
     assert not any(k.endswith(("_API_KEY", "_ACCESS_TOKEN", "_REFRESH_TOKEN", "_SECRET_KEY"))
                    and value for k, value in result["environment"].items())
     assert not (root / ".broker").exists()
@@ -310,8 +318,13 @@ def test_usage_lease_disconnect_closes_allocation(box):
 
 
 @pytest.mark.parametrize("name", ["OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN",
-                                 "STRIPE_WEBHOOK_SECRET", "TINYASSETS_BILLING_ENTITLEMENT_KEY"])
+                                 "STRIPE_WEBHOOK_SECRET", "TINYASSETS_BILLING_ENTITLEMENT_KEY",
+                                 "TINYASSETS_FCM_SERVICE_ACCOUNT_JSON"])
 def test_owner_startup_refuses_credential_environment(tmp_path, monkeypatch, name):
+    from tinyassets.platform_secrets import CHILD_FORBIDDEN_ENV, ENGINE_REQUIRED_SECRET_ENV
+
+    for secret_name in CHILD_FORBIDDEN_ENV | ENGINE_REQUIRED_SECRET_ENV.keys():
+        monkeypatch.delenv(secret_name, raising=False)
     monkeypatch.setattr(owner_runtime, "_runtime", None)
     monkeypatch.setenv(name, "synthetic-key")
     with pytest.raises(PermissionError, match="environment contains a raw credential"):

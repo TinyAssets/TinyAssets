@@ -40,12 +40,12 @@ def start(data: Path, relay: Path) -> OwnerRuntime:
     # A misconfigured launcher must fail before constructing any owner app.
     # Values are never included in the error. The image's static environment
     # and the null netns remain boxhostd's startup contract.
-    from tinyassets.platform_secrets import DAEMON_FORBIDDEN_ENV, DAEMON_ONLY_ENV
+    from tinyassets.platform_secrets import CHILD_FORBIDDEN_ENV, ENGINE_REQUIRED_SECRET_ENV
 
     if any(value and (name.upper().endswith(("_API_KEY", "_ACCESS_TOKEN", "_REFRESH_TOKEN",
                                              "_SECRET_KEY", "_CLIENT_SECRET", "_OAUTH_TOKEN",
                                              "_AUTH_TOKEN", "_WEBHOOK_SECRET"))
-                      or name.upper() in DAEMON_FORBIDDEN_ENV | DAEMON_ONLY_ENV
+                      or name.upper() in CHILD_FORBIDDEN_ENV | ENGINE_REQUIRED_SECRET_ENV.keys()
                       or name.upper() == "STRIPE_SECRET")
            for name, value in os.environ.items()):
         raise PermissionError("owner daemon environment contains a raw credential")

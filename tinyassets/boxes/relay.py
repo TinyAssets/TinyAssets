@@ -72,6 +72,8 @@ class OwnerRelays:
                 if not shared and (set(doc) != {"op", "center"}
                                    or doc["op"] not in {"BOX_CONNECT", "BOX_PUBLIC"}):
                     raise BoxAuthError("invalid relay operation")
+                if self.admission is None:
+                    raise BoxAuthError("relay broker admission unavailable")
                 center = doc.get("center", "")
                 grant = None if shared else self.admission.grant(owner, center, "relay")
                 if grant is not None and grant.uid != uid:

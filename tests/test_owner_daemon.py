@@ -30,10 +30,14 @@ _real_resolve_proxy = model.ApiKeyHttpProvider._resolve_proxy
 
 
 @pytest.fixture(autouse=True)
-def _owner_box_double(monkeypatch):
+def _owner_box_double(monkeypatch, _request_admission_hmac_key, _identity_fingerprint_key):
     """Seed existing fixtures before startup; then use the real local mode."""
     from tests.support.box_double import install
     from tinyassets.control_plane import binding
+    from tinyassets.platform_secrets import CHILD_FORBIDDEN_ENV, ENGINE_REQUIRED_SECRET_ENV
+
+    for name in CHILD_FORBIDDEN_ENV | ENGINE_REQUIRED_SECRET_ENV.keys():
+        monkeypatch.delenv(name, raising=False)
 
     real = binding.file_binding
     double = install(monkeypatch)
