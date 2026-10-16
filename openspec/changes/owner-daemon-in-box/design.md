@@ -107,6 +107,62 @@ adding a check in shared code.
 - **Enforcement.** Install one Python socket audit hook at owner startup for direct connects, datagrams and DNS; only loopback IPs/localhost and Unix channels are allowed, while the existing null netns remains the native-process boundary.
 - **Custody.** Startup rejects the existing platform-secret inventory and provider/OAuth credential environment names; owner-mode credential-vault access and local billing-store access refuse rather than create or read a box-local secret store.
 
+### D3c decisions (connection lifecycle at the door and the broker)
+
+Research rules applied: secrets stay outside the instance; the shared layer
+keeps identity and the credential proxy; one writer per state. The founder
+rule (2026-10-16): every auth type a provider allows, any provider, with no
+provider-specific code.
+
+- **Secrets enter only at the door.** The router serves the whole connection
+  flow: `/app/model-connect/*` (begin, exchange, resume, deposit, inline
+  begin/poll/cancel, generic OAuth begin/exchange, source sign-in),
+  `/app/model-callback/*`, `/app/oauth/client-metadata.json` and
+  `/app/connections`. Flow rows (preset PKCE, generic OAuth, DCR client
+  cache, inline popup) live only in router stores. A secret, code or token
+  never passes through a box, not even in transit.
+- **One custody writer: the broker.** The router hands a secret to the
+  broker over its private socket and never persists it. The broker writes
+  custody in shared `.platform` storage, which no box mounts, and commits the
+  grant. The box sees grants and credential-free source descriptors only.
+- **Which center.** The door accepts a center only if the broker's admission
+  map names the authenticated owner for it (`admitted_owner(center) ==
+  owner`). This is an identity read, not a tenant-data read.
+- **Connects started in a box.** A keyless (`none`) connect goes to the
+  broker's `HTTP_CONNECT` on the box channel. Any connect that needs a secret
+  returns a door link, the existing tap-to-connect, and the box's MCP and
+  approval actions take no secret value. A key pasted into chat is not
+  accepted; the slice 7 report names this change.
+- **Completion.** The box learns of a finished connect from the broker ledger
+  (`HAS_MODEL_SOURCE`, `GRANTED_RESOURCE`), with no push and no shared flow
+  row in the box.
+- **Refresh** runs only inside the broker (`ConnectionTokens`). The box's
+  `REFRESH` frame and every daemon-side vault writer are deleted.
+- **Disconnect and revoke.** Disconnect at the door, or from the box as the
+  credential-free `DISCONNECT` op. The broker calls the provider's RFC 7009
+  `revocation_endpoint` when its directory data names one, then erases
+  custody.
+- **Provider-agnostic.** Auth stays data: schemes `none`, `bearer`, `basic`,
+  `header`, `oauth1a`, `oauth2` and `url_secret`. OAuth uses discovery,
+  RFC 7591 DCR, the client metadata document and registered-client JSON.
+  Provider-specific code is deleted with the CLI stack: the OpenAI device
+  flow and its four routes, `llm_deposit` (Claude/Codex), `sk-ant-` checks,
+  and the CLI branches of `provider_resolver`, `credential_vault`,
+  `providers/base` and `api/universe` `set_engine`. A generic RFC 8628
+  device flow is not built; no remaining HTTP provider needs it, and it can
+  be added later as data.
+- **Plans.** Stripe webhook and checkout write `.broker/plans.db`. Account
+  admission writes an explicit `free` row. A missing row is an error, never
+  read as `free`.
+- **Hooks** already publish through the router (slice 2).
+
+| Research rule | 3c |
+|---|---|
+| Secrets stay outside the instance | Entered at the door, held by the broker; the box holds descriptors |
+| The door never reads tenant data | The door reads only identity (admission map) and its own flow rows |
+| One writer per state | Flow rows: router. Custody and grants: broker. Plans: billing at the broker |
+| Isolation is the box, not shared checks | No per-owner filter is added; the owner comes from authentication or the bound channel |
+
 ## D3. Lifecycle (boxhostd)
 
 - boxhostd supports one persistent sandbox per owner, running the owner

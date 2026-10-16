@@ -46,7 +46,10 @@ Nothing deploys until slice 7.
         refusing.
       - Stripe and plan writes go to the shared plan store. A missing plan
         fails loudly; it never reads as `free`.
-      - Hook create and revoke publish to the router map.
+      - [x] Hook create and revoke publish to the router map (slice 2).
+      Build order: 3c-1 deletes the CLI stack and provider-specific code;
+      3c-2 moves the flows to the door with broker custody, refresh and
+      RFC 7009 revoke; 3c-3 adds the plan store. Decisions: design.md D3c.
 - [ ] 4. boxhostd persistent per-owner sandbox lifecycle: wake, idle sleep,
       crash restart, memory cap, awake cap.
 - [ ] 5. The waker and the next-wake index. Test: a scheduled automation in
