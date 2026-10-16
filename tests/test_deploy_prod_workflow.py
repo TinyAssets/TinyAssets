@@ -276,7 +276,7 @@ def test_canary_step_only_probes_canonical():
     assert (
         "CORE_CANARY_PROVISIONED='${{ (steps.core_canary_provision.outputs.provisioned == '1'"
         " || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'"
-        " && inputs.founder_canary_waiver)) && '1' || '0' }}'"
+        " && github.run_attempt == 1 && inputs.founder_canary_waiver)) && '1' || '0' }}'"
         in deploy["run"]
     )
     waiver = _load()[True]["workflow_dispatch"]["inputs"]["founder_canary_waiver"]

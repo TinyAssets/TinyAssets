@@ -611,7 +611,7 @@ jobs:
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:${verifier}"
           set +e
           out="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo HEALTH_TIMEOUT=180 DISK_HEADROOM_HELPER='${RETENTION_HELPER}' BUNDLE_DIR='${BUNDLE_DIR}' DEPLOY_STARTED_EPOCH='${{ steps.run_clock.outputs.epoch }}' TURNS_PROBE='${probe}' VERIFY_BACKUP_PY='${verifier}' CORE_CANARY_PROVISIONED='${{ (steps.core_canary_provision.outputs.provisioned == '1' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.founder_canary_waiver)) && '1' || '0' }}' bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"
+                "sudo HEALTH_TIMEOUT=180 DISK_HEADROOM_HELPER='${RETENTION_HELPER}' BUNDLE_DIR='${BUNDLE_DIR}' DEPLOY_STARTED_EPOCH='${{ steps.run_clock.outputs.epoch }}' TURNS_PROBE='${probe}' VERIFY_BACKUP_PY='${verifier}' CORE_CANARY_PROVISIONED='${{ (steps.core_canary_provision.outputs.provisioned == '1' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.run_attempt == 1 && inputs.founder_canary_waiver)) && '1' || '0' }}' bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"
           rc=$?
           set -e
           echo "${out}"
