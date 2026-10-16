@@ -35,6 +35,17 @@ SHA = "c" * 40
 TOKEN = "ghp_EFFECTORTOKEN0123456789ABCDEFGHI"
 
 
+@pytest.fixture(autouse=True)
+def _collect_prior_run_allocations(in_process_broker):
+    # In production the broker cannot collect a daemon's run allocations.
+    # Here it shares the process: collect prior tests' cyclic allocations on
+    # the test thread, so a finalizer's synchronous accounting RPC cannot
+    # block the broker loop that must answer the workspace's next request.
+    import gc
+
+    gc.collect()
+
+
 # --------------------------------------------------------------------------- #
 # Scaffolding
 # --------------------------------------------------------------------------- #
