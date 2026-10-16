@@ -15,6 +15,7 @@ import os
 import shutil
 import sqlite3
 import stat
+import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -334,6 +335,41 @@ def prepare_center(source: Path, snapshots: Path, *, owner: str) -> CenterKnowle
     )
     return CenterKnowledge(owner, center, tuple(definitions), tuple(bindings), total,
                            vectors, inventory, copies)
+
+
+def initialize_empty_center(*, owner: str, center: str, source: Path) -> None:
+    """Give a newly admitted center the same empty census as the cutover."""
+    from tinyassets.agent_loop.served_chat import configured_box_provider
+
+    provider, _ = configured_box_provider()
+    if provider is None:
+        raise InvalidBundle("Canonical owner-box provider is unavailable")
+    bundle = KnowledgeBundle(provider, provider.bind(center, account_id=owner))
+    operation_id = "owner-box-empty-" + hashlib.sha256(
+        (owner + "\0" + center).encode()
+    ).hexdigest()
+    before = bundle.snapshot()
+    if "revision" in before.manifest:
+        if before.manifest.get("operation_id") != operation_id:
+            raise InvalidBundle("New center already has another knowledge revision")
+        from tinyassets.okf.records import source_census
+
+        for name in _FILES:
+            source_census(before, name)
+        return
+    with tempfile.TemporaryDirectory(prefix="owner-box-empty-") as scratch:
+        plan = prepare_center(source, Path(scratch), owner=owner)
+        if plan.source_rows or plan.vector_entries:
+            raise InvalidBundle("New center contains legacy knowledge sources")
+        census = census_sources(
+            plan.sources, plan.bindings,
+            verify_authority=lambda principal, home: (principal, home) == (owner, center),
+        )
+        migration = prepare_reviewed_migration(
+            bundle, census, operation_id=operation_id,
+            verify_authority=lambda principal, home: (principal, home) == (owner, center),
+        )
+        commit_migration(bundle, migration)
 
 
 def commit_center(plan: CenterKnowledge, tree: Path, state: Path) -> dict:

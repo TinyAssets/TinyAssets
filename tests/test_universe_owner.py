@@ -64,6 +64,26 @@ def _set_paid(universe_dir: Path) -> None:
 
 
 class TestCreationRecordsTheOwner:
+    def test_new_center_has_usable_project_and_daemon_memory(self, base, signed_in):
+        from tinyassets.daemon_brain import capture_daemon_memory, search_daemon_memory
+        from tinyassets.memory.project import project_memory_get, project_memory_set
+        from tinyassets.okf.records import SourceRecords
+
+        signed_in(A)
+        uid = json.loads(us._action_create_universe(universe_id="fresh-memory"))["universe_id"]
+        project = SourceRecords.bind(owner=A, center=uid, source="project")
+        daemon = SourceRecords.bind(owner=A, center=uid, source="daemon")
+        assert project_memory_set(project, project_id=uid, key="note", value="ready",
+                                  operation_id="first-note")["status"] == "ok"
+        assert project_memory_get(project, project_id=uid, key="note")["value"] == "ready"
+        captured = capture_daemon_memory(
+            daemon, daemon_id=uid, content="Remember this center",
+            reliability="observed", language_type="natural",
+            operation_id="first-memory",
+        )
+        assert captured["daemon_id"] == uid
+        assert search_daemon_memory(daemon, daemon_id=uid, query="Remember")
+
     def test_a_created_universe_is_owned_by_its_creator(self, base, signed_in):
         signed_in(A)
         uid = json.loads(us._action_create_universe(text="a seed."))["universe_id"]

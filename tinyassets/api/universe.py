@@ -4554,6 +4554,9 @@ def _action_create_universe(
         from tinyassets.boxes.lifecycle import admit_center
 
         admit_center(base, principal=founder, center=uid)
+        from tinyassets.okf.box_cutover import initialize_empty_center
+
+        initialize_empty_center(owner=founder, center=uid, source=udir)
         normalized_text = _normalize_escaped_text(text) if text.strip() else ""
         loop_branch_def_id = str(branch_def_id or "").strip()
         # universe-creation D4/D5: seed the linked OKF soul bundle. Creation
