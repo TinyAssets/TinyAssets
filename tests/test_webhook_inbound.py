@@ -206,7 +206,7 @@ def test_a_dispatch_failure_answers_uniform_404_without_leaking(tmp_path):
 def test_the_hooks_route_wires_token_body_and_headers_when_enabled(monkeypatch):
     from starlette.testclient import TestClient
 
-    from tinyassets.universe_server import create_streamable_http_app
+    from tests.owner_app_fixture import create_owner_app as create_streamable_http_app
 
     monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "1")
     seen: dict = {}
@@ -227,7 +227,7 @@ def test_the_hooks_route_wires_token_body_and_headers_when_enabled(monkeypatch):
 def test_the_route_is_absent_when_disabled(monkeypatch):
     from starlette.testclient import TestClient
 
-    from tinyassets.universe_server import create_streamable_http_app
+    from tests.owner_app_fixture import create_owner_app as create_streamable_http_app
 
     monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "0")
     client = TestClient(create_streamable_http_app())
@@ -247,7 +247,7 @@ def test_the_route_is_absent_when_disabled(monkeypatch):
 def test_the_route_rejects_an_oversized_content_length_before_reading(monkeypatch):
     from starlette.testclient import TestClient
 
-    from tinyassets.universe_server import create_streamable_http_app
+    from tests.owner_app_fixture import create_owner_app as create_streamable_http_app
 
     monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "1")
     called = {"n": 0}

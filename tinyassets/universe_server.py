@@ -4156,6 +4156,9 @@ PLATFORM_NOT_CLOUD_EXIT_CODE = 78
 
 def create_streamable_http_app(*, ingress=None) -> Starlette:
     """Create the production HTTP app for canonical `/mcp`."""
+    from tinyassets.owner_runtime import current as owner_runtime
+
+    owner_mode = owner_runtime() is not None
     canonical_app = mcp.http_app(path="/mcp", transport="streamable-http")
     modern_tools = mcp.http_app(path="/mcp", transport="streamable-http",
                                stateless_http=True, json_response=True)
@@ -4191,6 +4194,12 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
         from tinyassets.observability import emit_crash, emit_startup, install_serving
 
         install_serving()
+
+        if not owner_mode:
+            # The router has no owner stores, tick, sweepers or MCP sessions.
+            emit_startup()
+            yield
+            return
 
         from tinyassets.scoped_reset import prepare_service_writer_barrier
         from tinyassets.storage import data_dir
@@ -4303,8 +4312,9 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
         return _HookJSON(payload, status_code=status)
 
     _inbound_routes = (
-        [_HookRoute("/mcp/hooks/{token}", _hooks_endpoint, methods=["POST"])]
-        if _inbound_enabled()
+        [_HookRoute(path, _hooks_endpoint, methods=["POST"])
+         for path in ("/mcp/hooks/{token}", "/hooks/inbound/{token}")]
+        if owner_mode and _inbound_enabled()
         else []
     )
 
@@ -4372,6 +4382,11 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
         return _PulseJSON(payload)
 
     from tinyassets.observability import client_error
+    from tinyassets.owner_router import OwnerRouter, forwarded_path
+
+    app_routes = onboarding_routes()
+    if not owner_mode:
+        app_routes = [route for route in app_routes if not forwarded_path(route.path)]
 
     app = Starlette(
         routes=[
@@ -4384,11 +4399,11 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
             # Onboarding SPA at /app — same-origin to /mcp, dark-flagged
             # (returns 404 until TINYASSETS_ONBOARDING_APP is set). Mounted
             # before the MCP transport so the exact path resolves first.
-            *onboarding_routes(),
+            *app_routes,
             # REST door for programmatic clients (API keys only; see the
             # auth middleware's `_serve_rest_api`).
-            *rest_api_routes(),
-            *canonical_app.routes,
+            *(rest_api_routes() if owner_mode else []),
+            *(canonical_app.routes if owner_mode else []),
         ],
         lifespan=lifespan,
     )
@@ -4403,8 +4418,12 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
     # Inside Starlette's server-error wrapper, outside the exception middleware,
     # so a route exception is stashed before it becomes an HTTP 500.
     app.add_middleware(StashExceptionMiddleware)
-    app = AuthContextMiddleware(AppIngressMiddleware(
-        MCPEventsMiddleware(_MCPDiscoveryMiddleware(app), modern_tools), ingress))
+    if owner_mode:
+        app = AppIngressMiddleware(
+            MCPEventsMiddleware(_MCPDiscoveryMiddleware(app), modern_tools), ingress)
+    else:
+        app = _MCPDiscoveryMiddleware(OwnerRouter(app))
+    app = AuthContextMiddleware(app, router=not owner_mode)
     # Browser clients preflight OPTIONS /mcp with no bearer, and they can
     # read WWW-Authenticate and Mcp-Session-Id only when the response names
     # their origin. This sits outside auth so the preflight is not a 401,
@@ -4417,7 +4436,7 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
     # The session trail records every admitted request. It sits directly
     # inside admission so no request body is buffered before the origin is
     # admitted; a refused origin leaves no event.
-    app = RequestLogMiddleware(app)
+    app = RequestLogMiddleware(app, inspect_body=owner_mode)
     # Origin-ingress backstop (enforcement site D) -- OUTERMOST, so an
     # unadmitted origin refuses before auth, discovery, the MCP transport and
     # every route handler. Cached-only: it reads the non-mutating peek, so no
@@ -4506,224 +4525,17 @@ def main(
         sanitized_observation_fields(_provenance),
     )
 
-    # Served-budget maintenance for ALL transports (Codex re-review 2026-08-19:
-    # boot reconcile + the lease reconciler were streamable-http-only, so sse/
-    # stdio startup skipped the promised orphan cleanup). Boot reconciliation
-    # settles reservations orphaned by a crashed/killed prior process (at boot
-    # nothing is in-flight, so any open row is dead and safe to release); the
-    # periodic reconciler then settles per-call-lease-expired holds mid-run so a
-    # crashed turn's hold never bricks serving until the next reboot. Cheap +
-    # idempotent + a no-op when there are no reservations.
-    try:
-        import threading as _threading
-
-        from tinyassets.provider_assignment import (
-            reconcile_orphaned_reservations_on_boot,
-            reconcile_served_budget_leases,
-        )
-        from tinyassets.storage import data_dir as _sb_data_dir
-
-        _reclaimed = reconcile_orphaned_reservations_on_boot(_sb_data_dir())
-        # Delivery intent survives queued-run startup interruption. Reconcile
-        # ordinary runs first, then let the fenced receiver worker distinguish
-        # proven unstarted attempts from possibly executed work.
-        from tinyassets.api.runs import _ensure_runs_recovery
-        from tinyassets.delivery_runtime import reconcile_deliveries
-        from tinyassets.run_file_retention import reconcile_run_files
-        from tinyassets.run_input_origins import reconcile_admitted_runs
-
-        _admitted_run_cursor = ""
-        _file_retention_cursor = ""
-        try:
-            _file_retention_cursor = reconcile_run_files(_sb_data_dir())
-        except Exception:  # noqa: BLE001 - file debt must not disable other maintenance
-            logger.exception("run files: boot retention failed")
-        try:
-            _ensure_runs_recovery()
-            reconcile_deliveries(_sb_data_dir())
-        except Exception:  # noqa: BLE001 - delivery must not disable budget recovery
-            logger.exception("delivery: boot reconciliation failed")
-        try:
-            from tinyassets.consumer_runtime import initialize as initialize_consumer
-
-            initialize_consumer(_sb_data_dir())
-            _admitted_run_cursor = reconcile_admitted_runs(_sb_data_dir())
-        except Exception:  # noqa: BLE001 - held admissions must not disable maintenance
-            logger.exception("admitted runs: boot reconciliation failed")
-        if _reclaimed:
-            logger.info(
-                "served budget: released %d orphaned reservation(s) at boot",
-                _reclaimed,
-            )
-
-        def _served_budget_lease_loop() -> None:
-            import time as _time
-
-            nonlocal _admitted_run_cursor, _file_retention_cursor
-            while True:
-                _time.sleep(300.0)
-                try:
-                    from tinyassets.command_center_update_maintenance import tick as update_centers
-
-                    update_centers(_sb_data_dir())
-                except Exception:  # noqa: BLE001 - keep unrelated maintenance running
-                    logger.exception("command center updates: maintenance unavailable")
-                try:
-                    _file_retention_cursor = reconcile_run_files(
-                        _sb_data_dir(), after_operation_id=_file_retention_cursor,
-                    )
-                except Exception:  # noqa: BLE001 - retain debt and continue other maintenance
-                    logger.exception("run files: retention tick failed")
-                try:
-                    _admitted_run_cursor = reconcile_admitted_runs(
-                        _sb_data_dir(), after_run_id=_admitted_run_cursor,
-                    )
-                except Exception:  # noqa: BLE001 - independent bounded origin nomination
-                    logger.exception("admitted runs: reconciliation tick failed")
-                try:
-                    reconcile_deliveries(_sb_data_dir())
-                except Exception:  # noqa: BLE001 - do not starve budget settlement
-                    logger.exception("delivery: reconciliation tick failed")
-                try:
-                    _n = reconcile_served_budget_leases(_sb_data_dir())
-                    if _n:
-                        logger.info(
-                            "served budget: lease-reconciled %d stale "
-                            "reservation(s)",
-                            _n,
-                        )
-                except Exception:  # noqa: BLE001 - loop must never die
-                    logger.exception(
-                        "served budget: lease reconciliation tick failed"
-                    )
-
-        _threading.Thread(
-            target=_served_budget_lease_loop,
-            name="served-budget-lease-reconciler",
-            daemon=True,
-        ).start()
-        from tinyassets.command_center_update_maintenance import scheduled as updates_scheduled
-
-        updates_scheduled(_sb_data_dir())
-    except Exception:  # noqa: BLE001 - boot must not fail on budget maintenance
-        logger.exception("served budget: maintenance not started")
-        try:
-            from tinyassets.command_center_update_maintenance import (
-                unavailable as updates_unavailable,
-            )
-            from tinyassets.storage import data_dir as update_data_dir
-
-            updates_unavailable(update_data_dir())
-        except Exception:  # noqa: BLE001 - the original startup failure stays authoritative
-            logger.exception("command center updates: availability could not be recorded")
-
-    # Take the run-recovery lock and interrupt what the previous process left in
-    # flight BEFORE starting anything that runs: the engine MCP children serve
-    # run tools too, and whichever process sweeps must be the one whose runs
-    # are not in the table yet. A deploy-killed run is announced as interrupted
-    # here, which is what lets an owner's run_completed loop survive a deploy.
-    # The maintenance block above also calls it, but inside a try that an
-    # earlier failure skips; this call is the one boot can rely on (once-only).
-    from tinyassets.api.runs import _ensure_runs_recovery, start_run_owner_watcher
-
-    # This process is the execution owner. Its tree exists, and is advertised in
-    # the environment, BEFORE anything is spawned: engine children and workers
-    # started below inherit it and join it, so the owner's death proof covers
-    # them (change execution-owner-lease D2). Every transport, not only HTTP.
-    from tinyassets.owner_lease import start_owner_tree
-    from tinyassets.storage import data_dir as _owner_data_dir
-
-    start_owner_tree(_owner_data_dir())
-    _ensure_runs_recovery()
-    # And keep recovering: an engine child that dies mid-run while this server
-    # lives is found within one tick, by proof that it died.
-    start_run_owner_watcher()
-
-    # Enforceable visibility preflight (also fires in the HTTP app's lifespan;
-    # idempotent). For sse/stdio transports there is no Starlette lifespan, so
-    # run it here too — a strict-code boot must not serve undeclared universes.
-    if transport == "streamable-http":
-        # The PID1 bootstrap adopted the credential broker before retiring;
-        # nothing outbound may run without it, so refuse to serve instead.
-        from tinyassets.broker.supervisor import BrokerUidSplitRequired, get_supervisor
-        from tinyassets.storage import data_dir
-
-        if get_supervisor(data_dir()) is None:
-            raise BrokerUidSplitRequired("serve through the PID1 bootstrap")
-        # Founder-scoped engine MCP over HTTP: start one loopback server per
-        # serving universe so the universe agent's `run_graph`/`read_graph`
-        # tools are available on EVERY served turn after a clean boot — no
-        # manual step, surviving container recreate. No-op when the engine-MCP
-        # flag is off. Held alive by this (daemon) process for its lifetime.
-        from tinyassets.engine_mcp_http import start_engine_mcp_http_servers
-
-        _engine_http_procs = start_engine_mcp_http_servers()  # noqa: F841
-        app = create_streamable_http_app()
-        assigned_consumer = None
-        # The lifespan has not run yet. Storage initialization precedes the tick.
-        from tinyassets.consumer_runtime import initialize as initialize_consumer
-        from tinyassets.control_plane.tick import AssignedQueueConsumer
-        from tinyassets.storage import data_dir as assigned_data_dir
-
-        # The owner tick starts whether or not the assigned-queue consumer
-        # flag is set. That flag does not refuse a stored automation.
-        initialize_consumer(assigned_data_dir())
-        assigned_consumer = AssignedQueueConsumer(assigned_data_dir())
-        assigned_consumer.start()
-        try:
-            uvicorn.run(
-                app, host=host, port=port,
-                timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
-            )
-        finally:
-            if assigned_consumer is not None:
-                assigned_consumer.stop()
-        return
-
-    from tinyassets.api.visibility import run_visibility_startup_gate
-    from tinyassets.scoped_reset import prepare_service_writer_barrier
+    # The public process is only a router. Every owner runtime starts via
+    # owner_daemon, including its engine endpoints, tick and recovery work.
+    if transport != "streamable-http":
+        raise ValueError("the router serves only authenticated streamable-http")
+    from tinyassets.broker.supervisor import BrokerUidSplitRequired, get_supervisor
     from tinyassets.storage import data_dir
 
-    writer_barrier = prepare_service_writer_barrier(data_dir())
-    assigned_consumer = None
-    from tinyassets.control_plane.tick import AssignedQueueConsumer
-
-    try:
-        from tinyassets.consumer_runtime import initialize as initialize_consumer
-
-        # Storage must be ready before the owner tick opens its database.
-        # The tick starts whether or not the assigned-queue consumer flag is set.
-        initialize_consumer(data_dir())
-        assigned_consumer = AssignedQueueConsumer(data_dir())
-        assigned_consumer.start()
-        run_visibility_startup_gate()
-        start_staging_sweeper_for_serving(data_dir())
-        if transport in ("sse", "stdio"):
-            # Neither transport carries a bearer, and neither runs behind the
-            # auth middleware, so the principal is the local operator, bound
-            # once for the process (fail-closed principal boundary). The ContextVar set
-            # here is copied into every task anyio starts under mcp.run().
-            # Without it these two surfaces served every call as nobody --
-            # which, now that current_identity() raises, is a refusal rather
-            # than a silent stand-in, and a refusal is not a working server
-            # (Codex code review round 3, P1).
-            from tinyassets.auth.middleware import bind_local_operator_identity
-
-            bound = bind_local_operator_identity()
-            logger.info(
-                "%s transport: principal is local operator %r", transport, bound.user_id
-            )
-        if transport == "sse":
-            mcp.run(transport="sse", host=host, port=port)
-        elif transport == "stdio":
-            mcp.run()
-        else:
-            raise ValueError(f"Unknown transport: {transport}")
-    finally:
-        if assigned_consumer is not None:
-            assigned_consumer.stop()
-        stop_workspace_sweepers_for_serving()
-        writer_barrier.release()
+    if get_supervisor(data_dir()) is None:
+        raise BrokerUidSplitRequired("serve through the PID1 bootstrap")
+    uvicorn.run(create_streamable_http_app(), host=host, port=port,
+                timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S)
 
 
 if __name__ == "__main__":

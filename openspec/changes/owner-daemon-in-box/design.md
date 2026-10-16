@@ -19,7 +19,8 @@ adding a check in shared code.
 ## D1. The owner daemon
 
 - **Process:** the same image and code, with entrypoint `python -m tinyassets.owner_daemon
-  --data /home/owner/data --socket /run/owner/app.sock`. It runs
+  --data /home/owner/data --socket /run/owner/app.sock
+  --secret-file /run/owner/secret`. It runs
   inside the owner's gVisor box under the owner's uid. `data_dir()` is the
   owner's root. It serves the existing ASGI app (`/app/api/*`,
   `universe_server` MCP routes, `/api` handlers) on the unix socket, not TCP.
@@ -48,6 +49,8 @@ adding a check in shared code.
 - **Loopback.** The `bash`/`ta` engine transport uses loopback TCP inside the
   box's own netns. That is allowed. The rule is no NON-loopback connection.
 
+## D2. Shared router
+
 - Keeps the public doors (Cloudflare tunnel → `/mcp`, `/app`, `/api`,
   `/hooks/inbound`), WorkOS sign-in, MCP OAuth and API keys.
 - **Per request:** authenticate → `owner_id` → box (broker `owner_machine`)
@@ -56,6 +59,18 @@ adding a check in shared code.
   The router parses no owner payload.
 - Reads no owner data. Commons and published listings come from its own
   published store.
+
+### D2 decisions (slice 2)
+
+- **Transport.** One ASGI reverse proxy streams request bytes and raw response chunks over HTTP on a Unix socket, removes hop-by-hop headers, preserves MCP session headers, and closes the upstream on client disconnect; it never retries an owner request.
+- **Resolution.** Fenced `OWNER_BOX_ROUTE(principal, rotate)` returns only the broker-reserved uid and secret for an owner with a live center admission; a reservation alone is not admission, and unknown/retired owners return 404 without opening a socket.
+- **Socket.** The single `resolve_box` seam uses `TINYASSETS_BOXES_RUN/<broker uid>/app.sock` (default `/run/boxhostd`); slice 4 adds waking there without changing route handlers.
+- **Secret.** Admission mints a 256-bit per-owner secret in the broker's private identity database; explicit rotation replaces it, and owner startup requires `--secret-file`, whose value is checked with `hmac.compare_digest` on every request.
+- **Identity.** The router replaces caller-supplied `X-Owner`, `X-Box-Secret` and `X-Owner-Identity`; the last carries the existing authenticated identity and capability metadata, while public bearer/cookie credentials are removed before forwarding.
+- **Placement.** Router authentication resolves credentials only; MCP payload checks, outside capability admission and connection receipts run inside the owner daemon, and router logging never buffers owner payloads.
+- **Hook map.** The router's `.hook-owners.sqlite3` contains only token digests and owners; the migration seeds existing digests and slice 3 supplies box publication/revocation over the shared-state broker seam, while payload/delivery rows remain inside the box.
+- **Startup.** The shared entrypoint no longer starts owner recovery, engine endpoints, ticks or storage initialization and refuses direct SSE/stdio serving; owner recovery moved into the existing owner lifespan.
+- **Routes.** `/app/api/*`, `/api` and descendants, MCP transport `/mcp[/]` and `/mcp/events`, and `/hooks/inbound/<token>` (plus the existing `/mcp/hooks/<token>`) share the forwarder; discovery, sign-in/OAuth, pulse, published listing reads and billing retain router handlers.
 
 ## D3. Lifecycle (boxhostd)
 

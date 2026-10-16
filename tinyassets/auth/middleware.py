@@ -51,6 +51,10 @@ _current_identity: ContextVar[Identity | None] = ContextVar(
     "workflow_current_identity",
     default=None,
 )
+
+# Authentication providers may resolve shared credentials here, but owner-side
+# grants and receipts run only after forwarding. Set by the serving factory.
+router_authentication: ContextVar[bool] = ContextVar("router_authentication", default=False)
 _current_bearer_present: ContextVar[bool] = ContextVar(
     "tinyassets_current_bearer_present",
     default=False,
@@ -505,11 +509,9 @@ def _is_inbound_hook_path(path: str) -> bool:
     it is pinned to a single non-empty segment after the fixed prefix so no
     deeper ``/mcp/hooks/...`` path is ever exempted.
     """
-    prefix = "/mcp/hooks/"
-    if not path.startswith(prefix):
-        return False
-    token = path[len(prefix):]
-    return bool(token) and "/" not in token
+    from tinyassets.owner_router import hook_token
+
+    return hook_token(path) is not None
 
 
 def _inbound_hooks_enabled() -> bool:
@@ -1153,8 +1155,9 @@ def current_mcp_message_identity() -> Identity | None:
 class AuthContextMiddleware:
     """Resolve bearer auth into request-local identity for MCP tool calls."""
 
-    def __init__(self, app: Any) -> None:
+    def __init__(self, app: Any, *, router: bool = False) -> None:
         self.app = app
+        self.router = router
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.app, name)
@@ -1168,7 +1171,9 @@ class AuthContextMiddleware:
         previous_bearer: Token[bool] = _current_bearer_present.set(False)
         previous_boundary: Token[str | None] = _current_request_boundary_id.set(None)
         previous_canary = set_wiki_canary_authority(False)
+        previous_router = router_authentication.set(self.router)
         try:
+            trusted = scope.get("tinyassets_router_identity")
             auth_header = ""
             for key, value in scope.get("headers", []):
                 if key.lower() == b"authorization":
@@ -1180,12 +1185,35 @@ class AuthContextMiddleware:
             path = scope.get("path", "")
             method = scope.get("method", "").upper()
 
-            if _is_rest_api_path(path):
+            if trusted is not None:
+                _current_identity.set(trusted)
+                _current_bearer_present.set(True)
+                _current_request_boundary_id.set(f"request_boundary_{secrets.token_hex(32)}")
+                if trusted.metadata.get("auth_provider") == "api_key":
+                    from tinyassets.api_keys import admit_forwarded_identity
+
+                    if not admit_forwarded_identity(trusted):
+                        await _send_forbidden_403(send, "API capability not granted")
+                        return
+                elif trusted.metadata.get("outside_origin") is not None:
+                    from tinyassets.outside_authority import current_store
+
+                    authority = current_store()
+                    try:
+                        authority.observe(trusted.user_id, trusted.metadata["outside_origin"])
+                        trusted.metadata["outside_origin"] = authority.admit(
+                            trusted.user_id, trusted.metadata["outside_origin"])
+                    except PermissionError:
+                        await _send_forbidden_403(send, "outside client capability not granted")
+                        return
+
+            if _is_rest_api_path(path) and trusted is None:
                 await _serve_rest_api(self.app, scope, receive, send, token)
                 return
 
             canary_authorized = False
-            if token and wiki_canary_token_matches(token):
+            if ((trusted is not None and trusted.user_id == CANARY.user_id)
+                    or (trusted is None and token and wiki_canary_token_matches(token))):
                 # The canary service principal (change D4). Its
                 # bearer is valid for the exact GET /mcp/pulse health read or
                 # the probe shapes in canary_request_allowed on the MCP POST
@@ -1204,6 +1232,10 @@ class AuthContextMiddleware:
                         "the canary bearer may only probe /mcp or GET /mcp/pulse",
                     )
                     return
+                elif self.router:
+                    _current_identity.set(CANARY)
+                    _current_bearer_present.set(True)
+                    canary_authorized = True
                 else:
                     body, messages, disconnected, oversized = await _buffer_request_body(receive)
                     if oversized:
@@ -1227,10 +1259,12 @@ class AuthContextMiddleware:
             # token handler runs (Codex inbound review). The hook's OWNER is bound
             # to the run by the handler from the hook row, never from this request.
             is_hook_route = _inbound_hooks_enabled() and _is_inbound_hook_path(path)
-            if not canary_authorized and not is_hook_route:
+            if trusted is None and not canary_authorized and not is_hook_route:
                 auth_middleware(token)
             identity = _current_identity.get()
-            if identity is not None and identity.metadata.get("outside_origin") is not None:
+            if (not self.router and identity is not None
+                    and identity.metadata.get("outside_origin") is not None
+                    and not _is_rest_api_path(path)):
                 if path not in ("/mcp", "/mcp/"):
                     await _send_forbidden_403(
                         send, "outside clients use the MCP capability surface")
@@ -1255,7 +1289,7 @@ class AuthContextMiddleware:
                     await self.app(scope, receive, send)
                     return
                 linking_body = None
-                if method == "POST" and path in ("/mcp", "/mcp/"):
+                if not self.router and method == "POST" and path in ("/mcp", "/mcp/"):
                     request_body, _, disconnected, oversized = await _buffer_request_body(receive)
                     if oversized:
                         await _send_payload_too_large_413(send)
@@ -1282,7 +1316,7 @@ class AuthContextMiddleware:
                     # billing webhook) bind their own principal.
                     await _send_auth_challenge_401(send, invalid_token=False)
                     return
-            if (identity is not None and not canary_authorized
+            if (not self.router and identity is not None and not canary_authorized
                     and path in {"/mcp", "/mcp/"} and method == "POST"
                     and identity.metadata.get("oauth_connection")
                     and not identity.metadata.get("first_party_client")):
@@ -1299,6 +1333,7 @@ class AuthContextMiddleware:
             except Exception:
                 logger.exception("session trail identity snapshot failed")
             reset_wiki_canary_authority(previous_canary)
+            router_authentication.reset(previous_router)
             _current_request_boundary_id.reset(previous_boundary)
             _current_bearer_present.reset(previous_bearer)
             _current_identity.reset(previous)

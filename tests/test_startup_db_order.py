@@ -16,6 +16,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.owner_app_fixture import create_owner_app
 
 # Every test here enters the real serving lifespan or hosted main, both of
 # which now require an admitted cloud runtime. Module-local and explicit --
@@ -95,7 +96,7 @@ def test_http_lifespan_initializes_runs_db_before_the_scheduler_attaches(
     monkeypatch.setattr(us, "start_scheduler_for_serving", _start_scheduler_stand_in)
     monkeypatch.setattr(us, "stop_scheduler_for_serving", writer.release)
 
-    app = us.create_streamable_http_app()
+    app = create_owner_app()
     try:
         with TestClient(app):
             pass
@@ -128,109 +129,34 @@ def test_http_lifespan_orders_initialization_before_background_work(fresh_data_d
     )
     monkeypatch.setattr(us, "stop_scheduler_for_serving", lambda: None)
 
-    with TestClient(us.create_streamable_http_app()):
+    with TestClient(create_owner_app()):
         pass
 
     assert order == ["initialize", "scheduler"], order
 
 
-@pytest.fixture
-def isolate_boot_maintenance_thread(monkeypatch):
-    """Do not leak main's perpetual background threads into later tests.
-
-    `main` also takes the process-wide run-recovery lock and starts the
-    run-owner watcher, which every 15 s interrupts "dead-owner" runs and
-    redelivers terminal events in whatever data dir is CURRENT -- so a watcher
-    leaked from here acted on later tests' runs (found by the leak probe,
-    2026-10-01). Suppress the thread and restore the recovery globals.
-    """
-    from tinyassets.api import runs as api_runs
-
-    monkeypatch.setattr(api_runs, "_RUNS_RECOVERY_DONE", False)
-    monkeypatch.setattr(api_runs, "_RUNS_RECOVERY_LOCK", None)
-    real_start = threading.Thread.start
-    suppressed = []
-
-    def _start(thread):
-        if thread.name in ("served-budget-lease-reconciler", "run-owner-watcher"):
-            suppressed.append(thread)
-            return None
-        return real_start(thread)
-
-    monkeypatch.setattr(threading.Thread, "start", _start)
-    yield suppressed
-    lock = api_runs._RUNS_RECOVERY_LOCK
-    if lock is not None:
-        from tinyassets.singleton_lock import release_singleton_lock
-
-        release_singleton_lock(lock)
-    assert any(t.name == "served-budget-lease-reconciler" for t in suppressed), (
-        "main did not reach maintenance thread startup"
-    )
-    assert all(not thread.is_alive() for thread in suppressed)
-
-
 @pytest.mark.parametrize("transport", ["sse", "stdio", "streamable-http"])
-def test_startup_initializes_before_the_assigned_consumer_starts(
-    fresh_data_dir, monkeypatch, isolate_boot_maintenance_thread, transport
+def test_router_startup_never_starts_an_assigned_consumer(
+    fresh_data_dir, monkeypatch, transport
 ):
-    """The second serving entrypoint has the same ordering obligation.
-
-    `main`'s sse/stdio path starts `AssignedQueueConsumer` -- a polling
-    thread -- before `initialize_consumer`. Fixing only the HTTP lifespan would
-    leave this race in place.
-
-    The earlier boot-maintenance block (`universe_server.py:4126-4131`) usually
-    initializes first and hides this, but it swallows its own failure
-    (`except Exception: logger.exception(...)`). So the first initialize here
-    raises, exactly as that swallowed path leaves things, and the serving block
-    must still initialize before it starts a background consumer.
-    """
     from tinyassets import consumer_runtime
     from tinyassets import universe_server as us
-    from tinyassets.control_plane import tick as aqc
+    from tinyassets.control_plane import tick
 
-    order: list[str] = []
-    real_initialize = consumer_runtime.initialize
-    calls = {"n": 0}
+    def forbidden(*args, **kwargs):
+        pytest.fail("router opened owner storage or started an owner consumer")
 
-    def _record_initialize(base):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            order.append("initialize_swallowed")
-            raise sqlite3.OperationalError("database is locked")
-        order.append("initialize")
-        return real_initialize(base)
-
-    class _RecordingConsumer:
-        def __init__(self, base):
-            self.base = base
-
-        def start(self):
-            order.append("assigned_consumer")
-
-        def stop(self):
-            order.append("assigned_consumer_stop")
-
-    monkeypatch.setattr(consumer_runtime, "initialize", _record_initialize)
-    monkeypatch.setattr(aqc, "AssignedQueueConsumer", _RecordingConsumer)
-    monkeypatch.setattr(us.mcp, "run", lambda *a, **k: order.append("serve"))
-    monkeypatch.setattr(us.uvicorn, "run", lambda *a, **k: order.append("serve"))
-    from tinyassets import engine_mcp_http
-
-    monkeypatch.setattr(engine_mcp_http, "start_engine_mcp_http_servers", lambda: [])
-
-    us.main(transport=transport)
-
-    assert order[:3] == [
-        "initialize_swallowed",
-        "initialize",
-        "assigned_consumer",
-    ], order
-    assert "serve" in order, order
-    assert order[-1] == "assigned_consumer_stop", (
-        f"teardown must still stop the consumer it started: {order}"
-    )
+    monkeypatch.setattr(consumer_runtime, "initialize", forbidden)
+    monkeypatch.setattr(tick, "AssignedQueueConsumer", forbidden)
+    reached = []
+    monkeypatch.setattr(us.uvicorn, "run", lambda *a, **k: reached.append("router"))
+    if transport == "streamable-http":
+        us.main(transport=transport)
+        assert reached == ["router"]
+    else:
+        with pytest.raises(ValueError, match="only authenticated streamable-http"):
+            us.main(transport=transport)
+        assert reached == []
 
 
 def test_initializing_a_fresh_runs_db_under_a_held_write_lock_fails(tmp_path):
@@ -270,45 +196,28 @@ def test_http_initialization_failure_stops_before_scheduler_and_releases_barrier
         us, "stop_workspace_sweepers_for_serving", lambda: events.append("sweepers_stop")
     )
     with pytest.raises(sqlite3.OperationalError, match="initialization refused"):
-        with TestClient(us.create_streamable_http_app()):
+        with TestClient(create_owner_app()):
             pytest.fail("must not serve after initialization failure")
     assert events == ["stop", "sweepers_stop", "release"]
 
 
 @pytest.mark.parametrize("transport", ["sse", "stdio", "streamable-http"])
-def test_main_initialization_failure_does_not_start_worker_or_serve(
-    fresh_data_dir, monkeypatch, isolate_boot_maintenance_thread, transport
+def test_router_does_not_depend_on_owner_storage_initialization(
+    fresh_data_dir, monkeypatch, transport
 ):
-    from tinyassets import consumer_runtime, engine_mcp_http, scoped_reset
+    from tinyassets import consumer_runtime
     from tinyassets import universe_server as us
-    from tinyassets.control_plane import tick as aqc
 
-    events = []
+    def unavailable(base):
+        raise sqlite3.OperationalError("owner store unavailable")
 
-    class _Barrier:
-        def release(self):
-            events.append("release")
-
-    def _fail_initialize(base):
-        events.append("initialize")
-        raise sqlite3.OperationalError("initialization refused")
-
-    monkeypatch.setattr(scoped_reset, "prepare_service_writer_barrier", lambda base: _Barrier())
-    monkeypatch.setattr(consumer_runtime, "initialize", _fail_initialize)
-    monkeypatch.setattr(
-        aqc,
-        "AssignedQueueConsumer",
-        lambda base: pytest.fail("worker constructed before storage ready"),
-    )
-    monkeypatch.setattr(us.mcp, "run", lambda *a, **k: pytest.fail("must not serve"))
-    monkeypatch.setattr(us.uvicorn, "run", lambda *a, **k: pytest.fail("must not serve"))
-    monkeypatch.setattr(engine_mcp_http, "start_engine_mcp_http_servers", lambda: [])
-    monkeypatch.setattr(
-        us, "stop_workspace_sweepers_for_serving", lambda: events.append("sweepers_stop")
-    )
-    with pytest.raises(sqlite3.OperationalError, match="initialization refused"):
+    monkeypatch.setattr(consumer_runtime, "initialize", unavailable)
+    reached = []
+    monkeypatch.setattr(us.uvicorn, "run", lambda *a, **k: reached.append("router"))
+    if transport == "streamable-http":
         us.main(transport=transport)
-    expected = ["initialize", "initialize"]
-    if transport != "streamable-http":
-        expected += ["sweepers_stop", "release"]
-    assert events == expected
+        assert reached == ["router"]
+    else:
+        with pytest.raises(ValueError, match="only authenticated streamable-http"):
+            us.main(transport=transport)
+        assert reached == []

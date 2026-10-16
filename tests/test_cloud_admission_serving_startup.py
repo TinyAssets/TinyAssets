@@ -320,17 +320,12 @@ def test_lifespan_refuses_before_the_writer_barrier_and_storage(
     assert "scheduler" not in lifespan_sentinels
 
 
-def test_admitted_lifespan_reaches_initialization_in_order(cached, lifespan_sentinels):
+def test_admitted_router_lifespan_never_initializes_owner_state(cached, lifespan_sentinels):
     cached(ADMITTED)
 
     _enter_lifespan()
 
-    assert lifespan_sentinels[:4] == [
-        "writer-barrier",
-        "storage-initialize",
-        "scheduler",
-        "visibility",
-    ], lifespan_sentinels
+    assert lifespan_sentinels == []
 
 
 def test_lifespan_admission_opens_no_database_transaction_first(

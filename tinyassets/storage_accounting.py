@@ -646,6 +646,7 @@ STORES: dict[str, Store] = {
 #: code creates at the data root must appear here -- the completeness test reads
 #: the source for them.
 ROOT_ENTRIES: dict[str, str] = {
+    ".hook-owners.sqlite3": "platform: router hook token digests and authenticated owners",
     ".owner-boxd": "platform: in-box file operation generations and idempotency receipts",
     ".boxhost": "platform: root-private owner generations and idempotency receipts",
     ".platform": "platform: platform stores; legacy agent homes move to quota-charged owner boxes",

@@ -16,10 +16,11 @@ Nothing deploys until slice 7.
       chat/file write, pause/resume tick and no non-loopback connections.
       Host provisioning and the gVisor lifecycle remain slice 4.
       Validation counts and the existing main-baseline failures: `main-audit.md`.
-- [ ] 2. The router forwards authenticated requests to the box socket, with
+- [x] 2. The router forwards authenticated requests to the box socket, with
       a per-box secret and streaming. Delete the shared-daemon owner handlers
       as each moves. Test: owner B's identity can never reach A's socket;
       an unknown owner gets 404.
+      Slice 2 Linux results and local commits: `main-audit.md`.
 - [ ] 3. Broker socket into each box: model calls, connections, plan tier
       and commons reads. Test: the box holds no secret; egress outside the
       broker fails.

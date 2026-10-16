@@ -351,7 +351,9 @@ class WorkOSAuthProvider(AuthProvider):
 
         try:
             outside = origin(claims)
-            if outside is not None:
+            from tinyassets.auth.middleware import router_authentication
+
+            if outside is not None and not router_authentication.get():
                 authority = current_store()
                 authority.observe(sub, outside)
                 outside = authority.admit(sub, outside)

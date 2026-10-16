@@ -617,8 +617,9 @@ class RequestLogMiddleware:
     recorded.
     """
 
-    def __init__(self, app: Any) -> None:
+    def __init__(self, app: Any, *, inspect_body: bool = True) -> None:
         self.app = app
+        self.inspect_body = inspect_body
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.app, name)
@@ -631,7 +632,7 @@ class RequestLogMiddleware:
         session, minted = _incoming_session(scope)
         links = _incoming_links(scope, session)
         body = b""
-        if _should_buffer(scope):
+        if self.inspect_body and _should_buffer(scope):
             body, receive = await _buffer_small(receive)
         step, tool, client_name = classify_step(scope, body)
         client = _remember_client(session, links.get("mcp_session", ""), client_name, scope)
@@ -953,6 +954,8 @@ def _mcp_step(body: bytes) -> tuple[str, str, str]:
 def route_for(path: str) -> str:
     """The path with secret-shaped segments replaced."""
     path = path.split("?", 1)[0].split("#", 1)[0]
+    if path.startswith("/hooks/inbound/"):
+        return "/hooks/inbound/{token}"
     parts = path.split("/")
     out: list[str] = []
     for index, part in enumerate(parts):

@@ -1,5 +1,42 @@
 # Main vs the clean per-user-instance shape: read-only audit
 
+## Slice 2 implementation follow-up (2026-10-16)
+
+The authenticated router now forwards the owner door, MCP transport, REST owner
+handlers and inbound hooks through one streaming Unix HTTP proxy. Its only box
+lookup is the fenced broker `OWNER_BOX_ROUTE` operation; reservations without a
+live admission refuse. The broker persists and rotates per-box secrets, and
+`owner_daemon --secret-file` rejects missing/wrong secrets before authentication
+or handlers. The router strips public credentials and replaces all identity
+headers. D2 decisions in `design.md` record the wire and shared-map contracts.
+
+Deleted from shared serving: moved route registrations, MCP payload inspection
+and connection receipts, owner startup/recovery/engine/tick execution, and the
+direct unauthenticated SSE/stdio entrypoints. Recovery maintenance now runs in
+the owner lifespan. Existing handler modules remain available inside the box.
+
+Focused Linux validation: **155 passed**, covering real broker IPC, two owner
+daemon processes, file/MCP/REST reads, B naming A's center, unknown/unadmitted
+owners, forged broker fields/fences, durable secret rotation, wrong secrets,
+hook token routing, SSE first-chunk delivery and disconnect cancellation,
+router-only published/sign-in-shell/pulse routes, and the owner-store guard.
+Ruff on changed Python files and `git diff --check` pass. No skips were added.
+
+Test-Removal: retired `test_startup_initializes_before_the_assigned_consumer_starts`
+and `test_main_initialization_failure_does_not_start_worker_or_serve`: the shared
+entrypoint's owner initialization and direct SSE/stdio paths were deleted;
+replacement tests assert no owner initialization and refusal of those transports.
+The owner lifespan's storage-order/failure tests remain. The former admitted
+router lifespan initialization assertion now asserts no owner-state access.
+
+Remaining integration belongs to later slices: boxhostd mounting the socket and
+read-only secret, rotation on start and wake-on-request (4); shared-state broker
+publication/revocation of hook digests and shared credential management from
+boxes (3); seeding shared maps and splitting existing owner stores (6). No
+provisioning, egress, migration or deploy files changed; nothing was pushed.
+
+CI selection and chunk results are recorded below after the local build commit.
+
 ## Slice 1 implementation follow-up (2026-10-16)
 
 The owner entrypoint now serves the existing app with relay-derived admission,

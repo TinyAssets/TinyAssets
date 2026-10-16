@@ -76,6 +76,7 @@ def serving():
         yield
         return
     stop, stopped = threading.Event(), threading.Event()
+    maintenance, watcher = _start_maintenance(stop)
     engine_mcp_http.start_engine_mcp_http_servers(
         runtime.root, stop_event=stop, stopped_event=stopped,
     )
@@ -86,8 +87,151 @@ def serving():
     finally:
         consumer.stop()
         stop.set()
+        if watcher is not None:
+            watcher.set()
+        if maintenance is not None:
+            maintenance.join(30)
         wake = engine_mcp_http._SUPERVISOR_WAKE_EVENTS.get(runtime.root)
         if wake is not None:
             wake.set()
             if not stopped.wait(30):
                 raise RuntimeError("owner engine endpoints did not stop")
+
+
+def _start_maintenance(stop: threading.Event):
+    """Owner recovery and maintenance formerly started by the shared entrypoint."""
+    import logging
+
+    logger = logging.getLogger(__name__)
+    maintenance = None
+    # Served-budget maintenance for ALL transports (Codex re-review 2026-08-19:
+    # boot reconcile + the lease reconciler were streamable-http-only, so sse/
+    # stdio startup skipped the promised orphan cleanup). Boot reconciliation
+    # settles reservations orphaned by a crashed/killed prior process (at boot
+    # nothing is in-flight, so any open row is dead and safe to release); the
+    # periodic reconciler then settles per-call-lease-expired holds mid-run so a
+    # crashed turn's hold never bricks serving until the next reboot. Cheap +
+    # idempotent + a no-op when there are no reservations.
+    try:
+        import threading as _threading
+
+        from tinyassets.provider_assignment import (
+            reconcile_orphaned_reservations_on_boot,
+            reconcile_served_budget_leases,
+        )
+        from tinyassets.storage import data_dir as _sb_data_dir
+
+        _reclaimed = reconcile_orphaned_reservations_on_boot(_sb_data_dir())
+        # Delivery intent survives queued-run startup interruption. Reconcile
+        # ordinary runs first, then let the fenced receiver worker distinguish
+        # proven unstarted attempts from possibly executed work.
+        from tinyassets.api.runs import _ensure_runs_recovery
+        from tinyassets.delivery_runtime import reconcile_deliveries
+        from tinyassets.run_file_retention import reconcile_run_files
+        from tinyassets.run_input_origins import reconcile_admitted_runs
+
+        _admitted_run_cursor = ""
+        _file_retention_cursor = ""
+        try:
+            _file_retention_cursor = reconcile_run_files(_sb_data_dir())
+        except Exception:  # noqa: BLE001 - file debt must not disable other maintenance
+            logger.exception("run files: boot retention failed")
+        try:
+            _ensure_runs_recovery()
+            reconcile_deliveries(_sb_data_dir())
+        except Exception:  # noqa: BLE001 - delivery must not disable budget recovery
+            logger.exception("delivery: boot reconciliation failed")
+        try:
+            from tinyassets.consumer_runtime import initialize as initialize_consumer
+
+            initialize_consumer(_sb_data_dir())
+            _admitted_run_cursor = reconcile_admitted_runs(_sb_data_dir())
+        except Exception:  # noqa: BLE001 - held admissions must not disable maintenance
+            logger.exception("admitted runs: boot reconciliation failed")
+        if _reclaimed:
+            logger.info(
+                "served budget: released %d orphaned reservation(s) at boot",
+                _reclaimed,
+            )
+
+        def _served_budget_lease_loop() -> None:
+
+            nonlocal _admitted_run_cursor, _file_retention_cursor
+            while not stop.wait(300.0):
+                try:
+                    from tinyassets.command_center_update_maintenance import tick as update_centers
+
+                    update_centers(_sb_data_dir())
+                except Exception:  # noqa: BLE001 - keep unrelated maintenance running
+                    logger.exception("command center updates: maintenance unavailable")
+                try:
+                    _file_retention_cursor = reconcile_run_files(
+                        _sb_data_dir(), after_operation_id=_file_retention_cursor,
+                    )
+                except Exception:  # noqa: BLE001 - retain debt and continue other maintenance
+                    logger.exception("run files: retention tick failed")
+                try:
+                    _admitted_run_cursor = reconcile_admitted_runs(
+                        _sb_data_dir(), after_run_id=_admitted_run_cursor,
+                    )
+                except Exception:  # noqa: BLE001 - independent bounded origin nomination
+                    logger.exception("admitted runs: reconciliation tick failed")
+                try:
+                    reconcile_deliveries(_sb_data_dir())
+                except Exception:  # noqa: BLE001 - do not starve budget settlement
+                    logger.exception("delivery: reconciliation tick failed")
+                try:
+                    _n = reconcile_served_budget_leases(_sb_data_dir())
+                    if _n:
+                        logger.info(
+                            "served budget: lease-reconciled %d stale "
+                            "reservation(s)",
+                            _n,
+                        )
+                except Exception:  # noqa: BLE001 - loop must never die
+                    logger.exception(
+                        "served budget: lease reconciliation tick failed"
+                    )
+
+        maintenance = _threading.Thread(
+            target=_served_budget_lease_loop,
+            name="served-budget-lease-reconciler",
+            daemon=True,
+        )
+        maintenance.start()
+        from tinyassets.command_center_update_maintenance import scheduled as updates_scheduled
+
+        updates_scheduled(_sb_data_dir())
+    except Exception:  # noqa: BLE001 - boot must not fail on budget maintenance
+        logger.exception("served budget: maintenance not started")
+        try:
+            from tinyassets.command_center_update_maintenance import (
+                unavailable as updates_unavailable,
+            )
+            from tinyassets.storage import data_dir as update_data_dir
+
+            updates_unavailable(update_data_dir())
+        except Exception:  # noqa: BLE001 - the original startup failure stays authoritative
+            logger.exception("command center updates: availability could not be recorded")
+
+    # Take the run-recovery lock and interrupt what the previous process left in
+    # flight BEFORE starting anything that runs: the engine MCP children serve
+    # run tools too, and whichever process sweeps must be the one whose runs
+    # are not in the table yet. A deploy-killed run is announced as interrupted
+    # here, which is what lets an owner's run_completed loop survive a deploy.
+    # The maintenance block above also calls it, but inside a try that an
+    # earlier failure skips; this call is the one boot can rely on (once-only).
+    from tinyassets.api.runs import _ensure_runs_recovery, start_run_owner_watcher
+
+    # This process is the execution owner. Its tree exists, and is advertised in
+    # the environment, BEFORE anything is spawned: engine children and workers
+    # started below inherit it and join it, so the owner's death proof covers
+    # them (change execution-owner-lease D2). Every transport, not only HTTP.
+    from tinyassets.owner_lease import ensure_owner_tree
+    from tinyassets.storage import data_dir as _owner_data_dir
+
+    ensure_owner_tree(_owner_data_dir())
+    _ensure_runs_recovery()
+    # And keep recovering: an engine child that dies mid-run while this server
+    # lives is found within one tick, by proof that it died.
+    return maintenance, start_run_owner_watcher()

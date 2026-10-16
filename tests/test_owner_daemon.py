@@ -314,11 +314,15 @@ def test_cli_starts_a_real_subprocess_on_unix_socket(owner_mode):
     import sys
 
     uds = owner_mode.directory / "subprocess.sock"
+    secret_file = owner_mode.directory / "box-secret"
+    secret_file.write_text("s" * 43)
+    secret_file.chmod(0o400)
     with tempfile.TemporaryFile() as log:
         process = subprocess.Popen([
             sys.executable, "-m", "tinyassets.owner_daemon",
             "--data", str(owner_mode.runtime.root / "subprocess"), "--socket", str(uds),
             "--relay", str(owner_mode.relay),
+            "--secret-file", str(secret_file),
         ], stdout=log, stderr=log)
         try:
             deadline = time.monotonic() + 30

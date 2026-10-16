@@ -248,20 +248,19 @@ class ApiKeyStore:
 
 
 def current_store() -> ApiKeyStore:
-    from tinyassets.api.helpers import _base_path
+    from tinyassets.storage import data_dir
 
-    return ApiKeyStore(_base_path())
+    return ApiKeyStore(data_dir())
 
 
 def resolve_identity(token: str):
     """Resolve a REST bearer to a confined outside Identity, or None.
 
-    The outside grant is admitted here, so a revoked key, a killed switch or a
-    changed grant fails at the door, and again at every downstream check.
+    Router mode reads only the shared key map and rate counters. The owner
+    daemon admits the outside grant before dispatch; direct unit consumers
+    retain that admission here as well.
     """
     from tinyassets.auth.provider import Identity
-    from tinyassets.outside_authority import OutsideRefused
-    from tinyassets.outside_authority import current_store as outside_store
 
     store = current_store()
     resolved = store.resolve(token, touch=False)
@@ -272,21 +271,34 @@ def resolve_identity(token: str):
     last_used_at = bound.pop("last_used_at")
     if not store.admit_request(key_id, owner):
         return None
+    from tinyassets.auth.middleware import router_authentication
+
+    identity = Identity(
+        user_id=owner, username=owner,
+        capabilities=["read", "write", "costly", "submit_request", "list"],
+        metadata={"auth_provider": "api_key", "api_key_id": key_id, "outside_origin": bound},
+    )
+    if not router_authentication.get() and not admit_forwarded_identity(identity):
+        return None
+    store._touch(key_id, last_used_at)
+    return identity
+
+
+def admit_forwarded_identity(identity) -> bool:
+    """The router verified the key; its capabilities belong to this owner's store."""
+    from tinyassets.outside_authority import OutsideRefused
+    from tinyassets.outside_authority import current_store as outside_store
+
+    bound = identity.metadata["outside_origin"]
     try:
         with outside_store().db() as conn:
             row = conn.execute("SELECT authenticated_at FROM outside_families WHERE owner=? "
                                "AND client=? AND family=?",
-                               (owner, bound["client"], bound["family"])).fetchone()
+                               (identity.user_id, bound["client"], bound["family"])).fetchone()
         if row is None:
-            return None
+            return False
         bound["authenticated_at"] = row["authenticated_at"]
-        bound = outside_store().admit(owner, bound)
+        identity.metadata["outside_origin"] = outside_store().admit(identity.user_id, bound)
+        return True
     except (OutsideRefused, sqlite3.Error, OSError):
-        return None
-    store._touch(key_id, last_used_at)
-    return Identity(
-        user_id=owner,
-        username=owner,
-        capabilities=["read", "write", "costly", "submit_request", "list"],
-        metadata={"auth_provider": "api_key", "api_key_id": key_id, "outside_origin": bound},
-    )
+        return False
