@@ -641,7 +641,7 @@ Open, with what each actually waits on:
       have all 12 opt in, and maintain those opt-ins for 14 days. Open testing is not
       a shortcut: Play explicitly says it becomes available only after production
       access.
-- [ ] Independent cross-family review of the later voice-native slice. The original
+- [ ] Independent adversarial review of the later voice-native slice. The original
       release review does not cover it; the prepared request and exact retry path are
       in `2026-09-03-android-store-release-claude-review.md (archived in git)`.
 - [ ] Production roll out (§11) — your final click.
