@@ -6,10 +6,10 @@ import argparse
 from pathlib import Path
 
 
-def create_app(*, data: Path, relay: Path):
+def create_app(*, relay: Path):
     from tinyassets.owner_runtime import start
 
-    start(data, relay)
+    start(relay)
     from tinyassets.universe_server import create_streamable_http_app
 
     return create_streamable_http_app()
@@ -17,11 +17,10 @@ def create_app(*, data: Path, relay: Path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data", required=True, type=Path)
     parser.add_argument("--socket", required=True, type=Path)
     parser.add_argument("--relay", type=Path, default=Path("/run/boxhostd/relay.sock"))
     args = parser.parse_args()
-    app = create_app(data=args.data, relay=args.relay)
+    app = create_app(relay=args.relay)
     import uvicorn
 
     try:

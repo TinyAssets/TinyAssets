@@ -36,6 +36,8 @@ def _owner_box_double():
 @pytest.fixture
 def owner_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(owner_runtime, "_runtime", None)
+    monkeypatch.setattr(owner_runtime, "OWNER_MOUNT", tmp_path)
+    monkeypatch.setattr(owner_runtime, "_is_owner_mount", lambda path: path == tmp_path)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "0")
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "0")
@@ -58,7 +60,7 @@ def owner_mode(tmp_path, monkeypatch):
         # WHOAMI must not call any admission/broker method: bind fixed the identity.
         relay = OwnerRelays(Path(directory), None)
         path = relay.bind("owner", os.getuid())
-        runtime = owner_runtime.start(tmp_path, path)
+        runtime = owner_runtime.start(path)
         try:
             yield SimpleNamespace(runtime=runtime, directory=Path(directory), relay=path)
         finally:
@@ -84,7 +86,7 @@ def rig(owner_mode, tmp_path, monkeypatch):
 def test_startup_refuses_missing_or_unbound_relay(tmp_path, monkeypatch):
     monkeypatch.setattr(owner_runtime, "_runtime", None)
     with pytest.raises(OSError):
-        owner_runtime.start(tmp_path, tmp_path / "absent.sock")
+        owner_runtime.start(tmp_path / "absent.sock")
     assert owner_runtime.current() is None
 
 
@@ -92,6 +94,8 @@ def test_startup_refuses_a_negative_relay_answer(tmp_path, monkeypatch):
     from tinyassets import rpc_frames as rf
 
     monkeypatch.setattr(owner_runtime, "_runtime", None)
+    monkeypatch.setattr(owner_runtime, "OWNER_MOUNT", tmp_path)
+    monkeypatch.setattr(owner_runtime, "_is_owner_mount", lambda path: path == tmp_path)
     with tempfile.TemporaryDirectory(prefix="taod-refused-") as directory:
         path = Path(directory) / "relay.sock"
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
@@ -108,7 +112,7 @@ def test_startup_refuses_a_negative_relay_answer(tmp_path, monkeypatch):
             thread.start()
             try:
                 with pytest.raises(PermissionError, match="refused startup admission"):
-                    owner_runtime.start(tmp_path, path)
+                    owner_runtime.start(path)
                 assert owner_runtime.current() is None
             finally:
                 thread.join(5)
@@ -315,11 +319,20 @@ def test_cli_starts_a_real_subprocess_on_unix_socket(owner_mode):
 
     uds = owner_mode.directory / "subprocess.sock"
     with tempfile.TemporaryFile() as log:
-        process = subprocess.Popen([
-            sys.executable, "-m", "tinyassets.owner_daemon",
-            "--data", str(owner_mode.runtime.root / "subprocess"), "--socket", str(uds),
-            "--relay", str(owner_mode.relay),
-        ], stdout=log, stderr=log)
+        mount = owner_mode.runtime.root / "subprocess"
+        mount.mkdir()
+        # A test process has no boxhostd mount: point the fixed mount at a temp
+        # tree, then run the real CLI entry unchanged.
+        launcher = (
+            "import sys; from pathlib import Path; import tinyassets.owner_runtime as r; "
+            f"r.OWNER_MOUNT = Path({str(mount)!r}); r._is_owner_mount = lambda p: True; "
+            "from tinyassets.owner_daemon import main; "
+            f"sys.argv = ['owner_daemon', '--socket', {str(uds)!r}, "
+            f"'--relay', {str(owner_mode.relay)!r}]; "
+            "main()"
+        )
+        process = subprocess.Popen([sys.executable, "-c", launcher],
+                                   stdout=log, stderr=log)
         try:
             deadline = time.monotonic() + 30
             while not uds.exists() and process.poll() is None and time.monotonic() < deadline:
@@ -336,3 +349,13 @@ def test_cli_starts_a_real_subprocess_on_unix_socket(owner_mode):
             process.wait(timeout=30)
         # Uvicorn restores and re-raises SIGTERM after its graceful lifespan exit.
         assert process.returncode in (0, -signal.SIGTERM)
+
+
+def test_refuses_to_start_without_the_boxhostd_owner_mount(tmp_path, monkeypatch):
+    """No caller-chosen data root: outside the owner mount nothing starts."""
+    monkeypatch.setattr(owner_runtime, "_runtime", None)
+    monkeypatch.setattr(owner_runtime, "OWNER_MOUNT", tmp_path / "not-a-mount")
+    with pytest.raises(PermissionError, match="owner mount"):
+        owner_runtime.start(tmp_path / "relay.sock")
+    assert owner_runtime.current() is None
+    assert not (tmp_path / "not-a-mount").exists()
