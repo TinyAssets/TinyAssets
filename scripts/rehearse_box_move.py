@@ -187,6 +187,8 @@ owners = _owner_plan(data)
 for owner in owners:
     owner_rows = 0
     for center in owner.centers:
+        print(f'owner={owner.uid} path=/box-store/{owner.uid}/{center}/brain/knowledge VERIFY',
+              flush=True)
         with tempfile.TemporaryDirectory(prefix='knowledge-rehearsal-') as scratch:
             root = Path(scratch)
             (root / 'snapshots').mkdir()
@@ -562,8 +564,7 @@ def archive_rehearsal(image: str, archive: Path, *, fail: bool, store_bytes: int
             print(knowledge.stdout, end='')
             if knowledge.returncode:
                 raise RuntimeError(
-                    f'owner knowledge verification: FAIL (rc={knowledge.returncode}) '
-                    + knowledge.stderr)
+                    f'owner knowledge verification: FAIL (rc={knowledge.returncode})')
             quotas = container('--rm', '--cap-drop', 'ALL', '--user', '0',
                                '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'SYS_ADMIN',
                                '--device', f'{device}:{device}:r',
