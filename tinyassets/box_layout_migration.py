@@ -422,6 +422,18 @@ def _copy_credentials(source: Path, target: Path) -> None:
         raise RuntimeError(f"credential checksum differs for {source}")
 
 
+def _xfs_quota(store: Path, command: str) -> str:
+    # xfs_quota exits zero even when it cannot resolve a mounted block device.
+    # A successful process status alone did not establish any project quota.
+    result = subprocess.run(
+        ["xfs_quota", "-x", "-c", command, str(store)],
+        check=True, capture_output=True, text=True,
+    )
+    if result.stderr.strip():
+        raise RuntimeError(f"xfs_quota {command}: {result.stderr.strip()}")
+    return result.stdout
+
+
 def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
     import fcntl
 
@@ -484,15 +496,10 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
             tree = store / str(owner.uid)
             tree.mkdir(mode=0o700)
             os.chown(tree, owner.uid, owner.uid)
-            subprocess.run(
-                ["xfs_quota", "-x", "-c", f"project -s -p {tree} {owner.uid}",
-                 str(store)], check=True,
-            )
-            subprocess.run(
-                ["xfs_quota", "-x", "-c",
-                 f"limit -p bhard={owner.quota // 1024}k {owner.uid}", str(store)],
-                check=True,
-            )
+            setup = _xfs_quota(store, f"project -s -p {tree} {owner.uid}")
+            if f"Setting up project {owner.uid} " not in setup:
+                raise RuntimeError(f"xfs_quota did not establish project {owner.uid}")
+            _xfs_quota(store, f"limit -p bhard={owner.quota // 1024}k {owner.uid}")
             for center in owner.centers:
                 _copy_credentials(data / center, custody_root / center)
                 destination = tree / center

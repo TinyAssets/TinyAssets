@@ -81,6 +81,9 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
         migration.subprocess, "run",
         lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
     )
+    monkeypatch.setattr(migration, "_xfs_quota", lambda _store, command:
+                        f"Setting up project {command.rsplit(' ', 1)[-1]} "
+                        if command.startswith("project ") else "")
 
     def copy(source, target, uid):
         if copy_fails:
@@ -249,6 +252,9 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
     monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
     monkeypatch.setattr(migration, "_mounted", lambda *args: None)
     monkeypatch.setattr(migration.subprocess, "run", run)
+    monkeypatch.setattr(migration, "_xfs_quota", lambda _store, command:
+                        f"Setting up project {command.rsplit(' ', 1)[-1]} "
+                        if command.startswith("project ") else "")
     from tinyassets import activity_shape_migration as activity_shape
 
     monkeypatch.setattr(activity_shape, "_pending", lambda _: ["home"])
@@ -298,6 +304,15 @@ def test_xfs_mount_accepts_real_prjquota_output(monkeypatch, tmp_path):
     monkeypatch.setattr(migration.subprocess, "run", discard)
     with pytest.raises(RuntimeError, match="no discard"):
         migration._mounted(tmp_path)
+
+
+def test_xfs_quota_refuses_zero_exit_with_mount_error(monkeypatch, tmp_path):
+    def failed_setup(*args, **kwargs):
+        return subprocess.CompletedProcess(args[0], 0, "", "xfs_quota: cannot setup path for mount")
+
+    monkeypatch.setattr(migration.subprocess, "run", failed_setup)
+    with pytest.raises(RuntimeError, match="cannot setup path for mount"):
+        migration._xfs_quota(tmp_path, "project -s -p /box-store/300001 300001")
 
 
 @pytest.mark.skipif(
