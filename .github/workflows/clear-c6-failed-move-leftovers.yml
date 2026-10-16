@@ -16,7 +16,7 @@ name: Clear C6 failed-move leftovers (one-shot)
 # non-empty store refuses it; the full disk fails pull headroom). Deleting them
 # without an explicit hold would arm the next merge to deploy C6 live.
 # Safe to re-run: it refuses unless the marker parses as stable owner-split,
-# uid 300001 has no box_records row, the store is the XFS mount and no path
+# the identity DB exists and uid 300001 has no box_records row, the store is the XFS mount and no path
 # component is a link. A follow-up PR deletes it right after the run.
 
 on:
@@ -100,13 +100,15 @@ jobs:
           python3 -c 'import sqlite3, sys
           from pathlib import Path
           path = Path(sys.argv[1])
-          if not path.exists():
-              sys.exit(0)
+          if not path.is_file() or path.is_symlink():
+              print("refuse: the broker identity DB is missing"); sys.exit(2)
+          # Unreadable raises, which also refuses. No table: never moved.
           db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
           table = db.execute("SELECT 1 FROM sqlite_master WHERE name=?", ("box_records",)).fetchone()
           row = table and db.execute("SELECT 1 FROM box_records WHERE machine=?", (300001,)).fetchone()
-          sys.exit(1 if row else 0)' "$IDENTITIES" \
-            || refuse "uid 300001 has a box_records row; that tree is a real box"
+          if row:
+              print("refuse: uid 300001 has a box_records row; that tree is a real box"); sys.exit(2)' \
+            "$IDENTITIES" || refuse "box record check did not pass"
           # No component of either path may be a link, and each must sit on
           # the file system it is expected on.
           [ "$(findmnt -n -o FSTYPE --mountpoint "$STORE")" = xfs ] \
