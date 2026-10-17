@@ -181,7 +181,8 @@ provider-specific code.
 - **The slice 7 report names, per account:** CLI connections lost, keys
   pasted into chat no longer accepted, HTTP connections carried over,
   `/mcp/hooks/` integrations to re-point to `/hooks/inbound/`, and the loss
-  of local image descriptions.
+  of local image descriptions, and billing status no longer showing seat
+  and storage usage (plan limits remain).
 
 | Research rule | 3c |
 |---|---|
