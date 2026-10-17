@@ -1,7 +1,7 @@
 export const meta = {
   name: 'scan-then-patch',
   description: 'Codex-first sweep: Haiku scans each file, the other model family verifies each finding, Sol patches each verified finding in its own worktree, the other family checks each diff',
-  whenToUse: 'A sweep where each fix is independent. args: { objective: string, files: string[] }. Returns diffs only; nothing is committed or pushed.',
+  whenToUse: 'A sweep where each fix is independent. args: { objective: string, files: string[], maxFindingsPerFile?: number }. Returns diffs per file (plus truncated findings); nothing is committed or pushed.',
   phases: [
     { title: 'Scan', detail: 'one read-only Haiku agent per file', model: 'haiku' },
     { title: 'Verify', detail: 'Codex Sol refutes each finding (Sonnet if Codex is unavailable)' },
@@ -32,6 +32,9 @@ const files = (args && args.files) || []
 if (!objective || !files.length) throw new Error('scan-then-patch needs args { objective, files }')
 const READ_ONLY = 'Read only: do not create, edit or delete repository files, and do not change git state.'
 const MAX_ROUNDS = 3
+// Bounded fan-out: at most this many findings per file go on to verify and
+// patch; the rest are reported as truncated, never dropped silently.
+const MAX_FINDINGS_PER_FILE = (args && args.maxFindingsPerFile) || 10
 
 // The last balanced JSON object in text: braces inside strings don't count.
 function lastJsonObject(text) {
@@ -121,17 +124,25 @@ async function patchLoop(f) {
   const e = await patch(f, last.problems, { escalated: true })
   if (e) {
     const c = await check(f, e)
-    if (c && !c.problems.length) return { finding: f, rounds: rounds + 1, diff: e.diff, by: e.by, problems: [], escalate: false }
+    if (c && !c.problems.length) return { finding: f, rounds: rounds + 1, diff: e.diff, by: e.by, problems: [], escalate: false, sameFamilyCheck: !!c.sameFamilyCheck }
   }
   log(`stopped ${f.file} after ${rounds + 1} rounds; escalate to the lead for a simplicity check`)
-  return { finding: f, rounds: rounds + 1, diff: last.diff, by: last.by, problems: last.problems, escalate: true }
+  return { finding: f, rounds: rounds + 1, diff: last.diff, by: last.by, problems: last.problems, escalate: true, sameFamilyCheck: last.sameFamilyCheck }
 }
 
 const perFile = await pipeline(files,
   file => agent(`${READ_ONLY}\nObjective: ${objective}\nFile: ${file}\nReport every candidate in this file, quoting the evidence.`,
     { phase: 'Scan', label: `scan ${file}`, model: 'haiku', effort: 'low', schema: FINDINGS }),
-  scan => parallel(((scan && scan.findings) || []).map(f => () => verify(f))),
-  verified => parallel(verified.filter(Boolean).map(f => () => patchLoop(f))),
+  (scan, file) => {
+    const found = (scan && scan.findings) || []
+    if (found.length > MAX_FINDINGS_PER_FILE) {
+      log(`${file}: ${found.length} findings, verifying the first ${MAX_FINDINGS_PER_FILE}; ${found.length - MAX_FINDINGS_PER_FILE} reported as truncated`)
+    }
+    return parallel(found.slice(0, MAX_FINDINGS_PER_FILE).map(f => () => verify(f)))
+      .then(verified => ({ file, verified, truncated: found.slice(MAX_FINDINGS_PER_FILE) }))
+  },
+  ({ file, verified, truncated }) => parallel(verified.filter(Boolean).map(f => () => patchLoop(f)))
+    .then(results => ({ file, results, truncated })),
 )
 
-return perFile.filter(Boolean).flat()
+return perFile.filter(Boolean)
