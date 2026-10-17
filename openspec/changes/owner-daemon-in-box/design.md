@@ -471,6 +471,19 @@ copy/verify/remove transaction, seed shared custody/plans/keys/hooks/published
 stores, remove intermediate CLI/activity copying, and prove serving through
 the owner daemon/router/broker after migration. Task 6 stays unchecked.
 
+The October 10 archive census (read-only mount) refuses: 18 databases, 254
+tables; 156 owner, 10 router, 10 broker, 12 published, and 66 unknown tables
+in a retained pre-repair database copy. It finds 21,124 unattributed owner rows,
+859 unattributed files, and 13 populated tables with attribution rules pending.
+There are six explicitly mapped owners, all free, ten HTTP slots and two CLI
+subscription records. The archive predates owner-split admission: no broker
+identity database and no owner-split marker. These findings are not waived.
+Linux verification: 81 root tests and 45 unprivileged follow-up tests passed
+without skips; the broad focused run's root-venue and registry failures were
+resolved by those follow-ups. The source tree's existing S3/S4 probe-removal
+findings from `check_shapes.py` remain outside this diff. No independent review
+or final-shape serving/migration acceptance is claimed.
+
 ## D7. Guard and deletions
 
 - Guard test: the router package imports no owner store module and opens no
