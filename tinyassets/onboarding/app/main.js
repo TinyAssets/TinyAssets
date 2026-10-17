@@ -8532,7 +8532,7 @@
     },
     open(id,interactive=true){
       try{
-      if(this.selected!==id&&typeof CredentialRequests!=="undefined")CredentialRequests.clear();
+      if((this.selected!==id||!$('request-rail').open)&&typeof CredentialRequests!=="undefined")CredentialRequests.clear();
       const folded=foldedModelAccess(railCache);
       if(folded?.request_id===id)id=railCache.find(isSetupRequest).request_id;
       const req=railCache.find(row=>row.request_id===id);

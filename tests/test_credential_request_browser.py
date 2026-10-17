@@ -220,6 +220,11 @@ def test_card_is_reachable_in_real_needs_you_and_poll_preserves_secret(app_url, 
             "el=>el.scrollWidth<=el.clientWidth+1")
         assert FAKE not in page.evaluate("JSON.stringify(railCache)")
         assert len([c for c in calls if c["operation"] == "request_create"]) == 1
+        # Reopen before the queued close event runs: the old key is gone,
+        # and that stale event must not destroy the newly built card.
+        page.evaluate("$('request-rail').close();RequestSheets.open(testAsk.request_id)")
+        expect(page.get_by_label("One-time API key")).to_have_value("")
+        expect(page.get_by_role("checkbox")).to_be_visible()
         page.locator("#request-sheet-close").click()
         expect(page.get_by_label("One-time API key")).to_have_count(0)
         browser.close()
