@@ -509,7 +509,7 @@ def test_concurrent_run_child_admission_and_parent_release_never_reopens(budget)
     assert budget.receipt()["closed"]
 
 
-def test_abandoned_admitted_run_releases_without_leaking_parent_liveness(budget):
+def test_abandoned_admitted_run_releases_without_leaking_parent_liveness(budget, monkeypatch):
     import gc
 
     from tinyassets.request_budget import RunRequestAllocation
@@ -518,6 +518,19 @@ def test_abandoned_admitted_run_releases_without_leaking_parent_liveness(budget)
     child = parent.child()
     parent.close()
     assert not budget.receipt()["closed"]
+    child.cycle = child
+    calls = []
+    mutate = budget._store.mutate
+
+    def observed_mutation(*args, **kwargs):
+        calls.append(args)
+        return mutate(*args, **kwargs)
+
+    monkeypatch.setattr(budget._store, "mutate", observed_mutation)
     del child
     gc.collect()
+    # GC may interrupt a ContextVar.set. Accounting IPC can start a broker
+    # double and reenter ContextVar mutation through its SQLite tracer.
+    # Abandonment must only drop liveness; the broker reconciles the receipt.
+    assert calls == []
     assert budget.receipt()["closed"]

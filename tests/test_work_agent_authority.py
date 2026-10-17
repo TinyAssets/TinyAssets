@@ -26,6 +26,12 @@ work_agent = workflow_tests.work_agent
 def test_step_rechecks_current_authority_without_new_reservation(
     tmp_path, monkeypatch, authenticate_request, work_agent, manifest, change,
 ):
+    from tinyassets.providers import discovery_snapshot
+
+    # This test mutates authority, not catalogue age. Keep its synthetic
+    # discovery fresh even if the VM's wall clock steps backwards mid-call.
+    observed_at = discovery_snapshot._now()
+    monkeypatch.setattr(discovery_snapshot, "_now", lambda: observed_at)
     # Avoid persona/tool transport setup: only admission and its independent
     # between-step fence are in scope. No engine tool is ever executed here.
     monkeypatch.setattr(

@@ -273,6 +273,8 @@ def test_box_policy_door_forwards_proof_without_cookie(tmp_path, monkeypatch):
     assert response.status_code == 200, response.body
     assert seen[0] == ("alice", "write", {"session_proof": {"session_hash": "a" * 64},
                                          "expected_generation": 1, "policy": {}})
-    with pytest.raises(NotImplementedError, match="slice 3"):
+    # Slice 3: the box reaches policy only through its relay channel; with no
+    # relay bound it fails loudly, never reading a local policy file.
+    with pytest.raises(RuntimeError, match="owner broker channel is unavailable"):
         owner_policy_operation(tmp_path, "alice", "read")
     assert not (tmp_path / ".runtime" / "owner-sessions.db").exists()

@@ -4802,7 +4802,18 @@ def _contains_secret(value: object, secret: str) -> bool:
     return False
 
 
+# Capabilities classify new grants; accepted source descriptors latch them later.
+_MODEL_CONNECTION_SQL = """(
+    c.connection_type = 'http' AND EXISTS (
+            SELECT 1 FROM connection_capabilities k
+            WHERE k.connection_id = c.connection_id
+              AND k.capability_kind IN ('model_use', 'model_discovery')
+    )
+)"""
+
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS broker_schema_migrations (name TEXT PRIMARY KEY);
+
 CREATE TABLE IF NOT EXISTS outbound_connections (
     connection_id   TEXT PRIMARY KEY,
     owner_user_id   TEXT NOT NULL,
@@ -4834,7 +4845,8 @@ CREATE TABLE IF NOT EXISTS outbound_connection_grants (
     universe_id     TEXT NOT NULL,
     granted_at      REAL NOT NULL,
     revoked_at      REAL,
-    unprompted_action_cap_json TEXT
+    unprompted_action_cap_json TEXT,
+    inference_required INTEGER NOT NULL DEFAULT 1 CHECK (inference_required IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS connection_capabilities (
@@ -5016,6 +5028,27 @@ class ConnectionLedger:
                     connection.execute(
                         f"ALTER TABLE outbound_connections ADD COLUMN {column} {ddl}"
                     )
+            if "inference_required" not in grant_columns:
+                connection.execute(
+                    "ALTER TABLE outbound_connection_grants ADD COLUMN "
+                    "inference_required INTEGER NOT NULL DEFAULT 1 "
+                    "CHECK (inference_required IN (0, 1))"
+                )
+                # Existing grants adopt only broker-held facts, once. Unknown
+                # connection rows retain the fail-closed default.
+                connection.execute(
+                    "UPDATE outbound_connection_grants SET inference_required = COALESCE("
+                    f"(SELECT {_MODEL_CONNECTION_SQL} FROM outbound_connections c "
+                    "WHERE c.connection_id = outbound_connection_grants.connection_id), 1)"
+                )
+            if "inference_required" not in grant_columns or not connection.execute(
+                "SELECT 1 FROM broker_schema_migrations WHERE name='model_source_metering'"
+            ).fetchone():
+                from tinyassets.broker.owner_sources import backfill_metering
+
+                backfill_metering(self, connection)
+                connection.execute("INSERT OR IGNORE INTO broker_schema_migrations "
+                                   "VALUES ('model_source_metering')")
             # The column default also applies to rows inserted by older writers.
             # Adopt those rows without rotating any established deposit identity
             # or changing its policy. Ordinary opens must not take a write lock.
@@ -5583,6 +5616,13 @@ class ConnectionLedger:
                     time.time(),
                 ),
             )
+            if kind in _INFERENCE_CAPABILITIES:
+                # Capability installation may follow grant creation. Once a
+                # grant is a model grant, disabling metadata cannot unmeter it.
+                connection.execute(
+                    "UPDATE outbound_connection_grants SET inference_required=1 "
+                    "WHERE connection_id=? AND inference_required=0", (connection_key,),
+                )
         return capability
 
     def get_connection_capability(
@@ -5651,11 +5691,14 @@ class ConnectionLedger:
         with (contextlib.nullcontext(_transaction) if _transaction is not None
               else self._connect()) as connection:
             connection.execute(
-                """
+                f"""
                 INSERT INTO outbound_connection_grants (
                     grant_id, connection_id, owner_user_id, universe_id,
-                    granted_at, revoked_at, unprompted_action_cap_json
-                ) VALUES (?, ?, ?, ?, ?, NULL, ?)
+                    granted_at, revoked_at, unprompted_action_cap_json, inference_required
+                ) VALUES (?, ?, ?, ?, ?, NULL, ?, (
+                    SELECT {_MODEL_CONNECTION_SQL} FROM outbound_connections c
+                    WHERE c.connection_id = ?
+                ))
                 """,
                 (
                     grant.grant_id,
@@ -5671,9 +5714,21 @@ class ConnectionLedger:
                         if grant.unprompted_action_cap is not None
                         else None
                     ),
+                    grant.connection_id,
                 ),
             )
         return grant
+
+    def grant_requires_inference_usage(self, grant_id: str) -> bool:
+        """Read the durable broker classification, independent of box metadata."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT inference_required FROM outbound_connection_grants "
+                "WHERE grant_id=? AND revoked_at IS NULL", (grant_id,),
+            ).fetchone()
+        if row is None:
+            raise GrantResolutionError("absent or revoked outbound connection grant")
+        return bool(row["inference_required"])
 
     def get_grant(
         self, grant_id: str, *, _transaction: sqlite3.Connection | None = None,

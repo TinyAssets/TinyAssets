@@ -79,6 +79,10 @@ def connected_sources(base: str | Path, universe: str | Path, owner: str,
         raise PermissionError("invalid connected-source scope")
     sources: set[str] = set()
     def subscriptions(db):
+        from tinyassets.owner_runtime import current
+
+        if current() is not None:
+            return  # CLI sources have no broker_endpoint executor yet.
         for provider, service in _PROVIDER_SERVICE.items():
             if current_llm_subscription_custody(
                 db, universe_dir=universe, owner_user_id=owner,

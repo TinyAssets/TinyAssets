@@ -54,6 +54,10 @@ CHECKOUT_WINDOW_SECONDS = CHECKOUT_SESSION_SECONDS + 120.0
 
 
 def state_db_path(universe_dir: str | Path) -> Path:
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        raise PermissionError("billing state is held by the broker in owner mode")
     return Path(universe_dir) / _DB_FILENAME
 
 
@@ -88,6 +92,10 @@ def get_tier(universe_dir: str | Path, *, default: str = TIER_FREE) -> str:
 
     Free is the safe answer to every failure here: it is the tier that grants nothing.
     """
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        return get_plan(universe_dir)["tier"]
     try:
         with _connect(universe_dir) as conn:
             conn.executescript(_SCHEMA)
@@ -109,6 +117,10 @@ def read_tier(universe_dir: str | Path, *, default: str = TIER_FREE) -> str:
     the universe directory and blocked account deletion from renaming it. Free on
     every failure, as with `get_tier`.
     """
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        return get_plan(universe_dir)["tier"]
     path = state_db_path(universe_dir)
     if not path.is_file():
         return default
@@ -134,6 +146,12 @@ def get_plan(universe_dir: str | Path) -> dict[str, object]:
     a user who cancelled sees the same "Paid plan" as before and cannot tell whether
     it took. It is DISPLAY ONLY; ``get_tier`` remains the entitlement authority.
     """
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        from tinyassets.broker.owner_reads import remote
+
+        return remote("plan")
     plan: dict[str, object] = {"tier": get_tier(universe_dir), "ends_at": None}
     try:
         with _connect(universe_dir) as conn:

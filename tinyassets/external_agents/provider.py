@@ -24,6 +24,12 @@ class ExternalAgentProvider(BaseProvider):
 
     async def complete(self, prompt: str, system: str, config: ModelConfig,
                        *, universe_dir: Path | None = None) -> ProviderResponse:
+        from tinyassets.exceptions import ProviderConfinementError
+        from tinyassets.owner_runtime import current
+
+        if current() is not None:
+            raise ProviderConfinementError(
+                "provider CLIs refuse in owner mode until broker_endpoint auth is implemented")
         self.require_text_only_support(config)
         model = config.native_model_id or ""
         owner = config.invocation_owner_user_id

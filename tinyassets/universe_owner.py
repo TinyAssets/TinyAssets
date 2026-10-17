@@ -190,6 +190,12 @@ def account_type_of(
     home, no account, or an unreadable record to FREE. A preflight db_reader
     preserves missing bindings as FREE but raises on unreadable records.
     """
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        from tinyassets.broker.owner_reads import remote
+
+        return account_type(remote("plan")["tier"])
     # read_tier, not get_tier: get_tier creates the database and leaves its
     # connection to the GC, which on Windows held a handle in the universe dir
     # and blocked account deletion's rename (#4158).

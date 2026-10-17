@@ -388,7 +388,7 @@ def test_a_provider_that_is_not_yours_is_refused_by_ownership(tmp_path, monkeypa
     would have stayed green with the ownership comparison deleted (Codex, on the
     connect-any-llm lane).
     """
-    from tinyassets.providers.definition import register_definition
+    from tests.support.broker_double import seed_unchecked_definition
     from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
@@ -424,9 +424,9 @@ def test_a_provider_that_is_not_yours_is_refused_by_ownership(tmp_path, monkeypa
         universe_id="u-other",
         unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
     )
-    # Registered inside owner-1's universe, pointing at owner-2's grant: the
-    # confused-deputy shape the ownership check exists to refuse.
-    foreign = register_definition(
+    # Legacy metadata inside owner-1's universe, pointing at owner-2's grant.
+    # Registration rejects it now; runtime ownership must still refuse it.
+    foreign = seed_unchecked_definition(
         universe_id="u-owner", owner_user_id="owner-1", access_method="api_key_http",
         protocol="openai_chat", model="some-model", ref=grant_id,
     )

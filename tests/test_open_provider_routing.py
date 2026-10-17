@@ -60,9 +60,11 @@ def test_set_engine_open_provider_points_writer_at_definition(base: Path) -> Non
 
 
 def test_set_engine_open_provider_api_key_name(base: Path) -> None:
+    from tests.test_compute_connection import _seed_grant
     from tinyassets.api.universe import _set_engine_open_provider
     from tinyassets.providers.definition import register_definition
 
+    _seed_grant(base, owner="founder", universe="u-x")
     d = register_definition(
         universe_id="u-x", owner_user_id="founder", access_method="api_key_http",
         protocol="openai_chat", model="moonshotai/kimi-k2", ref="http_grant_" + "a" * 32,

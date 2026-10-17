@@ -156,6 +156,10 @@ class BrokerSupervisor:
 
 
 def get_supervisor(data_root: Path) -> BrokerSupervisor | None:
+    from tinyassets.owner_runtime import broker_egress, current
+
+    if current() is not None:
+        return broker_egress()
     with _registry_lock:
         result = _registry.get(Path(data_root).resolve())
         if result is not None:

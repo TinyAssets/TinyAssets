@@ -32,9 +32,13 @@ def case(tmp_path, monkeypatch):
         definitions[owner] = register_definition(
             universe_id="cc-alice", owner_user_id=owner, access_method="api_key_http",
             protocol="openai_chat", model=f"{owner}-fixture", ref=f"grant-{owner}")
-    definitions["foreign"] = register_definition(
-        universe_id="cc-alice", owner_user_id="alice", access_method="api_key_http",
-        protocol="chat_messages", model="foreign-fixture", ref="grant-bob")
+    from tests.support.broker_double import seed_unchecked_definition
+
+    # Simulate legacy/tampered metadata: broker registration now refuses this
+    # foreign ref, and runtime reads must still reject an already-stored row.
+    fields = dict(universe_id="cc-alice", owner_user_id="alice", access_method="api_key_http",
+                  protocol="chat_messages", model="foreign-fixture", ref="grant-bob")
+    definitions["foreign"] = seed_unchecked_definition(**fields)
     calls = []
 
     class Client:

@@ -198,7 +198,9 @@ def test_legacy_http_configuration_is_identified_without_inventing_a_candidate(
 
 
 def test_foreign_registered_source_is_not_listed(catalogue):
-    foreign = definition.register_definition(
+    from tests.support.broker_double import seed_unchecked_definition
+
+    foreign = seed_unchecked_definition(
         universe_id="u-models", owner_user_id="different-owner", access_method="api_key_http",
         protocol="openai_chat", model="private-model", ref="private-grant",
     )

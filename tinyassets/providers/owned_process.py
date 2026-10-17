@@ -139,6 +139,11 @@ async def aspawn_owned(cmd, *, shell=False, env=None, universe_view=None, instal
     from tinyassets.control_plane.native_launch import launcher
     from tinyassets.exceptions import ProviderConfinementError
     from tinyassets.external_agents.home import box_custody
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        raise ProviderConfinementError(
+            "provider CLIs refuse in owner mode until broker_endpoint auth is implemented")
 
     if shell or universe_view is not None or nested_sandbox:
         raise ProviderConfinementError(ProviderConfinementError.MESSAGE

@@ -315,12 +315,13 @@ def test_api_closed_shape_does_not_accept_caller_authority_fields(rig, fields):
 
 
 def test_api_requires_authentication_and_exact_owner_even_for_admin(rig, monkeypatch):
+    from tests.support.broker_double import seed_unchecked_definition
     from tinyassets.api import permissions
 
     monkeypatch.setattr(permissions, "is_authenticated_request", lambda: False)
     assert rig.api()["error"] == "authentication_required"
     monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
-    foreign = definitions.register_definition(
+    foreign = seed_unchecked_definition(
         universe_id="u-models",
         owner_user_id="other-owner",
         access_method="api_key_http",
@@ -340,7 +341,9 @@ def test_api_verified_lookup_rejects_tampered_definition(rig):
 
 
 def test_api_verified_lookup_rejects_definition_copied_from_other_universe(rig):
-    foreign = definitions.register_definition(
+    from tests.support.broker_double import seed_unchecked_definition
+
+    foreign = seed_unchecked_definition(
         universe_id="u-other",
         owner_user_id="owner",
         access_method="api_key_http",

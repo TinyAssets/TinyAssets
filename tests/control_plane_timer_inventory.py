@@ -107,6 +107,10 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CALL_SCOPED, "agent lease refresh for one running automation batch",
     ),
     "tinyassets/auto_ship_ledger.py::_file_lock": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/owner_channel.py::UsageLease._heartbeat": (
+        CALL_SCOPED,
+        "liveness ping for one model call's usage lease; ends when the lease closes",
+    ),
     "tinyassets/broker/server.py::_Connection._refresh": (
         CALL_SCOPED,
         "one broker stream waits for the daemon's refresh answer only until "

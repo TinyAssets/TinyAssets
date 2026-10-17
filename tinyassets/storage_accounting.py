@@ -723,6 +723,8 @@ ROOT_ENTRIES: dict[str, str] = {
     ".broker": "platform: credential broker socket, owner fence and operation bookkeeping",
     "ops.db": "platform: bounded broker idempotency records under .broker/state",
     "owner-identities.db": "platform: broker owner-identity bindings under .broker/state",
+    "plans.db": "platform: broker-held account plan tiers under .broker",
+    ".published": "platform: published commons copies shared across owners",
     ".run-execution-locks": "platform: locks",
     ".run-file-operation-locks": "platform: locks",
     ".connect": "platform: connection handshakes",

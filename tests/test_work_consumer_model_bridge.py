@@ -19,6 +19,45 @@ work_agent = work_tests.work_agent
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
+@pytest.mark.parametrize("sidecar", ["-wal", "-shm"])
+def test_conversation_scope_survives_last_projection_reader_closing(tmp_path, monkeypatch, sidecar):
+    from pathlib import Path
+
+    from tinyassets.daemon_server import grant_universe_access, set_founder_home
+    from tinyassets.storage import conversation_run_admissions as canonical
+    from tinyassets.storage import db_path
+
+    set_founder_home(tmp_path, founder_sub="owner", universe_id="center", platform_generated=True)
+    grant_universe_access(tmp_path, universe_id="center", actor_id="owner",
+                          permission="admin", granted_by="owner")
+    (tmp_path / "center").mkdir(exist_ok=True)
+    reader = sqlite3.connect(db_path(tmp_path))
+    reader.execute("SELECT * FROM founder_home").fetchall()
+    target = Path(str(db_path(tmp_path)) + sidecar)
+    assert target.exists()
+    exists = Path.exists
+    stat_path, lstat_path = Path.stat, Path.lstat
+    retired = []
+
+    def close_after_observation(path, info):
+        if path == target and not retired:
+            reader.close()  # SQLite itself removes the last reader's WAL/SHM files.
+            retired.append(path)
+            assert not exists(path)
+        return info
+
+    monkeypatch.setattr(Path, "stat", lambda path, **kw:
+                        close_after_observation(path, stat_path(path, **kw)))
+    monkeypatch.setattr(Path, "lstat", lambda path:
+                        close_after_observation(path, lstat_path(path)))
+    try:
+        with canonical.authorized_scope(tmp_path, owner="owner", universe="center") as scope:
+            assert scope.owner == "owner"
+        assert retired == [target]
+    finally:
+        reader.close()
+
+
 def captured_selection(monkeypatch):
     from tinyassets.config import load_universe_config
     from tinyassets.providers.model_policy import ModelRef

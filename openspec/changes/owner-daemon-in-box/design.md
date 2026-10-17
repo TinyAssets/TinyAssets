@@ -102,6 +102,21 @@ adding a check in shared code.
 - **Startup.** The shared entrypoint no longer starts owner recovery, engine endpoints, ticks or storage initialization and refuses direct SSE/stdio serving; owner recovery moved into the existing owner lifespan.
 - **Routes.** All owner-facing `/app/*` routes (including `/app/api/*`, home, chat, uploads and preferences), `/api` and descendants, MCP transport `/mcp[/]` and `/mcp/events`, and `/hooks/inbound/<token>` share the forwarder; discovery, sign-in/OAuth, pulse, published listing reads and billing retain router handlers.
 
+### D3 decisions (slice 3: broker egress)
+
+- **Model grant metering.** The broker latches `inference_required` from an HTTP connection's `model_use`/`model_discovery` capabilities or the first accepted source descriptor naming the grant. Descriptor publication and the latch commit together; platform registration publishes through the same broker operation before returning success. Backfill reads capabilities, broker-published descriptors and platform-side definition files where present in non-owner mode. Missing connection rows retain the existing fail-closed default. Destinations do not classify grants. Removing capabilities or descriptors never removes metering; an unregistered HTTP grant without a model capability remains ordinary, and a latched model POST without an inference envelope refuses before credential access.
+- **Send admission.** Every box stream checkpoint repeats OPEN's bound-center admission check, including after resolution/connect and before sending credentials or request bytes.
+- **Shared-read admission.** Every BOX_READ rechecks the relay-bound owner's route in the broker; an established BOX_SHARED channel grants no reads after the owner's last live center retires.
+- **Transport.** Existing synchronous and streaming broker clients open `BOX_CONNECT` on the startup-admitted relay; the broker derives identity, center and fence from `BOX_CHANNEL`, with no host-client fallback.
+- **Models.** Reuse the HTTP model executor, source/grant queries, accounting gate and credit-bounded `OPEN` stream; publish only validated, credential-free source descriptors into the broker ledger before inference.
+- **Accounting.** An allocation holds a dedicated box channel with a ten-second heartbeat; the broker holds its liveness locks and releases them on disconnect, so accounting never reads a box file or depends on a host copy of it.
+- **Connections.** Expose the existing bounded ledger, catalog, capability, HTTP-connect, disconnect and usage operations on the admitted box channel; credential refresh cannot fall back to daemon-side vault access.
+- **Policy.** Policy reads, receipts, classification, decisions and proposals use the channel-bound owner; protected policy writes and approval issuance remain at the shared protected door.
+- **CLIs (founder, 2026-10-16).** There is one model path: the broker's. Provider CLIs (Claude Code, Codex) as a model source are retired in owner mode, with no placeholder-credential proxy and no broker endpoint built for them. The in-box CLI provider route is deleted, not left refusing. Users whose subscription was connected through a CLI reconnect it through the broker's connection flow at cutover, and the cutover report names those accounts.
+- **Shared reads.** `BOX_SHARED` uses the relay-bound owner without a center and exposes only named plan and published-definition/catalog reads; plan rows live in `.broker/plans.db`, published data in `.published/`, and slice 6 seeds these shared stores at cutover.
+- **Enforcement.** Install one Python socket audit hook at owner startup for direct connects, datagrams and DNS; only loopback IPs/localhost and Unix channels are allowed, while the existing null netns remains the native-process boundary.
+- **Custody.** Startup rejects the existing platform-secret inventory and provider/OAuth credential environment names; owner-mode credential-vault access and local billing-store access refuse rather than create or read a box-local secret store.
+
 ## D3. Lifecycle (boxhostd)
 
 - boxhostd supports one persistent sandbox per owner, running the owner

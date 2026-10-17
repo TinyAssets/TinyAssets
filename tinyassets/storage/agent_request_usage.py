@@ -177,27 +177,9 @@ def resolve_inference_usage(base, owner, universe, ledger, resource, grant_id, v
     if envelope is None:
         if resource.connection_type != "http" or str(verb).upper() != "POST":
             return None
-        # Both installed capabilities and registered compute descriptors identify
-        # inference sources; a request cannot evade this by omitting model/body.
-        is_model = any(ledger.get_connection_capability(resource.connection_id, kind) is not None
-                       for kind in ("model_use", "model_discovery"))
-        from tinyassets.broker.provider_metadata import read_definitions
-        from tinyassets.providers.definition import _verified_definition
-
-        try:
-            definitions = read_definitions(store.base, universe)
-        except FileNotFoundError:
-            definitions = ()
-        except (OSError, ValueError, TypeError) as exc:
-            raise ProviderAuthorityHeldError(
-                "inference source definitions are unavailable",
-            ) from exc
-        is_model = is_model or any(
-            (definition := _verified_definition(row, expect_universe=universe)).ref == grant_id
-            and definition.owner_user_id == owner and definition.access_method == "api_key_http"
-            for row in definitions
-        )
-        if is_model:
+        # Metering is broker-held grant state. Published source descriptors are
+        # latched when accepted; withdrawing them cannot disable this requirement.
+        if ledger.grant_requires_inference_usage(grant_id):
             raise InferenceUsageRequired()
         return None
     ref = InferenceUsageReference.from_document(envelope)
@@ -246,6 +228,7 @@ class UsageStore:
                     conn.commit()
 
     def create(self, budget):
+        from tinyassets.owner_runtime import current
         from tinyassets.process_liveness import owner_token
 
         usage_id = secrets.token_hex(16)
@@ -254,9 +237,15 @@ class UsageStore:
             "deadline", "max_tokens", "max_cost_microunits",
         )}
         scope = (budget.owner, budget.universe, usage_id)
-        token = owner_token(self.base, broker_readable=self._remote)
-        parent_token = "request_" + usage_id
-        lease = ParentUsageLease(self.base, parent_token, broker_readable=self._remote)
+        if current() is not None and self._remote:
+            from tinyassets.owner_channel import UsageLease
+
+            lease = UsageLease(budget.universe, usage_id)
+            token, parent_token = lease.owner_token, lease.token
+        else:
+            token = owner_token(self.base, broker_readable=self._remote)
+            parent_token = "request_" + usage_id
+            lease = ParentUsageLease(self.base, parent_token, broker_readable=self._remote)
         try:
             if self._remote:
                 self._rpc(scope, "create", policy=policy, failures=budget._failures,
@@ -449,7 +438,8 @@ class UsageStore:
             )]
         return [self.receipt((owner, universe, uid)) for uid in ids]
 
-    def _validate_source(self, scope, attempt, grant_id, connection_id, verb, request):
+    def _validate_source(self, scope, attempt, grant_id, connection_id, verb, request,
+                         *, accounting_connection=None):
         """Bind server admission to its installed descriptor and current grant.
 
         A paid reservation cannot be relabelled as another HTTP source. Model
@@ -467,7 +457,17 @@ class UsageStore:
                 raise ValueError("source or model mismatch")
             from tinyassets.broker.provider_metadata import read_definitions
 
-            rows = read_definitions(self.base, scope[1])
+            # Reuse the broker's admission transaction. Daemon-side source
+            # inspection has no local accounting database to open.
+            row = (accounting_connection.execute(
+                f"SELECT owner_token FROM agent_request_usage WHERE {_SCOPE}", scope).fetchone()
+                   if accounting_connection is not None else None)
+            if row is not None and row[0].startswith("box_"):
+                from tinyassets.broker.owner_sources import read
+
+                rows = read(self._ledger, scope[1])
+            else:
+                rows = read_definitions(self.base, scope[1])
             definition = next(_verified_definition(row, expect_universe=scope[1])
                               for row in rows
                               if row.get("id") == attempt.source_ref.removeprefix("api_key_http:"))
@@ -520,7 +520,8 @@ class UsageStore:
                 if budget._attempts[ordinal - 1].state != "reserved":
                     raise ProviderAuthorityHeldError("inference usage reservation already consumed")
                 self._validate_source(scope, budget._attempts[ordinal - 1],
-                                      grant_id, connection_id, verb, request)
+                                      grant_id, connection_id, verb, request,
+                                      accounting_connection=conn)
                 conn.execute(
                     "INSERT INTO agent_request_dispatches "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)",

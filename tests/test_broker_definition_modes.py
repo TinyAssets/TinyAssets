@@ -14,6 +14,19 @@ pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX broker metadat
 def base(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(role_modes, "BROKER_READ_GID", os.getgid())
+    from tinyassets.broker.supervisor import get_supervisor
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    ledger = ConnectionLedger(tmp_path / ".broker/outbound.db", data_root=tmp_path)
+    ledger.create_connection(
+        connection_id="connection", owner_user_id="alice", connection_class="http",
+        connection_type="http", auth_scheme="bearer", scopes=("POST",),
+        provider="http", destination="service", credential_ref="vault://http/test",
+        allowed_endpoints=[{"host": "models.example.com", "path_template": "/chat",
+                            "methods": ["POST"]}])
+    ledger.grant_connection(grant_id="grant", connection_id="connection",
+                            owner_user_id="alice", universe_id="alice")
+    get_supervisor(tmp_path)  # Bootstrap before observing metadata-only replacements.
     return tmp_path
 
 
@@ -36,6 +49,9 @@ def test_every_replacement_has_read_group_before_atomic_publication(base, monkey
     assert len(published) == 2 and published[0] != published[1]
     assert {d.id for d in definition.list_definitions("alice")} == {first.id, second.id}
     assert stat.S_IMODE((base / "alice/provider_definitions.json").stat().st_mode) == 0o640
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    assert ConnectionLedger(base / ".broker/outbound.db").grant_requires_inference_usage("grant")
 
 
 def test_failed_group_assignment_preserves_existing_metadata_and_removes_only_temp(
@@ -51,4 +67,3 @@ def test_failed_group_assignment_preserves_existing_metadata_and_removes_only_te
     assert path.read_bytes() == before[0]
     assert os.path.samestat(path.stat(), before[1])
     assert list(path.parent.iterdir()) == [path]
-
