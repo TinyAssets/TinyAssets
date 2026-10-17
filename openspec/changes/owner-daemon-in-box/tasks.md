@@ -26,6 +26,8 @@ Nothing deploys until slice 7.
       broker fails.
 - [ ] 4. boxhostd persistent per-owner sandbox lifecycle: wake, idle sleep,
       crash restart, memory cap, awake cap.
+      - Retiring a center or deleting an account revokes the per-box secret and
+        stops the box first; a stale forward then fails at ingress (D2).
 - [ ] 5. The waker and the next-wake index. Test: a scheduled automation in
       a sleeping box runs with no request.
 - [ ] 6. Migration and census, with the shared root DB split by owner, the

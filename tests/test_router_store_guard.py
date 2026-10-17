@@ -18,7 +18,7 @@ from tinyassets.onboarding import (
     owner_sessions,
     session_store,
 )
-from tinyassets.router_credentials import HookOwners
+from tinyassets.router_credentials import DeletedOwners, HookOwners
 
 
 def oauth_connection(root):
@@ -37,6 +37,7 @@ OPENERS = [
     ("oauth_pkce", flows_db),
     ("api_keys", lambda root: ApiKeyStore(root).db()),
     ("hook_owners", HookOwners),
+    ("deleted_owners", DeletedOwners),
     ("mcp_oauth", lambda root: OAuthProvider(root / ".auth.db")),
     ("mcp_oauth", oauth_connection),
 ]
@@ -44,7 +45,8 @@ OPENERS = [
 
 @pytest.mark.parametrize("name,opener", OPENERS, ids=[
     "owner_sessions", "inline_flows", "handoffs", "refresh_sessions", "native_sign_in",
-    "canary_sign_in", "oauth_pkce", "api_keys", "hook_owners", "mcp_oauth", "mcp_oauth_connect",
+    "canary_sign_in", "oauth_pkce", "api_keys", "hook_owners", "deleted_owners", "mcp_oauth",
+    "mcp_oauth_connect",
 ])
 @pytest.mark.parametrize("inside", [True, False], ids=["box", "router"])
 def test_router_store_openers(tmp_path, monkeypatch, name, opener, inside):

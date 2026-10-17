@@ -708,3 +708,24 @@ def test_retired_hook_door_never_delivers_a_valid_token(router, monkeypatch):
             assert delivered.json() == {"owner": "alice", "payload": "still delivered"}
 
     asyncio.run(exercise())
+
+
+def test_a_deleted_owner_can_never_mint_again(tmp_path, monkeypatch):
+    from tinyassets import router_credentials
+    from tinyassets.router_credentials import dispatch
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    mint = {"operation": "key_mint", "name": "k", "request_ref": "ref-1"}
+    assert dispatch(tmp_path, "alice", {"operation": "hook_mint"})["token"]
+    assert dispatch(tmp_path, "alice", {"operation": "account_revoke"}) == {"revoked": True}
+    assert router_credentials.DeletedOwners(tmp_path).contains("alice")
+    # The tombstone is durable and checked under the dispatch lock, so a box
+    # request racing the revocation lands either before it (and is revoked)
+    # or after it (and is refused).
+    for request in (mint, {"operation": "hook_mint"}, {"operation": "key_list"},
+                    {"operation": "account_revoke"}):
+        with pytest.raises(PermissionError, match="deleted"):
+            dispatch(tmp_path, "alice", request)
+    assert dispatch(tmp_path, "bob", {"operation": "hook_mint"})["token"]
+    assert router_credentials._DISPATCH.acquire(blocking=False)
+    router_credentials._DISPATCH.release()
