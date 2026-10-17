@@ -47,10 +47,6 @@ def owner_work(function):
     """Hold the gate for scheduled work as well as disconnected HTTP turns."""
     @wraps(function)
     def wrapped(*args, **kwargs):
-        from tinyassets.owner_runtime import current
-
-        if current() is None:
-            return function(*args, **kwargs)
         with activity.enter():
             return function(*args, **kwargs)
     return wrapped

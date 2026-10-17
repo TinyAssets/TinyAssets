@@ -184,7 +184,10 @@ def test_supervisor_uses_one_root_for_database_routes_and_child(tmp_path, monkey
     monkeypatch.setattr(engine_endpoint, "EngineEndpoint", record_endpoint)
     from tinyassets.broker import supervisor
 
-    monkeypatch.setattr(supervisor, "_protect_daemon", lambda: None)
+    def no_shared_daemon_protection():
+        raise AssertionError("owner engine must not adopt shared-daemon authority")
+
+    monkeypatch.setattr(supervisor, "_protect_daemon", no_shared_daemon_protection)
     # Capture the supervisor without starting a background thread or a real CLI.
     monkeypatch.setattr(http.threading, "Thread", lambda **kw: SimpleNamespace(start=lambda: None))
     [server] = http.start_engine_mcp_http_servers(chosen)
@@ -192,6 +195,8 @@ def test_supervisor_uses_one_root_for_database_routes_and_child(tmp_path, monkey
     assert server._data_dir == str(chosen)
     assert endpoints == [("actor-a", "u-a")]
     assert _read(root=chosen).actor_id == "actor-a"
+    assert not hasattr(server, "box_server")
+    assert not (chosen / ".engine-mcp").exists()
 
 
 def test_supervisor_rejects_relative_root():

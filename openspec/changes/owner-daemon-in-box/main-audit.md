@@ -1220,3 +1220,79 @@ Receipts outside the repository:
 JUnit and hygiene body), `c6-s6a-final-focused/` (final focused log/JUnit), and
 `c6-s6a-root/s6a-root-final.log|xml` (final root proof), under the same Temp root.
 No deployment, push, merge, branch switch or production access occurred.
+
+
+## 6a part 1b: owner file/engine helpers (2026-10-17, partial)
+
+This is a coherent local subset, **not completion of the requested 1b pass**.
+The full D7 mode-fork scan is still outstanding; no remaining owner-work fork
+has been added to an allowlist. The existing router import/file-access guard
+is unchanged. No protected migration/deploy file or old-path shape probe changed.
+No production access, deployment, push, merge, rebase or branch switch occurred.
+
+Five runtime forks removed:
+
+| File:function | Surviving side |
+|---|---|
+| `universe_files.py:ensure_data_directory` | Create directories locally through the existing descriptor/no-follow implementation; delete the shared session/file-binding branch. |
+| `engine_mcp_http.py:box_engine_socket` | The owner engine uses loopback. Delete this helper, the host socket directory constructor, and the second server's startup/shutdown lifecycle. |
+| `engine_mcp_http.py:start_engine_mcp_http_servers` | Start inside the owner process; delete shared-daemon protection/adoption. |
+| `providers/base.py:get_sandbox_status` | Owner work already runs in its box; delete configured per-call-provider availability selection. |
+| `owner_activity.py:owner_work.wrapped` | Always hold the owner work/drain gate, including on exceptions. |
+
+The retained `BOX_ENGINE_HOST` constant still serves the deferred per-call
+backend's URL projection. Its consumer (`broker/public_egress.py`) is unchanged;
+its now-unused host engine-socket route belongs with that backend's next-pass
+retirement. `BoxExecutor`, `start_exec` and all six deferred backend modules
+are untouched. Session/file-binding consumers elsewhere remain pending.
+
+Tests: `test_engine_mcp_routes` keeps every assertion and now raises if engine
+startup tries shared-daemon protection, additionally checking that neither the
+second server nor the host socket directory exists. The stale raw-I/O exemption
+for the deleted socket helper was removed from `test_universe_path_io_guard`;
+its ratchet assertions remain intact. Five new `test_owner_local_paths` tests
+prove local/idempotent directory creation beneath an admitted center without
+mode/binding reads, link
+refusal, provider-independent sandbox status, work/drain admission and gate
+release on failure. **No whole tests retired in this subset; no skip/xfail.**
+
+Remaining 1b work (all unchanged by this subset):
+- Tools and sessions: `control_plane/binding.py:file_binding`,
+  `control_plane/session.py:_binding`, `universe_tools.py:_box`, `_operation_id`,
+  `read_file`, `_bash`, `agent_loop/tool_session.py:open_loop_tools`,
+  `providers/call.py:make_interactive_agent_turn`,
+  `engine_mcp_server.py:_universe_tool`; delete their shared-only bindings and
+  port surviving tests. Other local file-I/O methods still consult file_binding.
+- Broker placement: `broker/client.py:_owner_mode`, `_connect` and all peer-check
+  uses; `broker/aclient.py:_connect`; `broker/supervisor.py:get_supervisor`;
+  `broker/owner_identities.py:center_admission`, `admitted_owner`;
+  `broker/owner_sources.py:backfill_metering`; `boxes/lifecycle.py:admit_center`.
+  Router callers need explicit router-side operations; owner callers need only
+  the startup-admitted relay. Do not replace these forks with runtime flags.
+- Shared/owner services: `api_keys.py:current_store`,
+  `onboarding/owner_sessions.py:decision_session`, `require`,
+  `commons_catalog.py:publish_definition`, `get_definition`, `list_definitions`,
+  `_require_definition`, and `commons_bundles.py:next_version`.
+- Owner data and execution: `account_deletion.py:delete_account`,
+  `command_center_update_executor.py:_connect`, `_quota_inputs`,
+  `storage_accounting.py:_center_bytes`, `universe_owner.py:account_type_of`,
+  `account_type_for_universe`, `control_plane/tick.py:poll_once`,
+  `control_plane/continuations.py:tick`,
+  `providers/model_call.py:_dispatch_args`,
+  `providers/api_key_http_provider.py:_connection_context`,
+  `storage/agent_request_usage.py:UsageStore.create`,
+  `storage/subscription_state.py:state_db_path`, `get_tier`, `read_tier`, `get_plan`,
+  `storage/webhook_hooks.py:mint`, `_revoke_routes`.
+- Admission/readers: `credential_vault.py:_credential_root`,
+  `platform_runtime_provenance.py:_owner_observation`, and owner startup checks
+  in `agent_loop/owner_tools.py` and `owner_ingress.py`; distinguish admission
+  requirements from shared fallback behavior. The router entry's app-placement
+  read and owner_runtime's internal state checks are legitimate boundaries.
+- Finish D7's repository-wide alias-aware static scan with an explicit justified
+  boundary-only allowlist, port/retire all remaining affected tests, and validate.
+  No allowlist expansion was used to make this partial change appear complete.
+
+Validation receipts for this subset are under
+`C:/Users/Jonathan/AppData/Local/Temp/s6a1b-validation/`.
+`initial.log/xml` describe a discarded intermediate tree, not this commit.
+Final retained-tree validation is recorded below when complete.

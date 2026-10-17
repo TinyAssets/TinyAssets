@@ -189,9 +189,6 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/engine_mcp_http.py": [
         "_write_routes: os.open()",
         "_write_routes: os.replace()",
-        # The per-center engine socket under the daemon-owned .engine-mcp
-        # directory at the DATA ROOT (no owner tree), replaced on each start.
-        "box_engine_socket: .unlink()",
         "read_engine_mcp_route: .read_text()",
     ],
     # The refresh lock uses descriptor-relative O_NOFOLLOW opens and fstat
