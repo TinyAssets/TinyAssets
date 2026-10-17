@@ -200,21 +200,28 @@ def test_a_configured_registered_client_replaces_the_metadata_document(hf, app, 
     assert query["client_id"] == "registered-public-client"
 
 
-def test_an_agent_cannot_raise_the_sign_in_ask_itself(hf, app):
-    """No server-set discovery root, no offer: the identical payload makes no row."""
+def test_an_agent_source_ask_returns_a_door_link_without_discovery(hf, app):
+    """An agent can ask to connect; discovery and authorization stay at the door."""
     from tinyassets.api.pending_requests import list_requests, request_from_user
     from tinyassets.onboarding.source_connect import _ask_body, sign_in_action
     from tinyassets.providers.free_sources import sign_in_preset
 
     preset = sign_in_preset("huggingface")
     with _as(OWNER):
-        refused = request_from_user(universe_id=UID, payload={
+        asked = request_from_user(universe_id=UID, payload={
             "kind": "LLM", "title": "Use your Hugging Face models", "body": _ask_body(preset),
             "fields": [], "action": sign_in_action(preset, RESOURCE)})
-        assert refused["error"] == "request_invalid"
-        assert "no sign-in is offered" in refused["detail"]
+        assert asked["primary"] == "connect" and asked["fields"] == []
+        assert "authorize_url" not in json.dumps(asked)
+        from tests.owner_answer import answer_request
+
+        linked = answer_request(universe_id=UID, payload={
+            "request_id": asked["request_id"], "values": {}})
+        assert linked["status"] == "connect_required"
+        assert "request=" + asked["request_id"] in linked["connect_url"]
         pending = list_requests(universe_id=UID)["pending"]
-    assert all(r.get("action", {}).get("destination") != "model-huggingface" for r in pending)
+    assert any(r["request_id"] == asked["request_id"] for r in pending)
+    assert hf.authorize_queries == [] and hf.token_forms == []
 
 
 def test_source_sign_in_commits_the_broker_grant(hf, app):
@@ -241,15 +248,14 @@ def test_source_sign_in_commits_the_broker_grant(hf, app):
 
 
 def test_an_agent_ask_under_the_same_name_gets_no_pool_offer(hf, app, monkeypatch):
-    """Destination is agent-controllable; the offer needs the canonical platform ask."""
+    """Connecting at the door grants custody, without automatically pooling models."""
     from tinyassets.api import connection_uses
     from tinyassets.api.pending_requests import request_from_user
 
     monkeypatch.setattr(connection_uses, "select_model_if_unpowered",
                         lambda **_: {"status": "unchanged", "reason": "already_powered"})
     with _as(OWNER):
-        # An endpoint ON the issuer host roots discovery, so this ask does get
-        # a sign-in offer -- but it is not the installed card's action.
+        # The issuer endpoint can be discovered when the owner opens the door.
         asked = request_from_user(universe_id=UID, payload={
             "kind": "LLM", "title": "Use your Hugging Face models", "body": "", "fields": [],
             "action": {"type": "connect", "destination": "model-huggingface",
@@ -258,7 +264,7 @@ def test_an_agent_ask_under_the_same_name_gets_no_pool_offer(hf, app, monkeypatc
                        "uses": {"model": {"wire": "openai_chat", "billing": "free", "models": [
                            {"id": "agent-picked", "tools": True, "context": 32768}]}},
                        "oauth": {"scopes": ["inference-api"], "client_id": CIMD}}})
-    assert asked.get("primary") == "sign_in", asked
+    assert asked.get("primary") == "connect", asked
     done = _sign_in(hf, asked["request_id"])
     assert done.status_code == 200, done.text
     assert "confirmation" not in done.json()

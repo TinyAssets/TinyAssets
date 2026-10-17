@@ -859,14 +859,13 @@ def test_a_failed_turn_offers_to_send_again():
 
 
 @pytest.mark.parametrize("status,body_delay", [(401, False), (404, False), (404, True)])
-def test_write_cannot_replay_under_a_different_login(tmp_path, status, body_delay):
+def test_keyless_connect_cannot_replay_under_a_different_login(tmp_path, status, body_delay):
     rejection = {"status": status, "body": "", "delayMs" if body_delay else "headersDelayMs": 80}
     out = _drive(
         tmp_path,
         _handshake() + [rejection] + _handshake_with(_SID2)
         + [_ok({"status": "deposited"}, _SID2)],
-        '(async()=>{ const pending=MCP.requestFromUser({kind:"connect_http",'
-        'destination:"synthetic-dest"});'
+        '(async()=>{ const pending=MCP.connectHTTP("synthetic-dest",null,[],"none");'
         ' while(!SENT.some(s=>s.tool==="write_graph")) await new Promise(r=>setTimeout(r,1));'
         ' if(MCP.endLogin) MCP.endLogin(); else MCP.invalidateSession();'
         ' bearer="different-login"; return await pending; })()',
@@ -879,13 +878,12 @@ def test_write_cannot_replay_under_a_different_login(tmp_path, status, body_dela
     assert out["sessionIdAfter"] is None
 
 
-def test_delayed_handshake_cannot_send_a_write_under_the_next_login(tmp_path):
+def test_delayed_handshake_cannot_connect_under_the_next_login(tmp_path):
     plan = _handshake()
     plan[0]["headersDelayMs"] = 80
     out = _drive(
         tmp_path, plan + [_ok({"status": "deposited"})],
-        '(async()=>{ const pending=MCP.requestFromUser({kind:"connect_http",'
-        'destination:"synthetic-dest"});'
+        '(async()=>{ const pending=MCP.connectHTTP("synthetic-dest",null,[],"none");'
         ' while(!SENT.length) await new Promise(r=>setTimeout(r,1));'
         ' if(MCP.endLogin) MCP.endLogin(); else MCP.invalidateSession();'
         ' bearer="different-login"; return await pending; })()',
@@ -901,8 +899,7 @@ def test_stale_repair_handshake_cannot_discard_the_new_login_session(tmp_path):
     repair[0]["headersDelayMs"] = 80
     out = _drive(
         tmp_path, [_handshake()[0], _session_gone()] + repair,
-        '(async()=>{ const pending=MCP.requestFromUser({kind:"connect_http",'
-        'destination:"synthetic-dest"});'
+        '(async()=>{ const pending=MCP.connectHTTP("synthetic-dest",null,[],"none");'
         ' while(SENT.length<3) await new Promise(r=>setTimeout(r,1));'
         ' MCP.endLogin(); bearer="different-login"; MCP.sessionId="new-login-session";'
         ' return await pending; })()',

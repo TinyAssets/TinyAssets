@@ -7319,16 +7319,20 @@
       return out;
     },
     async post(operation,payload){
+      const epoch=MCP._loginEpoch;
+      const center=payload.center||(typeof queueScope!=="undefined"?queueScope:"");
       await ensureFreshToken();
+      MCP._assertLogin(epoch);
       if(!token()) throw new Error("sign_in_required");
       // No automatic retry: a code is redeemed at most once.
-      if(!payload.center&&typeof queueScope!=="undefined"&&queueScope)payload.center=queueScope;
+      if(center)payload={...payload,center};
       const response=await fetch("/app/model-connect/"+operation,{
         method:"POST",credentials:"same-origin",cache:"no-store",referrerPolicy:"no-referrer",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
         body:JSON.stringify(payload),
       });
       const result=await response.json();
+      MCP._assertLogin(epoch);
       if(!response.ok||result.error){
         const error=new Error((result&&(result.detail||result.error))||"sign_in_incomplete");
         error.signIn=result.error==='interactive_approval_required';throw error;
@@ -8528,7 +8532,7 @@
     },
     open(id,interactive=true){
       try{
-      if(this.selected!==id&&typeof CredentialRequests!=="undefined")CredentialRequests.clear();
+      if((this.selected!==id||!$('request-rail').open)&&typeof CredentialRequests!=="undefined")CredentialRequests.clear();
       const folded=foldedModelAccess(railCache);
       if(folded?.request_id===id)id=railCache.find(isSetupRequest).request_id;
       const req=railCache.find(row=>row.request_id===id);
@@ -8938,8 +8942,8 @@
         ?["api_key","api_secret","access_token","access_token_secret"]
         :req.action.auth_scheme==="basic"?["username","password"]
         :[req.action.auth_scheme==="url_secret"?"capability_url":"secret"];
-      req.fields=names.map(name=>({name,type:"secret",
-        label:name==="capability_url"?"Webhook URL":name.replaceAll("_"," ")}));
+      req={...req,fields:names.map(name=>({name,type:"secret",
+        label:name==="capability_url"?"Webhook URL":name.replaceAll("_"," ")}))};
     }
     const box = document.createElement("div"); box.className = "rtab-body";
     const asker=document.createElement("p");
@@ -9136,8 +9140,8 @@
       finally{buttons.forEach(b=>{b.disabled=false;});}
       return;
     }
-    const payload = { request_id: req.parent_request_id || req.request_id,
-      universe_id:req.universe_id||queueScope };
+    const payload = { request_id: req.parent_request_id || req.request_id };
+    if(req.universe_id)payload.universe_id=req.universe_id;
     if(req.item_id) payload.item_id=req.item_id;
     if(mode === "reply" && !text){ note.textContent = "Type something to send."; return; }
     if(text) payload.feedback = text;
@@ -9259,7 +9263,7 @@
     if(loginEpoch!==MCP._loginEpoch) return;
     if(!failure && r && Array.isArray(r.pending)){
       railFailed(null);
-      renderRail(r.pending.map(row=>({...row,universe_id:r.universe_id})), options);
+      renderRail(r.pending.map(row=>r.universe_id?{...row,universe_id:r.universe_id}:row), options);
       InlineApprovals.history(r.recently_answered, r.pending);
       return;
     }

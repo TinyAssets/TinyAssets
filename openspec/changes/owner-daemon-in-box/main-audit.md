@@ -901,3 +901,149 @@ were already classified. Receipts are outside the repository in the Windows
 temporary folder (`3c3-*-linux.log`, `3c3-linux-selection.json`). The lead retains the
 full CI selection, independent adversarial review (delegation was prohibited),
 task 6 census/rehearsal, deployment and live naive-user proof.
+
+
+## 3c CI regression repair (2026-10-17)
+
+Local repair of the 53 cases from CI's exact affected selection. D2 keeps
+owner request routing, protected approvals, account revocation and one-time key
+display; D3c moves discovery and all credential submission to the shared door,
+with broker custody and box completion by request_ref. Category **a** repairs
+a retained product behavior; **b** ports a deleted path's test to its retained
+user behavior. No tests were deleted, skipped, xfailed or quarantined.
+
+Additional product fixes found while exercising the retained behavior:
+- Door deposits capture the original login and center before token refresh,
+  refuse a changed login before sending, and discard late results after an
+  account switch without replaying the deposit.
+- A queued close event cannot erase a newly reopened API-key card.
+- Rendering default secret fields does not mutate the cached request, so
+  polling does not mistake that local form state for a changed request.
+
+The starter release follows `openspec/specs/platform-check-scope/spec.md`'s
+new immutable release requirement and the manifest test's version/hash pairing:
+`3-broker-connections`, SHA-256
+`23f4610ff686e0a449e4fb84f82645da823dab3b67439ac1ccf46879e13d4ca7`.
+
+### Disposition of every original failure
+
+Original IDs below remain the index even where a replacement has a more accurate
+name. No user-visible behavior was removed by this repair.
+
+| Original failing test | Category | Evidence and change |
+|---|---|---|
+| `tests/test_app_browser_notifications.py::test_item_verbs_use_the_existing_answer_path[accept]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_app_browser_notifications.py::test_item_verbs_use_the_existing_answer_path[deny]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_app_browser_notifications.py::test_item_verbs_use_the_existing_answer_path[reply]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_app_pending_requests_browser.py::test_cleared_reconnect_returns_on_later_failure_and_history_can_reask` | b | Assert the explicit request center now carried by the answer; clearing, later failure and history re-ask still execute. Failure was an additional universe_id, not lost behavior. |
+| `tests/test_app_pending_requests_browser.py::test_pending_requests_at_latest_and_new_arrival_answer[False-390]` | a | Ordinary answers no longer add an empty selected-chat center. The existing answer and scroll behavior assertions remain. |
+| `tests/test_app_pending_requests_browser.py::test_pending_requests_at_latest_and_new_arrival_answer[False-1280]` | a | Ordinary answers no longer add an empty selected-chat center. The existing answer and scroll behavior assertions remain. |
+| `tests/test_app_pending_requests_browser.py::test_pending_requests_at_latest_and_new_arrival_answer[True-390]` | a | Ordinary answers no longer add an empty selected-chat center. The existing answer and scroll behavior assertions remain. |
+| `tests/test_app_pending_requests_browser.py::test_pending_requests_at_latest_and_new_arrival_answer[True-1280]` | a | Ordinary answers no longer add an empty selected-chat center. The existing answer and scroll behavior assertions remain. |
+| `tests/test_app_request_rail_executes.py::test_model_setup_retry_is_visible_and_not_relayed_to_an_unpowered_agent[False]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_app_request_rail_executes.py::test_model_setup_retry_is_visible_and_not_relayed_to_an_unpowered_agent[True]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_app_request_rail_executes.py::test_patch_consent_rail_uses_protected_owner_door[True-accept]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_app_request_rail_executes.py::test_patch_consent_rail_uses_protected_owner_door[True-deny]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_app_request_rail_executes.py::test_patch_consent_rail_uses_protected_owner_door[True-clear]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_app_request_rail_executes.py::test_patch_consent_rail_uses_protected_owner_door[False-accept]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_app_request_rail_executes.py::test_patch_consent_rail_uses_protected_owner_door[False-deny]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_app_request_rail_executes.py::test_patch_consent_rail_uses_protected_owner_door[False-clear]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_credential_request_browser.py::test_card_is_reachable_in_real_needs_you_and_poll_preserves_secret[390]` | a | Polling preserves an existing row center when the response omits its envelope center, preventing card replacement and loss of the one-time API key. D2 keeps key issuance at the door. |
+| `tests/test_credential_request_browser.py::test_card_is_reachable_in_real_needs_you_and_poll_preserves_secret[1280]` | a | Polling preserves an existing row center when the response omits its envelope center, preventing card replacement and loss of the one-time API key. D2 keeps key issuance at the door. |
+| `tests/test_huggingface_sign_in_source.py::test_an_agent_cannot_raise_the_sign_in_ask_itself` | b | Ported to a fieldless connect ask and door link without box discovery; an agent may request a connection but cannot authorize it. |
+| `tests/test_huggingface_sign_in_source.py::test_an_agent_ask_under_the_same_name_gets_no_pool_offer` | b | Assert connect at the box, then OAuth at the door and no automatic model-pool offer. D3c removed box discovery and automatic serving. |
+| `tests/test_inline_owner_sessions.py::test_revoke_owner_cancels_all_connect_flows_only_for_that_owner` | b | Seed request_ref and frozen definition_json in the router flow schema; keep owner-specific revocation assertions. Failure was an obsolete positional INSERT. |
+| `tests/test_multi_value_credential_ask.py::test_one_box_of_four_is_refused_not_deposited_as_the_whole_credential` | b | Assert the broker door validation error and all missing OAuth bundle names, with no deposit. D3c moved bundle validation out of box answers. |
+| `tests/test_multi_value_credential_ask.py::test_a_legacy_request_stored_under_the_old_rules_is_refused` | b | Send the hostile legacy answer directly to the box approval endpoint, bypassing the test helper that now deposits at the door; retain rejection and empty-vault assertions. |
+| `tests/test_needs_you_open_browser.py::test_web_request_types_open_and_remain_actionable[False-model]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_web_request_types_open_and_remain_actionable[False-question]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_web_request_types_open_and_remain_actionable[False-patch]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_web_request_types_open_and_remain_actionable[False-patch_recommendation]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_web_request_types_open_and_remain_actionable[False-optional]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_web_request_types_open_and_remain_actionable[True-model]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_web_request_types_open_and_remain_actionable[True-question]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_web_request_types_open_and_remain_actionable[True-patch]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_web_request_types_open_and_remain_actionable[True-patch_recommendation]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_web_request_types_open_and_remain_actionable[True-optional]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_native_request_types_open_in_app_or_keep_visible_handoff[question-android]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_native_request_types_open_in_app_or_keep_visible_handoff[question-ios]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_native_request_types_open_in_app_or_keep_visible_handoff[question-desktop]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_native_request_types_open_in_app_or_keep_visible_handoff[patch_recommendation-android]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_native_request_types_open_in_app_or_keep_visible_handoff[patch_recommendation-ios]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_native_request_types_open_in_app_or_keep_visible_handoff[patch_recommendation-desktop]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_native_request_types_open_in_app_or_keep_visible_handoff[optional-android]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_native_request_types_open_in_app_or_keep_visible_handoff[optional-ios]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_native_request_types_open_in_app_or_keep_visible_handoff[optional-desktop]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_onboarding_mcp_session_recovery.py::test_deposit_cannot_replay_under_a_different_login[401-False]` | b | Exercise the retained keyless MCP connect under the same handshake/login race. Secret deposit no longer uses MCP. Added Chromium door-deposit tests for refresh and delayed success/401/404 after login changes. |
+| `tests/test_onboarding_mcp_session_recovery.py::test_deposit_cannot_replay_under_a_different_login[404-False]` | b | Exercise the retained keyless MCP connect under the same handshake/login race. Secret deposit no longer uses MCP. Added Chromium door-deposit tests for refresh and delayed success/401/404 after login changes. |
+| `tests/test_onboarding_mcp_session_recovery.py::test_deposit_cannot_replay_under_a_different_login[404-True]` | b | Exercise the retained keyless MCP connect under the same handshake/login race. Secret deposit no longer uses MCP. Added Chromium door-deposit tests for refresh and delayed success/401/404 after login changes. |
+| `tests/test_onboarding_mcp_session_recovery.py::test_delayed_handshake_cannot_send_a_secret_under_the_next_login` | b | Exercise the retained keyless MCP connect under the same handshake/login race. Secret deposit no longer uses MCP. Added Chromium door-deposit tests for refresh and delayed success/401/404 after login changes. |
+| `tests/test_onboarding_mcp_session_recovery.py::test_stale_repair_handshake_cannot_discard_the_new_login_session` | b | Exercise the retained keyless MCP connect under the same handshake/login race. Secret deposit no longer uses MCP. Added Chromium door-deposit tests for refresh and delayed success/401/404 after login changes. |
+| `tests/test_request_answer_routing.py::test_subagent_card_answer_in_real_browser[app_sheet]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_request_answer_routing.py::test_subagent_card_answer_in_real_browser[inline_card]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_request_answer_routing.py::test_subagent_card_answer_in_real_browser[desktop]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_request_fields_are_answerable.py::test_the_documented_oauth1a_names_are_the_ones_the_deposit_reads` | b | Keep OAuth bundle-name parity and assert served tools direct secrets to the shared door; removed the expectation that box tool guidance teaches secret submission. |
+| `tests/test_starter_manifest.py::test_published_starter_release_is_immutable` | a | Publish version 3-broker-connections and pin its computed manifest digest together, following platform-check-scope. Version 2 content was changed by 3c; its digest was not silently repinned. |
+| `tests/test_starter_ta_tasks.py::test_connect_my_google_calendar_offers_owner_sign_in_through_ta` | b | Calendar ask retains public endpoints/scopes and opens the owner door; assert no box-discovered provider_id or private secret. D3c places discovery at the door. |
+
+### Local commits and focused validation
+
+- `73fefaada19`: new immutable starter release.
+- `85dd0f542a4`: port superseded connection tests to the D3c contract.
+- `38ca04fbfaa`: repair request cards, routing and login-bound door submission.
+- `6cac7542153`: clear the previous one-time key on immediate same-sheet reopen.
+
+All 53 original cases passed in the 13-file regression run (287 passed; its
+three failures were new test-interception synchronization errors, since fixed).
+The final door/OAuth rerun passed 49. A further two-file run passed 163,
+including the new four-field Chromium proof, and found only two stale
+empty-center expectations in `test_onboarding_app.py`; after their update,
+that complete file passed 147.
+
+The 99-file owner/broker/router/structural selection passed 1,867, with those
+same two onboarding expectation failures and two root-only skips. The final
+147-pass file run covers both failures. The complete owner-destruction file
+passed 5 under `--as-root`, including both skipped cases; skips are not
+counted as passing proof. Ruff on every touched Python file, JavaScript syntax,
+`git diff --check`, and strict OpenSpec validation passed.
+
+No reviewer was dispatched because delegation was explicitly prohibited.
+These are local commits only; no push, merge, branch change, host git configuration
+change, worktree creation or deployment was performed.
+
+### Full original CI chunks
+
+Each uses the original 155-file list and order from the supplied scratch
+folder, through `python scripts/linux_oracle.py -- -q --no-header
+-p no:cacheprovider <files>`. The selector still reports 1,196 files. Existing
+skip counts are reported separately and are not credited as passing cases.
+
+| Chunk | Passed | Failed | Existing skips | Elapsed |
+|---|---:|---:|---:|---:|
+| aa | 2,999 | 0 | 0 | 833.45s |
+| ac | 3,113 | 0 | 2 | 1222.75s |
+| ad | 3,491 | 0 | 8 | 592.35s |
+| ae | 3,192 | 0 | 5 | 608.88s |
+| af | 2,979 | 0 | 0 | 715.18s |
+| ag | 2,362 | 0 | 1 | 580.76s |
+
+The immediate-reopen refinement was made after the full chunks had taken
+snapshots of the original 53 repairs. Its final two-file Chromium run passed
+83; the final combined 112-file run covered every requested regression file and
+every owner/broker/router/structural file on the final implementation:
+**2,160 passed, zero failed, two root-only skips in 432.53s**. Both skipped
+owner-destruction cases passed in the separate five-pass root run above.
+All six original failing chunks completed with **18,136 passed, zero failed,
+16 pre-existing skips**. No skip, xfail or quarantine was added. The interrupted first
+`ae` run held the pre-repair onboarding assertions and was restarted from the
+corrected onboarding-assertion snapshot; it is not counted as a completed
+validation run.
+
+
+Receipt files are outside the repository under
+`C:/Users/Jonathan/AppData/Local/Temp/`:
+`3c-regression-chunk-{aa,ac,ad,ae,af,ag}.log`,
+`3c-regression-final-selection.json`, `3c-regression-final-selection.log`,
+`3c-regression-root.log`, and `3c-regression-reopen-final.log`.
+The original chunk lists and original failure logs remain unchanged in the
+supplied scratch directory.

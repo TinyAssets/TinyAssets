@@ -405,6 +405,8 @@ class _Connection:
                 from tinyassets.broker.owner_reads import PlanMissing, read
 
                 try:
+                    await asyncio.to_thread(self._server._owner_identities.box_route,
+                                            self._box_owner)
                     result = await asyncio.to_thread(
                         read, self._server._data_root, self._box_owner, doc)
                     answer = {"op": "BOX_RESULT", "result": result}
@@ -1171,6 +1173,8 @@ class _Connection:
     def _checkpoint(self, stream: _Stream) -> None:
         if stream.cancelled:
             raise _Cancelled
+        if self._role == BOX:
+            self._box_scope({})
         if stream.authority is not None:
             stream.authority()
         if stream.upstream is not None and hasattr(stream.upstream, "check_authority"):

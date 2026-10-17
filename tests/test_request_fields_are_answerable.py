@@ -91,8 +91,8 @@ def test_the_fixed_names_are_enforced_when_the_scheme_reads_them() -> None:
     assert "api_secret" in str(caught.value)
 
 
-def test_the_documented_oauth1a_names_are_the_ones_the_deposit_reads() -> None:
-    """Doc/runtime parity, because this exact pair disagreed in production."""
+def test_oauth1a_fields_match_deposit_and_tools_direct_secrets_to_door() -> None:
+    """Field names stay compatible; tools describe only the secret-free path."""
     from tinyassets.api.http_connection import _OAUTH1A_FIELDS
     from tinyassets.api.pending_requests import _MULTI_VALUE_FIELD_NAMES
 
@@ -100,14 +100,11 @@ def test_the_documented_oauth1a_names_are_the_ones_the_deposit_reads() -> None:
 
     import tinyassets.engine_mcp_server as engine
 
-    # REACHABLE, not resident (2026-09-26): field naming lives in the
-    # `connections` handbook chapter, which the resident index names as covering
-    # "naming each field the way the site names it". The wrong-name assertion
-    # below now spans the whole reachable text, so it got stronger.
     doc = engine.served_tool_guidance("write_graph")
-    for name in _OAUTH1A_FIELDS:
-        assert name in doc, f"the docs never name {name!r}"
-    assert "api_key_secret" not in doc, "the wrong name is back in the docs"
+    assert "shared connection door" in doc
+    assert "never send a secret" in doc
+    assert "through a tool or approval answer" in doc
+    assert "api_key_secret" not in doc
 
 
 @pytest.mark.parametrize(

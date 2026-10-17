@@ -104,6 +104,9 @@ adding a check in shared code.
 
 ### D3 decisions (slice 3: broker egress)
 
+- **Model grant metering.** The broker records `inference_required` on each grant from its HTTP connection's `model_use`/`model_discovery` capabilities or `compute:` destination at grant creation; existing grants are backfilled once from the same broker-held state, and enabling a model capability also latches existing grants. Removing capabilities or box-published descriptors never removes metering, and a model POST without an inference envelope refuses before credential access.
+- **Send admission.** Every box stream checkpoint repeats OPEN's bound-center admission check, including after resolution/connect and before sending credentials or request bytes.
+- **Shared-read admission.** Every BOX_READ rechecks the relay-bound owner's route in the broker; an established BOX_SHARED channel grants no reads after the owner's last live center retires.
 - **Transport.** Existing synchronous and streaming broker clients open `BOX_CONNECT` on the startup-admitted relay; the broker derives identity, center and fence from `BOX_CHANNEL`, with no host-client fallback.
 - **Models.** Reuse the HTTP model executor, source/grant queries, accounting gate and credit-bounded `OPEN` stream; publish only validated, credential-free source descriptors into the broker ledger before inference.
 - **Accounting.** An allocation holds a dedicated box channel with a ten-second heartbeat; the broker holds its liveness locks and releases them on disconnect, so accounting never reads a box file or depends on a host copy of it.
@@ -181,7 +184,8 @@ provider-specific code.
 - **The slice 7 report names, per account:** CLI connections lost, keys
   pasted into chat no longer accepted, HTTP connections carried over,
   `/mcp/hooks/` integrations to re-point to `/hooks/inbound/`, and the loss
-  of local image descriptions.
+  of local image descriptions, and billing status no longer showing seat
+  and storage usage (plan limits remain).
 
 | Research rule | 3c |
 |---|---|

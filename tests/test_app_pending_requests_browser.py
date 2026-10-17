@@ -67,7 +67,7 @@ def test_cleared_reconnect_returns_on_later_failure_and_history_can_reask(app_ur
             page.get_by_role('button', name='Clear', exact=True).click()
             page.wait_for_function('() => answers.length === 1 && railCache.length === 0')
             assert page.evaluate('answers[0]') == {
-                'request_id': first['request_id'], 'dismiss': True,
+                'request_id': first['request_id'], 'universe_id': 'u-1', 'dismiss': True,
             }
             assert page.evaluate('relays') == []
             assert not read_rail()["pending"]

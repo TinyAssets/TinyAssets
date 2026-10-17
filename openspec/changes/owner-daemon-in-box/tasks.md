@@ -87,6 +87,7 @@ Nothing deploys until slice 7.
         with authorship from the relay bind. Proof and deletions: `main-audit.md`.
 - [x] 4. boxhostd persistent per-owner sandbox lifecycle: wake, idle sleep,
       crash restart, memory cap, awake cap.
+      - Stopping a box on retirement also closes that box's open broker channels.
       - Retiring a center or deleting an account revokes the per-box secret and
         stops the box first; a stale forward then fails at ingress (D2).
 - [ ] 5. The waker and the next-wake index. Test: a scheduled automation in

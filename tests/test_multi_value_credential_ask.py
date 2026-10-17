@@ -197,7 +197,7 @@ def test_one_box_of_four_is_refused_not_deposited_as_the_whole_credential(base) 
     )
 
     blob = json.dumps(out)
-    assert "missing" in blob.lower(), out
+    assert out["error"] == "connection_setup_invalid", out
     for absent in ("api_secret", "access_token", "access_token_secret"):
         assert absent in blob, f"the refusal must name {absent}"
 
@@ -254,10 +254,14 @@ def test_a_legacy_request_stored_under_the_old_rules_is_refused(base) -> None:
     )
     request_id = legacy_id if isinstance(legacy_id, str) else legacy_id["request_id"]
 
-    out = _owner_answer(
-        "u-legacy",
-        request_id=request_id,
-        values={"part_a": "alpha-token", "part_b": "beta-token"},
+    # Bypass the browser fixture: this deliberately submits to the box approval
+    # endpoint, which must refuse every secret even for an old stored request.
+    from tests.owner_answer import answer_request, session_cookie
+
+    out = answer_request(
+        universe_id="u-legacy", cookie=session_cookie(), payload={
+            "request_id": request_id,
+            "values": {"part_a": "alpha-token", "part_b": "beta-token"}},
     )
 
     blob = json.dumps(out)
