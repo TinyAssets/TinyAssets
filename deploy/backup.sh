@@ -178,7 +178,7 @@ fi
 TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
 
 box_archive() {  # $1 = archive path; $2 = remote name
-    local path="$1" name="$2" box_root tree member box_tar_rc
+    local path="$1" name="$2" box_root tree member
     if [[ ! -e "${BOX_STORE_DIR}" ]]; then
         if [[ "${BACKUP_REQUIRE_BOX_STORE:-0}" == 1 ]]; then
             log "ERROR: required box store is absent"

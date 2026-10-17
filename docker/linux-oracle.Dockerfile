@@ -50,4 +50,9 @@ RUN python -m playwright install --with-deps chromium     && chmod -R a+rX /opt/
 ENV TMPDIR=/tmp/oracle-tmp
 RUN mkdir -p /tmp/oracle-tmp
 
+# Migration copy and deploy-shell proofs must execute in the oracle too.
+RUN apt-get update -qq \
+    && apt-get install -y -qq --no-install-recommends rsync shellcheck \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /work

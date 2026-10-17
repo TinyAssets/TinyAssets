@@ -446,6 +446,31 @@ cutover. The `--archive` rehearsal on the private production copy must:
   pause after the move;
 - prove a restore of the paired backup returns today's layout.
 
+### D6 census and restore groundwork (slice 6, incomplete)
+
+`python -m tinyassets.box_layout_migration census <data> --dry-run` reads
+SQLite through `readonly_db`, inventories shared tables, and emits counts with
+report-local account labels. Unknown tables, missing/contradictory ownership,
+unattributed files, paid orphans and HTTP slots without an owned connection
+refuse. Tables whose attribution rule is still pending are separately marked;
+classifying their destination does not authorize copying or dropping their rows.
+The census reads attribution columns, not conversation/checkpoint payloads.
+
+The synthetic source has two owners and two centers each. The Linux restore
+rehearsal runs the existing `backup-restore.sh` against real SQLite and tar
+archives after tree copy, box-record creation, and host-tree/row deletion. All
+three restore the original owner-split file bytes, including the marker and
+databases, with the partial box trees retained outside the active store.
+Host service discovery and mount checks use disposable shims; this does not
+claim real XFS quota or gVisor proof.
+
+This is diagnostic groundwork, **not the completed cutover**. The old apply
+path and deploy wiring are still unchanged. Remaining: finish every table and
+file attribution, replace the intermediate apply with the single final-shape
+copy/verify/remove transaction, seed shared custody/plans/keys/hooks/published
+stores, remove intermediate CLI/activity copying, and prove serving through
+the owner daemon/router/broker after migration. Task 6 stays unchecked.
+
 ## D7. Guard and deletions
 
 - Guard test: the router package imports no owner store module and opens no
