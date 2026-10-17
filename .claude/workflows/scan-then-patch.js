@@ -33,6 +33,30 @@ if (!objective || !files.length) throw new Error('scan-then-patch needs args { o
 const READ_ONLY = 'Read only: do not create, edit or delete repository files, and do not change git state.'
 const MAX_ROUNDS = 3
 
+// The last balanced JSON object in text: braces inside strings don't count.
+function lastJsonObject(text) {
+  for (let start = text.lastIndexOf('{'); start >= 0; start = text.lastIndexOf('{', start - 1)) {
+    let depth = 0, inString = false, escaped = false
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i]
+      if (inString) {
+        if (escaped) escaped = false
+        else if (ch === '\\') escaped = true
+        else if (ch === '"') inString = false
+      } else if (ch === '"') inString = true
+      else if (ch === '{') depth++
+      else if (ch === '}' && --depth === 0) {
+        try {
+          const value = JSON.parse(text.slice(start, i + 1))
+          if (value && typeof value === 'object' && !Array.isArray(value)) return value
+        } catch {}
+        break
+      }
+    }
+  }
+  return null
+}
+
 // One Codex job on a model class. exit_code != 0 means "use the Claude fallback".
 async function codex(task, { label, phase, modelClass, effort, write = false, schema }) {
   const run = await agent(`Run one Codex job and report its result. Do not do the task yourself.
@@ -45,16 +69,20 @@ ${task}${schema ? `\n\nEnd your answer with ONE JSON object matching: ${JSON.str
     { label: `codex ${modelClass} ${label}`, phase, model: 'haiku', effort: 'low', schema: CODEX_RUN, ...(write ? { isolation: 'worktree' } : {}) })
   if (!run || run.exit_code !== 0) return null
   if (!schema) return run
-  const tail = run.output.slice(run.output.lastIndexOf('{'))
-  try { return { ...JSON.parse(tail), diff: run.diff } } catch { return null }
+  const parsed = lastJsonObject(run.output)
+  return parsed ? { ...parsed, diff: run.diff } : null
 }
 
-// Haiku scanned, so the verifier is the other family: Codex Sol, else Sonnet.
+// Haiku scanned, so the verifier is the other family: Codex Sol. With Codex
+// down, Sonnet verifies, and the finding is labelled sameFamilyVerify so the
+// lead knows its verification was not cross-family.
 async function verify(f) {
   const task = `${READ_ONLY}\nYou did not write this finding. Try to refute it; default to refuted=true if unsure.\n${JSON.stringify(f)}`
-  const v = (await codex(task, { label: `verify-${f.file}`, phase: 'Verify', modelClass: 'sol', effort: 'medium', schema: VERDICT }))
-    || (await agent(task, { label: `verify ${f.file}`, phase: 'Verify', model: 'sonnet', schema: VERDICT }))
-  return v && !v.refuted ? f : null
+  const cross = await codex(task, { label: `verify-${f.file}`, phase: 'Verify', modelClass: 'sol', effort: 'medium', schema: VERDICT })
+  if (cross) return !cross.refuted ? f : null
+  log(`Codex unavailable: ${f.file} verified within the Claude family`)
+  const v = await agent(task, { label: `verify ${f.file}`, phase: 'Verify', model: 'sonnet', schema: VERDICT })
+  return v && !v.refuted ? { ...f, sameFamilyVerify: true } : null
 }
 
 async function patch(f, rejected, { escalated = false } = {}) {
@@ -70,8 +98,11 @@ async function patch(f, rejected, { escalated = false } = {}) {
 async function check(f, p) {
   const task = `${READ_ONLY}\nCheck that this diff fixes the finding and breaks nothing. List every problem; an empty list means it is correct.\nFinding: ${JSON.stringify(f)}\nDiff:\n${p.diff}`
   if (p.by === 'codex') return agent(task, { label: `check ${f.file}`, phase: 'Check', model: 'sonnet', schema: CHECK })
-  return (await codex(task, { label: `check-${f.file}`, phase: 'Check', modelClass: 'sol', effort: 'medium', schema: CHECK }))
-    || agent(task, { label: `check ${f.file}`, phase: 'Check', model: 'haiku', schema: CHECK })
+  const cross = await codex(task, { label: `check-${f.file}`, phase: 'Check', modelClass: 'sol', effort: 'medium', schema: CHECK })
+  if (cross) return cross
+  log(`Codex unavailable: the Claude-written diff for ${f.file} is checked within the Claude family`)
+  const c = await agent(task, { label: `check ${f.file}`, phase: 'Check', model: 'sonnet', schema: CHECK })
+  return c ? { ...c, sameFamilyCheck: true } : null
 }
 
 // Stop when clean, after two rounds in a row without fewer problems, or at round 3;
@@ -83,8 +114,8 @@ async function patchLoop(f) {
     const p = await patch(f, last && last.problems)
     if (!p) return { finding: f, rounds, diff: null, problems: ['patch failed on Codex and Claude'], escalate: true }
     const c = await check(f, p)
-    last = { diff: p.diff, by: p.by, problems: c ? c.problems : ['check failed'] }
-    if (!last.problems.length) return { finding: f, rounds, diff: p.diff, by: p.by, problems: [], escalate: false }
+    last = { diff: p.diff, by: p.by, problems: c ? c.problems : ['check failed'], sameFamilyCheck: !!(c && c.sameFamilyCheck) }
+    if (!last.problems.length) return { finding: f, rounds, diff: p.diff, by: p.by, problems: [], escalate: false, sameFamilyCheck: last.sameFamilyCheck }
     if (last.problems.length < best) { best = last.problems.length; stalled = 0 } else stalled++
   }
   const e = await patch(f, last.problems, { escalated: true })
