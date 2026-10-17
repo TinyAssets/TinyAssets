@@ -1369,6 +1369,27 @@ Unprivileged CI retains the documented root-only skip for the full XFS test.
 Receipts live outside the repository in
 `%TEMP%/ta-s6-escalation-validation/` (`rehearsal.log`, `rehearsal.xml`).
 
+Final validation selected 74 files: touched tests, the requested rehearsal,
+census, migration and deploy patterns, all 35 structural guard files, ten
+affected heavy files, and provider/reconnect/owner-egress consumers. The
+unprivileged oracle recorded **2,412 passed, two failed, two skipped**
+(`final-selection.log` / `.xml`; exact selection in `final-selection.json`).
+The two migration failures simulate effective root while the process still
+owns its temporary directories as the unprivileged user; the broker ownership
+guard correctly refuses that mismatch. Both pass under actual root. The
+special-bit copy and XFS harness cases use their existing root-only skips and
+also pass under actual root. Node-by-node XML reconciliation in
+`coverage-final.json` confirms **2,416 distinct cases passed**, with no
+unresolved cases. No failure or skip is credited as a pass. All **35 structural
+guard files passed, 960 cases**, without skips.
+
+Changed-file Ruff and `git diff --check` pass. Repository-wide Ruff records
+33 pre-existing findings in seven files verified unchanged from the starting
+head (`ruff-all.json`). Post-commit hygiene passes against
+`conv/c6-owner-daemon-s5` with `Registry row(s): S8` and the unchanged existing
+`Test-Removal: retired --` declaration in `hygiene-body.txt`. The product and
+harness commit is `b96419aba6c`; this validation receipt changes prose only.
+
 The previous interruption failed because the migration Python process is PID 1
 in its container namespace: a self-sent SIGKILL is ignored there. A minimal
 network-less container reproduced PID 1 surviving that signal while its child
