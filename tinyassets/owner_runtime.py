@@ -40,6 +40,11 @@ def current() -> OwnerRuntime | None:
     return _runtime
 
 
+def refuse_router_store(name: str) -> None:
+    if current() is not None:
+        raise RuntimeError(f"router store {name} is never opened inside an owner box")
+
+
 def start(relay: Path) -> OwnerRuntime:
     """Read identity once from the per-box socket, before constructing the app.
 

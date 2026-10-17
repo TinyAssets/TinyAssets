@@ -173,8 +173,8 @@ def test_redaction_strips_secrets_and_keeps_the_commit(captured, monkeypatch):
     assert "sk_live_" not in text
     assert "code=1" not in text
     assert "a" * 40 in text
-    assert obs.route_for("/mcp/hooks/not-a-slug") == "/mcp/hooks/{token}"
-    assert "/hooks/{token}" in obs.route_for("/mcp/hooks/deadbeef")
+    assert obs.route_for("/hooks/inbound/not-a-slug") == "/hooks/inbound/{token}"
+    assert "/hooks/inbound/{token}" in obs.route_for("/hooks/inbound/deadbeef")
     assert obs.route_for("/hooks/inbound/deadbeef") == "/hooks/inbound/{token}"
 
 

@@ -26,7 +26,7 @@ Three layers, phased. The whole system is inbound-channel-agnostic; Floor 1 alon
 end-to-end value.
 
 1. **Universal inbound webhook URL** (platform builds once) — a stable, unguessable per-
-   branch URL `https://<domain>/mcp/hooks/<branch-trigger-token>`. Any channel that can POST an
+   branch URL `https://<domain>/hooks/inbound/<branch-trigger-token>`. Any channel that can POST an
    HTTP webhook hits it and the bound branch runs, with the POST body as run input, executed
    as the branch's owning universe. Zero user code, zero platform patching. **The fastest
    floor — covers the majority of modern channels instantly.** This change's shippable slice.
@@ -44,7 +44,7 @@ end-to-end value.
 
 ## Impact
 
-- New public surface: an inbound `POST /mcp/hooks/<token>` receiver. Public-surface change → the
+- New public surface: an inbound `POST /hooks/inbound/<token>` receiver. Public-surface change → the
   §11 canary + trust-boundary review apply. The token is unguessable and scoped to ONE
   branch+universe, so an inbound POST can only ever trigger that one branch as that universe.
 - No change to the canonical `/mcp` handle set. No change to existing effectors.

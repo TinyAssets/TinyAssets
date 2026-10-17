@@ -10,18 +10,18 @@
       404-indistinct; size cap; enqueue via the gated run path (`_action_run_branch`-equivalent)
       as `actor=universe:<uid>`, author-gated; `inputs={"webhook": {...}}`; per-token rate limit;
       return `(status, payload)`. Transport-agnostic (testable without a server).
-- [ ] 1.4 Mount `Route("/mcp/hooks/{token}", handle, methods=["POST"])` in `create_streamable_http_app`
+- [ ] 1.4 Mount `Route("/hooks/inbound/{token}", handle, methods=["POST"])` in `create_streamable_http_app`
       (`universe_server.py`). Bind it AFTER discovery, before the MCP catch-all.
 - [ ] 1.5 Tests: valid token → 202 + run enqueued as the universe; unknown/revoked/malformed →
       404 indistinct + nothing enqueued; cross-universe token cannot trigger another branch;
       oversized body → 413/400; body passed as input verbatim.
 - [ ] 1.6 Mint/revoke/list user operation (MCP-reachable via `runtime_ops`/extensions), authorized
-      to the caller's OWN universe only; returns the full `https://<domain>/mcp/hooks/<token>` URL.
+      to the caller's OWN universe only; returns the full `https://<domain>/hooks/inbound/<token>` URL.
 - [ ] 1.7 Tests: mint for own branch → URL; mint for a branch the universe does not own → refused.
 - [ ] 1.8 Plugin mirror rebuild + parity; ruff; targeted pytest green.
 - [ ] 1.9 Codex cross-family review (public-surface security: token unguessable + per-branch,
       no identity from request, author-gated run, 404-indistinct, rate-limited, dark-until-flag).
-- [ ] 1.10 Land; the code is DARK until `TINYASSETS_INBOUND_ENABLED` is flipped; the /mcp/hooks mount rides the existing /mcp tunnel (no infra change) +
+- [ ] 1.10 Land; the code is DARK until `TINYASSETS_INBOUND_ENABLED` is flipped; integrations target the single /hooks/inbound door at cutover +
       §11 canary). Document the enable step.
 
 ### Phase 1 activation — the 3 remaining Codex findings (gate public exposure)

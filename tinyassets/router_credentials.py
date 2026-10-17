@@ -24,6 +24,9 @@ MAX_HOOKS_PER_OWNER = 200
 
 class HookOwners:
     def __init__(self, root: Path):
+        from tinyassets.owner_runtime import refuse_router_store
+
+        refuse_router_store("hook_owners")
         self.path = root / ".hook-owners.sqlite3"
 
     def publish(self, token_hash: str, owner: str):
@@ -42,6 +45,12 @@ class HookOwners:
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("DELETE FROM hook_owners WHERE token_hash=? AND owner=?",
                        (token_hash, owner))
+
+    def revoke_owner(self, owner: str):
+        if not self.path.exists():
+            return
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("DELETE FROM hook_owners WHERE owner=?", (owner,))
 
     def resolve(self, token: str) -> str | None:
         if not self.path.exists():
@@ -94,6 +103,25 @@ def dispatch(root: Path, owner: str, request: dict) -> dict:
         raise ValueError("invalid credential operation")
     operation = request.get("operation")
     keys = ApiKeyStore(root)
+    if operation == "account_revoke" and set(request) == {"operation"}:
+        from tinyassets.onboarding import (
+            approval_handoff,
+            canary_sign_in,
+            owner_sessions,
+            session_store,
+        )
+
+        # This process's data_dir is the router root, never the requesting box.
+        owner_sessions.revoke_owner(owner)
+        session_store.revoke_owner(owner)
+        canary_sign_in.revoke_owner(owner)
+        with approval_handoff.flows() as db:
+            db.execute("DELETE FROM approval_handoffs WHERE owner=?", (owner,))
+        for key in keys.list(owner, authority=None)["keys"]:
+            if key["revoked_at"] is None:
+                keys.revoke(owner, key["key_id"], authority=None)
+        HookOwners(root).revoke_owner(owner)
+        return {"revoked": True}
     if operation == "key_mint" and set(request) == {"operation", "name", "request_ref"}:
         if not isinstance(request["request_ref"], str) or len(request["request_ref"]) > 4096:
             raise ValueError("invalid key request reference")

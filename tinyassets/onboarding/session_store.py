@@ -6,9 +6,9 @@ refresh token here.
 **Sealed at rest.** Every record is AES-GCM ciphertext under a process key. The
 AAD binds both the handle and the record kind, so a record copied onto another
 handle's filename does not decrypt and a record's kind cannot be flipped by an
-editor of the JSON. Nothing outside the ciphertext identifies a session: not the
-token, and — this was the round-2 blocker — not the successor handle a rotation
-points at either. A tombstone that named its successor in plaintext would have
+editor of the JSON. Authenticated public owner metadata supports revocation.
+No credential is outside the ciphertext: neither the token nor the successor
+handle a rotation points at. A tombstone naming its successor in plaintext would have
 handed a data-dir reader a *directly usable bearer handle*, which is the original
 cross-user disclosure wearing a different hat.
 
@@ -95,7 +95,7 @@ _B64_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{43}=?$")
 _HEX_KEY_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 _MAX_TOKEN = 4096
-_RECORD_VERSION = 1
+_RECORD_VERSION = 2
 _KIND_SESSION = "session"
 _KIND_TOMBSTONE = "tombstone"
 
@@ -224,6 +224,9 @@ def store_dir() -> Path:
     Raises ``SessionStoreUnavailable`` if the legacy plaintext store is present
     and cannot be removed.
     """
+    from tinyassets.owner_runtime import refuse_router_store
+
+    refuse_router_store("refresh_sessions")
     from tinyassets.storage import data_dir
 
     root = data_dir()
@@ -375,17 +378,17 @@ def _int(value: object) -> int | None:
     return value
 
 
-def _aad(handle: str, kind: str) -> bytes:
-    """Authenticated-but-public context: the handle AND the record kind.
+def _aad(handle: str, kind: str, owner: str) -> bytes:
+    """Authenticate the handle, record kind and revocation owner.
 
     The handle stops a record being moved to another handle's filename. The kind
-    stops the one plaintext field that remains (``kind``) being edited to make a
-    tombstone read as a session, or the reverse.
+    stops a tombstone being relabelled as a session. The owner prevents a record
+    being relabelled to escape account revocation.
     """
-    return f"{kind}\x00{handle}".encode("utf-8")
+    return f"{kind}\x00{handle}\x00{owner}".encode("utf-8")
 
 
-def _seal(handle: str, kind: str, payload: dict, ttl: int) -> dict:
+def _seal(handle: str, kind: str, payload: dict, ttl: int, *, owner: str) -> dict:
     """Seal ``payload`` (a JSON object) with its deadline INSIDE the ciphertext.
 
     The authenticated deadline is ``until``, sealed with the payload; the outer
@@ -400,11 +403,12 @@ def _seal(handle: str, kind: str, payload: dict, ttl: int) -> dict:
     body["until"] = until
     nonce = secrets.token_bytes(12)
     ciphertext = AESGCM(seal_key()).encrypt(
-        nonce, json.dumps(body).encode("utf-8"), _aad(handle, kind)
+        nonce, json.dumps(body).encode("utf-8"), _aad(handle, kind, owner)
     )
     return {
         "v": _RECORD_VERSION,
         "kind": kind,
+        "owner": owner,
         "nonce": _b64(nonce),
         "ct": _b64(ciphertext),
         "exp": until,
@@ -417,6 +421,9 @@ def _open(handle: str, record: dict, now: int | None = None) -> dict | None:
     if _int(record.get("v")) != _RECORD_VERSION:
         return None
     kind = record.get("kind")
+    owner = record.get("owner")
+    if not isinstance(owner, str) or not owner:
+        return None
     if kind not in (_KIND_SESSION, _KIND_TOMBSTONE):
         return None
     nonce = _unb64(record.get("nonce"))
@@ -424,7 +431,7 @@ def _open(handle: str, record: dict, now: int | None = None) -> dict | None:
     if nonce is None or ciphertext is None or len(nonce) != 12:
         return None
     try:
-        plaintext = AESGCM(seal_key()).decrypt(nonce, ciphertext, _aad(handle, kind))
+        plaintext = AESGCM(seal_key()).decrypt(nonce, ciphertext, _aad(handle, kind, owner))
     except (InvalidTag, ValueError):
         return None
     try:
@@ -469,14 +476,16 @@ def valid_handle(handle: str) -> bool:
     return bool(_HANDLE_RE.match(handle or ""))
 
 
-def mint(refresh_token: str) -> str:
+def mint(refresh_token: str, *, owner: str) -> str:
     """A fresh handle sealing ``refresh_token``, or "" if there is nothing to seal."""
     if not refresh_token or len(refresh_token) > _MAX_TOKEN:
         return ""
+    if not isinstance(owner, str) or not owner:
+        raise ValueError("refresh session requires a verified owner")
     handle = secrets.token_urlsafe(32)
     _write_record(
         handle,
-        _seal(handle, _KIND_SESSION, {"rt": refresh_token}, REFRESH_SESSION_TTL),
+        _seal(handle, _KIND_SESSION, {"rt": refresh_token}, REFRESH_SESSION_TTL, owner=owner),
     )
     return handle
 
@@ -550,17 +559,35 @@ def rotate(current_handle: str, new_refresh_token: str) -> str:
     live credential in plaintext, and the tombstone expires at the end of grace
     instead of lingering for the session's full TTL.
     """
-    new_handle = mint(new_refresh_token)
-    if not new_handle or not valid_handle(current_handle):
-        return new_handle
+    if not valid_handle(current_handle):
+        return ""
     path = _record_path(current_handle)
-    if _read_json(path) is None:
-        return new_handle  # nothing there to supersede
+    record = _read_json(path)
+    if record is None or _open(current_handle, record, int(time.time())) is None:
+        return ""
+    owner = record["owner"]
+    new_handle = mint(new_refresh_token, owner=owner)
+    if not new_handle:
+        return ""
     _write_record(
         current_handle,
-        _seal(current_handle, _KIND_TOMBSTONE, {"succ": new_handle}, GRACE_SECONDS),
+        _seal(current_handle, _KIND_TOMBSTONE, {"succ": new_handle}, GRACE_SECONDS, owner=owner),
     )
     return new_handle
+
+
+def revoke_owner(owner: str) -> None:
+    """Remove every device and rotation-grace record for this verified owner."""
+    for path in store_dir().glob("*.json"):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        except ValueError:
+            continue  # An unreadable JSON record cannot renew.
+        if isinstance(record, dict) and record.get("owner") == owner:
+            # Revocation must fail loudly if a credential cannot be removed.
+            path.unlink(missing_ok=True)
 
 
 def drop(handle: str) -> None:

@@ -1682,7 +1682,7 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
     **A WEBHOOK LINK IS NOT A TOKEN.** When the owner hands you a link whose
     secret is IN the address — a Slack ``hooks.slack.com/services/T…/B…/<token>``,
     a Discord ``discord.com/api/webhooks/<id>/<token>``, a Zapier catch hook, a
-    TinyAssets ``/mcp/hooks/<token>`` — there is no bearer token to ask for and
+    TinyAssets ``/hooks/inbound/<token>`` — there is no bearer token to ask for and
     NOTHING about that link goes in ``path_template``. Use
     ``"auth_scheme": "url_secret"``, write ``{secret}`` where the code is, and
     ask for the WHOLE LINK in one field named ``capability_url``::

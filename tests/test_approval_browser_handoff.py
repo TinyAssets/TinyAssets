@@ -175,6 +175,33 @@ def test_handoff_wrong_owner_expiry_and_bearer_are_not_proof(flow):
         assert browser.get(path, follow_redirects=False).status_code == 410
 
 
+def test_handoffs_keep_newest_twenty_per_owner(flow):
+    with TestClient(flow.app, base_url=ORIGIN) as browser:
+        with identity_context(Identity(user_id="bob", username="bob")):
+            bob = browser.post("/app/approval-handoff", headers=JSON, json={
+                "request_id": "bob-request", "client": "web",
+            }).json()["launch_path"]
+        paths = []
+        with identity_context(flow.identity):
+            for n in range(25):
+                response = browser.post("/app/approval-handoff", headers=JSON, json={
+                    "request_id": f"alice-{n}", "client": "web",
+                })
+                assert response.status_code == 200
+                paths.append(response.json()["launch_path"])
+            with approval_handoff.flows() as conn:
+                counts = dict(conn.execute(
+                    "SELECT owner, COUNT(*) FROM approval_handoffs GROUP BY owner"))
+            assert counts == {"alice": 20, "bob": 1}
+            assert browser.get(paths[4], follow_redirects=False).status_code == 410
+            assert browser.get(paths[5], follow_redirects=False).status_code == 303
+            assert browser.get(bob, follow_redirects=False).status_code == 303
+            login(browser, flow)
+            newest = browser.get(paths[-1], follow_redirects=False)
+            assert newest.status_code == 303
+            assert newest.headers["location"] == "/app?approval=" + paths[-1].rsplit("/", 1)[1]
+
+
 @pytest.mark.parametrize("state", ["oa_" + "a" * 43, "oa_app_" + "Z_-" * 14 + "0"])
 def test_frontend_proxies_owner_callback_and_preserves_cookie_headers(monkeypatch, state):
     from tinyassets.frontend import Frontend

@@ -52,14 +52,14 @@ named principal or reading no state: the OAuth discovery routes
 its PKCE exchange, refresh and logout route `/mcp/app/token` (the signed-in
 user, or the flow itself); the connect-deposit routes `/mcp/connect/*` (the
 depositing user's session, matched by the existing traversal-safe
-predicate); inbound hook routes `/mcp/hooks/<id>` (exactly one path segment,
+predicate); inbound hook routes `/hooks/inbound/<id>` (exactly one path segment,
 the existing predicate; the hook's owner is stamped on the emitted event);
 `/mcp/app/billing/webhook` (Stripe-signed; the handler binds the customer
 from the event). No other path
 SHALL be exempt, and no exemption SHALL be a wildcard prefix.
 
 #### Scenario: inbound hook runs as its owner
-- **WHEN** a valid hook secret arrives on `/mcp/hooks/<id>`
+- **WHEN** a valid hook secret arrives on `/hooks/inbound/<id>`
 - **THEN** the emitted event carries the hook owner's principal and the run binds to it without a further lookup
 
 #### Scenario: a hook with no recorded owner

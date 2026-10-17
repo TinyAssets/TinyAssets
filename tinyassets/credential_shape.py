@@ -186,7 +186,7 @@ _SECRET_PARAM_NAMES = frozenset({
 _MIN_SECRET_PARAM_CHARS = 8
 
 #: A bare ``host/path`` with no scheme is still a URL to a reader, and the founder's
-#: own report quoted one that way (``tinyassets.io/mcp/hooks/…``).
+#: own report quoted one that way (``tinyassets.io/hooks/inbound/…``).
 _SCHEMELESS_URL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}/")
 
 #: A dotted-quad host. A credential ask pointing at a raw address is never help.

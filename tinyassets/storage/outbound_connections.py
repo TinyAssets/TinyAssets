@@ -560,7 +560,7 @@ _KNOWN_CONNECTION_TYPES = frozenset({"", "http"})
 
 #: The capability-URL scheme: the credential is a PATH SEGMENT, not a header.
 #: A Slack/Discord/Zapier incoming webhook and this platform's own
-#: ``/mcp/hooks/<token>`` all carry their secret in the URL, which is the most
+#: ``/hooks/inbound/<token>`` all carry their secret in the URL, which is the most
 #: common way an agent posts a message anywhere -- and the one place every other
 #: scheme had nothing to say. Live 2026-09-30 a universe handed a webhook link
 #: asked for a bearer token that does not exist, then hardcoded the secret into
@@ -578,7 +578,7 @@ _SUPPORTED_HTTP_AUTH_SCHEMES = frozenset(
 )
 
 #: The reserved path placeholder a capability URL's secret fills. ``{secret}`` is
-#: exactly one segment (``/mcp/hooks/{secret}``, Discord's token); ``{secret+}``
+#: exactly one segment (``/hooks/inbound/{secret}``, Discord's token); ``{secret+}``
 #: is the final tail of one or more (Slack's secret is ``T…/B…/token``, three
 #: segments). RESERVED: the name may not be used as an ordinary ``{param}``, and
 #: its value pattern is the platform's, never the caller's (see
@@ -732,7 +732,7 @@ def validate_url_secret_binding(
         #
         # Every real capability URL is a FIXED path plus a secret -- Slack's
         # `/services/{secret+}`, Discord's `/api/webhooks/{secret+}`, Zapier's
-        # `/hooks/catch/{secret+}`, this platform's `/mcp/hooks/{secret}`. So
+        # `/hooks/catch/{secret+}`, this platform's `/hooks/inbound/{secret}`. So
         # this costs nothing real, and it buys two things:
         #
         # 1. It removes the shape astra's round-1 FINDING 3 attacked. There can
@@ -1785,7 +1785,7 @@ _SSRF_READ_CHUNK = 65536
 #:
 #: Sending one at all is the fix for an UNIDENTIFIED client, not for one
 #: specific block. On 2026-09-30 a UA-less POST to this platform's own
-#: `/mcp/hooks` was answered `error code: 1010` (403) by Cloudflare while the
+#: `/hooks/inbound` was answered `error code: 1010` (403) by Cloudflare while the
 #: same request carrying a User-Agent reached the application -- but that A/B
 #: did NOT reproduce hours later, from either the dev host or the production
 #: egress IP, with or without the header. So an edge block here is a bot score,
@@ -2438,8 +2438,8 @@ def _validate_param_patterns(
 
     ``{secret}`` / ``{secret+}`` is the ONE exception, and the exception is the
     whole security argument for capability URLs. Its pattern is the platform's:
-    the anchored LITERAL token. So a stored ``/mcp/hooks/{secret}`` endpoint
-    matches the concrete path ``/mcp/hooks/{secret}`` and nothing else — the
+    the anchored LITERAL token. So a stored ``/hooks/inbound/{secret}`` endpoint
+    matches the concrete path ``/hooks/inbound/{secret}`` and nothing else — the
     egress allowlist is evaluated with zero secret material in the URL, and a
     node that puts its own value (or a real secret) in the secret's position is
     refused by the allowlist rather than quietly sent. A caller-declared pattern
