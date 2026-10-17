@@ -42,12 +42,12 @@ def _signature(path: Path) -> _Signature:
 
 @contextmanager
 def readonly_db(path: Path) -> Iterator[sqlite3.Connection]:
-    """Read a live WAL directly or a verified private copy when -shm is absent.
+    """Read a verified private copy, including when a live WAL index exists.
 
-    SQLite can read a live read-only WAL when -shm exists. Without it, copy the
-    database and WAL to a writable temporary directory, then verify that the
-    source files did not change during the copy. A writer arriving during this
-    window creates -shm or changes a source digest, so the read fails closed.
+    SQLite's mode=ro may still update read marks in an existing -shm file.
+    Root can do that even when its mode is read-only. Never open the source
+    through SQLite: copy the database and WAL and verify their bytes before
+    opening the private copy. A concurrent writer makes the copy refuse.
     """
     path = Path(path).resolve()
     shm = path.with_name(path.name + "-shm")
@@ -57,40 +57,35 @@ def readonly_db(path: Path) -> Iterator[sqlite3.Connection]:
         raise RuntimeError(f"SQLite rollback journal present: {journal}")
     with ExitStack() as local_stack:
         snapshot = _SNAPSHOT.get()
-        if shm.exists():
-            if snapshot is not None and path in snapshot:
+        had_shm = shm.exists()
+        scratch = Path(local_stack.enter_context(
+            tempfile.TemporaryDirectory(prefix="tinyassets-sqlite-read-")))
+        database = scratch / path.name
+        source = [path]
+        if wal.is_file():
+            source.append(wal)
+        signatures = {item: _signature(item) for item in source}
+        if snapshot is not None and path in snapshot:
+            prior_signatures, prior_digests = snapshot[path]
+            if (signatures != prior_signatures or
+                    any(_digest(item) != prior_digests[item] for item in source)):
                 raise RuntimeError(f"SQLite store changed during read-only snapshot: {path}")
-            database = path
-        else:
-            scratch = Path(local_stack.enter_context(
-                tempfile.TemporaryDirectory(prefix="tinyassets-sqlite-read-")))
-            copied = scratch / path.name
-            source = [path]
-            if wal.is_file():
-                source.append(wal)
-            signatures = {item: _signature(item) for item in source}
-            if snapshot is not None and path in snapshot:
-                prior_signatures, prior_digests = snapshot[path]
-                if (signatures != prior_signatures or
-                        any(_digest(item) != prior_digests[item] for item in source)):
-                    raise RuntimeError(f"SQLite store changed during read-only snapshot: {path}")
-            digests = {}
-            for item in source:
-                digest = hashlib.sha256()
-                with item.open("rb") as original, (scratch / item.name).open("wb") as target:
-                    for block in iter(lambda: original.read(1024 * 1024), b""):
-                        target.write(block)
-                        digest.update(block)
-                digests[item] = digest.digest()
-            if (shm.exists() or journal.exists() or journal.is_symlink()
-                    or wal.is_file() != (wal in source) or any(
-                _signature(item) != signatures[item] or _digest(item) != digests[item]
-                for item in source
-            )):
-                raise RuntimeError(f"SQLite store changed during read-only snapshot: {path}")
-            if snapshot is not None:
-                snapshot[path] = (signatures, digests)
-            database = copied
+        digests = {}
+        for item in source:
+            digest = hashlib.sha256()
+            with item.open("rb") as original, (scratch / item.name).open("wb") as target:
+                for block in iter(lambda: original.read(1024 * 1024), b""):
+                    target.write(block)
+                    digest.update(block)
+            digests[item] = digest.digest()
+        if (shm.exists() != had_shm or journal.exists() or journal.is_symlink()
+                or wal.is_file() != (wal in source) or any(
+            _signature(item) != signatures[item] or _digest(item) != digests[item]
+            for item in source
+        )):
+            raise RuntimeError(f"SQLite store changed during read-only snapshot: {path}")
+        if snapshot is not None:
+            snapshot[path] = (signatures, digests)
         conn = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True, timeout=30.0)
         try:
             yield conn

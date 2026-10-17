@@ -38,6 +38,543 @@ _EPHEMERAL_ENTRIES = (".runtime",)
 
 
 @dataclass(frozen=True)
+class CensusRule:
+    """A reviewed table placement, never inferred from a column's spelling.
+
+    References name the database, table and unique parent column. All populated
+    ownership fields must agree; an unknown explicit owner is not repaired by
+    an adjacent row. Empty tables still need a rule.
+    """
+
+    placement: str
+    principals: tuple[str, ...] = ()
+    centers: tuple[str, ...] = ()
+    references: tuple[tuple[str, str, str, str], ...] = ()
+
+
+def _census_rules() -> dict[str, dict[str, CensusRule]]:
+    rules: dict[str, dict[str, CensusRule]] = {}
+
+    def add(database, tables, placement, *, principals=(), centers=(), references=()):
+        target = rules.setdefault(database, {})
+        for table in tables.split():
+            if table in target:
+                raise AssertionError(f"duplicate census rule: {database}/{table}")
+            target[table] = CensusRule(placement, principals, centers, references)
+
+    main = ".tinyassets.db"
+    add(main, "user_accounts user_sessions", "router")
+    add(main, "deleted_principals llm_credential_deposit_owners llm_credential_custody "
+        "llm_credential_deposit_commits llm_credential_refresh_state", "broker")
+    add(main, "author_definitions author_forks agent_definitions agent_component_lineage "
+        "commons_bundles commons_bundle_sources commons_bundle_versions "
+        "command_center_release_series command_center_releases command_center_release_evidence",
+        "published")
+    # branch_definitions and goals contain both published and private rows; the
+    # census resolves their visibility per row before applying the owner rule.
+    add(main, "branch_definitions goals", "owner", principals=("author",))
+    add(main, "universes universe_rules author_runtime_instances branches universe_snapshots "
+        "user_requests vote_windows action_records universe_notes universe_work_targets "
+        "universe_hard_priorities universe_acl founder_home request_admissions branch_tasks_v2 "
+        "branch_tasks_v2_quarantine request_admission_rollouts automation_activations "
+        "cloud_automation_controls cloud_automation_slice_triggers "
+        "cloud_automation_terminal_receipts "
+        "background_branch_bindings cloud_automation_continuations cloud_execution_continuations "
+        "app_principal_mappings app_channel_bindings scheduled_work operation_scopes "
+        "action_approvals "
+        "agent_bindings action_result_outbox webhook_admissions webhook_inflight "
+        "assigned_queue_refusals provider_work_receipts provider_assignment_candidates "
+        "universe_owner request_storage_migration", "owner", centers=("universe_id",))
+    add(main, "provider_work_bindings provider_assignments universe_model_preferences "
+        "agent_turns agent_turn_rounds agent_turn_tools connection_disconnections "
+        "universe_app_ui universe_app_ui_asset native_shortlist_cache owner_view_receipts",
+        "owner", principals=("owner_user_id",), centers=("universe_id",))
+    add(main, "learned_model_evidence learned_model_source_evidence refused_model_marks "
+        "account_timezone owner_ui_prefs", "owner", principals=("owner_user_id",))
+    add(main, "command_center_adoptions command_center_update_requests "
+        "command_center_update_policies "
+        "command_center_policy_requests command_center_auto_receipts command_center_auto_status",
+        "owner", principals=("owner_id",), centers=("universe_id",))
+    add(main, "agent_request_usage agent_request_attempts agent_request_usage_links "
+        "agent_request_dispatches", "owner", principals=("owner",), centers=("universe",))
+    add(main, "agent_import_stages agent_interchange_idempotency agent_conversion_receipts "
+        "agent_conversion_receipt_links agent_conversion_receipt_owners", "owner",
+        principals=("actor_id",))
+    add(main, "capability_grants", "owner", principals=("user_id",))
+    add(main, "webhook_hooks", "owner", principals=("owner_principal_id",),
+        centers=("universe_id",))
+    for table, column, parent, key in (
+        ("branch_heads", "branch_id", "branches", "branch_id"),
+        ("vote_ballots", "vote_id", "vote_windows", "vote_id"),
+        ("request_admission_events", "admission_id", "request_admissions", "admission_id"),
+        ("provider_work_execution_claims", "receipt_id", "provider_work_receipts", "receipt_id"),
+        ("provider_invocation_reservations", "receipt_id", "provider_work_receipts", "receipt_id"),
+        ("served_provider_budget_reservations", "binding_id",
+         "provider_work_bindings", "binding_id"),
+        ("background_branch_attempts", "binding_id", "background_branch_bindings", "binding_id"),
+    ):
+        add(main, table, "owner", references=((column, main, parent, key),))
+    # These historical tables need an attribution implementation before any
+    # nonempty instance can move. Classifying them does not authorize dropping
+    # or replicating their rows. The census therefore refuses populated rows.
+    add(main, "gate_claims canonical_bindings goal_canonicals unreconciled_writes "
+        "branch_tasks_v2_maintenance_state scoped_reset_leases scoped_reset_operations "
+        "background_branch_authority_owners app_event_admissions action_result_receipts "
+        "webhook_deliveries owner_fence", "owner")
+    add(".auth.db", "oauth_clients authorization_codes access_tokens refresh_tokens", "router")
+    add(".hosted-model-auth.db", "hosted_model_flows connection_oauth_flows", "router")
+    add(".api-keys.sqlite3", "api_keys api_key_request_counts", "router")
+    add(".hook-owners.sqlite3", "hook_owners", "router")
+    add(".router-deleted-owners.sqlite3", "deleted_owners", "router")
+    add(".runtime/owner-sessions.db", "owner_sessions owner_login_flows owner_login_completions "
+        "owner_refresh_sessions owner_approval_handoffs canary_sign_in_attempts", "router")
+    add(".owner_devices.db", "owner_devices owner_notify_settings request_notifications", "owner",
+        principals=("owner_user_id",))
+    add(".source_channel_policy.db", "source_channel_policy", "owner", centers=("universe_id",))
+    add(".broker/state/owner-identities.db", "owner_identities center_admissions box_records "
+        "owner_box_secrets owner_box_revocations", "broker")
+    add(".broker/plans.db", "plans", "broker")
+    add(".broker/state/next-wake.db", "next_wakes", "broker")
+    add(".broker/credential-custody.db", "llm_credential_deposit_owners llm_credential_custody "
+        "llm_credential_deposit_commits llm_credential_refresh_state deleted_principals", "broker")
+    add("outbound.db", "outbound_connections outbound_connection_grants "
+        "outbound_connector_artifacts outbound_connector_artifact_edges connection_capabilities "
+        "broker_schema_migrations box_model_sources", "broker")
+    rules[".broker/outbound.db"] = dict(rules["outbound.db"])
+    add(".broker/state/ops.db", "ops meta", "broker")
+    add(".control_plane.db", "triggers", "owner", principals=("owner_principal_id",),
+        centers=("command_center_id",))
+    add(".control_plane.db", "trigger_fires", "owner", principals=("owner_principal_id",),
+        references=(("trigger_key", ".control_plane.db", "triggers", "trigger_key"),))
+    add(".automations.db", "automations", "owner", principals=("owner_principal_id",),
+        centers=("universe_id",))
+    add(".automations.db", "automation_attempts", "owner",
+        references=(("automation_id", ".automations.db", "automations", "automation_id"),))
+    add(".automations.db", "universe_leases", "owner")
+    add(".account_seats.db", "account_seats seat_waiters chat_turn_failures", "owner",
+        principals=("account_id",), centers=("universe_id",))
+    add(".effector_consents.db", "effector_consents", "owner", principals=("granted_by",))
+    add(".engine_run_admissions.db", "admissions dispatch_budget", "owner",
+        centers=("universe_id",))
+    add(".engine_run_admissions.db", "settlements", "owner",
+        references=(("run_id", ".runs.db", "runs", "run_id"),))
+    packages = ".command-center-packages/packages.db"
+    add(packages, "blobs package_versions", "published")
+    add(packages, "pins extension_activations extension_bindings extension_revisions", "owner",
+        principals=("owner_id",), centers=("universe_id",))
+    add(".runs.db", "runs", "owner", principals=("owner_user_id",),
+        centers=("queue_universe_id",))
+    add(".runs.db", "run_events run_cancels run_terminal_outbox run_judgments run_receipts "
+        "run_file_operations run_file_allocations run_file_objects run_file_bindings "
+        "run_file_cleanup "
+        "run_input_admissions", "owner", references=(("run_id", ".runs.db", "runs", "run_id"),))
+    add(".runs.db", "run_lineage", "owner",
+        references=(("run_id", ".runs.db", "runs", "run_id"),))
+    add(".runs.db", "teammate_messages", "owner",
+        references=(("from_run_id", ".runs.db", "runs", "run_id"),))
+    add(".runs.db", "run_child_attachments", "owner",
+        references=(("parent_run_id", ".runs.db", "runs", "run_id"),))
+    add(".runs.db", "node_edit_audit branch_versions_migrations", "owner")
+    add(".runs.db", "branch_versions", "owner", principals=("publisher",))
+    add(".runs.db", "branch_schedules branch_subscriptions", "owner",
+        principals=("owner_actor", "owner_principal_id"), centers=("universe_id",))
+    add(".runs.db", "scheduler_delivered_events", "owner", references=(
+        ("subscription_id", ".runs.db", "branch_subscriptions", "subscription_id"),))
+    add(".runs.db", "contribution_events", "owner", principals=("owner_user_id",),
+        references=(("source_run_id", ".runs.db", "runs", "run_id"),))
+    add(".runs.db", "conversation_run_admissions", "owner", principals=("owner_user_id",),
+        centers=("universe_id",))
+    add(".runs.db", "graph_receivers graph_output_links", "owner", principals=("owner_id",),
+        centers=("universe_id",))
+    add(".runs.db", "graph_deliveries", "owner", principals=("sender_id", "receiver_owner_id"),
+        centers=("sender_universe_id", "receiver_universe_id"))
+    add(".runs.db", "graph_delivery_attempts graph_delivery_files graph_delivery_answers", "owner",
+        references=(("delivery_id", ".runs.db", "graph_deliveries", "delivery_id"),))
+    add(".runs.db", "gate_event", "owner", principals=("attested_by",))
+    add(".runs.db", "gate_event_cite", "owner",
+        references=(("event_id", ".runs.db", "gate_event", "event_id"),))
+    add(".runs.db", "workspace_generations workspace_leases workspace_ledger "
+        "workspace_outbox workspace_waiters", "owner", centers=("universe_id",))
+    add(".runs.db", "workspace_locks", "owner",
+        references=(("run_id", ".runs.db", "runs", "run_id"),))
+    add(".langgraph_runs.db", "checkpoints writes", "owner",
+        references=(("thread_id", ".runs.db", "runs", "thread_id"),))
+    add(".owner_leases.db", "owner_lease restore_state owner_store_catalog fence_high_water",
+        "owner")
+    add(".storage_accounting.db", "measurements pending counter commons_writers commons_log_bytes",
+        "owner")
+    add("wiki_trigger_attempts.db", "wiki_trigger_attempts", "owner")
+    return rules
+
+
+CENSUS_RULES = _census_rules()
+
+
+def _census_columns(database: str, table: str) -> set[str]:
+    """Read attribution metadata only; never materialize history or token blobs."""
+    rule = CENSUS_RULES.get(database, {}).get(table)
+    columns = set()
+    if rule:
+        columns.update(rule.principals + rule.centers)
+        columns.update(reference[0] for reference in rule.references)
+    for rules in CENSUS_RULES.values():
+        for candidate in rules.values():
+            for _, parent_db, parent_table, parent_column in candidate.references:
+                if (database, table) == (parent_db, parent_table):
+                    columns.add(parent_column)
+    if database == ".tinyassets.db" and table in {"branch_definitions", "goals"}:
+        columns.update(("published", "visibility"))
+    if (database, table) == (".runs.db", "branch_versions"):
+        columns.add("public")
+    if database in {"outbound.db", ".broker/outbound.db"} and table == "outbound_connections":
+        columns.update(("destination", "owner_user_id"))
+    if (database, table) == (".api-keys.sqlite3", "api_keys"):
+        columns.update(("owner", "revoked_at"))
+    if (database, table) == (".hook-owners.sqlite3", "hook_owners"):
+        columns.add("owner")
+    return columns
+
+
+def _quoted(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def census(data: Path) -> dict:
+    """Read-only, count-only cutover audit, including all refusal evidence.
+
+    No store initializers, live runtime readers, or default-plan readers run
+    here. Even WAL recovery happens only in readonly_db's external scratch.
+    Account labels are report-local ordinals, never identities or credential
+    material. A refused audit is useful evidence, not permission to migrate.
+    """
+    from collections import Counter
+
+    from tinyassets.principals import named_principal
+
+    data = Path(data).resolve()
+    refusals: Counter = Counter()
+    tables: dict[tuple[str, str], list[dict]] = {}
+    database_files: set[Path] = set()
+    known_centers: dict[str, set[str]] = {}
+    owners: set[str] = set()
+    identities = data / ".broker/state/owner-identities.db"
+    for relative in (".tinyassets.db", ".broker", ".broker/state",
+                     ".broker/state/owner-identities.db", ".layout.json"):
+        if (data / relative).is_symlink():
+            raise RuntimeError("census shared authority path is a symlink")
+    with readonly_snapshot():
+        marker_path = data / ".layout.json"
+        marker = json.loads(marker_path.read_text()) if marker_path.is_file() else {}
+        if (not isinstance(marker, dict) or marker.get("layout") != 2
+                or marker.get("state") != "stable" or marker.get("split") != "owner-split"
+                or marker.get("box_layout") not in (None, "owner-split")):
+            refusals["not_production_owner_split_layout"] += 1
+        # Read explicit creation/home bindings for an old archive's diagnostic
+        # census. Only the broker can authorize an actual box UID/admission.
+        main = data / ".tinyassets.db"
+        if main.is_file():
+            with readonly_db(main) as db:
+                names = {row[0] for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+                for table, principal in (("universe_owner", "owner_id"),
+                                         ("founder_home", "founder_sub")):
+                    if table in names:
+                        for center, owner in db.execute(
+                            f"SELECT universe_id,{principal} FROM {table}"
+                        ):
+                            if named_principal(owner) and _CENTER.fullmatch(center or ""):
+                                known_centers.setdefault(center, set()).add(owner)
+                                owners.add(owner)
+                            else:
+                                refusals["invalid_explicit_ownership"] += 1
+        admitted: dict[str, str] = {}
+        if identities.is_file():
+            with readonly_db(identities) as db:
+                permanent = dict(db.execute("SELECT principal,machine_id FROM owner_identities"))
+                if (len(set(permanent.values())) != len(permanent) or any(
+                    not named_principal(owner) or type(uid) is not int
+                    or not OWNER_ID_FIRST <= uid <= OWNER_ID_LAST
+                    for owner, uid in permanent.items()
+                )):
+                    refusals["invalid_permanent_identities"] += 1
+                owners.update(permanent)
+                retired = set()
+                for event, owner, center, machine in db.execute(
+                    "SELECT event,principal,center,machine FROM center_admissions "
+                    "ORDER BY generation"
+                ):
+                    if (owner not in permanent or permanent[owner] != machine
+                            or not _CENTER.fullmatch(center or "")):
+                        refusals["invalid_admission"] += 1
+                    elif event == "admit" and center not in admitted and center not in retired:
+                        admitted[center] = owner
+                        known_centers.setdefault(center, set()).add(owner)
+                    elif event == "retire" and admitted.get(center) == owner:
+                        del admitted[center]
+                        retired.add(center)
+                    else:
+                        refusals["invalid_admission_history"] += 1
+            for center, candidates in known_centers.items():
+                if admitted.get(center) not in candidates or len(candidates) != 1:
+                    refusals["ownership_not_live_admitted"] += 1
+            for center in admitted:
+                if (data / center).is_symlink() or not (data / center).is_dir():
+                    refusals["admitted_center_tree_absent"] += 1
+        else:
+            refusals["broker_admission_database_absent"] += 1
+
+        # Enumerate actual shared files, including SQLite with an unfamiliar
+        # filename. A suffix-only scan would silently miss a renamed store.
+        shared_roots = [data]
+        for directory in (".broker", ".runtime", ".published", ".command-center-packages"):
+            root = data / directory
+            if root.is_dir() and not root.is_symlink():
+                shared_roots.extend(p for p in root.rglob("*") if p.is_dir() and not p.is_symlink())
+                shared_roots.append(root)
+        for root in shared_roots:
+            for path in sorted(root.iterdir()):
+                if path.is_symlink() or not path.is_file():
+                    continue
+                with path.open("rb") as stream:
+                    is_database = stream.read(16) == b"SQLite format 3\x00"
+                if not is_database:
+                    continue
+                database_files.add(path)
+                relative = path.relative_to(data).as_posix()
+                with readonly_db(path) as db:
+                    if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+                        refusals["database_integrity"] += 1
+                    if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                        refusals["database_foreign_keys"] += 1
+                    db.row_factory = sqlite3.Row
+                    for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+                        table = row[0]
+                        # SQLite's autoincrement cursor is schema machinery,
+                        # retained/rebuilt with the schema, not a tenant row.
+                        if table == "sqlite_sequence":
+                            continue
+                        available = {info[1] for info in db.execute(
+                            f"PRAGMA table_info({_quoted(table)})")}
+                        selected = sorted(_census_columns(relative, table) & available)
+                        projection = ",".join(map(_quoted, selected)) if selected else "1"
+                        tables[relative, table] = [dict(item) for item in db.execute(
+                            f"SELECT {projection} FROM {_quoted(table)}")]
+
+        labels = {owner: f"account-{index:04d}"
+                  for index, owner in enumerate(sorted(owners), start=1)}
+        memo: dict[tuple[str, str, int], frozenset[str]] = {}
+        indexes: dict[tuple[str, str, str], dict[object, list[int]]] = {}
+
+        def row_owners(database, table, index, active=frozenset()):
+            key = (database, table, index)
+            if key in memo:
+                return memo[key]
+            if key in active:
+                return frozenset()
+            rule = CENSUS_RULES.get(database, {}).get(table)
+            if rule is None:
+                return frozenset()
+            row = tables[database, table][index]
+            claims: list[set[str]] = []
+            for column in rule.principals:
+                if row.get(column):
+                    value = row[column]
+                    claims.append({value} if value in owners else set())
+            for column in rule.centers:
+                if row.get(column):
+                    claims.append(known_centers.get(row[column], set()))
+            for column, parent_db, parent, parent_column in rule.references:
+                if row.get(column):
+                    index_key = parent_db, parent, parent_column
+                    if index_key not in indexes:
+                        lookup: dict[object, list[int]] = {}
+                        for i, candidate in enumerate(tables.get((parent_db, parent), [])):
+                            lookup.setdefault(candidate.get(parent_column), []).append(i)
+                        indexes[index_key] = lookup
+                    matches = indexes[index_key].get(row[column], [])
+                    if len(matches) != 1:
+                        claims.append(set())
+                    else:
+                        claims.append(set(row_owners(
+                            parent_db, parent, matches[0], active | {key})))
+            resolved = (frozenset.union(*(frozenset(c) for c in claims))
+                        if claims and all(len(c) == 1 for c in claims) else frozenset())
+            memo[key] = resolved if len(resolved) == 1 else frozenset()
+            return memo[key]
+
+        table_report = {}
+        totals: Counter = Counter()
+        for (database, table), rows in sorted(tables.items()):
+            rule = CENSUS_RULES.get(database, {}).get(table)
+            placement = rule.placement if rule else "unknown"
+            counts: Counter = Counter()
+            public = 0
+            if rule is None:
+                refusals["unknown_table"] += 1
+            elif placement == "owner":
+                if rows and not (rule.principals or rule.centers or rule.references):
+                    refusals["attribution_rule_pending"] += 1
+                for index, row in enumerate(rows):
+                    if ((database == ".tinyassets.db" and table in {"branch_definitions", "goals"}
+                            and row.get("visibility") == "public"
+                            and (table == "goals" or row.get("published") == 1))
+                            or ((database, table) == (".runs.db", "branch_versions")
+                                and row.get("public") == 1)):
+                        public += 1
+                        continue
+                    candidates = row_owners(database, table, index)
+                    if len(candidates) != 1:
+                        counts["unattributed"] += 1
+                    else:
+                        counts[labels[next(iter(candidates))]] += 1
+                refusals["unattributed_owner_rows"] += counts.get("unattributed", 0)
+            elif (database, table) in {
+                (".api-keys.sqlite3", "api_keys"), (".hook-owners.sqlite3", "hook_owners"),
+            }:
+                for row in rows:
+                    if row.get("revoked_at") is None and row.get("owner") not in owners:
+                        refusals["router_credential_without_owner"] += 1
+            totals[placement] += len(rows) - public
+            totals["published"] += public
+            table_report[f"{database}/{table}"] = {
+                "class": placement, "total": len(rows), "per_owner": dict(counts),
+                "published": public,
+                "attribution": ("pending" if rule and placement == "owner"
+                                and not (rule.principals or rule.centers or rule.references)
+                                else "specified"),
+            }
+
+        plan_report, credential_report = _census_accounts(
+            data, known_centers, labels, tables, refusals)
+        file_report = _census_files(data, known_centers, labels, database_files, refusals)
+        return {
+            "version": 1, "ready": not any(refusals.values()), "owners": len(owners),
+            "admitted_centers": len(admitted), "explicit_centers": len(known_centers),
+            "databases": len(database_files), "tables": table_report, "row_totals": dict(totals),
+            "plans": plan_report, "credentials": credential_report, "files": file_report,
+            "refusals": {key: value for key, value in sorted(refusals.items()) if value},
+        }
+
+
+def _census_accounts(data, centers, labels, tables, refusals):
+    """Read Stripe's actual tier rows and raw vault shapes without loading secrets into reports."""
+    from collections import Counter
+
+    plans = {label: {"tier": "free", "paid_sources": 0} for label in labels.values()}
+    credentials = {label: {"dropped_cli": 0, "carried_http": 0} for label in labels.values()}
+    # Scan every center, including unowned centers: a paid orphan must refuse.
+    directory_names = {path.name for path in data.iterdir()
+                       if path.is_dir() and not path.is_symlink()
+                       and not path.name.startswith(".")}
+    custody = data / ".platform/credential-vaults"
+    if custody.is_symlink() or (data / ".platform").is_symlink():
+        raise RuntimeError("census credential custody path is a symlink")
+    if custody.is_dir():
+        directory_names.update(path.name for path in custody.iterdir())
+    paid: Counter = Counter()
+    for name in sorted(directory_names):
+        directory = data / name
+        owners = centers.get(directory.name, set())
+        label = labels[next(iter(owners))] if len(owners) == 1 else None
+        path = directory / ".subscription_state.db"
+        if path.is_file():
+            with readonly_db(path) as db:
+                names = {row[0] for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+                if names != {"subscription_meta"}:
+                    refusals["unknown_subscription_table"] += 1
+                    continue
+                meta = dict(db.execute("SELECT key,value FROM subscription_meta"))
+            tier = meta.get("tier", "free")  # Legacy schema: absence means no subscription.
+            if tier not in {"free", "paid"}:
+                refusals["invalid_tier"] += 1
+            elif tier == "paid":
+                if label is None:
+                    refusals["unattributed_paid_tier"] += 1
+                else:
+                    paid[label] += 1
+                    plans[label] = {"tier": "paid", "paid_sources": paid[label]}
+        vaults = [directory / ".credential-vault.json",
+                  data / ".platform/credential-vaults" / directory.name / ".credential-vault.json"]
+        if any(path.is_symlink() or path.parent.is_symlink() for path in vaults):
+            raise RuntimeError("census vault path is a symlink")
+        present = [path for path in vaults if path.is_file()]
+        if len(present) > 1:
+            refusals["duplicate_vault_locations"] += 1
+        for path in present:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            records = raw.get("credentials") if isinstance(raw, dict) else None
+            if not isinstance(records, list):
+                refusals["invalid_vault_document"] += 1
+                continue
+            for record in records:
+                if not isinstance(record, dict):
+                    refusals["invalid_vault_record"] += 1
+                    continue
+                kind = record.get("credential_type")
+                if label is None:
+                    refusals["unattributed_credential"] += 1
+                elif kind == "llm_subscription":
+                    credentials[label]["dropped_cli"] += 1
+                elif kind == "http":
+                    connections = [row for database in ("outbound.db", ".broker/outbound.db")
+                                   for row in tables.get((database, "outbound_connections"), [])]
+                    matching = [row for row in connections
+                                if row.get("destination") == record.get("destination")
+                                and row.get("owner_user_id") in owners]
+                    if len(matching) != 1:
+                        refusals["http_slot_without_unique_owner_connection"] += 1
+                    else:
+                        credentials[label]["carried_http"] += 1
+                else:
+                    # VCS/social custody needs an explicit carry/drop contract;
+                    # never silently treat those secrets as HTTP slots.
+                    refusals["unclassified_credential_type"] += 1
+    return plans, credentials
+
+
+def _census_files(data, centers, labels, databases, refusals):
+    from collections import Counter
+
+    counts: Counter = Counter()
+    shared = {
+        ".layout.json": "broker", ".layout.lock": "broker",
+        "platform-expected-instance.json": "router", "release-state.json": "router",
+        ".billing_webhook_verified.json": "router",
+    }
+    published = {"wiki", ".wiki", ".published", ".command-center-packages"}
+    for directory, dirs, files in os.walk(data, followlinks=False):
+        root = Path(directory)
+        # os.walk lists directory symlinks in dirs but never descends them.
+        for name in [*files, *(name for name in dirs if (root / name).is_symlink())]:
+            path = root / name
+            relative = path.relative_to(data)
+            parts = relative.parts
+            if parts[0] in centers and len(centers[parts[0]]) == 1:
+                label = labels[next(iter(centers[parts[0]]))]
+                counts[label] += 1
+            elif path in databases or any(
+                path == database.with_name(database.name + suffix)
+                for database in databases for suffix in ("-wal", "-shm")
+            ):
+                counts["database_files"] += 1
+            elif len(parts) == 1 and name in shared:
+                counts[shared[name]] += 1
+            elif parts[0] in published:
+                counts["published"] += 1
+            elif (len(parts) >= 4 and parts[:2] == (".platform", "credential-vaults")
+                  and len(centers.get(parts[2], set())) == 1):
+                counts["broker"] += 1
+            elif (len(parts) >= 3 and parts[0] in {".agent-sessions", ".universe-sidecars"}
+                  and len(centers.get(parts[1], set())) == 1):
+                counts[labels[next(iter(centers[parts[1]]))]] += 1
+            else:
+                counts["unattributed"] += 1
+    refusals["unattributed_files"] += counts["unattributed"]
+    return dict(counts)
+
+
+@dataclass(frozen=True)
 class OwnerMove:
     principal: str
     uid: int
@@ -623,13 +1160,19 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("check", "preflight", "apply"))
+    parser.add_argument("mode", choices=("check", "preflight", "apply", "census"))
     parser.add_argument("data", type=Path)
+    parser.add_argument("--dry-run", action="store_true",
+                        help="only read and report the detailed cutover census")
     parser.add_argument("--store", type=Path)
     parser.add_argument("--backup", type=Path)
     parser.add_argument("--box-backup", type=Path)
     args = parser.parse_args()
     try:
+        if args.dry_run or args.mode == "census":
+            report = census(args.data)
+            print(json.dumps(report, indent=2, sort_keys=True))
+            return 0 if report["ready"] else UNREADABLE
         if args.mode == "check":
             return check(args.data)
         if args.mode == "preflight":

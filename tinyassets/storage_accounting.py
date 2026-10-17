@@ -723,6 +723,7 @@ ROOT_ENTRIES: dict[str, str] = {
     ".auth.db": "platform: sessions (never gated)",
     ".hosted-model-auth.db": "platform: credential vault (never gated)",
     ".owner_devices.db": "platform: device registrations",
+    ".source_channel_policy.db": "platform: legacy per-center source-channel policy, census only",
     ".effector_consents.db": "platform: consent records",
     ".outbound-proxy": "platform: egress proxy state",
     ".broker": "platform: credential broker socket, owner fence and operation bookkeeping",
@@ -757,6 +758,7 @@ ROOT_ENTRIES: dict[str, str] = {
 #: Names that live INSIDE a universe directory: every byte there is counted by
 #: `universe_files` (minus `_NOT_USER_BYTES`), so these need no store of their own.
 UNIVERSE_ENTRIES: frozenset[str] = frozenset({
+    ".credential-vault.json",  # Historical center custody, read only by the cutover census.
     ".conversation_memory.db", ".conversation_attention.db",
     ".credentials", ".credentials.json",
     ".engine_mcp_config.json", ".oauth-refresh", ".pause",
