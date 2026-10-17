@@ -87,16 +87,6 @@ class ProviderUnavailableError(ProviderError):
     """
 
 
-class ExternalAgentUnavailable(ProviderUnavailableError):
-    """A selected native agent could not run; another source cannot replace it."""
-
-    failure_class = "external_agent_unavailable"
-
-    def __init__(self, agent: str, model: str, reason: str):
-        self.agent = agent
-        self.model = model
-        self.reason = reason
-        super().__init__(f"{agent} {model or 'default'} unavailable: {reason}")
 
 
 class SelectedModelCapacityError(ProviderUnavailableError):

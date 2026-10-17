@@ -16,25 +16,22 @@ def sources():
     return (
         connection("small", models=[replace(model("free"), remaining_requests=50)]),
         replace(connection("large", models=[replace(model("paid"), remaining_requests=1000)]),
-                source_kind="subscription", default_model_id="paid"),
+                source_kind="http", default_model_id="paid"),
     )
 
 
-def test_subscription_beats_small_free_allowance_and_swapping_capacity_reverses_choice():
+def test_larger_allowance_wins_and_swapping_capacity_reverses_choice():
     small, large = sources()
     assert refs(order((small, large)))[0] == ModelRef("large", "paid")
     small = replace(small, models=(replace(small.models[0], remaining_requests=2000),))
     assert refs(order((small, large)))[0] == ModelRef("small", "free")
-    # Changing access methods cannot change the answer.
-    assert refs(order((replace(small, source_kind="subscription"),
-                       replace(large, source_kind="http"))))[0] == ModelRef("small", "free")
 
 
 def test_all_authorized_models_compete_and_swapping_catalog_scores_reverses_choice():
     a = connection("a", models=[model("a", score=Scores("comparable-v1", "fresh", 40))])
     b = replace(connection("b", models=[model("default"),
                 model("best", score=Scores("comparable-v1", "fresh", 90))]),
-                source_kind="subscription", default_model_id="default")
+                source_kind="http", default_model_id="default")
     assert refs(order((a, b)))[0] == ModelRef("b", "best")
     a = replace(a, models=(replace(a.models[0], scores=Scores("comparable-v1", "fresh", 99)),))
     assert refs(order((a, b)))[0] == ModelRef("a", "a")

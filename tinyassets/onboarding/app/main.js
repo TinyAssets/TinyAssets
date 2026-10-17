@@ -5711,22 +5711,6 @@
   };
   // End hosted model connection controller.
 
-  // A deposit is only half of "connect": the command center must also SERVE on it, or
-  // chat works while every run fails with provider_not_bound. Same route the
-  // phone uses; idempotent; returns {status:"serving"|"held", ...}, never throws.
-  async function serveOn(service){
-    try{
-      const r=await fetch("/app/serving/bind",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:JSON.stringify({service})});
-      return (await r.json()).serving||null;
-    }catch(_e){ return null; }
-  }
-  function serviceLabel(service){ return service; }
-  function servingSentence(service, sv){
-    if(sv&&sv.status==="serving") return serviceLabel(service)+" connected. Your agent thinks and works on it from the next turn.";
-    const why=(sv&&(sv.detail||sv.reason))?(": "+(sv.detail||sv.reason)):"";
-    return serviceLabel(service)+" credential saved, but your command center is not running on it yet"+why+".";
-  }
-
   // ---- File attachments: every accepted file is uploaded ------------------
   // EVERY accepted file - a small text note included - goes through ONE
   // authenticated raw-body route, POST /app/files, and comes back as the
@@ -8766,9 +8750,8 @@
 
   const ConnectShapes={
     shape:"",
-    labels:{api_key:"API key", local:"Your own server", sign_in:"Sign in again"},
+    labels:{api_key:"API key", local:"Your own server"},
     help:{
-      sign_in:"Your saved sign-in for this source is no longer accepted. Signing in again replaces it — there is nothing to copy or paste.",
       api_key:"From your provider's API page: the chat URL, a key, and the model id.",
       local:"A model server you run must be reachable over HTTPS, for example through a tunnel. TinyAssets can't reach localhost.",
     },
@@ -8825,21 +8808,12 @@
       this.shape=shape;
       Array.from($("connect-shapes").children||[]).forEach(b=>
         b.setAttribute("aria-pressed",String(b.dataset.shape===shape)));
-      // `sign_in` has NO fields: the owner types nothing, which is the whole point
-      // of it. So the field box stays hidden for it and its own box appears instead.
-      const signin = shape==="sign_in";
-      $("connect-endpoint").hidden=!shape||signin;
-      $("connect-signin").hidden=!signin;
-      $("signin-help").textContent=signin?(this.help[shape]||""):"";
-      $("endpoint-help").textContent=signin?"":(this.help[shape]||"");
+      $("connect-endpoint").hidden=!shape;
+      $("endpoint-help").textContent=this.help[shape]||"";
       $("endpoint-url").placeholder=this.placeholders[shape]||"";
     },
   };
 
-  // The sign-in shape's client. The daemon already had both routes and NO client
-  // called them, so a source whose saved sign-in died had no way back through the
-  // app -- the founder hit exactly that. Start, show the code, poll, and let the
-  // daemon deposit; the credential never touches this page.
   // A declared model list needs a context size; the field is a bound for the
   // model use, not a claim about the provider. Most current chat models exceed it.
   const ENDPOINT_CONTEXT=32768;

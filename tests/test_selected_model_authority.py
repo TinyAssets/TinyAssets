@@ -518,7 +518,9 @@ def test_without_selected_authority_router_discards_configuration_override(tmp_p
         )
     finally:
         auth.revoke_provider_request(capability)
-    assert seen == [None]
+    assert len(seen) == 1
+    assert seen[0].provider.startswith("api_key_http:")
+    assert seen[0].model_id == "synthetic-model"
 
 
 def test_request_revocation_refuses_before_discovery(served, reader):

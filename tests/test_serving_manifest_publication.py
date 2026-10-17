@@ -419,9 +419,12 @@ def test_prepublication_invalid_connection_preserves_existing_assignment(scene):
 
 
 def test_new_connection_is_not_accepted_without_its_own_custody(scene):
+    scene[2].revoke_grant("http_grant_" + "d" * 32)
     with pytest.raises(PermissionError):
         _publish(
-            scene, model_access={scene[3].id: ModelAccess("discovered"), "codex": ModelAccess()}
+            scene, model_access={
+                scene[3].id: ModelAccess("discovered"), scene[4].id: ModelAccess("discovered"),
+            }
         )
     assert _root(scene) is None
 

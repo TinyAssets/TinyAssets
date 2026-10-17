@@ -13,10 +13,10 @@ from tinyassets.providers.model_policy import Catalog, Charge, Exhaustion, Model
 
 def plan():
     primary = replace(connection("primary", models=[model("chosen")]),
-                      source_kind="subscription", provider_scope="primary-account",
+                      source_kind="http", provider_scope="primary-account",
                       default_model_id="chosen")
     secondary = replace(connection("secondary", models=[model("strongest")]),
-                        source_kind="subscription", provider_scope="secondary-account",
+                        source_kind="http", provider_scope="secondary-account",
                         default_model_id="strongest")
     free = connection("free", models=[
         replace(model("weaker", score=Scores("comparable-v1", "fresh", 1)),
@@ -31,20 +31,20 @@ def plan():
     )
 
 
-def test_exact_saved_primary_recovers_on_other_subscription_before_ranked_free_models():
+def test_exact_saved_primary_recovers_on_ranked_connected_models():
     selected = plan()
     failed = (Exhaustion("account", ModelRef("primary", "chosen")),)
     assert refs(selected.order("owner", "universe")) == [ModelRef("primary", "chosen")]
     assert not selected.order("owner", "universe", failed).candidates
     assert refs(selected.capacity_order("owner", "universe", failed)) == [
-        ModelRef("secondary", "strongest"), ModelRef("free", "stronger"),
-        ModelRef("free", "weaker"),
+        ModelRef("free", "stronger"), ModelRef("free", "weaker"),
+        ModelRef("secondary", "strongest"),
     ]
     assert selected.policy.fallbacks == ()
     assert selected.policy.saved_default == ModelRef("primary", "chosen")
 
 
-def test_capacity_recovery_keeps_subscriptions_ahead_of_explicit_http_tail():
+def test_capacity_recovery_keeps_explicit_fallback_ahead_of_automatic_choices():
     selected = plan()
     selected = replace(selected, policy=replace(
         selected.policy, fallbacks=(ModelRef("free", "stronger"),),

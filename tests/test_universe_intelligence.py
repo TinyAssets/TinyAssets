@@ -382,11 +382,11 @@ def test_converse_persistence_failure_does_not_break_reply(tmp_path, monkeypatch
 
 
 def test_failed_post_turn_learning_reports_a_bounded_receipt_reason(tmp_path, monkeypatch):
-    from tinyassets.exceptions import ExternalAgentUnavailable
+    from tinyassets.exceptions import ProviderError
     from tinyassets.providers.execution_receipt import normalize_execution_receipt
 
     def refused(*_args):
-        raise ExternalAgentUnavailable("codex", "gpt-6.1-sol", "job_failed:incomplete")
+        raise ProviderError("synthetic inference failure")
 
     monkeypatch.setattr(ui, "extract_learning", refused)
     reasons = []
@@ -395,12 +395,12 @@ def test_failed_post_turn_learning_reports_a_bounded_receipt_reason(tmp_path, mo
         founder_message="hello", reply="done", actor_id="owner", agent_id="main",
         failure_observer=reasons.append,
     )
-    assert not settled and reasons == ["job_failed:incomplete"]
+    assert not settled and reasons == ["provider_error"]
     receipt = normalize_execution_receipt({
-        "provider": "codex", "model": "", "model_status": "unknown",
-        "execution": "native_agent", "learning_failure": reasons[0],
+        "provider": "api_key_http:fixture", "model": "", "model_status": "unknown",
+        "execution": "engine_inference", "learning_failure": reasons[0],
     })
-    assert receipt["learning_failure"] == "job_failed:incomplete"
+    assert receipt["learning_failure"] == "provider_error"
 
 
 def test_commit_learning_persists_canon_to_universe_wiki(tmp_path, monkeypatch):

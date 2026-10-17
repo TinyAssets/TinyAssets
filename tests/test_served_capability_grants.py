@@ -70,15 +70,3 @@ def test_coordinator_passes_four_handles_and_full_backend_grant(monkeypatch):
     assert captured[0]["capability_grant"] == subject.BACKEND_ENGINE_CAPABILITIES
 
 
-def test_codex_displays_four_handles_but_signs_full_backend_grant(monkeypatch):
-    from tests.test_owner_steering import _codex_dialled
-    from tinyassets.providers.base import ModelConfig
-
-    monkeypatch.setattr(subject, "SERVED_ENGINE_MCP_TOOLS", subject.FOUR_MODEL_TOOLS)
-    config = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="owner",
-                         engine_mcp_graph_id="center")
-    dialled = _codex_dialled(monkeypatch, config)
-    # The same route call the HTTP loop makes: four displayed handles, the full
-    # backend grant signed onto the route by open_engine_tools.
-    assert tuple(dialled["enabled_tools"]) == subject.FOUR_MODEL_TOOLS
-    assert tuple(dialled["capability_grant"]) == subject.BACKEND_ENGINE_CAPABILITIES

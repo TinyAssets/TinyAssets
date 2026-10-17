@@ -29,7 +29,6 @@ from tinyassets.agent_loop.execution import off_loop
 # Admission deadline refusals must release reservations for launches that never ran.
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
-    ExternalAgentUnavailable,
     InteractiveDeadlineError,
     ProviderAuthenticationError,
     ProviderAuthorityHeldError,
@@ -1627,8 +1626,6 @@ class ProviderRouter:
                     **_tool_wait_evidence(exc),
                 ))
                 continue
-            except ExternalAgentUnavailable:
-                raise
             except ProviderUnavailableError as exc:
                 if self._cool(cfg, provider_name, COOLDOWN_UNAVAILABLE,
                               owner=quota_owner, reason="provider_unavailable"):

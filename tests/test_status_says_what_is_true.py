@@ -17,10 +17,7 @@ universe, serving or not.
 """
 from __future__ import annotations
 
-import json
-import re
 import shutil
-import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -171,55 +168,3 @@ def test_the_new_reason_says_the_universe_IS_serving_in_words_a_user_can_use():
 _NODE = shutil.which("node")
 
 
-@pytest.mark.skipif(_NODE is None, reason="node is not installed")
-def test_the_app_heal_does_not_fire_on_the_new_reason():
-    """The heal must keep firing for `no_serving_runtime` and stay quiet for a
-    universe that is serving but has no background executor."""
-    from tinyassets.onboarding import render_app_html
-
-    html, _csp = render_app_html()
-
-    def fn(name: str) -> str:
-        start = html.index(f"function {name}(")
-        if html[max(0, start - 6):start] == "async ":
-            start -= 6
-        i = html.index("{", start)
-        depth = 0
-        for j in range(i, len(html)):
-            if html[j] == "{":
-                depth += 1
-            elif html[j] == "}":
-                depth -= 1
-                if depth == 0:
-                    return html[start:j + 1]
-        raise AssertionError(name)
-
-    script = "\n".join([
-        "const posts = [];",
-        "globalThis.fetch = async (url, opts) => { posts.push(JSON.parse(opts.body));"
-        " return {json: async () => ({serving: {status: 'serving'}})}; };",
-        "globalThis.authHeaders = () => ({});",
-        "globalThis.appendMessage = () => {};",
-        "let servingHealAttempted = false;",
-        # `serviceLabel` reads a module-level table, so lift it too or the whole
-        # bundle throws ReferenceError before a single assertion runs.
-        re.search(r"const SERVICE_LABELS=\{.*?\};", html, re.S).group(0),
-        fn("serveOn"), fn("serviceLabel"), fn("unservedCandidates"), fn("healServing"),
-        "const status = (reason) => ({active_host: {llm_endpoint_bound: 'codex'},"
-        " supervisor_liveness: {epoch2_operational: {consumer_pump: [{reason}]},"
-        " provider_auth: {writers: {codex: {status: 'ok'}}}}});",
-        "(async () => {",
-        "  await healServing(status(process.argv[process.argv.length - 1]));",
-        "  console.log(JSON.stringify({posts, attempted: servingHealAttempted}));",
-        "})();",
-    ])
-    quiet = json.loads(subprocess.run(
-        [_NODE, "-e", script, "--", "legacy_control_tasks_parked"],
-        capture_output=True, text=True, timeout=30, check=True,
-    ).stdout.strip().splitlines()[-1])
-    loud = json.loads(subprocess.run(
-        [_NODE, "-e", script, "--", "no_serving_runtime"],
-        capture_output=True, text=True, timeout=30, check=True,
-    ).stdout.strip().splitlines()[-1])
-    assert quiet == {"posts": [], "attempted": False}, quiet
-    assert loud["posts"] == [{"service": "codex"}], loud

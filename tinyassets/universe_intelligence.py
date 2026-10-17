@@ -773,7 +773,6 @@ def _learn_from_turn(
     """
     from tinyassets.exceptions import (
         AllProvidersExhaustedError,
-        ExternalAgentUnavailable,
         ProviderAuthorityHeldError,
         ProviderError,
     )
@@ -798,7 +797,7 @@ def _learn_from_turn(
         commit_learning(universe_dir, proposed, universe_id=universe_id, actor_id=actor_id,
                         agent_id=agent_id)
         return True
-    except (AllProvidersExhaustedError, ExternalAgentUnavailable,
+    except (AllProvidersExhaustedError,
             ProviderAuthorityHeldError, TurnInterrupted) as exc:
         if isinstance(exc, AllProvidersExhaustedError):
             attempts = getattr(exc, "attempts", ())
@@ -807,8 +806,6 @@ def _learn_from_turn(
                 "auth_invalid", "quota_or_cooldown", "provider_error", "timed_out",
                 "provider_unavailable", "unknown",
             } else "provider_exhausted"
-        elif isinstance(exc, ExternalAgentUnavailable):
-            reason = exc.reason
         elif isinstance(exc, TurnInterrupted):
             reason = "interrupted"
         else:
