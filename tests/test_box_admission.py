@@ -84,10 +84,15 @@ def test_new_owner_box_reservation_is_canonical_idempotent_and_fail_closed(tmp_p
     from tinyassets.broker.box_admission import provision
 
     tmp_path.chmod(0o700)
-    identities = OwnerIdentities(tmp_path / "identities.db", initialize=True)
+    state = tmp_path / ".broker"
+    state.mkdir(mode=0o700)
+    identities = OwnerIdentities(state / "owner-identities.db", initialize=True)
     uid = identities.resolve("alice", allocate=True).uid
     identities.admission("admit", "alice", "a")
-    monkeypatch.setattr("tinyassets.universe_owner.account_type_of", lambda root, owner: "tier")
+    def no_owner_read(*args):
+        raise AssertionError("broker provisioning must read only shared plans")
+
+    monkeypatch.setattr("tinyassets.universe_owner.account_type_of", no_owner_read)
     monkeypatch.setattr("tinyassets.usage_policy.limits_for",
                         lambda tier: SimpleNamespace(storage_bytes=1024**3))
     # No startup schema creation, even after authenticated admission.

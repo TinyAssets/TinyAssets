@@ -135,7 +135,7 @@ def box(broker, tmp_path, monkeypatch):  # noqa: F811
     box_thread = threading.get_ident()
     actual_refuse = owner_runtime.refuse_router_store
     monkeypatch.setattr(owner_runtime, "refuse_router_store", lambda name: (
-        actual_refuse(name) if threading.get_ident() == box_thread else None))
+        None if name == "plans" and threading.get_ident() != box_thread else actual_refuse(name)))
     from tinyassets.broker import supervisor
 
     monkeypatch.setattr(supervisor, "get_supervisor", lambda root: owner_runtime.broker_egress())

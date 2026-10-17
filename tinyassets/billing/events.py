@@ -38,8 +38,7 @@ def apply_event(root, event):
         # The signed owner is an account, never a path or a home reference.
         if not (obj.get("metadata") or {}).get("owner_id"):
             raise PlanMissing("legacy billing delivery requires its cutover mapping")
-        plans.bind_subscription(claimed_owner, customer_id=customer,
-                                subscription_id=subscription)
+        plans.read(claimed_owner)
         owner = claimed_owner
     if (obj.get("metadata") or {}).get("owner_id") and owner != claimed_owner:
         raise PermissionError("billing mapping disagrees with signed account")

@@ -214,8 +214,6 @@ PINNED: dict[str, list[str]] = {
     ],
     # Shared router session map; these paths never enter an owner mount.
     "tinyassets/onboarding/session_store.py": [
-        "revoke_owner: .read_text()",
-        "revoke_owner: .unlink()",
         "_discard_legacy_store: shutil.rmtree()",
         "_read_json: .read_text()",
         "_unlink: .unlink()",

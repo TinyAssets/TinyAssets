@@ -565,7 +565,7 @@ class _Connection:
             with self._server._fence.send(doc["generation"], doc["token"]):
                 plans = Plans(self._server._data_root)
                 operations = {name: getattr(plans, name) for name in (
-                    "read", "owner_for", "owner_for_checkout", "bind_subscription",
+                    "read", "owner_for", "owner_for_checkout",
                     "apply_tier_event",
                     "current_checkout_attempt", "begin_checkout_attempt",
                     "record_checkout_session", "settle_checkout_attempt")}

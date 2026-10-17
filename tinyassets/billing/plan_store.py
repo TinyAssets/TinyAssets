@@ -30,9 +30,6 @@ class BillingPlans:
     def owner_for_checkout(self, **args):
         return self._call("owner_for_checkout", **args)
 
-    def bind_subscription(self, owner, **args):
-        return self._call("bind_subscription", owner=owner, **args)
-
     def apply_tier_event(self, owner, **args):
         return self._call("apply_tier_event", owner=owner, **args)
 

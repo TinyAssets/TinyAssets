@@ -344,6 +344,8 @@ def _start_checkout(*, owner: str, origin: str) -> dict[str, Any]:
     )
 
     plans = BillingPlans(data_dir())
+    if plans.read(owner)["tier"] == "paid":
+        return {"error": "already_subscribed"}
     now = time.time()
     mode = "live" if key_is_live() else "test"
 

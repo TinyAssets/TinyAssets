@@ -62,6 +62,13 @@ try:
             result = publish_definition(root, author_id='forged', payload=payload,
                                         idempotency_key='same-publication')
             assert result['author_id'] == 'owner'
+            from tinyassets.commons_catalog import create_binding
+            from tinyassets.commons_bundles import next_version
+            assert next_version(root, payload['bundle_id']) == 2
+            binding = create_binding(root, universe_id='center',
+                definition_id=result['agent_definition_id'], created_by='owner',
+                payload={'schema_version': 1, 'name': 'Installed public copy'})
+            assert binding['agent_definition_id'] == result['agent_definition_id']
             try:
                 request('', {'op': 'BOX_PUBLISH', 'payload': payload,
                              'idempotency_key': '', 'owner': 'other'})
@@ -133,6 +140,7 @@ def test_signed_webhook_then_box_plan_and_router_status_cancel(box, monkeypatch)
         assert Plans(box.shared).read("other")["tier"] == "free"
         status = client.get("/app/billing/status").json()
         assert status["tier"] == "paid" and "usage" not in status
+        assert client.post("/app/billing/checkout").json() == {"error": "already_subscribed"}
         cancelled = []
         monkeypatch.setattr(billing, "cancel_subscription", cancelled.append)
         assert client.post("/app/billing/cancel").json()["cancelled"]
@@ -209,7 +217,7 @@ def test_box_publication_author_and_router_listing(box, monkeypatch):  # noqa: F
     with door(monkeypatch, box.shared, "owner") as client:
         response = client.get("/app/run/" + published["agent_definition_id"])
         assert response.status_code == 200 and "Box publication" in response.text
-    assert not list(box.root.rglob(".tinyassets.db"))
+    assert (box.root / "proof/.tinyassets.db").is_file()
     assert not (box.root / ".published").exists()
 
 
@@ -251,3 +259,15 @@ def test_mapped_legacy_events_and_conflicting_owner_claims(tmp_path, monkeypatch
         apply_event(tmp_path, forged)
     assert plans.read("other")["tier"] == "free"
     assert plans.read("owner")["tier"] == "free"
+
+
+def test_stale_unmapped_subscription_cannot_replace_current_mapping(tmp_path, monkeypatch):
+    from tinyassets.billing.events import apply_event
+
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)
+    plans = Plans(tmp_path)
+    plans.set_plan("owner", "paid", event_created=100, subscription_id="sub_current")
+    event = _subscription_event(owner_id="owner")
+    event["created"] = 10
+    assert apply_event(tmp_path, event) == {"applied": False, "tier": None}
+    assert plans.read("owner")["subscription_id"] == "sub_current"

@@ -144,6 +144,12 @@ def owner_mode(tmp_path, monkeypatch, agent, in_process_broker, _owner_box_doubl
         relay = OwnerRelays(Path(directory), Admission())
         path = relay.bind("owner", os.getuid())
         runtime = owner_runtime.start(path)
+        # This rig serves the broker on worker threads in the box's process.
+        # Only the process proofs can exercise the real process-local guard.
+        owner_thread = threading.get_ident()
+        refuse = owner_runtime.refuse_router_store
+        monkeypatch.setattr(owner_runtime, "refuse_router_store", lambda name: (
+            None if name == "plans" and threading.get_ident() != owner_thread else refuse(name)))
         from tinyassets.control_plane import binding
 
         monkeypatch.setattr(binding, "file_binding", _owner_box_double.file_binding)

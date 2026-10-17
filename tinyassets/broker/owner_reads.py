@@ -106,15 +106,6 @@ class Plans:
             raise PlanMissing("checkout has no unique owner")
         return rows[0][0]
 
-    def bind_subscription(self, owner, *, customer_id, subscription_id):
-        self.read(owner)
-        if not subscription_id:
-            raise ValueError("subscription id required")
-        with closing(self._connect()) as db, db:
-            db.execute("UPDATE plans SET customer_id=COALESCE(?, customer_id), "
-                       "subscription_id=? WHERE owner=?",
-                       (customer_id or None, subscription_id, owner))
-
     def current_checkout_attempt(self, owner, *, now):
         import json
 

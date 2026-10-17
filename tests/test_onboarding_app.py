@@ -2472,7 +2472,7 @@ def test_a_relay_during_a_turn_waits_and_goes_out_when_the_turn_ends(tmp_path):
     assert "1 waiting" not in out["statusBeforeRelease"]
     assert out["converseCalls"] == ["first"]  # The server queues the asking agent separately.
     assert [m["role"] for m in out["messages"]] == ["founder", "universe"]
-    assert out["answered"] == [{"request_id": "req_1", "values": {}}]
+    assert out["answered"] == [{"request_id": "req_1", "universe_id": "", "values": {}}]
 
 
 def test_a_general_answer_relays_the_values_given(tmp_path):
@@ -2775,7 +2775,7 @@ def test_a_rail_relay_keeps_a_typed_draft(tmp_path):
     out = _run_app(tmp_path, {"kind": "rail", "request": _REQ, "payload": {"reply": "ok"},
                               "draft": "half a sentence"})
     assert out["converseCalls"] == []
-    assert out["answered"] == [{"request_id": "req_1", "values": {}}]
+    assert out["answered"] == [{"request_id": "req_1", "universe_id": "", "values": {}}]
     assert out["composer"] == "half a sentence"
 
 

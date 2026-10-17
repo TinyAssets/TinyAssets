@@ -30,7 +30,9 @@ def admitted(in_process_broker, broker, tmp_path, monkeypatch):  # noqa: F811
     from tinyassets.broker import supervisor
 
     tmp_path.chmod(0o700)
-    identities = OwnerIdentities(tmp_path / "identities.db", initialize=True)
+    state = tmp_path / ".broker"
+    state.mkdir(mode=0o700)
+    identities = OwnerIdentities(state / "owner-identities.db", initialize=True)
     broker.server._owner_identities = identities
     for name in ("alice", "bob", "reserved"):
         identities.resolve(name, allocate=True)
@@ -329,7 +331,8 @@ def test_router_only_routes_need_no_box(tmp_path, monkeypatch, cloud_runtime):  
         raise AssertionError("router-only route resolved a box")
 
     monkeypatch.setattr(owner_identities, "owner_box_route", no_box)
-    listing = publish_definition(tmp_path, author_id="alice", payload=_definition("Public item"))
+    listing = publish_definition(tmp_path / ".published", author_id="alice",
+                                 payload=_definition("Public item"))
     app = universe_server.create_streamable_http_app()
     assert all(not forwarded_path(route.path) for route in app.routes)
     with TestClient(app) as client:
