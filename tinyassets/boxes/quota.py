@@ -30,6 +30,17 @@ class OwnerQuota:
         if not options.intersection({"pquota", "prjquota"}) or "discard" in options:
             raise BoxError("owner box store needs project quotas without discard")
 
+    def destroy(self, uid: int) -> None:
+        from tinyassets.boxes.destroy import tree
+
+        GvisorRuntime.box_id(uid)
+        self._mounted()
+        tree(self.store, uid, erase=True)
+        # With every inode gone, clear the permanent project's resource limits.
+        subprocess.run(["xfs_quota", "-x", "-c",
+                        f"limit -p bsoft=0 bhard=0 isoft=0 ihard=0 {uid}", str(self.store)],
+                       check=True, capture_output=True, text=True, timeout=10)
+
     def set_bound(self, uid: int, gid: int, bhard_bytes: int) -> Path:
         GvisorRuntime.box_id(uid)
         if type(gid) is not int or gid != uid:

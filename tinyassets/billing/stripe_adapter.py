@@ -217,6 +217,7 @@ def _post(
     *,
     timeout: float = 20.0,
     idempotency_key: str = "",
+    method: str = "POST",
 ) -> dict:
     key = _secret_key()
     if not key:
@@ -225,7 +226,7 @@ def _post(
     request = urllib.request.Request(
         f"{_API}/{path.lstrip('/')}",
         data=body,
-        method="POST",
+        method=method,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     # Basic auth: key as username, empty password, per Stripe.
@@ -436,7 +437,8 @@ def cancel_subscription(subscription_id: str, *, immediately: bool = False) -> d
     if not subscription_id:
         raise ValueError("subscription_id is required")
     if immediately:
-        return _post(f"subscriptions/{subscription_id}/cancel", [])
+        return _post(f"subscriptions/{urllib.parse.quote(subscription_id, safe='')}", [],
+                     method="DELETE")
     return _post(
         f"subscriptions/{subscription_id}", [("cancel_at_period_end", "true")]
     )
@@ -472,6 +474,35 @@ def find_active_subscription(owner_id: str) -> str | None:
     raise BillingUnavailable(
         "could not scan all active subscriptions; cancel not attempted"
     )
+
+
+def cancel_account_billing(root, owner: str) -> str:
+    """Deletion uses the shared owner mapping, including after admission retirement."""
+    from tinyassets.billing.plan_store import BillingPlans
+
+    plans = BillingPlans(root)
+    plan = plans.read(owner)
+    subscription = plan["subscription_id"]
+    if not subscription:
+        if plan["tier"] != "free":
+            raise BillingUnavailable("paid account has no subscription mapping")
+        return "none"
+    # Read first so an interrupted cancellation can be retried after Stripe
+    # committed it, but before either our plan or deletion receipt was saved.
+    result = _get("subscriptions/" + urllib.parse.quote(subscription, safe=""))
+    if result.get("id") != subscription:
+        raise BillingUnavailable("subscription identity mismatch")
+    if result.get("status") not in {"canceled", "incomplete_expired"}:
+        result = cancel_subscription(subscription, immediately=True)
+    if result.get("id") != subscription or result.get("status") not in {
+            "canceled", "incomplete_expired"}:
+        raise BillingUnavailable("subscription cancellation not confirmed")
+    plans.apply_tier_event(owner, tier="free",
+                           event_created=max(_time.time(), plan["event_created"]),
+                           ends_at=None)
+    if plans.read(owner)["tier"] != "free":
+        raise BillingUnavailable("account plan cancellation not confirmed")
+    return "cancelled"
 
 
 

@@ -64,6 +64,13 @@ class DeletedOwners:
             raise RuntimeError("account deletion receipt unavailable")
         return receipt
 
+    def save_receipt(self, owner: str, receipt: dict):
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("PRAGMA synchronous=FULL")
+            if db.execute("UPDATE deleted_owners SET receipt=? WHERE owner=?",
+                          (json.dumps(receipt), owner)).rowcount != 1:
+                raise RuntimeError("account deletion tombstone missing")
+
 
 class HookOwners:
     def __init__(self, root: Path):
