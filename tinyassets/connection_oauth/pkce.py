@@ -76,6 +76,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 @contextmanager
 def flows_db(base: Path | str) -> Iterator[tuple[sqlite3.Connection, float]]:
     """One IMMEDIATE transaction over the flow store, expired rows swept first."""
+    from tinyassets.owner_runtime import refuse_router_store
+
+    refuse_router_store("oauth_pkce")
     conn = sqlite3.connect(Path(base) / _DB_NAME, timeout=5, isolation_level=None)
     conn.row_factory = sqlite3.Row
     try:

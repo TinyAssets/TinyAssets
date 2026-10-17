@@ -104,6 +104,10 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     # Neither touches a compiled graph stream or grants execution authority.
     CallSite("tinyassets/onboarding/__init__.py", "_handle_billing_webhook", "request.stream"),
     CallSite("tinyassets/onboarding/hosted_model_auth.py", "exchange_key", "client.stream"),
+    # The router relays opaque HTTP bytes to an admitted Unix socket; neither
+    # stream invokes a model or executes an owner's work in the shared process.
+    CallSite("tinyassets/owner_router.py", "forward", "Request().stream"),
+    CallSite("tinyassets/owner_router.py", "forward", "client.stream"),
     CallSite("tinyassets/onboarding/__init__.py", "_read_bounded_body", "request.stream"),
     # The public browser error beacon streams its body with a 4 KiB running
     # cap (#4662); it only writes a log line and grants no execution authority.

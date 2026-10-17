@@ -22,7 +22,7 @@ def stores(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr("tinyassets.daemon_server.get_founder_home", lambda *a: "home")
     keys, authority = ApiKeyStore(tmp_path), OutsideClientAuthority(tmp_path)
-    monkeypatch.setattr("tinyassets.api_keys.current_store", lambda: keys)
+    monkeypatch.setattr("tinyassets.api_keys.current_store", lambda base=None: keys)
     monkeypatch.setattr("tinyassets.outside_authority.current_store", lambda: authority)
     authority.set_enabled(True)
     return keys, authority

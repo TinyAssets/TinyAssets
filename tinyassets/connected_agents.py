@@ -108,13 +108,13 @@ def roster(base, *, universe_id: str, owner: str) -> list[dict]:
     Existing local revocation and exact scopes govern inclusion. An unclassified
     OAuth receipt states only past authentication, never current remote access.
     """
-    from tinyassets.api_keys import ApiKeyStore, _client, _family
+    from tinyassets.api_keys import _client, _family, current_store
     from tinyassets.daemon_server import get_founder_home
     from tinyassets.outside_authority import OutsideClientAuthority, OutsideRefused
 
     authority = OutsideClientAuthority(base)
     result = []
-    for key in ApiKeyStore(base).list(owner, authority=authority)["keys"]:
+    for key in current_store(base).list(owner, authority=authority)["keys"]:
         if key["last_used_at"] is None or key["revoked_at"] is not None:
             continue
         bound = {"client": _client(key["key_id"]), "family": _family(key["key_id"])}

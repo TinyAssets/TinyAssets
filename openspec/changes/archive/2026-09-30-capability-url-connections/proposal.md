@@ -2,7 +2,7 @@
 
 **Live, 2026-09-30.** A free-account universe
 (`u-01ky3zh1arr8qth8jee7zx63pq`, turn `d75a6cb6447e4434b8b0d6aecf706475`)
-was given a friend's webhook link — `https://tinyassets.io/mcp/hooks/<secret>`
+was given a friend's webhook link — `https://tinyassets.io/hooks/inbound/<secret>`
 — and asked to send bug reports to it. What happened, in order:
 
 1. It raised a `connect_http` ask for an **"API Token or Bearer Token"** that
@@ -29,7 +29,7 @@ common way an agent posts a message anywhere:
 | Slack incoming webhook | `https://hooks.slack.com/services/T…/B…/<24-char token>` |
 | Discord webhook | `https://discord.com/api/webhooks/<id>/<68-char token>` |
 | Zapier / Make catch hook | `https://hooks.zapier.com/hooks/catch/<id>/<key>/` |
-| TinyAssets inbound hook | `https://tinyassets.io/mcp/hooks/<43-char token>` |
+| TinyAssets inbound hook | `https://tinyassets.io/hooks/inbound/<43-char token>` |
 
 None of the five depositable schemes describe it. `bearer`, `header`, `basic`
 and `oauth1a` all put the credential in a **header**; `oauth2` needs a sign-in.
@@ -59,7 +59,7 @@ meets a webhook link has exactly two options today, and both are wrong:
 
 3. **The secret is substituted at call time, inside the broker child.** The
    node's packet, the run state, the receipt, the evidence and every failure
-   record carry the placeholder form `…/mcp/hooks/{secret}` — never the real
+   record carry the placeholder form `…/hooks/inbound/{secret}` — never the real
    URL. The allowlist matcher admits the `{secret}` segment **only as the
    literal token**, so the egress boundary is evaluated with no secret material
    present, and a node that hardcodes a real secret in its own packet is

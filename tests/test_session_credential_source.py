@@ -80,7 +80,7 @@ def test_the_bearer_handle_is_never_used_as_a_filename():
 
 
 def test_the_stored_filename_does_not_contain_the_handle():
-    handle = onboarding._mint_refresh_session("rt_secret")
+    handle = onboarding._mint_refresh_session("rt_secret", owner="owner")
     names = [p.name for p in session_store.store_dir().iterdir()]
     assert names, "nothing was written"
     assert all(handle not in n for n in names), names
@@ -112,7 +112,7 @@ def test_an_unconfigured_deployment_still_does_not_publish_the_handle(monkeypatc
 
 
 def test_two_handles_do_not_collide():
-    a = onboarding._mint_refresh_session("rt_a")
-    b = onboarding._mint_refresh_session("rt_b")
+    a = onboarding._mint_refresh_session("rt_a", owner="owner")
+    b = onboarding._mint_refresh_session("rt_b", owner="owner")
     assert onboarding._read_refresh_session(a) == "rt_a"
     assert onboarding._read_refresh_session(b) == "rt_b"

@@ -14,7 +14,7 @@ from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 
 
 @pytest.mark.usefixtures("cloud_runtime")
-def test_main_sweeps_before_spawning_engines_or_the_consumer(
+def test_owner_lifespan_sweeps_before_spawning_engines_or_the_consumer(
     tmp_path, monkeypatch, in_process_broker,
 ):
     import threading
@@ -66,7 +66,16 @@ def test_main_sweeps_before_spawning_engines_or_the_consumer(
     monkeypatch.setattr(us, "create_streamable_http_app", object)
     monkeypatch.setattr(us.uvicorn, "run", lambda *a, **k: order.append("serve"))
 
-    us.main(host="127.0.0.1", port=0)
+    from types import SimpleNamespace
+
+    from tinyassets import owner_runtime
+
+    monkeypatch.setattr(owner_runtime, "current", lambda: SimpleNamespace(root=tmp_path))
+    monkeypatch.setattr(api_runs, "start_run_owner_watcher", lambda: None)
+    monkeypatch.setattr(engine_mcp_http, "start_engine_mcp_http_servers",
+                        lambda *a, **kw: order.append("engines") or [])
+    with owner_runtime.serving():
+        order.append("serve")
 
     assert "recovery" in order, order
     first = order.index("recovery")

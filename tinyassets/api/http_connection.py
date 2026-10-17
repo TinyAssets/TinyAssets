@@ -104,7 +104,7 @@ _ABSENT = object()
 #: depositable with no service code, ``header`` does the same for every
 #: custom-header API, and ``url_secret`` for every capability URL — a webhook
 #: link whose secret is a path segment, which is how Slack, Discord, Zapier,
-#: Make and this platform's own ``/mcp/hooks/<token>`` all work. Before it, a
+#: Make and this platform's own ``/hooks/inbound/<token>`` all work. Before it, a
 #: universe handed such a link had two options and both were wrong: ask for a
 #: bearer token that does not exist, or hardcode the secret into
 #: ``path_template`` where the grant stores and shows it in the clear. It did
@@ -274,7 +274,7 @@ def extract_url_secret(
         or not hostname
     ):
         # A PORT is refused, not ignored. Reading `hostname` alone accepted
-        # `https://host:8443/mcp/hooks/<secret>` against an endpoint that is
+        # `https://host:8443/hooks/inbound/<secret>` against an endpoint that is
         # dialed on 443 — so the owner's secret for one origin would be sent to
         # a different one on the same name (astra round 1, FINDING 6). The
         # endpoint grammar carries no port, so there is nothing to match against.
@@ -1421,7 +1421,7 @@ def _rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
         # service hands out when one is regenerated -- so the same extraction as
         # the deposit runs here, against the STORED endpoints. Without it the
         # whole URL would land in the vault and every later call would send
-        # `https://host/mcp/hooks/https://host/mcp/hooks/<token>`.
+        # `https://host/hooks/inbound/https://host/hooks/inbound/<token>`.
         extracted, extract_error = extract_url_secret(
             secret, resource.allowed_endpoints
         )

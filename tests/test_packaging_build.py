@@ -24,7 +24,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -392,100 +391,18 @@ def _write_admitted_process_harness(directory: str) -> Path:
     return path
 
 
-def _stdio_handshake(
-    env: dict[str, str], command: list[str] | None = None,
-) -> SimpleNamespace:
-    """Drive the staged bundle over real stdio like an installing host would.
-
-    Speaks newline-delimited JSON-RPC into ``server.py``'s stdin exactly as
-    the MCPB `mcp_config` launcher does, and returns the responses keyed by
-    request id. Each request waits for its response before the next write —
-    writing the whole script and closing stdin immediately races the
-    server's EOF shutdown against its in-flight dispatch.
-
-    ``command`` substitutes the fixture-only harness above for a bare
-    ``server.py`` invocation. The protocol, the launcher and the staged
-    runtime are identical either way — only the process-provenance
-    observation differs.
-    """
-    initialize = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2025-06-18",
-            "capabilities": {},
-            "clientInfo": {"name": "packaging-probe", "version": "0"},
-        },
-    }
-    initialized = {"jsonrpc": "2.0", "method": "notifications/initialized"}
-    list_tools = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
-    assert [
-        initialize["method"], initialized["method"], list_tools["method"],
-    ] == list(STDIO_PROBE_METHODS)
-
-    responses: dict[int, dict] = {}
-    # Binary: the child's stderr banner/log is console-codepage encoded.
-    with tempfile.TemporaryFile() as err_file:
-        proc = subprocess.Popen(
-            command or [sys.executable, str(DIST_STAGE / "server.py")],
-            cwd=str(DIST_STAGE),
-            env=env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=err_file,
-            text=True,
-            bufsize=1,
-        )
-        watchdog = threading.Timer(300, proc.kill)
-        watchdog.start()
-
-        def _stderr() -> str:
-            err_file.seek(0)
-            return err_file.read().decode("utf-8", "replace")
-
-        def _await(request_id: int) -> None:
-            while True:
-                line = proc.stdout.readline()
-                if not line:
-                    pytest.fail(
-                        f"stdio server closed before responding to "
-                        f"id={request_id}.\nstderr={_stderr()}"
-                    )
-                line = line.strip()
-                if not line.startswith("{"):
-                    continue
-                message = json.loads(line)
-                if isinstance(message.get("id"), int):
-                    responses[message["id"]] = message
-                    if message["id"] == request_id:
-                        return
-
-        try:
-            for payload in (initialize,):
-                proc.stdin.write(json.dumps(payload) + "\n")
-            proc.stdin.flush()
-            _await(1)
-
-            for payload in (initialized, list_tools):
-                proc.stdin.write(json.dumps(payload) + "\n")
-            proc.stdin.flush()
-            _await(2)
-
-            proc.stdin.close()
-            returncode = proc.wait(timeout=60)
-        finally:
-            watchdog.cancel()
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait(timeout=60)
-            stderr = _stderr()
-
-    assert returncode == 0, (
-        f"stdio launch failed (rc={returncode}).\nstderr={stderr}"
+def _stdio_refusal(env: dict[str, str], command: list[str]):
+    """The staged shared router must not expose its retired local transport."""
+    outcome = subprocess.run(
+        command, cwd=str(DIST_STAGE), env=env,
+        input='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n',
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False, timeout=300,
     )
-    assert set(responses) == {1, 2}, f"stderr={stderr}"
-    return SimpleNamespace(responses=responses, stderr=stderr)
+    assert outcome.returncode != 0
+    assert "the router serves only authenticated streamable-http" in outcome.stderr
+    assert '"result"' not in outcome.stdout
+    return outcome
 
 
 @pytest.fixture
@@ -756,27 +673,15 @@ def test_staged_bundle_refuses_unadmitted_startup(staged_bundle):
         )
 
 
-def test_staged_bundle_enumerates_seven_under_simulated_admission(staged_bundle):
-    """Real launcher + real stdio, fixture-only admitted-process evidence.
-
-    The catalog half of the packaging proof. The staged `server.py` and the
-    staged runtime are unmodified and the JSON-RPC handshake is real; only
-    the process-provenance observation is simulated, injected through the
-    runtime's existing Python seam by the fixture-only child harness.
-
-    Read this for exactly what it proves: the artifact users install carries
-    a runtime whose stdio transport answers `initialize` and enumerates the
-    canonical seven. It is **not** a cloud deployment, **not** a successful
-    desktop installation, and **not** evidence that an off-cloud install
-    serves — that shape is refused, by the test directly above.
-    """
+def test_staged_bundle_refuses_stdio_under_simulated_admission(staged_bundle):
+    """Cloud admission does not re-enable the retired shared owner transport."""
     _build_staged_bundle(staged_bundle)
     with tempfile.TemporaryDirectory(prefix="tinyassets-mcpb-stdio-") as data:
         harness = _write_admitted_process_harness(data)
         assert REPO_ROOT not in harness.resolve().parents, (
             "the fixture-only harness must never live inside the repo"
         )
-        outcome = _stdio_handshake(
+        outcome = _stdio_refusal(
             _provider_free_env(data),
             [sys.executable, str(harness), str(DIST_STAGE)],
         )
@@ -790,10 +695,6 @@ def test_staged_bundle_enumerates_seven_under_simulated_admission(staged_bundle)
         outcome.stderr
     ), f"admission evidence must be labelled simulated.\nstderr={outcome.stderr}"
 
-    initialize = outcome.responses[1]["result"]
-    assert initialize["serverInfo"]["name"] == "TinyAssets"
-    tools = {tool["name"] for tool in outcome.responses[2]["result"]["tools"]}
-    assert tools == CANONICAL_MCPB_TOOLS
 
 
 def test_admitted_process_harness_is_fixture_only():
@@ -886,24 +787,17 @@ def test_bundle_configures_no_auth_provider_selection(staged_bundle):
     )
 
 
-def test_staged_bundle_enumerates_without_credentials(staged_bundle):
-    """An uncredentialed client completes initialize and enumeration.
-
-    Same fixture-only simulated admission as the catalog proof above: cloud
-    admission and client credentials are different facts, and this asserts
-    the second one only. Enumeration is not an authorization check either —
-    per-call gating is not proven here, and `LOCAL_ACCEPTANCE.md` says so.
-    """
+def test_staged_bundle_refuses_stdio_without_credentials(staged_bundle):
+    """Missing credentials cannot fall back to a shared local operator."""
     _build_staged_bundle(staged_bundle)
     with tempfile.TemporaryDirectory(prefix="tinyassets-mcpb-anon-") as data:
         harness = _write_admitted_process_harness(data)
-        outcome = _stdio_handshake(
+        outcome = _stdio_refusal(
             _provider_free_env(data),
             [sys.executable, str(harness), str(DIST_STAGE)],
         )
 
-    assert "error" not in outcome.responses[2]
-    assert outcome.responses[2]["result"]["tools"], "catalog must enumerate"
+    assert "serverInfo" not in outcome.stdout
 
 
 def test_packaging_probes_are_provider_free():

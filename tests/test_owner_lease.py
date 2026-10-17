@@ -323,15 +323,18 @@ def test_join_inherited_tree_refuses_when_the_founder_is_gone(base, monkeypatch)
 
 
 def test_the_daemon_starts_its_tree_before_spawning_any_executor():
-    """Finding 1: main() must advertise the tree before engines or the consumer."""
-    from tinyassets import universe_server
+    """The owner lifespan advertises its tree before engines or the consumer."""
+    import inspect
 
-    source = Path(universe_server.__file__).read_text(encoding="utf-8")
-    main = source[source.index("def main("):]
-    tree = main.index("start_owner_tree(")
-    for spawn in ("start_engine_mcp_http_servers()", "assigned_consumer.start()",
-                  "start_run_owner_watcher()", 'mcp.run(transport="sse"'):
-        assert tree < main.index(spawn), spawn
+    from tinyassets import owner_runtime
+
+    maintenance = inspect.getsource(owner_runtime._start_maintenance)
+    assert maintenance.index("ensure_owner_tree(") < maintenance.index(
+        "return maintenance, start_run_owner_watcher()"
+    )
+    serving = inspect.getsource(owner_runtime.serving)
+    for spawn in ("start_engine_mcp_http_servers(", "consumer.start()"):
+        assert serving.index("_start_maintenance(stop)") < serving.index(spawn)
 
 
 def test_restore_reads_cataloged_stores_too(base, owner):

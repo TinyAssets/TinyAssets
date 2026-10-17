@@ -1,7 +1,6 @@
-"""Actual hosted main nominates admitted work without network or provider effects."""
+"""Owner startup maintenance nominates admitted work without network or provider effects."""
 
 import threading
-import time
 import uuid
 
 import pytest
@@ -12,15 +11,15 @@ from tests.test_consumer_selection import store as store
 
 
 @pytest.mark.usefixtures("cloud_runtime")
-def test_actual_main_nominates_saved_consumer_on_boot_and_periodic_tick(
+def test_owner_maintenance_nominates_saved_consumer_on_boot_and_periodic_tick(
     store, monkeypatch, in_process_broker,
 ):
     from tinyassets import (
         delivery_runtime,
         engine_mcp_http,
+        owner_runtime,
         provider_assignment,
         run_input_origins,
-        universe_server,
     )
     from tinyassets.api import runs as api_runs
     from tinyassets.onboarding import session_store
@@ -51,12 +50,11 @@ def test_actual_main_nominates_saved_consumer_on_boot_and_periodic_tick(
     monkeypatch.setattr(api_runs, "_ensure_runs_recovery", lambda: None)
     monkeypatch.setattr(delivery_runtime, "reconcile_deliveries", lambda _: None)
     monkeypatch.setattr(engine_mcp_http, "start_engine_mcp_http_servers", lambda: [])
-    monkeypatch.setattr(universe_server, "create_streamable_http_app", object)
-    monkeypatch.setattr(universe_server.uvicorn, "run", lambda *a, **k: None)
     monkeypatch.setattr(run_input_origins, "dispatch_initial_run",
                         lambda base, *, run_id: nominated.append((base, run_id)))
 
-    universe_server.main(host="127.0.0.1", port=0)
+    stop = threading.Event()
+    owner_runtime._start_maintenance(stop)
     assert nominated == [(store, row["run_id"])]
     loop = next(target for target in loops if target.__name__ == "_served_budget_lease_loop")
     sleeps = []
@@ -69,7 +67,7 @@ def test_actual_main_nominates_saved_consumer_on_boot_and_periodic_tick(
             raise StopLoop
         sleeps.append(seconds)
 
-    monkeypatch.setattr(time, "sleep", one_tick)
+    monkeypatch.setattr(stop, "wait", one_tick)
     with pytest.raises(StopLoop):
         loop()
     assert sleeps == [300.0]

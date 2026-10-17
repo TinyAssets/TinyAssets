@@ -31,6 +31,8 @@ _KEY_RE = re.compile(r"^ta_key_([0-9a-f]{16})_([A-Za-z0-9_-]{43})$")
 #: REST capabilities a key may hold. Each is the MCP handle the route runs.
 CAPABILITIES = frozenset({"read_graph", "run_graph", "converse"})
 MAX_KEYS_PER_OWNER = 25
+#: Revoked rows kept per owner; older ones are pruned so the shared store stays bounded.
+MAX_REVOKED_KEYS_PER_OWNER = 100
 MAX_NAME = 80
 #: ``last_used_at`` is coarse: written at most once a minute per key, with a
 #: short lock wait, so polling a run is a read, not a disk-synced write.
@@ -72,6 +74,9 @@ class ApiKeyStore:
 
     @contextmanager
     def db(self, *, timeout: float = 10):
+        from tinyassets.owner_runtime import refuse_router_store
+
+        refuse_router_store("api_keys")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.path, timeout=timeout)
         try:
@@ -106,7 +111,7 @@ class ApiKeyStore:
             raise ValueError("owner required")
         if not isinstance(name, str) or not name.strip() or len(name) > MAX_NAME:
             raise ValueError("key name required (at most 80 characters)")
-        if not isinstance(scopes, list) or not scopes:
+        if authority is not None and (not isinstance(scopes, list) or not scopes):
             raise ValueError("at least one scope required")
         for scope in scopes:
             if not isinstance(scope, dict) or scope.get("capability") not in CAPABILITIES:
@@ -126,10 +131,11 @@ class ApiKeyStore:
                 raise ValueError("too many live API keys; revoke one first")
             bound = {"client": _client(key_id), "family": _family(key_id),
                      "authenticated_at": int(now)}
-            authority.observe(owner, bound)
-            # Raises before the row commits, so a refused grant leaves no key.
-            authority.change(owner, bound["client"], expected_generation=0,
-                             family=bound["family"], scopes=scopes)
+            if authority is not None:
+                authority.observe(owner, bound)
+                # Raises before the row commits, so a refused grant leaves no key.
+                authority.change(owner, bound["client"], expected_generation=0,
+                                 family=bound["family"], scopes=scopes)
             conn.execute("INSERT INTO api_keys VALUES (?,?,?,?,?,NULL,NULL)",
                          (key_id, owner, name.strip(), _digest(secret), now))
         return {"key": f"{PREFIX}{key_id}_{secret}", "key_id": key_id, "name": name.strip(),
@@ -145,9 +151,17 @@ class ApiKeyStore:
             if row["revoked_at"] is None:
                 conn.execute("UPDATE api_keys SET revoked_at=? WHERE key_id=?",
                              (time.time(), key_id))
+                stale = [r["key_id"] for r in conn.execute(
+                    "SELECT key_id FROM api_keys WHERE owner=? AND revoked_at IS NOT NULL "
+                    "ORDER BY revoked_at DESC LIMIT -1 OFFSET ?",
+                    (owner, MAX_REVOKED_KEYS_PER_OWNER))]
+                for stale_id in stale:
+                    conn.execute("DELETE FROM api_keys WHERE key_id=?", (stale_id,))
+                    conn.execute("DELETE FROM api_key_request_counts WHERE kind='key' "
+                                 "AND subject=?", (stale_id,))
                 client = _client(key_id)
                 grant = next((c for c in authority.inspect(owner)["clients"]
-                              if c["client"] == client), None)
+                              if c["client"] == client), None) if authority is not None else None
                 if grant is not None and not grant["revoked"]:
                     authority.change(owner, client, expected_generation=grant["generation"],
                                      family=grant["family"], scopes=[], revoke=True)
@@ -156,7 +170,8 @@ class ApiKeyStore:
     def list(self, owner: str, *, authority: Any) -> dict[str, Any]:
         import json
 
-        grants = {c["client"]: c for c in authority.inspect(owner)["clients"]}
+        grants = ({c["client"]: c for c in authority.inspect(owner)["clients"]}
+                  if authority is not None else {})
         with self.db() as conn:
             rows = conn.execute("SELECT key_id,name,created_at,last_used_at,revoked_at FROM "
                                 "api_keys WHERE owner=? ORDER BY created_at", (owner,)).fetchall()
@@ -247,21 +262,79 @@ class ApiKeyStore:
             logger.warning("api key %s: last_used_at not recorded (store busy)", key_id)
 
 
-def current_store() -> ApiKeyStore:
-    from tinyassets.api.helpers import _base_path
+class OwnerApiKeys:
+    """Key metadata lives at the router; only outside grants live in this box."""
 
-    return ApiKeyStore(_base_path())
+    @staticmethod
+    def request_key_id(owner: str, request_ref: str) -> str:
+        from tinyassets.owner_runtime import current
+
+        return ApiKeyStore.request_key_id(current().principal, request_ref)
+
+    def mint(self, owner, *, name, scopes, authority, request_ref=""):
+        from tinyassets.owner_runtime import current, router_credential
+
+        owner = current().principal
+        if (not isinstance(scopes, list) or not scopes
+                or any(not isinstance(s, dict) or s.get("capability") not in CAPABILITIES
+                       for s in scopes)):
+            raise ValueError("valid API scopes required")
+        result = router_credential("key_mint", name=name, request_ref=request_ref)
+        if result.get("already_created"):
+            return result
+        bound = {"client": _client(result["key_id"]), "family": _family(result["key_id"]),
+                 "authenticated_at": int(result["created_at"])}
+        try:
+            authority.observe(owner, bound)
+            authority.change(owner, bound["client"], expected_generation=0,
+                             family=bound["family"], scopes=scopes)
+        except Exception:
+            router_credential("key_revoke", key_id=result["key_id"])
+            raise
+        return {**result, "scopes": scopes}
+
+    def list(self, owner, *, authority):
+        import json
+
+        from tinyassets.owner_runtime import current, router_credential
+
+        result = router_credential("key_list")
+        grants = {c["client"]: c for c in authority.inspect(current().principal)["clients"]}
+        for key in result["keys"]:
+            grant = grants.get(_client(key["key_id"]))
+            key["scopes"] = json.loads(grant["scopes"]) if grant else []
+        return result
+
+    def revoke(self, owner, key_id, *, authority):
+        from tinyassets.owner_runtime import current, router_credential
+
+        result = router_credential("key_revoke", key_id=key_id)
+        owner = current().principal
+        grant = next((c for c in authority.inspect(owner)["clients"]
+                      if c["client"] == _client(key_id)), None)
+        if grant is not None and not grant["revoked"]:
+            authority.change(owner, grant["client"], expected_generation=grant["generation"],
+                             family=grant["family"], scopes=[], revoke=True)
+        return result
+
+
+def current_store(base: Path | None = None) -> ApiKeyStore | OwnerApiKeys:
+    from tinyassets.owner_runtime import current
+    from tinyassets.storage import data_dir
+
+    if current() is not None:
+        return OwnerApiKeys()
+    return ApiKeyStore(base if base is not None else data_dir())
 
 
 def resolve_identity(token: str):
     """Resolve a REST bearer to a confined outside Identity, or None.
 
-    The outside grant is admitted here, so a revoked key, a killed switch or a
-    changed grant fails at the door, and again at every downstream check.
+    Router mode reads only the shared key map and rate counters. The owner
+    daemon admits the outside grant before dispatch; direct unit consumers
+    retain that admission here as well.
     """
     from tinyassets.auth.provider import Identity
-    from tinyassets.outside_authority import OutsideRefused
-    from tinyassets.outside_authority import current_store as outside_store
 
     store = current_store()
     resolved = store.resolve(token, touch=False)
@@ -272,21 +345,34 @@ def resolve_identity(token: str):
     last_used_at = bound.pop("last_used_at")
     if not store.admit_request(key_id, owner):
         return None
+    from tinyassets.auth.middleware import router_authentication
+
+    identity = Identity(
+        user_id=owner, username=owner,
+        capabilities=["read", "write", "costly", "submit_request", "list"],
+        metadata={"auth_provider": "api_key", "api_key_id": key_id, "outside_origin": bound},
+    )
+    if not router_authentication.get() and not admit_forwarded_identity(identity):
+        return None
+    store._touch(key_id, last_used_at)
+    return identity
+
+
+def admit_forwarded_identity(identity) -> bool:
+    """The router verified the key; its capabilities belong to this owner's store."""
+    from tinyassets.outside_authority import OutsideRefused
+    from tinyassets.outside_authority import current_store as outside_store
+
+    bound = identity.metadata["outside_origin"]
     try:
         with outside_store().db() as conn:
             row = conn.execute("SELECT authenticated_at FROM outside_families WHERE owner=? "
                                "AND client=? AND family=?",
-                               (owner, bound["client"], bound["family"])).fetchone()
+                               (identity.user_id, bound["client"], bound["family"])).fetchone()
         if row is None:
-            return None
+            return False
         bound["authenticated_at"] = row["authenticated_at"]
-        bound = outside_store().admit(owner, bound)
+        identity.metadata["outside_origin"] = outside_store().admit(identity.user_id, bound)
+        return True
     except (OutsideRefused, sqlite3.Error, OSError):
-        return None
-    store._touch(key_id, last_used_at)
-    return Identity(
-        user_id=owner,
-        username=owner,
-        capabilities=["read", "write", "costly", "submit_request", "list"],
-        metadata={"auth_provider": "api_key", "api_key_id": key_id, "outside_origin": bound},
-    )
+        return False

@@ -13,6 +13,7 @@ from starlette.responses import HTMLResponse
 from starlette.routing import Route
 
 from tests.fixtures.deploy_traffic_acceptance import SCOPE
+from tests.owner_app_fixture import create_owner_app
 from tinyassets.auth.provider import Identity
 
 
@@ -51,7 +52,7 @@ def policy(scope, payload):
 
 
 def main():
-    from tinyassets import origin_admission, universe_server
+    from tinyassets import origin_admission
     from tinyassets.auth import middleware
     from tinyassets.ingress import AppAcceptance
 
@@ -60,7 +61,7 @@ def main():
     middleware.set_provider(FixtureAuth())
     # Isolated observation ONLY; never an environment bypass in product code.
     origin_admission.cached_process_is_cloud_admitted = lambda: True
-    app = universe_server.create_streamable_http_app(ingress=AppAcceptance(
+    app = create_owner_app(ingress=AppAcceptance(
         root / "runtime", root / "ingress", admission_policy=policy,
     ))
 

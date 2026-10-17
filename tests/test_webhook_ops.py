@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from tinyassets.api import webhook_ops
 from tinyassets.storage import webhook_hooks
 
@@ -24,13 +26,19 @@ def _wire(monkeypatch, tmp_path, *, universe="u-a", branch_exists=True):
     monkeypatch.setattr("tinyassets.daemon_server.get_branch_definition", _get_branch)
 
 
-def test_mint_returns_a_url_for_an_owned_branch(monkeypatch, tmp_path):
+@pytest.mark.parametrize("base, origin", [
+    ("https://tinyassets.io", "https://tinyassets.io"),
+    ("https://hooks.example.com/", "https://hooks.example.com"),
+    ("https://tinyassets.io/mcp", "https://tinyassets.io"),
+])
+def test_mint_returns_a_url_for_an_owned_branch(monkeypatch, tmp_path, base, origin):
     _wire(monkeypatch, tmp_path)
+    monkeypatch.setenv("TINYASSETS_PUBLIC_BASE_URL", base)
     out = json.loads(webhook_ops._action_mint_webhook(
         {"universe_id": "u-a", "branch_def_id": "b-1"},
     ))
     assert out["branch_def_id"] == "b-1"
-    assert out["url"].endswith("/mcp/hooks/" + out["token"])
+    assert out["url"] == origin + "/hooks/inbound/" + out["token"]
     # The token resolves to this universe + branch (no source binding) AND to
     # the principal who minted it. A webhook token is somebody's: an exact-dict
     # assertion written when nothing owned it would hide that.

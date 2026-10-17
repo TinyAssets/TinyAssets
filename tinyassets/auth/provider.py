@@ -848,6 +848,9 @@ class OAuthProvider(AuthProvider):
     """
 
     def __init__(self, db_path: Path | str | None = None) -> None:
+        from tinyassets.owner_runtime import refuse_router_store
+
+        refuse_router_store("mcp_oauth")
         if db_path is None:
             # Route through the canonical resolver so container deploys
             # get $TINYASSETS_DATA_DIR/.auth.db instead of the CWD-relative
@@ -861,6 +864,9 @@ class OAuthProvider(AuthProvider):
         self._initialize_db()
 
     def _connect(self) -> sqlite3.Connection:
+        from tinyassets.owner_runtime import refuse_router_store
+
+        refuse_router_store("mcp_oauth")
         conn = sqlite3.connect(str(self._db_path), timeout=10)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")

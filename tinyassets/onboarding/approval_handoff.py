@@ -15,6 +15,7 @@ RETURN_COOKIE = "__Host-ta-approval-return"
 PREFIX = "/app/approval-handoff/"
 HANDLE = re.compile(r"[A-Za-z0-9_-]{43}")
 CLIENTS = {"android", "android-debug", "ios", "desktop", "web"}
+MAX_HANDOFFS_PER_OWNER = 20
 
 
 @contextmanager
@@ -78,6 +79,12 @@ async def handle(request):
         # No action, draft, bearer or approval token is persisted in this transport.
         ref = secrets.token_urlsafe(32)
         with flows() as conn:
+            conn.execute(
+                "DELETE FROM approval_handoffs WHERE rowid IN ("
+                "SELECT rowid FROM approval_handoffs WHERE owner=? "
+                "ORDER BY rowid DESC LIMIT -1 OFFSET ?)",
+                (owner, MAX_HANDOFFS_PER_OWNER - 1),
+            )
             conn.execute(
                 "INSERT INTO approval_handoffs VALUES (?,?,?,?,?)",
                 (hashed(ref), owner, data["request_id"], data["client"], time.time() + 3600),

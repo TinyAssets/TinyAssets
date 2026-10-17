@@ -28,6 +28,7 @@ from sse_starlette.sse import EventSourceResponse
 from starlette.testclient import TestClient
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.owner_app_fixture import create_owner_app
 
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
@@ -92,7 +93,7 @@ def app_with_slow_tool(tmp_path, monkeypatch):
 
     us.mcp.tool(name="slow_probe")(slow_probe)
     try:
-        yield us.create_streamable_http_app()
+        yield create_owner_app()
     finally:
         provider = getattr(us.mcp, "local_provider", None)   # fastmcp >= 3.4
         (provider.remove_tool if provider is not None else us.mcp.remove_tool)("slow_probe")

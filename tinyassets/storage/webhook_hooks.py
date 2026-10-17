@@ -195,10 +195,17 @@ def mint(
             raise ValueError("webhook_hooks: source_id must be a non-empty string or None")
         if len(source_id) > MAX_ID_LEN:
             raise ValueError(f"webhook_hooks: source_id exceeds {MAX_ID_LEN} chars")
-    token = secrets.token_urlsafe(32)
+    from tinyassets.owner_runtime import current, router_credential
+
+    runtime = current()
+    token = (router_credential("hook_mint")["token"] if runtime is not None
+             else secrets.token_urlsafe(32))
+    if runtime is not None:
+        owner_principal_id = runtime.principal
     ts = time.time() if now is None else now
-    conn = _connect(base_path)
+    conn = None
     try:
+        conn = _connect(base_path)
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
             "INSERT INTO webhook_hooks "
@@ -211,8 +218,13 @@ def mint(
         )
         conn.commit()
         return token
+    except Exception:
+        if runtime is not None:
+            router_credential("hook_revoke", token_hash=_hash_token(token))
+        raise
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def resolve(base_path: str | Path, *, token: str) -> dict[str, Any] | None:
@@ -424,6 +436,14 @@ def list_active_for_branch(base_path: str | Path, *, branch_def_id: str) -> list
     ]
 
 
+def _revoke_routes(conn, where: str, values: tuple):
+    from tinyassets.owner_runtime import current, router_credential
+
+    if current() is not None:
+        for row in conn.execute(f"SELECT token_hash FROM webhook_hooks WHERE {where}", values):
+            router_credential("hook_revoke", token_hash=row["token_hash"])
+
+
 def revoke(base_path: str | Path, *, token: str, now: float | None = None) -> bool:
     """Revoke a token by its value (soft: kept for audit). Returns True if an active token
     was revoked. The token is hashed for lookup; the raw value is never stored."""
@@ -431,6 +451,7 @@ def revoke(base_path: str | Path, *, token: str, now: float | None = None) -> bo
     conn = _connect(base_path)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        _revoke_routes(conn, "token_hash = ? AND revoked_at IS NULL", (_hash_token(token),))
         cur = conn.execute(
             "UPDATE webhook_hooks SET revoked_at = ? "
             "WHERE token_hash = ? AND revoked_at IS NULL",
@@ -469,6 +490,7 @@ def revoke_by_prefix(
         if matches != 1:
             conn.rollback()
             return False
+        _revoke_routes(conn, where, (universe_id, prefix))
         cur = conn.execute(
             f"UPDATE webhook_hooks SET revoked_at = ? WHERE {where}",
             (ts, universe_id, prefix),
@@ -487,6 +509,8 @@ def revoke_source(
     conn = _connect(base_path)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        _revoke_routes(conn, "universe_id = ? AND source_id = ? AND revoked_at IS NULL",
+                       (universe_id, source_id))
         cur = conn.execute(
             "UPDATE webhook_hooks SET revoked_at = ? "
             "WHERE universe_id = ? AND source_id = ? AND revoked_at IS NULL",

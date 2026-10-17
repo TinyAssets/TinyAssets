@@ -19,7 +19,8 @@ adding a check in shared code.
 ## D1. The owner daemon
 
 - **Process:** the same image and code, with entrypoint `python -m tinyassets.owner_daemon
-  --data /home/owner/data --socket /run/owner/app.sock`. It runs
+  --data /home/owner/data --socket /run/owner/app.sock
+  --secret-file /run/owner/secret`. It runs
   inside the owner's gVisor box under the owner's uid. `data_dir()` is the
   owner's root. It serves the existing ASGI app (`/app/api/*`,
   `universe_server` MCP routes, `/api` handlers) on the unix socket, not TCP.
@@ -60,7 +61,7 @@ adding a check in shared code.
   design and `gvisor_runtime`), never a CLI path. Startup refuses if that path
   isn't a mount (slice 1 review: durable, quota-bound storage only).
 
-## D2. The router (the shared daemon, reduced)
+## D2. Shared router
 
 - Keeps the public doors (Cloudflare tunnel → `/mcp`, `/app`, `/api`,
   `/hooks/inbound`), WorkOS sign-in, MCP OAuth and API keys.
@@ -71,10 +72,40 @@ adding a check in shared code.
 - Reads no owner data. Commons and published listings come from its own
   published store.
 
+### D2 decisions (slice 2)
+
+- **Router stores never open in a box.** Every router-store opener refuses inside an owner runtime (`refuse_router_store`); box code reaches router state only through router-forwarded identity metadata or the bound credential channel.
+- **Account revocation.** `account_revoke` takes only the operation over the bound relay credential channel; the router revokes that owner's sessions, inline/hosted/OAuth flows, approval handoffs, live API keys and hook digests. Refresh records carry the verified owner in authenticated public metadata, preserved through rotation so all devices and grace handles can be revoked; legacy unattributed records refuse renewal. Anonymous native login flows contain no owner and are consumed before identity is known; canary rate counters belong to the configured canary. Account deletion in a box must report a failed router revocation as an error.
+- **Handoff bound.** Each owner keeps at most 20 unexpired approval handoffs; insertion removes the oldest beyond the newest 19 in the same transaction.
+- **One hook door:** `/hooks/inbound/<token>`; `/mcp/hooks/` is deleted and integrations re-point at cutover (named in the slice 7 report).
+
+- Slices 2 onward change production serving, so they stay unmerged and merge together with the cutover slice as one maintenance deploy, after the `--archive` rehearsal (review of #5172).
+- Secret delivery and rotation at sandbox start: slice 4 (boxhostd mints via the broker on every start and writes the read-only secret file); slices 2–7 merge together as one stack.
+- **Credential channel.** The existing per-box relay adds `ROUTER_CREDENTIAL`; only its `bind()` supplies owner/uid, the broker checks live admission and forwards to a broker-uid-only router socket under `.runtime`; the router is the only key/hook-map writer, using the existing runtime group without host provisioning.
+- **API key authority.** Owner-mode mint/list/revoke use the channel, with no box key database; grants remain local, a failed grant invalidates the newly minted router key, and a request reference never replays its secret.
+- **Hook ordering.** The router mints hook tokens; the box stores only the digest and delivery configuration; all three revocation paths invalidate the router map before the local row, and failed local creation revokes the router token.
+- **Deleted accounts never mint again.** `account_revoke` first writes a durable owner tombstone (`.router-deleted-owners.sqlite3`). Every router credential request runs under one dispatch lock and refuses a tombstoned owner, so a box request racing the revocation is either revoked or refused.
+- **Retirement ends the box's secret** (slice 4): retiring a center or deleting an account makes boxhostd revoke the per-box secret and stop the box before the router state is cleared, so a forward resolved just before retirement fails at ingress. The router adds no recheck.
+- **Single identity.** A valid protected session and bearer must name the same owner or the router returns 401 before resolving any box.
+- **Approval handoff.** `/app/approval-handoff[/<ref>]` is sign-in navigation whose rows live in the router's owner-sessions store, so it stays at the door. It is never forwarded.
+- **Bounded router rows.** Hook digests are capped per owner with an atomic count-and-insert. Revoked key rows beyond the newest 100 per owner are pruned, with their rate counters. Live keys keep the existing cap of 25.
+- **Model-connection callbacks** stay at the door, and task 3c moves the whole connection flow there with broker custody. A box never holds flow state, so nothing is forwarded.
+
+- **Transport.** One ASGI reverse proxy streams request bytes and raw response chunks over HTTP on a Unix socket, removes hop-by-hop headers, preserves MCP session headers, and closes the upstream on client disconnect; it never retries an owner request.
+- **Resolution.** Fenced `OWNER_BOX_ROUTE(principal, rotate)` returns only the broker-reserved uid and secret for an owner with a live center admission; a reservation alone is not admission, and unknown/retired owners return 404 without opening a socket.
+- **Socket.** The single `resolve_box` seam uses `TINYASSETS_BOXES_RUN/<broker uid>/app.sock` (default `/run/tinyassets-boxhostd`, the existing Compose mount); slice 4 adds waking there without changing route handlers.
+- **Secret.** Admission mints a 256-bit per-owner secret in the broker's private identity database; explicit rotation replaces it, and owner startup requires `--secret-file`, whose value is checked with `hmac.compare_digest` on every request.
+- **Identity.** The router replaces caller-supplied `X-Owner`, `X-Box-Secret` and `X-Owner-Identity`; the last carries the existing authenticated identity and capability metadata, while public bearer/cookie credentials are removed before forwarding.
+- **Sessions.** Existing protected-owner cookies resolve only through the router session map; cookie-authenticated mutations retain exact-origin JSON admission, and the verified protected-view proof travels with the authenticated identity for box-local consumers.
+- **Placement.** Router authentication resolves credentials only; MCP payload checks, outside capability admission and connection receipts run inside the owner daemon, and router logging never buffers owner payloads.
+- **Hook map.** The router's `.hook-owners.sqlite3` contains only token digests and owners; the migration seeds existing digests; box mint/revoke requests now use the bound relay and broker to reach the router writer, while payload/delivery rows remain inside the box.
+- **Startup.** The shared entrypoint no longer starts owner recovery, engine endpoints, ticks or storage initialization and refuses direct SSE/stdio serving; owner recovery moved into the existing owner lifespan.
+- **Routes.** All owner-facing `/app/*` routes (including `/app/api/*`, home, chat, uploads and preferences), `/api` and descendants, MCP transport `/mcp[/]` and `/mcp/events`, and `/hooks/inbound/<token>` share the forwarder; discovery, sign-in/OAuth, pulse, published listing reads and billing retain router handlers.
+
 ## D3. Lifecycle (boxhostd)
 
 - boxhostd supports one persistent sandbox per owner, running the owner
-  daemon with its socket bind-mounted to `/run/boxhostd/<uid>/app.sock`.
+  daemon with its socket bind-mounted to `/run/tinyassets-boxhostd/<uid>/app.sock`.
 - It wakes on a router request or on the waker. It sleeps after N minutes
   idle with no running turn, and the daemon flushes on SIGTERM.
 - It restarts on a crash, with backoff.

@@ -2,7 +2,8 @@
 
 The policy database is never opened by the daemon or by a box. All mutation
 methods here are called only by the broker's policy RPC after it has received
-the opaque owner cookie. Every owner starts with DEFAULT_RULES.
+a protected-session proof (the router's hash, or a legacy owner cookie).
+The broker checks the live router row itself. Every owner starts with DEFAULT_RULES.
 """
 
 from __future__ import annotations
@@ -141,8 +142,18 @@ class PolicyStore:
             path.with_name(path.name + suffix).unlink(missing_ok=True)
         return int(existed)
 
-    def _session(self, owner: str, cookie: str) -> str:
-        if not isinstance(cookie, str) or len(cookie) < 32 or len(cookie) > 512:
+    def _session(self, owner: str, cookie: str | dict) -> str:
+        from tinyassets.owner_runtime import refuse_router_store
+
+        refuse_router_store("owner_sessions")
+        if isinstance(cookie, dict) and set(cookie) == {"session_hash"}:
+            session_hash = cookie["session_hash"]
+            if (not isinstance(session_hash, str) or len(session_hash) != 64
+                    or any(c not in "0123456789abcdef" for c in session_hash)):
+                raise PolicyRefused("interactive owner session required")
+        elif isinstance(cookie, str) and 32 <= len(cookie) <= 512:
+            session_hash = hashlib.sha256(cookie.encode()).hexdigest()
+        else:
             raise PolicyRefused("interactive owner session required")
         path = self._root / ".runtime" / "owner-sessions.db"
         if not path.is_file():
@@ -152,7 +163,7 @@ class PolicyStore:
                 row = db.execute(
                     "SELECT session_hash, identity_json FROM owner_sessions "
                     "WHERE session_hash=? AND expires_at>?",
-                    (hashlib.sha256(cookie.encode()).hexdigest(), time.time()),
+                    (session_hash, time.time()),
                 ).fetchone()
         except sqlite3.Error as exc:
             raise PolicyRefused("interactive owner session unavailable") from exc
@@ -211,7 +222,7 @@ class PolicyStore:
             raise RuntimeError("policy digest mismatch")
         return OwnerPolicy(owner, row["generation"], row["digest"], document)
 
-    def write(self, owner: str, cookie: str, expected_generation: int,
+    def write(self, owner: str, cookie: str | dict, expected_generation: int,
               document: dict) -> OwnerPolicy:
         session_id = self._session(owner, cookie)
         self._validate(owner, document)
@@ -320,7 +331,7 @@ class PolicyStore:
         kind = max(matches, key=lambda match: severity.get(match[2], 4))[2]
         return OPERATION_KINDS.get(kind, "app.write"), method
 
-    def issue_once(self, owner: str, cookie: str, expected_generation: int,
+    def issue_once(self, owner: str, cookie: str | dict, expected_generation: int,
                    request_digest: str) -> dict:
         session_id = self._session(owner, cookie)
         if (type(expected_generation) is not int or not isinstance(request_digest, str)

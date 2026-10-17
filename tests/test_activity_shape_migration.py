@@ -5,6 +5,7 @@ import pickle
 import shutil
 import sqlite3
 import tarfile
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,7 @@ from tinyassets.control_plane.session import _activity_instructions
 def _legacy(data: Path, center: str, owner: str, *, run_owner: str | None = None):
     root = data / center
     root.mkdir()
-    with sqlite3.connect(data / ".tinyassets.db") as db:
+    with closing(sqlite3.connect(data / ".tinyassets.db")) as db, db:
         db.execute("CREATE TABLE IF NOT EXISTS universe_owner "
                    "(universe_id TEXT, owner_id TEXT)")
         db.execute("CREATE TABLE IF NOT EXISTS branch_definitions "
@@ -38,7 +39,7 @@ def _legacy(data: Path, center: str, owner: str, *, run_owner: str | None = None
     generation = activities.claim(root, record["activity_id"], replaceable=lambda _: False)
     assert generation == 1
     runs.initialize_runs_db(data)
-    with sqlite3.connect(data / ".runs.db") as db:
+    with closing(sqlite3.connect(data / ".runs.db")) as db, db:
         db.execute("INSERT INTO runs "
                    "(run_id,branch_def_id,thread_id,status,actor,owner_user_id,"
                    "queue_universe_id,started_at) "
@@ -59,7 +60,7 @@ def _snapshot(data: Path, backup: Path):
 
 def _boxed(data: Path, store: Path, owners: dict[str, tuple[str, int]]):
     (data / ".broker" / "state").mkdir(parents=True)
-    with sqlite3.connect(data / ".broker" / "state" / "owner-identities.db") as db:
+    with closing(sqlite3.connect(data / ".broker" / "state" / "owner-identities.db")) as db, db:
         db.execute("CREATE TABLE owner_identities (principal TEXT, machine_id INTEGER)")
         db.execute("CREATE TABLE box_records (principal TEXT, machine INTEGER)")
         for center, (owner, uid) in owners.items():
@@ -82,12 +83,12 @@ def _apply_boxed(data: Path, store: Path, monkeypatch):
 
 
 def _run_row(data: Path, run_id: str) -> tuple:
-    with sqlite3.connect(data / ".runs.db") as db:
+    with closing(sqlite3.connect(data / ".runs.db")) as db, db:
         return db.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone()
 
 
 def _activity_row_bytes(data: Path, center: str, activity_id: str) -> bytes:
-    with sqlite3.connect(activities.store_path(data / center)) as db:
+    with closing(sqlite3.connect(activities.store_path(data / center))) as db, db:
         row = db.execute("SELECT * FROM activities WHERE activity_id=?",
                          (activity_id,)).fetchone()
     return pickle.dumps(row)
@@ -120,7 +121,7 @@ def test_conversion_is_per_owner_idempotent_and_restoreable(tmp_path, monkeypatc
         store / "300001" / "one", activities.get(data / "one", good))
     assert prompt == "Owner's exact text: Do it\nDetails\n"
     assert node == {"tools_allowed": ["agent", "read", "bash"]}
-    with sqlite3.connect(data / ".runs.db") as db:
+    with closing(sqlite3.connect(data / ".runs.db")) as db, db:
         status = db.execute("SELECT status FROM runs WHERE run_id='run-one'").fetchone()[0]
         assert status == "failed"
     assert migration.check(data) == 0
@@ -144,7 +145,7 @@ def test_missing_owner_box_ends_work_in_one_cutover(tmp_path, monkeypatch, capsy
     delayed = _legacy(data, "two", "owner-two")
     store = tmp_path / "box-store"
     _boxed(data, store, {"one": ("owner-one", 300001), "two": ("owner-two", 300002)})
-    with sqlite3.connect(data / ".broker" / "state" / "owner-identities.db") as db:
+    with closing(sqlite3.connect(data / ".broker" / "state" / "owner-identities.db")) as db, db:
         db.execute("DELETE FROM box_records WHERE principal='owner-two'")
     instructions = b"Owner's later instructions \r\nKeep these exact bytes.\n"
     (store / "300002" / "two" / "Activities.md").write_bytes(instructions)
@@ -157,7 +158,7 @@ def test_missing_owner_box_ends_work_in_one_cutover(tmp_path, monkeypatch, capsy
     assert activity_shape.UNAVAILABLE in ended["result_summary"]
     assert activity_shape.UNAVAILABLE in activities.events_page(
         data / "two", delayed)["events"][-1]["line"]
-    with sqlite3.connect(data / ".runs.db") as db:
+    with closing(sqlite3.connect(data / ".runs.db")) as db, db:
         status, error = db.execute(
             "SELECT status, error FROM runs WHERE run_id='run-two'"
         ).fetchone()
@@ -198,7 +199,7 @@ def test_converted_center_is_untouched_after_new_work(tmp_path, monkeypatch):
 def test_definition_only_center_gets_its_own_conversion_record(tmp_path, monkeypatch):
     data = tmp_path / "data"
     (data / "one").mkdir(parents=True)
-    with sqlite3.connect(data / ".tinyassets.db") as db:
+    with closing(sqlite3.connect(data / ".tinyassets.db")) as db, db:
         db.execute("CREATE TABLE universe_owner (universe_id TEXT, owner_id TEXT)")
         db.execute("CREATE TABLE branch_definitions (branch_def_id TEXT, author TEXT, "
                    "node_defs_json TEXT, graph_json TEXT)")
@@ -223,7 +224,7 @@ def test_cross_owner_definition_is_not_copied(tmp_path, monkeypatch):
     data = tmp_path / "data"
     data.mkdir()
     activity_id = _legacy(data, "one", "owner-one")
-    with sqlite3.connect(data / ".tinyassets.db") as db:
+    with closing(sqlite3.connect(data / ".tinyassets.db")) as db, db:
         db.execute("UPDATE branch_definitions SET author='owner-two'")
     store = tmp_path / "box-store"
     _boxed(data, store, {"one": ("owner-one", 300001)})

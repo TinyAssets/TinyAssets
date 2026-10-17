@@ -173,8 +173,9 @@ def test_redaction_strips_secrets_and_keeps_the_commit(captured, monkeypatch):
     assert "sk_live_" not in text
     assert "code=1" not in text
     assert "a" * 40 in text
-    assert obs.route_for("/mcp/hooks/not-a-slug") == "/mcp/hooks/{token}"
-    assert "/hooks/{token}" in obs.route_for("/mcp/hooks/deadbeef")
+    assert obs.route_for("/hooks/inbound/not-a-slug") == "/hooks/inbound/{token}"
+    assert "/hooks/inbound/{token}" in obs.route_for("/hooks/inbound/deadbeef")
+    assert obs.route_for("/hooks/inbound/deadbeef") == "/hooks/inbound/{token}"
 
 
 def test_starlette_records_the_stack_before_the_error_propagates(captured):
@@ -491,7 +492,7 @@ def test_admission_refuses_before_the_trail_reads_a_body(captured, monkeypatch):
     assert sent[0]["status"] == origin_admission.PLATFORM_NOT_CLOUD_STATUS
     assert captured == []
     source = (ROOT / "tinyassets" / "universe_server.py").read_text(encoding="utf-8")
-    assert source.index("app = RequestLogMiddleware(app)") < source.index(
+    assert source.index("app = RequestLogMiddleware(app, inspect_body=owner_mode)") < source.index(
         "app = PlatformOriginAdmission(app)"
     )
 

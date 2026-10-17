@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+import secrets
 import sqlite3
 import stat
 from contextlib import closing
@@ -105,6 +106,8 @@ class OwnerIdentities:
                 db.execute(f"CREATE TRIGGER IF NOT EXISTS no_admission_{operation.lower()} "
                            f"BEFORE {operation} ON center_admissions BEGIN "
                            "SELECT RAISE(ABORT, 'center admissions are append-only'); END")
+            db.execute("CREATE TABLE IF NOT EXISTS owner_box_secrets ("
+                       "principal TEXT PRIMARY KEY NOT NULL, secret TEXT NOT NULL)")
         directory = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             os.fsync(directory)
@@ -164,6 +167,8 @@ class OwnerIdentities:
                 if found is None:
                     raise LookupError("owner identity is not allocated")
                 machine = found[0]
+                db.execute("INSERT OR IGNORE INTO owner_box_secrets VALUES (?, ?)",
+                           (principal, secrets.token_urlsafe(32)))
             else:
                 if admitted is None:
                     raise CenterUnadmitted("retire requires a prior admit")
@@ -186,6 +191,30 @@ class OwnerIdentities:
         if type(found[0]) is not int or not OWNER_ID_FIRST <= found[0] <= OWNER_ID_LAST:
             raise RuntimeError("invalid durable owner identity")
         return found[0]
+
+    def box_route(self, principal: str, *, rotate: bool = False) -> tuple[int, str]:
+        """An admitted owner's socket identity and secret; never allocate a machine."""
+        validate_principal(principal)
+        with closing(self._connect(write=True)) as db, db:
+            db.execute("PRAGMA synchronous=FULL")
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT machine_id FROM owner_identities WHERE principal=? AND EXISTS ("
+                "SELECT 1 FROM center_admissions a WHERE a.principal=owner_identities.principal "
+                "AND a.event='admit' AND NOT EXISTS (SELECT 1 FROM center_admissions r "
+                "WHERE r.center=a.center AND r.event='retire'))", (principal,),
+            ).fetchone()
+            if row is None:
+                raise LookupError("owner has no live admission")
+            # Existing admissions receive their first secret on the first lookup.
+            db.execute("INSERT OR IGNORE INTO owner_box_secrets VALUES (?, ?)",
+                       (principal, secrets.token_urlsafe(32)))
+            if rotate:
+                db.execute("UPDATE owner_box_secrets SET secret=? WHERE principal=?",
+                           (secrets.token_urlsafe(32), principal))
+            secret = db.execute("SELECT secret FROM owner_box_secrets WHERE principal=?",
+                                (principal,)).fetchone()[0]
+            return row[0], secret
 
     def center_state(self, center: str) -> str:
         validate_center(center)
@@ -298,3 +327,20 @@ def admitted_owner(data_root: Path, *, center: str) -> str:
         raise PermissionError('center owner admission refused')
     validate_principal(answer['principal'])
     return answer['principal']
+
+
+def owner_box_route(data_root: Path, *, principal: str,
+                    rotate: bool = False) -> tuple[int, str]:
+    """Fenced router/lifecycle operation. No owner file or database is opened here."""
+    validate_principal(principal)
+    answer = _owner_request(data_root, {"op": "OWNER_BOX_ROUTE", "principal": principal,
+                                        "rotate": rotate})
+    if answer == {"op": "OWNER_BOX_UNADMITTED"}:
+        raise LookupError("owner has no live admission")
+    if (set(answer) != {"op", "uid", "secret"} or answer["op"] != "OWNER_BOX_ROUTE_IS"
+            or type(answer["uid"]) is not int
+            or not OWNER_ID_FIRST <= answer["uid"] <= OWNER_ID_LAST
+            or not isinstance(answer["secret"], str)
+            or not re.fullmatch(r"[A-Za-z0-9_-]{43}", answer["secret"])):
+        raise RuntimeError("owner box route refused")
+    return answer["uid"], answer["secret"]

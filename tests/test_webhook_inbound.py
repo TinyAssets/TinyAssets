@@ -206,7 +206,7 @@ def test_a_dispatch_failure_answers_uniform_404_without_leaking(tmp_path):
 def test_the_hooks_route_wires_token_body_and_headers_when_enabled(monkeypatch):
     from starlette.testclient import TestClient
 
-    from tinyassets.universe_server import create_streamable_http_app
+    from tests.owner_app_fixture import create_owner_app as create_streamable_http_app
 
     monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "1")
     seen: dict = {}
@@ -217,7 +217,7 @@ def test_the_hooks_route_wires_token_body_and_headers_when_enabled(monkeypatch):
 
     monkeypatch.setattr("tinyassets.webhook_inbound.handle_hook", _spy)
     client = TestClient(create_streamable_http_app())   # no `with` -> skip lifespan
-    resp = client.post("/mcp/hooks/abc123", content=b'{"x":1}', headers={"X-Test": "y"})
+    resp = client.post("/hooks/inbound/abc123", content=b'{"x":1}', headers={"X-Test": "y"})
     assert resp.status_code == 202
     assert seen["token"] == "abc123" and seen["body"] == b'{"x":1}'
     assert seen["headers"]["x-test"] == "y"
@@ -227,18 +227,15 @@ def test_the_hooks_route_wires_token_body_and_headers_when_enabled(monkeypatch):
 def test_the_route_is_absent_when_disabled(monkeypatch):
     from starlette.testclient import TestClient
 
-    from tinyassets.universe_server import create_streamable_http_app
+    from tests.owner_app_fixture import create_owner_app as create_streamable_http_app
 
     monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "0")
     client = TestClient(create_streamable_http_app())
-    resp = client.post("/mcp/hooks/abc123", content=b"{}")
-    # The route is not mounted, and with inbound off the path is no longer
-    # exempt from the bearer challenge either — so an unauthenticated POST is
-    # answered by the transport before routing. Both are refusals; the point
-    # is that nothing dispatches.
-    assert resp.status_code == 401
+    resp = client.post("/hooks/inbound/abc123", content=b"{}")
+    # This path is outside /mcp; with inbound off there is no route to deliver it.
+    assert resp.status_code == 404
     resp_authenticated = client.post(
-        "/mcp/hooks/abc123", content=b"{}", headers={"Authorization": "Bearer any"},
+        "/hooks/inbound/abc123", content=b"{}", headers={"Authorization": "Bearer any"},
     )
     assert resp_authenticated.status_code == 404   # route not mounted at all
 
@@ -247,7 +244,7 @@ def test_the_route_is_absent_when_disabled(monkeypatch):
 def test_the_route_rejects_an_oversized_content_length_before_reading(monkeypatch):
     from starlette.testclient import TestClient
 
-    from tinyassets.universe_server import create_streamable_http_app
+    from tests.owner_app_fixture import create_owner_app as create_streamable_http_app
 
     monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "1")
     called = {"n": 0}
@@ -259,7 +256,7 @@ def test_the_route_rejects_an_oversized_content_length_before_reading(monkeypatc
     monkeypatch.setattr("tinyassets.webhook_inbound.handle_hook", _spy)
     client = TestClient(create_streamable_http_app())
     resp = client.post(
-        "/mcp/hooks/abc", content=b"x" * 10,
+        "/hooks/inbound/abc", content=b"x" * 10,
         headers={"Content-Length": str(wh.MAX_BODY_BYTES + 1)},
     )
     assert resp.status_code == 413 and called["n"] == 0

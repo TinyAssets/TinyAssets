@@ -138,7 +138,7 @@ The platform has to be TOLD which intake to offer: it is your universe's node, o
 you like any user's, so there is no id in the code. It needs a `receiver_id`, and
 production has none yet (`/data/.runs.db` `graph_receivers`: 0 rows, read 2026-09-30).
 
-Your two intakes exist today only as inbound `/mcp/hooks/<token>` webhooks. Those are
+Your two intakes exist today only as inbound `/hooks/inbound/<token>` webhooks. Those are
 anonymous — whatever arrives is attached to nobody's universe, and the sender has to hold
 a secret. Native delivery carries the sender's identity and needs no secret at all, which
 is why the seeded request has nothing to paste.

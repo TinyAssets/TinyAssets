@@ -35,6 +35,12 @@ def _owner_box_double():
 
 @pytest.fixture
 def owner_mode(tmp_path, monkeypatch):
+    from tinyassets.api import runs as api_runs
+
+    # The real lifespan now owns boot recovery. Its process-lifetime lock must
+    # not survive this fixture and suppress recovery in a later test's root.
+    monkeypatch.setattr(api_runs, "_RUNS_RECOVERY_DONE", False)
+    monkeypatch.setattr(api_runs, "_RUNS_RECOVERY_LOCK", None)
     monkeypatch.setattr(owner_runtime, "_runtime", None)
     monkeypatch.setattr(owner_runtime, "OWNER_MOUNT", tmp_path)
     monkeypatch.setattr(owner_runtime, "_is_owner_mount", lambda path: path == tmp_path)
@@ -66,6 +72,10 @@ def owner_mode(tmp_path, monkeypatch):
         finally:
             runtime.tools.close()
             relay.close()
+            if api_runs._RUNS_RECOVERY_LOCK is not None:
+                from tinyassets.singleton_lock import release_singleton_lock
+
+                release_singleton_lock(api_runs._RUNS_RECOVERY_LOCK)
     assert attempts == []
 
 
@@ -318,6 +328,9 @@ def test_cli_starts_a_real_subprocess_on_unix_socket(owner_mode):
     import sys
 
     uds = owner_mode.directory / "subprocess.sock"
+    secret_file = owner_mode.directory / "box-secret"
+    secret_file.write_text("s" * 43)
+    secret_file.chmod(0o400)
     with tempfile.TemporaryFile() as log:
         mount = owner_mode.runtime.root / "subprocess"
         mount.mkdir()
@@ -328,7 +341,7 @@ def test_cli_starts_a_real_subprocess_on_unix_socket(owner_mode):
             f"r.OWNER_MOUNT = Path({str(mount)!r}); r._is_owner_mount = lambda p: True; "
             "from tinyassets.owner_daemon import main; "
             f"sys.argv = ['owner_daemon', '--socket', {str(uds)!r}, "
-            f"'--relay', {str(owner_mode.relay)!r}]; "
+            f"'--relay', {str(owner_mode.relay)!r}, '--secret-file', {str(secret_file)!r}]; "
             "main()"
         )
         process = subprocess.Popen([sys.executable, "-c", launcher],

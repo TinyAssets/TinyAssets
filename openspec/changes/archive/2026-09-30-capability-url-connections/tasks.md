@@ -37,7 +37,7 @@ Shape per design.md.
 - [x] 12. Landed as PR #4115, merge `dedf69d7`, deployed in `8a7c8c00`
   (release state `git_sha` asserted to contain the merge). Live proof green on
   2026-09-30 against the founder's own universe: **12/12 checks**, including
-  a real **202 `{"queued":true}`** from `https://tinyassets.io/mcp/hooks/<token>`
+  a real **202 `{"queued":true}`** from `https://tinyassets.io/hooks/inbound/<token>`
   through the real effector, and the run it enqueued recorded as
   `run_name=webhook actor=universe:<uid>`, `completed`, `provider_used=NULL`
   (no inference). Spec synced to

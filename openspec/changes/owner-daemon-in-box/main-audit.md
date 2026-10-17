@@ -1,5 +1,169 @@
 # Main vs the clean per-user-instance shape: read-only audit
 
+## Slice 2 review fixes and validation (2026-10-16)
+
+Local implementation: `545139dd00e`. Validation fixture correction: `50323502234`.
+Review disposition: AGREE on findings 1–4; finding 5 is deferred to slice 4,
+with no secret-start/rotation implementation change. Nothing was pushed or deployed.
+
+- **1, socket:** `resolve_box` defaults to the existing Compose mount,
+  `/run/tinyassets-boxhostd/<uid>/app.sock`; a test checks that deployment contract.
+- **2, keys:** the router alone writes key records. Owner-mode mint/list/revoke,
+  including connected-agent listing, use the bound relay, broker admission and
+  broker-only router RPC; grants remain local and the box has no key database.
+  Real owner-process tests mint a key through this channel, authenticate `/api`,
+  revoke it from the box and observe 401. The fixture no longer copies key rows.
+- **3, hooks:** the router mints and revokes the token map through the same channel;
+  payload/configuration rows remain local. Box-created tokens reach the owner's
+  real socket, and raw-token, prefix and source revocations all yield inbound 404.
+- **4, identity:** B's bearer plus A's valid protected cookie returns 401;
+  matching bearer/cookie and cookie-only requests still work.
+- **Channel admission:** tests refuse owner-field injection, another owner's
+  key revocation, a non-broker router-socket peer and a retired box admission;
+  another owner's hook-map entry survives a foreign revocation attempt.
+
+`design.md` D2 records the socket default, bound credential channel and sole
+router writer, local grants and failure cleanup, hook revocation ordering,
+single request identity, slice-4 secret-start deferral and stack-only maintenance
+cutover after the `--archive` rehearsal. No deploy or provisioning files changed.
+
+Focused Linux runs: 146 passed; the expanded router/connected-agent/key/hook and
+inventory rerun passed 99; the corrected snapshot fixture passed 7. No skips in
+these runs. All used `python scripts/linux_oracle.py`.
+
+After the local implementation commit, CI's exact selection command
+`python scripts/affected_tests.py --base origin/main --pr --out <file>` selected
+889 files. CRs were removed, no paths were missing, and `split -l 155` produced
+the ordered chunks below. Regenerating after the fixture commit produced the
+same selection byte for byte. Each chunk ran through `linux_oracle.py`.
+
+| Chunk | Files | Passed | Existing skips |
+| --- | ---: | ---: | ---: |
+| AA, complete corrected rerun | 155 | 3,502 | 12 |
+| AB | 155 | 2,709 | 2 |
+| AC | 155 | 3,694 | 47 |
+| AD | 155 | 3,123 | 20 |
+| AE | 155 | 2,855 | 1 |
+| AF | 114 | 2,402 | 5 |
+| Affected heavy files | 34 | 1,359 | 0 |
+
+The selected chunks total 18,285 passes and 87 existing skips, with zero final
+failures. No skips were added and no tests were retired. Logs, exact ordered
+lists, JUnit reports and the selection digest are under
+`%TEMP%/owner-s2-review-9a6wl8na/`; `final-results.json` references AA's corrected
+report rather than replacing its original failed-run evidence.
+
+AA first hit a disappearing `.runs.db-shm` while the activity migration fixture
+tarred a supposedly stopped tree. Its SQLite contexts committed without closing;
+garbage collection could remove a sidecar during traversal. The fixture now
+explicitly closes its SQLite connections. The identical 155-file
+order on clean, detached `../wf-c12-rehearse` at `origin/main`
+`417f6a4c003db2bfde9cf216cb734eb5e317adc2` passed 3,501 tests with 12 skips: it did
+not reproduce the failure, and no baseline exemption is claimed. The complete
+corrected branch AA rerun passed, as shown above.
+
+Ruff passes for every changed Python file; `git diff --check` passes. Bare
+`python -m ruff check` reports 35 existing findings, identical to detached main
+by relative filename, code, line and message; both JSON reports are retained
+with the validation evidence. The baseline worktree stayed detached and clean;
+the slice-3 worktree was not touched, and no agents were dispatched.
+
+## Slice 2 implementation follow-up (2026-10-16)
+
+The authenticated router now forwards owner-facing app routes, MCP transport, REST owner
+handlers and inbound hooks through one streaming Unix HTTP proxy. Its only box
+lookup is the fenced broker `OWNER_BOX_ROUTE` operation; reservations without a
+live admission refuse. The broker persists and rotates per-box secrets, and
+`owner_daemon --secret-file` rejects missing/wrong secrets before authentication
+or handlers. The router strips public credentials and replaces all identity
+headers. D2 decisions in `design.md` record the wire and shared-map contracts.
+
+Deleted from shared serving: moved route registrations, MCP payload inspection
+and connection receipts, owner startup/recovery/engine/tick execution, and the
+direct unauthenticated SSE/stdio entrypoints. Recovery maintenance now runs in
+the owner lifespan. Existing handler modules remain available inside the box.
+
+Focused Linux validation: **155 passed**, covering real broker IPC, two owner
+daemon processes, file/MCP/REST reads, B naming A's center, unknown/unadmitted
+owners, forged broker fields/fences, durable secret rotation, wrong secrets,
+hook token routing, SSE first-chunk delivery and disconnect cancellation,
+router-only published/sign-in-shell/pulse routes, and the owner-store guard.
+Ruff on changed Python files and `git diff --check` pass. No skips were added.
+
+Test-Removal: retired `test_startup_initializes_before_the_assigned_consumer_starts`: shared owner initialization was deleted; replacement asserts no shared consumer startup, with storage ordering retained in owner-lifespan tests.
+
+Test-Removal: retired `test_main_initialization_failure_does_not_start_worker_or_serve`: the shared owner initialization dependency was deleted; replacement proves router startup does not touch owner storage.
+
+Test-Removal: retired `test_admitted_lifespan_reaches_initialization_in_order`: the router lifespan no longer initializes owner state; replacement asserts that boundary, with owner initialization coverage retained.
+
+Test-Removal: retired `test_both_bearerless_transports_bind_the_local_operator`: shared local-operator serving was deleted; both transports now assert refusal.
+
+Test-Removal: retired `test_staged_bundle_enumerates_seven_under_simulated_admission`: shared stdio serving was deleted; the staged artifact proves refusal even with cloud admission.
+
+Test-Removal: retired `test_staged_bundle_enumerates_without_credentials`: shared stdio serving was deleted; the replacement proves refusal and no server response without credentials.
+
+Remaining integration belongs to later slices: boxhostd mounting the socket and
+read-only secret, rotation on start and wake-on-request (4); seeding shared maps
+and splitting existing owner stores (6). Review fixes below complete shared key
+and hook management from boxes in slice 2. No
+provisioning, egress, migration or deploy files changed; nothing was pushed.
+
+Local implementation commits: `38fae347fb9`, `6e3d9ecb220`, `3acb71ee293`,
+`b68bc5756e5` (the connection-lifetime validation fix).
+No push, provisioning, migration or deploy was performed. The user's explicit
+no-delegation instruction applies to this slice; no peer agent was dispatched.
+
+CI selection used `python scripts/affected_tests.py --base origin/main --pr --out <file>`
+after the local implementation commits, removed CRs and missing paths, then
+`split -l 155`. The original 878 files formed five 155-file chunks and one
+103-file chunk; the final selection contains 888 files, with eight added
+files and then two connection-fix additions run as supplemental chunks. Every invocation used
+`python scripts/linux_oracle.py -- <ordered files> -q --tb=short`.
+Logs and exact ordered lists are under `%TEMP%/owner-s2-validation/`.
+
+| Linux selection | Result |
+| --- | --- |
+| AA, 155 files | 3,348 passed, 4 existing skips |
+| AB, 155 files | 2,711 passed, 2 existing skips after the connection-lifetime fix |
+| AC, 155 files | 3,621 passed, 47 existing skips |
+| AD, 155 files | 3,255 passed, 20 existing skips |
+| AE, 155 files | 2,777 passed, 1 existing skip |
+| AF, 103 files | 2,188 passed, 5 existing skips |
+| Final-selection addition, 8 files | 215 passed, 8 existing skips |
+| Connection-fix selection addition, 2 files | 147 passed |
+| Affected heavy files, 32 files | 1,330 passed |
+| Connection-fix affected heavy files, 7 files | 479 passed |
+| Structural targets, 39 targets | 824 passed on the complete corrected rerun |
+| Focused owner routing/lifecycle | 155 passed; expanded owner-app/session coverage 111 passed |
+| Registry and moved-code regression recheck | 132 passed |
+| Retired transport and owner-tree tests | 83 passed |
+| Connection lifetime and direct callers, 8 files | 217 passed, including the red-to-green real-SQLite regression |
+
+First-pass failures caused by this slice were old assertions about shared
+startup, maintenance source locations, the request-logger constructor and
+retired shared transports; their owner-side/refusal replacements retain the
+relevant coverage. The new hook map and HTTP stream calls also needed entries
+in the existing store/background-call inventories. No skip or skipif was added.
+
+AB first failed in `test_actual_competing_store_writer_is_fenced_until_commit`
+(`.runs.db` case), then errored during setup of
+`test_change_after_reservation_refuses[retire]`: both raised SQLite `unable to
+open database file` in `branch_versions` (2,710 passed and 2 skipped on each run).
+Two comparisons in the identical 155-file order on untouched `origin/main`
+`417f6a4c003db2bfde9cf216cb734eb5e317adc2` each passed 2,711 tests with 2 skips;
+they did **not** reproduce the failure, so this slice claims no baseline exemption.
+The second baseline's sampled descriptor count reached 938 under a 1,024 soft
+limit. Inspection found that version-store transaction contexts did not close
+their SQLite connections. A new real-SQLite regression failed before the fix;
+the scoped operations now close their connections, including setup-error paths,
+while retaining commit/rollback semantics. This necessary validation fix changes
+no storage shape or authorization rule. The complete original AB order then
+passed 2,711 tests with 2 existing skips. Its sampled descriptor count in the
+previously failing section was 100. No observed failure is carried as a baseline
+exemption. Chunk reruns cover the route/lifecycle corrections; the final
+connection fix additionally has the complete AB rerun, its direct-caller and
+affected-heavy runs, and both added selected files recorded above.
+
 ## Slice 1 implementation follow-up (2026-10-16)
 
 The owner entrypoint now serves the existing app with relay-derived admission,
@@ -10,7 +174,7 @@ startup, and a separate CLI process. Non-loopback connects are forbidden in
 the in-process acceptance run. Model wires use the existing fixture and its
 real in-process broker; no cloud-provenance fixture is used.
 
-Run with `python -m tinyassets.owner_daemon --data <root> --socket <app.sock>`;
+Run with `python -m tinyassets.owner_daemon --data <root> --socket <app.sock> --secret-file <read-only-secret>`;
 `--relay` defaults to the existing `/run/boxhostd/relay.sock` mount.
 
 Linux validation (working tree, no commit or deployment):

@@ -597,3 +597,30 @@ def test_suggest_edit_filters_private_run_context(
     monkeypatch.setattr("tinyassets.api.runs._run_read_allowed", lambda row: False)
     seen = _ext("suggest_node_edit", branch_def_id="suggest", node_id="s")
     assert SECRET not in json.dumps(seen), seen
+
+
+
+def test_version_reads_release_sqlite_connections(tmp_path, monkeypatch):
+    """Reading versions must release descriptors without waiting for cyclic GC."""
+    import sqlite3
+
+    from tinyassets import branch_versions
+
+    connect = branch_versions._connect
+    opened = []
+
+    def retained_connection(base):
+        connection = connect(base)
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(branch_versions, "_connect", retained_connection)
+    try:
+        assert branch_versions.get_branch_version(tmp_path, "missing") is None
+        assert opened
+        for connection in opened:
+            with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+                connection.execute("SELECT 1")
+    finally:
+        for connection in opened:
+            connection.close()

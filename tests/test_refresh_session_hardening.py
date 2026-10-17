@@ -40,7 +40,7 @@ def _data_dir(tmp_path, monkeypatch):
     "asserts nothing there. Production and CI are Linux, which is where it counts.",
 )
 def test_a_stored_session_is_not_readable_by_anyone_else():
-    handle = onboarding._mint_refresh_session("rt_secret_value")
+    handle = onboarding._mint_refresh_session("rt_secret_value", owner="owner")
     # Resolve the file the way the code does. This test was written when the handle
     # WAS the filename; the digest rename left it pointing at a path that no longer
     # exists, and because it skips on Windows the local run never noticed. CI on
@@ -111,7 +111,7 @@ def test_a_presented_handle_is_dropped_when_a_new_signin_mints_its_own():
 
 
 def test_the_round_trip_still_works():
-    handle = onboarding._mint_refresh_session("rt_abc")
+    handle = onboarding._mint_refresh_session("rt_abc", owner="owner")
     assert onboarding._read_refresh_session(handle) == "rt_abc"
     onboarding._drop_refresh_session(handle)
     assert onboarding._read_refresh_session(handle) == ""
@@ -120,7 +120,7 @@ def test_the_round_trip_still_works():
 def test_an_expired_session_yields_nothing_and_is_removed():
     import time
 
-    handle = onboarding._mint_refresh_session("rt_abc")
+    handle = onboarding._mint_refresh_session("rt_abc", owner="owner")
     # The filename is a keyed digest now, not the handle -- the handle is a bearer
     # credential and must not be published by a directory listing.
     path = session_store._record_path(handle)

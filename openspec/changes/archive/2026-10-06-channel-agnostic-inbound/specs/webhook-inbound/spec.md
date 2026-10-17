@@ -4,7 +4,7 @@
 
 ### Requirement: A branch can be triggered by an inbound webhook via an unguessable per-branch URL
 
-The platform SHALL expose a stable inbound receiver at `POST /mcp/hooks/<token>` where `<token>`
+The platform SHALL expose a stable inbound receiver at `POST /hooks/inbound/<token>` where `<token>`
 is an unguessable secret minted per (branch, universe). A POST to a valid token SHALL enqueue
 a run of exactly that branch, executed as that branch's owning universe, with the request body
 supplied as run input. The token SHALL map to exactly one branch and one universe, so an
@@ -12,7 +12,7 @@ inbound POST can never trigger a different branch or act as a different universe
 
 #### Scenario: A valid token runs its bound branch as the owning universe
 
-- **WHEN** an HTTP `POST /mcp/hooks/<token>` arrives with a valid token
+- **WHEN** an HTTP `POST /hooks/inbound/<token>` arrives with a valid token
 - **THEN** exactly the branch bound to that token is enqueued to run
 - **AND** the run's actor is the token's owning universe (never another universe, never a
   platform/host identity)
@@ -46,7 +46,7 @@ works for any channel able to POST to the URL.
 
 - **WHEN** the founder requests an inbound webhook for a branch they own
 - **THEN** a fresh unguessable token is minted, bound to that (branch, universe), and the full
-  `https://<domain>/mcp/hooks/<token>` URL is returned for them to paste into the channel's webhook
+  `https://<domain>/hooks/inbound/<token>` URL is returned for them to paste into the channel's webhook
   settings
 
 #### Scenario: A founder cannot mint a token for a branch they do not own
@@ -88,7 +88,7 @@ owner-scoped and require no per-channel platform code.
 
 #### Scenario: A Source delivery fires the bound branch as the owning universe, once per delivery
 
-- **WHEN** a POST arrives at a Source's `/mcp/hooks/<token>` URL
+- **WHEN** a POST arrives at a Source's `/hooks/inbound/<token>` URL
 - **THEN** an event is published that fires exactly the bound branch, as the owning universe (never a
   subscriber/host identity), with the request body as input
 - **AND** a channel retry carrying the same delivery id fires the branch at most once

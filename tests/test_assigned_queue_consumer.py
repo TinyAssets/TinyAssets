@@ -18,7 +18,7 @@ pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 
-def test_universe_server_consumer_is_started_and_stopped(
+def test_owner_daemon_consumer_is_started_and_stopped(
     tmp_path: Path, monkeypatch, in_process_broker,
 ) -> None:
     import threading
@@ -59,7 +59,15 @@ def test_universe_server_consumer_is_started_and_stopped(
     monkeypatch.setattr(universe_server.uvicorn, "run", lambda *_a, **_k: None)
     monkeypatch.setattr(consumer_module, "AssignedQueueConsumer", _FakeConsumer)
 
-    universe_server.main(host="127.0.0.1", port=0)
+    from types import SimpleNamespace
+
+    from tinyassets import owner_runtime
+
+    monkeypatch.setattr(owner_runtime, "current", lambda: SimpleNamespace(root=tmp_path))
+    monkeypatch.setattr(owner_runtime, "_start_maintenance", lambda stop: (None, None))
+    monkeypatch.setattr(engine_http, "start_engine_mcp_http_servers", lambda *a, **kw: [])
+    with owner_runtime.serving():
+        pass
 
     assert lifecycle == ["constructed", "started", "stopped"]
 

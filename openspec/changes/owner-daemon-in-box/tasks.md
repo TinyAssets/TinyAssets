@@ -16,15 +16,18 @@ Nothing deploys until slice 7.
       chat/file write, pause/resume tick and no non-loopback connections.
       Host provisioning and the gVisor lifecycle remain slice 4.
       Validation counts and the existing main-baseline failures: `main-audit.md`.
-- [ ] 2. The router forwards authenticated requests to the box socket, with
+- [x] 2. The router forwards authenticated requests to the box socket, with
       a per-box secret and streaming. Delete the shared-daemon owner handlers
       as each moves. Test: owner B's identity can never reach A's socket;
       an unknown owner gets 404.
+      Slice 2 Linux results and local commits: `main-audit.md`.
 - [ ] 3. Broker socket into each box: model calls, connections, plan tier
       and commons reads. Test: the box holds no secret; egress outside the
       broker fails.
 - [ ] 4. boxhostd persistent per-owner sandbox lifecycle: wake, idle sleep,
       crash restart, memory cap, awake cap.
+      - Retiring a center or deleting an account revokes the per-box secret and
+        stops the box first; a stale forward then fails at ingress (D2).
 - [ ] 5. The waker and the next-wake index. Test: a scheduled automation in
       a sleeping box runs with no request.
 - [ ] 6. Migration and census, with the shared root DB split by owner, the

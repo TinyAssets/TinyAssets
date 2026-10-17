@@ -91,6 +91,9 @@ def _matches(presented: str, expected: str) -> bool:
 
 @contextmanager
 def _limits():
+    from tinyassets.owner_runtime import refuse_router_store
+
+    refuse_router_store("canary_sign_in")
     from tinyassets.onboarding.owner_sessions import store
 
     with store() as conn:
@@ -100,6 +103,13 @@ def _limits():
         )
         conn.execute("DELETE FROM canary_door_limits WHERE expires<=?", (time.time(),))
         yield conn
+
+
+def revoke_owner(owner: str) -> None:
+    # Every counter gates the one server-pinned canary, not the caller's account.
+    if owner == os.environ.get(USER_ENV):
+        with _limits() as conn:
+            conn.execute("DELETE FROM canary_door_limits")
 
 
 def _rate_limited(request) -> bool:

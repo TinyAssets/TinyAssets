@@ -6,7 +6,7 @@ Requirement source: ``openspec/specs/http-connections-and-outbound-authority/spe
 
 THE live failure, 2026-09-30 (free account universe
 ``u-01ky3zh1arr8qth8jee7zx63pq``, turn ``d75a6cb6447e4434b8b0d6aecf706475``): a
-universe was handed a friend's ``https://tinyassets.io/mcp/hooks/<secret>`` link
+universe was handed a friend's ``https://tinyassets.io/hooks/inbound/<secret>`` link
 to send bug reports to. It asked for an "API Token or Bearer Token" that does not
 exist, hit ``auth_scheme must be one of basic, bearer, header, oauth1a``, and
 settled on ``bearer`` with the secret hardcoded into ``path_template`` — stored
@@ -65,11 +65,11 @@ from tinyassets.storage.outbound_connections import (
 
 #: A real-shaped capability secret: `secrets.token_urlsafe(32)` is what
 #: `storage/webhook_hooks.mint` produces, so this is the exact shape the
-#: platform's own `/mcp/hooks/<token>` receiver hands out.
+#: platform's own `/hooks/inbound/<token>` receiver hands out.
 HOOK_SECRET = "MRL8k3nZ-Ht9xWq2vB7pC4dF6gJ0sYaT1uK5wQ9eXmZ7b0"
 HOOK_HOST = "hooks.example.com"
-HOOK_TEMPLATE = "/mcp/hooks/{secret}"
-HOOK_URL = f"https://{HOOK_HOST}/mcp/hooks/{HOOK_SECRET}"
+HOOK_TEMPLATE = "/hooks/inbound/{secret}"
+HOOK_URL = f"https://{HOOK_HOST}/hooks/inbound/{HOOK_SECRET}"
 
 #: Slack's secret is three segments, which is why `{secret+}` exists.
 SLACK_SECRET = "T024BE7LD/B01ABCDEF/nOpQrStUvWxYz0123456789A"
@@ -196,7 +196,7 @@ def test_reserved_placeholder_takes_the_literal_token_as_its_pattern() -> None:
 
     Every other ``{param}`` must declare a value pattern that admits a
     node-supplied segment. The reserved one is patterned as the ESCAPED LITERAL
-    TOKEN, so the stored endpoint matches the concrete path ``/mcp/hooks/{secret}``
+    TOKEN, so the stored endpoint matches the concrete path ``/hooks/inbound/{secret}``
     and nothing else — which is how the allowlist can be evaluated with no secret
     material present at all.
     """
@@ -252,7 +252,7 @@ def test_binding_refuses_a_header_scheme_that_carries_the_placeholder() -> None:
 
 def test_binding_refuses_url_secret_without_a_placeholder() -> None:
     plain = _parse_allowed_endpoints(
-        [{"host": HOOK_HOST, "path_template": "/mcp/hooks/x", "methods": ["POST"]}]
+        [{"host": HOOK_HOST, "path_template": "/hooks/inbound/x", "methods": ["POST"]}]
     )
     with pytest.raises(SsrfValidationError):
         validate_url_secret_binding(_URL_SECRET_SCHEME, plain)
@@ -617,7 +617,7 @@ def _substitute(path_qs: str, endpoint: Any, **over: Any) -> Any:
 
 def test_substitution_replaces_the_placeholder_verbatim() -> None:
     out = _substitute(HOOK_TEMPLATE, _parsed()[0])
-    assert out.path_qs == f"/mcp/hooks/{HOOK_SECRET}"
+    assert out.path_qs == f"/hooks/inbound/{HOOK_SECRET}"
     assert out.hostname == HOOK_HOST  # the host is never touched: the DNS pin holds
 
 
@@ -626,12 +626,12 @@ def test_substitution_leaves_the_query_string_alone() -> None:
     was validated against `query_patterns`, and splicing a credential there
     would put it somewhere the owner's grant never described."""
     out = _substitute(f"{HOOK_TEMPLATE}?note=1", _parsed()[0])
-    assert out.path_qs == f"/mcp/hooks/{HOOK_SECRET}?note=1"
+    assert out.path_qs == f"/hooks/inbound/{HOOK_SECRET}?note=1"
 
 
 def test_substitution_refuses_a_url_secret_request_that_names_no_placeholder() -> None:
     with pytest.raises(SsrfValidationError):
-        _substitute("/mcp/hooks/whatever", _parsed()[0])
+        _substitute("/hooks/inbound/whatever", _parsed()[0])
 
 
 def test_substitution_refuses_a_placeholder_under_another_scheme() -> None:
@@ -909,7 +909,7 @@ def test_wire_request_carries_the_substituted_secret(stub_server: Any) -> None:
     assert result["status"] == 200
     received = stub_server.stub["received"]
     # The receiver saw the REAL capability URL...
-    assert received["path"] == f"/mcp/hooks/{HOOK_SECRET}"
+    assert received["path"] == f"/hooks/inbound/{HOOK_SECRET}"
     # ...and no Authorization header, because there is nothing to put in one.
     assert "authorization" not in received["headers"]
     assert received["body"] == b'{"text":"a bug report"}'
@@ -951,9 +951,9 @@ def test_allowlist_refuses_a_node_supplied_value_in_the_secret_position() -> Non
         ssl_context=_PassThroughTLS(),
     )
     for path in (
-        f"/mcp/hooks/{HOOK_SECRET}",   # the real secret, hardcoded by the node
-        "/mcp/hooks/guessed-value-01",
-        "/mcp/hooks/{other}",
+        f"/hooks/inbound/{HOOK_SECRET}",   # the real secret, hardcoded by the node
+        "/hooks/inbound/guessed-value-01",
+        "/hooks/inbound/{other}",
     ):
         with pytest.raises(SsrfValidationError):
             driver(
@@ -981,7 +981,7 @@ def test_a_failing_far_side_that_echoes_the_url_fails_closed(
 
     driver, port = _local_driver(stub_server)
     stub_server.stub.update(
-        status=500, body=f"failed calling /mcp/hooks/{HOOK_SECRET}".encode()
+        status=500, body=f"failed calling /hooks/inbound/{HOOK_SECRET}".encode()
     )
     endpoints = _parse_allowed_endpoints(
         [
@@ -1099,14 +1099,14 @@ def test_a_bare_segment_is_still_accepted() -> None:
 @pytest.mark.parametrize(
     "pasted",
     [
-        f"https://evil.example.com/mcp/hooks/{HOOK_SECRET}",          # wrong host
+        f"https://evil.example.com/hooks/inbound/{HOOK_SECRET}",          # wrong host
         f"https://{HOOK_HOST}/other/path/{HOOK_SECRET}",              # undeclared path
-        f"https://{HOOK_HOST}/mcp/hooks/{HOOK_SECRET}?x=1",           # a query
-        f"https://{HOOK_HOST}/mcp/hooks/{HOOK_SECRET}#frag",          # a fragment
-        f"https://u:p@{HOOK_HOST}/mcp/hooks/{HOOK_SECRET}",           # userinfo
-        f"http://{HOOK_HOST}/mcp/hooks/{HOOK_SECRET}",                # not https
-        f"https://{HOOK_HOST}/mcp/hooks/{HOOK_SECRET}/deeper",        # extra segment
-        f"https://{HOOK_HOST}/mcp/hooks/short",                       # too short
+        f"https://{HOOK_HOST}/hooks/inbound/{HOOK_SECRET}?x=1",           # a query
+        f"https://{HOOK_HOST}/hooks/inbound/{HOOK_SECRET}#frag",          # a fragment
+        f"https://u:p@{HOOK_HOST}/hooks/inbound/{HOOK_SECRET}",           # userinfo
+        f"http://{HOOK_HOST}/hooks/inbound/{HOOK_SECRET}",                # not https
+        f"https://{HOOK_HOST}/hooks/inbound/{HOOK_SECRET}/deeper",        # extra segment
+        f"https://{HOOK_HOST}/hooks/inbound/short",                       # too short
     ],
 )
 def test_a_mismatched_link_is_refused_without_echoing_it(pasted: str) -> None:
@@ -1145,7 +1145,7 @@ def test_a_link_on_another_port_is_refused_not_silently_retargeted() -> None:
     carries no port, so there is nothing to match against: refuse.
     """
     value, error = extract_url_secret(
-        f"https://{HOOK_HOST}:8443/mcp/hooks/{HOOK_SECRET}", _parsed()
+        f"https://{HOOK_HOST}:8443/hooks/inbound/{HOOK_SECRET}", _parsed()
     )
     assert value == ""
     assert "port" in error
@@ -1156,7 +1156,7 @@ def test_a_link_with_a_non_numeric_port_does_not_leak_either() -> None:
     """`parts.port` is lazy and raises on a non-numeric port, so it is read
     inside the same guard as the parse."""
     value, error = extract_url_secret(
-        f"https://{HOOK_HOST}:notaport/mcp/hooks/{HOOK_SECRET}", _parsed()
+        f"https://{HOOK_HOST}:notaport/hooks/inbound/{HOOK_SECRET}", _parsed()
     )
     assert value == ""
     assert HOOK_SECRET not in error
@@ -1199,7 +1199,7 @@ def test_two_carriers_that_agree_are_not_ambiguous() -> None:
         + [
             {
                 "host": HOOK_HOST,
-                "path_template": "/mcp/hooks/{secret+}",
+                "path_template": "/hooks/inbound/{secret+}",
                 "methods": ["POST"],
             }
         ]
@@ -1252,7 +1252,7 @@ def test_the_refusal_names_both_repairs() -> None:
     """Whichever it is — a credential or a public id — the fix is a placeholder,
     so the error is actionable both ways."""
     refusal = embedded_secret_refusal(
-        [{"host": HOOK_HOST, "path_template": f"/mcp/hooks/{HOOK_SECRET}"}]
+        [{"host": HOOK_HOST, "path_template": f"/hooks/inbound/{HOOK_SECRET}"}]
     )
     assert refusal is not None
     detail = refusal["detail"]
@@ -1278,12 +1278,12 @@ def test_reading_a_stored_template_never_applies_the_refusal() -> None:
         [
             {
                 "host": HOOK_HOST,
-                "path_template": f"/mcp/hooks/{HOOK_SECRET}",
+                "path_template": f"/hooks/inbound/{HOOK_SECRET}",
                 "methods": ["POST"],
             }
         ]
     )
-    assert stored[0].path_template == f"/mcp/hooks/{HOOK_SECRET}"
+    assert stored[0].path_template == f"/hooks/inbound/{HOOK_SECRET}"
 
 
 # --------------------------------------------------------------------------- #
@@ -1315,7 +1315,7 @@ def test_deposit_refuses_a_hardcoded_secret_in_the_template(base: Path) -> None:
         "u-owner",
         secret=HOOK_SECRET,
         auth_scheme="bearer",
-        endpoints=_endpoints(template=f"/mcp/hooks/{HOOK_SECRET}"),
+        endpoints=_endpoints(template=f"/hooks/inbound/{HOOK_SECRET}"),
     )
 
     assert result["error"] == "connection_setup_invalid"
@@ -1328,7 +1328,7 @@ def test_deposit_refuses_a_link_for_the_wrong_host(base: Path) -> None:
     _login("founder")
 
     result = _connect(
-        "u-owner", secret=f"https://evil.example.com/mcp/hooks/{HOOK_SECRET}"
+        "u-owner", secret=f"https://evil.example.com/hooks/inbound/{HOOK_SECRET}"
     )
 
     assert result["error"] == "connection_setup_invalid"
@@ -1379,7 +1379,7 @@ def test_deposit_refuses_a_link_on_another_port(base: Path) -> None:
     _login("founder")
 
     result = _connect(
-        "u-owner", secret=f"https://{HOOK_HOST}:8443/mcp/hooks/{HOOK_SECRET}"
+        "u-owner", secret=f"https://{HOOK_HOST}:8443/hooks/inbound/{HOOK_SECRET}"
     )
 
     assert result["error"] == "connection_setup_invalid"
@@ -1422,7 +1422,7 @@ def test_rotation_extracts_from_the_new_link(base: Path) -> None:
         payload=json.dumps(
             {
                 "destination": "bug-reports",
-                "secret": f"https://{HOOK_HOST}/mcp/hooks/{replacement}",
+                "secret": f"https://{HOOK_HOST}/hooks/inbound/{replacement}",
             }
         ),
     )
@@ -1487,7 +1487,7 @@ def test_the_ask_refuses_a_hardcoded_secret_before_the_owner_sees_it(
             "endpoints": [
                 {
                     "host": HOOK_HOST,
-                    "path_template": f"/mcp/hooks/{HOOK_SECRET}",
+                    "path_template": f"/hooks/inbound/{HOOK_SECRET}",
                     "methods": ["POST"],
                 }
             ],
@@ -1593,7 +1593,7 @@ def test_the_effector_refuses_a_packet_that_hardcodes_the_code() -> None:
     )
 
     error = _capability_url_shape_error(
-        f"https://{HOOK_HOST}/mcp/hooks/{HOOK_SECRET}", _View(_URL_SECRET_SCHEME)
+        f"https://{HOOK_HOST}/hooks/inbound/{HOOK_SECRET}", _View(_URL_SECRET_SCHEME)
     )
     assert error
     # The message must not echo the offending url -- that would put the code in

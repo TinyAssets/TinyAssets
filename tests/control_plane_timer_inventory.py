@@ -51,10 +51,10 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         "the owner lease; per-universe heartbeat/.pause still touch the universe "
         "directory until the cutover (#4262) moves them to .platform/",
     ),
-    "tinyassets/universe_server.py::main._served_budget_lease_loop": (
+    "tinyassets/owner_runtime.py::_start_maintenance._served_budget_lease_loop": (
         CONTROL_PLANE,
         "run-file retention, admitted-run, delivery, budget-lease reconciliation "
-        "and stored presentation-policy updates under the service writer barrier",
+        "and stored presentation-policy updates inside the admitted owner's daemon",
     ),
     "tinyassets/api/runs.py::start_run_owner_watcher._watch": (
         CONTROL_PLANE, "dead-owner run recovery and terminal-event redelivery",
