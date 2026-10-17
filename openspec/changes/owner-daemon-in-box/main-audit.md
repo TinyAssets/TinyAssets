@@ -711,3 +711,81 @@ After the implementation commit restored the original non-ASCII verifier test
 value caught by the commit hook, the complete hosted-auth file passed again:
 **51 passed** on Linux. The commit's import-graph, path-resolver, provider-drift
 and skill hooks passed; final ruff still passed all 33 changed Python files.
+
+
+## Task 3c-2d build (2026-10-16)
+
+Implementation commit: `b6e2c91cac4`. Its import-graph, path-resolver,
+provider-drift, skill and text-encoding commit hooks passed.
+
+3c-2 is complete locally. Box `connect_http` and `rotate_http` no longer take
+credentials; the old secret-taking implementations, `allow_oauth2`/`allow_keyless`
+switches, `answer_connect_with_token`, `_assembled_secret`, `_rotate_answer`,
+box-side `_with_sign_in_offer`, the keyless vault marker and `connect_source`
+helper are deleted. Secret/token/key/password/capability-URL values are absent
+from the box connect schema and rejected by connect approvals. The box returns
+an `/app` link containing request, center and connection ID. Generic browser
+connect, rotation and model-endpoint forms post secrets directly to the shared
+door. The keyless action commits through HTTP_CONNECT and dispatch needs no vault.
+
+The existing continuation tick and pending-request read reconcile broker
+GRANTED_RESOURCE rows by request_ref and policy. They apply connection uses and
+resolve through the existing answer/wake transaction. Failures remain pending
+and are returned explicitly. Rotation also records request_ref. The door reads
+no owner request and the box reads no router state; no push path was added.
+
+New tests in `tests/test_model_connect_door_lifecycle.py`:
+- `test_other_auth_connect_box_call_disconnect` (none, bearer, basic, header,
+  oauth1a, url_secret; three door disconnects and three box disconnects).
+- `test_box_action_and_approval_link_then_ledger_completion` (links, rejected
+  secret values, unmatched/matched request_ref, repeat polling and no router read).
+- `test_box_connect_schema_has_no_secret_parameters`.
+
+Existing credential tests now enter through the shared door, then poll the box
+ledger. OAuth tests discover at the door; source-pooling fixtures separately
+apply model consent inside the owner context. Browser tests fail if credential
+values are sent through the approval/MCP transport. A structural-guard fixture
+that captured a mocked `/fake` path during imports now uses a per-test data root.
+
+Deleted tests for the removed in-box token-answer path:
+- `tests/test_consent_owner_answers.py::test_oauth_token_answer_requires_owner_proof_before_deposit`
+- `tests/test_generic_oauth_connections.py::test_the_stored_token_url_is_pinned_to_the_discovered_one`
+
+Deleted stale bootstrap/automatic-serving tests whose implementation was removed in 3c-2c:
+- `tests/test_notification_is_the_setup.py::test_the_guided_sign_in_round_trips_to_a_serving_universe_with_no_llm_call`
+- `tests/test_notification_is_the_setup.py::test_reconnect_after_a_product_disconnect_serves_again`
+- `tests/test_notification_is_the_setup.py::test_after_the_approval_a_turn_selects_a_free_tool_model_on_its_own_connection`
+- `tests/test_notification_is_the_setup.py::test_the_free_model_approval_names_no_internal_ids`
+- `tests/test_notification_is_the_setup.py::test_a_disconnected_universe_turn_is_setup_not_a_mystery`
+
+Renamed and ported tests (their assertions now exercise the door):
+- `test_card_connects_with_one_key_and_returns_unanswered_consent` ?
+  `test_card_connects_with_one_key_at_door` in `test_free_source_cards.py`.
+- `test_oauth_is_the_primary_action_when_the_provider_offers_it` ?
+  `test_oauth_discovery_begins_at_the_door` in `test_generic_oauth_connections.py`.
+- `test_a_rotation_needs_a_box_to_paste_into` ?
+  `test_a_fieldless_rotation_returns_the_door` in `test_replacing_a_rejected_credential.py`.
+
+Validation (focused only; no full affected selection):
+- Requested patterns, every GUARDS test and all touched test files are covered;
+  the initial 161-file Linux selection ran 3,416 cases: **3,318 passed, 96 failed,
+  2 root-only skips**. Collection first exposed two stale imports of the already
+  deleted model-bootstrap module; they now use the shared owner fixture.
+- The five-file core repair passed **202**, with four failures subsequently fixed.
+  The broader repair passed **930**, with 17 failures subsequently fixed.
+- Final lifecycle/OAuth/browser/guidance run: **184 passed**.
+- Final continuation/pending/model-use/broker/rotation/approval run: **362 passed**,
+  with three receipt/ASGI-fixture failures fixed and covered by the last two-file
+  run: **153 passed**. All original failures now have passing executions or
+  ported replacement tests; none were skipped, xfailed or quarantined.
+- Both root-only `test_owner_box_destroy.py` cases passed separately with
+  `linux_oracle.py --as-root`: **2 passed**. A skip is not counted as a pass.
+- Ruff passed on all **40 changed Python files**; JavaScript syntax, the channel
+  ratchet, `git diff --check` and `openspec validate owner-daemon-in-box --strict`
+  passed.
+
+Linux logs, JUnit and selection manifests are outside the repository at
+`C:/Users/Jonathan/AppData/Local/Temp/ta-3c2d-7vcbyijm/`.
+The full CI selection, independent review, deployment/cutover, deployed-SHA
+assertion and live naive-user pass remain with the lead. This task did not push,
+merge, change branches, create a worktree or dispatch another agent.
