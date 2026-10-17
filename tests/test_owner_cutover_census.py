@@ -456,6 +456,7 @@ def test_reviewed_legacy_keys_resolve_before_drop_without_default_owner(source):
 
 @pytest.mark.parametrize('actor', ['bob', 'unknown-account'])
 def test_real_parent_never_repairs_conflicting_or_unknown_actor(source, actor):
+    """Publisher identity stays unchanged; the admitted author owns its history."""
     _sql(source / '.tinyassets.db', """
         CREATE TABLE branch_definitions (branch_def_id TEXT, author TEXT);
         INSERT INTO branch_definitions VALUES ('owned','alice');
@@ -472,9 +473,9 @@ def test_real_parent_never_repairs_conflicting_or_unknown_actor(source, actor):
         assert table['reasons'] == {'conflicting_owners': 1}
     else:
         assert report['ready'], report['refusals']
-        assert table['dropped'] == 1
-        assert table['reasons'] == {'unadmitted_principal': 1}
-        assert table['per_owner'] == {}
+        assert table['dropped'] == 0
+        assert table['reasons'] == {}
+        assert table['per_owner'] == {'account-0001': 1}
 
 
 def test_files_have_masked_patterns_and_legacy_vaults_are_unopened_drops(source):
@@ -562,7 +563,7 @@ def test_checkpoint_thread_requires_all_runs_to_agree(source):
     # Conflict wins over another broken key; missing reference wins over actor.
     ('conflicting_owners', ('bob', 'a1', 'deleted-definition'), 'unattributed'),
     ('orphan_reference', ('deleted-account', 'missing-center', 'deleted'), 'dropped'),
-    ('unknown_center', ('alice', 'missing-center', None), 'dropped'),
+    (None, ('alice', 'missing-center', None), ('owner', 'alice')),
 ])
 def test_one_row_reason_drives_inventory_and_count(source, reason, values, target):
     _sql(source / '.runs.db', '''
@@ -574,10 +575,10 @@ def test_one_row_reason_drives_inventory_and_count(source, reason, values, targe
     inventory = {}
     report = census(source, _inventory=inventory)
     table = report['tables']['.runs.db/branch_versions']
-    assert table['reasons'] == {reason: 1}
+    assert table['reasons'] == ({reason: 1} if reason else {})
     assert table['dropped'] == int(target == 'dropped')
     assert inventory['assignments']['.runs.db', 'branch_versions'] == [target]
-    assert report['ready'] == (target == 'dropped')
+    assert report['ready'] == (target != 'unattributed')
     assert report['refusals'].get('unattributed_owner_rows', 0) == int(target == 'unattributed')
     assert sum(table['per_owner'].values()) + table['dropped'] == table['total'] == 1
     assert _fingerprint(source) == before
@@ -848,3 +849,165 @@ def test_unknown_files_refuse_with_only_masked_filename_patterns(source, relativ
     assert 'private-personal-name' not in json.dumps(report)
     assert 'private contents' not in json.dumps(report)
     assert _fingerprint(source) == before
+
+
+def test_workflow_history_author_then_publisher_and_version_schedules(source, tmp_path):
+    from tinyassets.box_layout_migration import _build_databases
+
+    _sql(source / '.tinyassets.db', '''
+        CREATE TABLE branch_definitions (branch_def_id TEXT, author TEXT);
+        INSERT INTO branch_definitions VALUES ('alice-definition','alice'),
+            ('bob-definition','bob'), ('unadmitted-definition','platform-actor');
+    ''')
+    _sql(source / '.runs.db', '''
+        CREATE TABLE branch_versions (branch_version_id TEXT, branch_def_id TEXT,
+                                      publisher TEXT, snapshot_json TEXT);
+        INSERT INTO branch_versions VALUES
+            ('author','alice-definition','platform-actor','{"synthetic":"author"}'),
+            ('both','alice-definition','alice','{"synthetic":"both"}'),
+            ('publisher','missing','bob','{"synthetic":"publisher"}'),
+            ('fallback','unadmitted-definition','bob','{"synthetic":"fallback"}'),
+            ('drop','missing','platform-actor','{"synthetic":"drop"}');
+        CREATE TABLE branch_schedules (branch_def_id TEXT, branch_version_id TEXT,
+                                       owner_actor TEXT);
+        INSERT INTO branch_schedules VALUES ('alice-definition',NULL,'platform-actor'),
+                                             ('missing',NULL,'platform-actor');
+    ''')
+    before = _fingerprint(source)
+    inventory = {}
+    report = census(source, _inventory=inventory)
+    assert report['ready'], report['refusals']
+    assert report['workflow_history'] == {
+        'account-0001': {'versions': 2, 'schedules': 1},
+        'account-0002': {'versions': 2, 'schedules': 1},
+    }
+    versions = report['tables']['.runs.db/branch_versions']
+    assert versions['dropped'] == 1
+    assert versions['reasons'] == {'orphan_reference': 1}
+    assert report['loss_summary']['unattributed']['orphan_reference']['workflow history'] == {
+        'class': 'dropped', 'rows': 1, 'files': 0, 'versions': 1,
+    }
+    store, shared = tmp_path / 'boxes', tmp_path / 'shared'
+    _build_databases(source, store, shared, inventory)
+    for uid, ids in ((300001, ['author', 'both']), (300002, ['publisher', 'fallback'])):
+        with closing(sqlite3.connect(store / str(uid) / '.runs.db')) as db:
+            rows = db.execute(
+                'SELECT branch_version_id,snapshot_json FROM branch_versions').fetchall()
+            assert [row[0] for row in rows] == ids
+            assert all(json.loads(row[1])['synthetic'] == row[0] for row in rows)
+            assert db.execute('SELECT COUNT(*) FROM branch_schedules').fetchone()[0] == 1
+    assert _fingerprint(source) == before
+    _sql(source / '.runs.db', '''
+        INSERT INTO branch_versions VALUES ('conflict','alice-definition','bob','{}');
+        INSERT INTO branch_schedules VALUES ('alice-definition','publisher','platform-actor');
+    ''')
+    report = census(source)
+    assert not report['ready']
+    assert report['tables']['.runs.db/branch_versions']['reasons']['conflicting_owners'] == 1
+    assert report['tables']['.runs.db/branch_schedules']['reasons']['conflicting_owners'] == 2
+
+
+def _round6_files(source, *, drop_blob=False):
+    """Exactly the 16 identified files; all content and identifiers are synthetic."""
+    _sql(source / '.tinyassets.db', '''
+        CREATE TABLE universes (id TEXT);
+        INSERT INTO universes VALUES ('never');
+    ''')
+    placements = {
+        '.broker/.outbound-proxy/account-a/audit.jsonl': 'broker',
+        '.broker/.outbound-proxy/account-b/audit.jsonl': 'broker',
+        '.broker/state/architecture-signing.json': 'broker',
+        '.connect/client_id': 'router', '.connect/client_secret': 'router',
+        '.connect/session_secret': 'router',
+        '.engine_mcp_http_routes.json': 'regenerated',
+        '.scoped-reset.barrier': 'regenerated',
+        '.run-file-custody/.blob-root.lock': 'regenerated',
+        '.tinyassets.db.prebudgetrepair.bak-shm': 'dropped',
+        '.tinyassets.db.prebudgetrepair.bak-wal': 'dropped',
+        '.executors/synthetic/.codex/config.toml': 'dropped',
+        '.platform/external-agent-refresh-' + 'a' * 32: 'dropped',
+        '.run-file-custody/synthetic.body': 'dropped' if drop_blob else ('owner', 'alice'),
+        '.scheduler_fires.jsonl': 'split', 'ledger.json': 'split',
+    }
+    for relative in placements:
+        path = source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('synthetic-private-' + path.name)
+    _sql(source / '.runs.db', '''
+        CREATE TABLE run_file_operations (operation_id TEXT, owner_id TEXT, universe_id TEXT);
+        INSERT INTO run_file_operations VALUES ('operation','alice','a1');
+        CREATE TABLE run_file_objects (file_id TEXT, operation_id TEXT, owner_id TEXT,
+                                       universe_id TEXT, storage_key TEXT);
+        INSERT INTO run_file_objects VALUES ('synthetic','operation','alice','a1','synthetic');
+    ''')
+    if drop_blob:
+        _sql(source / '.runs.db', "UPDATE run_file_objects SET operation_id='missing'")
+    fires = [dict(branch_def_id='private-definition', result='ok', run_name='private-run',
+                  ts=42, universe_id=center) for center in ('a1', 'b1', 'a2', 'never', 'unknown')]
+    (source / '.scheduler_fires.jsonl').write_text(
+        ''.join(json.dumps(entry) + '\n' for entry in fires))
+    ledger = [dict(action='synthetic', actor=actor, target=target, summary='private-summary',
+                   timestamp='synthetic-time') for actor, target in (
+                       ('alice', 'bob'), ('platform-actor', 'bob'), ('', 'alice'),
+                       ('platform-actor', 'unknown'))]
+    (source / 'ledger.json').write_text(json.dumps(ledger))
+    return placements, fires, ledger
+
+
+@pytest.mark.parametrize('drop_blob', [False, True])
+def test_round6_file_classes_and_history_counts_are_private_and_readonly(source, drop_blob):
+    placements, _, _ = _round6_files(source, drop_blob=drop_blob)
+    before = _fingerprint(source)
+    inventory = {}
+    report = census(source, _inventory=inventory)
+    assert report['ready'], report['refusals']
+    assert {name: inventory['file_targets'][name] for name in placements} == placements
+    assert inventory['dropped_centers'] == {'never'}
+    assert report['history_splits'] == {
+        '.scheduler_fires.jsonl': {'description': 'scheduled-run history', 'total': 5,
+                                 'per_owner': {'account-0001': 2, 'account-0002': 1}, 'dropped': 2},
+        'ledger.json': {'description': 'activity ledger', 'total': 4,
+                        'per_owner': {'account-0001': 2, 'account-0002': 1}, 'dropped': 1},
+    }
+    losses = report['loss_summary']['unattributed']
+    assert losses['retired_cli_state']['CLI login state']['files'] == 2
+    assert losses['no_admitted_owner'] == {
+        'scheduled-run history': {'class': 'dropped', 'entries': 2},
+        'activity ledger': {'class': 'dropped', 'entries': 1},
+    }
+    if drop_blob:
+        assert losses['platform_store']['run-file uploads']['files'] == 1
+    assert len(report['accepted_user_costs']) == 5
+    serialized = json.dumps(report)
+    for private in ('alice', 'bob', '.connect', 'client_secret', 'session_secret',
+                    'synthetic-private', 'private-summary', 'private-run', 'private-definition'):
+        assert private not in serialized
+    assert _fingerprint(source) == before
+
+
+@pytest.mark.parametrize('mutation', ['source', 'owner_count', 'dropped_count', 'output'])
+def test_history_split_verification_refuses_changed_counts_or_content(source, tmp_path,
+                                                                    monkeypatch, mutation):
+    from tinyassets import box_layout_migration as migration
+
+    _round6_files(source)
+    inventory = {}
+    assert census(source, _inventory=inventory)['ready']
+    store = tmp_path / 'boxes'
+    for uid in inventory['owners'].values():
+        (store / str(uid)).mkdir(parents=True)
+    if mutation == 'source':
+        (source / 'ledger.json').write_text('[]')
+    elif mutation == 'owner_count':
+        inventory['histories']['ledger.json']['report']['per_owner']['account-0001'] += 1
+    elif mutation == 'dropped_count':
+        inventory['histories']['ledger.json']['report']['dropped'] += 1
+    else:
+        original = migration._history_entries
+
+        def corrupt(path):
+            return original(path) if path.parent == source else []
+
+        monkeypatch.setattr(migration, '_history_entries', corrupt)
+    with pytest.raises(RuntimeError, match='history'):
+        migration._split_histories(source, store, inventory)

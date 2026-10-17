@@ -1531,3 +1531,85 @@ Round-5 validation:
 - Post-commit hygiene uses `conv/c6-owner-daemon-s5` through `HEAD`, with
   `Registry row(s): S8` and the unchanged existing `Test-Removal: retired --`
   declaration in `hygiene-body.txt`; its receipt is `hygiene-final.log`.
+
+## Slice 6 round-6 census corrections (2026-10-17)
+
+Only the supplied redacted counts/platform names and synthetic fixtures were
+used. The synthetic census with all 16 identified files is `ready=True`.
+The lead must establish the real-data result separately; no production tree
+or backup was read, extracted or opened in this pass.
+
+Versions use the admitted definition author, otherwise their admitted
+publisher, otherwise drop. An admitted publisher keeps the version's own
+snapshot even without the definition. Schedules follow the definition or a
+version, including the actual schema's `branch_def_id` join to version rows.
+Competing admitted owners still refuse. Synthetic extraction asserts each
+owner's retained workflow-history counts, both author and publisher paths,
+verbatim snapshots, and the single unowned version drop. Dropped workflow
+records retain `workflow history` version/schedule counts on their candidate
+account line or the explicit unowned bucket.
+
+| Identified files | Disposition |
+| --- | --- |
+| Two broker outbound-proxy account audit JSONL files; architecture-signing JSON | Broker custody, private ownership/modes, no box copies. |
+| Three door handshake files | Private router custody, no box copies; names and contents absent from census reports. |
+| Engine MCP route table; reset barrier; run-file blob-root lock | Regenerated. |
+| Stale backup SHM and WAL | Counted drops with the stale backup; not opened for database inspection. |
+| Retired executor configuration; external-agent refresh marker | Two counted `CLI login state` file drops. |
+| Run-file custody body | Follows its `run_file_objects` row via `storage_key + '.body'`; moved verbatim or counted as a dropped upload. Object attribution also resolves the operation parent. |
+| Scheduled-fire JSONL | Split by admitted center into each owner's root `.scheduler_fires.jsonl`; unknown/non-admitted centers count as dropped entries. |
+| Root activity ledger | Split by admitted actor, falling back to admitted target, into each owner's root `ledger.json`; unresolved entries count as drops. |
+
+The root ledger path matches `api.branches._append_global_ledger` and
+`api.engine_helpers._append_ledger`. The scheduler is retired with no current
+reader; its original relative path is retained in each owner's box root.
+Reports describe these as `scheduled-run history, N entries` and
+`activity ledger, N entries`, with pseudonymous per-owner counts and explicit
+unowned drops. They also list the five accepted user costs: model reconnect
+and retired CLI connections, tap-to-connect keys, hook URL changes, removed
+local image descriptions and billing usage figures.
+
+Apply rebuilds both unpublished splits on resume, reads back every owner's
+entry count and content, and checks retained plus dropped equals the source
+total. Synthetic mutation probes refuse changed source, owner counts, drop
+counts or output. A real fork exits 137 via `CUTOVER_CRASH_AT` at
+`after_scheduled_history_split`, proving source preservation between splits,
+resume without duplication, output ownership, broker/router custody, cleanup
+after verification and completed-apply idempotence. Both retained and dropped
+custody-body cases use that crash proof. The original source files are removed
+only during verified publication. D6 and the owner-isolation delta spec match.
+
+Validation receipts are outside the repository at
+`%TEMP%/ta-s6-round6-validation/`. No sub-agent, new worktree, branch/configuration
+change, push, merge or deployment was used. The user's local-only scope leaves
+the lead's production census, independent review and live acceptance outstanding.
+
+Round-6 validation:
+- Requested census/migration/restore patterns, touched tests, all 35 structural
+  guard files, the three affected heavy files and the deploy transaction
+  consumer ran through the Linux oracle. The unprivileged selection recorded
+  **1,690 passed, two failed, 29 root-fixture errors and one existing root-only
+  skip**. All 32 nonpassing cases passed under actual root; none is waived or
+  credited from a skip. `user.log` / `user.xml` preserve the original evidence.
+- Final root census/layout/cutover selection: **146 passed, zero skips**,
+  `root-verified.log` / `.xml`. The final history fixture explicitly distinguishes
+  a registered never-admitted center from an unknown center; its focused
+  crash/classification/reconciliation rerun passed **8/8**, `history-final.*`.
+- Final 35 structural guard files plus census: **1,051 passed, zero skips**,
+  comprising **960 guard cases and 91 census cases**, `guards-verified.*`.
+- The exact root Docker-engine harness command passed **6/6**, zero skips,
+  `harness-verified.*`. Every one of its ten rehearsal steps passed, including
+  both manifest comparisons after crashes, serving, reconnect confirmation,
+  both real paired restores and report privacy.
+- `coverage.json` reconciles **1,728 distinct passing cases**, zero unresolved
+  cases, across the required Linux venues. No test was skipped, quarantined or
+  weakened to obtain those passes. The two old publisher-disposition probes
+  now assert the founder's exact admitted-author/publisher behavior and retain
+  their conflict and reason/count checks.
+- Changed-file Ruff, strict OpenSpec validation and `git diff --check` pass.
+  Whole-repository Ruff retains **33 findings in seven files** verified unchanged
+  from the starting head; `ruff-all.json` records them.
+- Post-commit hygiene uses `conv/c6-owner-daemon-s5` through `HEAD`, with
+  `Registry row(s): S8` and the unchanged existing `Test-Removal: retired --`
+  line copied into the external `hygiene-body.txt`; `hygiene-final.log` retains
+  the command's final result.

@@ -515,8 +515,11 @@ An admitted center attributes its rows to its owner even when their named
 principal is unadmitted, an earlier identity or a platform actor. This applies
 through reviewed parent joins as well as direct center keys; another admitted
 owner still conflicts and a missing parent still drops as `orphan_reference`.
-`universe:<center>` actors resolve through live admission. Branch versions and
-schedules join their branch definition; interchange receipts/links join their stage and receipt, and
+`universe:<center>` actors resolve through live admission. Branch versions use
+the admitted definition author, otherwise their admitted publisher, otherwise
+drop; their own snapshot survives an absent definition. Schedules resolve
+through their definition or version. Competing admitted owners still refuse.
+Interchange receipts/links join their stage and receipt, and
 published stages join their created definition's author. Idempotency uses its
 operation to select stage, receipt or definition. Checkpoints can join several
 runs only when every run resolves to the same owner.
@@ -555,9 +558,35 @@ PID/liveness/heartbeat state and interrupted atomic-publication files. Real
 SQLite files retain table-by-table schema review. Unknown files still refuse
 where required and expose only `<file>.<ext>` (or `<file>` with no conventional
 extension), with code-constant filenames allowed verbatim. No unknown platform
-vault index or key is assumed safe merely from its extension. These are code
-classifications and synthetic proofs, not a claim that the 16 redacted real-data
-refusals are cleared; the next authorized census establishes that count.
+vault index or key is assumed safe merely from its extension. The round-6
+identifications classify all 16 supplied files in synthetic proof; only the
+lead's next authorized census establishes the real-data result.
+
+Broker egress audit JSONL files and architecture signing state remain broker
+files. The three door handshake files remain private router state; neither
+their names nor contents appear in reports, and they never enter boxes.
+The engine route table, reset barrier and blob-root lock regenerate. Stale
+backup WAL/SHM files drop without opening them. Executor configuration and
+external-agent refresh markers drop under `CLI login state`.
+Run-file bodies resolve through `run_file_objects.storage_key + '.body'`,
+matching the reader and cleanup code; they move or drop with that row and
+their losses are counted. Objects also resolve their operation parent.
+
+The transaction splits `.scheduler_fires.jsonl` by admitted `universe_id`
+and `ledger.json` by admitted actor, falling back to admitted target. Each
+owner gets the original relative filename at its box data root, preserving
+entry order and the JSONL/list shapes. `api.engine_helpers._append_ledger`
+and `api.branches._append_global_ledger` use this root ledger path. The retired
+scheduler has no current reader; its same-path file preserves owner history.
+Unknown/non-admitted entries drop with explicit counts. `history_splits`
+reports `scheduled-run history` and `activity ledger`, per-account entries,
+original totals and drops; `workflow_history` reports carried version/schedule
+counts. `loss_summary` separately lists dropped history entries.
+Both splits read back counts and content and require per-owner totals plus
+drops to equal the original count before publication. Unpublished files rebuild
+on resume; `after_scheduled_history_split` exercises a real exit between them.
+Only verified publication removes the source histories and custody bodies.
+Reports also list all five accepted user costs from the founder's decisions.
 
 The transaction holds the exclusive layout lock and verifies a fresh paired
 snapshot before its first write. A root-private `.owner-cutover.json` records

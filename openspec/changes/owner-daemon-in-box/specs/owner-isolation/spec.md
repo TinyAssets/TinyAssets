@@ -17,6 +17,7 @@ custody and its platform vault directory.
 - **AND** parent failures propagate, while retired non-account actor markers may still follow a real parent
 - **AND** a row with an admitted center, directly or through a reviewed parent, belongs to that center's owner even if its principal is unadmitted; conflicting admitted owners still refuse and missing parents still drop
 - **AND** dropped branch versions and schedules report `workflow history` with version/schedule counts on the candidate owner's line; unresolved budget reservations and provider bindings retain their drops as `usage reservation history` and `provider bindings`
+- **AND** versions use their admitted definition author, otherwise admitted publisher, otherwise drop; a missing definition does not discard the version's own snapshot, schedules resolve through definition or version, and competing admitted owners still refuse
 - **AND** per-account losses report reason, class and count without identities or path lists
 
 #### Scenario: File directory kinds explain placement
@@ -27,6 +28,16 @@ custody and its platform vault directory.
 - **AND** known identity, plan, key and lock files follow their creator-backed broker, router or regenerated placement
 - **AND** unclassified filenames expose only `<file>.<ext>` or `<file>`; code-constant filenames may be printed verbatim, while unknown platform vault indexes and keys still refuse
 - **AND** retired credential directories are summarized as CLI login state per account
+
+#### Scenario: Round-6 files and owner histories publish atomically
+- **WHEN** the cutover classifies the identified platform files
+- **THEN** egress audit and architecture signing files remain broker state, door handshake secrets remain private router state with no report names or content, and neither enters a box
+- **AND** route tables, reset barriers and blob-root locks regenerate; stale backup sidecars drop unopened; retired executor configuration and refresh markers count as `CLI login state`
+- **AND** custody bodies follow their `run_file_objects` row via `storage_key + '.body'`, including counted drops
+- **AND** scheduled-run JSONL entries split by admitted center and activity-ledger list entries split by admitted actor, falling back to admitted target, at the original relative filename in each owner's box root
+- **AND** reports list per-account `scheduled-run history` and `activity ledger` entry counts, explicit unowned drops and all five accepted user costs
+- **AND** both splits read back content and per-owner counts and require retained plus dropped entries to equal the original total before publication
+- **AND** a hard exit after the scheduled history split resumes both splits without duplication or source loss
 
 #### Scenario: Restore after owner serving writes
 - **WHEN** the operator explicitly accepts post-cutover write loss and restores the verified paired pre-cutover backup after stopping serving

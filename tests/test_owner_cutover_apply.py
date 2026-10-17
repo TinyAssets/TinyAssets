@@ -12,7 +12,7 @@ import pytest
 
 from tests.test_box_layout_migration import _archive
 from tests.test_broker_server import broker  # noqa: F401
-from tests.test_owner_cutover_census import _fingerprint, _sql
+from tests.test_owner_cutover_census import _fingerprint, _round6_files, _sql
 from tests.test_owner_cutover_census import source as source
 from tinyassets import box_layout_migration as migration
 
@@ -41,6 +41,60 @@ def cutover(source, tmp_path, monkeypatch):
             archive.add(tree, arcname=name)
         _archive(path, path.read_bytes())
     return source, store, data_backup, box_backup
+
+
+@pytest.mark.parametrize('drop_blob', [False, True])
+def test_round6_apply_resumes_hard_crash_between_verified_history_splits(cutover, drop_blob):
+    data, store, *_ = cutover
+    placements, fires, ledger = _round6_files(data, drop_blob=drop_blob)
+    report = migration.census(data)
+    assert report['ready'], report['refusals']
+    before = _fingerprint(data)
+    child = os.fork()
+    if child == 0:
+        os.environ['CUTOVER_CRASH_AT'] = 'after_scheduled_history_split'
+        migration.apply(*cutover)
+        os._exit(0)
+    _, status = os.waitpid(child, 0)
+    assert os.waitstatus_to_exitcode(status) == 137
+    assert (store / '300001/.scheduler_fires.jsonl').is_file()
+    assert not (store / '300001/ledger.json').exists()
+    assert json.loads((data / '.owner-cutover.json').read_text())['phase'] == 'build'
+    for relative in placements:
+        assert _fingerprint(data)[relative] == before[relative]
+    migration.apply(*cutover)
+    migration.verify(data, store)
+    receipt = json.loads((data / '.owner-cutover.json').read_text())
+    assert receipt['report']['history_splits'] == report['history_splits']
+    for uid, fire_indices, ledger_indices in ((300001, (0, 2), (0, 2)), (300002, (1,), (1,))):
+        tree = store / str(uid)
+        assert [json.loads(line) for line in (tree / '.scheduler_fires.jsonl').read_text(
+            ).splitlines()] == [fires[i] for i in fire_indices]
+        assert json.loads((tree / 'ledger.json').read_text()) == [ledger[i] for i in ledger_indices]
+        for name in ('.scheduler_fires.jsonl', 'ledger.json'):
+            assert (tree / name).stat().st_uid == uid
+        blob = tree / '.run-file-custody/synthetic.body'
+        assert blob.exists() == (uid == 300001 and not drop_blob)
+        if blob.exists():
+            assert blob.read_text() == 'synthetic-private-synthetic.body'
+        for relative, placement in placements.items():
+            if placement in {'broker', 'router', 'regenerated', 'dropped'}:
+                assert not (tree / relative).exists()
+    for relative, placement in placements.items():
+        if placement in {'broker', 'router'}:
+            assert (data / relative).read_bytes() == ('synthetic-private-' +
+                                                    relative.rsplit('/', 1)[-1]).encode()
+            assert (data / relative).stat().st_uid == (1002 if placement == 'broker' else 1001)
+            assert (data / relative).stat().st_mode & 0o777 == 0o600
+        else:
+            assert not (data / relative).exists()
+    for name, summary in report['history_splits'].items():
+        actual = sum(len(migration._history_entries(store / str(uid) / name))
+                     for uid in (300001, 300002))
+        assert actual + summary['dropped'] == summary['total']
+    published = (_fingerprint(data), _fingerprint(store))
+    migration.apply(*cutover)
+    assert (_fingerprint(data), _fingerprint(store)) == published
 
 
 @pytest.mark.parametrize('crash', ['none', 'copy', 'publish', 'cleanup'])

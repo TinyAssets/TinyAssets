@@ -209,6 +209,14 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
     add(".runs.db", "branch_schedules branch_subscriptions", "owner",
         principals=("owner_actor", "owner_principal_id"), centers=("universe_id",),
         references=(("branch_def_id", main, "branch_definitions", "branch_def_id"),))
+    rules[".runs.db"]["branch_schedules"] = CensusRule(
+        "owner", principals=("owner_actor", "owner_principal_id"), centers=("universe_id",),
+        references=(("branch_def_id", main, "branch_definitions", "branch_def_id"),
+                    ("branch_def_id", ".runs.db", "branch_versions", "branch_def_id"),
+                    ("branch_version_id", ".runs.db", "branch_versions", "branch_version_id")))
+    rules[".runs.db"]["run_file_objects"] = CensusRule(
+        "owner", references=(("run_id", ".runs.db", "runs", "run_id"),
+                             ("operation_id", ".runs.db", "run_file_operations", "operation_id")))
     add(".runs.db", "scheduler_delivered_events", "owner", references=(
         ("subscription_id", ".runs.db", "branch_subscriptions", "subscription_id"),))
     add(".runs.db", "contribution_events", "owner", principals=("owner_user_id",),
@@ -309,6 +317,8 @@ def _census_columns(database: str, table: str) -> set[str]:
         columns.add("id")
     if (database, table) == (".runs.db", "branch_versions"):
         columns.add("public")
+    if (database, table) == (".runs.db", "run_file_objects"):
+        columns.update(("storage_key", "file_id"))
     if database in {"outbound.db", ".broker/outbound.db"} and table == "outbound_connections":
         columns.update(("destination", "owner_user_id"))
     if (database, table) == (".api-keys.sqlite3", "api_keys"):
@@ -437,7 +447,9 @@ def census(data: Path, *, _inventory: dict | None = None,
             for path in sorted(root.iterdir()):
                 if path.is_symlink() or not path.is_file():
                     continue
-                if path == data / ".tinyassets.db.prebudgetrepair.bak":
+                if path.name in {".tinyassets.db.prebudgetrepair.bak",
+                                 ".tinyassets.db.prebudgetrepair.bak-shm",
+                                 ".tinyassets.db.prebudgetrepair.bak-wal"}:
                     continue  # Explicitly out of scope; do not open the stale copy.
                 with path.open("rb") as stream:
                     is_database = stream.read(16) == b"SQLite format 3\x00"
@@ -485,6 +497,7 @@ def census(data: Path, *, _inventory: dict | None = None,
             rule = _census_rule(database, table)
             row = tables[database, table][index]
             candidates, reasons, center_owners = set(), set(), set()
+            workflow_owners = set()
             placeholder = False
 
             def center_claim(value):
@@ -501,6 +514,8 @@ def census(data: Path, *, _inventory: dict | None = None,
                     continue
                 if value in owners and value in admitted_principals:
                     candidates.add(value)
+                    if table == "branch_versions" and column == "publisher":
+                        workflow_owners.add(value)
                 elif value.startswith("universe:"):
                     center_claim(value.partition(":")[2])
                 elif not named_principal(value) or value in {"host", "system"}:
@@ -538,6 +553,15 @@ def census(data: Path, *, _inventory: dict | None = None,
                     candidates.update(parent_owners)
                     reasons.update(parent_reasons)
                     center_owners.update(parent_centers)
+                    if database == ".runs.db" and table in {"branch_versions", "branch_schedules"}:
+                        # Versions carry their own snapshot. Either admitted
+                        # author or publisher is sufficient, but both remain
+                        # evidence so contradictory admitted owners refuse.
+                        if not parent_reasons:
+                            workflow_owners.update(parent_owners)
+            if workflow_owners:
+                reasons.difference_update({"orphan_reference", "unadmitted_principal",
+                                           "unknown_center", "no_owner_key"})
             if center_owners:
                 reasons.difference_update({
                     "unadmitted_principal", "unknown_center", "no_owner_key"})
@@ -679,14 +703,25 @@ def census(data: Path, *, _inventory: dict | None = None,
                     unit = "versions" if table == "branch_versions" else "schedules"
                     workflow_counts = loss_summary[label][reason][description]
                     workflow_counts[unit] = workflow_counts.get(unit, 0) + 1
+        blob_targets = {}
+        for index, row in enumerate(tables.get((".runs.db", "run_file_objects"), [])):
+            storage_key = row.get("storage_key") or row.get("file_id")
+            key = str(storage_key) + ".body" if storage_key else None
+            if key:
+                target = assignments[".runs.db", "run_file_objects"][index]
+                if key in blob_targets and blob_targets[key] != target:
+                    refusals["conflicting_blob_owners"] += 1
+                    target = "unattributed"
+                blob_targets[key] = target
+        histories, history_report = _census_histories(data, admitted, labels, loss_summary)
         file_report = _census_files(data, known_centers, labels, database_files, refusals,
                                     dropped_centers, run_owners, file_targets, patterns, losses,
                                     {str(uid): owner for owner, uid in permanent.items()},
-                                    file_kinds, loss_summary)
+                                    file_kinds, loss_summary, blob_targets)
         if _inventory is not None:
             _inventory.update(tables=tables, assignments=assignments, owners=permanent,
                               centers=admitted, dropped_centers=dropped_centers, labels=labels,
-                              file_targets=file_targets)
+                              file_targets=file_targets, histories=histories)
         return {
             "version": 1, "ready": not any(refusals.values()), "owners": len(owners),
             "admitted_centers": len(admitted), "explicit_centers": len(known_centers),
@@ -694,6 +729,20 @@ def census(data: Path, *, _inventory: dict | None = None,
             "plans": plan_report, "credentials": credential_report, "files": file_report,
             "file_patterns": patterns, "file_pattern_kinds": file_kinds,
             "losses": losses, "loss_summary": loss_summary,
+            "history_splits": history_report,
+            "workflow_history": {
+                label: {unit: table_report.get(f".runs.db/{table}", {}).get(
+                    "per_owner", {}).get(label, 0)
+                        for table, unit in (("branch_versions", "versions"),
+                                            ("branch_schedules", "schedules"))}
+                for label in labels.values()},
+            "accepted_user_costs": [
+                "Every account reconnects a model source; CLI connections are retired.",
+                "Keys pasted into chat are no longer accepted (tap-to-connect).",
+                "/mcp/hooks/ integrations re-point to /hooks/inbound/.",
+                "Local image descriptions are dropped.",
+                "Billing status no longer shows usage figures.",
+            ],
             "account_model_source_summary": ("every account reconnects a model source" if not any(
                 row["carried_http"] for row in credential_report.values())
                 else "accounts without a carried model source reconnect"),
@@ -713,6 +762,56 @@ def census(data: Path, *, _inventory: dict | None = None,
             },
             "refusals": {key: value for key, value in sorted(refusals.items()) if value},
         }
+
+
+_HISTORY_FILES = {".scheduler_fires.jsonl": "scheduled-run history",
+                  "ledger.json": "activity ledger"}
+
+
+def _history_entries(path):
+    if path.is_symlink():
+        raise RuntimeError("history source is a symlink")
+    if path.name == ".scheduler_fires.jsonl":
+        entries = [(json.loads(line), line)
+                   for line in path.read_text(encoding="utf-8").splitlines()]
+    else:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(document, list):
+            raise RuntimeError("activity ledger must be a list")
+        entries = [(entry, entry) for entry in document]
+    if any(not isinstance(entry, dict) for entry, _ in entries):
+        raise RuntimeError("history entries must be objects")
+    return entries
+
+
+def _census_histories(data, centers, labels, loss_summary):
+    histories, report = {}, {}
+    admitted = set(centers.values())
+    for name, description in _HISTORY_FILES.items():
+        path = data / name
+        if not path.exists() and not path.is_symlink():
+            continue
+        targets = []
+        counts = dict.fromkeys(labels.values(), 0)
+        for entry, _ in _history_entries(path):
+            if name == ".scheduler_fires.jsonl":
+                owner = centers.get(entry.get("universe_id"))
+            else:
+                actor, target = entry.get("actor"), entry.get("target")
+                owner = actor if actor in admitted else target if target in admitted else None
+            targets.append(owner)
+            if owner is not None:
+                counts[labels[owner]] += 1
+        dropped = targets.count(None)
+        if dropped:
+            group = loss_summary["unattributed"].setdefault("no_admitted_owner", {})
+            group[description] = {"class": "dropped", "entries": dropped}
+        counts_report = {"description": description, "total": len(targets),
+                         "per_owner": counts, "dropped": dropped}
+        report[name] = counts_report
+        histories[name] = {"targets": targets, "report": counts_report,
+                           "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+    return histories, report
 
 
 def _census_accounts(data, centers, labels, tables, refusals):
@@ -808,7 +907,7 @@ def _census_accounts(data, centers, labels, tables, refusals):
 
 def _census_files(data, centers, labels, databases, refusals, dropped_centers=(),
                   run_owners=None, file_targets=None, patterns=None, losses=None, uid_owners=None,
-                  pattern_kinds=None, loss_summary=None):
+                  pattern_kinds=None, loss_summary=None, blob_targets=None):
     from collections import Counter
 
     counts: Counter = Counter()
@@ -818,6 +917,9 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
         "platform-expected-instance.json": "router", "release-state.json": "router",
         ".billing_webhook_verified.json": "router",
         ".broker/state/fence.json": "broker",
+        ".broker/state/architecture-signing.json": "broker",
+        ".connect/client_id": "router", ".connect/client_secret": "router",
+        ".connect/session_secret": "router",
     }
     # Creator-backed SQLite filenames also classify empty files and detached
     # sidecars. Real databases still go through table-by-table schema review.
@@ -836,6 +938,7 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
         ".run_recovery.lock", ".run_recovery.lock.pid", ".ui-preview.lock",
         ".deploy-pending.json",
         ".runtime_status.json", ".worker_supervisor.json",
+        ".engine_mcp_http_routes.json", ".scoped-reset.barrier",
     }
     dropped_roots = {"scratch", ".active_universe", "activity.log", "activity.log.1"}
     from tinyassets.storage_accounting import ROOT_ENTRIES
@@ -857,7 +960,24 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
 
     def classify(path, relative):
         parts = relative.parts
-        if relative.as_posix() == ".tinyassets.db.prebudgetrepair.bak":
+        if relative.as_posix() in {".tinyassets.db.prebudgetrepair.bak",
+                                  ".tinyassets.db.prebudgetrepair.bak-shm",
+                                  ".tinyassets.db.prebudgetrepair.bak-wal"}:
+            return "dropped"
+        if relative.as_posix() in _HISTORY_FILES:
+            return "split"
+        if len(parts) == 2 and parts[0] == ".run-file-custody":
+            if parts[1] == ".blob-root.lock":
+                return "regenerated"
+            if parts[1].endswith(".body"):
+                return (blob_targets or {}).get(parts[1], "dropped")
+        if (len(parts) == 4 and parts[:2] == (".broker", ".outbound-proxy")
+                and parts[3] == "audit.jsonl"):
+            return "broker"
+        if ((len(parts) == 4 and parts[0] == ".executors"
+             and parts[2:] == (".codex", "config.toml")) or
+                (len(parts) == 2 and parts[0] == ".platform"
+                 and re.fullmatch(r"external-agent-refresh-[a-f0-9]+", parts[1]))):
             return "dropped"
         if parts[0] in dropped_centers:
             return "dropped"
@@ -964,6 +1084,8 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
          for suffix in ("", "-wal", "-shm", "-journal")}
 
     def masked(parts):
+        if parts[0] == ".connect":
+            return "<router-private>/<file>"
         result = []
         for index, part in enumerate(parts):
             value = "<file>" if index == len(parts) - 1 else "<id>"
@@ -998,8 +1120,8 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
             relative = path.relative_to(data)
             parts = relative.parts
             target = classify(path, relative)
-            placement = "owner" if isinstance(target, tuple) else target
-            counts[labels[target[1]] if placement == "owner" else placement] += 1
+            placement = "owner" if isinstance(target, tuple) or target == "split" else target
+            counts[labels[target[1]] if isinstance(target, tuple) else placement] += 1
             if file_targets is not None:
                 file_targets[relative.as_posix()] = target
             pattern = masked(parts)
@@ -1023,12 +1145,15 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
                 if loss_summary is not None:
                     cli = (len(parts) > 1 and parts[1] in _CREDENTIAL_ENTRIES) or (
                         len(parts) >= 5 and parts[:2] == (".platform", "owners")
-                        and parts[3] == "agent-home")
+                        and parts[3] == "agent-home") or parts[0] == ".executors" or (
+                        parts[0] == ".platform" and len(parts) == 2
+                        and parts[1].startswith("external-agent-refresh-"))
                     reason = "retired_cli_state" if cli else kind
                     description = "CLI login state" if cli else {
                         "unadmitted_center": "never-admitted center files",
                         "unknown_dir": "unknown directory files",
-                    }.get(kind, "retired files")
+                    }.get(kind, "run-file uploads" if parts[0] == ".run-file-custody"
+                          else "retired files")
                     _count_loss(loss_summary, label, reason, description, "files")
     refusals["unattributed_files"] += counts["unattributed"]
     return dict(counts)
@@ -1660,6 +1785,36 @@ def _crash_at(boundary: str) -> None:
         os._exit(137)
 
 
+def _split_histories(data, store, inventory):
+    """Rebuild unpublished files on resume, then read back every entry count."""
+    for name, history in inventory["histories"].items():
+        path = data / name
+        if hashlib.sha256(path.read_bytes()).hexdigest() != history["sha256"]:
+            raise RuntimeError("history source changed after census")
+        entries = _history_entries(path)
+        if len(entries) != len(history["targets"]):
+            raise RuntimeError("history source count changed after census")
+        kept = 0
+        for owner, uid in inventory["owners"].items():
+            selected = [value for (_, value), target in zip(
+                            entries, history["targets"], strict=True)
+                        if target == owner]
+            destination = store / str(uid) / name
+            if name == ".scheduler_fires.jsonl":
+                destination.write_text("".join(line + "\n" for line in selected), encoding="utf-8")
+            else:
+                destination.write_text(json.dumps(selected) + "\n", encoding="utf-8")
+            actual = _history_entries(destination)
+            expected = history["report"]["per_owner"][inventory["labels"][owner]]
+            if len(actual) != expected or [value for _, value in actual] != selected:
+                raise RuntimeError("history destination verification failed")
+            kept += len(actual)
+        if kept + history["report"]["dropped"] != history["report"]["total"]:
+            raise RuntimeError("history split count reconciliation failed")
+        _crash_at("after_scheduled_history_split" if name == ".scheduler_fires.jsonl"
+                  else "after_activity_ledger_split")
+
+
 def _build_cutover(data: Path, store: Path, journal: dict) -> None:
     inventory = {}
     report = census(data, _inventory=inventory, _source_marker=journal["source_marker"])
@@ -1712,6 +1867,20 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
                 if destination.is_file() or destination.is_symlink():
                     destination.unlink()
     _build_databases(data, store, shared, inventory)
+    _split_histories(data, store, inventory)
+    # File-only shared state stays in its authority's custody and is included
+    # in the same verified publication as the extracted databases.
+    for relative, target in inventory["file_targets"].items():
+        if target not in {"broker", "router"} or relative in {
+                ".layout.json", ".layout.lock", ".owner-cutover.json"}:
+            continue
+        if PurePosixPath(relative).parts[0] in inventory["centers"]:
+            continue  # Center-local subscription metadata is seeded as plans.
+        source = data / relative
+        destination = shared / relative
+        if not destination.exists():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
     _seed_shared(data, shared, inventory, report, plan)
     _crash_at("after_seeding")
     from tinyassets.boxes.layout import BROKER_READ_GID, BROKER_UID, DAEMON_UID
@@ -1736,7 +1905,7 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
                 uid = DAEMON_UID
             gid = BROKER_READ_GID if relative and relative[0] == ".published" else uid
             os.chown(path, uid, gid)
-            private = relative and relative[0] in {".broker", ".platform"}
+            private = relative and relative[0] in {".broker", ".platform", ".connect"}
             mode = 0o700 if private else 0o750
             if relative == (".platform",):
                 mode = 0o711
@@ -1756,7 +1925,8 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
                    legacy_runs=any(PurePosixPath(path).parts[0] == "runs"
                                    for path in inventory["file_targets"]),
                    discarded_files=[path for path, target in inventory["file_targets"].items()
-                                    if target in {"dropped", "regenerated"}],
+                                    if target in {"dropped", "regenerated", "split"}
+                                    or isinstance(target, tuple)],
                    cli_homes=[p.relative_to(data).as_posix()
                               for p in (data / ".platform/owners").glob("*/agent-home")
                               if p.parent.name.isdecimal()])
