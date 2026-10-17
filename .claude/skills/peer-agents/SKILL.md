@@ -73,7 +73,7 @@ Two more habits that fell out of the same incident:
 
 Useful flags: `--timeout SEC` (default 1800), `--effort low|medium|high|xhigh` (codex only; `low` for trivial tasks). **Never `--effort minimal` — the GPT-6 models reject it with a 400.** Also `--system TEXT` (codex: prepended to prompt), `--cwd DIR`.
 
-**Models are classes, never versions.** Name a class and get the newest model in it on every run. claude: `--model fable` (Claude Code maps family aliases to the newest model). codex: `--model luna` for mechanical work, `sol` (the default) for building and verifying, `astra` for the hardest lanes and escalation; the wrapper resolves the class from the CLI's `~/.codex/models_cache.json`, retries once on the next-newest if the account rejects the newest, and prints the model that ran. Pin an exact slug only with a stated reason (`--model`, `WORKFLOW_CODEX_MODEL`). A failed run writes `[peer_agent] ERROR` + full stderr to `--out`.
+**Models are classes, never versions; each resolves to its newest.** claude: `--model fable`. codex: `luna` mechanical, `sol` (default) build/verify, `astra` hard/escalation; resolved from `~/.codex/models_cache.json`, one retry on the next-newest, model printed. Pin a slug only with a stated reason. A failed run writes `[peer_agent] ERROR` + stderr to `--out`.
 
 ## When to use which peer
 
