@@ -10,7 +10,7 @@
 | The clock is outside, the rows are inside | The box keeps its schedule rows; the shared index keeps only `next_wake_at` |
 | A flag lives with its reader and has one writer | Pause, heartbeats and the ledger are box state; account suspension is router state |
 | Durable truth survives the instance | The box tree on an XFS volume, plus off-host snapshots (C6 P6/S27) |
-| Cross-tenant views are published data, not reads of private stores | Commons publishing copies out at publish time; the listing reads only the caller's own box |
+| Cross-tenant views are published data, not reads of private stores | Commons publishing copies out at publish time; public listing reads only `.published/` |
 
 Any finding in review that can't be expressed as a defect in the router, the
 broker proxy or the waker belongs inside one box. It is fixed there, never by
@@ -244,6 +244,37 @@ failure. A failure leaves a revoked, credential-free connection receipt with
 `revocation_error` and `custody_erased`; `HTTP_CONNECT` can replace it with a
 fresh incarnation. Model-connect placement, box actions and ledger completion
 are described in the 3c-2 as-built contract above.
+
+### 3c-3 as built
+
+- `broker.owner_reads.Plans` is the sole shared plan writer. Its `set_plan`
+  (`apply_tier_event`) keeps ordered tiers, end dates, customer/subscription
+  mappings and the owner's checkout attempt in `.broker/plans.db`.
+  First center admission attaches that database and writes the explicit free
+  row in the identity transaction. Further admissions never repair a missing
+  account plan. Missing rows raise `PlanMissing`, including over `BOX_SHARED`.
+- Router billing uses fenced `BILLING_PLAN` IPC because `.broker` belongs to
+  the broker UID. Status, checkout and cancel use authenticated owner IDs;
+  verified subscription events use the stored customer/subscription mapping,
+  and first service-signed owner claims establish that mapping. Old signed
+  center references require the mapping seeded by task 6. Checkout settlement
+  resolves the stored session/attempt identity, ignoring client reference hints.
+  Checkout retries retain their exact creation parameters and lease identity.
+- Seat/storage usage is omitted from the billing response. Plan limits remain;
+  billing does not need a private usage read to sell or cancel a subscription.
+  Box quota reads and update preparation use `BOX_SHARED` plan reads, and broker
+  provisioning reads the shared plan directly.
+- `BOX_PUBLISH` copies a validated immutable definition into `.published/`,
+  taking authorship only from the relay bind. Bundle ownership and idempotency
+  stay enforced by the existing commons writer. `bundle_version` is a named
+  shared read for later package publications. Private bindings may retain a
+  public definition copy for their local foreign key.
+- Public-run and broker catalog reads open only `.published/` and do not
+  initialize schemas. Published SQLite data uses rollback journaling and is
+  broker-written/router-readable. The box no longer writes a shared preview;
+  uncached public previews render from published content without router writes.
+- Task 6's census/copy and task 6a's remaining non-owner compatibility branches
+  are not part of this slice. No deployment or independent review is claimed.
 
 ## D3. Lifecycle (boxhostd)
 

@@ -789,3 +789,62 @@ Linux logs, JUnit and selection manifests are outside the repository at
 The full CI selection, independent review, deployment/cutover, deployed-SHA
 assertion and live naive-user pass remain with the lead. This task did not push,
 merge, change branches, create a worktree or dispatch another agent.
+
+
+## 3c-3 shared plans and commons publication (2026-10-16)
+
+Implementation commits: `94f4cf683a1` and `5bce9478a58`. Billing is owner-keyed at the broker;
+router calls use fenced `BILLING_PLAN`, box plan/catalog reads use `BOX_SHARED`,
+and `BOX_PUBLISH` selects the author from the relay bind. The one plan writer
+owns tier ordering, processor mappings and checkout attempts. Admission's
+attached-database transaction creates the explicit free row. Missing rows raise
+`PlanMissing`; a later center admission cannot silently recreate them.
+
+Deleted runtime paths: router home/center billing resolution and per-center
+billing writes, router seat/storage usage queries, box direct commons publishing,
+box shared-preview writes, and router preview-cache writes. Billing status omits
+usage; its plan limits remain. Owner quota and update-preparation reads use the
+channel. Legacy non-owner subscription readers remain for task 6/6a; no census
+or cutover copy was built. Published data uses the existing storage inventory;
+there are no new disk names or timers.
+
+Deleted tests, by file:
+- `test_checkout_lease.py`: `test_a_fresh_legacy_claim_still_blocks`,
+  `test_a_stale_legacy_claim_is_cleared_and_replaced`, and
+  `test_a_corrupt_legacy_claim_fails_closed` exercised runtime migration of the
+  retired per-center checkout claim. The shared store keeps one owner attempt.
+- `test_billing_boundary.py`: `test_an_unreadable_state_db_reads_as_free_never_paid`
+  and `test_an_unreadable_db_reports_no_end_date` asserted silent defaults.
+  Replacement: `test_an_unreadable_shared_plan_fails_loudly`; event ordering,
+  end-date and webhook tests now use shared rows.
+- `test_account_plan_action.py`: `test_no_home_is_not_an_upgrade_on_any_surface`
+  is replaced by `test_missing_plan_fails_on_every_surface`.
+- `test_public_run_link.py`: `test_preview_replacement_preserves_exact_bytes`
+  and `test_preview_write_refuses_linked_cache_directory` exercised the deleted
+  cache writer. `test_legacy_preview_renders_only_published_component_and_caches`
+  is replaced by `test_legacy_preview_is_public_and_does_not_write_at_router`.
+No test file was deleted; no skip, xfail or quarantine was added.
+
+Focused Linux validation (no full affected selection):
+- The requested patterns, all structural GUARDS files and touched tests ran in
+  a 119-file selection: **2,228 passed, 10 failed, 2 root-only skips**.
+- Seven failures came from daemon/router fixtures missing the explicit shared
+  plan or seeding the public listing in the old root. The two relay-payload
+  assertions and the stale session-store raw-I/O pin were existing drift.
+  The nine-file repair run passed **317**, with those last three stale
+  assertions still in its pre-edit snapshot; their final file rerun is recorded below.
+- Core billing/checkout/ordering/provisioning run: **165 passed**. Separate
+  process, binding and router-store guard proof: **33 passed**. Provisioning's
+  existing rig: **4 passed**. Root-required owner-destruction file: **5 passed**,
+  including both cases skipped as unprivileged; skips are not counted as proof.
+- Final fixture rerun: **178 passed**. All ten initial failures now have passing
+  executions; the final seven process/placement tests also pass in the repair run.
+- Ruff passed on all **29 changed Python files**. `git diff --check` and
+  `openspec validate owner-daemon-in-box --strict` passed. Existing storage and
+  timer inventories and the channel-agnostic guard passed in the focused selection.
+
+No new disk-name or timer registration was required; `plans.db` and `.published`
+were already classified. Receipts are outside the repository in the Windows
+temporary folder (`3c3-*-linux.log`, `3c3-linux-selection.json`). The lead retains the
+full CI selection, independent adversarial review (delegation was prohibited),
+task 6 census/rehearsal, deployment and live naive-user proof.

@@ -78,12 +78,13 @@ Nothing deploys until slice 7.
       after repair, its full rerun passed all 1,357 tests. The two repaired files
       and their consumers passed 145 focused tests. Ruff passed on changed Python
       files. Logs and the exact remaining-work inventory: scratchpad `3c2-*`.
-      - 3c-3 also: `/app/billing/status|checkout|cancel|webhook` key plans
-        by owner in `.broker/plans.db`, never reading a home or
-        `.subscription_state.db` at the router. Seat and storage usage come
-        from the box through the channel. The commons publish writer
-        copies a definition from the box into shared `.published/` through
-        the channel.
+      - [x] 3c-3: `/app/billing/status|checkout|cancel|webhook` key plans
+        by owner in `.broker/plans.db` through fenced `BILLING_PLAN`, never
+        reading a home or `.subscription_state.db` at the router. Billing
+        status omits private seat/storage usage and retains plan limits.
+        Admission writes explicit free; `BOX_SHARED` raises `PlanMissing`
+        for missing rows. `BOX_PUBLISH` copies definitions into `.published/`
+        with authorship from the relay bind. Proof and deletions: `main-audit.md`.
 - [ ] 4. boxhostd persistent per-owner sandbox lifecycle: wake, idle sleep,
       crash restart, memory cap, awake cap.
       - Retiring a center or deleting an account revokes the per-box secret and

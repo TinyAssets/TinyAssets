@@ -54,6 +54,33 @@ and SHALL read published data independently of owner-private roots.
 - **THEN** BOX_SHARED returns the shared billing or published catalog result
 - **AND** no shared database or Stripe credential is placed in the box
 
+#### Scenario: Explicit account admission and missing plan
+- **WHEN** the broker admits an owner's first center
+- **THEN** its explicit free row and center admission commit in one transaction
+- **AND** an existing paid row is preserved
+- **AND** a later missing row raises PlanMissing through BOX_SHARED rather than becoming free
+
+#### Scenario: Billing at the shared door
+- **WHEN** an authenticated owner requests billing status, checkout or cancellation
+- **THEN** the router uses fenced BILLING_PLAN operations keyed by that owner
+- **AND** the broker keeps tier, end date, processor mapping and checkout attempt in .broker/plans.db
+- **AND** neither home resolution nor an owner store is read at the router
+- **AND** status includes plan limits and omits private seat/storage usage
+
+#### Scenario: Verified billing event reaches the box
+- **WHEN** a signed, mode-matching subscription event arrives at the router
+- **THEN** its service claim and stored customer/subscription mapping select the owner
+- **AND** ordered tier application preserves de-escalation on equal timestamps
+- **AND** checkout settlement matches its stored session/attempt rather than a client reference hint
+- **AND** the owner's next BOX_SHARED plan read observes the shared row
+
+#### Scenario: A box publishes to the shared commons
+- **WHEN** the box submits a definition through BOX_PUBLISH
+- **THEN** the broker validates and writes it in .published with the bound owner as author
+- **AND** a request cannot select another author or append to another owner's bundle
+- **AND** public-run and catalog reads use only the published copy
+- **AND** neither the box nor the public router writes a shared preview cache
+
 ### Requirement: Boxes sleep and wake without a person
 
 A box SHALL sleep when idle, and SHALL wake on an inbound request or at its
