@@ -43,6 +43,18 @@ def test_old_count_is_a_ceiling(tmp_path: Path):
     assert check_shapes.old_count(shape, tmp_path) == 2
 
 
+def test_s8_public_forwarder_belongs_only_to_the_owner_daemon(tmp_path):
+    root = tmp_path / "tinyassets"
+    root.mkdir()
+    (root / "owner_public_egress.py").write_text("class OwnerPublicForwarder: pass\n")
+    assert check_shapes.old_count(check_shapes.SHAPES["S8"], tmp_path) == 0
+    (root / "daemon_server.py").write_text("from tinyassets.owner_public_egress import PROXY_ENV\n")
+    (root / "owner_router.py").write_text("OwnerPublicForwarder(relay)\n")
+    (root / "router").mkdir()
+    (root / "router" / "worker.py").write_text("JAIL_PROXY_URL = 'second path'\n")
+    assert check_shapes.old_count(check_shapes.SHAPES["S8"], tmp_path) == 3
+
+
 def test_recursive_file_probe_works_on_python_311(tmp_path: Path):
     nested = tmp_path / "mirror" / "nested"
     nested.mkdir(parents=True)

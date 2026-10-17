@@ -19,6 +19,11 @@ def main():
     # A test process has no boxhostd mount: the fixed mount is this temp root.
     owner_runtime.OWNER_MOUNT = root
     owner_runtime._is_owner_mount = lambda path: path == root
+    # These process doubles share the host netns; real boxes each bind 3128
+    # in their own null netns. Egress commands have a dedicated real-port rig.
+    from tinyassets import owner_public_egress
+
+    owner_public_egress.LISTEN_ADDRESS = ("127.0.0.1", 0)
     app = create_app(relay=relay, secret_file=secret)
     from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
     from tinyassets.owner_runtime import current

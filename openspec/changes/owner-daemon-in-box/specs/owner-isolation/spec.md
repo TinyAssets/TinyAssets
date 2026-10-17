@@ -55,6 +55,13 @@ outbound connections at its socket seam.
 - **THEN** its policy decision, connection grant and HTTP dispatch use the admitted box channel
 - **AND** revoking the grant prevents dispatch
 
+#### Scenario: Native commands use the persistent public bridge
+- **WHEN** OwnerBoxd starts in the admitted owner daemon
+- **THEN** it owns one loopback HTTP/CONNECT listener for the box lifetime and supplies proxy defaults to every command, including provisioning and wake probes
+- **AND** each connection uses the owner-bound relay and the broker's existing admission, public-address floor and owner/host caps
+- **AND** authenticated git's invocation-scoped local routes take precedence over the public proxy default
+- **AND** closing the daemon for shutdown or idle sleep closes the listener and active bridges without retaining command output pipes
+
 ### Requirement: Shared reads contain no box-local shared authority
 
 The daemon SHALL read its plan and published commons through named broker

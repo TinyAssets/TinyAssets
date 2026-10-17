@@ -839,7 +839,8 @@ class OwnerBoxd(BoxdCore):
         validate_principal(principal)
         return principal
 
-    def __init__(self, *, owner_id: str, owner_root: Path, state_dir: Path) -> None:
+    def __init__(self, *, owner_id: str, owner_root: Path, state_dir: Path,
+                 relay: Path | None = None) -> None:
         self._owner_id = self._check_cc(owner_id)
         if not owner_root.is_dir() or owner_root.is_symlink():
             raise BoxPathError("owner root must be an existing directory, not a link")
@@ -849,6 +850,15 @@ class OwnerBoxd(BoxdCore):
             owner_of=lambda key: self._owner_id if key == self._owner_id else None,
             allow_unisolated=True,
         )
+        self._public_forwarder = None
+        if relay is not None:
+            from tinyassets.owner_public_egress import OwnerPublicForwarder
+
+            try:
+                self._public_forwarder = OwnerPublicForwarder(relay)
+            except BaseException:
+                super().close()
+                raise
 
     def _box_fd(self, cc: str, *, create: bool = True) -> int:
         if cc != self._owner_id:
@@ -869,3 +879,10 @@ class OwnerBoxd(BoxdCore):
 
     def destroy(self, handle: BoxHandle, op_id: str) -> DestroyReceipt:
         raise BoxOperationRefused("owner deletion is a fenced boxhostd operation")
+
+    def close(self) -> None:
+        try:
+            super().close()
+        finally:
+            if self._public_forwarder is not None:
+                self._public_forwarder.close()

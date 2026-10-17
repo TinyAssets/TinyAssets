@@ -84,15 +84,17 @@ class OwnerRelays:
                     guest.sendall(rf.control(rf.CONNECTION, answer.control()))
                     return
                 shared = doc == {"op": "BOX_SHARED"}
-                if not shared and (set(doc) != {"op", "center"}
+                owner_public = doc == {"op": "BOX_PUBLIC"}
+                if not shared and not owner_public and (set(doc) != {"op", "center"}
                                    or doc["op"] not in {"BOX_CONNECT", "BOX_PUBLIC"}):
                     raise BoxAuthError("invalid relay operation")
                 if self.admission is None:
                     raise BoxAuthError("relay broker admission unavailable")
-                center = doc.get("center", "")
-                grant = None if shared else self.admission.grant(owner, center, "relay")
-                if grant is not None and grant.uid != uid:
-                    raise BoxAuthError("foreign center on owner relay")
+                # The persistent public listener has no invocation center.
+                # Lifecycle admission selects a live center for this bound
+                # owner; PublicEgress repeats BOX_ADMISSION before any bytes.
+                center = (self.admission.owner(owner)["centers"][0] if owner_public
+                          else doc.get("center", ""))
                 broker.settimeout(30)
                 broker.connect(str(self.admission.broker_socket))
                 if peer(broker)[1:] != (1002, 1002):
@@ -110,8 +112,7 @@ class OwnerRelays:
                 readers = [guest, broker]
                 while readers:
                     ready, _, _ = select.select(readers, [], [], 30)
-                    if not ready or (grant is not None
-                                     and not self.admission.authorize(grant, center)):
+                    if not ready:
                         return
                     for source in ready:
                         data = source.recv(65536)
@@ -121,7 +122,7 @@ class OwnerRelays:
                             destination.shutdown(socket.SHUT_WR)
                         else:
                             destination.sendall(data)
-        except (OSError, ValueError, rf.FrameError):
+        except (OSError, ValueError, LookupError, rf.FrameError):
             pass  # no identity or credential details in guest errors
         finally:
             guest.close()

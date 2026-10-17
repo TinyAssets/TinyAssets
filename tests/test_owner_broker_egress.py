@@ -37,10 +37,14 @@ SECRET = "broker-only-synthetic-provider-secret"
 
 @pytest.fixture
 def box(broker, tmp_path, monkeypatch):  # noqa: F811
+    from tinyassets import owner_public_egress
     from tinyassets.boxes import layout
     from tinyassets.boxes import relay as relays
 
     monkeypatch.setattr(layout, "BROKER_READ_GID", os.getgid())
+    # Parent and fresh-process proofs share a host netns. Real boxes have
+    # separate null netns; native public egress has a fixed-port command rig.
+    monkeypatch.setattr(owner_public_egress, "LISTEN_ADDRESS", ("127.0.0.1", 0))
     from tinyassets.broker.owner_reads import Plans
     from tinyassets.broker.policy import PolicyStore
     from tinyassets.commons_catalog import publish_definition
@@ -141,6 +145,7 @@ def box(broker, tmp_path, monkeypatch):  # noqa: F811
     monkeypatch.setattr(owner_runtime, "OWNER_MOUNT", root)
     monkeypatch.setattr(owner_runtime, "_is_owner_mount", lambda candidate: candidate == root)
     runtime = owner_runtime.start(path)
+    assert runtime.tools._public_forwarder._thread.is_alive()
     import threading
 
     box_thread = threading.get_ident()

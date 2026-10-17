@@ -131,6 +131,9 @@ SHAPES: dict[str, Shape] = {
         ("tinyassets/agent_loop/box_ta_worker.py", ""),
         ("scripts/box_acceptance.py", ""),
         ("tinyassets/boxes/network.py", r"\bFORWARDER\s*="),
+        ("tinyassets/daemon*.py", r"\b(?:OwnerPublicForwarder|JAIL_PROXY_URL|PROXY_ENV)\b"),
+        ("tinyassets/router/**/*.py", r"\b(?:OwnerPublicForwarder|JAIL_PROXY_URL|PROXY_ENV)\b"),
+        ("tinyassets/owner_router.py", r"\b(?:OwnerPublicForwarder|JAIL_PROXY_URL|PROXY_ENV)\b"),
         ("tinyassets/**/*.py", r"\b(?:class\s+BoxExecutor|def\s+start_exec)\b"),
     ), ceiling=0),
     "S9": Shape(

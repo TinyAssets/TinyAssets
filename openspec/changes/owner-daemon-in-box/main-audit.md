@@ -1917,7 +1917,7 @@ local path above):
 - `tests/test_box_provider_contract.py::test_stdin_a_child_never_reads_cannot_stall_the_wall_clock`
 - `tests/test_box_provider_contract.py::test_the_exec_ends_with_its_leader_and_takes_its_group_with_it`
 - `tests/test_box_provider_contract.py::test_wall_clock_and_output_limits_kill_the_exec`
-- `tests/test_box_public_egress.py::test_box_forwarder_child_does_not_hold_command_output_open`
+- `tests/test_box_public_egress.py::test_box_forwarder_child_does_not_hold_command_output_open` (the per-call implementation was retired here; part 1f ports this behavior to `tests/test_owner_public_egress.py`).
 - `tests/test_c6_owner_box_callers.py::test_bound_process_uses_the_exact_session_handle`
 - `tests/test_c6_owner_box_callers.py::test_code_node_accepts_only_guest_workspace_path`
 - `tests/test_c6_owner_box_callers.py::test_code_node_public_runner_requires_admitted_box`
@@ -1942,13 +1942,21 @@ class because protected `deploy/box-store-quotas.py` still consumes that
 historical authority; no runtime exec transport API remains. Slice 6 must
 reconcile that offline restore shape with the local owner journals.
 
-The retired guest forwarder was also the native command public-network
-proxy. This cleanup adds no owner-daemon replacement for general native HTTP
-proxying. Broker model/HTTP calls and the ported authenticated git routes keep
-their admitted channels; native package-manager public downloads remain an
-unported feature for the existing slice-7 founder report. Local provisioning
-runs with its original consent, manifest, cancellation and charge guards and
-fails loudly when a dependency cannot be obtained; it has no host fallback.
+The retired guest forwarder's native-command public-network capability is
+restored by 6a part 1f in `tinyassets/owner_public_egress.py`. Startup gives
+OwnerBoxd its admitted relay and starts one in-process loopback HTTP/CONNECT
+bridge on `127.0.0.1:3128` for the daemon lifetime. A centerless `BOX_PUBLIC`
+request lets the root relay use its existing owner lifecycle admission to
+select a live center; the broker still repeats `BOX_ADMISSION` and applies its
+unchanged public-address floor, destination pinning and per-owner/host caps
+before relaying bytes. OwnerBoxd's bounded process launcher supplies all six
+proxy variables and both NO_PROXY spellings to every child, including wake
+probes and provisioning; bash merges these defaults ahead of invocation
+overrides, preserving authenticated git's local routes. OwnerBoxd.close stops
+children and closes/joins the listener and active bridges on shutdown/idle
+sleep. No per-command fork, host listener, shared-router proxy or retired
+backend module is restored. Local provisioning retains its consent, manifest,
+cancellation and charge guards.
 
 The protected box-layout migration still calls the already-retired
 `account_type_of(..., db_reader=readonly_db)` API. Its five failures below are
@@ -1982,3 +1990,99 @@ Validation receipts: `C:/Users/Jonathan/AppData/Local/Temp/s6a1e-validation-pli6
 - Post-commit hygiene against `conv/c6-owner-daemon-s5` passed for the backend
   retirement commit with `Registry row(s): S8` and the documented test-retirement
   reason. The same gate is repeated at the final commit.
+
+
+## 6a part 1f: persistent in-box native public egress (2026-10-17)
+
+`owner_public_egress.OwnerPublicForwarder` is owned only by OwnerBoxd. Owner
+startup passes the admitted relay, binds the single loopback listener before
+serving, and fails startup if it cannot bind (releasing its journal lock).
+Commands share that listener without forking a forwarder. Shutdown interrupts
+active bridges, including a stalled relay admission, joins all workers and
+releases port 3128 for the next wake. The daemon's existing SIGTERM/idle-sleep
+finally calls OwnerBoxd.close. Process supervision retains close_fds and never
+hands command pipes to the listener.
+
+The root relay accepts centerless BOX_PUBLIC and obtains a live center via
+OwnerRegistry.owner's existing broker lifecycle admission. Its bind still
+supplies the principal; neither the request nor the in-box bridge supplies an
+owner. The broker receives its original center-bearing BOX_PUBLIC document,
+repeats BOX_ADMISSION and returns BOX_ADMITTED before raw HTTP/CONNECT. No
+broker parser, DNS/public-address floor, admission implementation or capacity
+limit is changed. No shared-daemon listener or retired backend is restored;
+D7 still bans all fourteen retired modules. The authenticated-git recheck
+also exposed two live remnants masked by direct-broker fixtures: relay calls
+to the deleted OwnerRegistry.grant/authorize APIs, and git_client.exchange
+writing OPEN directly to the relay without BOX_CONNECT. The relay now relies
+on its existing broker admission and per-stream scope/checkpoints; the git
+exchange uses BrokerClient._connect and the relay's broker peer verification.
+The existing lifecycle closes retired boxes/channels. No session-grant API or
+cross-owner application check is restored. S8 retains every existing probe
+and adds shared-daemon/router forwarder probes plus a mutation self-test.
+
+OwnerBoxd.run's single bounded launcher adds HTTP_PROXY, HTTPS_PROXY,
+ALL_PROXY and lowercase variants plus both NO_PROXY spellings. OwnerTools
+bash puts these defaults after the ambient environment and before invocation
+overrides. Authenticated git's invocation-local http_proxy therefore keeps
+its broker routes. Wake probes and provisioning reach the same launcher;
+the package manager inherits its stage process environment.
+
+Tests added/ported:
+
+- `test_owner_public_egress.py`: real OwnerBoxd children, owner-bound root
+  relay, OwnerRegistry lifecycle requests and BOX_HOST broker PublicEgress,
+  with only destination DNS policy substituted for a local HTTP origin.
+  Covers HTTP, CONNECT, repeated commands sharing the listener, request body
+  and response after half-close, all proxy spellings despite ambient values,
+  bash and wake probes, and execute_provision's real stage with a synthetic
+  package-manager executable that checks its env and downloads locally.
+- Refusals: no retained admission, absent verified box record, loopback and
+  metadata destinations under the unchanged floor, owner cap and host cap;
+  every refusal proves no upstream connection was opened.
+- The retired command-output-EOF regression is ported to OwnerBoxd; active
+  connection shutdown, stalled admission shutdown, listener restart after
+  sleep and bind-failure journal cleanup have explicit proofs.
+- `test_box_git_bridge.py`: a real git ls-remote child uses the authenticated
+  broker route with public proxy defaults present; existing refusal/credential
+  assertions remain intact. An additional native proof uses the real
+  OwnerRegistry, root relay and BOX_HOST broker for git, then proves a foreign
+  center still refuses on that relay. Existing broker parsing, body/half-close and
+  refusal tests in `test_box_public_egress.py` are unchanged. Inspection of
+  the retirement diff found no other deleted public-egress backend cases.
+- Router/waker process doubles and in-process parent daemon fixtures select
+  ephemeral loopback ports because they share the host netns with their child
+  process proofs; real boxes and the native egress proof bind 3128. Existing
+  fixture assertions stay intact and now also assert the listener is alive.
+
+Validation receipts: `C:/Users/Jonathan/AppData/Local/Temp/s6a1f-validation-x62rdlwe/`.
+No test was retired or loosened, and no skip or xfail was added. Protected
+slice-6 files remain unchanged. No production/data access, dispatch, worktree,
+push, merge, rebase, branch switch or host Git configuration edit occurred.
+Independent review and deployment remain with the lead as required by this
+local-only handoff.
+
+
+Final 1f validation:
+
+- Final unprivileged Linux oracle: **2,298 passed**, one existing Windows-only
+  transport-refusal test skipped by its platform condition, across **126
+  files**. Selection includes every touched test, the requested owner/egress/
+  broker/box patterns and every GUARDS key. The skipped case was separately
+  executed natively on Windows: **1 passed**. No skip or xfail was added.
+- Root venue (`--as-root`), with rsync provisioned only in the disposable
+  container before pytest: **44 passed, 5 failed, no skips** across five files.
+  All five failures are the unchanged protected `box_layout_migration` API
+  mismatch (`account_type_of(..., db_reader=...)`) already recorded in 1d/1e:
+  `test_preflight_reads_wal_without_writing_data[False]`,
+  `test_preflight_reads_wal_without_writing_data[True]`,
+  `test_preflight_refuses_unreadable_founder_home`,
+  `test_apply_refuses_unreadable_founder_home_before_any_write`, and
+  `test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambiguous`.
+- Ruff on all **15 changed/new Python files**, `check_shapes.py`, strict
+  OpenSpec validation and whitespace checks passed. No changed file is heavy.
+  D7's existing 29 role-dispatch exceptions and fourteen retired-module bans
+  remain unchanged; git uses the existing BrokerClient connection seam with
+  its original peer verifier, adding no runtime-mode branch.
+- The post-commit hygiene gate uses `conv/c6-owner-daemon-s5` and the copied
+  body with `Registry row(s): S8` and the existing `Test-Removal: retired --`
+  reason. Its output is saved alongside these receipts after the local commit.

@@ -49,6 +49,7 @@ def _owner_box_double(monkeypatch, _request_admission_hmac_key, _identity_finger
 
 @pytest.fixture
 def owner_mode(tmp_path, monkeypatch, agent, in_process_broker, _owner_box_double):
+    from tinyassets import owner_public_egress
     from tinyassets.api import runs as api_runs
 
     # The real lifespan now owns boot recovery. Its process-lifetime lock must
@@ -58,6 +59,9 @@ def owner_mode(tmp_path, monkeypatch, agent, in_process_broker, _owner_box_doubl
     monkeypatch.setattr(owner_runtime, "_runtime", None)
     monkeypatch.setattr(owner_runtime, "OWNER_MOUNT", tmp_path)
     monkeypatch.setattr(owner_runtime, "_is_owner_mount", lambda path: path == tmp_path)
+    # The CLI subprocess proof shares this fixture's host netns. Production
+    # boxes bind 3128 in separate null netns; the native egress rig proves it.
+    monkeypatch.setattr(owner_public_egress, "LISTEN_ADDRESS", ("127.0.0.1", 0))
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "0")
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "0")
@@ -144,6 +148,7 @@ def owner_mode(tmp_path, monkeypatch, agent, in_process_broker, _owner_box_doubl
         relay = OwnerRelays(Path(directory), Admission())
         path = relay.bind("owner", os.getuid())
         runtime = owner_runtime.start(path)
+        assert runtime.tools._public_forwarder._thread.is_alive()
         # This rig serves the broker on worker threads in the box's process.
         # Only the process proofs can exercise the real process-local guard.
         owner_thread = threading.get_ident()
