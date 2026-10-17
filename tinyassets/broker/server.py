@@ -443,6 +443,9 @@ class _Connection:
         elif op == "OWNER_IDENTITY":
             answer = await asyncio.to_thread(self._owner_identity, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "RETIRE_OWNER":
+            answer = await asyncio.to_thread(self._retire_owner, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "CENTER_ADMISSION":
             answer = await asyncio.to_thread(self._center_admission, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
@@ -582,14 +585,9 @@ class _Connection:
             identities = self._server._owner_identities
             if identities is None or self._server._data_root is None:
                 raise RuntimeError("router credential admission is unavailable")
-            revoke = doc["request"] == {"operation": "account_revoke"}
             if (type(doc["uid"]) is not int
-                    or (identities.owner_machine(doc["principal"]) if revoke else
-                        identities.box_route(doc["principal"])[0]) != doc["uid"]):
+                    or identities.box_route(doc["principal"])[0] != doc["uid"]):
                 raise PermissionError("owner channel is no longer admitted")
-            if revoke:
-                uid = identities.revoke_box(doc["principal"], deleted=True)
-                self._stop_owner_box(doc["principal"], uid)
             return broker_request(self._server._data_root, doc["principal"], doc["request"])
         except (OSError, ValueError, LookupError, PermissionError, RuntimeError, sqlite3.Error):
             return {"op": "ROUTER_CREDENTIAL_REFUSED"}
@@ -672,6 +670,18 @@ class _Connection:
             return {"op": "SOLE_CENTER_UNADMITTED"}
         except Exception:  # noqa: BLE001 - no persisted state on refusal
             return {"op": "SOLE_CENTER_REFUSED"}
+
+    def _retire_owner(self, doc):
+        try:
+            if (set(doc) != {"op", "principal", "generation", "token"}
+                    or type(doc["generation"]) is not int or not isinstance(doc["token"], str)):
+                raise ValueError("invalid owner retirement")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                uid = self._server._owner_identities.retire_owner(doc["principal"])
+                self._stop_owner_box(doc["principal"], uid)
+            return {"op": "OWNER_RETIRED"}
+        except Exception:
+            return {"op": "OWNER_RETIRE_REFUSED"}
 
     def _center_admission(self, doc: dict[str, Any]) -> dict[str, Any]:
         """DA1: append-only admit/retire; machine always from the reservation."""

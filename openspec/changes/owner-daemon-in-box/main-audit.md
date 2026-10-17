@@ -1,5 +1,58 @@
 # Main vs the clean per-user-instance shape: read-only audit
 
+## Slice 4 door-owned account deletion follow-up (2026-10-17)
+
+The public `/app/account/delete` route is shared-router-only. Its existing
+identity, same-origin JSON and confirmation validation precedes one door
+orchestrator: forward to `/_box/account/delete`; receive box-local erasure;
+persist the receipt and owner tombstone under the credential dispatch lock;
+call fenced broker `RETIRE_OWNER`; clear router state in-process; drop the
+device refresh handle and cookie; return 200. A blocked/refused box returns
+409 unchanged. An incomplete receipt or failed step returns a loud error.
+The tombstone stores the receipt in the existing router database, so retries
+skip box resolution/deletion, finish retirement and cleanup, and return the
+saved result after the process is gone.
+
+The broker permanently fences new admissions, retires all existing owner
+centers, and waits for boxhostd to revoke ingress and stop the real process.
+The box's own deletion no longer calls the provider lifecycle or shared
+broker/identity/billing cleanup. Router cleanup covers owner sessions,
+inline/hosted/OAuth flows, refresh and grace handles, canary state, approval
+handoffs, API keys and hook digests.
+
+Removed paths: public deletion registration inside the box; the box handler's
+router-revoke call and local router-store fallback; the credential dispatch
+`account_revoke` operation; its broker retired-owner exception/self-stop path;
+and the test-process revoke endpoint. No compatibility operation remains.
+`test_a_failed_account_revoke_can_be_retried_to_completion` now drives the
+public router door with a real box and injects both retirement and cleanup
+failures. The old box-revocation test was replaced with local-only erasure
+proof, and the old 503 expectation became a 200/receipt assertion. Additional
+proof covers blocked/refused deletion, multiple center retirement, stale
+fences, stop-acknowledgement retry, missing/wrong ingress secrets, and old-secret
+401 immediately before process stop. No test file was deleted or quarantined.
+
+Focused validation (logs, JUnit and selection outside the repository at
+`C:/Users/Jonathan/AppData/Local/Temp/ta-s4-door-xmay9m42/`):
+- Dedicated real-process router suite: **28 passed**.
+- Requested owner/onboarding patterns, touched tests, broker tests and every
+  structural `GUARDS` key: **1,640 passed, 6 failed** across 72 files. The
+  failures were five stale MCP secret-deposit probes and one root-only control
+  test run as the unprivileged user; the deletion and structural tests passed.
+- The recovery probes now exercise the live MCP `requestFromUser` write,
+  retaining the login-change, no-replay and session-preservation assertions.
+  Secret deposits already moved to the separate shared door; the old extracted
+  harness failed with `ConnectOAuth is not defined`. Full repaired file:
+  **34 passed** on Linux. No product JavaScript changed.
+- Root-required control proof: **1 passed**; owner-destruction file (including
+  its two permanent-UID filesystem cases): **5 passed**. All six original
+  failures now have passing executions. Every Linux report has zero skips.
+- Ruff passed on all **13 changed Python files**; strict OpenSpec validation
+  and `git diff --check` passed.
+The lead retains full CI selection, independent review, deployment and live
+naive-user proof; this follow-up is committed locally only.
+
+
 ## Slice 3 implementation follow-up (2026-10-16)
 
 Owner-mode model and authenticated HTTP calls now acquire the admitted relay,

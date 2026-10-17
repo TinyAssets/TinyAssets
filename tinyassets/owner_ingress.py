@@ -81,6 +81,35 @@ class OwnerIngress:
             gate.__exit__(None, None, None)
             return await self.app(scope, receive, send)
         try:
-            await self.app(scope, receive, send)
+            if scope["path"] == "/_box/account/delete" and scope["method"] == "POST":
+                response = await delete_local_account(identity)
+                await response(scope, receive, send)
+            else:
+                await self.app(scope, receive, send)
         finally:
             gate.__exit__(None, None, None)
+
+
+async def delete_local_account(identity):
+    from starlette.concurrency import run_in_threadpool
+
+    from tinyassets.account_deletion import (
+        AccountDeletionBlocked,
+        AccountDeletionError,
+        delete_account,
+    )
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.owner_runtime import current
+
+    def erase():
+        with identity_context(identity):
+            return delete_account(current().root, founder_sub=identity.user_id)
+
+    try:
+        receipt = await run_in_threadpool(erase)
+        return JSONResponse(receipt)
+    except AccountDeletionBlocked as exc:
+        return JSONResponse({"error": "deletion_blocked", "reasons": str(exc).split("; ")},
+                            status_code=409)
+    except AccountDeletionError as exc:
+        return JSONResponse({"error": "deletion_refused", "detail": str(exc)}, status_code=409)

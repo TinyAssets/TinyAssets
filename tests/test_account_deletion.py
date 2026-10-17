@@ -1160,13 +1160,14 @@ def app_route(monkeypatch, tmp_path):
     )
     monkeypatch.setattr("tinyassets.api.helpers._base_path", lambda: tmp_path)
     calls: dict[str, list] = {"deleted": [], "dropped": []}
-    monkeypatch.setattr(
-        "tinyassets.account_deletion.delete_account",
-        lambda base, *, founder_sub: calls["deleted"].append((Path(base), founder_sub)) or {
-            "home_removed": True, "billing": "none", "identity": "deleted",
-            "unfinished_phases": [],
-        },
-    )
+    async def delete_owner(identity):
+        from starlette.responses import JSONResponse
+
+        calls["deleted"].append((tmp_path, identity.user_id))
+        return JSONResponse({"home_removed": True, "billing": "none", "identity": "deleted",
+                             "unfinished_phases": []})
+
+    monkeypatch.setattr("tinyassets.owner_router.delete_owner_account", delete_owner)
     monkeypatch.setattr(
         onboarding, "_drop_refresh_session", lambda h: calls["dropped"].append(h)
     )
@@ -1228,12 +1229,13 @@ def test_route_deletes_the_signed_in_principal_and_ends_the_session(app_route, t
 def test_route_reports_a_block_with_its_reasons(app_route, monkeypatch):
     onboarding, calls = app_route
 
-    def _blocked(base, *, founder_sub):
-        raise AccountDeletionBlocked(
-            "another founder is bound to this universe; a vote is still open"
-        )
+    async def blocked(identity):
+        from starlette.responses import JSONResponse
 
-    monkeypatch.setattr("tinyassets.account_deletion.delete_account", _blocked)
+        return JSONResponse({"error": "deletion_blocked", "reasons": [
+            "another founder is bound to this universe", "a vote is still open"]}, status_code=409)
+
+    monkeypatch.setattr("tinyassets.owner_router.delete_owner_account", blocked)
     with _as(A):
         resp = asyncio.run(onboarding._handle_account_delete(_Request({"confirm": "DELETE"})))
     assert resp.status_code == 409
@@ -1248,10 +1250,12 @@ def test_route_reports_a_block_with_its_reasons(app_route, monkeypatch):
 def test_route_reports_a_refusal_without_pretending(app_route, monkeypatch):
     onboarding, calls = app_route
 
-    def _refuse(base, *, founder_sub):
-        raise AccountDeletionError("home path escapes the data root")
+    async def refused(identity):
+        from starlette.responses import JSONResponse
 
-    monkeypatch.setattr("tinyassets.account_deletion.delete_account", _refuse)
+        return JSONResponse({"error": "deletion_refused", "detail": "unsafe path"}, status_code=409)
+
+    monkeypatch.setattr("tinyassets.owner_router.delete_owner_account", refused)
     with _as(A):
         resp = asyncio.run(onboarding._handle_account_delete(_Request({"confirm": "DELETE"})))
     assert resp.status_code == 409
@@ -1345,35 +1349,20 @@ def test_failed_two_pass_owner_tree_keeps_the_binding_and_retry_resumes(
     assert (two_users / HOME_B / "soul.md").exists()
 
 
-@pytest.mark.parametrize("fail", [False, True])
-def test_owner_mode_account_delete_uses_router_revocation_and_surfaces_failure(
-    app_route, monkeypatch, fail,
+def test_owner_mode_deletes_local_data_without_retiring_or_opening_shared_stores(
+    two_users, monkeypatch,
 ):
     from tinyassets import owner_runtime
 
-    onboarding, calls = app_route
-    requests = []
     monkeypatch.setattr(owner_runtime, "current", lambda: object())
 
-    def revoke(operation, **fields):
-        assert calls["deleted"], "local deletion must finish before router revocation"
-        requests.append((operation, fields))
-        if fail:
-            raise RuntimeError("router revocation failed")
-        return {"revoked": True}
+    def forbidden(*args, **kwargs):
+        raise AssertionError("local deletion attempted shared lifecycle or identity work")
 
-    def local_revoke(owner):
-        raise AssertionError("box opened local session store")
-
-    monkeypatch.setattr(owner_runtime, "router_credential", revoke)
-    monkeypatch.setattr("tinyassets.onboarding.owner_sessions.revoke_owner", local_revoke)
-    monkeypatch.setattr(onboarding, "_drop_refresh_session", local_revoke)
-    request = _Request({"confirm": "DELETE", "session_ref": "r" * 43})
-    with _as(A):
-        if fail:
-            with pytest.raises(RuntimeError, match="router revocation failed"):
-                asyncio.run(onboarding._handle_account_delete(request))
-        else:
-            response = asyncio.run(onboarding._handle_account_delete(request))
-            assert response.status_code == 200
-    assert requests == [("account_revoke", {})]
+    monkeypatch.setattr(account_deletion, "_destroy_owner_box", forbidden)
+    monkeypatch.setattr("tinyassets.broker.account_erasure.erase_account", forbidden)
+    receipt = delete_account(two_users, founder_sub=A, cancel_billing=forbidden,
+                             delete_identity=forbidden)
+    assert receipt["home_removed"] and not receipt["unfinished_phases"]
+    assert not (two_users / HOME_A).exists()
+    assert (two_users / HOME_B / "soul.md").exists()

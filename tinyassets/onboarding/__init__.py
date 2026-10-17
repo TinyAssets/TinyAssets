@@ -1687,17 +1687,15 @@ async def _handle_turn_pending(request: Any) -> Any:
 
 
 async def _handle_account_delete(request: Any) -> Any:
-    """Delete the signed-in user's account: their universe (memory, history,
-    deposited credentials), every row keyed to it, any paid plan (cancelled
-    now), and the sign-in identity itself. The app's Account view posts here;
-    ``tinyassets.io/account`` documents the same path for the web. Google Play
-    requires both. Same-origin JSON + an explicit ``confirm: "DELETE"`` body so
-    a cross-site post or a stray click cannot erase an account."""
+    """Validate the owner's deletion request and orchestrate it at the shared door.
+
+    The app's Account view posts here; same-origin JSON and explicit confirmation
+    prevent a cross-site post or stray click from deleting the owner's data.
+    """
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import JSONResponse, PlainTextResponse
 
-    from tinyassets.account_deletion import AccountDeletionBlocked, AccountDeletionError
-    from tinyassets.auth.middleware import current_identity, identity_context
+    from tinyassets.auth.middleware import current_identity
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
@@ -1721,40 +1719,16 @@ async def _handle_account_delete(request: Any) -> Any:
         session_ref = ""
     identity = current_identity()
 
-    def _run() -> dict[str, Any]:
-        from tinyassets.account_deletion import delete_account
-        from tinyassets.api.helpers import _base_path
+    import json
 
-        with identity_context(identity):
-            return delete_account(_base_path(), founder_sub=identity.user_id)
+    from tinyassets.owner_router import delete_owner_account
 
-    try:
-        receipt = await run_in_threadpool(_run)
-    except AccountDeletionBlocked as exc:
-        # Someone else's data, live work, or unsettled money is in scope. The
-        # reasons name no person and no content, so they are safe to show — and
-        # showing them is the difference between "try again" and "email us".
-        return JSONResponse(
-            {"error": "deletion_blocked", "reasons": str(exc).split("; ")},
-            status_code=409,
-            headers=_NO_STORE,
-        )
-    except AccountDeletionError as exc:
-        # Refused before anything changed (unsafe binding, no principal).
-        return JSONResponse(
-            {"error": "deletion_refused", "detail": str(exc)},
-            status_code=409,
-            headers=_NO_STORE,
-        )
-    from tinyassets import owner_runtime
-
-    if owner_runtime.current() is not None:
-        await run_in_threadpool(owner_runtime.router_credential, "account_revoke")
-    else:
-        from tinyassets.onboarding.owner_sessions import revoke_owner
-        await run_in_threadpool(revoke_owner, identity.user_id)
-        if session_ref:
-            _drop_refresh_session(session_ref)
+    result = await delete_owner_account(identity)
+    if result.status_code != 200:
+        return result
+    receipt = json.loads(result.body)
+    if session_ref:
+        await run_in_threadpool(_drop_refresh_session, session_ref)
     response = JSONResponse(
         {
             "deleted": True,

@@ -75,7 +75,7 @@ adding a check in shared code.
 ### D2 decisions (slice 2)
 
 - **Router stores never open in a box.** Every router-store opener refuses inside an owner runtime (`refuse_router_store`); box code reaches router state only through router-forwarded identity metadata or the bound credential channel.
-- **Account revocation.** `account_revoke` takes only the operation over the bound relay credential channel; the router revokes that owner's sessions, inline/hosted/OAuth flows, approval handoffs, live API keys and hook digests. Refresh records carry the verified owner in authenticated public metadata, preserved through rotation so all devices and grace handles can be revoked; legacy unattributed records refuse renewal. Anonymous native login flows contain no owner and are consumed before identity is known; canary rate counters belong to the configured canary. Account deletion in a box must report a failed router revocation as an error.
+- **Account revocation.** The shared door clears router sessions, inline/hosted/OAuth flows, approval handoffs, live API keys and hook digests in-process after box-local deletion, the durable tombstone and broker retirement. No box credential operation can revoke router account state. Refresh records carry the verified owner in authenticated public metadata, preserved through rotation so all devices and grace handles can be revoked; legacy unattributed records refuse renewal. Anonymous native login flows contain no owner and are consumed before identity is known; canary rate counters belong to the configured canary.
 - **Handoff bound.** Each owner keeps at most 20 unexpired approval handoffs; insertion removes the oldest beyond the newest 19 in the same transaction.
 - **One hook door:** `/hooks/inbound/<token>`; `/mcp/hooks/` is deleted and integrations re-point at cutover (named in the slice 7 report).
 
@@ -84,8 +84,8 @@ adding a check in shared code.
 - **Credential channel.** The existing per-box relay adds `ROUTER_CREDENTIAL`; only its `bind()` supplies owner/uid, the broker checks live admission and forwards to a broker-uid-only router socket under `.runtime`; the router is the only key/hook-map writer, using the existing runtime group without host provisioning.
 - **API key authority.** Owner-mode mint/list/revoke use the channel, with no box key database; grants remain local, a failed grant invalidates the newly minted router key, and a request reference never replays its secret.
 - **Hook ordering.** The router mints hook tokens; the box stores only the digest and delivery configuration; all three revocation paths invalidate the router map before the local row, and failed local creation revokes the router token.
-- **Deleted accounts never mint again.** `account_revoke` first writes a durable owner tombstone (`.router-deleted-owners.sqlite3`). Every router credential request runs under one dispatch lock and refuses a tombstoned owner, so a box request racing the revocation is either revoked or refused.
-- **Retirement ends the box's secret** (slice 4): retiring a center or deleting an account makes boxhostd revoke the per-box secret and stop the box before the router state is cleared, so a forward resolved just before retirement fails at ingress. The router adds no recheck.
+- **Deleted accounts never mint again.** The shared door owns `/app/account/delete`: authenticated identity, same-origin JSON and `confirm == "DELETE"`. It forwards to the secret-authenticated `/_box/account/delete` route, which deletes only box-local data and returns its receipt (blocked/refused outcomes stop the orchestration). The door then stores the receipt with `DeletedOwners.add` under the credential dispatch lock, fencing all new mints. A retry with a tombstone skips box deletion and resumes from the durable receipt.
+- **Retirement ends the box's secret** (slice 4): after the tombstone, the door retires all owner center admissions through the fenced broker. The broker permanently revokes the box admission and makes boxhostd revoke the ingress secret, stop the box and close its channels. Only then does the door clear router sessions, refresh sessions, canary state, handoffs, keys and hooks in-process, drop this device's refresh session and return the receipt. Every failed step is loud and retryable. There is no box-to-router account-revoke operation; a stale forward fails at ingress.
 - **Single identity.** A valid protected session and bearer must name the same owner or the router returns 401 before resolving any box.
 - **Approval handoff.** `/app/approval-handoff[/<ref>]` is sign-in navigation whose rows live in the router's owner-sessions store, so it stays at the door. It is never forwarded.
 - **Bounded router rows.** Hook digests are capped per owner with an atomic count-and-insert. Revoked key rows beyond the newest 100 per owner are pruned, with their rate counters. Live keys keep the existing cap of 25.
@@ -340,14 +340,15 @@ are described in the 3c-2 as-built contract above.
 - **Retirement.** Broker retirement atomically removes the secret and records a
   revocation in its existing identity DB. A bound `RETIRE_CENTER` channel op
   uses the relay owner; fenced `CENTER_ADMISSION(retire)` uses the same path.
-  `account_revoke` writes a permanent broker deletion fence. Both require
-  boxhostd's stop acknowledgment; account revocation clears router credentials
-  only afterward. The host revokes live ingress, then forcibly stops the box,
-  including a caller waiting for its own deletion response. That caller's
-  forwarded request can end with 503/disconnect; the broker continues clearing
-  router state. Retrying the broker-side revocation is idempotent. A stale
-  forward fails at revoked ingress or at the stopped socket. Another retained
-  center can wake the owner again with a new secret; deleted accounts cannot.
+  The door's fenced `RETIRE_OWNER` operation permanently revokes the owner and
+  retires every center admission, then requires boxhostd's stop acknowledgment.
+  The host revokes live ingress, stops the box and closes its broker channels.
+  Account deletion's public response remains at the router, which clears its
+  credential state in-process and answers 200 with the saved receipt. Failed
+  steps return errors; a tombstoned retry skips the box and completes retirement
+  and cleanup. A stale forward fails at revoked ingress or the stopped socket.
+  A center-only retirement permits another retained center to wake the owner
+  with a new secret; deleted accounts cannot.
 
 - **Linux proof.** The oracle has no runsc. Lifecycle/OCI tests use the existing
   runtime-double pattern; the router process fixture now launches actual owner

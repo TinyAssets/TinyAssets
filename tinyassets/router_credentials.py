@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -37,13 +38,16 @@ class DeletedOwners:
         refuse_router_store("deleted_owners")
         self.path = root / ".router-deleted-owners.sqlite3"
 
-    def add(self, owner: str):
+    def add(self, owner: str, receipt: dict | None = None):
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("PRAGMA synchronous=FULL")
             db.execute("CREATE TABLE IF NOT EXISTS deleted_owners ("
-                       "owner TEXT PRIMARY KEY, deleted_at REAL NOT NULL)")
-            db.execute("INSERT OR IGNORE INTO deleted_owners VALUES (?, ?)",
-                       (owner, time.time()))
+                       "owner TEXT PRIMARY KEY, deleted_at REAL NOT NULL, receipt TEXT)")
+            if "receipt" not in {row[1] for row in db.execute("PRAGMA table_info(deleted_owners)")}:
+                db.execute("ALTER TABLE deleted_owners ADD COLUMN receipt TEXT")
+            db.execute("INSERT OR IGNORE INTO deleted_owners (owner, deleted_at, receipt) "
+                       "VALUES (?, ?, ?)",
+                       (owner, time.time(), json.dumps(receipt)))
 
     def contains(self, owner: str) -> bool:
         if not self.path.exists():
@@ -51,6 +55,14 @@ class DeletedOwners:
         with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)) as db:
             return db.execute("SELECT 1 FROM deleted_owners WHERE owner=?",
                               (owner,)).fetchone() is not None
+
+    def receipt(self, owner: str) -> dict:
+        with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)) as db:
+            row = db.execute("SELECT receipt FROM deleted_owners WHERE owner=?",
+                             (owner,)).fetchone()
+        if row is None or not isinstance(receipt := json.loads(row[0]), dict):
+            raise RuntimeError("account deletion receipt unavailable")
+        return receipt
 
 
 class HookOwners:
@@ -133,39 +145,51 @@ def dispatch(root: Path, owner: str, request: dict) -> dict:
         raise ValueError("invalid credential operation")
     with _DISPATCH:
         deleted = DeletedOwners(root)
-        # Revocation is idempotent and must stay retryable after a partial
-        # failure; everything else is refused once the tombstone exists.
-        if deleted.contains(owner) and request.get("operation") != "account_revoke":
+        if deleted.contains(owner):
             raise PermissionError("owner account is deleted")
-        return _dispatch(root, owner, request, deleted)
+        return _dispatch(root, owner, request)
 
 
-def _dispatch(root: Path, owner: str, request: dict, deleted: DeletedOwners) -> dict:
+def tombstone(root: Path, owner: str, receipt: dict):
+    with _DISPATCH:
+        DeletedOwners(root).add(owner, receipt)
+
+
+def revoke_account(root: Path, owner: str):
+    """Door-only cleanup; never exposed on the box credential channel."""
+    from tinyassets.api_keys import ApiKeyStore
+
+    with _DISPATCH:
+        if not DeletedOwners(root).contains(owner):
+            raise RuntimeError("account deletion requires a tombstone")
+        _revoke_account(root, owner, ApiKeyStore(root))
+
+
+def _revoke_account(root: Path, owner: str, keys):
+    from tinyassets.onboarding import (
+        approval_handoff,
+        canary_sign_in,
+        owner_sessions,
+        session_store,
+    )
+
+    # This process's data_dir is the router root, never the requesting box.
+    owner_sessions.revoke_owner(owner)
+    session_store.revoke_owner(owner)
+    canary_sign_in.revoke_owner(owner)
+    with approval_handoff.flows() as db:
+        db.execute("DELETE FROM approval_handoffs WHERE owner=?", (owner,))
+    for key in keys.list(owner, authority=None)["keys"]:
+        if key["revoked_at"] is None:
+            keys.revoke(owner, key["key_id"], authority=None)
+    HookOwners(root).revoke_owner(owner)
+
+
+def _dispatch(root: Path, owner: str, request: dict) -> dict:
     from tinyassets.api_keys import ApiKeyStore
 
     operation = request.get("operation")
     keys = ApiKeyStore(root)
-    if operation == "account_revoke" and set(request) == {"operation"}:
-        # The tombstone lands first, so nothing minted later can survive.
-        deleted.add(owner)
-        from tinyassets.onboarding import (
-            approval_handoff,
-            canary_sign_in,
-            owner_sessions,
-            session_store,
-        )
-
-        # This process's data_dir is the router root, never the requesting box.
-        owner_sessions.revoke_owner(owner)
-        session_store.revoke_owner(owner)
-        canary_sign_in.revoke_owner(owner)
-        with approval_handoff.flows() as db:
-            db.execute("DELETE FROM approval_handoffs WHERE owner=?", (owner,))
-        for key in keys.list(owner, authority=None)["keys"]:
-            if key["revoked_at"] is None:
-                keys.revoke(owner, key["key_id"], authority=None)
-        HookOwners(root).revoke_owner(owner)
-        return {"revoked": True}
     if operation == "key_mint" and set(request) == {"operation", "name", "request_ref"}:
         if not isinstance(request["request_ref"], str) or len(request["request_ref"]) > 4096:
             raise ValueError("invalid key request reference")

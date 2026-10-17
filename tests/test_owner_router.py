@@ -177,6 +177,7 @@ def router(boxes, cloud_runtime, monkeypatch):  # noqa: F811
             if token in {"alice", "bob", "reserved", "unknown"}:
                 return Identity(user_id=token, username=token, capabilities=["read", "list"])
 
+    monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     monkeypatch.setattr(middleware, "_provider", Provider())
     app = universe_server.create_streamable_http_app()
     # Guard the actual router request, including auth/middleware, not a mock
@@ -391,6 +392,7 @@ def test_owner_socket_requires_current_secret(boxes, admitted):
         for value in (None, "wrong", boxes.secrets["bob"]):
             selected = headers | ({"x-box-secret": value} if value else {})
             assert client.get("/mcp", headers=selected).status_code == 401
+            assert client.post("/_box/account/delete", headers=selected).status_code == 401
         assert client.get("/mcp", headers=headers | {
             "x-box-secret": boxes.secrets["alice"]}).status_code == 200
 
@@ -513,6 +515,8 @@ def test_box_channel_cannot_supply_owner_or_revoke_another_owners_credentials(
     assert request("bob", {"operation": "key_list", "owner": "alice"}) == {
         "op": "ROUTER_CREDENTIAL_REFUSED"}
     assert request("bob", {"operation": "key_list"}, principal="alice") is None
+    assert request("alice", {"operation": "account_revoke"}) == {
+        "op": "ROUTER_CREDENTIAL_REFUSED"}
     assert request("alice", {"operation": "account_revoke", "owner": "bob"}) == {
         "op": "ROUTER_CREDENTIAL_REFUSED"}
     token = request("alice", {"operation": "hook_mint"})["result"]["token"]
@@ -589,8 +593,8 @@ def test_router_key_rows_stay_bounded_across_mint_revoke_cycles(tmp_path, monkey
     assert rows == {"alice": 2, "bob": 1}
 
 
-def test_account_revoke_from_box_removes_only_bound_owners_router_state(
-    router, boxes, tmp_path, monkeypatch,
+def test_door_deletion_removes_only_bound_owners_data_and_router_state(
+    router, boxes, admitted, tmp_path, monkeypatch,
 ):
     from tinyassets import router_credentials
     from tinyassets.api_keys import ApiKeyStore
@@ -604,6 +608,23 @@ def test_account_revoke_from_box_removes_only_bound_owners_router_state(
         session_store,
     )
 
+    # Probe ingress after its secret is revoked but before the real process stops.
+    stop = boxes.runtime.stop
+    rejected = []
+
+    def checked_stop(uid):
+        if uid == admitted.owner_machine("alice") and boxes.runtime.alive(uid):
+            path = boxes.run / str(uid) / "app.sock"
+            with httpx.Client(transport=httpx.HTTPTransport(uds=str(path)),
+                              base_url="http://owner") as client:
+                response = client.get("/_box/status", headers={
+                    "x-box-secret": boxes.secrets["alice"]})
+                rejected.append(response.status_code)
+                assert response.status_code == 401
+        return stop(uid)
+
+    monkeypatch.setattr(boxes.runtime, "stop", checked_stop)
+    admitted.admission("admit", "alice", "cc-alice-extra")
     monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "1")
     monkeypatch.setenv(canary_sign_in.USER_ENV, "alice")
     with canary_sign_in._limits() as db:
@@ -614,15 +635,6 @@ def test_account_revoke_from_box_removes_only_bound_owners_router_state(
         second = session_store.rotate(first, owner + "-rotated")
         third = session_store.mint(owner + "-other-device", owner=owner)
         refresh_handles[owner] = (first, second, third)
-    requests = []
-    dispatch = router_credentials.dispatch
-
-    def recorded(root, owner, request):
-        result = dispatch(root, owner, request)
-        requests.append((root, owner, request))
-        return result
-
-    monkeypatch.setattr(router_credentials, "dispatch", recorded)
     for owner in ("alice", "bob"):
         with owner_sessions.store() as db:
             db.execute("INSERT INTO owner_sessions VALUES (?,?,?)", (
@@ -664,14 +676,19 @@ def test_account_revoke_from_box_removes_only_bound_owners_router_state(
                 assert (await client.post("/app/test-session", headers={
                     "cookie": owner_sessions.COOKIE + "=" + owner + "-cookie",
                     "origin": origin}, json={})).status_code == 200
-            requests.clear()
-            revoked = await client.post("/app/test-credentials", headers={
-                "authorization": "Bearer alice"}, json={"operation": "account_revoke"})
-            assert revoked.status_code == 503, revoked.text
-            deadline = time.monotonic() + 5
-            while not requests and time.monotonic() < deadline:
-                await asyncio.sleep(.01)
-            assert requests == [(tmp_path, "alice", {"operation": "account_revoke"})]
+            revoked = await client.post("/app/account/delete", headers={
+                "authorization": "Bearer alice", "origin": origin}, json={"confirm": "DELETE"})
+            assert revoked.status_code == 200, revoked.text
+            assert revoked.json()["home_removed"] and revoked.json()["unfinished"] == []
+            assert router_credentials.DeletedOwners(tmp_path).contains("alice")
+            assert not (boxes.roots["alice"] / "cc-alice").exists()
+            assert not boxes.runtime.alive(admitted.owner_machine("alice"))
+            assert boxes.runtime.alive(admitted.owner_machine("bob"))
+            assert admitted.center_state("cc-alice") == "retired"
+            assert admitted.center_state("cc-alice-extra") == "retired"
+            assert rejected == [401]
+            with pytest.raises(LookupError):
+                admitted.box_route("alice", rotate=True)
             for owner in ("alice", "bob"):
                 session = await client.post("/app/test-session", headers={
                     "cookie": owner_sessions.COOKIE + "=" + owner + "-cookie",
@@ -741,7 +758,8 @@ def test_a_deleted_owner_can_never_mint_again(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     mint = {"operation": "key_mint", "name": "k", "request_ref": "ref-1"}
     assert dispatch(tmp_path, "alice", {"operation": "hook_mint"})["token"]
-    assert dispatch(tmp_path, "alice", {"operation": "account_revoke"}) == {"revoked": True}
+    router_credentials.tombstone(tmp_path, "alice", {})
+    router_credentials.revoke_account(tmp_path, "alice")
     assert router_credentials.DeletedOwners(tmp_path).contains("alice")
     # The tombstone is durable and checked under the dispatch lock, so a box
     # request racing the revocation lands either before it (and is revoked)
@@ -754,39 +772,62 @@ def test_a_deleted_owner_can_never_mint_again(tmp_path, monkeypatch):
     router_credentials._DISPATCH.release()
 
 
-def test_a_failed_account_revoke_can_be_retried_to_completion(tmp_path, monkeypatch):
-    from tinyassets import router_credentials
+@pytest.mark.parametrize("failure", ["retire", "revoke"])
+def test_a_failed_account_revoke_can_be_retried_to_completion(
+    router, boxes, admitted, tmp_path, monkeypatch, failure,
+):
+    from tinyassets import owner_router, router_credentials
     from tinyassets.api_keys import ApiKeyStore
-    from tinyassets.onboarding import session_store
+    from tinyassets.broker import owner_identities
+    from tinyassets.onboarding import app_config, session_store
     from tinyassets.router_credentials import HookOwners, dispatch
 
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    key = dispatch(tmp_path, "alice", {"operation": "key_mint", "name": "k",
-                                       "request_ref": "ref-1"})
     token = dispatch(tmp_path, "alice", {"operation": "hook_mint"})["token"]
-    real = session_store.revoke_owner
+    target, name = ((owner_identities, "retire_owner") if failure == "retire"
+                    else (session_store, "revoke_owner"))
+    real = getattr(target, name)
     calls = []
 
-    def fails_once(owner):
-        calls.append(owner)
+    def fails_once(*args, **kwargs):
+        calls.append(True)
         if len(calls) == 1:
-            raise OSError("unlink failed")
-        real(owner)
+            raise OSError("injected deletion failure")
+        return real(*args, **kwargs)
 
-    monkeypatch.setattr(session_store, "revoke_owner", fails_once)
-    with pytest.raises(OSError):
-        dispatch(tmp_path, "alice", {"operation": "account_revoke"})
-    # The tombstone already refuses new mints while the revocation is incomplete.
-    assert router_credentials.DeletedOwners(tmp_path).contains("alice")
-    with pytest.raises(PermissionError, match="deleted"):
-        dispatch(tmp_path, "alice", {"operation": "hook_mint"})
-    assert HookOwners(tmp_path).resolve(token) == "alice"
-    # The retry completes: no live key or hook token survives.
-    assert dispatch(tmp_path, "alice", {"operation": "account_revoke"}) == {"revoked": True}
+    monkeypatch.setattr(target, name, fails_once)
+    resource = urlsplit(app_config()["resource"])
+    origin = resource.scheme + "://" + resource.netloc
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=router),
+                                     base_url="http://test") as client:
+            async def delete():
+                return await client.post("/app/account/delete", headers={
+                    "authorization": "Bearer alice", "origin": origin}, json={"confirm": "DELETE"})
+
+            first = await delete()
+            assert first.status_code == 503, first.text
+            assert router_credentials.DeletedOwners(tmp_path).contains("alice")
+            receipt = router_credentials.DeletedOwners(tmp_path).receipt("alice")
+            assert receipt["home_removed"]
+            assert HookOwners(tmp_path).resolve(token) == "alice"
+            with pytest.raises(PermissionError, match="deleted"):
+                dispatch(tmp_path, "alice", {"operation": "hook_mint"})
+
+            def forbidden(*args):
+                raise AssertionError("tombstoned retry must not resolve or wake the box")
+
+            monkeypatch.setattr(owner_router, "resolve_box", forbidden)
+            retry = await delete()
+            assert retry.status_code == 200, retry.text
+            assert retry.json()["home_removed"] == receipt["home_removed"]
+            assert (await delete()).json() == retry.json()
+
+    asyncio.run(exercise())
+    assert not boxes.runtime.alive(admitted.owner_machine("alice"))
     assert HookOwners(tmp_path).resolve(token) is None
-    live = [k for k in ApiKeyStore(tmp_path).list("alice", authority=None)["keys"]
-            if k["revoked_at"] is None]
-    assert live == [] and key["key_id"]
+    assert all(k["revoked_at"] is not None for k in
+               ApiKeyStore(tmp_path).list("alice", authority=None)["keys"])
 
 
 def test_boxhostd_real_process_restart_rotates_secret_and_serves_again(boxes, admitted):
@@ -873,3 +914,51 @@ def test_bound_center_retirement_uses_relay_owner_and_stops_its_daemon(boxes, ad
     assert boxes.runtime.alive(admitted.owner_machine("bob"))
     with pytest.raises(LookupError):
         admitted.box_route("alice")
+
+
+@pytest.mark.parametrize("outcome", ["blocked", "refused"])
+def test_box_deletion_rejection_leaves_lifecycle_and_router_state_untouched(
+    router, boxes, admitted, tmp_path, outcome,
+):
+    import sqlite3
+
+    from tinyassets.daemon_server import DB_FILENAME
+    from tinyassets.onboarding import app_config, owner_sessions, session_store
+    from tinyassets.router_credentials import DeletedOwners, HookOwners, dispatch
+
+    with sqlite3.connect(boxes.roots["alice"] / DB_FILENAME) as db:
+        if outcome == "blocked":
+            db.execute("INSERT INTO founder_home VALUES (?,?,?,?)",
+                       ("other", "cc-alice", time.time(), 1))
+        else:
+            db.execute("UPDATE founder_home SET universe_id='../escape' WHERE founder_sub='alice'")
+    handle = session_store.mint("refresh", owner="alice")
+    with owner_sessions.store() as db:
+        db.execute("INSERT INTO owner_sessions VALUES (?,?,?)", (
+            owner_sessions.hashed("alice-cookie"),
+            json.dumps(Identity(user_id="alice", username="alice").to_dict()), time.time() + 600))
+    token = dispatch(tmp_path, "alice", {"operation": "hook_mint"})["token"]
+    before = admitted.admissions_after(0)
+    resource = urlsplit(app_config()["resource"])
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=router),
+                                     base_url="http://test") as client:
+            result = await client.post("/app/account/delete", headers={
+                "authorization": "Bearer alice",
+                "origin": resource.scheme + "://" + resource.netloc},
+                json={"confirm": "DELETE", "session_ref": handle})
+            assert result.status_code == 409, result.text
+            assert result.json()["error"] == "deletion_" + outcome
+
+    asyncio.run(exercise())
+    assert not DeletedOwners(tmp_path).contains("alice")
+    assert admitted.admissions_after(0) == before
+    assert admitted.box_route("alice")[1] == boxes.secrets["alice"]
+    assert boxes.runtime.alive(admitted.owner_machine("alice"))
+    assert (boxes.roots["alice"] / "cc-alice" / "hello.txt").exists()
+    assert session_store.read(handle)[0]
+    assert owner_sessions.lookup("alice-cookie") is not None
+    assert HookOwners(tmp_path).resolve(token) == "alice"
+    assert any(k["revoked_at"] is None for k in
+               dispatch(tmp_path, "alice", {"operation": "key_list"})["keys"])

@@ -1,6 +1,6 @@
 """The shared door: authenticated identity -> broker admission -> Unix HTTP stream.
 
-This module never interprets a request body or imports an owner store. Boxhostd
+This module never imports an owner store. Boxhostd
 owns the wake step; the router never manages a process.
 """
 from __future__ import annotations
@@ -21,6 +21,7 @@ _HOP = {b"connection", b"keep-alive", b"proxy-authenticate", b"proxy-authorizati
         b"te", b"trailer", b"transfer-encoding", b"upgrade"}
 _TRUSTED = {b"x-owner", b"x-box-secret", b"x-owner-identity"}
 _SHARED_APP = {
+    "/app/account/delete",
     "/app", "/app/client-error", "/app/token", "/app/native-sign-in",
     "/app/owner-sign-in", "/app/owner-sign-in/complete", "/app/canary-sign-in",
     "/app/oauth/client-metadata.json", "/app/ui-frame", "/app/sw.js",
@@ -165,3 +166,63 @@ async def forward(scope, receive, send, identity, route: BoxRoute):
         if started:
             raise  # A truncated stream must never look like a successful response.
         await JSONResponse({"error": "box_unavailable"}, status_code=503)(scope, receive, send)
+
+
+async def delete_owner_account(identity):
+    """The door owns the deletion sequence, including retries after box shutdown."""
+    from tinyassets.broker.owner_identities import retire_owner
+    from tinyassets.router_credentials import DeletedOwners, revoke_account, tombstone
+    from tinyassets.storage import data_dir
+
+    root = data_dir()
+    deleted = DeletedOwners(root)
+    try:
+        if await run_in_threadpool(deleted.contains, identity.user_id):
+            receipt = await run_in_threadpool(deleted.receipt, identity.user_id)
+        else:
+            route = await run_in_threadpool(resolve_box, identity.user_id)
+            response = await delete_box_data(identity, route)
+            if response.status_code != 200:
+                return response
+            receipt = json.loads(response.body)
+            if receipt.get("unfinished_phases"):
+                return JSONResponse({"error": "deletion_incomplete", "receipt": receipt},
+                                    status_code=503, headers={"cache-control": "no-store"})
+            await run_in_threadpool(tombstone, root, identity.user_id, receipt)
+        await run_in_threadpool(retire_owner, root, principal=identity.user_id)
+        await run_in_threadpool(revoke_account, root, identity.user_id)
+        return JSONResponse(receipt, headers={"cache-control": "no-store"})
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("account deletion failed")
+        return JSONResponse({"error": "account_deletion_failed"}, status_code=503,
+                            headers={"cache-control": "no-store"})
+
+
+async def delete_box_data(identity, route):
+    """Use the normal secret-authenticated forwarder, retaining the box outcome."""
+    import asyncio
+
+    path = "/_box/account/delete"
+    scope = {"type": "http", "method": "POST", "path": path, "raw_path": path.encode(),
+             "query_string": b"", "headers": [], "http_version": "1.1"}
+    delivered = False
+    messages = []
+
+    async def receive():
+        nonlocal delivered
+        if not delivered:
+            delivered = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await asyncio.Future()
+
+    async def send(message):
+        messages.append(message)
+
+    await forward(scope, receive, send, identity, route)
+    from starlette.responses import Response
+
+    return Response(b"".join(m.get("body", b"") for m in messages),
+                    status_code=messages[0]["status"], media_type="application/json",
+                    headers={"cache-control": "no-store"})

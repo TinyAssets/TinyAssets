@@ -168,3 +168,46 @@ def test_client_distinguishes_a_never_admitted_retire(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="refused"):
         owner_identities.center_admission(tmp_path, event="retire", principal="alice",
                                           center="alice-home")
+
+
+def test_owner_retirement_is_fenced_complete_and_retryable(broker, tmp_path, monkeypatch):  # noqa: F811
+    identities = store(tmp_path, "alice", "bob")
+    broker.server._owner_identities = identities
+    for owner, center in (("alice", "a"), ("alice", "a2"), ("bob", "b")):
+        identities.admission("admit", owner, center)
+    stopped = []
+
+    def stop(operation, owner, **fields):
+        assert operation == "retire" and owner == "alice" and fields == {"uid": 300001}
+        assert identities.center_state("a") == identities.center_state("a2") == "retired"
+        with pytest.raises(LookupError):
+            identities.box_route("alice", rotate=True)
+        stopped.append(owner)
+        if len(stopped) == 1:
+            raise OSError("stop acknowledgement lost")
+        return {"stopped": True}
+
+    monkeypatch.setattr("tinyassets.boxes.daemon_control.request", stop)
+
+    def retire(**changes):
+        document = {"op": "RETIRE_OWNER", "principal": "alice",
+                    "generation": broker.state["generation"], "token": broker.state["token"]}
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+            channel.settimeout(5)
+            channel.connect(str(broker.path))
+            channel.sendall(rf.control(0, document | changes))
+            return rf.read_frame_blocking(channel).control()
+
+    before = rows(identities)
+    for changes in ({"token": "stale"}, {"generation": True}, {"uid": 300001},
+                    {"principal": "unknown"}):
+        assert retire(**changes) == {"op": "OWNER_RETIRE_REFUSED"}
+        assert rows(identities) == before and not stopped
+    assert retire() == {"op": "OWNER_RETIRE_REFUSED"}
+    after = rows(identities)
+    assert retire() == {"op": "OWNER_RETIRED"}
+    assert rows(identities) == after
+    assert identities.center_state("b") == "admitted"
+    assert identities.box_route("bob")
+    with pytest.raises(PermissionError, match="deleted"):
+        identities.admission("admit", "alice", "new")

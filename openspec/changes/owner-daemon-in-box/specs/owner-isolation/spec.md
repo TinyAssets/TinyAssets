@@ -108,10 +108,18 @@ reported next-wake time.
 - **AND** scheduled wakes queue without eviction and behind interactive wakes
 
 #### Scenario: Retirement fences stale forwards
-- **WHEN** a center is retired or a bound box requests account_revoke
+- **WHEN** a center is retired or the shared door retires an account after persisting its deletion tombstone
 - **THEN** the broker durably revokes its box secret and requires boxhostd to stop the box before router credentials are cleared
 - **AND** a forward resolved beforehand fails at revoked ingress or the stopped socket
 - **AND** another retained center starts with a fresh secret; a deleted account can never wake or admit again
+
+#### Scenario: The shared door orchestrates account deletion
+- **WHEN** an authenticated owner submits same-origin JSON with `confirm == "DELETE"` to `/app/account/delete`
+- **THEN** the router forwards deletion to the owner's secret-authenticated internal route and the box deletes only local data
+- **AND** a blocked or refused deletion returns 409 without changing router state or admissions
+- **AND** after a complete receipt the router stores it with the owner tombstone, retires every owner admission through the broker, clears router credentials in-process, drops the device refresh session and returns 200
+- **AND** a failed step returns a loud error; a tombstoned retry skips the box and completes retirement and router cleanup with the saved receipt
+- **AND** the box exposes no operation that revokes router account state
 
 #### Scenario: A scheduled run in a sleeping box
 - **WHEN** a sleeping box's next-wake time arrives

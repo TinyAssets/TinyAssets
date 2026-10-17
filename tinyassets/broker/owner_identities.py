@@ -253,6 +253,18 @@ class OwnerIdentities:
             db.execute("DELETE FROM owner_box_secrets WHERE principal=?", (principal,))
         return uid
 
+    def retire_owner(self, principal: str) -> int:
+        """Fence new admissions, retire every center, and keep retries possible."""
+        uid = self.revoke_box(principal, deleted=True)
+        with closing(self._connect(write=True)) as db, db:
+            db.execute("PRAGMA synchronous=FULL")
+            db.execute("INSERT INTO center_admissions (event, principal, center, machine) "
+                       "SELECT 'retire', a.principal, a.center, a.machine "
+                       "FROM center_admissions a WHERE a.principal=? AND a.event='admit' "
+                       "AND NOT EXISTS (SELECT 1 FROM center_admissions r "
+                       "WHERE r.center=a.center AND r.event='retire')", (principal,))
+        return uid
+
     def center_state(self, center: str) -> str:
         validate_center(center)
         with closing(self._connect(write=False)) as db:
@@ -333,6 +345,13 @@ def _owner_request(data_root: Path, request: dict) -> dict:
         if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
             raise RuntimeError("invalid owner identity reply")
         return frame.control()
+
+
+def retire_owner(data_root: Path, *, principal: str):
+    validate_principal(principal)
+    answer = _owner_request(data_root, {"op": "RETIRE_OWNER", "principal": principal})
+    if answer != {"op": "OWNER_RETIRED"}:
+        raise RuntimeError("owner retirement refused")
 
 
 def center_admission(data_root: Path, *, event: str, principal: str,
