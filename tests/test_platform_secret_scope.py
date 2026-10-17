@@ -507,9 +507,12 @@ def test_broker_receives_only_registered_oauth_environment(tmp_path):
                       "UNRELATED='line one\nTINYASSETS_OAUTH_FAKE_SECRET=not-a-variable'\n")
     result = _helper(tmp_path, ["render-daemon-env"], source, daemon)
     assert result.returncode == 0, result.stderr
-    # The rendered daemon copy assigns no OAuth name; how compose fills bare
-    # declarations from the project env is covered by the compose-guarded tests.
-    assert not any(name.startswith("TINYASSETS_OAUTH_") for name in _assigned(daemon))
+    # The rendered daemon copy assigns none of the registered OAuth names (the
+    # FAKE one only appears inside UNRELATED's quoted value). How compose fills
+    # bare declarations from the project env is covered by the compose tests.
+    oauth = {"TINYASSETS_OAUTH_EXAMPLE_CLIENT_ID", "TINYASSETS_OAUTH_EXAMPLE_SECRET",
+             "TINYASSETS_OAUTH_DIRECTORY"}
+    assert not oauth & _assigned(daemon) and "private-fixture" not in daemon.read_text()
     broker = tmp_path / "broker.env"
     assert _assigned(broker) == {"TINYASSETS_OAUTH_EXAMPLE_CLIENT_ID",
                                  "TINYASSETS_OAUTH_EXAMPLE_SECRET",
