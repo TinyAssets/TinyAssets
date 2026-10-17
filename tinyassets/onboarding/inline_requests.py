@@ -6,6 +6,8 @@ from starlette.responses import JSONResponse
 from tinyassets import bound_requests
 from tinyassets.auth.middleware import current_identity, identity_context
 from tinyassets.capability_health import observed
+from tinyassets.exceptions import ProviderError
+from tinyassets.onboarding.hosted_model_auth import HostedAuthError
 from tinyassets.onboarding.owner_sessions import HEADERS, require
 from tinyassets.owner_control import ControlUnavailable
 
@@ -35,10 +37,22 @@ async def handle_approval(request):
 
     def perform():
         with identity_context(identity):
-            _, home, denied = _owner_gate(str(data.get("universe_id", "")))
+            uid, home, denied = _owner_gate(str(data.get("universe_id", "")))
             if denied:
                 return denied
             operation = request.path_params["operation"]
+            if operation == "model_connection":
+                from tinyassets.api.helpers import _base_path
+                from tinyassets.onboarding.source_connect import offer_connection_access
+
+                if (set(data) != {"universe_id", "grant_id"}
+                        or not isinstance(data["grant_id"], str)):
+                    return {"error": "invalid_request"}
+                try:
+                    return offer_connection_access(base=_base_path(), uid=uid,
+                        owner=identity.user_id, grant_id=data["grant_id"])
+                except (PermissionError, ValueError, LookupError, ProviderError):
+                    raise HostedAuthError("model_confirmation_unavailable", 409) from None
             if operation == "answer":
                 from tinyassets.api.pending_requests import _answer_request
 
@@ -65,6 +79,8 @@ async def handle_approval(request):
             result.get("error"), 404 if result.get("error") else 200
         )
         return JSONResponse(result, status_code=status, headers=HEADERS)
+    except HostedAuthError as exc:
+        return JSONResponse({"error": exc.code}, status_code=exc.status, headers=HEADERS)
     except bound_requests.RequestRefused as exc:
         return JSONResponse(
             {"error": "preview_required", "detail": str(exc)}, status_code=409, headers=HEADERS

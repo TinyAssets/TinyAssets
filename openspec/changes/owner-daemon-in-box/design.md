@@ -84,8 +84,8 @@ adding a check in shared code.
 - **Credential channel.** The existing per-box relay adds `ROUTER_CREDENTIAL`; only its `bind()` supplies owner/uid, the broker checks live admission and forwards to a broker-uid-only router socket under `.runtime`; the router is the only key/hook-map writer, using the existing runtime group without host provisioning.
 - **API key authority.** Owner-mode mint/list/revoke use the channel, with no box key database; grants remain local, a failed grant invalidates the newly minted router key, and a request reference never replays its secret.
 - **Hook ordering.** The router mints hook tokens; the box stores only the digest and delivery configuration; all three revocation paths invalidate the router map before the local row, and failed local creation revokes the router token.
-- **Deleted accounts never mint again.** The shared door owns `/app/account/delete`: authenticated identity, same-origin JSON and `confirm == "DELETE"`. It forwards to the secret-authenticated `/_box/account/delete` route, which deletes only box-local data and returns its receipt (blocked/refused outcomes stop the orchestration). The door then stores the receipt with `DeletedOwners.add` under the credential dispatch lock, fencing all new mints. A retry with a tombstone skips box deletion and resumes from the durable receipt.
-- **Retirement ends the box's secret** (slice 4): after the tombstone, the door retires all owner center admissions through the fenced broker. The broker permanently revokes the box admission and makes boxhostd revoke the ingress secret, stop the box and close its channels. Only then does the door clear router sessions, refresh sessions, canary state, handoffs, keys and hooks in-process, drop this device's refresh session and return the receipt. Every failed step is loud and retryable. There is no box-to-router account-revoke operation; a stale forward fails at ingress.
+- **Deleted accounts never mint again.** The shared door owns `/app/account/delete`: authenticated identity, same-origin JSON and `confirm == "DELETE"`. It forwards to the secret-authenticated `/_box/account/delete` route, which deletes only box-local data and returns its receipt (blocked/refused outcomes stop the orchestration). The door then stores the receipt with `DeletedOwners.add` under the credential dispatch lock, fencing all new mints. A retry with a tombstone resumes every unfinished shared phase from the durable receipt; the tombstone refuses new work, never cleanup.
+- **Retirement ends the box's secret** (slice 4): after the local drain and sweep and the shared tombstone, the door retires all owner center admissions through the fenced broker. The broker permanently revokes box admission and requires boxhostd to stop the box, destroy its entire volume and quota limits, and remove its relay/app socket directories and secret. The door records broker custody erasure, owner-keyed billing cancellation and plan update, router credential revocation, then external identity deletion. Billing runs even if destruction fails; identity survives until earlier cleanup completes so the owner can retry. Only a complete receipt returns success. Every failed step stays loud and retryable after the tombstone. There is no box-to-router account-revoke operation; a stale forward fails at ingress.
 - **Single identity.** A valid protected session and bearer must name the same owner or the router returns 401 before resolving any box.
 - **Approval handoff.** `/app/approval-handoff[/<ref>]` is sign-in navigation whose rows live in the router's owner-sessions store, so it stays at the door. It is never forwarded.
 - **Bounded router rows.** Hook digests are capped per owner with an atomic count-and-insert. Revoked key rows beyond the newest 100 per owner are pruned, with their rate counters. Live keys keep the existing cap of 25.
@@ -203,7 +203,9 @@ custody; `oauth_offer`, `oauth_exchange` and `preset_exchange` keep discovery an
 exchanges in the broker. Box connect and rotate actions take no credential:
 keyless connects use the box channel; other schemes return the existing `/app`
 link with `request`, `center` and connection ID. The browser posts credentials
-only to the door. Commit and rotation record `request_ref`; box ledger polling
+only to the door. Commit and rotation record `request_ref` only at the door, with broker-stamped
+`committed_via` derived from transport; the box channel rejects request references.
+Only door-committed grants can complete asks. Box ledger polling
 through `GRANTED_RESOURCE` matches the pending request, applies its uses, resolves
 it and wakes the existing continuation. There is no push or router request read.
 The lifecycle tests exercise all nine auth variants from a separate box process,
@@ -341,18 +343,30 @@ are described in the 3c-2 as-built contract above.
   A box surviving an idle interval resets its failure count. A failed launch
   whose cleanup cannot prove absence keeps its capacity reservation and is
   never advertised as ready.
-- **Retirement.** Broker retirement atomically removes the secret and records a
-  revocation in its existing identity DB. A bound `RETIRE_CENTER` channel op
-  uses the relay owner; fenced `CENTER_ADMISSION(retire)` uses the same path.
-  The door's fenced `RETIRE_OWNER` operation permanently revokes the owner and
-  retires every center admission, then requires boxhostd's stop acknowledgment.
-  The host revokes live ingress, stops the box and closes its broker channels.
-  Account deletion's public response remains at the router, which clears its
-  credential state in-process and answers 200 with the saved receipt. Failed
-  steps return errors; a tombstoned retry skips the box and completes retirement
-  and cleanup. A stale forward fails at revoked ingress or the stopped socket.
-  A center-only retirement permits another retained center to wake the owner
-  with a new secret; deleted accounts cannot.
+- **Wake lease.** Router resolution atomically wakes and leases a box through
+  boxhostd's router-only `resolve(owner, cleanup)` operation. LRU and idle sleep
+  skip leased boxes. The router releases the opaque lease after upstream response
+  headers prove ingress admission, or on forwarding failure; abandoned leases
+  expire after ten seconds. Cleanup resolution may reach a draining ingress.
+- **Deletion drain.** The authenticated internal deletion route closes the same
+  activity gate used by requests and turns before waiting on their completion condition for up to twenty seconds
+  for active work. It admits only deletion/control calls while draining. A bound
+  timeout reports `drain` unfinished; a retry may finish quiescence. No sweep
+  starts while a turn can still write.
+- **Retirement and account erasure.** Center retirement still stops without
+  destroying retained centers. Account retirement permanently fences admission
+  and secret rotation, then requires boxhostd's broker-only `destroy(owner, uid)`
+  acknowledgment: prove stop, erase the complete XFS owner tree without following
+  links or mounts, clear quota limits, remove relay/app socket directories and
+  the secret. Every part is idempotent, including after broker tombstoning.
+  The door serializes deletion attempts and stores a durable shared receipt after
+  the local sweep. It records destruction, broker custody erasure, owner-keyed
+  Stripe cancellation plus shared plan update through BILLING_PLAN, router
+  credential revocation, and existing WorkOS identity deletion. Billing runs even
+  after destruction failure. Identity deletion waits until the other steps finish
+  so sign-in remains available for retries. Only a fully confirmed receipt returns
+  200; every other outcome names unfinished phases. A tombstone blocks new work,
+  never unfinished cleanup. No owner path or store is read at the door.
 
 - **Linux proof.** The oracle has no runsc. Lifecycle/OCI tests use the existing
   runtime-double pattern; the router process fixture now launches actual owner
@@ -741,6 +755,21 @@ explicit classes refuse. Shared tables are not split.
 - Build what the research says to build.
 - A co-admin of a shared center is refused, as the research recommends by default. Sharing is by publishing.
 - Features not ported into the owner daemon at cutover are dropped. The list is reported to the founder before the cutover deploy.
+
+### 3c review corrections
+
+- A credential-free grant records its commit transport (`door` or `box`), chosen
+  by the broker. Only `door` plus the matching request reference completes an
+  existing connection ask; a keyless agent connection cannot approve model use.
+- Model receipts continue in the browser to the protected owner approval endpoint
+  in the box. It verifies the live door grant, prepares only credential-free
+  model metadata and raises the existing `bind_model_access` ask. The owner then
+  approves that ask. Existing automatic selection ranks all accepted sources;
+  the first source powers the default agent. No secret or flow enters the box.
+- Failed provider revocation still erases custody, but returns
+  `removed_locally_revoke_failed` and a durable provider recovery message.
+  Since the token is erased, recovery is manual revocation at the provider,
+  named from directory data; retrying removal retains that outcome.
 
 ## Founder decisions (2026-10-17)
 

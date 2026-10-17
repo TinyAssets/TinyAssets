@@ -44,6 +44,7 @@ let viewGeneration=0;
 const token=()=>accessToken,authHeaders=()=>accessToken?{Authorization:'Bearer '+accessToken}:{};
 let engineConnected=true,HostedModelConnect={setup:'connected',paint(){}};
 let failPost=false,postRefuses=false,meOk=true,getRefuses=false;
+let removalResult={status:'removed'};
 let connections=[{connection_id:'c1',destination:'my-service',incarnation:'first-incarnation'}];
 const fire=name=>{if(hooks[name])hooks[name]();};
 const fetch=async(url,options={})=>{
@@ -54,7 +55,7 @@ const fetch=async(url,options={})=>{
  fire(kind);                        // something changes while the call is in flight
  if(kind==='post'&&failPost)throw new Error('network result ambiguous');
  if(kind==='post')return {ok:!postRefuses,json:async()=>{fire('postJson');
-   return postRefuses?{error:'refused'}:{status:'removed'};}};
+   return postRefuses?{error:'refused'}:removalResult;}};
  if(kind==='me')return {ok:meOk,json:async()=>{fire('meJson');
    return {engine_connected:false,setup:'disconnected'};}};
  return {ok:!getRefuses,json:async()=>{fire('getJson');
@@ -437,3 +438,15 @@ def test_failed_json_after_account_change_has_no_stale_error_repaint(hook):
     assert "not confirmed" not in result["status"]
     assert "could not be re-read" not in result["status"]
     assert result["engineConnected"] is True
+
+
+@pytest.mark.parametrize("state_read", ["meOk=true;", "meOk=false;"])
+def test_failed_provider_revoke_stays_visible_after_local_removal(state_read):
+    message = ("Removed locally, but provider-side revocation failed. The token was erased, "
+               "so TinyAssets cannot retry; revoke it at Fixture (https://provider.example).")
+    result = run(state_read + "removalResult={status:'removed_locally_revoke_failed',message:"
+                 + json.dumps(message) + "};" + CONFIRM)
+    assert len(posts(result)) == 1
+    assert result["rows"][0]["removed"] is True
+    assert message in result["status"]
+    assert "provider account is unchanged" not in result["status"]

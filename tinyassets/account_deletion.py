@@ -1046,7 +1046,7 @@ def delete_account(
 ) -> dict[str, Any]:
     """Delete everything the platform holds for ``founder_sub`` and return a
     content-free receipt. Inside an owner daemon this erases only local data;
-    the shared door owns retirement and router credential cleanup.
+    the shared door owns volume destruction, billing, identity and credential cleanup.
 
     Raises :class:`AccountDeletionError` before changing anything when the
     principal is empty or the bound home path is unsafe, and
@@ -1211,7 +1211,7 @@ def delete_account(
 
         _phase("agent_session_records", _session_records)
 
-    billing = "not_configured"
+    billing = "deferred:door" if local_only else "not_configured"
     if home and not local_only:
         billing = _phase(
             "billing", lambda: (cancel_billing or cancel_stripe_billing)(home)
@@ -1219,7 +1219,7 @@ def delete_account(
     # A failed two-pass deletion resumes only under this principal's own
     # authenticated identity, so the sign-in identity outlives it.
     if local_only:
-        identity = "not_applicable"
+        identity = "deferred:door"
     else:
         identity = "deferred:owner_tree" if owner_tree_failed else _phase(
             "identity", lambda: (delete_identity or delete_workos_user)(principal)
@@ -1229,9 +1229,11 @@ def delete_account(
     # subscription may still be charging, and silence there is exactly the harm
     # (Codex round 3, finding 3). `not_configured` for identity means the WorkOS
     # user still exists and a host must remove it.
-    if billing not in ("cancelled", "none", "not_configured") and "billing" not in failures:
+    if (not local_only and billing not in ("cancelled", "none", "not_configured")
+            and "billing" not in failures):
         failures.append("billing")
-    if identity not in ("deleted", "not_applicable") and "identity" not in failures:
+    if (not local_only and identity not in ("deleted", "not_applicable")
+            and "identity" not in failures):
         failures.append("identity")
 
     receipt: dict[str, Any] = {

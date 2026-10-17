@@ -72,7 +72,11 @@ async def handle_model_connect(request):
         return JSONResponse({"error": "invalid_model_connection"}, 400, headers=_HEADERS)
     identity = current_identity()
 
+    resolved_center = ""
+
     def run():
+        nonlocal resolved_center
+
         from tinyassets.api.helpers import _base_path
         from tinyassets.broker.catalog import connections
         from tinyassets.broker.http_connect import connect_operation
@@ -97,6 +101,7 @@ async def handle_model_connect(request):
                 raise LookupError("center not found")
             center = connection_center(base, principal=owner,
                                        center=data.get("center") or requested)
+            resolved_center = center
             ref = data.get("request_ref", "")
             approval = None
             if operation in {"oauth_begin", "inline_begin", "source_sign_in"}:
@@ -183,6 +188,12 @@ async def handle_model_connect(request):
 
     try:
         result = await run_in_threadpool(run)
+        if result.get("status") == "provisioned" and not result.get("request_ref"):
+            from tinyassets.onboarding.source_connect import model_source
+
+            if model_source(result.get("allowed_endpoints", [])) is not None:
+                result["model_confirmation"] = {"grant_id": result["grant_id"],
+                                                "universe_id": resolved_center}
         return JSONResponse(result, headers=_HEADERS)
     except (hosted.HostedAuthError, FlowError) as exc:
         detail = getattr(exc, "detail", "") if operation in {"deposit", "rotate"} else ""
