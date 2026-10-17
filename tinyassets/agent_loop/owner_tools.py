@@ -30,8 +30,6 @@ from tinyassets.owner_runtime import current
 class OwnerTools(BoxTools):
     def __init__(self, universe_dir: Path):
         runtime = current()
-        if runtime is None:
-            raise RuntimeError("owner tools require owner startup admission")
         self.runtime = runtime
         self._root = str(universe_dir)
         self.provider = runtime.tools

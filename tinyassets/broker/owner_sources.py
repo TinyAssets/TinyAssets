@@ -43,10 +43,8 @@ def publish(ledger, owner, center, document):
     return {"id": definition.id}
 
 
-def backfill_metering(ledger, conn):
+def backfill_metering(conn):
     """Only promote old grants, from shared metadata the broker can itself read."""
-    from tinyassets.broker.provider_metadata import read_definitions
-    from tinyassets.owner_runtime import current
     from tinyassets.providers.definition import _verified_definition
 
     conn.execute(
@@ -67,11 +65,6 @@ def backfill_metering(ledger, conn):
         rows = [json.loads(row[0]) for row in conn.execute(
             "SELECT definition FROM box_model_sources WHERE center=?", (center,))
         ] if published else []
-        if current() is None:
-            try:
-                rows.extend(read_definitions(ledger._data_root, center))
-            except FileNotFoundError:
-                pass
         refs = set()
         for row in rows:
             definition = _verified_definition(row, expect_universe=center)

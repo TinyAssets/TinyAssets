@@ -146,8 +146,10 @@ def test_invalid_definition_is_rejected_without_a_partial_write(
 ) -> None:
     from tinyassets.commons_catalog import (
         AgentValidationError,
-        list_definitions,
         publish_definition,
+    )
+    from tinyassets.commons_catalog import (
+        _list_definitions as list_definitions,
     )
 
     with pytest.raises(AgentValidationError, match=path_fragment):
@@ -184,8 +186,10 @@ def test_component_remix_records_verified_multi_parent_lineage_atomically(
 ) -> None:
     from tinyassets.commons_catalog import (
         AgentValidationError,
-        list_definitions,
         publish_definition,
+    )
+    from tinyassets.commons_catalog import (
+        _list_definitions as list_definitions,
     )
 
     identity_parent = publish_definition(
@@ -642,7 +646,8 @@ def test_custom_agent_api_requires_auth_and_write_access_for_mutations(
 
 
 def test_concurrent_definition_retry_creates_exactly_one_artifact(tmp_path) -> None:
-    from tinyassets.commons_catalog import list_definitions, publish_definition
+    from tinyassets.commons_catalog import _list_definitions as list_definitions
+    from tinyassets.commons_catalog import publish_definition
 
     payload = _definition("Concurrent publish")
 

@@ -148,7 +148,7 @@ def test_model_capability_added_after_grant_latches_metering(tmp_path):
 
 
 @pytest.mark.parametrize("source", ["ordinary", "compute", "model_use", "model_discovery",
-                                   "published", "platform", "unknown"])
+                                   "published", "unknown"])
 @pytest.mark.parametrize("old_column", [False, True])
 def test_existing_grants_backfill_from_broker_state(tmp_path, source, old_column):
     ledger = ConnectionLedger(tmp_path / ".broker/outbound.db", data_root=tmp_path)
@@ -162,24 +162,15 @@ def test_existing_grants_backfill_from_broker_state(tmp_path, source, old_column
     )
     ledger.grant_connection(grant_id="grant", connection_id="connection",
                             owner_user_id="owner", universe_id="center")
-    if source in {"published", "platform"}:
-        import json
-
+    if source == "published":
+        from tinyassets.broker.owner_sources import publish
         from tinyassets.providers.definition import ProviderDefinition, _definition_id
 
         fields = dict(universe_id="center", owner_user_id="owner", access_method="api_key_http",
                       protocol="openai_chat", ref="grant", model="model")
         definition = ProviderDefinition(id=_definition_id(**fields), **fields,
                                         visibility="private", created_at="now").as_dict()
-        if source == "published":
-            from tinyassets.broker.owner_sources import publish
-
-            publish(ledger, "owner", "center", definition)
-        else:
-            path = tmp_path / "center/provider_definitions.json"
-            path.parent.mkdir()
-            path.write_text(json.dumps([definition]))
-            path.chmod(0o640)
+        publish(ledger, "owner", "center", definition)
     with ledger._connect() as conn:
         conn.execute("DELETE FROM broker_schema_migrations")
         if source in {"model_use", "model_discovery"}:
@@ -196,3 +187,17 @@ def test_existing_grants_backfill_from_broker_state(tmp_path, source, old_column
     reopened = ConnectionLedger(ledger._db_path, data_root=tmp_path)
     assert reopened.grant_requires_inference_usage("grant") == (
         source not in {"ordinary", "compute"})
+
+
+
+def test_backfill_never_reads_old_host_center_definitions(ordinary, monkeypatch):
+    from tinyassets.broker import provider_metadata
+
+    def forbidden(*args):
+        raise AssertionError("broker backfill must not read a private host center")
+    monkeypatch.setattr(provider_metadata, "read_definitions", forbidden)
+    with ordinary._connect() as conn:
+        conn.execute("DELETE FROM broker_schema_migrations")
+    reopened = ConnectionLedger(ordinary._db_path, data_root=ordinary._data_root)
+    assert reopened.grant_requires_inference_usage("grant") is False
+    assert not (ordinary._data_root / "center").exists()

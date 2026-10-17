@@ -60,7 +60,7 @@ class OwnerIngress:
             from tinyassets.owner_runtime import current
 
             runtime = current()
-            if runtime is None or identity.user_id != runtime.principal:
+            if identity.user_id != runtime.principal:
                 raise ValueError("request is not for this box's owner")
         except (ValueError, KeyError, TypeError):
             return await JSONResponse({"error": "router_required"}, status_code=401)(

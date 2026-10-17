@@ -355,34 +355,6 @@ def retire_owner(data_root: Path, *, principal: str):
         raise RuntimeError("owner retirement refused")
 
 
-def center_admission(data_root: Path, *, event: str, principal: str,
-                     center: str) -> tuple[int, int]:
-    """Append an admit/retire row through the broker; returns (generation, machine)."""
-    if event not in ADMISSION_EVENTS:
-        raise ValueError("invalid admission event")
-    validate_principal(principal)
-    validate_center(center)
-    from tinyassets.owner_runtime import current
-
-    if current() is not None:
-        from tinyassets.owner_channel import request
-
-        result = request("", {"op": "RETIRE_CENTER" if event == "retire" else "ADMIT_CENTER",
-                              "center": center})
-        return result["generation"], result["machine"]
-    answer = _owner_request(data_root, {"op": "CENTER_ADMISSION", "event": event,
-                                        "principal": principal, "center": center})
-    if answer == {"op": "CENTER_ADMISSION_UNADMITTED"}:
-        raise CenterUnadmitted("the admission log never admitted this center")
-    if (set(answer) != {"op", "generation", "machine"}
-            or answer["op"] != "CENTER_ADMISSION_IS"
-            or type(answer["generation"]) is not int or answer["generation"] < 1
-            or type(answer["machine"]) is not int
-            or not OWNER_ID_FIRST <= answer["machine"] <= OWNER_ID_LAST):
-        raise RuntimeError("center admission refused")
-    return answer["generation"], answer["machine"]
-
-
 def owner_identity(data_root: Path, *, principal: str, allocate: bool = False) -> OwnerIdentity:
     """Resolve through the authenticated broker; never open its database locally."""
     validate_principal(principal)

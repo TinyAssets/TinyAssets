@@ -157,17 +157,6 @@ def test_owner_channel_admission_retry_and_refusals(broker, tmp_path, monkeypatc
     assert request(broker) == refused
 
 
-def test_client_distinguishes_a_never_admitted_retire(monkeypatch, tmp_path):
-    from tinyassets.broker import owner_identities
-
-    answers = iter([{"op": "CENTER_ADMISSION_UNADMITTED"}, {"op": "CENTER_ADMISSION_REFUSED"}])
-    monkeypatch.setattr(owner_identities, "_owner_request", lambda root, doc: next(answers))
-    with pytest.raises(owner_identities.CenterUnadmitted):
-        owner_identities.center_admission(tmp_path, event="retire", principal="alice",
-                                          center="alice-home")
-    with pytest.raises(RuntimeError, match="refused"):
-        owner_identities.center_admission(tmp_path, event="retire", principal="alice",
-                                          center="alice-home")
 
 
 def test_owner_retirement_is_fenced_complete_and_retryable(broker, tmp_path, monkeypatch):  # noqa: F811

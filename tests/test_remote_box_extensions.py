@@ -278,7 +278,8 @@ def test_turn_hooks_run_in_the_turns_remote_box(world, tmp_path, monkeypatch):
     root, store = _owner_store(server)
     content = _package()
     content["run.py"] = (b'#!/usr/bin/env python3\nimport json,sys\n'
-                         b'open("/cc/turn-hook.log","a").write(sys.argv[1]+"\\n")\n'
+                         b'open(' + repr(str(root / "turn-hook.log")).encode()
+                         + b',"a").write(sys.argv[1]+"\\n")\n'
                          b'print(json.dumps({"ok":True}))\n')
     _activate(server, store, content)
 
@@ -295,13 +296,13 @@ def test_turn_hooks_run_in_the_turns_remote_box(world, tmp_path, monkeypatch):
                 owner=server._ACTOR_ID, turn=SimpleNamespace(turn_id="turn-1"),
                 _interrupted=lambda: False)
             coordinator._open_tools = lambda timeout: tool_session.open_loop_tools(
-                granted=("bash",), bind_box=lambda: (tools, "/cc"),
+                granted=("bash",),
                 owner=server._ACTOR_ID, universe_dir=root,
                 engine_identity=lambda: (server._ACTOR_ID, root.name),
                 timeout=timeout, ta_turn="turn-1")
             assert await turn_event(coordinator, "turn_start", {"turn_id": "turn-1"}) is None
 
     asyncio.run(run())
-    assert (tmp_path / "boxes" / "u-alpha" / "turn-hook.log").read_text() == "start\n"
+    assert (root / "turn-hook.log").read_text() == "start\n"
     # The hook ran in the box, not the platform's local jail.
     assert not (root / ".agent-workspace" / "turn-hook.log").exists()

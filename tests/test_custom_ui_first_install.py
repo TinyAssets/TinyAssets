@@ -25,7 +25,9 @@ from tinyassets.commons_catalog import (
     AgentValidationError,
     _agent_connect,
     list_bindings,
-    list_definitions,
+)
+from tinyassets.commons_catalog import (
+    _list_definitions as list_definitions,
 )
 
 ALICE, BOB = "alice", "bob"

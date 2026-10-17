@@ -81,3 +81,24 @@ def test_owner_work_releases_gate_after_failure(monkeypatch):
         work()
     assert activity.active == 0
     assert activity.status(drain=True)["draining"] is True
+
+
+
+def test_session_loads_local_agent_without_a_shared_binding(tmp_path, monkeypatch):
+    from tinyassets.control_plane import session
+
+    center = tmp_path / "center"
+    center.mkdir()
+    (center / "AGENTS.md").write_text("Local owner instructions.")
+    monkeypatch.setattr(served_chat, "configured_box_provider", forbidden)
+    monkeypatch.setattr(owner_runtime, "current", forbidden)
+    monkeypatch.setattr(binding, "file_binding", lambda root: None)
+    seen = []
+    def execute(agent, message, parent):
+        seen.append((agent.instructions, message, parent.owner))
+        return "done"
+    monkeypatch.setattr(session, "_owner_turn", execute)
+    parent = session.OwnerTurn(tmp_path, "center", "alice", "founder", "thread:owner")
+    assert session.start("main", "hello", parent) == "done"
+    assert seen == [("Local owner instructions.", "hello", "alice")]
+    assert binding.current_binding() is None

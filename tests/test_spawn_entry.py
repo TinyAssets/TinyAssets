@@ -76,24 +76,14 @@ def test_every_parent_kind_resolves_the_agent_from_its_files(tmp_path, _owner_bo
     theirs.mkdir()
     (theirs / "settings.yaml").write_text("schema_version: 1\nagent: {owner: p}\n",
                                           encoding="utf-8")
-    from tinyassets.boxes.provider import ExecLimits
-    from tinyassets.control_plane.binding import SessionBinding
+    (tmp_path / "elsewhere").mkdir()
 
-    def admitted(center):
-        # A child carries its parent's admitted binding on the owner box.
-        (tmp_path / center).mkdir(exist_ok=True)
-        handle = _owner_box_double.bind_under(tmp_path, center, account_id="o",
-                                              turn_id=f"parent-{center}")
-        return SessionBinding(_owner_box_double, handle, ExecLimits(), tmp_path / center)
-
-    parent = session.ChildOf(base_path=tmp_path, universe_id="u", owner="o", agent_id="main",
-                             box_binding=admitted("u"))
+    parent = session.ChildOf(base_path=tmp_path, universe_id="u", owner="o", agent_id="main")
     with pytest.raises(session.AgentUnavailable):
         session.start("nobody", "hi", parent)
     with pytest.raises(session.AgentUnavailable):
         session.start("scout", "hi", session.ChildOf(
-            base_path=tmp_path, universe_id="elsewhere", owner="o", agent_id="main",
-            box_binding=admitted("elsewhere")))
+            base_path=tmp_path, universe_id="elsewhere", owner="o", agent_id="main"))
     # A co-admin's own agent on this shared command center is not "o"'s to start.
     with pytest.raises(session.AgentUnavailable):
         session.start("theirs", "hi", parent)
@@ -103,4 +93,4 @@ def test_every_parent_kind_resolves_the_agent_from_its_files(tmp_path, _owner_bo
     with pytest.raises(ActivityRefused):
         session.start("scout", "hi", session.ChildOf(
             base_path=tmp_path, universe_id="u", owner="o", agent_id="main",
-            inside_activity=True, box_binding=admitted("u")))
+            inside_activity=True))

@@ -241,7 +241,20 @@ def install(monkeypatch):
         """
         root = Path(os.path.abspath(root))
         current = binding_module.current_binding()
-        if (current is not None or root.name.startswith(".")
+        # Explicit handles still exercise the deferred per-call backend. The
+        # owner daemon's local tools do not use this test-only binding seam.
+        if current is not None:
+            if root == current.universe_dir:
+                current.validate(current.handle.account_id, root)
+                return current
+            if (root.is_relative_to(current.universe_dir)
+                    or (root.parent == current.universe_dir.parent
+                        and not root.name.startswith("."))):
+                from tinyassets.boxes.provider import BoxAuthError
+
+                raise BoxAuthError("owner file access differs from admitted test session")
+            return None
+        if (root.name.startswith(".")
                 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", root.name)):
             return real_file_binding(root)
         if not root.is_dir():
@@ -274,6 +287,47 @@ def install(monkeypatch):
         return 1
 
     monkeypatch.setattr(lifecycle, "admit_center", admit_center)
+    # Owner tool calls now use the actual in-process OwnerTools/OwnerBoxd.
+    # Only startup admission is simulated; no per-call execution provider runs.
+    from contextvars import ContextVar
+
+    from tinyassets import owner_runtime
+    from tinyassets.agent_loop import owner_tools
+    from tinyassets.boxes.boxd import OwnerBoxd
+
+    admitted = ContextVar("test_owner_tool_admission", default=None)
+    original_current = owner_tools.current
+    original_tools_for = owner_tools.tools_for
+    local_cores = {}
+    monkeypatch.setattr(owner_tools, "current", lambda: original_current() or admitted.get())
+
+    def local_tools_for(universe_dir):
+        root = Path(universe_dir).absolute()
+        if original_current() is not None:
+            return original_tools_for(root)
+        owner = double.admitted_owner(root.parent, root.name)
+        key = (root.parent, owner)
+        if key not in local_cores:
+            state = Path(double._state) / ("local-" + hashlib.sha256(str(key).encode()).hexdigest())
+            core = OwnerBoxd(owner_id=owner, owner_root=root.parent, state_dir=state)
+            local_cores[key] = core
+        runtime = owner_runtime.OwnerRuntime(owner, os.getuid(), root.parent,
+                                             os.getpid(), local_cores[key])
+        token = admitted.set(runtime)
+        try:
+            return original_tools_for(root)
+        finally:
+            admitted.reset(token)
+
+    monkeypatch.setattr(owner_tools, "tools_for", local_tools_for)
+    previous_close = double.close
+
+    def close():
+        for core in local_cores.values():
+            core.close()
+        previous_close()
+
+    double.close = close
     return double
 
 

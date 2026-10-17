@@ -11,11 +11,8 @@ from types import SimpleNamespace
 import pytest
 
 from tests import test_interactive_http_agent as base
-from tests.agent_loop_fakes import FakeBox
 from tinyassets.agent_loop import served_chat
-from tinyassets.boxes import ExecLimits
-from tinyassets.control_plane.binding import bind_session, use_binding
-from tinyassets.engine_tool_client import EngineToolError
+from tinyassets.control_plane.binding import use_binding
 
 rig = base.rig
 reader = base.reader
@@ -25,36 +22,20 @@ run = base.run
 
 @pytest.fixture
 def agent(base_agent, monkeypatch):
-    box = FakeBox(lambda argv, stdin: (
-        b'\x1eTA1 {"ready":true}\n\x1eTA1 '
-        + json.dumps({"output": base64.b64encode(b"box says hi").decode()})
-        .encode() + b'\n', 0))
-    # This integration fixture scripts execution and owner-file transport;
-    # starter admission now reads through that same bound provider.
-    root = base_agent.served.context.universe_dir
-    files = {p.relative_to(root).as_posix(): p.read_bytes()
-             for p in root.rglob("*") if p.is_file()}
+    from tinyassets.agent_loop.owner_tools import OwnerTools
 
-    def read(handle, path, *, max_bytes):
-        if path not in files:
-            raise FileNotFoundError(path)
-        return SimpleNamespace(data=files[path][:max_bytes], size=len(files[path]), generation=1)
+    observed = SimpleNamespace(starts=[], commands=[])
+    original = OwnerTools.bash
 
-    def write(handle, op_id, path, data, **kwargs):
-        files[path] = data
-        return SimpleNamespace(generation=1)
+    async def bash(self, op_id, command, timeout=0, **kwargs):
+        observed.starts.append(op_id)
+        observed.commands.append(command)
+        return await original(self, op_id, command, timeout, **kwargs)
 
-    box.read, box.write = read, write
-    monkeypatch.setattr(served_chat, "_box_provider", box)
-    monkeypatch.setattr(served_chat, "_box_limits", ExecLimits())
-    base_agent.box = box
+    monkeypatch.setattr(OwnerTools, "bash", bash)
+    base_agent.box = observed
     base_agent.adapter = served_chat.ThinLoopChatAdapter()
-    base_agent.binding = bind_session(
-        provider=box, limits=ExecLimits(),
-        universe_dir=base_agent.served.context.universe_dir, owner="owner",
-        execution_id="durable-send:test")
-    with use_binding(base_agent.binding):
-        yield base_agent
+    yield base_agent
 
 
 base_agent = base.agent
@@ -73,33 +54,20 @@ def test_thin_loop_model_inventory_is_exactly_four(agent):
 
 
 def test_box_tool_runs_in_the_bound_box_by_journal_op_id(agent):
-    agent.tool_call = ("bash", '{"command": "echo hi"}')
+    root = agent.served.context.universe_dir
+    agent.tool_call = ("bash", '{"command": "printf local > proof.txt; cat proof.txt"}')
     assert run(agent) == "finished exact answer"
     turn = agent.latest()
     assert turn.state == "completed"
-    # Bound ONCE at turn start, to this owner and command center and turn.
-    assert agent.box.binds == [(agent.served.context.universe_dir.name, "owner",
-                                agent.binding.session_id)]
     assert agent.box.starts == [f"{turn.turn_id}:1:1"]
-    argv = agent.box.execs[f"{turn.turn_id}:1:1"].argv
-    assert argv[:2] == ["python3", "-c"]
-    assert json.loads(agent.box.execs[f"{turn.turn_id}:1:1"].stdin)["command"] == "echo hi"
-    assert "TA_SOCKET" in argv[2]
-    # Never forwarded to the engine route.
+    assert agent.box.commands == ["printf local > proof.txt; cat proof.txt"]
+    assert (root / "proof.txt").read_text() == "local"
+    assert _last_tool_text(agent) == "local\n[exit code 0]"
     assert agent.tools == []
-    assert _last_tool_text(agent) == "box says hi\n[exit code 0]"
+    assert turn.rounds[0].tools[0].state == "completed"
+    assert len(turn.rounds) == 2
 
 
-def test_unknown_box_outcome_holds_the_turn_and_nothing_replays(agent):
-    agent.box.fail_start = 2
-    agent.tool_call = ("bash", '{"command": "rm -rf build"}')
-    with pytest.raises(EngineToolError, match="unknown"):
-        run(agent)
-    turn = agent.latest()
-    assert turn.state == "held_tool_unknown"
-    # One model round, the same op_id asked twice, no second inference.
-    assert len(agent.wires) == 1
-    assert set(agent.box.starts) == {f"{turn.turn_id}:1:1"}
 
 
 @pytest.mark.parametrize("name", ["history", "activity"])
@@ -112,84 +80,54 @@ def test_direct_owner_reads_are_not_model_tools(agent, name):
 
 @pytest.mark.parametrize("target", ["status", "conversation", "runs"])
 def test_engine_tools_keep_their_engine_route(agent, monkeypatch, target):
-    """Four model tools: engine capabilities are reached by ``ta`` in the box,
-    over the turn's own signed engine session, never as a model tool."""
-    from types import SimpleNamespace
-
     from tinyassets import engine_tool_client
     from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
 
-    message = {"op": "call", "name": "read_graph", "arguments": {"target": target}}
-    request, delivery = "a" * 32, "b" * 32
-    agent.box.script = lambda argv, stdin: (
-        b'\x1eTA1 {"ready":true}\n\x1eTA1 '
-        + json.dumps({"request": request, "message": message, "delivery": delivery}).encode()
-        + b'\n\x1eTA1 '
-        + json.dumps({"output": base64.b64encode(b"read it").decode()}).encode() + b'\n', 0)
     opened, asked = [], []
     real_open, real_client = engine_tool_client.open_engine_tools, engine_tool_client._make_client
-
     def open_engine_tools(**kwargs):
         opened.append(kwargs)
         return real_open(**kwargs)
-
     def make_client(*args):
         client = real_client(*args)
-
         async def read_resource(uri):
             payload = uri.removeprefix("ta-bridge://request/")
-            asked.append(json.loads(base64.urlsafe_b64decode(payload)))
-            return [SimpleNamespace(text=json.dumps({"result": "status"}))]
-
+            message = json.loads(base64.urlsafe_b64decode(payload))
+            asked.append(message)
+            if message == {"deliver": "extensions"}:
+                result = {"extensions": [], "undelivered": []}
+            elif message == {"op": "catalog"}:
+                result = {"capabilities": [{"name": "read_graph"}]}
+            else:
+                result = {"result": "status"}
+            return [SimpleNamespace(text=json.dumps(result))]
         client.read_resource = read_resource
         return client
-
     monkeypatch.setattr("tinyassets.agent_loop.tool_session.open_engine_tools", open_engine_tools)
     monkeypatch.setattr(engine_tool_client, "_make_client", make_client)
-    agent.tool_call = ("bash", json.dumps({"command": "ta call read_graph"}))
+    command = "ta read_graph --json '" + json.dumps({"target": target}) + "'"
+    agent.tool_call = ("bash", json.dumps({"command": command}))
     assert run(agent) == "finished exact answer"
-    # The model saw only the four box tools.
     offered = {t["function"]["name"] for t in agent.wires[0][1]["body"]["tools"]}
     assert offered == {"read", "write", "edit", "bash"}
-    # The engine session displays bash alone but carries the turn's backend grant.
     assert [(o["enabled_tools"], o["capability_grant"]) for o in opened] == [
         (("bash",), BACKEND_ENGINE_CAPABILITIES)]
-    # The box's ta request went to the engine route, verbatim, not as a tool call.
-    assert asked == [message] and agent.tools == []
-    turn = agent.latest()
-    (sent,) = agent.box.stdin_sent
-    assert sent[:2] == (f"{turn.turn_id}:1:1", delivery)
-    assert json.loads(sent[2]) == {"request": request, "answer": {"result": "status"}}
-    assert _last_tool_text(agent) == "read it\n[exit code 0]"
+    assert asked == [{"op": "catalog"},
+                     {"op": "call", "name": "read_graph", "arguments": {"target": target}}]
+    assert agent.tools == []
+    assert agent.box.commands == [command]
+    assert agent.box.starts == [f"{agent.latest().turn_id}:1:1"]
+    assert '"status"' in _last_tool_text(agent)
+    assert _last_tool_text(agent).endswith("[exit code 0]")
 
 
-def test_no_box_provider_refuses_before_any_tool_runs(agent, monkeypatch):
-    monkeypatch.setattr(served_chat, "_box_provider", None)
-    agent.tool_call = ("bash", '{"command": "true"}')
-    with use_binding(None), pytest.raises(EngineToolError, match="box_unavailable"):
-        run(agent)
-    assert agent.wires == [] and agent.tools == []
 
 
-def test_session_handle_is_not_rebound_for_tools(agent, monkeypatch):
-    def rebind(*args, **kwargs):
-        raise AssertionError("tools may not mint a new session")
-
-    monkeypatch.setattr(agent.box, "bind", rebind)
-    agent.tool_call = ("bash", '{"command": "true"}')
-    assert run(agent) == "finished exact answer"
-    assert agent.box.starts and agent.tools == []
 
 
-def test_no_binding_keeps_the_engine_tool_adapter(agent):
-    agent.adapter = served_chat.ServedChatAgentAdapter()
-    agent.tool_call = ("bash", '{"command": "true"}')
-    with use_binding(None):
-        assert run(agent) == "finished exact answer"
-    assert agent.box.starts == [] and agent.tools == [("bash", {"command": "true"})]
 
 
-def test_the_served_chat_factory_selects_the_thin_loop_only_with_binding(agent, monkeypatch):
+def test_the_served_chat_factory_always_selects_the_local_thin_loop(agent, monkeypatch):
     from tinyassets.providers import call
 
     built = []
@@ -209,6 +147,6 @@ def test_the_served_chat_factory_selects_the_thin_loop_only_with_binding(agent, 
     with use_binding(None):
         adapter = factory_adapter()
     assert isinstance(adapter, served_chat.ServedChatAgentAdapter)
-    assert not isinstance(adapter, served_chat.ThinLoopChatAdapter)
+    assert isinstance(adapter, served_chat.ThinLoopChatAdapter)
     monkeypatch.delenv("TINYASSETS_AGENT_LOOP")
     assert isinstance(factory_adapter(), served_chat.ThinLoopChatAdapter)

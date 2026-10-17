@@ -4671,17 +4671,11 @@ async def _universe_tool(op, /, **kwargs) -> str:
     if required == 'read' and PurePosixPath(str(kwargs.get('path', ''))).suffix.lower() in (
             '.png', '.jpg', '.jpeg', '.webp', '.gif'):
         capability = 'read_image'
-    from tinyassets.control_plane.binding import active_binding, use_binding
 
     try:
         udir = _universe_dir(_GRAPH_ID)
-        binding = active_binding(_ACTOR_ID, _GRAPH_ID)
-        from tinyassets.owner_runtime import current
 
-        if binding is None and current() is None:
-            return "error: no admitted session owns this command center's box"
-        with use_binding(binding):
-            result = await asyncio.to_thread(op, udir, **kwargs)
+        result = await asyncio.to_thread(op, udir, **kwargs)
         error = result_error(result)
         if error is not IGNORED:
             RATES.record(capability, failure_code(error) if error else 'ok')

@@ -2,7 +2,7 @@
 
 Google Play requires any app that lets people create an account to offer a
 deletion path inside the app AND on a public web page; ``/legal`` promises the
-same erasure. ``delete_account`` is that path.
+same erasure. ``delete_account`` performs the box-local part of that operation.
 
 **The row set is derived from the schema, not from a list.** The first draft
 carried a hand-written table list, which is the "two definitions of one fact"
@@ -34,9 +34,9 @@ your data" false.
 **Order.** The home and sidecar are staged as separate children under
 ``.deleting/<home>/``; a crash between their renames resumes from that container.
 Then every root-database row in one transaction, then the satellite
-databases, then the directory, then billing, then identity. Each phase is
-isolated: a failure in one never prevents the next, because the phase that must
-not be skipped is the one that stops the money. Anything unfinished is written
+databases, then the local directory. Router retirement, shared credentials,
+billing and identity are outside this helper. Each local phase is isolated:
+a failure in one never prevents the next. Anything unfinished is written
 to a durable receipt under ``.account-deletions/`` and logged at ERROR — never
 swallowed (Hard Rule 8).
 """
@@ -47,22 +47,16 @@ import hashlib
 import json
 import logging
 import os
-import re
 import shutil
 import sqlite3
 import stat
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-_WORKOS_USER_ID = re.compile(r"user_[A-Za-z0-9]+\Z")
-_WORKOS_BASE_URL = "https://api.workos.com"
 _STAGING_DIR = ".deleting"
 _RECEIPT_DIR = ".account-deletions"
 
@@ -895,71 +889,6 @@ def _authoring_session_ids(root: Path, principal: str) -> list[str]:
         conn.close()
 
 
-# --------------------------------------------------------------------------- #
-# billing + identity (injectable; defaults talk to Stripe and WorkOS)
-# --------------------------------------------------------------------------- #
-
-
-def cancel_stripe_billing(home: str) -> str:
-    """Cancel the home's subscription NOW. Returns ``cancelled`` / ``none`` /
-    ``not_configured`` / ``unavailable``; raises on a Stripe failure."""
-    from tinyassets.billing import BillingUnavailable
-    from tinyassets.billing.stripe_adapter import (
-        billing_enabled,
-        cancel_subscription,
-        find_active_subscription,
-    )
-
-    if not home or not billing_enabled():
-        return "not_configured"
-    try:
-        subscription_id = find_active_subscription(home)
-    except BillingUnavailable:
-        return "unavailable"
-    if not subscription_id:
-        return "none"
-    cancel_subscription(subscription_id, immediately=True)
-    return "cancelled"
-
-
-def delete_workos_user(
-    user_id: str, *, request: Callable[..., Any] | None = None
-) -> str:
-    """Delete the WorkOS user record — which is also what ends sessions this
-    process cannot enumerate: another device's refresh handle is opaque here, so
-    upstream deletion, not local sweeping, is what stops it renewing. Returns
-    ``deleted`` / ``not_configured`` / ``not_applicable``; raises
-    :class:`AccountDeletionError` (secret-free) on an API failure."""
-    api_key = os.environ.get("WORKOS_API_KEY", "").strip()
-    if not api_key:
-        return "not_configured"
-    if _WORKOS_USER_ID.fullmatch(user_id) is None:
-        return "not_applicable"
-    req = urllib.request.Request(
-        f"{_WORKOS_BASE_URL}/user_management/users/{urllib.parse.quote(user_id, safe='')}",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Accept": "application/json",
-            "User-Agent": "tinyassets-account-deletion/1.0",
-        },
-        method="DELETE",
-    )
-    opener = request or urllib.request.urlopen
-    try:
-        with opener(req, timeout=20) as response:
-            status = int(getattr(response, "status", 200) or 200)
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return "deleted"  # already gone — the outcome the caller wanted
-        raise AccountDeletionError(
-            f"WorkOS user deletion failed (HTTP {exc.code})"
-        ) from None
-    except (urllib.error.URLError, TimeoutError, OSError):
-        raise AccountDeletionError("WorkOS user deletion request failed") from None
-    if status in (200, 202, 204):
-        return "deleted"
-    raise AccountDeletionError(f"WorkOS user deletion returned HTTP {status}")
-
 
 # --------------------------------------------------------------------------- #
 # the operation
@@ -997,33 +926,10 @@ def pending_deletions(base_path: str | Path) -> list[dict[str, Any]]:
     return out
 
 
-def _destroy_owner_box(root: Path, home: str, *, principal: str):
-    """C12's destruction-only admission and stable receipt contract."""
-    from tinyassets.agent_loop.served_chat import configured_box_provider
-    from tinyassets.boxes.provider import DestroyReceipt
-
-    provider, _ = configured_box_provider()
-    if provider is None or not callable(getattr(provider, "bind_for_destroy", None)):
-        raise AccountDeletionError("authenticated owner destruction is unavailable")
-    op_id = "account-delete-" + hashlib.sha256(
-        (principal + "\x00" + home).encode("utf-8")
-    ).hexdigest()
-    handle = provider.bind_for_destroy(home, account_id=principal)
-    result = provider.destroy(handle, op_id)
-    if (not isinstance(result, DestroyReceipt) or result.command_center_id != home
-            or result.op_id != op_id or type(result.files_removed) is not int
-            or result.files_removed < 0 or type(result.new_epoch) is not int
-            or result.new_epoch < 1):
-        raise AccountDeletionError("invalid durable owner destruction receipt")
-    return result
-
-
 def delete_account(
     base_path: str | Path,
     *,
     founder_sub: str,
-    cancel_billing: Callable[[str], str] | None = None,
-    delete_identity: Callable[[str], str] | None = None,
 ) -> dict[str, Any]:
     """Delete everything the platform holds for ``founder_sub`` and return a
     content-free receipt. Inside an owner daemon this erases only local data;
@@ -1032,15 +938,12 @@ def delete_account(
     Raises :class:`AccountDeletionError` before changing anything when the
     principal is empty or the bound home path is unsafe, and
     :class:`AccountDeletionBlocked` when someone else's data or live work is in
-    scope. After tombstoning, phase failures never stop billing cancellation
-    and anything unfinished lands in a durable receipt. Failed staging keeps
+    scope. After tombstoning, anything unfinished lands in a durable receipt. Failed staging keeps
     the home binding solely so a retry can finish moving the remaining source.
     """
     from tinyassets.daemon_server import _connect, get_founder_home, initialize_author_server
-    from tinyassets.owner_runtime import current
     from tinyassets.principals import named_principal
 
-    local_only = current() is not None
     principal = named_principal(founder_sub)
     if not principal:
         raise AccountDeletionError("no authenticated principal to delete")
@@ -1100,33 +1003,16 @@ def delete_account(
         with _connect(root) as conn:
             _delete_root_rows(conn, principal=principal, home=home, counts=counts)
 
-    def _owner_tree():
-        return _destroy_owner_box(root, home, principal=principal)
 
-    destroyed = _phase("owner_tree", _owner_tree) if home and not local_only else None
-    owner_tree_failed = "owner_tree" in failures
-
-    def _broker_rows() -> None:
-        from tinyassets.broker.account_erasure import erase_account
-
-        removed = erase_account(root, principal=principal)
-        counts.update({f"outbound:{table}": n for table, n in removed.items()})
-
-    if not local_only:
-        _phase("broker_egress", _broker_rows)
-
-    # After the two-pass deletion only the sidecar remains to stage.
+    # Stage local owner data before removing its root binding.
     staged = _phase(
         "home_staging", lambda: _stage_home(root, home)
-    ) if home and not owner_tree_failed else None
+    ) if home else None
     staging_failed = "home_staging" in failures
-    if owner_tree_failed:
-        # Keep the binding: a retry resumes pass one under the same intent.
-        failures.append("root_rows")
-    elif staging_failed:
+    if staging_failed:
         # Keep the home binding so a retry can finish the deterministic staging
-        # container, even when the home itself has already moved. Billing and
-        # the other independent phases still run and failures get a receipt.
+        # container, even when the home itself has already moved.
+        # Independent local phases still run and failures get a receipt.
         failures.append("root_rows")
     else:
         _phase("root_rows", _root_rows)
@@ -1149,8 +1035,7 @@ def delete_account(
 
         _phase("authoring_blobs", _blobs)
 
-    home_removed = (staged is None and not staging_failed and not owner_tree_failed
-                    or destroyed is not None)
+    home_removed = staged is None and not staging_failed
     staged_path = str(root / _STAGING_DIR / home) if staging_failed else ""
     if staged is not None:
         def _remove() -> None:
@@ -1193,27 +1078,7 @@ def delete_account(
         _phase("agent_session_records", _session_records)
 
     billing = "not_configured"
-    if home and not local_only:
-        billing = _phase(
-            "billing", lambda: (cancel_billing or cancel_stripe_billing)(home)
-        ) or "error"
-    # A failed two-pass deletion resumes only under this principal's own
-    # authenticated identity, so the sign-in identity outlives it.
-    if local_only:
-        identity = "not_applicable"
-    else:
-        identity = "deferred:owner_tree" if owner_tree_failed else _phase(
-            "identity", lambda: (delete_identity or delete_workos_user)(principal)
-        ) or "error"
-    # An outcome that is neither "done" nor "nothing to do" is UNFINISHED, even
-    # though nothing raised: `unavailable` means we could not reach Stripe, so a
-    # subscription may still be charging, and silence there is exactly the harm
-    # (Codex round 3, finding 3). `not_configured` for identity means the WorkOS
-    # user still exists and a host must remove it.
-    if billing not in ("cancelled", "none", "not_configured") and "billing" not in failures:
-        failures.append("billing")
-    if identity not in ("deleted", "not_applicable") and "identity" not in failures:
-        failures.append("identity")
+    identity = "not_applicable"
 
     receipt: dict[str, Any] = {
         "principal_fingerprint": fingerprint,
@@ -1226,13 +1091,6 @@ def delete_account(
         "unfinished_phases": sorted(failures),
         "retained": list(RETAINED),
     }
-    if destroyed is not None:
-        receipt["box_destroy"] = {
-            "command_center_id": destroyed.command_center_id, "op_id": destroyed.op_id,
-            "files_removed": destroyed.files_removed, "new_epoch": destroyed.new_epoch,
-        }
-    if owner_tree_failed:
-        receipt["home_deletion_pending"] = True
     if failures:
         receipt["host_receipt_path"] = _write_unfinished_receipt(root, receipt)
     logger.info(
@@ -1251,10 +1109,8 @@ __all__ = [
     "RETAINED",
     "AccountDeletionBlocked",
     "AccountDeletionError",
-    "cancel_stripe_billing",
     "delete_account",
     "deletion_blockers",
     "deletion_plan",
-    "delete_workos_user",
     "pending_deletions",
 ]

@@ -1326,3 +1326,197 @@ Validation for product commit `384b9305d6b` and the final fixture port:
 The validation/fixture follow-up changes no product behavior beyond
 `384b9305d6b`. D7's full static scan and the remaining 1b fork inventory above
 are still incomplete.
+
+
+## 6a part 1c: classified deletion subset (2026-10-17, incomplete)
+
+This pass completes **20 classified rows**: 15 LEGACY_SHARED, four
+UNREACHABLE_ROLE and the unused admission-wrapper UNSURE. All 29 ROLE_DISPATCH
+rows remain. The other 21 rows and D7 enforcement remain unfinished; the 6a
+dual-path bullet is deliberately unchecked. No slice 6 file, old-path probe,
+production surface, branch configuration or remote Git state changed.
+
+Every deletion was checked against its implementation and production callers.
+The classification was confirmed for all sites changed here; no listed legacy
+site was reclassified as role dispatch.
+
+| File:function (under tinyassets/) | Disposition |
+| --- | --- |
+| `account_deletion.py:delete_account` | Keep local erasure; remove host destroy, broker erasure, billing and identity phases and their unused helpers. |
+| `agent_loop/owner_tools.py:OwnerTools.__init__` | Keep startup-admitted tools; remove the unreachable None-role arm. |
+| `agent_loop/tool_session.py:open_loop_tools` | Keep local tools_for/enable_ta; remove injected binder and exec-provider bridge. |
+| `boxes/lifecycle.py:admit_center` | Keep bound ADMIT_CENTER; remove host provisioning. |
+| `broker/owner_sources.py:backfill_metering` | Keep broker capabilities/descriptors; remove role test AND obsolete private host metadata input. |
+| `commons_bundles.py:next_version` | Keep BOX_SHARED version reads. |
+| `commons_catalog.py:list_definitions` | Keep BOX_SHARED catalog reads; broker _list_definitions remains. |
+| `commons_catalog.py:_require_definition` | Keep missing public-definition fetch/copy, existing-row early return and final missing error. |
+| `control_plane/binding.py:file_binding` | Keep None for local owner files; remove shared session lookup/refusal routing. |
+| `control_plane/session.py:_binding` | Delete helper and binding-only starter scope/cancellation; load locally. Remove parent binding fields and both production carriers. |
+| `engine_mcp_server.py:_universe_tool` | Keep local operation; remove binding lookup, binding-required rejection and placement scope. |
+| `onboarding/owner_sessions.py:decision_session` | Keep exact forwarded protected proof; remove router-local transaction arm. |
+| `owner_ingress.py:OwnerIngress.__call__` | Keep admitted-principal comparison and secret/identity checks; remove unreachable runtime-None role alternative. |
+| `providers/call.py:make_interactive_agent_turn` | Always use ThinLoopChatAdapter. |
+| `storage_accounting.py:_center_bytes` | Keep local owner-root walk; delete host-provider measurement and its helper. |
+| `universe_tools.py:_box` | Keep local OwnerTools; remove BoxExecutor/session binding. |
+| `universe_tools.py:_operation_id` | Keep UUID operation IDs. |
+| `universe_tools.py:read_file` | Keep bounded local read_content image handling; delete exec-based _read_image. |
+| `universe_tools.py:_bash` | Keep local enable_ta; remove provider TurnBridge arm. |
+| `broker/owner_identities.py:center_admission` | UNSURE resolved: delete the unused wrapper after its sole production caller disappears. |
+
+The tool tests now use the actual local OwnerTools/OwnerBoxd and a real local
+bash/ta process. The default test double supplies startup admission at the
+local-tools seam; it does not invoke the deleted BoxExecutor binder. The
+journal-operation, tool inventory, steering, engine routing, hook execution,
+image and local file behavior survives. The package fixtures inject only the
+published-read transport and exercise the real broker catalog readers. Pure
+catalog store tests call those surviving readers directly. Root/row erasure,
+blocked deletion, tombstones, staging refusal and retry assertions remain;
+local deletion receipts no longer claim a prior host destruction. On linked
+staging refusal the original home remains intact; on partial staging the bytes
+stay in the recorded staging directory until retry succeeds. No surviving
+assertion count was reduced and no skip/xfail was added.
+
+UNSURE evidence and decisions:
+
+- `broker/owner_identities.py:center_admission`: the only production call was
+  `boxes/lifecycle.py:admit_center`'s host arm. The box calls ADMIT_CENTER on the
+  bound relay directly. Deleting that arm leaves no caller, so delete the whole
+  wrapper. Broker CENTER_ADMISSION remains an independently tested protocol
+  operation; the real-daemon retirement test now sends that operation directly.
+- `broker/client.py:BrokerClient.owner_policy`: classify as LEGACY_SHARED.
+  `onboarding_routes` registers `/app/api/policy`; `owner_router.forwarded_path`
+  forwards it and `create_streamable_http_app` removes that route from the router.
+  `_handle_policy` reads the private home and pending proposal in the BOX, then
+  calls `owner_policy_operation`. Other callers are owner policy_rules,
+  pending_requests and ta_capabilities. Protected authorization still lives at
+  the shared door/broker: the router forwards the session proof and broker
+  `PolicyStore._session` verifies the live router session row before write or
+  issue_once. The D3 phrase about protected writes describes that authorization
+  boundary, not a second host execution of the owner handler. Removing this
+  client's host arm and porting its protocol fixtures is **still pending**.
+
+D7 status: the router import/direct-file-access checks remain intact. The full
+mode scanner is **not installed**: 21 unretired sites still violate it. The exact
+29 reviewed role-boundary entries below are the allowlist to use when finishing
+it; no legacy site is grandfathered. Internal owner_runtime lifecycle state is
+owned by that module; branchless principal/root/tools reads are not mode forks.
+
+| File:function | One-line reason |
+| --- | --- |
+| `api_keys.py:current_store` | Router opens its key store; the box uses credential RPC. |
+| `broker/client.py:BrokerClient._owner_mode` | Shared management methods choose router or bound box transport. |
+| `broker/client.py:BrokerClient._connect` | Router management uses the host socket; boxes use the relay. |
+| `broker/client.py:BrokerClient.ledger_query` | Router connection completion and box grant reads share this client. |
+| `broker/client.py:BrokerClient.connection_catalog` | Router connections page and box catalog both query the broker. |
+| `broker/client.py:BrokerClient.disconnect` | Both the router door and box can revoke a connection. |
+| `broker/client.py:BrokerClient.http_connect` | Router deposits secrets; boxes connect without secrets. |
+| `broker/owner_identities.py:admitted_owner` | Router selects an admitted center; boxes use bound identity RPC. |
+| `broker/supervisor.py:get_supervisor` | Router owns the process supervisor; boxes receive a channel adapter. |
+| `commons_catalog.py:publish_definition` | Box publishes over RPC; broker writes its published store. |
+| `commons_catalog.py:get_definition` | Router reads published data; box reads it over the bound channel. |
+| `credential_vault.py:_credential_root` | Broker owns raw custody; direct box access must refuse. |
+| `onboarding/owner_sessions.py:require` | Router resolves cookies; boxes validate forwarded protected proof. |
+| `platform_runtime_provenance.py:_owner_observation` | Box provenance comes from relay admission; router observes its process. |
+| `universe_server.py:create_streamable_http_app` | One factory places routes, lifespans and authentication by process role. |
+| `api_keys.py:ApiKeyStore.db` | Router opens its key store; direct box access must refuse. |
+| `auth/provider.py:OAuthProvider.__init__` | Router constructs OAuth storage; direct box access must refuse. |
+| `auth/provider.py:OAuthProvider._connect` | Router opens OAuth storage; direct box access must refuse. |
+| `billing/plan_store.py:BillingPlans.__init__` | Router billing uses broker plans; a box cannot construct this writer. |
+| `broker/owner_reads.py:Plans.__init__` | Broker opens plans; boxes must use the bound channel. |
+| `broker/owner_reads.py:publish` | Broker writes published data; boxes must use the bound channel. |
+| `broker/policy.py:PolicyStore._session` | Broker verifies router session evidence; box cannot open that store. |
+| `connection_oauth/pkce.py:flows_db` | Router owns OAuth flows; direct box access must refuse. |
+| `onboarding/canary_sign_in.py:_limits` | Router owns sign-in limits; direct box access must refuse. |
+| `onboarding/native_sign_in.py:flows` | Router owns native sign-in flows; direct box access must refuse. |
+| `onboarding/owner_sessions.py:store` | Router owns sessions; box uses forwarded proof. |
+| `onboarding/session_store.py:store_dir` | Router owns refresh sessions; direct box access must refuse. |
+| `router_credentials.py:DeletedOwners.__init__` | Router owns deletion tombstones; direct box access must refuse. |
+| `router_credentials.py:HookOwners.__init__` | Router owns hook digests; boxes reach it through credential RPC. |
+
+Retirement inventory for this pass (the earlier 6a retirement inventory still
+applies). These are tests of removed shared-session/provider routing, remote
+handle generations/cancellation, unused wrapper parsing, private host metadata,
+host destruction, or owner-side broker/key/billing/identity cleanup. The
+surviving local behavior is covered by the ported suites and owner process
+proofs. Renamed ports are not counted as retirements.
+
+- `tests/test_agent_loop_tool_session.py::test_a_granted_box_tool_with_no_box_is_refused_before_anything_opens`
+- `tests/test_agent_loop_served_chat.py::test_unknown_box_outcome_holds_the_turn_and_nothing_replays`
+- `tests/test_agent_loop_served_chat.py::test_no_box_provider_refuses_before_any_tool_runs`
+- `tests/test_agent_loop_served_chat.py::test_session_handle_is_not_rebound_for_tools`
+- `tests/test_agent_loop_served_chat.py::test_no_binding_keeps_the_engine_tool_adapter`
+- `tests/test_control_plane_binding.py::test_session_binds_before_real_agent_loader_without_host_directory`
+- `tests/test_control_plane_binding.py::test_reconnect_reuses_durable_session_identity_and_does_not_cancel`
+- `tests/test_control_plane_binding.py::test_only_explicit_owner_stop_ends_the_box_session`
+- `tests/test_control_plane_binding.py::test_missing_stable_identity_refuses_before_files`
+- `tests/test_control_plane_binding.py::test_foreign_parent_binding_refuses_before_loading`
+- `tests/test_control_plane_binding.py::test_explicit_child_binding_survives_executor_handoff`
+- `tests/test_control_plane_binding.py::test_child_cannot_replace_its_live_parent_handle`
+- `tests/test_control_plane_binding.py::test_owner_box_layout_refuses_missing_provider_before_host_read`
+- `tests/test_control_plane_binding.py::test_bound_file_scope_rejects_another_owner_root`
+- `tests/test_control_plane_binding.py::test_mixed_agent_generations_refuse_before_executor`
+- `tests/test_control_plane_binding.py::test_named_agent_uses_one_snapshot_for_settings_and_instructions`
+- `tests/test_control_plane_binding.py::test_roster_change_between_pages_refuses_before_agent_files`
+- `tests/test_control_plane_binding.py::test_busy_roster_does_not_look_like_an_empty_agent_list`
+- `tests/test_center_admissions.py::test_client_distinguishes_a_never_admitted_retire`
+- `tests/test_box_lifecycle.py::test_committed_admission_refuses_missing_host_and_invalid_layout`
+- `tests/test_broker_model_grants.py::test_existing_grants_backfill_from_broker_state[platform-*] (two parametrizations: obsolete host definition input)`
+- `tests/test_account_deletion.py::test_failed_two_pass_owner_tree_keeps_the_binding_and_retry_resumes`
+- `tests/test_account_deletion.py::test_workos_deletion_failures_raise_without_the_key`
+- `tests/test_account_deletion.py::test_workos_deletion_sends_a_delete_and_treats_gone_as_done`
+- `tests/test_account_deletion.py::test_workos_deletion_skips_non_workos_principals`
+- `tests/test_account_deletion.py::test_workos_deletion_is_not_configured_without_a_key`
+- `tests/test_account_deletion.py::test_billing_and_identity_failures_are_reported_not_hidden`
+- `tests/test_account_deletion.py::test_an_unconfigured_identity_provider_is_unfinished_work`
+- `tests/test_account_deletion.py::test_an_unreachable_payment_processor_is_unfinished_work`
+- `tests/test_account_deletion.py::test_account_deletion_erases_only_its_authenticated_connections`
+- `tests/test_account_deletion.py::test_account_deletion_erases_only_its_api_keys`
+- `tests/test_box_lifecycle.py::test_destroy_refuses_receipt_for_another_center`
+- `tests/test_box_lifecycle.py::test_destroy_uses_c12_stable_id_and_validates_receipt`
+
+Additional retired tests exposed by the broad run:
+
+- `tests/test_broker_account_erasure.py::test_actual_account_deletion_calls_broker_after_tombstone`
+- `tests/test_broker_account_erasure.py::test_unavailable_and_lost_ack_are_unfinished_not_success`
+
+Both exercised delete_account's removed shared broker phase. Its unused
+`broker/account_erasure.py:erase_account` client wrapper is also deleted; the
+broker's independent ERASE_ACCOUNT protocol and transactional local_erase guards
+remain. The pre-existing router retirement flow does not call that protocol;
+this pass does not add a new deletion phase at the shared door.
+
+The test double retains explicit validated handles only for the separately
+deferred per-call backend's tests. Local owner tools use OwnerTools/OwnerBoxd
+and never that binding seam.
+
+Exact unfinished classification rows:
+
+- `broker/aclient.py:AsyncBrokerClient._connect`
+- `broker/client.py:BrokerClient.publish_model_source`
+- `broker/client.py:BrokerClient.usage`
+- `broker/client.py:BrokerClient.capability`
+- `broker/client.py:BrokerClient.request`
+- `broker/client.py:BrokerClient.owner_policy (UNSURE decision below; deletion pending)`
+- `command_center_update_executor.py:_connect`
+- `command_center_update_executor.py:_quota_inputs`
+- `control_plane/continuations.py:tick`
+- `control_plane/tick.py:AssignedQueueConsumer.poll_once`
+- `providers/api_key_http_provider.py:ApiKeyHttpProvider._connection_context`
+- `providers/model_call.py:_dispatch_args`
+- `storage/agent_request_usage.py:UsageStore.create`
+- `storage/subscription_state.py:state_db_path`
+- `storage/subscription_state.py:get_tier`
+- `storage/subscription_state.py:read_tier`
+- `storage/subscription_state.py:get_plan`
+- `storage/webhook_hooks.py:mint`
+- `storage/webhook_hooks.py:_revoke_routes`
+- `universe_owner.py:account_type_of`
+- `universe_owner.py:account_type_for_universe`
+
+Also unfinished: install the alias-aware repository D7 scan using only the 29
+role boundaries above, port the remaining fixtures, rerun their required Linux
+selection, and tick the dual-path bullet only then. The per-call backend,
+legacy launcher, box_tools/start_exec bridge modules and slice 6 migration/deploy
+cleanup remain the separately deferred work from the briefs.
+
+Validation receipts and final local commit identities are appended below.

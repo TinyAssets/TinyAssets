@@ -103,19 +103,11 @@ def router_owner_session():
 
 @contextmanager
 def decision_session(session):
-    """Use forwarded admission in a box, or serialize with router revocation."""
-    from tinyassets.owner_runtime import current
+    """Approve only against the protected proof forwarded by the router."""
 
-    if current() is not None:
-        proof = router_owner_session()
-        yield proof is not None and proof == session
-        return
-    with store() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        yield bool(conn.execute(
-            "SELECT 1 FROM owner_sessions WHERE session_hash=? AND expires_at>?",
-            (session["session_hash"], time.time()),
-        ).fetchone())
+    proof = router_owner_session()
+    yield proof is not None and proof == session
+    return
 
 
 def require(request, *, owner=None, optional=False):

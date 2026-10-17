@@ -43,6 +43,9 @@ UI = {
 
 @pytest.fixture(autouse=True)
 def _pin_data_dir(tmp_path: Path, monkeypatch):
+    from tests.support.shared_catalog import install
+
+    install(monkeypatch, tmp_path)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
 

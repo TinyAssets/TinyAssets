@@ -994,15 +994,12 @@ def list_definitions(
     limit: int = 30,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
-    from tinyassets.owner_runtime import current
 
     args = dict(query=query, tags=tags, exclude_tags=exclude_tags,
                 author_id=author_id, limit=limit, offset=offset)
-    if current() is not None:
-        from tinyassets.broker.owner_reads import remote
+    from tinyassets.broker.owner_reads import remote
 
-        return remote("catalog", **args)
-    return _list_definitions(base_path, **args)
+    return remote("catalog", **args)
 
 
 def _list_definitions(base_path, *, query="", tags=(), exclude_tags=(), author_id="",
@@ -1096,27 +1093,25 @@ def _require_definition(
 ) -> None:
     if _read_definition_row(conn, definition_id) is not None:
         return
-    from tinyassets.owner_runtime import current
 
-    if current() is not None:
-        from tinyassets.broker.owner_reads import remote
+    from tinyassets.broker.owner_reads import remote
 
-        definition = remote("definition", definition_id=definition_id, include_catalogue=False)
-        if definition is not None:
-            # A private binding keeps an immutable public copy for its foreign key.
-            # This copy never participates in the published catalog or authorship.
-            conn.execute(
-                "INSERT OR IGNORE INTO agent_definitions (agent_definition_id, author_id, "
-                "name, description, schema_version, tags_json, components_json, "
-                "external_origins_json, portable_json, content_fingerprint, "
-                "idempotency_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?)",
-                (definition_id, definition["author_id"], definition["name"],
-                 definition["description"], definition["schema_version"],
-                 _canonical_json(definition["tags"]), _canonical_json(definition["components"]),
-                 _canonical_json(definition["external_origins"]),
-                 _canonical_json(definition["portable_definition"]),
-                 definition["content_fingerprint"], definition["created_at"]))
-            return
+    definition = remote("definition", definition_id=definition_id, include_catalogue=False)
+    if definition is not None:
+        # A private binding keeps an immutable public copy for its foreign key.
+        # This copy never participates in the published catalog or authorship.
+        conn.execute(
+            "INSERT OR IGNORE INTO agent_definitions (agent_definition_id, author_id, "
+            "name, description, schema_version, tags_json, components_json, "
+            "external_origins_json, portable_json, content_fingerprint, "
+            "idempotency_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?)",
+            (definition_id, definition["author_id"], definition["name"],
+             definition["description"], definition["schema_version"],
+             _canonical_json(definition["tags"]), _canonical_json(definition["components"]),
+             _canonical_json(definition["external_origins"]),
+             _canonical_json(definition["portable_definition"]),
+             definition["content_fingerprint"], definition["created_at"]))
+        return
     raise AgentNotFoundError(f"agent definition {definition_id!r} was not found")
 
 

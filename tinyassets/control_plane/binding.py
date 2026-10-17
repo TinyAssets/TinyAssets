@@ -146,25 +146,5 @@ def bind_session(*, provider, limits, universe_dir, owner, execution_id):
 
 
 def file_binding(root: Path) -> SessionBinding | None:
-    """Resolve an existing capability, never bind by a path's basename."""
-    from tinyassets.owner_runtime import current
-
-    if current() is not None:
-        return None
-    root = _path(root)
-    binding = current_binding()
-    if binding is not None:
-        if root == binding.universe_dir:
-            binding.validate(binding.handle.account_id, root)
-            return binding
-        if root.is_relative_to(binding.universe_dir):
-            raise BoxAuthError("owner file access must use its admitted root")
-        if root.parent == binding.universe_dir.parent and not root.name.startswith("."):
-            raise BoxAuthError("owner file access differs from admitted session")
-    # Owner files never fall back to a host path, even if a caller lost its
-    # context while handing work to an executor.
-    from tinyassets.storage import data_dir
-
-    if root.parent == _path(data_dir()) and not root.name.startswith("."):
-        raise BoxAuthError("owner files require an admitted session binding")
+    """Owner files are local to the admitted daemon."""
     return None

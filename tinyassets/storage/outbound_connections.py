@@ -5037,7 +5037,7 @@ class ConnectionLedger:
             ).fetchone():
                 from tinyassets.broker.owner_sources import backfill_metering
 
-                backfill_metering(self, connection)
+                backfill_metering(connection)
                 connection.execute("INSERT OR IGNORE INTO broker_schema_migrations "
                                    "VALUES ('model_source_metering')")
             # The column default also applies to rows inserted by older writers.

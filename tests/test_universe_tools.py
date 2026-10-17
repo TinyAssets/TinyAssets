@@ -114,12 +114,15 @@ def test_another_user_cannot_drive_the_tools_over_someone_elses_universe(
         assert "current serving owner authority" in out, out
         assert "private founder notes" not in out
 
-    # The real owner, same universe, same code path, with no admitted session:
-    # the tools refuse rather than touching a host path.
+    # The admitted owner uses local tools without a shared session binding.
     s = _bind_engine(monkeypatch, root, actor="actor-a", graph="u-a")
-    for out in _call_all_four(s):
-        assert "no admitted session" in out, out
-        assert "private founder notes" not in out
+    outputs = _call_all_four(s)
+    assert "private founder notes" in outputs[0]
+    assert outputs[1].startswith("wrote ")
+    assert "edited" in outputs[2]
+    assert "privbte founder notes" in outputs[3]
+    assert (root / "u-a" / "notes/x.md").read_text() == "x"
+    assert (root / "u-a" / "founder.md").read_text() == "A's privbte founder notes"
 
 
 def test_an_unbound_engine_refuses_every_tool(monkeypatch):

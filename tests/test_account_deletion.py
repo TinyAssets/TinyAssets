@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-import urllib.error
 from pathlib import Path
 
 import pytest
@@ -195,8 +194,7 @@ def test_shared_copy_provenance_deletes_by_owner_across_home_changes(two_users: 
                   "command_center_auto_receipts", "command_center_auto_status")
         for table in tables:
             assert plan[table] == [("owner_id", "principal")]
-    delete_account(two_users, founder_sub=A, cancel_billing=lambda home: "cancelled",
-                   delete_identity=lambda sub: "deleted")
+    delete_account(two_users, founder_sub=A)
     for table in tables:
         assert _rows(path, f'SELECT owner_id, universe_id FROM "{table}" ORDER BY universe_id') == [
             (B, HOME_A), (B, HOME_B)]
@@ -212,8 +210,7 @@ def test_model_preferences_removed_for_current_and_former_home_only_for_owner(tw
     store.save(A, HOME_A, expected_generation=0, policy=prefs)
     store.save(A, "former-home", expected_generation=0, policy=prefs)
     other = store.save(B, HOME_B, expected_generation=0, policy=prefs)
-    delete_account(two_users, founder_sub=A, cancel_billing=lambda home: "cancelled",
-                   delete_identity=lambda sub: "deleted")
+    delete_account(two_users, founder_sub=A)
     assert store.get(A, HOME_A).policy is None
     assert store.get(A, "former-home").policy is None
     assert store.get(B, HOME_B) == other
@@ -246,8 +243,7 @@ def test_agent_journal_deletion_counts_cascades_and_former_home(two_users: Path)
             expected_generation=turn.generation, ordinal=1, reply=reply).snapshot
         turns.append(turn)
     set_founder_home(two_users, founder_sub=A, universe_id=HOME_A, platform_generated=True)
-    receipt = delete_account(two_users, founder_sub=A, cancel_billing=lambda home: "cancelled",
-                             delete_identity=lambda sub: "deleted")
+    receipt = delete_account(two_users, founder_sub=A)
     assert journal.get(A, HOME_A, turns[0].turn_id) is None
     assert journal.get(A, "former-home", turns[1].turn_id) is None
     assert journal.get(B, HOME_B, turns[2].turn_id) == turns[2]
@@ -270,8 +266,7 @@ def test_account_deletion_stops_the_accounts_activities_first(two_users: Path, m
     other = agent_activities.create(two_users / HOME_B, owner_principal=B, title="t", brief="b",
                                     origin_kind="ask")["activity_id"]
 
-    receipt = delete_account(two_users, founder_sub=A, cancel_billing=lambda home: "cancelled",
-                             delete_identity=lambda sub: "deleted")
+    receipt = delete_account(two_users, founder_sub=A)
 
     assert cancelled == ["run-a"]
     assert not (two_users / RECORDS_DIR / HOME_A).exists()
@@ -292,8 +287,7 @@ def test_a_symlinked_records_root_is_refused_and_reported_not_followed(
     except OSError:
         pytest.skip("this host cannot create symlinks")
 
-    receipt = delete_account(two_users, founder_sub=A, cancel_billing=lambda home: "cancelled",
-                             delete_identity=lambda sub: "deleted")
+    receipt = delete_account(two_users, founder_sub=A)
 
     assert (elsewhere / HOME_A / "keep.txt").is_file()
     assert "agent_session_records" in receipt["unfinished_phases"]
@@ -305,8 +299,7 @@ def test_records_that_are_not_a_directory_are_reported_not_skipped(two_users: Pa
     (two_users / RECORDS_DIR).mkdir()
     (two_users / RECORDS_DIR / HOME_A).write_text("odd", encoding="utf-8")
 
-    receipt = delete_account(two_users, founder_sub=A, cancel_billing=lambda home: "cancelled",
-                             delete_identity=lambda sub: "deleted")
+    receipt = delete_account(two_users, founder_sub=A)
 
     assert "agent_session_records" in receipt["unfinished_phases"]
 
@@ -314,15 +307,8 @@ def test_records_that_are_not_a_directory_are_reported_not_skipped(two_users: Pa
 def test_deleting_a_removes_all_of_a_and_none_of_b(two_users: Path):
     base = two_users
     root_db = base / ".tinyassets.db"
-    billed: list[str] = []
-    identities: list[str] = []
 
-    receipt = delete_account(
-        base,
-        founder_sub=A,
-        cancel_billing=lambda home: billed.append(home) or "cancelled",
-        delete_identity=lambda sub: identities.append(sub) or "deleted",
-    )
+    receipt = delete_account(base, founder_sub=A)
 
     # A: gone everywhere.
     assert not (base / HOME_A).exists()
@@ -344,8 +330,8 @@ def test_deleting_a_removes_all_of_a_and_none_of_b(two_users: Path):
     auth = base / ".auth.db"
     for table in ("access_tokens", "refresh_tokens"):
         assert _rows(auth, f"SELECT 1 FROM {table} WHERE user_id = ?", (A,)) == []
-    assert billed == [HOME_A]
-    assert identities == [A]
+    assert "box_destroy" not in receipt
+    assert "home_deletion_pending" not in receipt
 
     # B: untouched.
     assert (base / HOME_B / "soul.md").is_file()
@@ -366,8 +352,8 @@ def test_deleting_a_removes_all_of_a_and_none_of_b(two_users: Path):
     assert receipt["home_id"] == HOME_A
     assert receipt["home_removed"] is True
     assert receipt["home_staged_path"] == ""
-    assert receipt["billing"] == "cancelled"
-    assert receipt["identity"] == "deleted"
+    assert receipt["billing"] == "not_configured"
+    assert receipt["identity"] == "not_applicable"
     assert receipt["unfinished_phases"] == []
     assert receipt["rows_deleted"]["founder_home"] == 1
     assert receipt["rows_deleted"]["universes"] == 1
@@ -395,7 +381,7 @@ def test_a_persons_rows_inside_someone_elses_universe_are_left_alone(two_users: 
     )
     before = _rows(root_db, "SELECT COUNT(*) FROM branches WHERE universe_id = ?", (HOME_B,))
 
-    delete_account(base, founder_sub=A, delete_identity=lambda s: "deleted")
+    delete_account(base, founder_sub=A)
 
     assert _rows(root_db, "SELECT 1 FROM branches WHERE branch_id = 'br-a-in-b'") == [(1,)]
     assert _rows(
@@ -411,7 +397,7 @@ def test_access_a_held_on_another_universe_is_revoked(two_users: Path):
     root_db = base / ".tinyassets.db"
     grant_universe_access(base, universe_id=HOME_B, actor_id=A, permission="read")
 
-    delete_account(base, founder_sub=A, delete_identity=lambda s: "deleted")
+    delete_account(base, founder_sub=A)
 
     assert _rows(root_db, "SELECT 1 FROM universe_acl WHERE actor_id = ?", (A,)) == []
     b_sql = "SELECT permission FROM universe_acl WHERE universe_id = ? AND actor_id = ?"
@@ -427,7 +413,7 @@ def test_a_second_founder_on_the_same_home_blocks_the_deletion(two_users: Path):
     set_founder_home(base, founder_sub=shared, universe_id=HOME_A, platform_generated=True)
 
     with pytest.raises(AccountDeletionBlocked) as exc:
-        delete_account(base, founder_sub=A, delete_identity=lambda s: "deleted")
+        delete_account(base, founder_sub=A)
 
     assert "another founder" in str(exc.value)
     assert (base / HOME_A / "soul.md").is_file(), "a blocked deletion changes nothing"
@@ -448,7 +434,7 @@ def test_another_persons_request_in_my_universe_blocks_the_deletion(two_users: P
     )
 
     with pytest.raises(AccountDeletionBlocked) as exc:
-        delete_account(base, founder_sub=A, delete_identity=lambda s: "deleted")
+        delete_account(base, founder_sub=A)
 
     assert "another person's requests" in str(exc.value)
     assert _rows(root_db, "SELECT 1 FROM user_requests WHERE request_id = 'req-b'") == [(1,)]
@@ -488,7 +474,7 @@ def test_my_own_dependent_rows_are_deleted_and_counted_not_silently_cascaded(
         (A, HOME_A),
     )
 
-    receipt = delete_account(base, founder_sub=A, delete_identity=lambda s: "deleted")
+    receipt = delete_account(base, founder_sub=A)
 
     assert _rows(root_db, "SELECT 1 FROM request_admissions WHERE admission_id = 'adm-a'") == []
     assert _rows(root_db, "SELECT 1 FROM branch_tasks_v2 WHERE branch_task_id = 'task-a'") == []
@@ -513,7 +499,7 @@ def test_audit_rows_survive_without_the_person_or_the_content(two_users: Path):
         (HOME_A, A),
     )
 
-    receipt = delete_account(base, founder_sub=A, delete_identity=lambda s: "deleted")
+    receipt = delete_account(base, founder_sub=A)
 
     row = _rows(
         root_db,
@@ -545,7 +531,7 @@ def test_a_grant_the_person_made_to_another_universe_goes_with_their_connection(
         (A, HOME_B),
     )
 
-    receipt = delete_account(base, founder_sub=A, delete_identity=lambda s: "deleted")
+    receipt = delete_account(base, founder_sub=A)
 
     assert receipt["unfinished_phases"] == [], receipt["unfinished_phases"]
     assert _rows(outbound, "SELECT 1 FROM outbound_connections WHERE owner_user_id = ?", (A,)) == []
@@ -581,7 +567,7 @@ def test_a_commons_pointer_survives_its_binder_being_deleted(two_users: Path):
         tuple(values[c] for c in used),
     )
 
-    receipt = delete_account(base, founder_sub=A, delete_identity=lambda s: "deleted")
+    receipt = delete_account(base, founder_sub=A)
 
     rows = _rows(root_db, "SELECT bound_by_actor_id FROM canonical_bindings")
     assert len(rows) == 1, "the commons pointer must survive its binder"
@@ -594,18 +580,13 @@ def test_a_principal_with_no_home_still_loses_grants_tokens_and_identity(two_use
     stranger = "user_01CCCCCCCCCCCCCCCCCCCCCCCC"
     grant_universe_access(base, universe_id=HOME_B, actor_id=stranger, permission="read")
     _exec(base / ".auth.db", "INSERT INTO access_tokens VALUES ('at-c', ?)", (stranger,))
-    seen: list[str] = []
 
-    receipt = delete_account(
-        base,
-        founder_sub=stranger,
-        delete_identity=lambda sub: seen.append(sub) or "deleted",
-    )
+    receipt = delete_account(base, founder_sub=stranger)
 
     assert receipt["home_id"] == ""
     assert receipt["home_removed"] is True
     assert receipt["billing"] == "not_configured"
-    assert seen == [stranger]
+    assert receipt["identity"] == "not_applicable"
     root_db = base / ".tinyassets.db"
     assert _rows(root_db, "SELECT 1 FROM universe_acl WHERE actor_id = ?", (stranger,)) == []
     auth = base / ".auth.db"
@@ -645,7 +626,7 @@ def test_other_root_stores_lose_the_persons_data_too(two_users: Path):
     (blobs / "sess-b").mkdir(parents=True)
     (blobs / "sess-b" / "handle-2").write_text("B's upload", encoding="utf-8")
 
-    receipt = delete_account(base, founder_sub=A, delete_identity=lambda s: "deleted")
+    receipt = delete_account(base, founder_sub=A)
 
     assert _rows(authoring, "SELECT session_id FROM authoring_sessions") == [("sess-b",)]
     assert _rows(automations, "SELECT automation_id FROM automations") == [("au-b",)]
@@ -654,46 +635,6 @@ def test_other_root_stores_lose_the_persons_data_too(two_users: Path):
     assert receipt["rows_deleted"]["authoring:authoring_sessions"] == 1
     assert receipt["rows_deleted"]["automations:automations"] == 1
     assert receipt["rows_deleted"]["authoring_blobs (directories)"] == 1
-
-
-def test_account_deletion_erases_only_its_api_keys(two_users: Path):
-    from tinyassets.api_keys import ApiKeyStore
-    from tinyassets.outside_authority import OutsideClientAuthority
-
-    keys = ApiKeyStore(two_users)
-    authority = OutsideClientAuthority(two_users)
-    authority.set_enabled(True)
-    scope_a = {"universe": HOME_A, "agent": "default", "capability": "read_graph"}
-    scope_b = {"universe": HOME_B, "agent": "default", "capability": "read_graph"}
-    a = keys.mint(A, name="a", scopes=[scope_a], authority=authority)
-    b = keys.mint(B, name="b", scopes=[scope_b], authority=authority)
-    keys.admit_request(a["key_id"], A)
-    keys.admit_request(b["key_id"], B)
-
-    receipt = delete_account(two_users, founder_sub=A, delete_identity=lambda _: "deleted")
-
-    assert receipt["unfinished_phases"] == []
-    assert _rows(keys.path, "SELECT key_id FROM api_keys ORDER BY key_id") == [(b["key_id"],)]
-    assert _rows(keys.path, "SELECT DISTINCT owner FROM api_key_request_counts") == [(B,)]
-    assert receipt["rows_deleted"]["api-keys:api_keys"] == 1
-
-
-def test_account_deletion_erases_only_its_authenticated_connections(two_users: Path, monkeypatch):
-    from tinyassets.auth.provider import Identity
-    from tinyassets.connected_agents import observe_mcp
-    from tinyassets.outside_authority import OutsideClientAuthority
-
-    authority = OutsideClientAuthority(two_users)
-    monkeypatch.setattr("tinyassets.outside_authority.current_store", lambda: authority)
-    for owner in (A, B):
-        observe_mcp(Identity(owner, owner, metadata={"oauth_connection": {
-            "id": "fixture-connection", "identity_source": "verified_session"}}))
-    receipt = delete_account(two_users, founder_sub=A, delete_identity=lambda _: "deleted")
-    assert receipt["unfinished_phases"] == []
-    assert _rows(authority.path, "SELECT owner FROM authenticated_connections") == [(B,)]
-    observe_mcp(Identity(A, A, metadata={"oauth_connection": {
-        "id": "fixture-reentry", "identity_source": "verified_session"}}))
-    assert _rows(authority.path, "SELECT owner FROM authenticated_connections") == [(B,)]
 
 
 def test_a_foreign_terminal_row_in_my_universe_blocks_the_deletion(two_users: Path):
@@ -718,7 +659,7 @@ def test_a_foreign_terminal_row_in_my_universe_blocks_the_deletion(two_users: Pa
         pytest.skip("author_runtime_instances has no owner column in this schema")
 
     with pytest.raises(AccountDeletionBlocked) as exc:
-        delete_account(base, founder_sub=A, delete_identity=lambda s: "deleted")
+        delete_account(base, founder_sub=A)
 
     assert "another person's rows" in str(exc.value)
     survived = _rows(
@@ -726,37 +667,6 @@ def test_a_foreign_terminal_row_in_my_universe_blocks_the_deletion(two_users: Pa
     )
     assert survived == [(1,)]
     assert (base / HOME_A / "soul.md").is_file()
-
-
-def test_an_unreachable_payment_processor_is_unfinished_work(two_users: Path):
-    """Nothing raises when Stripe is unreachable — `cancel_stripe_billing`
-    returns "unavailable". Silence there is the harm: the subscription may still
-    be charging, so it has to count as unfinished and leave a receipt."""
-    base = two_users
-
-    receipt = delete_account(
-        base,
-        founder_sub=A,
-        cancel_billing=lambda home: "unavailable",
-        delete_identity=lambda sub: "deleted",
-    )
-
-    assert receipt["billing"] == "unavailable"
-    assert receipt["unfinished_phases"] == ["billing"]
-    assert receipt["host_receipt_path"]
-    pending = account_deletion.pending_deletions(base)
-    assert len(pending) == 1 and pending[0]["billing"] == "unavailable"
-
-
-def test_an_unconfigured_identity_provider_is_unfinished_work(two_users: Path):
-    """`not_configured` means the WorkOS user still exists, while /account says
-    the sign-in is removed. The host has to be told."""
-    receipt = delete_account(
-        two_users, founder_sub=A, delete_identity=lambda sub: "not_configured"
-    )
-    assert receipt["identity"] == "not_configured"
-    assert receipt["unfinished_phases"] == ["identity"]
-    assert account_deletion.pending_deletions(two_users)
 
 
 def test_the_fence_is_written_before_anything_is_staged(two_users: Path, monkeypatch):
@@ -774,7 +684,7 @@ def test_the_fence_is_written_before_anything_is_staged(two_users: Path, monkeyp
         return real_stage(root, home)
 
     monkeypatch.setattr(account_deletion, "_stage_home", _watching_stage)
-    delete_account(base, founder_sub=A, delete_identity=lambda s: "deleted")
+    delete_account(base, founder_sub=A)
 
     assert seen == [True], "the tombstone must exist before the home is staged"
 
@@ -785,7 +695,7 @@ def test_the_tombstone_keeps_no_identifier(two_users: Path):
     from tinyassets.api.first_contact import principal_is_deleted
 
     base = two_users
-    delete_account(base, founder_sub=A, delete_identity=lambda s: "deleted")
+    delete_account(base, founder_sub=A)
 
     stored = _rows(base / ".tinyassets.db", "SELECT founder_sub FROM deleted_principals")
     assert len(stored) == 1
@@ -815,7 +725,7 @@ def test_a_cascade_into_an_unvisited_table_is_still_counted(two_users: Path):
         (A,),
     )
 
-    receipt = delete_account(base, founder_sub=A, delete_identity=lambda s: "deleted")
+    receipt = delete_account(base, founder_sub=A)
 
     assert _rows(root_db, "SELECT 1 FROM user_sessions WHERE user_id = ?", (A,)) == []
     assert receipt["rows_deleted"].get("user_accounts") == 1
@@ -883,7 +793,7 @@ def test_created_by_is_not_a_deletion_key():
 def test_anonymous_and_empty_principals_are_refused(two_users: Path):
     for bad in ("", "  ", "anonymous"):
         with pytest.raises(AccountDeletionError):
-            delete_account(two_users, founder_sub=bad, delete_identity=lambda s: "deleted")
+            delete_account(two_users, founder_sub=bad)
     assert (two_users / HOME_A).is_dir() and (two_users / HOME_B).is_dir()
 
 
@@ -895,58 +805,25 @@ def test_an_escaping_home_binding_is_refused_before_anything_changes(two_users: 
     (base.parent / "outside" / "keep.txt").write_text("x", encoding="utf-8")
 
     with pytest.raises(AccountDeletionError):
-        delete_account(base, founder_sub=evil, delete_identity=lambda s: "deleted")
+        delete_account(base, founder_sub=evil)
 
     assert (base.parent / "outside" / "keep.txt").is_file()
     assert get_founder_home(base, evil) == "../outside", "refusal must change nothing"
 
 
-def test_billing_and_identity_failures_are_reported_not_hidden(two_users: Path, caplog):
-    base = two_users
-
-    def _boom(_: str) -> str:
-        raise RuntimeError("stripe down sk_live_SHOULD_NOT_APPEAR")
-
-    with caplog.at_level("ERROR"):
-        receipt = delete_account(
-            base, founder_sub=A, cancel_billing=_boom, delete_identity=_boom
-        )
-
-    assert receipt["billing"] == "error"
-    assert receipt["identity"] == "error"
-    assert receipt["unfinished_phases"] == ["billing", "identity"]
-    assert receipt["home_removed"] is True, "the data still goes; the failure is reported"
-    assert not (base / HOME_A).exists()
-    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
-    assert len(errors) == 2
-    assert "sk_live_SHOULD_NOT_APPEAR" not in " ".join(errors)
-    # A durable, content-free receipt tells the host exactly what to finish.
-    pending = account_deletion.pending_deletions(base)
-    assert len(pending) == 1
-    assert pending[0]["unfinished_phases"] == ["billing", "identity"]
-    assert A not in json.dumps(pending[0])
-
-
 def test_a_failed_row_phase_still_cancels_the_billing(two_users: Path, monkeypatch, caplog):
-    """The phase that must never be skipped is the one that stops the money.
-    A broken satellite store must not leave a live subscription behind."""
+    """A broken local store leaves a durable receipt while home removal completes."""
     base = two_users
-    billed: list[str] = []
 
     def _broken(*_args, **_kwargs):
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(account_deletion, "_delete_satellite_rows", _broken)
     with caplog.at_level("ERROR"):
-        receipt = delete_account(
-            base,
-            founder_sub=A,
-            cancel_billing=lambda home: billed.append(home) or "cancelled",
-            delete_identity=lambda s: "deleted",
-        )
+        receipt = delete_account(base, founder_sub=A)
 
-    assert billed == [HOME_A], "billing ran even though an earlier phase failed"
-    assert receipt["identity"] == "deleted"
+    assert receipt["home_removed"] is True
+    assert receipt["identity"] == "not_applicable"
     assert receipt["unfinished_phases"] == ["store:auth", "store:outbound"]
     assert receipt["host_receipt_path"]
 
@@ -959,13 +836,8 @@ def test_nonempty_in_home_sidecar_does_not_strand_deletion_or_billing(two_users)
     planted.mkdir()
     (planted / "owned.txt").write_text("user content", encoding="utf-8")
     initialize_consents_db(home)
-    billed = []
-    receipt = delete_account(
-        two_users, founder_sub=A,
-        cancel_billing=lambda h: billed.append(h) or "cancelled",
-        delete_identity=lambda _: "deleted",
-    )
-    assert billed == [HOME_A]
+    receipt = delete_account(two_users, founder_sub=A)
+    assert receipt["billing"] == "not_configured"
     assert receipt["home_removed"] and not receipt["unfinished_phases"]
     assert not home.exists() and not consents_db_path(home).parent.exists()
     assert not (two_users / ".deleting").exists()
@@ -979,7 +851,6 @@ def test_partial_staging_is_receipted_billing_runs_and_retry_resumes(two_users, 
     initialize_consents_db(home)
     sidecar = consents_db_path(home).parent
     rename = Path.rename
-    billed = []
 
     def fail_sidecar(path, target):
         if path == sidecar:
@@ -988,21 +859,14 @@ def test_partial_staging_is_receipted_billing_runs_and_retry_resumes(two_users, 
 
     with monkeypatch.context() as patch:
         patch.setattr(Path, "rename", fail_sidecar)
-        receipt = delete_account(
-            two_users, founder_sub=A,
-            cancel_billing=lambda h: billed.append(h) or "cancelled",
-            delete_identity=lambda _: "deleted",
-        )
-    assert billed == [HOME_A]
-    # Owner deletion precedes sidecar staging; a failed sidecar keeps its retry receipt.
-    assert receipt["home_removed"] and not home.exists()
+        receipt = delete_account(two_users, founder_sub=A)
+    assert receipt["billing"] == "not_configured"
+    # Staged bytes remain until the sidecar can join the same deletion receipt.
+    assert not receipt["home_removed"] and not home.exists()
     assert "home_staging" in receipt["unfinished_phases"]
     assert Path(receipt["home_staged_path"]).is_dir()
     assert account_deletion.pending_deletions(two_users)
-    retry = delete_account(
-        two_users, founder_sub=A, cancel_billing=lambda _: "none",
-        delete_identity=lambda _: "deleted",
-    )
+    retry = delete_account(two_users, founder_sub=A)
     assert retry["home_removed"] and not retry["unfinished_phases"]
     assert not sidecar.exists() and not (two_users / ".deleting").exists()
     assert (two_users / HOME_B / "soul.md").exists()
@@ -1017,24 +881,19 @@ def test_staging_rejects_linked_platform_parents_without_touching_peer(
         (two_users / linked_parent).symlink_to(peer, target_is_directory=True)
     except OSError:
         pytest.skip("this host cannot create a directory symlink")
-    billed = []
-    receipt = delete_account(
-        two_users, founder_sub=A,
-        cancel_billing=lambda h: billed.append(h) or "cancelled",
-        delete_identity=lambda _: "deleted",
-    )
-    assert billed == [HOME_A]
-    # The two passes removed the home itself; only the sidecar staging refused.
-    assert receipt["home_removed"] is True
+    receipt = delete_account(two_users, founder_sub=A)
+    assert receipt["billing"] == "not_configured"
+    # Local staging refuses linked parents before removing the owner home.
+    assert receipt["home_removed"] is False
     assert "home_staging" in receipt["unfinished_phases"]
-    assert not (two_users / HOME_A).exists()
+    assert (two_users / HOME_A / "soul.md").read_text() == "# soul\n"
     assert (peer / "soul.md").read_text(encoding="utf-8") == "# soul\n"
     assert not (peer / HOME_A).exists()
 
 
 def test_a_second_deletion_of_the_same_principal_is_a_clean_noop(two_users: Path):
-    delete_account(two_users, founder_sub=A, delete_identity=lambda s: "deleted")
-    receipt = delete_account(two_users, founder_sub=A, delete_identity=lambda s: "deleted")
+    delete_account(two_users, founder_sub=A)
+    receipt = delete_account(two_users, founder_sub=A)
     assert receipt["home_id"] == ""
     assert receipt["rows_deleted"] == {}
     assert (two_users / HOME_B / "soul.md").is_file()
@@ -1047,7 +906,7 @@ def test_a_deleted_principal_cannot_be_handed_a_fresh_universe(two_users: Path):
 
     base = two_users
     assert principal_is_deleted(base, A) is False
-    delete_account(base, founder_sub=A, delete_identity=lambda s: "deleted")
+    delete_account(base, founder_sub=A)
 
     assert principal_is_deleted(base, A) is True
     assert ensure_founder_home(base, A) == "", "a deleted account must not be re-founded"
@@ -1061,72 +920,6 @@ def test_the_operator_reset_still_clears_the_tombstone():
     from tinyassets.scoped_reset import MAIN_DB_TABLE_CLASSIFICATIONS
 
     assert MAIN_DB_TABLE_CLASSIFICATIONS["deleted_principals"] == "reset_binding"
-
-
-# --------------------------------------------------------------------------- #
-# WorkOS identity deletion
-# --------------------------------------------------------------------------- #
-
-
-class _Resp:
-    def __init__(self, status: int) -> None:
-        self.status = status
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-
-def test_workos_deletion_is_not_configured_without_a_key(monkeypatch):
-    monkeypatch.delenv("WORKOS_API_KEY", raising=False)
-    assert account_deletion.delete_workos_user(A) == "not_configured"
-
-
-def test_workos_deletion_skips_non_workos_principals(monkeypatch):
-    monkeypatch.setenv("WORKOS_API_KEY", "sk_test_x")
-    calls: list[str] = []
-    assert account_deletion.delete_workos_user(
-        "host:jonathan",
-        request=lambda req, timeout: calls.append(req.full_url) or _Resp(200),
-    ) == "not_applicable"
-    assert calls == []
-
-
-def test_workos_deletion_sends_a_delete_and_treats_gone_as_done(monkeypatch):
-    monkeypatch.setenv("WORKOS_API_KEY", "sk_test_x")
-    seen: list[tuple[str, str]] = []
-
-    def _ok(req, timeout):
-        seen.append((req.get_method(), req.full_url))
-        assert req.get_header("Authorization") == "Bearer sk_test_x"
-        return _Resp(200)
-
-    assert account_deletion.delete_workos_user(A, request=_ok) == "deleted"
-    assert seen == [("DELETE", f"https://api.workos.com/user_management/users/{A}")]
-
-    def _gone(req, timeout):
-        raise urllib.error.HTTPError(req.full_url, 404, "gone", {}, None)
-
-    assert account_deletion.delete_workos_user(A, request=_gone) == "deleted"
-
-
-def test_workos_deletion_failures_raise_without_the_key(monkeypatch):
-    monkeypatch.setenv("WORKOS_API_KEY", "sk_test_SECRET")
-
-    def _fail(req, timeout):
-        raise urllib.error.HTTPError(req.full_url, 500, "boom sk_test_SECRET", {}, None)
-
-    with pytest.raises(AccountDeletionError) as exc:
-        account_deletion.delete_workos_user(A, request=_fail)
-    assert "500" in str(exc.value) and "SECRET" not in str(exc.value)
-
-    def _timeout(req, timeout):
-        raise TimeoutError()
-
-    with pytest.raises(AccountDeletionError):
-        account_deletion.delete_workos_user(A, request=_timeout)
 
 
 # --------------------------------------------------------------------------- #
@@ -1307,48 +1100,6 @@ def test_the_android_shell_cannot_reach_checkout():
     assert "PLAN.can_purchase_on_surface===true" in html
 
 
-def test_failed_two_pass_owner_tree_keeps_the_binding_and_retry_resumes(
-        two_users, monkeypatch):
-    """A migrated home goes through D10's two passes before any root row goes.
-
-    A failed pass must keep the home binding (pass one's admission needs it)
-    and never fall through to the daemon's single-UID staging of that home.
-    """
-    calls = []
-    real_destroy = account_deletion._destroy_owner_box
-
-    def failing(root, center, *, principal):
-        calls.append((center, principal))
-        raise account_deletion.AccountDeletionError("injected box destruction failure")
-
-    identities = []
-    with monkeypatch.context() as patch:
-        patch.setattr(account_deletion, "_destroy_owner_box", failing)
-        receipt = delete_account(two_users, founder_sub=A, cancel_billing=lambda _: "none",
-                                 delete_identity=lambda p: identities.append(p) or "deleted")
-    assert calls == [(HOME_A, A)]
-    assert {"owner_tree", "root_rows", "identity"} <= set(receipt["unfinished_phases"])
-    # Only this principal's own sign-in can resume pass one, so it survives.
-    assert identities == [] and receipt["identity"] == "deferred:owner_tree"
-    assert receipt["home_deletion_pending"] is True  # the box still holds the tree
-    assert not receipt["home_removed"] and receipt["home_staged_path"] == ""
-    assert (two_users / HOME_A).is_dir() and not (two_users / ".deleting").exists()
-    assert get_founder_home(two_users, A) == HOME_A
-
-    def destroyed(root, center, *, principal):
-        calls.append((center, principal))
-        return real_destroy(root, center, principal=principal)
-
-    with monkeypatch.context() as patch:
-        patch.setattr(account_deletion, "_destroy_owner_box", destroyed)
-        retry = delete_account(two_users, founder_sub=A, cancel_billing=lambda _: "none",
-                               delete_identity=lambda _: "deleted")
-    assert calls[-1] == (HOME_A, A)
-    assert retry["home_removed"] and not retry["unfinished_phases"]
-    assert not (two_users / HOME_A).exists() and not get_founder_home(two_users, A)
-    assert (two_users / HOME_B / "soul.md").exists()
-
-
 def test_owner_mode_deletes_local_data_without_retiring_or_opening_shared_stores(
     two_users, monkeypatch,
 ):
@@ -1359,10 +1110,9 @@ def test_owner_mode_deletes_local_data_without_retiring_or_opening_shared_stores
     def forbidden(*args, **kwargs):
         raise AssertionError("local deletion attempted shared lifecycle or identity work")
 
-    monkeypatch.setattr(account_deletion, "_destroy_owner_box", forbidden)
-    monkeypatch.setattr("tinyassets.broker.account_erasure.erase_account", forbidden)
-    receipt = delete_account(two_users, founder_sub=A, cancel_billing=forbidden,
-                             delete_identity=forbidden)
+    monkeypatch.setattr("tinyassets.agent_loop.served_chat.configured_box_provider", forbidden)
+    monkeypatch.setattr("tinyassets.broker.server._Connection._erase_account", forbidden)
+    receipt = delete_account(two_users, founder_sub=A)
     assert receipt["home_removed"] and not receipt["unfinished_phases"]
     assert not (two_users / HOME_A).exists()
     assert (two_users / HOME_B / "soul.md").exists()

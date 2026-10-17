@@ -852,12 +852,13 @@ def test_boxhostd_real_process_restart_rotates_secret_and_serves_again(boxes, ad
 
 
 def test_broker_retirement_stops_real_daemon_and_stale_forward_fails(boxes, admitted, tmp_path):
-    from tinyassets.broker.owner_identities import center_admission
+    from tinyassets.broker.owner_identities import _owner_request
     from tinyassets.owner_router import BoxRoute, forward, resolve_box
 
     stale = resolve_box("alice")
     uid = admitted.owner_machine("alice")
-    center_admission(tmp_path, event="retire", principal="alice", center="cc-alice")
+    _owner_request(tmp_path, {"op": "CENTER_ADMISSION", "event": "retire",
+                              "principal": "alice", "center": "cc-alice"})
     assert not boxes.runtime.alive(uid)
     with pytest.raises(LookupError):
         admitted.box_route("alice")

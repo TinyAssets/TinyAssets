@@ -2,14 +2,13 @@
 # ruff: noqa: F811 -- imported pytest fixtures
 import socket
 import sys
-from types import SimpleNamespace
 
 import pytest
 
 from tests.support.broker_ipc import discovery  # noqa: F401
 from tests.test_broker_server import broker  # noqa: F401
-from tinyassets.broker.account_erasure import ACCOUNT_SCOPE, erase_account, local_erase
-from tinyassets.storage.outbound_connections import ConnectionLedger, ProxyRequestError
+from tinyassets.broker.account_erasure import ACCOUNT_SCOPE, local_erase
+from tinyassets.storage.outbound_connections import ConnectionLedger
 
 
 def seed(ledger):
@@ -87,70 +86,8 @@ unix = pytest.mark.skipif(sys.platform == "win32" or not hasattr(socket, "SO_PEE
                           reason="Unix peer credentials")
 
 
-@unix
-def test_actual_account_deletion_calls_broker_after_tombstone(discovery, monkeypatch):
-    from tinyassets import account_deletion
-    from tinyassets.broker.policy import PolicyRefused, PolicyStore
-    from tinyassets.daemon_server import _connect
-
-    seed(discovery.ledger)
-    admissions = SimpleNamespace(admissions_after=lambda _generation: [
-        SimpleNamespace(center="shared-home", principal=owner, event="admit")
-        for owner in ("erase-a", "erase-b")])
-    (discovery.root / ".broker").chmod(0o700)
-    policy = PolicyStore(discovery.root, admissions)
-    policy.bootstrap()
-    policy.read("erase-a")
-    policy.read("erase-b")
-    discovery.broker.server._policy_store = policy
-    original = erase_account
-
-    def checked(root, *, principal):
-        with _connect(root) as db:
-            assert db.execute("SELECT 1 FROM deleted_principals WHERE founder_sub=?",
-                              (account_deletion.principal_digest(principal),)).fetchone()
-        return original(root, principal=principal)
-
-    monkeypatch.setattr("tinyassets.broker.account_erasure.erase_account", checked)
-    result = account_deletion.delete_account(discovery.root, founder_sub="erase-a",
-                                             delete_identity=lambda owner: "not_applicable")
-    assert result["unfinished_phases"] == []
-    assert result["rows_deleted"]["outbound:agent_request_dispatches"] == 1
-    assert discovery.ledger.get_connection("erase-a") is None
-    assert discovery.ledger.get_connection("erase-b") is not None
-    assert not policy._path("erase-a").exists()
-    with pytest.raises(PolicyRefused, match="erased"):
-        policy.read("erase-a")
-    assert policy.erase("erase-a") == 0
-    policy.bootstrap()
-    assert policy.read("erase-b").owner == "erase-b"
-    assert not (discovery.root / "outbound.db").exists()
 
 
-@unix
-def test_unavailable_and_lost_ack_are_unfinished_not_success(discovery, monkeypatch):
-    from tinyassets import account_deletion
-    from tinyassets.broker import account_erasure, supervisor
-
-    seed(discovery.ledger)
-    original = erase_account
-
-    def lost(root, *, principal):
-        original(root, principal=principal)
-        raise ProxyRequestError("lost committed acknowledgement")
-
-    monkeypatch.setattr(account_erasure, "erase_account", lost)
-    result = account_deletion.delete_account(discovery.root, founder_sub="erase-a",
-                                             delete_identity=lambda owner: "not_applicable")
-    assert "broker_egress" in result["unfinished_phases"]
-    assert discovery.ledger.get_connection("erase-a") is None
-    monkeypatch.setattr(account_erasure, "erase_account", original)
-    assert erase_account(discovery.root, principal="erase-a") == {}
-    monkeypatch.setattr(supervisor, "get_supervisor", lambda root: None)
-    result = account_deletion.delete_account(discovery.root, founder_sub="erase-b",
-                                             delete_identity=lambda owner: "not_applicable")
-    assert "broker_egress" in result["unfinished_phases"]
-    assert discovery.ledger.get_connection("erase-b") is not None
 
 
 @unix

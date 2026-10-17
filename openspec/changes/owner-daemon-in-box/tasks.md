@@ -133,8 +133,10 @@ Nothing deploys until slice 7.
       - Add a guard test that fails if a shared-daemon fork reappears
         outside the router entry. Router import/direct-file-access guard added;
         the repository-wide mode-fork scan remains with the outstanding deletions.
-      Part 1 is incomplete: compatibility cleanup is recorded in `main-audit.md`;
-      runtime forks, the exec bridge and per-call backend remain. Part 2 removes
+      Part 1 remains incomplete: part 1c removes 20 classified rows; 21
+      classified rows and the D7 mode scan remain (exact inventory and
+      role-boundary allowlist: `main-audit.md`). The exec bridge and per-call
+      backend remain. Part 2 removes
       one-shot migrations and deploy old-layout branches after slice 6.
 - [ ] 6b. Per-box deploy roll and the canary-box acceptance (D11).
 - [ ] 7. Report the list of unported, dropped features to the founder; then the cutover deploy (lead), with deployed sha asserted and one naive-user
