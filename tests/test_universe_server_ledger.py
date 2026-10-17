@@ -22,6 +22,7 @@ import pytest
 import tinyassets.api.universe as us
 from tinyassets.auth.provider import Identity
 from tinyassets.daemon_server import grant_universe_access
+from tinyassets.universe_soul import read_universe_soul, write_universe_soul
 
 
 def _call(action: str, **kwargs) -> dict:
@@ -217,7 +218,7 @@ def test_set_premise_appends_ledger(universe: str) -> None:
     assert entry["summary"] == "A tower of bones."
     assert "timestamp" in entry
     assert entry["payload"]["bytes"] == len("A tower of bones.".encode("utf-8"))
-    assert entry["payload"]["legacy_program_mirror"] == "PROGRAM.md"
+    assert read_universe_soul(us._base_path() / universe).purpose == "A tower of bones."
 
 
 def test_set_premise_empty_does_not_append(universe: str) -> None:
@@ -260,10 +261,7 @@ def test_submit_request_refuses_without_a_ledger_mutation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _authenticate_ledger_submitter(universe, monkeypatch)
-    (us._base_path() / universe / "PROGRAM.md").write_text(
-        "A legacy fantasy premise.",
-        encoding="utf-8",
-    )
+    write_universe_soul(us._base_path() / universe, purpose='A legacy fantasy premise.')
 
     out = _call("submit_request", text="Please add a dragon.", request_type="scene_direction")
     assert out["error"] == "request_execution_unavailable"

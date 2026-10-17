@@ -24,6 +24,7 @@ from tinyassets.evaluation.structural import (
     _extract_premise_terms,
     _facts_contradict,
 )
+from tinyassets.universe_soul import write_universe_soul
 
 
 def _patch_notes(**overrides) -> PatchNotes:
@@ -1196,10 +1197,9 @@ class TestPremiseGrounding:
 
     def test_program_md_disk_fallback(self, tmp_path):
         """Read premise from PROGRAM.md on disk when state has none."""
-        program = tmp_path / "PROGRAM.md"
-        program.write_text(
-            "Loral Duskspore is a mycologist in the Underhallow.",
-            encoding="utf-8",
+        program = tmp_path / "soul.md"
+        write_universe_soul(
+            program.parent, purpose="Loral Duskspore is a mycologist in the Underhallow.",
         )
         state = _make_scene_state(
             prose="Loral explored the Underhallow caverns.",

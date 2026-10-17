@@ -1097,3 +1097,83 @@ Validation for this repair:
 - Full Linux receipt: `C:/Users/Jonathan/AppData/Local/Temp/3c-hygiene-linux-final.log`.
   Gate verification runs after commit against committed HEAD; its receipt is
   `C:/Users/Jonathan/AppData/Local/Temp/3c-hygiene-gate.log`.
+
+
+## 6a part 1: compatibility cleanup (2026-10-17, incomplete)
+
+This local step completes the pre-C6 cleanup subset below. It does not complete
+6a part 1, and it is not deployed. No slice 6 migration or protected deploy file
+was edited. The remaining work is explicit so this step can be committed alone.
+
+Deleted:
+- The consent-move startup invocation and interrupted-move state machine in
+  `storage_layout.py`. Startup validates existing
+  committed markers or initializes a fresh marker; it never relocates consent
+  files or makes `.premigration` copies. Existing sidecar consent and forgery
+  checks remain. The consent-move module and legacy path helper remain unchanged:
+  protected `agent_file_migration.py` imports its `MIGRATING` constant. The first
+  broad Linux run exposed that dependency; deleting it now would break slice 6's
+  protected migration. No constant-only compatibility shim was introduced.
+- `universe_soul`'s `PROGRAM.md` reader, path helper and constant; the API's
+  premise mirror reads/writes and implicit legacy fantasy-loop selection;
+  evaluation's old-file fallback and the fantasy package's old reads and
+  auto-generation mirror. Premise create/read/inspect/status/ledger
+  behavior now uses `soul.md`. Old `PROGRAM.md` content is ignored; users can
+  re-create their premise and explicitly declare their loop. No new migration.
+- First-contact's `OperationalError` fail-open and the dead `boxes.lifecycle`
+  `owner_layout` helper. Account destruction no longer scans a legacy host home
+  and refuses residual bytes; its durable receipt validation is preserved.
+
+Tests for surviving premise behavior now read/write the soul profile. The
+missing-host admission test replaces its deleted owner-layout assertion with
+an assertion that missing host admission never mutates broker admission.
+No surviving test has fewer assertions; no skip/xfail was added. Added checks
+cover missing deletion tables, stale premises and implicit loop selection.
+
+Guard subset: `test_router_store_guard` now statically restricts `owner_router`
+to its six justified shared-control-plane imports and rejects direct file/SQLite I/O.
+Mutation examples prove owner-store imports and owner file reads are caught.
+The full D7 repository-wide mode-fork scan is NOT complete: the forks below
+must be deleted first, rather than grandfathered into an allowlist.
+
+Whole tests retired (startup consent relocation and residual legacy-byte
+refusal only):
+
+`tests/test_box_lifecycle.py`:
+- `test_destroy_refuses_residual_legacy_bytes`
+
+`tests/test_platform_state_outside_command_centers.py`:
+- `test_a_dot_entry_at_the_root_is_not_a_command_center`
+- `test_a_link_at_the_old_name_is_set_aside_not_followed`
+- `test_an_interrupted_move_resumes`
+- `test_both_copies_present_is_a_refusal_naming_the_command_center`
+- `test_crash_after_legacy_rename_resumes`
+- `test_crash_after_target_creation_resumes_without_legacy_grants`
+- `test_migration_preserves_reset_for_a_home_without_consents`
+- `test_the_move_carries_no_row_and_sets_the_old_file_aside`
+- `test_the_move_is_idempotent`
+
+`tests/test_storage_layout.py`:
+- `test_migration_fences_older_admission_before_creating_target`
+
+Remaining in part 1:
+- Delete `storage/platform_state_move.py` and `legacy_consents_db_path` after
+  slice 6 removes the protected migration's constant import.
+- All B1-B25 runtime-fork/bridge/backend work still present in `compat-audit.md`
+  (except already completed earlier slices and the dead owner_layout helper
+  removed here). Delete the session/file binding route, BoxExecutor/start_exec,
+  and frontend/production_files/file_worker/exec_worker/executions/gvisor_files
+  with their callers and their old-only tests. The owner daemon's local tools
+  and persistent boxhostd lifecycle remain the target.
+- Delete the legacy launcher selector together with the frontend. This step
+  intentionally does not leave a dangling entrypoint while that backend exists.
+- Complete D7's repository-wide static mode-fork scan with only justified
+  router/owner admission boundary checks; do not allow remaining owner-work forks.
+- Finish the corresponding owner-mode test ports and rerun focused validation.
+
+Part 2, after slice 6: remove the one-shot box-layout/activity/agent-file and
+final census/migration modules after they run, their deploy wiring, and old-layout
+deploy/backup/quota/rehearsal branches. `.premigration` copying in the protected
+box migration remains owned by slice 6, then deleted with that migration.
+
+Validation and final line counts are recorded below after the Linux runs.

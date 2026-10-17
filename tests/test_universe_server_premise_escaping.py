@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from tinyassets.universe_soul import read_universe_soul, write_universe_soul
+
 
 @pytest.fixture
 def us(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -136,7 +138,7 @@ def test_set_premise_normalizes_on_write(us, tmp_path):
     result = json.loads(us._action_set_premise(universe_id="u1", text=corrupt))
     assert result["status"] == "updated"
 
-    on_disk = (base / "u1" / "PROGRAM.md").read_text(encoding="utf-8")
+    on_disk = read_universe_soul(base / 'u1').purpose
     assert on_disk == "# Title\n\nParagraph one.\n\nParagraph two."
 
 
@@ -146,7 +148,7 @@ def test_set_premise_preserves_intentional_newlines(us):
     already = "# Title\n\nA normal paragraph.\n\nAnother one."
 
     us._action_set_premise(universe_id="u1", text=already)
-    on_disk = (base / "u1" / "PROGRAM.md").read_text(encoding="utf-8")
+    on_disk = read_universe_soul(base / 'u1').purpose
     assert on_disk == already
 
 
@@ -154,10 +156,7 @@ def test_read_premise_decodes_pre_existing_corrupt_file(us):
     """Files written by a buggy client before the fix still render cleanly."""
     base = Path(us._base_path())
     udir = _mkuniverse(base, "corrupt-u")
-    (udir / "PROGRAM.md").write_text(
-        "# Ashwater Chronicles\\n\\nA dark fantasy.",
-        encoding="utf-8",
-    )
+    write_universe_soul(udir, purpose='# Ashwater Chronicles\\n\\nA dark fantasy.')
 
     result = json.loads(us._action_read_premise(universe_id="corrupt-u"))
     assert result["premise"] == "# Ashwater Chronicles\n\nA dark fantasy."
@@ -167,13 +166,11 @@ def test_read_premise_decodes_pre_existing_corrupt_file(us):
 def test_read_premise_passes_through_healthy_file(us):
     base = Path(us._base_path())
     udir = _mkuniverse(base, "healthy-u")
-    (udir / "PROGRAM.md").write_text(
-        "# Sporemarch\n\nCharacters seed fungal memory.\n",
-        encoding="utf-8",
-    )
+    write_universe_soul(udir, purpose='# Sporemarch\n\nCharacters seed fungal memory.\n')
 
     result = json.loads(us._action_read_premise(universe_id="healthy-u"))
-    assert result["premise"] == "# Sporemarch\n\nCharacters seed fungal memory.\n"
+    assert result["premise"] == "# Sporemarch\n\nCharacters seed fungal memory."
+    assert result["source"] == "soul.md"
 
 
 def test_read_premise_reports_missing_premise(us):
@@ -194,5 +191,5 @@ def test_create_universe_normalizes_embedded_premise(us):
         universe_id="newverse", text=corrupt,
     ))
     assert result["status"] == "created"
-    on_disk = (base / "newverse" / "PROGRAM.md").read_text(encoding="utf-8")
+    on_disk = read_universe_soul(base / 'newverse').purpose
     assert on_disk == "# New Universe\n\nFirst premise line."

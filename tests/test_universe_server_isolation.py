@@ -25,6 +25,7 @@ from tinyassets.daemon_server import (
     ensure_universe_registered,
     grant_universe_access,
 )
+from tinyassets.universe_soul import read_universe_soul, write_universe_soul
 
 
 class _StaticAuthProvider(AuthProvider):
@@ -143,7 +144,7 @@ class TestUniverseIdInResponses:
 
     def test_read_premise_includes_universe_id(self, universe_base):
         udir = _make_universe(universe_base, "alpha")
-        (udir / "PROGRAM.md").write_text("An alpha premise.", encoding="utf-8")
+        write_universe_soul(udir, purpose='An alpha premise.')
         out = json.loads(us._action_read_premise(universe_id="alpha"))
         assert out["universe_id"] == "alpha"
         assert out["premise"] == "An alpha premise."
@@ -213,8 +214,8 @@ class TestUniverseIdInResponses:
         """Two universes must never cross-contaminate through the response."""
         udir_a = _make_universe(universe_base, "alpha")
         udir_b = _make_universe(universe_base, "beta")
-        (udir_a / "PROGRAM.md").write_text("Alpha premise.", encoding="utf-8")
-        (udir_b / "PROGRAM.md").write_text("Beta premise.", encoding="utf-8")
+        write_universe_soul(udir_a, purpose='Alpha premise.')
+        write_universe_soul(udir_b, purpose='Beta premise.')
 
         out_a = json.loads(us._action_read_premise(universe_id="alpha"))
         out_b = json.loads(us._action_read_premise(universe_id="beta"))
@@ -320,9 +321,7 @@ class TestUniverseAclEnforcement:
         assert created["status"] == "created"
         assert created["founder_id"] == "alice"
         assert updated["status"] == "updated"
-        assert (universe_base / uid / "PROGRAM.md").read_text(
-            encoding="utf-8",
-        ) == "Founder-owned update."
+        assert read_universe_soul(universe_base / uid).purpose == "Founder-owned update."
 
     def test_create_universe_denies_other_founder_write(self, universe_base):
         # D0a: a *different* authenticated founder, even holding the write
@@ -443,9 +442,7 @@ class TestUniverseAclEnforcement:
         ))
 
         assert out["status"] == "updated"
-        assert (universe_base / "private" / "PROGRAM.md").read_text(
-            encoding="utf-8",
-        ) == "Allowed update."
+        assert read_universe_soul(universe_base / 'private').purpose == "Allowed update."
 
     def test_private_universe_allows_owner_admin_write(self, universe_base):
         _make_private_universe(universe_base, "private")
@@ -466,9 +463,7 @@ class TestUniverseAclEnforcement:
         ))
 
         assert out["status"] == "updated"
-        assert (universe_base / "private" / "PROGRAM.md").read_text(
-            encoding="utf-8",
-        ) == "Owner update."
+        assert read_universe_soul(universe_base / 'private').purpose == "Owner update."
 
     def test_list_filters_private_universes_without_grant(self, universe_base):
         _make_universe(universe_base, "public")
@@ -936,9 +931,7 @@ class TestScopeHeader:
 
     def test_dispatch_injects_text_header_on_read(self, universe_base):
         _make_universe(universe_base, "alpha")
-        (universe_base / "alpha" / "PROGRAM.md").write_text(
-            "An alpha premise.", encoding="utf-8",
-        )
+        write_universe_soul(universe_base / 'alpha', purpose='An alpha premise.')
         out = json.loads(us._dispatch_with_ledger(
             "read_premise",
             us._action_read_premise,

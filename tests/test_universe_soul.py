@@ -7,7 +7,10 @@ from pathlib import Path
 import pytest
 
 from tinyassets.auth.provider import Identity
-from tinyassets.universe_soul import read_pinned_universe_soul
+from tinyassets.universe_soul import (
+    read_pinned_universe_soul,
+    read_universe_soul,
+)
 
 
 @pytest.fixture
@@ -77,7 +80,7 @@ def test_read_premise_falls_back_to_soul_purpose(us):
     base = Path(us._base_path())
     udir = _mkuniverse(base, "u1")
     us._action_set_premise(universe_id="u1", text="A solar archive wakes up.")
-    (udir / "PROGRAM.md").unlink()
+    assert not (udir / "PROGRAM.md").exists()
 
     result = json.loads(us._action_read_premise(universe_id="u1"))
 
@@ -120,9 +123,7 @@ def test_create_universe_always_writes_soul_profile(us):
     assert result["has_soul"] is True
     assert result["soul"]["path"] == "soul.md"
     assert (base / "fresh-uni" / "soul.md").exists()
-    assert (base / "fresh-uni" / "PROGRAM.md").read_text(
-        encoding="utf-8",
-    ) == "A seedling kingdom."
+    assert read_universe_soul(base / 'fresh-uni').purpose == "A seedling kingdom."
 
 
 def test_create_universe_without_premise_still_has_thin_soul(us):
@@ -227,3 +228,16 @@ def test_create_universe_records_declared_loop_branch(us):
     pinned = read_pinned_universe_soul(base / "workflow-uni")
     assert pinned is not None
     assert pinned.context()["loop_branch_def_id"] == "workflow:review_loop"
+
+
+def test_old_premise_cannot_override_soul_or_declare_a_loop(us):
+    base = Path(us._base_path())
+    udir = _mkuniverse(base, "u-old")
+    (udir / "PROGRAM.md").write_text("Obsolete premise.", encoding="utf-8")
+    assert json.loads(us._action_read_premise(universe_id="u-old"))["premise"] is None
+    branch, details = us._universe_loop_dispatch(udir)
+    assert branch == ""
+    assert details["error"] == "universe_loop_not_declared"
+    us._action_set_premise(universe_id="u-old", text="Current purpose.")
+    assert json.loads(us._action_read_premise(universe_id="u-old"))["premise"] == "Current purpose."
+    assert (udir / "PROGRAM.md").read_text(encoding="utf-8") == "Obsolete premise."

@@ -121,17 +121,21 @@ Nothing deploys until slice 7.
         the 2026-10-16 audit, the `box_tools`/`start_exec` bridge and the
         per-call box backend (`frontend`, `production_files`,
         `file_worker`, `exec_worker`, `executions`, `gvisor_files`).
-      - Delete the pre-C6 compatibility code: the `PROGRAM.md` premise
-        mirror, first-contact's fail-open on old databases, the legacy
-        launcher branch in `box_daemon_entry`, the consent move on every
-        start, unused `owner_layout`, account deletion's legacy-bytes
-        refusal, and copying `.premigration` files.
+      - [x] Delete the `PROGRAM.md` premise mirror and implicit legacy loop,
+        first-contact's fail-open on old databases, the consent move on every
+        start, unused `owner_layout`, and account deletion's legacy-bytes refusal.
+      - [ ] Delete the legacy launcher branch with the per-call backend;
+        remove `.premigration` copying in slice 6's migration work.
       - Delete the one-shot migrations once they have run:
         `box_layout_migration`, `activity_shape_migration`,
         `agent_file_migration` (and its deploy wiring), this change's
         migration, and the deploy script's old-layout branches.
       - Add a guard test that fails if a shared-daemon fork reappears
-        outside the router entry.
+        outside the router entry. Router import/direct-file-access guard added;
+        the repository-wide mode-fork scan remains with the outstanding deletions.
+      Part 1 is incomplete: compatibility cleanup is recorded in `main-audit.md`;
+      runtime forks, the exec bridge and per-call backend remain. Part 2 removes
+      one-shot migrations and deploy old-layout branches after slice 6.
 - [ ] 6b. Per-box deploy roll and the canary-box acceptance (D11).
 - [ ] 7. Report the list of unported, dropped features to the founder; then the cutover deploy (lead), with deployed sha asserted and one naive-user
       pass per surface: app, MCP and a scheduled run.

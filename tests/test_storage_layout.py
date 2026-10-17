@@ -29,15 +29,11 @@ def _write(base: Path, document) -> None:
 
 
 def test_a_fresh_data_dir_gets_the_layout_this_code_writes(tmp_path):
-    # The marker also records the one-way moves this data has had, so a fresh
-    # root is "already moved" -- it never had platform state in the wrong place.
-    # A root this image initialises is an owner-box root: it serves no other.
-    moved = {"consents_outside_command_centers": "done"}
-    fresh = {"layout": 2, "state": "stable", "box_layout": "owner-box", "moves": moved}
+    # Startup creates only the marker for a fresh root; it never runs a move.
+    fresh = {"layout": 2, "state": "stable", "box_layout": "owner-box"}
     assert layout.check(tmp_path) == fresh
     assert json.loads((tmp_path / layout.MARKER).read_text(encoding="utf-8")) == fresh
-    # Idempotent, including the move: a second admission re-reads "done" and
-    # does not run it again.
+    # A second admission preserves the exact committed marker.
     assert layout.check(tmp_path) == fresh
 
 
@@ -323,16 +319,17 @@ def test_delayed_start_does_not_wait_for_admitted_process_lifetime(
     import threading
 
     if existing_marker:
-        _write(tmp_path, {"layout": 1, "state": "stable", "box_layout": "owner-box"})
+        _write(tmp_path, {"layout": 2, "state": "stable", "box_layout": "owner-box"})
     released, resume, finished = (threading.Event() for _ in range(3))
-    real_unlock = layout._unlock
+    real_open = layout._open_lock
     errors = []
 
-    def delayed_unlock(fd):
-        real_unlock(fd)
+    def delayed_open(base):
+        fd = real_open(base)
         if threading.current_thread().name == "delayed" and not released.is_set():
             released.set()
             assert resume.wait(10)
+        return fd
 
     def start():
         try:
@@ -342,7 +339,7 @@ def test_delayed_start_does_not_wait_for_admitted_process_lifetime(
         finally:
             finished.set()
 
-    monkeypatch.setattr(layout, "_unlock", delayed_unlock)
+    monkeypatch.setattr(layout, "_open_lock", delayed_open)
     waiter = threading.Thread(target=start, name="delayed", daemon=True)
     waiter.start()
     try:
@@ -356,31 +353,6 @@ def test_delayed_start_does_not_wait_for_admitted_process_lifetime(
         layout.release_for_tests()
         waiter.join(5)
         layout.release_for_tests()
-
-
-def test_migration_fences_older_admission_before_creating_target(tmp_path, monkeypatch):
-    from tinyassets.storage import effector_consents
-
-    home = tmp_path / "u-alpha"
-    home.mkdir()
-    effector_consents.legacy_consents_db_path(home).write_bytes(b"untrusted")
-    observed = []
-    initialize = effector_consents.initialize_consents_db
-
-    def observe(home):
-        observed.append(layout.read_marker(tmp_path))
-        return initialize(home)
-
-    monkeypatch.setattr(effector_consents, "initialize_consents_db", observe)
-    final = layout.check(tmp_path)
-    # The pre-move image knows only layout 1 and state=stable. Exercise its
-    # admission predicate on BOTH the before-first-write and finished markers.
-    with monkeypatch.context() as old_image:
-        old_image.setattr(layout, "KNOWN_LAYOUTS", frozenset({1}))
-        for document in [*observed, final]:
-            with pytest.raises(layout.LayoutRefused):
-                layout._validated(tmp_path, document)
-    assert observed
 
 
 def test_fail_safe_python_refuses_actual_consent_migration_marker(tmp_path):

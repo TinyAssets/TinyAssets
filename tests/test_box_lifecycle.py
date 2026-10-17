@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from tinyassets import account_deletion
-from tinyassets.boxes.lifecycle import admit_center, owner_layout
+from tinyassets.boxes.lifecycle import admit_center
 from tinyassets.boxes.provider import DestroyReceipt
 
 
@@ -39,13 +39,14 @@ def test_committed_admission_reserves_then_provisions_through_host(tmp_path, mon
 
 def test_committed_admission_refuses_missing_host_and_invalid_layout(tmp_path, monkeypatch):
     _layout(tmp_path, "owner-box")
+    admissions = []
+    monkeypatch.setattr("tinyassets.broker.owner_identities.center_admission",
+                        lambda *args, **kwargs: admissions.append(kwargs))
     monkeypatch.setattr("tinyassets.agent_loop.served_chat.configured_box_provider",
                         lambda: (None, None))
     with pytest.raises(RuntimeError, match="no admitted provider"):
         admit_center(tmp_path, principal="alice", center="cc-a")
-    _layout(tmp_path, "unrecognized")
-    with pytest.raises(RuntimeError, match="stable, known"):
-        owner_layout(tmp_path)
+    assert admissions == []
 
 
 def test_destroy_uses_c12_stable_id_and_validates_receipt(tmp_path, monkeypatch):
@@ -69,23 +70,6 @@ def test_destroy_uses_c12_stable_id_and_validates_receipt(tmp_path, monkeypatch)
     assert calls[0] == ("bind", "cc-a", "alice")
     assert calls[1][0] == "destroy"
     assert calls[1][1] == calls[3][1]
-
-
-def test_destroy_refuses_residual_legacy_bytes(tmp_path, monkeypatch):
-    (tmp_path / "cc-a").mkdir()
-    (tmp_path / "cc-a" / "residual").write_text("bytes")
-
-    class Provider:
-        def bind_for_destroy(self, center, *, account_id):
-            return object()
-
-        def destroy(self, handle, op_id):
-            return DestroyReceipt("cc-a", op_id, 1, 2)
-
-    monkeypatch.setattr("tinyassets.agent_loop.served_chat.configured_box_provider",
-                        lambda: (Provider(), None))
-    with pytest.raises(account_deletion.AccountDeletionError, match="legacy owner bytes"):
-        account_deletion._destroy_owner_box(tmp_path, "cc-a", principal="alice")
 
 
 def test_destroy_refuses_receipt_for_another_center(tmp_path, monkeypatch):

@@ -18,8 +18,6 @@ again through the ordinary ask at first use.
 """
 from __future__ import annotations
 
-import json
-import os
 import sqlite3
 from pathlib import Path
 
@@ -27,13 +25,11 @@ import pytest
 
 from tinyassets import storage_layout as layout
 from tinyassets.boxes.layout import UNIVERSE_SIDECARS_DIR
-from tinyassets.storage import platform_state_move as psm
 from tinyassets.storage.effector_consents import (
     consents_db_path,
     grant_consent,
     initialize_consents_db,
     is_consent_active,
-    legacy_consents_db_path,
 )
 
 SINK = "authenticated_call"
@@ -51,7 +47,7 @@ def _forge(command_center: Path, sink: str = SINK, dest: str = DEST) -> Path:
     """What a command center's own processes could do: create the database
     first, with a row granting itself something."""
     command_center.mkdir(parents=True, exist_ok=True)
-    path = legacy_consents_db_path(command_center)
+    path = command_center / ".effector_consents.db"
     con = sqlite3.connect(path)
     try:
         con.executescript(
@@ -108,162 +104,6 @@ def test_a_real_grant_still_works(data: Path):
 # ---------------------------------------------------------------------------
 # The migration
 # ---------------------------------------------------------------------------
-
-
-def _marker(base: Path) -> dict:
-    return json.loads((base / layout.MARKER).read_text(encoding="utf-8"))
-
-
-def test_the_move_carries_no_row_and_sets_the_old_file_aside(data: Path):
-    cc = data / "u-alpha"
-    _forge(cc)
-    (data / layout.MARKER).write_text(
-        json.dumps({"layout": 1, "state": "stable",
-                    "box_layout": layout.ACTIVE_BOX_LAYOUT}), encoding="utf-8")
-
-    layout.check(data)
-
-    # Nothing carried: the forged grant did not survive.
-    assert is_consent_active(cc, sink=SINK, destination=DEST) is False
-    # The old file is kept, renamed, so an operator can still read it.
-    assert not legacy_consents_db_path(cc).exists()
-    assert (cc / (".effector_consents.db" + psm.SUPERSEDED_SUFFIX)).exists()
-    assert _marker(data)[psm.MOVES][psm.CONSENTS] == psm.DONE
-
-
-def test_the_move_is_idempotent(data: Path):
-    cc = data / "u-alpha"
-    _forge(cc)
-    (data / layout.MARKER).write_text(
-        json.dumps({"layout": 1, "state": "stable",
-                    "box_layout": layout.ACTIVE_BOX_LAYOUT}), encoding="utf-8")
-
-    layout.check(data)
-    first = sorted(p.name for p in cc.iterdir())
-    layout.release_for_tests()
-    layout.check(data)
-
-    assert sorted(p.name for p in cc.iterdir()) == first
-
-
-def test_both_copies_present_is_a_refusal_naming_the_command_center(data: Path):
-    """Either an interrupted run or a planted file. Guessing is how a forged
-    file gets blessed, so it refuses and changes nothing."""
-    cc = data / "u-alpha"
-    _forge(cc)
-    initialize_consents_db(cc)  # now both exist
-    (data / layout.MARKER).write_text(
-        json.dumps({"layout": 1, "state": "stable",
-                    "box_layout": layout.ACTIVE_BOX_LAYOUT}), encoding="utf-8")
-
-    with pytest.raises(psm.MoveRefused, match="u-alpha"):
-        layout.check(data)
-
-    # Both files untouched, and the marker still says the move is unfinished.
-    assert legacy_consents_db_path(cc).exists()
-    assert consents_db_path(cc).exists()
-    assert _marker(data)[psm.MOVES][psm.CONSENTS] == psm.MIGRATING
-
-
-def test_an_interrupted_move_resumes(data: Path):
-    cc = data / "u-alpha"
-    _forge(cc)
-    (data / layout.MARKER).write_text(
-        json.dumps({"layout": 1, "state": "stable", "box_layout": layout.ACTIVE_BOX_LAYOUT,
-                    psm.MOVES: {psm.CONSENTS: psm.MIGRATING}}), encoding="utf-8")
-
-    layout.check(data)
-
-    assert _marker(data)[psm.MOVES][psm.CONSENTS] == psm.DONE
-    assert not legacy_consents_db_path(cc).exists()
-
-
-def test_crash_after_target_creation_resumes_without_legacy_grants(data, monkeypatch):
-    from tinyassets.storage import effector_consents
-
-    cc = data / "u-alpha"
-    legacy = _forge(cc)
-    initialize = effector_consents.initialize_consents_db
-
-    def crash(home):
-        initialize(home)
-        raise RuntimeError("crash after target creation")
-
-    with monkeypatch.context() as patch:
-        patch.setattr(effector_consents, "initialize_consents_db", crash)
-        with pytest.raises(RuntimeError, match="crash after target"):
-            layout.check(data)
-    assert legacy.exists() and consents_db_path(cc).exists()
-    layout.check(data)
-    assert not legacy.exists()
-    assert legacy.with_name(legacy.name + psm.SUPERSEDED_SUFFIX).exists()
-    assert not is_consent_active(cc, sink=SINK, destination=DEST)
-    assert _marker(data)[psm.MOVES][psm.CONSENTS] == psm.DONE
-
-
-def test_migration_preserves_reset_for_a_home_without_consents(data):
-    from tinyassets.scoped_reset import _walk_home_without_following
-
-    cc = data / "u-alpha"
-    cc.mkdir()
-    assert not _walk_home_without_following(cc)
-    layout.check(data)
-    assert not consents_db_path(cc).exists()
-    assert not _walk_home_without_following(cc)
-
-
-def test_crash_after_legacy_rename_resumes(data, monkeypatch):
-    cc = data / "u-alpha"
-    legacy = _forge(cc)
-    replace = os.replace
-
-    def crash(source, destination):
-        replace(source, destination)
-        if source == legacy:
-            raise RuntimeError("crash after legacy rename")
-
-    with monkeypatch.context() as patch:
-        patch.setattr(os, "replace", crash)
-        with pytest.raises(RuntimeError, match="crash after legacy"):
-            layout.check(data)
-    layout.check(data)
-    assert not legacy.exists()
-    assert not is_consent_active(cc, sink=SINK, destination=DEST)
-    assert _marker(data)[psm.MOVES][psm.CONSENTS] == psm.DONE
-
-
-def test_a_dot_entry_at_the_root_is_not_a_command_center(data: Path):
-    """The sidecar folder itself must not be walked as a command center."""
-    (data / UNIVERSE_SIDECARS_DIR).mkdir()
-    (data / ".runtime").mkdir()
-    (data / "u-alpha").mkdir()
-
-    assert [p.name for p in psm.command_centers(data)] == ["u-alpha"]
-
-
-@pytest.mark.skipif(not hasattr(os, "symlink"), reason="no symlink on this host")
-def test_a_link_at_the_old_name_is_set_aside_not_followed(data: Path):
-    """A link there is evidence. Reading or deleting through it is exactly what
-    this change refuses to do, so it is renamed like any other old file."""
-    cc = data / "u-alpha"
-    cc.mkdir()
-    other = data / "u-bravo"
-    other.mkdir()
-    victim = other / "someone-elses.db"
-    victim.write_text("not a database\n", encoding="utf-8")
-    try:
-        os.symlink(victim, legacy_consents_db_path(cc))
-    except (OSError, NotImplementedError):
-        pytest.skip("this host cannot create a symlink")
-    (data / layout.MARKER).write_text(
-        json.dumps({"layout": 1, "state": "stable",
-                    "box_layout": layout.ACTIVE_BOX_LAYOUT}), encoding="utf-8")
-
-    layout.check(data)
-
-    assert victim.read_text(encoding="utf-8") == "not a database\n"
-    assert (cc / (".effector_consents.db" + psm.SUPERSEDED_SUFFIX)).is_symlink()
-    assert is_consent_active(cc, sink=SINK, destination=DEST) is False
 
 
 # ---------------------------------------------------------------------------

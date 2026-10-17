@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 import tinyassets.api.universe as us
+from tinyassets.universe_soul import write_universe_soul
 
 
 @pytest.fixture
@@ -126,7 +127,7 @@ def test_inspect_surfaces_on_disk_word_count_not_stale_status(
     """
     udir = universe_base / "u"
     udir.mkdir()
-    (udir / "PROGRAM.md").write_text("a premise", encoding="utf-8")
+    write_universe_soul(udir, purpose='a premise')
     (udir / "status.json").write_text(
         json.dumps({"current_phase": "draft", "word_count": 99999}),
         encoding="utf-8",

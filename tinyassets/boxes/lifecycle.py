@@ -2,19 +2,6 @@
 
 from pathlib import Path
 
-from tinyassets.storage_layout import KNOWN_LAYOUTS, LayoutRefused, read_marker
-
-
-def owner_layout(data_root: str | Path) -> str:
-    marker = read_marker(Path(data_root))
-    if marker is None:
-        return "owner-split"
-    layout = marker.get("box_layout", "owner-split")
-    if (marker.get("state") != "stable" or marker.get("layout") not in KNOWN_LAYOUTS
-            or layout not in ("owner-split", "owner-box")):
-        raise LayoutRefused("owner admission requires a stable, known storage layout")
-    return layout
-
 
 def admit_center(data_root: str | Path, *, principal: str, center: str) -> int:
     """Broker admission reserves the owner; host binding provisions its box."""

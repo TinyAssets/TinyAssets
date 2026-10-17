@@ -1015,25 +1015,6 @@ def _destroy_owner_box(root: Path, home: str, *, principal: str):
             or result.files_removed < 0 or type(result.new_epoch) is not int
             or result.new_epoch < 1):
         raise AccountDeletionError("invalid durable owner destruction receipt")
-    from tinyassets.workspace_fs import open_dir_nofollow, open_subdir_nofollow
-
-    parent = open_dir_nofollow(root)
-    try:
-        try:
-            legacy = open_subdir_nofollow(parent, home)
-        except FileNotFoundError:
-            legacy = None
-        if legacy is not None:
-            try:
-                with os.scandir(legacy) as children:
-                    if next(children, None) is not None:
-                        raise AccountDeletionError(
-                            "legacy owner bytes remain after box destruction"
-                        )
-            finally:
-                os.close(legacy)
-    finally:
-        os.close(parent)
     return result
 
 

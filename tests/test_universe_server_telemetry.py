@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 
 import tinyassets.api.universe as us
+from tinyassets.universe_soul import write_universe_soul
 
 
 @pytest.fixture
@@ -50,7 +51,7 @@ def _make_universe(
     udir = base / uid
     udir.mkdir()
     if premise is not None:
-        (udir / "PROGRAM.md").write_text(premise, encoding="utf-8")
+        write_universe_soul(udir, purpose=premise)
     if work_targets is not None:
         (udir / "work_targets.json").write_text(
             json.dumps(work_targets), encoding="utf-8",

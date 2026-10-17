@@ -1,5 +1,6 @@
 """Every router-state opener refuses before touching an owner's private tree."""
 
+import ast
 import os
 from contextlib import ExitStack, closing
 from pathlib import Path
@@ -78,3 +79,60 @@ def test_policy_session_reader_refuses_in_box(tmp_path, monkeypatch):
         "alice", 1001, tmp_path, os.getpid(), None))
     with pytest.raises(RuntimeError, match="router store owner_sessions"):
         PolicyStore(tmp_path, None)._session("alice", {"session_hash": "a" * 64})
+
+
+# The router can resolve identity, route lifecycle calls and clean up shared
+# credentials. These are shared control-plane stores, never owner data stores.
+_ROUTER_IMPORTS = {
+    "tinyassets.auth.middleware",
+    "tinyassets.boxes.daemon_control",
+    "tinyassets.broker.owner_identities",
+    "tinyassets.onboarding.owner_sessions",
+    "tinyassets.router_credentials",
+    "tinyassets.storage",  # data_dir is passed only to the shared store APIs.
+}
+
+
+def _router_owner_io(source):
+    violations = []
+    tree = ast.parse(source)
+    dataclass_replace = any(
+        isinstance(node, ast.ImportFrom) and node.module == "dataclasses"
+        and any(alias.name == "replace" and alias.asname is None for alias in node.names)
+        for node in ast.walk(tree)
+    )
+    for node in ast.walk(tree):
+        imports = ([node.module] if isinstance(node, ast.ImportFrom)
+                   else [item.name for item in node.names] if isinstance(node, ast.Import) else [])
+        for module in imports:
+            if module and module.startswith("tinyassets") and module not in _ROUTER_IMPORTS:
+                violations.append((node.lineno, "owner import", module))
+        if isinstance(node, ast.Call):
+            name = (node.func.attr if isinstance(node.func, ast.Attribute)
+                    else node.func.id if isinstance(node.func, ast.Name) else "")
+            # dataclasses.replace changes identity metadata, never the filesystem.
+            if dataclass_replace and isinstance(node.func, ast.Name) and node.func.id == "replace":
+                continue
+            if name in {"open", "connect", "read_text", "read_bytes", "write_text", "write_bytes",
+                        "mkdir", "iterdir", "glob", "rglob", "scandir", "listdir",
+                        "unlink", "rmdir", "rename", "replace", "stat", "lstat"}:
+                violations.append((node.lineno, "direct filesystem access", name))
+    return violations
+
+
+def test_router_imports_only_shared_control_plane_and_never_opens_files():
+    source = (Path(__file__).resolve().parents[1] / "tinyassets" / "owner_router.py").read_text(
+        encoding="utf-8",
+    )
+    assert _router_owner_io(source) == []
+
+
+@pytest.mark.parametrize("source", [
+    "from tinyassets.daemon_server import _connect",
+    "import tinyassets.universe_files as files",
+    "data_dir().joinpath('owner', 'soul.md').read_text()",
+    "open(data_dir() / 'owner' / 'soul.md')",
+    "sqlite3.connect(data_dir() / 'owner' / 'history.db')",
+])
+def test_router_guard_detects_owner_store_imports_and_file_access(source):
+    assert _router_owner_io(source)

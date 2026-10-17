@@ -84,9 +84,7 @@ from tinyassets.universe_soul import (
     NO_LOOP_DECLARED,
     SOUL_FILENAME,
     has_soul,
-    legacy_premise_path,
     premise_from_soul,
-    read_legacy_premise,
     read_universe_soul,
     write_universe_soul,
 )
@@ -95,7 +93,6 @@ logger = logging.getLogger("universe_server.universe")
 
 ENV_CAPABILITIES_VAR = "UNIVERSE_SERVER_CAPABILITIES"
 ACTION_CANCEL_BRANCH_TASK = "cancel_branch_task"
-LEGACY_FANTASY_LOOP_BRANCH_DEF_ID = "fantasy_author:universe_cycle_wrapper"
 
 
 def _env_actor_grants() -> tuple[str, ...]:
@@ -221,7 +218,6 @@ def _extract_set_premise(
         _truncate(text),
         {
             "bytes": len(text.encode("utf-8")),
-            "legacy_program_mirror": "PROGRAM.md",
         },
     )
 
@@ -353,29 +349,12 @@ def _synthesis_first_run_checklist(has_premise: bool) -> dict[str, Any]:
 def _universe_loop_dispatch(udir: Path) -> tuple[str, dict[str, Any]]:
     soul = read_universe_soul(udir)
     if soul is None:
-        if not read_legacy_premise(udir).strip():
-            return NO_LOOP_DECLARED, {
-                "source": "no_soul_no_loop_declared",
-                "has_soul": False,
-                "branch_def_id": "",
-                "error": "universe_loop_not_declared",
-                "note": (
-                    "This command center has no soul.md and no legacy PROGRAM.md; "
-                    "declare a Loop branch in soul.md before queuing work."
-                ),
-            }
-        return LEGACY_FANTASY_LOOP_BRANCH_DEF_ID, {
-            "source": "legacy_program_fantasy_compat",
+        return NO_LOOP_DECLARED, {
+            "source": "no_soul_no_loop_declared",
             "has_soul": False,
-            "branch_def_id": LEGACY_FANTASY_LOOP_BRANCH_DEF_ID,
-            "caveat": (
-                "Legacy command center has PROGRAM.md but no soul.md; keeping the "
-                "fantasy loop as an explicit compatibility path only until "
-                "the command center is migrated to a soul-declared loop. Scheduled "
-                "for removal once PROGRAM.md-only command centers are migrated; "
-                "tracked under the de-fantasy audit "
-                "docs/architecture.md."
-            ),
+            "branch_def_id": "",
+            "error": "universe_loop_not_declared",
+            "note": "Declare a Loop branch in soul.md before queuing work.",
         }
     branch_def_id = soul.loop_branch_def_id.strip()
     if not branch_def_id:
@@ -755,7 +734,7 @@ def _dispatch_with_ledger(
 # is not a heartbeat — it only moves when a phase transitions. For liveness
 # we also consult `activity.log`, which is appended to on every node entry,
 # `.runtime_status.json`, which is refreshed while the graph process is alive,
-# and PROGRAM.md + work_targets.json to disambiguate "no premise" vs
+# and soul.md + work_targets.json to disambiguate "no premise" vs
 # "starved for work" vs "actually running".
 #
 # The fleet daemon loop that wrote those three files was retired on
@@ -1115,9 +1094,7 @@ def _daemon_liveness(udir: Path, status: dict[str, Any] | None) -> dict[str, Any
     same interpreted fields, so legibility fixes in one place land
     everywhere at once.
     """
-    has_premise = bool(
-        read_legacy_premise(udir).strip() or premise_from_soul(udir).strip()
-    )
+    has_premise = bool(premise_from_soul(udir).strip())
     targets = _read_json(udir / "work_targets.json")
     has_work = isinstance(targets, list) and any(
         t.get("lifecycle") == "active" for t in targets if isinstance(t, dict)
@@ -1870,16 +1847,11 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
         result["has_soul"] = True
         result["soul"] = soul.summary()
 
-    # Premise remains the public compatibility field. The durable source is
-    # now soul.md when PROGRAM.md is absent or empty.
-    program = _normalize_escaped_text(read_legacy_premise(udir))
-    premise = program.strip() or (soul.purpose if soul is not None else "")
+    premise = _normalize_escaped_text(soul.purpose).strip() if soul is not None else ""
     result["has_premise"] = bool(premise)
     if premise:
         result["premise"] = premise[:500] + ("..." if len(premise) > 500 else "")
-        result["premise_source"] = (
-            "PROGRAM.md" if program.strip() else SOUL_FILENAME
-        )
+        result["premise_source"] = SOUL_FILENAME
 
     # Notes summary
     notes = _read_json(udir / "notes.json")
@@ -3469,14 +3441,9 @@ def _query_world_db(
 def _action_read_premise(universe_id: str = "", **_kwargs: Any) -> str:
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
-    content = _normalize_escaped_text(read_legacy_premise(udir))
-    source = "PROGRAM.md"
-    if not content.strip():
-        soul = read_universe_soul(udir)
-        content = soul.purpose if soul is not None else ""
-        source = SOUL_FILENAME
-    else:
-        soul = read_universe_soul(udir)
+    soul = read_universe_soul(udir)
+    content = _normalize_escaped_text(soul.purpose) if soul is not None else ""
+    source = SOUL_FILENAME
 
     if not content.strip():
         return json.dumps({
@@ -3535,7 +3502,6 @@ def _action_set_premise(universe_id: str = "", text: str = "", **_kwargs: Any) -
         soul = write_universe_soul(
             udir, purpose=text, lineage="created-from-premise",
         )
-        write_data_path(legacy_premise_path(udir), text)
         return json.dumps({
             "universe_id": uid,
             "status": "updated",
@@ -4490,10 +4456,6 @@ def _action_create_universe(
             loop_branch_def_id=loop_branch_def_id,
             owner_id=founder,
         )
-        # Write premise mirror if provided
-        if normalized_text.strip():
-            write_data_path(legacy_premise_path(udir), normalized_text)
-
         result: dict[str, Any] = {
             "universe_id": uid,
             "status": "created",

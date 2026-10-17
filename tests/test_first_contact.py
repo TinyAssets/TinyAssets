@@ -1347,3 +1347,14 @@ def test_the_owner_still_reads_their_own_new_home(data_dir):
     assert uid in {
         u["id"] for u in json.loads(us._action_list_universes())["universes"]
     }
+
+
+def test_deleted_principal_check_propagates_database_errors(data_dir, monkeypatch):
+    import sqlite3
+
+    from tinyassets import daemon_server
+    from tinyassets.api.first_contact import principal_is_deleted
+
+    monkeypatch.setattr(daemon_server, "initialize_author_server", lambda _base: None)
+    with pytest.raises(sqlite3.OperationalError, match="deleted_principals"):
+        principal_is_deleted(data_dir, "owner")

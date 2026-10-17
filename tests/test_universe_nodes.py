@@ -52,6 +52,7 @@ from domains.fantasy_daemon.phases.worldbuild import (
 )
 from tests.support.fantasy_model import answer as fantasy_answer
 from tinyassets.notes import add_note, update_note_status
+from tinyassets.universe_soul import read_universe_soul, write_universe_soul
 
 # -----------------------------------------------------------------------
 # worldbuild tests
@@ -287,8 +288,8 @@ class TestWorldbuildAutoPremise:
             result = _maybe_generate_premise(state)
 
         assert result == "A story of Ryn navigating the shattered glass realm."
-        assert (universe_dir / "PROGRAM.md").exists()
-        assert "Ryn" in (universe_dir / "PROGRAM.md").read_text(encoding="utf-8")
+        assert (universe_dir / "soul.md").exists()
+        assert "Ryn" in read_universe_soul(universe_dir).purpose
         assert "Ryn" in (universe_dir / "soul.md").read_text(encoding="utf-8")
 
     def test_skips_when_program_md_exists(self, tmp_path):
@@ -297,7 +298,7 @@ class TestWorldbuildAutoPremise:
 
         universe_dir = tmp_path / "universe"
         universe_dir.mkdir()
-        (universe_dir / "PROGRAM.md").write_text("Existing premise.", encoding="utf-8")
+        write_universe_soul(universe_dir, purpose='Existing premise.')
         canon_dir = universe_dir / "canon"
         canon_dir.mkdir()
         (canon_dir / "world.md").write_text("Some content.", encoding="utf-8")
@@ -403,7 +404,7 @@ class TestWorldbuildCanonGeneration:
         universe_dir = tmp_path / "test-universe"
         universe_dir.mkdir()
         if premise:
-            (universe_dir / "PROGRAM.md").write_text(premise, encoding="utf-8")
+            write_universe_soul(universe_dir, purpose=premise)
         return universe_dir
 
     def test_generates_canon_files(self, tmp_path):
@@ -1053,9 +1054,7 @@ class TestWorldbuildCanonGeneration:
         """Should read premise from PROGRAM.md."""
         universe_dir = tmp_path / "universe"
         universe_dir.mkdir()
-        (universe_dir / "PROGRAM.md").write_text(
-            "My epic story premise.", encoding="utf-8"
-        )
+        write_universe_soul(universe_dir, purpose='My epic story premise.')
         premise = _read_premise(universe_dir, {})
         assert premise == "My epic story premise."
 
@@ -1603,7 +1602,7 @@ class TestReflectCanonReview:
         universe_dir = tmp_path / "test-universe"
         universe_dir.mkdir()
         if premise:
-            (universe_dir / "PROGRAM.md").write_text(premise, encoding="utf-8")
+            write_universe_soul(universe_dir, purpose=premise)
         if canon_files:
             canon_dir = universe_dir / "canon"
             canon_dir.mkdir()
@@ -1917,7 +1916,7 @@ class TestCommitWorldbuildSignals:
     def _make_universe(self, tmp_path: Path, canon_files: dict[str, str] | None = None) -> Path:
         universe_dir = tmp_path / "test-universe"
         universe_dir.mkdir()
-        (universe_dir / "PROGRAM.md").write_text("A fantasy world.", encoding="utf-8")
+        write_universe_soul(universe_dir, purpose='A fantasy world.')
         if canon_files:
             canon_dir = universe_dir / "canon"
             canon_dir.mkdir()
@@ -2358,7 +2357,7 @@ class TestWorldbuildSignalDriven:
         universe_dir = tmp_path / "test-universe"
         universe_dir.mkdir()
         if premise:
-            (universe_dir / "PROGRAM.md").write_text(premise, encoding="utf-8")
+            write_universe_soul(universe_dir, purpose=premise)
         if canon_files:
             canon_dir = universe_dir / "canon"
             canon_dir.mkdir()
@@ -2514,7 +2513,7 @@ class TestReflectSignalDriven:
         universe_dir = tmp_path / "test-universe"
         universe_dir.mkdir()
         if premise:
-            (universe_dir / "PROGRAM.md").write_text(premise, encoding="utf-8")
+            write_universe_soul(universe_dir, purpose=premise)
         if canon_files:
             canon_dir = universe_dir / "canon"
             canon_dir.mkdir()

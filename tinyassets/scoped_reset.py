@@ -1042,7 +1042,7 @@ def _relocated_home_store_blockers(home: Path) -> list[str]:
     """Stores that belong to this home but no longer live inside it.
 
     Platform state that decides what a command center may do moved out of the
-    command-center folder on 2026-10-03 (``storage/platform_state_move.py``),
+    command-center folder on 2026-10-03 (``storage/effector_consents.py``),
     because the command center could write it. This walk only sees inside the
     home, so without this the relocated stores would simply stop being noticed:
     today ``.effector_consents.db`` raises a "no scoped-reset adapter" blocker,
@@ -1061,7 +1061,7 @@ def _relocated_home_store_blockers(home: Path) -> list[str]:
         out.append(
             "home operational store has no scoped-reset adapter: "
             f"{relocated.name} (relocated outside the home, see "
-            "storage/platform_state_move.py)"
+            "storage/effector_consents.py)"
         )
     return out
 
