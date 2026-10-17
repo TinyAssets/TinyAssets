@@ -224,7 +224,7 @@ def test_an_agent_source_ask_returns_a_door_link_without_discovery(hf, app):
     assert hf.authorize_queries == [] and hf.token_forms == []
 
 
-def test_source_sign_in_commits_the_broker_grant(hf, app):
+def test_source_sign_in_commits_the_broker_grant(hf, app, monkeypatch):
     from tinyassets.connection_oauth.tokens import decode
     from tinyassets.credential_vault import load_credential_vault
 
@@ -245,6 +245,28 @@ def test_source_sign_in_commits_the_broker_grant(hf, app):
     bundle = decode(records[0]["token"])
     assert bundle.token_url == f"https://{ISSUER}/oauth/token" and bundle.client_id == CIMD
     assert bundle.access_token == hf.issued[0] and bundle.refresh_token
+    assert body["model_confirmation"] == {"grant_id": body["grant_id"], "universe_id": UID}
+
+    from tinyassets.onboarding.source_connect import offer_connection_access, sign_in_action
+    from tinyassets.provider_assignment import load_provider_assignment
+    from tinyassets.providers.free_sources import sign_in_preset
+
+    def forbidden(**kwargs):
+        raise AssertionError("sign-in source has no granted model catalogue endpoint")
+
+    monkeypatch.setattr("tinyassets.providers.discovery_http.read_granted_discovery_document",
+                        forbidden)
+    with _as(OWNER):
+        offered = offer_connection_access(base=app, uid=UID, owner=OWNER,
+                                          grant_id=body["grant_id"])
+    assert offered["status"] == "confirmation_required"
+    assert offered["request"]["request_id"] == offered["request_id"]
+    assert offered["request"]["action"]["type"] == "bind_model_access"
+    declared = sign_in_action(sign_in_preset("huggingface"), RESOURCE)["uses"]["model"]
+    assert list(offered["request"]["action"]["model_access"].values()) == [{
+        "model_scope": "explicit", "model_ids": [m["id"] for m in declared["models"]],
+        "cost_caps": None}]
+    assert load_provider_assignment(app, universe_id=UID) is None
 
 
 def test_an_agent_ask_under_the_same_name_gets_no_pool_offer(hf, app, monkeypatch):

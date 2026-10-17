@@ -77,11 +77,15 @@ def sign_in_action(preset, public_resource):
         "endpoints": [{"host": base.netloc, "path_template": base.path + "/chat/completions",
                        "methods": ["POST"]}],
         "access": "exact",
-        "uses": {"model": {"wire": preset["wire"], "billing": "free", "models": [
-            {"id": model, "tools": True, "context": 32768} for model in preset["models"]]}},
+        "uses": {"model": {"wire": preset["wire"], "billing": "free",
+                           "models": _installed_models(preset)}},
         "oauth": {"scopes": list(preset["sign_in"]["scopes"]),
                   "client_id": sign_in_client_id(preset, public_resource)},
     }
+
+
+def _installed_models(preset):
+    return [{"id": model, "tools": True, "context": 32768} for model in preset["models"]]
 
 
 def _ask_body(preset):
@@ -108,9 +112,12 @@ def model_source(endpoints):
             return preset
     for preset in source_cards() + [sign_in_preset(p["id"]) for p in sign_in_cards()]:
         base = urlsplit(preset["base_url"])
+        paths = [("/chat/completions", "POST")]
+        if "sign_in" not in preset:
+            paths.append(("/models", "GET"))
         required = [{"host": base.netloc, "path_template": base.path + path,
                      "methods": [method]}
-                    for path, method in (("/chat/completions", "POST"), ("/models", "GET"))]
+                    for path, method in paths]
         if _canonical_endpoint_set(required) <= actual:
             return preset
     return None
@@ -150,10 +157,14 @@ def offer_connection_access(*, base, uid, owner, grant_id):
             from tinyassets.providers.discovery_http import read_granted_discovery_document
             from tinyassets.providers.free_sources import discovered_agent_models
 
-            payload = read_granted_discovery_document(
-                db_path=base / "outbound.db", grant_id=grant_id, owner_user_id=owner,
-                universe_id=uid, url=preset["base_url"].rstrip("/") + "/models")
-            entries = discovered_agent_models(preset, payload)
+            if "sign_in" in preset:
+                # Sign-in sources declare their models without granting a catalogue endpoint.
+                entries = _installed_models(preset)
+            else:
+                payload = read_granted_discovery_document(
+                    db_path=base / "outbound.db", grant_id=grant_id, owner_user_id=owner,
+                    universe_id=uid, url=preset["base_url"].rstrip("/") + "/models")
+                entries = discovered_agent_models(preset, payload)
             definition_id = _definition_for(uid, owner, grant_id, preset["wire"],
                                             entries[0]["id"]).id
             descriptor = {"wire": preset["wire"], "models": entries, "billing": "free"}

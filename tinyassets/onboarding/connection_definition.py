@@ -67,8 +67,5 @@ def sign_in_definition(preset_id, public_resource):
     if preset is None:
         raise HostedAuthError("unknown_model_connection", 404)
     action = sign_in_action(preset, public_resource)
-    base = urlsplit(preset["base_url"])
-    action["endpoints"].append({"host": base.netloc,
-                                "path_template": base.path + "/models", "methods": ["GET"]})
     return {key: action[key] for key in ("destination", "endpoints", "oauth")} | {
         "discovery_hosts": [preset["sign_in"]["issuer_host"]]}
