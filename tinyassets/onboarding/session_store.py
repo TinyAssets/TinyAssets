@@ -335,11 +335,15 @@ def _read_json(path: Path) -> dict | None:
     return loaded if isinstance(loaded, dict) else None
 
 
-def _unlink(path: Path) -> None:
+def _unlink(path: Path, *, strict: bool = False) -> None:
+    """Best-effort unless ``strict``: then only an absent file is tolerated."""
     try:
         path.unlink()
-    except OSError:
+    except FileNotFoundError:
         pass
+    except OSError:
+        if strict:
+            raise
 
 
 def _write_record(handle: str, record: dict) -> None:
@@ -579,15 +583,10 @@ def rotate(current_handle: str, new_refresh_token: str) -> str:
 def revoke_owner(owner: str) -> None:
     """Remove every device and rotation-grace record for this verified owner."""
     for path in store_dir().glob("*.json"):
-        try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            continue
-        except ValueError:
-            continue  # An unreadable JSON record cannot renew.
-        if isinstance(record, dict) and record.get("owner") == owner:
+        record = _read_json(path)  # An unreadable record cannot renew either.
+        if record is not None and record.get("owner") == owner:
             # Revocation must fail loudly if a credential cannot be removed.
-            path.unlink(missing_ok=True)
+            _unlink(path, strict=True)
 
 
 def drop(handle: str) -> None:
