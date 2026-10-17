@@ -457,28 +457,12 @@ def _active_host_snapshot(
     A command center's selected source belongs to model_options; this hint
     reports only which installed and authenticated host endpoint is available.
     """
-    import shutil as _shutil
 
     api_key_enabled = api_key_providers_enabled()
     api_key_vars_present = [
         name for name in API_KEY_PROVIDER_ENV_VARS if os.environ.get(name)
     ]
-    from tinyassets.providers.base import subscription_auth_health as _auth_health
-
-    claude_authed = (
-        _shutil.which("claude")
-        and _auth_health("claude-code", allow_probe=False)["status"]
-        != "not_logged_in"
-    )
-    if os.environ.get("OLLAMA_HOST"):
-        endpoint_hint = "ollama"
-    elif api_key_enabled and os.environ.get("ANTHROPIC_BASE_URL"):
-        endpoint_hint = "anthropic"
-    elif claude_authed:
-        endpoint_hint = "claude"
-    else:
-        endpoint_hint = "unset"
-
+    endpoint_hint = "broker"
     active_host: dict[str, object] = {
         "host_id": os.environ.get("UNIVERSE_SERVER_HOST_USER", "host"),
         "served_llm_type": served_llm_type or "any",

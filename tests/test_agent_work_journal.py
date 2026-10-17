@@ -4,7 +4,6 @@ from dataclasses import asdict, replace
 
 import pytest
 
-from tests import test_agent_native_journal as native
 from tests import test_agent_turn_journal as chat
 from tinyassets.storage import agent_turn_records as records
 from tinyassets.storage.agent_turn_journal import JournalUnavailable, reset_blockers
@@ -20,7 +19,7 @@ def work_root(journal, receipt="work-receipt"):
 
 
 def work_candidate(kind, receipt="work-receipt"):
-    original = chat.candidate() if kind == "http" else native.native_candidate()
+    original = chat.candidate()
     return replace(original, authority_kind="work_invocation", work_receipt_id=receipt)
 
 
@@ -31,14 +30,13 @@ def begin_work(journal, turn, kind="http", receipt="work-receipt"):
     ).snapshot
 
 
-@pytest.mark.parametrize("kind", ["http", "native"])
+@pytest.mark.parametrize("kind", ["http"])
 def test_work_rounds_are_distinct_and_roundtrip_without_rewriting_chat(journal, kind):
-    original = chat.candidate() if kind == "http" else native.native_candidate()
+    original = chat.candidate()
     legacy_fields = asdict(original)
     legacy_fields.pop("authority_kind")
     legacy_fields.pop("work_receipt_id")
-    expected = records.dump({"version": 1, **legacy_fields} if kind == "http" else
-                            {"version": 2, "kind": "native_agent", **legacy_fields})
+    expected = records.dump({"version": 1, **legacy_fields})
     assert original.canonical_json() == expected
     assert type(original).from_json(expected) == original
 
@@ -46,21 +44,21 @@ def test_work_rounds_are_distinct_and_roundtrip_without_rewriting_chat(journal, 
     raw = turn.rounds[0].candidate.canonical_json()
     value = records.document(raw)
     assert value["version"] == 3
-    assert value["kind"] == ("engine_inference" if kind == "http" else "native_agent")
+    assert value["kind"] == "engine_inference"
     assert type(original).from_json(raw) == work_candidate(kind)
     assert turn.authority_kind == "work_invocation" and turn.work_receipt_id == "work-receipt"
     assert journal.get("owner", "home", turn.turn_id) == turn
     assert journal.get("someone-else", "home", turn.turn_id) is None
 
 
-@pytest.mark.parametrize("kind", ["http", "native"])
+@pytest.mark.parametrize("kind", ["http"])
 @pytest.mark.parametrize("root_kind,round_kind", [
     ("chat", "work"), ("work", "chat"), ("work", "another_work"),
 ])
 def test_round_cannot_change_root_lineage(journal, kind, root_kind, round_kind):
     turn = chat.new(journal) if root_kind == "chat" else work_root(journal)
     if round_kind == "chat":
-        candidate = chat.candidate() if kind == "http" else native.native_candidate()
+        candidate = chat.candidate()
     else:
         candidate = work_candidate(
             kind, "other" if round_kind == "another_work" else "work-receipt",
@@ -71,7 +69,7 @@ def test_round_cannot_change_root_lineage(journal, kind, root_kind, round_kind):
     assert journal.get("owner", "home", turn.turn_id) == turn
 
 
-@pytest.mark.parametrize("kind", ["http", "native"])
+@pytest.mark.parametrize("kind", ["http"])
 @pytest.mark.parametrize("target", ["header", "round"])
 def test_read_refuses_persisted_lineage_mismatch(journal, kind, target):
     turn = begin_work(journal, work_root(journal), kind)
@@ -88,7 +86,7 @@ def test_read_refuses_persisted_lineage_mismatch(journal, kind, target):
         journal.get("owner", "home", turn.turn_id)
 
 
-@pytest.mark.parametrize("kind", ["http", "native"])
+@pytest.mark.parametrize("kind", ["http"])
 @pytest.mark.parametrize("changes", [
     {"authority_kind": "served_request"}, {"authority_kind": "invented"},
     {"work_receipt_id": ""}, {"work_receipt_id": None}, {"work_receipt_id": True},
@@ -131,8 +129,3 @@ def test_work_tools_keep_exact_results_and_unknown_effect_reset_hold(journal):
     assert journal.get("owner", "home", turn.turn_id) == turn
 
 
-def test_native_work_completion_retains_work_scope(journal):
-    turn = begin_work(journal, work_root(journal), "native")
-    turn = native.end_native(journal, turn, native.completed()).snapshot
-    assert turn.state == "completed" and turn.work_receipt_id == "work-receipt"
-    assert journal.get("owner", "home", turn.turn_id) == turn

@@ -50,8 +50,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 
-from tinyassets.providers.base import subprocess_env_for_provider  # noqa: E402
-from tinyassets.providers.claude_provider import _normalize_stream_obj  # noqa: E402
+from tinyassets.providers.base import subprocess_env_without_api_keys  # noqa: E402
 
 # codex v0.122+ can exit 0 with empty output on auth failure (see
 # workflow/providers/codex_provider.py). Same heuristic here — stderr only,
@@ -216,11 +215,13 @@ def claude_retained_text(stdout: str) -> str:
                 or not isinstance(obj.get("result"), str)
             ):
                 raise ValueError("Claude terminal result is not a valid success")
-        for event, payload in _normalize_stream_obj(obj):
-            if event == "text_delta":
-                blocks.append(payload["text"])
-            elif event == "result":
-                terminal = payload["obj"]
+        if kind == "assistant":
+            if isinstance(content, str):
+                blocks.append(content)
+            else:
+                blocks.extend(block["text"] for block in content if block["type"] == "text")
+        else:
+            terminal = obj
     if terminal is None:
         raise ValueError(
             "Claude stream has no successful terminal result (empty output or incomplete stream)"
@@ -414,10 +415,10 @@ def _main() -> int:
         return fail("empty prompt", 2)
 
     if args.provider == "claude":
-        env = subprocess_env_for_provider("claude-code")
+        env = subprocess_env_without_api_keys()
         cmd = build_claude_cmd(args)
     else:
-        env = subprocess_env_for_provider("codex")
+        env = subprocess_env_without_api_keys()
         if args.system:
             prompt = f"{args.system}\n\n{prompt}"
         if not out_path:

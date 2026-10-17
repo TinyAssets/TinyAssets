@@ -283,26 +283,3 @@ def test_model_setup_does_not_change_existing_spending_ceilings(rig):
     assert "within spending limits you already set" in row["grant_sentence"]
 
 
-def test_other_accepted_sources_are_preserved_exactly(rig, monkeypatch):
-    from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.provider_serving_binding import bind_serving_provider
-
-    write_credential_vault(rig[1], [
-        {"credential_type": "llm_subscription", "service": "codex", "auth_json_b64": "e30="},
-        {"credential_type": "llm_subscription", "service": "claude", "oauth_token": "fixture-only"},
-    ], owner_user_id="owner-1", universe_id="u-owner")
-    access = {name: ModelAccess("explicit", ("",)) for name in ("codex", "claude-code")}
-    bound = bind_serving_provider(
-        base_path=rig[0], universe_dir=rig[1], universe_id="u-owner", owner_user_id="owner-1",
-        agent_binding_id=rig[2]["agent_binding_id"], expected_revision=1,
-        provider="codex", model_access=access,
-    )
-    revision = bound["agent_binding"]["revision"]
-    assert ask(rig, expected_revision=revision)["error"] == "request_invalid"  # drops Claude
-    proposal = {name: item.document() for name, item in access.items()}
-    proposal["codex"] = ModelAccess("explicit", ("", "named-model")).document()
-    accepted = ask(rig, expected_revision=revision, model_access=proposal)
-    assert accepted["status"] == "pending"
-    assert accepted["action"]["proposed_membership"]["claude-code"] == proposal["claude-code"]
-    proposal["claude-code"] = ModelAccess("discovered").document()
-    assert ask(rig, expected_revision=revision, model_access=proposal)["error"] == "request_invalid"

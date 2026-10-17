@@ -126,13 +126,6 @@ def _same_origin_json(request: Any, public_resource: str = "") -> bool:
     return parts.netloc in allowed
 
 
-#: The one subscription service this daemon can complete by BROKERED SIGN-IN rather
-#: than by the owner pasting something. Named here, in the module that implements that
-#: flow, so a caller deciding whether to OFFER a sign-in can ask instead of knowing:
-#: `api.pending_requests` reads this and names no source itself.
-DEVICE_SIGN_IN_SERVICE = "codex"
-
-
 def onboarding_enabled() -> bool:
     """Whether the onboarding app route serves content (dark flag)."""
     return os.environ.get("TINYASSETS_ONBOARDING_APP", "").strip().lower() in _TRUTHY
@@ -146,7 +139,6 @@ def app_config(build: str | None = None) -> dict[str, Any]:
     drift from what ``/mcp`` itself accepts. Contains public values only.
     """
     from tinyassets.auth.wellknown import protected_resource_metadata
-    from tinyassets.onboarding import openai_device as _openai
     from tinyassets.onboarding.realtime_voice import public_voice_config
 
     prm = protected_resource_metadata()
@@ -170,16 +162,6 @@ def app_config(build: str | None = None) -> dict[str, Any]:
         # registered public client id are present; otherwise the page renders an
         # honest "not configured" notice instead of a broken redirect.
         "configured": bool(issuer and client_id),
-        # One-tap OpenAI (browser flow, native app): public client + authorize
-        # endpoint; the app builds PKCE locally and catches the loopback redirect.
-        "openai": {
-            "authorize_url": _openai.BROWSER_AUTHORIZE_URL,
-            "client_id": _openai.CODEX_CLIENT_ID,
-            "scope": _openai.BROWSER_SCOPE,
-            "redirect_port": _openai.BROWSER_DEFAULT_PORT,
-            "redirect_path": _openai.BROWSER_REDIRECT_PATH,
-            "device_verification_url": _openai.VERIFICATION_URL,
-        },
         "voice": public_voice_config(),
     }
 
@@ -715,170 +697,8 @@ def _bootstrap_home(identity: Any) -> str:
             return ""
 
 
-async def _handle_openai_device_start(request: Any) -> Any:
-    """Begin the one-tap OpenAI link: returns the user code + approval URL."""
-    from starlette.responses import JSONResponse, PlainTextResponse
-
-    from tinyassets.auth.middleware import current_identity
-    from tinyassets.onboarding.openai_device import (
-        DeviceAuthError,
-        register_flow,
-        start_device_auth,
-    )
-
-    if not onboarding_enabled():
-        return PlainTextResponse("Not Found", status_code=404)
-    denied = _app_identity_required()
-    if denied is not None:
-        return denied
-    from starlette.concurrency import run_in_threadpool
-
-    data = await _read_small_json(request)
-    if data is None:
-        return JSONResponse({"error": "invalid_json"}, status_code=400)
-    # The caller says which source it is signing back in to, and this route completes
-    # exactly one. Before, it ignored the field and deposited for its own service
-    # whatever was asked, so a reconnect card for a different source would have
-    # silently replaced the wrong credential (Codex refute-review, P1 #5).
-    #
-    # The universe is NOT taken from the caller, and that is deliberate rather than an
-    # oversight: `_bootstrap_home` states the invariant -- the signed-in user's own
-    # home is the only universe a credential from the app may land in, and a
-    # client-supplied id is ignored. Honouring one here would reverse that decision,
-    # so the card's target is the home and a request naming anything else is refused
-    # rather than quietly redirected.
-    asked = str(data.get("service") or DEVICE_SIGN_IN_SERVICE).strip().lower()
-    if asked != DEVICE_SIGN_IN_SERVICE:
-        # This daemon completes exactly one service by brokered sign-in. A card for any
-        # other source offers its own shapes instead, so reaching here means the caller
-        # asked for a flow that does not exist -- refused loudly rather than silently
-        # completing the one service this route does know.
-        return JSONResponse({"error": "sign_in_unsupported_for_service"}, status_code=400)
-    identity = current_identity()
-    # The TARGET is the card's universe plus this caller's identity, resolved through
-    # the same admin-ACL check every other write here uses. A universe the caller does
-    # not administer fails loudly; it is never quietly replaced with their own.
-    target = await run_in_threadpool(
-        _owned_target_universe, identity, str(data.get("universe_id") or ""),
-    )
-    if target is None:
-        return JSONResponse({"error": "sign_in_universe_not_yours"}, status_code=403)
-    if not target:
-        return JSONResponse({"error": "no_home_universe"}, status_code=409)
-    try:
-        started = await start_device_auth()
-        # The raw device tuple is a bearer capability for the credential; it
-        # stays in the daemon, bound to THIS user + THEIR home. The app gets an
-        # opaque handle.
-        handle = register_flow(
-            user_id=identity.user_id,
-            universe_id=target,
-            device_auth_id=started["device_auth_id"],
-            user_code=started["user_code"],
-        )
-    except DeviceAuthError as exc:
-        return JSONResponse({"error": exc.code}, status_code=exc.status)
-    return JSONResponse(
-        {
-            "flow": handle,
-            "user_code": started["user_code"],
-            "verification_url": started["verification_url"],
-            "interval": started["interval"],
-        },
-        headers={"Cache-Control": "no-store"},
-    )
 
 
-async def _handle_openai_device_poll(request: Any) -> Any:
-    """One poll of the pending OpenAI approval. On approval the tokens are
-    exchanged and deposited server-side as the signed-in user; the response
-    carries only a status — never the credential."""
-    from starlette.concurrency import run_in_threadpool
-    from starlette.responses import JSONResponse, PlainTextResponse
-
-    from tinyassets.auth.middleware import current_identity, identity_context
-    from tinyassets.onboarding.openai_device import (
-        DeviceAuthError,
-        consume_flow,
-        deposit_codex_auth_json,
-        lookup_flow,
-        poll_device_auth,
-        release_flow,
-    )
-
-    if not onboarding_enabled():
-        return PlainTextResponse("Not Found", status_code=404)
-    denied = _app_identity_required()
-    if denied is not None:
-        return denied
-    data = await _read_small_json(request)
-    if data is None:
-        return JSONResponse({"error": "invalid_json"}, status_code=400)
-    identity = current_identity()
-    handle = str(data.get("flow", ""))[:128]
-    try:
-        # Same identity that started the flow, or it does not exist.
-        flow = lookup_flow(handle, user_id=identity.user_id)
-    except DeviceAuthError as exc:
-        return JSONResponse({"error": exc.code}, status_code=exc.status)
-    try:
-        outcome = await poll_device_auth(
-            device_auth_id=flow.device_auth_id,
-            user_code=flow.user_code,
-        )
-    except DeviceAuthError as exc:
-        consume_flow(handle)  # a terminal failure ends the flow
-        return JSONResponse({"error": exc.code}, status_code=exc.status)
-    except BaseException:
-        # Anything unexpected (incl. client disconnect / task cancellation)
-        # hands the lease back so the flow is not stuck until expiry.
-        release_flow(handle)
-        raise
-    if outcome is None:
-        release_flow(handle)  # still pending: hand the lease back for the next poll
-        return JSONResponse({"status": "pending"}, headers={"Cache-Control": "no-store"})
-    consume_flow(handle)  # approval reached: one-shot, whatever the deposit says
-
-    def _deposit() -> dict[str, Any]:
-        # Re-pin the identity inside the worker thread (same pattern as the
-        # browser deposit form) so connect_llm's actor resolution sees the user.
-        with identity_context(identity):
-            result = deposit_codex_auth_json(outcome["auth_json"], universe_id=flow.universe_id)
-            if (isinstance(result, dict) and not result.get("error")
-                    and (result.get("serving") or {}).get("status") == "held"):
-                from tinyassets.api.helpers import _base_path
-                from tinyassets.onboarding.source_connect import offer_subscription_source
-
-                try:
-                    offered = offer_subscription_source(
-                        base=_base_path(), uid=flow.universe_id, owner=identity.user_id,
-                        service=DEVICE_SIGN_IN_SERVICE,
-                    )
-                    if offered is not None:
-                        result = {**result, "confirmation": offered["request"]}
-                except Exception:  # noqa: BLE001 - deposit succeeded; expose no private detail
-                    result = {**result, "confirmation_error": "model_confirmation_requires_review"}
-            return result
-
-    result = await run_in_threadpool(_deposit)
-    if not isinstance(result, dict) or result.get("error"):
-        err = "deposit_failed"
-        if isinstance(result, dict) and result.get("error"):
-            err = str(result["error"])
-        status = 401 if err == "authentication_required" else 400
-        return JSONResponse({"status": "failed", "error": err}, status_code=status)
-    serving = result.get("serving") or {}
-    response = {"status": "connected", "service": DEVICE_SIGN_IN_SERVICE,
-                "serving": {"status": "serving" if serving.get("status") == "serving"
-                            else "held"}}
-    if "confirmation" in result:
-        response["confirmation"] = result["confirmation"]
-    if "confirmation_error" in result:
-        response["confirmation_error"] = result["confirmation_error"]
-    return JSONResponse(
-        response,
-        headers={"Cache-Control": "no-store"},
-    )
 
 
 def _command_center_name(home: str) -> str:
@@ -949,130 +769,8 @@ async def _handle_me(request: Any) -> Any:
     return JSONResponse(doc, headers={"Cache-Control": "no-store"})
 
 
-async def _handle_openai_begin(request: Any) -> Any:
-    """Browser sign-in start: the app sends the PKCE challenge + loopback
-    redirect it will build the authorize URL with. The daemon binds them to
-    the signed-in user + their exact home behind an opaque handle, so the
-    later exchange can only complete for that session, that verifier, that
-    redirect, into that universe."""
-    from starlette.concurrency import run_in_threadpool
-    from starlette.responses import JSONResponse, PlainTextResponse
-
-    from tinyassets.auth.middleware import current_identity
-    from tinyassets.onboarding.openai_device import (
-        DeviceAuthError,
-        register_flow,
-        valid_loopback_redirect,
-    )
-
-    if not onboarding_enabled():
-        return PlainTextResponse("Not Found", status_code=404)
-    denied = _app_identity_required()
-    if denied is not None:
-        return denied
-    data = await _read_small_json(request)
-    if data is None:
-        return JSONResponse({"error": "invalid_json"}, status_code=400)
-    challenge = str(data.get("code_challenge", "")).strip()
-    redirect_uri = str(data.get("redirect_uri", "")).strip()
-    if not (43 <= len(challenge) <= 128) or not _re.fullmatch(r"[A-Za-z0-9_-]+", challenge):
-        return JSONResponse({"error": "invalid_code_challenge"}, status_code=400)
-    if not valid_loopback_redirect(redirect_uri):
-        return JSONResponse({"error": "invalid_redirect_uri"}, status_code=400)
-    identity = current_identity()
-    home = await run_in_threadpool(_bootstrap_home, identity)
-    if not home:
-        return JSONResponse({"error": "no_home_universe"}, status_code=409)
-    try:
-        handle = register_flow(
-            user_id=identity.user_id,
-            universe_id=home,
-            code_challenge=challenge,
-            redirect_uri=redirect_uri,
-        )
-    except DeviceAuthError as exc:
-        return JSONResponse({"error": exc.code}, status_code=exc.status)
-    return JSONResponse({"flow": handle}, headers={"Cache-Control": "no-store"})
 
 
-async def _handle_openai_exchange(request: Any) -> Any:
-    """Browser sign-in completion: the app caught OpenAI's redirect on its
-    loopback listener and sends (flow, code, verifier). The flow must belong
-    to this identity, the verifier must hash to the challenge the flow was
-    begun with, and the exchange uses the flow's redirect. The daemon then
-    deposits into the flow's home universe; the response carries only a
-    status."""
-    from starlette.concurrency import run_in_threadpool
-    from starlette.responses import JSONResponse, PlainTextResponse
-
-    from tinyassets.auth.middleware import current_identity, identity_context
-    from tinyassets.onboarding.openai_device import (
-        DeviceAuthError,
-        consume_flow,
-        deposit_codex_auth_json,
-        exchange_browser_code,
-        lookup_flow,
-        release_flow,
-        verifier_matches_challenge,
-    )
-
-    if not onboarding_enabled():
-        return PlainTextResponse("Not Found", status_code=404)
-    denied = _app_identity_required()
-    if denied is not None:
-        return denied
-    data = await _read_small_json(request)
-    if data is None:
-        return JSONResponse({"error": "invalid_json"}, status_code=400)
-    identity = current_identity()
-    handle = str(data.get("flow", ""))[:128]
-    code_verifier = str(data.get("code_verifier", ""))
-    # RFC 7636 §4.1 shape, checked BEFORE the flow is leased so a malformed
-    # verifier can never 500 with the lease held.
-    if not _re.fullmatch(r"[A-Za-z0-9\-._~]{43,128}", code_verifier):
-        return JSONResponse({"error": "invalid_code_verifier"}, status_code=400)
-    try:
-        flow = lookup_flow(handle, user_id=identity.user_id)
-    except DeviceAuthError as exc:
-        return JSONResponse({"error": exc.code}, status_code=exc.status)
-    if not flow.code_challenge or not verifier_matches_challenge(
-        code_verifier, flow.code_challenge
-    ):
-        consume_flow(handle)  # a wrong verifier is terminal: one attempt per flow
-        return JSONResponse({"error": "verifier_mismatch"}, status_code=400)
-    try:
-        outcome = await exchange_browser_code(
-            code=str(data.get("code", "")),
-            code_verifier=code_verifier,
-            redirect_uri=flow.redirect_uri,
-        )
-    except DeviceAuthError as exc:
-        if exc.status in (429, 502):
-            release_flow(handle)  # transient upstream trouble: the app may retry
-        else:
-            consume_flow(handle)
-        return JSONResponse({"error": exc.code}, status_code=exc.status)
-    except BaseException:
-        release_flow(handle)
-        raise
-    consume_flow(handle)
-    universe_id = flow.universe_id
-
-    def _deposit() -> dict[str, Any]:
-        with identity_context(identity):
-            return deposit_codex_auth_json(outcome["auth_json"], universe_id=universe_id)
-
-    result = await run_in_threadpool(_deposit)
-    if not isinstance(result, dict) or result.get("error"):
-        err = "deposit_failed"
-        if isinstance(result, dict) and result.get("error"):
-            err = str(result["error"])
-        status = 401 if err == "authentication_required" else 400
-        return JSONResponse({"status": "failed", "error": err}, status_code=status)
-    return JSONResponse(
-        {"status": "connected", "service": DEVICE_SIGN_IN_SERVICE},
-        headers={"Cache-Control": "no-store"},
-    )
 
 
 async def _handle_voice_session(request: Any) -> Any:
@@ -2460,10 +2158,6 @@ def onboarding_routes() -> list[Any]:
         Route("/app/oauth/client-metadata.json", handle_client_metadata,
               methods=["GET", "HEAD"]),
         Route("/app/token", _handle_token, methods=["POST"]),
-        Route("/app/openai/device/start", _handle_openai_device_start, methods=["POST"]),
-        Route("/app/openai/device/poll", _handle_openai_device_poll, methods=["POST"]),
-        Route("/app/openai/begin", _handle_openai_begin, methods=["POST"]),
-        Route("/app/openai/exchange", _handle_openai_exchange, methods=["POST"]),
         Route("/app/voice/status", _handle_voice_status, methods=["GET"]),
         Route("/app/voice/session", _handle_voice_session, methods=["POST"]),
         Route("/app/me", _handle_me, methods=["GET"]),

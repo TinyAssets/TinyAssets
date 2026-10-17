@@ -1221,8 +1221,7 @@ def write_graph(
             one of YOUR OWN branches by branch_id, public or private; one that an
             automation, webhook, schedule, goal binding, invoking branch or a
             command center loop still depends on is refused with the dependents named.
-            With target=connection, connect_llm deposits the authenticated
-            owner's own Claude/Codex subscription into this command center's private
+
             vault (owner-only; see payload_json). Also with target=connection,
             connect_http provisions a generic outbound http connection to ANY
             HTTPS API the command center can then act on via the
@@ -1295,14 +1294,6 @@ def write_graph(
             {"expected_generation": <integer>, "policy": {...}} preference
             document. The authenticated actor's current home is required;
             saving preferences never grants model or spending access.
-            For target=connection operation=connect_llm, pass
-            {"service": "claude"|"codex", "auth_material_b64": "<base64>"} to
-            deposit YOUR OWN subscription into this command center's private vault so
-            the command center can serve on it. Owner-only. base64 is transport: for
-            claude it decodes to your OAuth token; for codex it is the base64 of
-            your auth.json. The secret is stored in the command center's vault and is
-            never echoed back. After a successful deposit, re-point serving with
-            target=agent_binding operation=bind_serving_provider then set_serving.
             For target=connection operation=connect_http, pass
             {"destination": "<stable key, e.g. webhook:acme>", "secret":
             "<bearer token>", "allowed_endpoints": [{"host": "api.example.com",
@@ -1323,11 +1314,8 @@ def write_graph(
             {"access_method": "api_key_http", "protocol": "openai_chat"|
             "anthropic_messages", "model": "<model>", "ref": "<grant_id of an http
             connection already granted to this command center>"} to register an open compute
-            provider (Kimi/OpenRouter/any OpenAI-compatible endpoint). For a CLI
-            subscription pass {"access_method": "subscription_cli", "protocol":
-            "cli:codex"|"cli:claude-code", "model": "<model>", "ref": "codex"|
-            "claude-code"}. Owner-only, registration ONLY — NO secret here (deposit the
-            api key out of band via the secure browser form / connect_http first).
+            provider. Registration takes no secret; deposit the key through the
+            secure browser connection form first.
             For target=connection operation=configure_provider_capability, pass
             {"capability_kind": "realtime_voice", "enabled": true,
             "descriptor": {"protocol": "tinyassets.voice.v1", "session_url":
@@ -1607,15 +1595,6 @@ def write_graph(
         # owner-scoped handler; cloud_connections only lists. Adds no
         # advertised handle — the live tool catalog stays pinned.
         connection_operation = (operation or "").strip().lower()
-        if connection_operation == "connect_llm":
-            from tinyassets.api.llm_deposit import connect_llm
-
-            return json.dumps(
-                connect_llm(
-                    universe_id=graph_id,
-                    payload=payload_json,
-                )
-            )
         if connection_operation == "connect_http":
             # Owner-scoped provisioning of a generic outbound http connection so a
             # universe can act on a channel (Slack, any HTTPS API). Its own
@@ -3539,10 +3518,10 @@ def converse(
             "history_saved": saved,
         }
         if held is not None:
-            from tinyassets.api.pending_requests import _connect_llm_request
+            from tinyassets.api.pending_requests import _model_connect_request
 
             try:
-                held["needs_connection"] = _connect_llm_request()
+                held["needs_connection"] = _model_connect_request()
             except Exception:
                 logger.warning("converse: connect request unavailable", exc_info=True)
             return json.dumps(_with_unsettled_steering(

@@ -4539,19 +4539,15 @@ def connect_compute(
     appears as a tab on the right of their app, they paste the key into it, and the
     deposit happens there (that is ``connect_http``). Never send them hunting for a
     control: the nav button was cut on 2026-08-27 and asking is the route now.
-    For a ``subscription_cli`` provider the ``ref`` is the CLI name (``codex`` /
-    ``claude-code``) and the subscription is deposited via ``connect_llm``.
-
     Args:
         access_method: ``api_key_http`` (any Kimi/OpenRouter/OpenAI-compatible
             endpoint, over an http connection already granted to this command center) or
-            ``subscription_cli`` (run a vendor CLI subscription). Required.
+            Required.
         protocol: The wire shape — ``openai_chat`` / ``anthropic_messages`` for
-            api_key_http, ``cli:codex`` / ``cli:claude-code`` for subscription_cli.
+            api_key_http.
         model: The model id to run (e.g. ``moonshotai/kimi-k2``).
         ref: For api_key_http, the grant_id of an http connection already granted to
-            this command center. For subscription_cli, the CLI name (``codex`` /
-            ``claude-code``).
+            this command center.
         visibility: ``private`` (default) or ``public`` (share the SHAPE — never a
             credential — to the commons for others to remix).
     """
@@ -4563,7 +4559,7 @@ def connect_compute(
     am = (access_method or "").strip()
     if not am:
         return json.dumps({
-            "error": "access_method is required (api_key_http or subscription_cli).",
+            "error": "access_method is required (api_key_http).",
         })
 
     from tinyassets.api.compute_connection import connect_compute as _impl

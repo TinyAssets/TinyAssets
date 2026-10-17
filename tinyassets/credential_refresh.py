@@ -1,34 +1,4 @@
-"""The ONE refresh core for every vault credential that rotates its secret.
-
-Two stores in this repo hold a refreshable OAuth credential for one universe: an
-``http`` record whose token is the ``oauth2`` bundle
-(:mod:`tinyassets.connection_oauth.tokens`), and an ``llm_subscription`` record
-whose document is the CLI's own ``auth.json``
-(:func:`tinyassets.onboarding.openai_device.build_codex_auth_json`). Both spend a
-single-use refresh token, so both need the same five things in the same order --
-and the order is the whole of the correctness:
-
-1. the per-credential THREAD lock, so one process refreshes once;
-2. the per-credential FILE lock, so one HOST refreshes once;
-3. the vault's exclusive admission, taken BEFORE anything is spent. The
-   cross-process admission is bounded (on Windows it gives up after about a
-   second), so a refresh that took it only to WRITE could rotate the secret at
-   the provider and then fail to save it, losing the credential entirely;
-4. a RE-READ inside those locks -- the holder before us may already have
-   rotated, and staleness is re-decided on what was just read rather than on
-   what the caller saw;
-5. the write, while the vault is still held.
-
-This module owns that ordering and nothing else. It does not know either
-encoding: the caller supplies four pure functions (read / stale / spend /
-records) and how it reports a failure. A base class with two subclasses was the
-alternative, and it would have put the ordering in a template method -- inviting
-an override of exactly the part that must not vary.
-
-Nothing here logs, returns, or formats a secret. The caller's ``spend`` is
-responsible for scrubbing the token endpoint's own words before they reach a
-:class:`RefreshRejected` detail.
-"""
+"""Refresh HTTP OAuth custody under thread, file and vault locks."""
 
 from __future__ import annotations
 

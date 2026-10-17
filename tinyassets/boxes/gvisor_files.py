@@ -114,11 +114,9 @@ class GvisorFileBackend:
             self._capacity.notify_all()
 
     def execute(self, uid: int, args: dict, running) -> dict:
-        from tinyassets.boxes.cli_wire import PrivateDecoder
         from tinyassets.boxes.gvisor_runtime import OVERLAY
 
-        private = PrivateDecoder(args["cli"]) if "cli" in args else None
-        body = encode({key: args[key] for key in ("argv", "env", "cwd", "cli") if key in args})
+        body = encode({key: args[key] for key in ("argv", "env", "cwd") if key in args})
         argv = [str(self.runtime.runsc), "--root", str(self.runtime.state_root),
                 "--systemd-cgroup=false", "--network=none", "--platform=systrap",
                 f"--overlay2={OVERLAY}", "exec", self.runtime.box_id(uid),
@@ -136,7 +134,7 @@ class GvisorFileBackend:
                 self._wake(uid)
                 self._busy.add(uid)
                 proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.DEVNULL if private else subprocess.STDOUT,
+                                        stderr=subprocess.STDOUT,
                                         start_new_session=True)
             os.set_blocking(proc.stdin.fileno(), False)
             os.set_blocking(proc.stdout.fileno(), False)
@@ -180,8 +178,6 @@ class GvisorFileBackend:
                                 output_eof = True
                                 selector.unregister(key.fileobj)
                                 continue
-                            if private:
-                                chunk = private.feed(chunk)
                             room = args["output_bytes"] - total
                             running.append_output(chunk[:room])
                             total += len(chunk)
@@ -193,8 +189,6 @@ class GvisorFileBackend:
             # A runsc client exit does not prove detached guest children died.
             # The host caller stops the whole sandbox before recording this exit.
             result = {"exit_code": proc.poll() if not killed else None, "killed": killed}
-            if private and not killed:
-                result["private"] = private.finish(result["exit_code"])
             return result
         finally:
             try:

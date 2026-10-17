@@ -1443,27 +1443,6 @@ def converse(
                 universe_id=uid,
                 owner_user_id=capability.principal_id,
             )
-            # Bring the owner's stored sign-ins current BEFORE this turn pins
-            # anything. A rotation renews the accepted binding, which moves its
-            # revision and digests, and the carrier and model plan captured below
-            # pin both: rotated after capture, the turn was refused "connect your
-            # provider" (live 2026-09-28). The principal is proven the serving
-            # binding's owner by the resolution above. `launching` is unknown yet,
-            # so a finished sign-in only records its card here; the launch-time
-            # refresh is still what refuses the source it is about to use.
-            from tinyassets.subscription_refresh import refresh_deposited_subscriptions
-
-            refresh_deposited_subscriptions(
-                base_path=udir.parent,
-                universe_dir=udir,
-                owner_user_id=capability.principal_id,
-                universe_id=uid,
-            )
-            selected = resolve_serving_agent_binding(
-                udir.parent,
-                universe_id=uid,
-                owner_user_id=capability.principal_id,
-            )
         request_carrier = mint_provider_request_carrier(
             universe_id=uid,
             agent_binding_id=selected["agent_binding_id"],

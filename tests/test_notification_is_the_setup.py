@@ -61,7 +61,7 @@ def _rail():
 
 def test_the_unpowered_request_is_the_setup_with_the_installed_preset_first(rig):
     first = _rail()[0]
-    assert first["request_id"] == "sys_connect_llm" and first["sticky"] is True
+    assert first["request_id"] == "sys_connect_model" and first["sticky"] is True
     action = first["action"]
     assert action["type"] == "connect" and action["use"] == "model"
     primary = action["setup"]["primary"]
@@ -79,7 +79,7 @@ def test_a_powered_universe_sees_only_an_optional_connect_another(rig, monkeypat
     monkeypatch.setattr("tinyassets.api.pending_requests._serving_llm_bound",
                         lambda *a, **k: True)
     row = _rail()[-1]
-    assert row["request_id"] == "sys_connect_llm"
+    assert row["request_id"] == "sys_connect_model"
     assert row["title"] == "Connect another LLM" and row["sticky"] is False
     assert "primary" not in row["action"]["setup"], "a powered universe was offered first power"
 
@@ -153,7 +153,7 @@ def test_the_guided_sign_in_round_trips_to_a_serving_universe_with_no_llm_call(r
     # Nothing left waiting: the connect entry became the optional one and the
     # free-model request resolved.
     rows = _rail()
-    assert [r["request_id"] for r in rows] == ["sys_connect_llm"]
+    assert [r["request_id"] for r in rows] == ["sys_connect_model"]
     assert rows[0]["sticky"] is False
 
 
@@ -290,7 +290,7 @@ let railNodes=new Map();
 // it, and the renderer derives the element's state from this rather than reading it
 // back off a node that survives every refresh.
 let connectOtherOpen=false;
-const CONNECT_REQUEST_ID="sys_connect_llm";
+const CONNECT_REQUEST_ID="sys_connect_model";
 // `isSetupRequest` closes over this too, since a reconnect card is answered by the
 // same connect panel: the sliced function needs every module-level name it reads.
 const RECONNECT_REQUEST_PREFIX="reconnect-source:";
@@ -321,7 +321,7 @@ console.log(JSON.stringify({tabs,panelHidden:$('connect-panel').hidden,
     return json.loads(run.stdout)
 
 
-_SETUP = {"request_id": "sys_connect_llm", "kind": "LLM", "sticky": True,
+_SETUP = {"request_id": "sys_connect_model", "kind": "LLM", "sticky": True,
           "title": "Connect the model your universe runs on", "body": "Needs a model.",
           "fields": [], "action": {"type": "connect", "use": "model", "setup": {
               "primary": {"preset_id": "guided_models_v1", "label": "Continue with Example",
@@ -361,7 +361,7 @@ def test_a_powered_user_sees_only_a_collapsed_connect_another():
         "setup expanded for a powered user"
     assert out["panelHidden"] is True and out["sheetOpen"] is False
     assert len(out["tabs"]) == 2, "a powered universe's own model request was hidden"
-    opened = _run_rail([powered], "railOpen='sys_connect_llm';renderRail(railCache);")
+    opened = _run_rail([powered], "railOpen='sys_connect_model';renderRail(railCache);")
     assert opened["tabs"][0]["hasPanel"] is True
     assert opened["primary"] is None, "a powered universe was offered first power"
     assert opened["otherOpen"] is True, "the ways to add another were not shown"

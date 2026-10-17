@@ -34,7 +34,7 @@ function node(tag){
 const els=new Map();
 const $=id=>{if(!els.has(id)){const e=node('div');e.id=id;els.set(id,e);}return els.get(id);};
 const document={createElement:node};
-const NATIVE=false, CONNECT_REQUEST_ID='sys_connect_llm';
+const NATIVE=false, CONNECT_REQUEST_ID='sys_connect_model';
 let opened=0; function openConnectRequest(){opened++;}
 const calls=[];
 const ConnectOAuth={
@@ -46,7 +46,7 @@ const ConnectOAuth={
 };
 const SignInConnect={ids:{},configure(s,u){calls.push({configure:s,universe:u});},
   start(){calls.push({start:this.ids.result});}};
-let railCache=[{request_id:'sys_connect_llm',action:{type:'connect',setup:__SETUP__}}];
+let railCache=[{request_id:'sys_connect_model',action:{type:'connect',setup:__SETUP__}}];
 function text(n){return [n.textContent].concat(n.children.map(text)).join(' ').trim();}
 function find(n,pred){if(pred(n))return n;
   for(const c of n.children){const f=find(c,pred);if(f)return f;}return null;}

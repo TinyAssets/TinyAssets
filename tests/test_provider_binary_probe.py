@@ -31,17 +31,7 @@ def reset_stub():
 
 
 class TestIsAvailableClassmethod:
-    def test_claude_unavailable_when_binary_absent(self, monkeypatch):
-        import tinyassets.providers.claude_provider as _cp
-        monkeypatch.setattr(_cp.shutil, "which", lambda name: None)
-        from tinyassets.providers.claude_provider import ClaudeProvider
-        assert ClaudeProvider.is_available() is False
 
-    def test_claude_available_when_binary_present(self, monkeypatch):
-        import tinyassets.providers.claude_provider as _cp
-        monkeypatch.setattr(_cp.shutil, "which", lambda name: "/usr/local/bin/claude")
-        from tinyassets.providers.claude_provider import ClaudeProvider
-        assert ClaudeProvider.is_available() is True
 
 
 
@@ -58,43 +48,3 @@ class TestIsAvailableClassmethod:
         assert _Dummy.is_available() is True
 
 
-class TestStubSkipsWhenBinaryAbsent:
-    def test_claude_not_registered_when_binary_absent(
-        self, monkeypatch, reset_stub
-    ):
-        import tinyassets.providers.claude_provider as _cp
-        monkeypatch.setattr(_cp.ClaudeProvider, "is_available", classmethod(lambda cls: False))
-
-        stub = _reload_stub()
-
-        assert stub._router is not None
-        assert "claude-code" not in stub._router.available_providers
-
-    def test_shipped_external_agent_registered_without_host_binary(
-        self, monkeypatch, reset_stub
-    ):
-        import tinyassets.external_agents.provider as package_provider
-
-        monkeypatch.setattr(
-            package_provider.ExternalAgentProvider,
-            "is_available",
-            classmethod(lambda cls: False),
-        )
-        stub = _reload_stub()
-
-        assert stub._router is not None
-        assert "codex" in stub._router.available_providers
-        assert isinstance(
-            stub._router._providers["codex"], package_provider.ExternalAgentProvider
-        )
-
-    def test_claude_registered_when_binary_present(
-        self, monkeypatch, reset_stub
-    ):
-        import tinyassets.providers.claude_provider as _cp
-        monkeypatch.setattr(_cp.ClaudeProvider, "is_available", classmethod(lambda cls: True))
-
-        stub = _reload_stub()
-
-        assert stub._router is not None
-        assert "claude-code" in stub._router.available_providers

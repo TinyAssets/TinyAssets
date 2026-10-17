@@ -33,7 +33,6 @@ from tinyassets.providers.model_call import open_allocation
 from tinyassets.providers.model_capacity import (
     MAX_FREE_SIBLING_RETRIES as _MAX_FREE_SIBLING_RETRIES,
 )
-from tinyassets.providers.native_agent_input import render_native_input
 from tinyassets.request_budget import (
     FREE_TURN_ATTEMPTS,
     TEXT_TURN_ATTEMPTS,
@@ -43,7 +42,6 @@ from tinyassets.request_budget import (
     pooled_budget,
 )
 from tinyassets.served_tools import granted_tools, model_tools
-from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
 from tinyassets.storage.agent_turn_boot import BOOT
 from tinyassets.storage.agent_turn_journal import AgentTurnJournal, JournalUnavailable
 from tinyassets.storage.agent_turn_records import load_result
@@ -77,11 +75,6 @@ def turn_effects(turn):
     effects, stage = "none", None
     for position, previous in enumerate(turn.rounds):
         last = position == len(turn.rounds) - 1
-        if type(previous.candidate) is NativeInput:
-            if not (type(previous.reply) is NativeTerminal
-                    and previous.reply.status == "capacity_no_effects"):
-                effects = "some" if effects == "some" else "unknown"
-            continue
         for tool in previous.tools:
             if tool.state == "completed":
                 effects = "some"
@@ -124,7 +117,6 @@ class AgentTurnCoordinator:
         self.retrying_capacity = False
         self.visited = set()
         self.execution_kind = None
-        self.native_input = None
         # Narrowed sibling retries used so far, and the diagnostics of the
         # rounds they replaced -- a turn that tried four models must not report
         # one attempt (live 2026-09-25 read "attempts=1" for a dead end).
@@ -207,7 +199,7 @@ class AgentTurnCoordinator:
         candidate = self.adapter.round_input(
             authority, reservation, config, owner=self.owner, context=self.context,
             prompt=self.prompt, system=self.inference_system,
-            native_input=None, kind="engine_inference",
+            kind="engine_inference",
         )
         self._free_request = metered_free_source(
             self.context, config.selected_model, owner=self.owner,
@@ -234,11 +226,6 @@ class AgentTurnCoordinator:
     def _history(self):
         history = []
         for previous in self.turn.rounds:
-            if type(previous.candidate) is NativeInput:
-                if (type(previous.reply) is NativeTerminal
-                        and previous.reply.status == "capacity_no_effects"):
-                    continue
-                raise JournalUnavailable("native continuation is incomplete")
             if previous.state == "failed":
                 continue
             if (
@@ -265,42 +252,7 @@ class AgentTurnCoordinator:
             )
         return tuple(history)
 
-    def _begin_native(self, authority, reservation, config):
-        candidate = self.adapter.round_input(
-            authority, reservation, config, owner=self.owner, context=self.context,
-            prompt=self.prompt, system=self.system, native_input=self.native_input,
-            kind="native_agent",
-        )
-        self._accept(self.journal.begin_round(
-            self.owner, self.context.universe_dir.name, self.turn.turn_id,
-            expected_generation=self.turn.generation, candidate=candidate,
-            after_failed_inference=self.retrying_capacity,
-        ))
-        self.retrying_capacity = False
-        self._note_round()
 
-    def _finish_native_failure(self, exc):
-        terminal = NativeTerminal("indeterminate")
-        if isinstance(exc, AllProvidersExhaustedError):
-            proofs = getattr(exc, "native_evidence", ())
-            boundary = capacity_boundary(
-                self.context.model_selection, exc.attempts,
-                execution_kind="native_agent", native_evidence=proofs,
-            )
-            # One claimed native intent corresponds to exactly one executed
-            # provider attempt. Never compress several unknown launches to one proof.
-            if boundary is not None and boundary.attempted and len(proofs) == 1:
-                terminal = NativeTerminal(
-                    "capacity_no_effects", evidence=proofs[0],
-                    failure_class=boundary.failure_class,
-                    capacity_scope=boundary.exhaustion.scope,
-                    retry_after_s=boundary.retry_after_s,
-                )
-        self._accept(self.journal.finish_native(
-            self.owner, self.context.universe_dir.name, self.turn.turn_id,
-            expected_generation=self.turn.generation, ordinal=len(self.turn.rounds),
-            terminal=terminal,
-        ))
 
     def _learn_verified_model(self, response):
         """Record a model id that just answered on this owner's source.
@@ -432,8 +384,7 @@ class AgentTurnCoordinator:
             return self.request_budget.receipt()["dispatched"]
         if self.turn is None:
             return 0
-        return sum(1 for previous in self.turn.rounds
-                   if type(previous.candidate) is not NativeInput)
+        return len(self.turn.rounds)
 
     def _completed_tools(self):
         """Names of the tool calls this turn's ledger proves completed, in order."""
@@ -574,34 +525,23 @@ class AgentTurnCoordinator:
                         raise ProviderAuthorityHeldError(
                             "text-only mode requires an admitted text inference route"
                         )
-                    if self.execution_kind == "engine_inference":
-                        if engine is None and not self._text_only:
-                            engine = await stack.enter_async_context(
-                                self._open_tools(timeout),
-                            )
-                        config = replace(
-                            self._remaining(turn_deadline),
-                            agent_request=AgentInferenceRequest(
-                                tools=(
-                                    () if self._text_only else codec.tool_definitions(engine.tools)
-                                ),
-                                history=codec.compact_history(
-                                    self._history(), self.compaction,
-                                ),
-                                tool_choice="none" if self._text_only else "auto",
+                    if engine is None and not self._text_only:
+                        engine = await stack.enter_async_context(
+                            self._open_tools(timeout),
+                        )
+                    config = replace(
+                        self._remaining(turn_deadline),
+                        agent_request=AgentInferenceRequest(
+                            tools=(
+                                () if self._text_only else codec.tool_definitions(engine.tools)
                             ),
-                        )
-                        prompt, system, observer = self.prompt, instructions, self._begin
-                    else:
-                        self.native_input = render_native_input(
-                            self.prompt, instructions, self._history(),
-                        )
-                        prompt, system = self.native_input
-                        config = replace(
-                            self._remaining(turn_deadline), agent_request=None,
-                            selected_model=None,
-                        )
-                        observer = self._begin_native
+                            history=codec.compact_history(
+                                self._history(), self.compaction,
+                            ),
+                            tool_choice="none" if self._text_only else "auto",
+                        ),
+                    )
+                    prompt, system, observer = self.prompt, instructions, self._begin
                     config = replace(
                         config, request_budget=self.request_budget,
                         model_launch_parent=(
@@ -619,20 +559,11 @@ class AgentTurnCoordinator:
                             router=self.router, prompt=prompt, system=system, config=config,
                             context=self.context, observer=observer, kind=self.execution_kind,
                         )
-                        if self.interrupt is not None and self.execution_kind == "native_agent":
-                            # A native agent runs until it is done, and only
-                            # cancelling it ends its process family; see
-                            # tinyassets/turn_interrupt.py for why an HTTP round
-                            # is left to return instead.
-                            response = await self.interrupt.run(inference)
-                        else:
-                            response = await inference
+                        response = await inference
                     except BaseException as exc:
                         # No engine tool can start before a validated inference
                         # is committed. Preserve failure, never restart this turn.
-                        if self.turn.state == "native_started":
-                            await off_loop(self._finish_native_failure, exc)
-                        elif self.turn.state == "inference_started":
+                        if self.turn.state == "inference_started":
                             await self._journal_write("finish_inference",
                                     self.owner,
                                     uid,
@@ -653,34 +584,6 @@ class AgentTurnCoordinator:
                             await self._pause_before_retry(turn_deadline)
                             continue
                         raise
-                    if self.execution_kind == "native_agent":
-                        try:
-                            if response.provider != self.context.model_selection.connection_id:
-                                raise ProviderProtocolError("native response source changed")
-                            terminal = NativeTerminal(
-                                "completed", evidence=response.native_evidence,
-                                text=response.text, configured_model=response.model,
-                                reported_model=response.reported_model or None,
-                                input_tokens=response.input_tokens,
-                                output_tokens=response.output_tokens,
-                            )
-                            await self._journal_write("finish_native",
-                                self.owner, uid, self.turn.turn_id,
-                                expected_generation=self.turn.generation,
-                                ordinal=len(self.turn.rounds), terminal=terminal,
-                                cost_microusd=response.cost_microunits,
-                            )
-                        except BaseException as exc:
-                            if self.turn.state == "native_started":
-                                await off_loop(self._finish_native_failure, exc)
-                            raise
-                        # The call SUCCEEDED and the journal has committed it, so
-                        # this model id provably works on this kind of source.
-                        # Learn it for every universe with that kind. After the
-                        # commit and outside the try, so a catalog write can
-                        # neither be mistaken for a turn failure nor rewrite one.
-                        await off_loop(self._learn_verified_model, response)
-                        return self._capacity_notice(response)
                     if response.agent_reply is None:
                         raise ProviderProtocolError("HTTP agent response lacks validated progress")
                     await self._journal_write("finish_inference",
@@ -1145,7 +1048,7 @@ class AgentTurnCoordinator:
         if (
             not self._has_candidate_order()
             or not isinstance(exc, AllProvidersExhaustedError)
-            or self.turn.state not in {"ready", "held_transport", "held_native_capacity"}
+            or self.turn.state not in {"ready", "held_transport"}
         ):
             return False
         attempts = tuple(exc.attempts or ())
@@ -1166,8 +1069,7 @@ class AgentTurnCoordinator:
             self._leave_hot_source(None)
             return False
         self._leave_hot_source(candidate)
-        if self.execution_kind == "engine_inference":
-            self.spent_attempts += list(attempts)
+        self.spent_attempts += list(attempts)
         self.context = replace(self.context, model_selection=candidate)
         self.retrying_capacity = self.turn.state != "ready"
         return True
@@ -1192,13 +1094,11 @@ class AgentTurnCoordinator:
     def _next_after_capacity(self, exc):
         if (
             not self._has_candidate_order() or not isinstance(exc, AllProvidersExhaustedError)
-            or self.turn.state not in {"ready", "held_transport", "held_native_capacity"}
+            or self.turn.state not in {"ready", "held_transport"}
         ):
             return False
         boundary = capacity_boundary(
             self.context.model_selection, exc.attempts, execution_kind=self.execution_kind,
-            native_evidence=(getattr(exc, "native_evidence", ())
-                             if self.execution_kind == "native_agent" else ()),
         )
         if boundary is None:
             return False
@@ -1247,8 +1147,7 @@ class AgentTurnCoordinator:
         # positionally with its own ``native_evidence``, and carrying them onto
         # a later exception would leave the two lists mismatched, which
         # ``capacity_boundary`` correctly refuses to read.
-        if self.execution_kind == "engine_inference":
-            self.spent_attempts += list(exc.attempts or ())
+        self.spent_attempts += list(exc.attempts or ())
         self.context = replace(self.context, model_selection=candidate)
         self.retrying_capacity = self.turn.state != "ready"
         return True
@@ -1277,15 +1176,7 @@ class AgentTurnCoordinator:
         """
         if not self.spent_attempts or not isinstance(exc, AllProvidersExhaustedError):
             return
-        attempts = list(exc.attempts or ())
-        evidence = getattr(exc, "native_evidence", ())
-        # ``native_evidence`` is positional against ``attempts``; a pairing this
-        # hop does not recognize is left alone rather than repaired blind.
-        if type(evidence) is not tuple or len(evidence) != len(attempts):
-            return
-        # Every carried round was engine inference, which has no native proof.
-        exc.attempts = self.spent_attempts + attempts
-        exc.native_evidence = (None,) * len(self.spent_attempts) + evidence
+        exc.attempts = self.spent_attempts + list(exc.attempts or ())
 
     def close_quiescent(self):
         if self.turn is not None and self.turn.state == "ready":

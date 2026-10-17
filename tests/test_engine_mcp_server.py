@@ -451,7 +451,6 @@ def test_write_brain_cannot_touch_soul_md(monkeypatch, tmp_path):
 def test_write_brain_refuses_hardlinked_governed_file(monkeypatch, tmp_path):
     """Codex brain-loop review: if identity.md is a hardlink aliasing soul.md,
     write_brain must NOT mutate soul.md's (executable) frontmatter through it."""
-    import os
 
     from tinyassets import engine_mcp_server as s
 
@@ -473,7 +472,6 @@ def test_write_brain_snapshot_sink_cannot_alias_soul(monkeypatch, tmp_path):
     must not write through a hardlink either. Atomic writes repoint the name to a
     fresh inode, so a soul_versions/index.md hardlinked to soul.md cannot overwrite
     it during the snapshot."""
-    import os
 
     from tinyassets import engine_mcp_server as s
 
@@ -503,7 +501,6 @@ def _can_symlink(tmp_path):
 def test_write_brain_refuses_parent_dir_symlink_escape(monkeypatch, tmp_path):
     """Codex re-review: soul_versions symlinked to an external dir must not let the
     snapshot write escape the universe."""
-    import os
 
     import pytest
 
@@ -529,7 +526,6 @@ def test_write_brain_refuses_parent_dir_symlink_escape(monkeypatch, tmp_path):
 def test_read_brain_does_not_follow_symlinked_section(monkeypatch, tmp_path):
     """Codex re-review: a brain file symlinked out of the universe must not
     disclose the external file's contents through read_brain."""
-    import os
 
     import pytest
 
@@ -552,7 +548,6 @@ def test_read_brain_does_not_follow_symlinked_section(monkeypatch, tmp_path):
 def test_engine_run_admit_never_writes_through_a_symlinked_ledger(monkeypatch, tmp_path):
     """A tampered settlement ledger records nothing -- and refuses nothing: the
     ledger admits every run (spec `engine-run-admissions`)."""
-    import os
 
     import pytest
 
@@ -701,18 +696,6 @@ def test_sandboxed_config_on_when_all_conditions_met(monkeypatch):
 
 # ── claude_provider._engine_mcp_flags: the CLI wiring ───────────────────────
 
-def test_engine_mcp_flags_fail_closed_without_ids(tmp_path):
-    from tinyassets.providers.base import ModelConfig
-    from tinyassets.providers.claude_provider import _engine_mcp_flags
-
-    cfg = ModelConfig(
-        engine_mcp_enabled=True, engine_mcp_actor_id="", engine_mcp_graph_id="u"
-    )
-    assert _engine_mcp_flags(cfg, tmp_path) == []
-    cfg = ModelConfig(
-        engine_mcp_enabled=True, engine_mcp_actor_id="sub", engine_mcp_graph_id=""
-    )
-    assert _engine_mcp_flags(cfg, tmp_path) == []
 
 
 def _seal_plainly(monkeypatch):
@@ -722,92 +705,12 @@ def _seal_plainly(monkeypatch):
                         lambda path, data: Path(path).write_bytes(data))
 
 
-def test_engine_mcp_flags_seal_an_http_route_config_into_the_snapshot(tmp_path, monkeypatch):
-    from tinyassets import engine_mcp_http
-    from tinyassets.providers.base import ModelConfig
-    from tinyassets.providers.claude_provider import _engine_mcp_flags
-
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    _seal_plainly(monkeypatch)
-    route = engine_mcp_http.EngineMcpRoute(
-        "sub-9", "u-9", "http://127.0.0.1:8790/mcp", "s" * 40, "")
-    monkeypatch.setattr(engine_mcp_http, "read_engine_mcp_route", lambda **kwargs: route)
-    snapshot = tmp_path / "u-9" / ".runtime" / "provider-launch-credentials" / "codex-1"
-    snapshot.mkdir(parents=True)
-    cfg = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="sub-9",
-                      engine_mcp_graph_id="u-9", credential_snapshot_dir=snapshot)
-    from tinyassets.engine_mcp_http import BOX_ENGINE_HOST
-    from tinyassets.providers.owned_process import guest_job_dir, launch_scope
-
-    # Without an admitted launch there is no box to seal the route into.
-    assert _engine_mcp_flags(cfg, tmp_path / "u-9") == []
-    with launch_scope(tmp_path / "u-9", owner="sub-9", service="claude-code",
-                      credential_dir=snapshot, operation_id="op-seal"):
-        flags = _engine_mcp_flags(cfg, tmp_path / "u-9")
-    assert flags[0] == "--mcp-config" and flags[2] == "--strict-mcp-config"
-    # The box path the leased snapshot lands under for this launch.
-    assert flags[1] == guest_job_dir("op-seal") + "/claude/engine-mcp.json"
-    sealed = snapshot / "engine-mcp.json"  # the only daemon state the box receives
-    server = json.loads(sealed.read_text())["mcpServers"]["tinyassets"]
-    assert server["type"] == "http" and server["url"].startswith(
-        f"http://{BOX_ENGINE_HOST}:8790/mcp")
-    assert server["headers"] == {"Authorization": "Bearer " + "s" * 40}
-    assert "command" not in server  # no stdio engine
 
 
-def test_engine_mcp_flags_refuse_without_a_route_or_snapshot(tmp_path, monkeypatch):
-    from tinyassets import engine_mcp_http
-    from tinyassets.providers.base import ModelConfig
-    from tinyassets.providers.claude_provider import _engine_mcp_flags
-
-    monkeypatch.setattr(engine_mcp_http, "read_engine_mcp_route", lambda **kwargs: None)
-    cfg = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="sub",
-                      engine_mcp_graph_id="u", credential_snapshot_dir=tmp_path)
-    assert _engine_mcp_flags(cfg, tmp_path) == []
-    cfg = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="sub",
-                      engine_mcp_graph_id="u")
-    assert _engine_mcp_flags(cfg, tmp_path) == []
 
 
-def test_sandbox_cli_args_fails_closed_when_strict_not_installed(monkeypatch, tmp_path):
-    """Codex ADAPT #1: engine MCP requested but strict-config not installed (e.g.
-    the config write failed) must FAIL the turn, not run with a relaxed policy
-    that fails open to ambient connectors."""
-    import pytest
-
-    from tinyassets.exceptions import ProviderError
-    from tinyassets.providers import claude_provider as cp
-    from tinyassets.providers.base import ModelConfig
-
-    monkeypatch.setattr(cp, "_engine_mcp_flags", lambda c, d: [])  # write failed
-    cfg = ModelConfig(
-        sandbox_workspace=True,
-        engine_mcp_enabled=True,
-        engine_mcp_actor_id="sub",
-        engine_mcp_graph_id="u",
-        allowed_tools=("WebFetch", "mcp__tinyassets__read_graph"),
-        disallowed_tools=("Bash",),  # mcp__* already dropped by the caller
-    )
-    with pytest.raises(ProviderError):
-        cp._sandbox_cli_args(cfg, tmp_path)
 
 
-def test_sandbox_cli_args_includes_strict_when_installed(monkeypatch, tmp_path):
-    from tinyassets.providers import claude_provider as cp
-    from tinyassets.providers.base import ModelConfig
-
-    monkeypatch.setattr(
-        cp, "_engine_mcp_flags",
-        lambda c, d: ["--mcp-config", "x", "--strict-mcp-config"],
-    )
-    cfg = ModelConfig(
-        sandbox_workspace=True,
-        engine_mcp_enabled=True,
-        engine_mcp_actor_id="sub",
-        engine_mcp_graph_id="u",
-    )
-    flags = cp._sandbox_cli_args(cfg, tmp_path)
-    assert "--strict-mcp-config" in flags
 
 
 # ── codex: no MCP server in the CLI; the platform process dials the route ─────
@@ -829,131 +732,6 @@ def _codex_route(tmp_path, monkeypatch, **entry):
         (tmp_path / ".engine_mcp_http_routes.json").write_text(json.dumps({"u-9": {
             "version": 1, "actor_id": "sub", "port": 8790,
             "url": "http://127.0.0.1:8790/mcp", **entry}}), encoding="utf-8")
-
-
-def _codex_session(monkeypatch, config):
-    """Open the codex adapter's engine tools for real; only the client is faked."""
-    import contextlib
-
-    from mcp.types import ListToolsResult, Tool
-
-    from tinyassets import engine_tool_client
-    from tinyassets.external_agents.runner import _engine_tools
-
-    dialled = []
-
-    class Client:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_):
-            return None
-
-        def is_connected(self):
-            return False
-
-        async def list_tools_mcp(self, *, cursor=None):
-            return ListToolsResult(tools=[Tool(name=name, inputSchema={"type": "object"})
-                                          for name in ("read", "write", "edit", "bash",
-                                                       "publish_shape")])
-
-    def make(route, timeout):
-        dialled.append(route)
-        return Client()
-
-    monkeypatch.setattr(engine_tool_client, "_make_client", make)
-
-    async def go():
-        async with contextlib.AsyncExitStack() as stack:
-            session = await _engine_tools(stack, config)
-            return [tool.name for tool in session.tools] if session is not None else None
-
-    return asyncio.run(go()), dialled
-
-
-def test_codex_engine_mcp_args_fail_closed_without_route(tmp_path, monkeypatch):
-    """Engine tools requested but no running route: the turn fails before any
-    launch rather than running without its tools."""
-    from tinyassets.engine_tool_client import EngineToolError
-    from tinyassets.providers.base import ModelConfig
-
-    _codex_route(tmp_path, monkeypatch)                      # no routes file
-    cfg = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="sub",
-                      engine_mcp_graph_id="u-9")
-    dialled = []
-    with pytest.raises(EngineToolError, match="engine_tools_unavailable"):
-        _, dialled = _codex_session(monkeypatch, cfg)
-    assert dialled == []
-
-
-def test_codex_engine_mcp_args_wires_trusted_http_server(tmp_path, monkeypatch):
-    from tinyassets import agent_sessions
-    from tinyassets.providers.base import ModelConfig
-    from tinyassets.served_tools import FOUR_MODEL_TOOLS
-
-    secret, grant_key = "s" * 43, "k" * 43
-    _codex_route(tmp_path, monkeypatch, secret=secret, grant_key=grant_key)
-    session = agent_sessions.AgentSessionRef(
-        universe_dir=tmp_path, key="thread:sub:main", fresh_prompt_digest="d",
-        resume_prompt="", built_at=1.0)
-    cfg = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="sub",
-                      engine_mcp_graph_id="u-9", agent_session=session)
-    names, dialled = _codex_session(monkeypatch, cfg)
-    (route,) = dialled
-    # The one owner-pinned route, dialled for this session with a signed grant.
-    assert (route.actor_id, route.graph_id) == ("sub", "u-9")
-    assert route.url.startswith("http://127.0.0.1:8790/mcp?")
-    assert "session=thread%3Asub%3Amain" in route.url
-    assert "grant=" in route.url
-    # The secret authenticates the platform's own client, never a URL or env.
-    assert route.secret == secret
-    assert secret not in route.url and grant_key not in route.url
-    assert "TINYASSETS_ENGINE_MCP_BEARER" not in os.environ
-    # Exactly the definition's tools; publish is NOT among them.
-    assert tuple(names) == FOUR_MODEL_TOOLS
-    assert "publish_shape" not in names
-    for tool in FOUR_MODEL_TOOLS:
-        assert tool in names
-    assert len(names) == 4
-
-
-def test_codex_engine_mcp_args_fail_closed_missing_secret(tmp_path, monkeypatch):
-    from tinyassets.engine_tool_client import EngineToolError
-    from tinyassets.providers.base import ModelConfig
-
-    _codex_route(tmp_path, monkeypatch, secret="")
-    cfg = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="sub",
-                      engine_mcp_graph_id="u-9")
-    dialled = []
-    with pytest.raises(EngineToolError):
-        _, dialled = _codex_session(monkeypatch, cfg)
-    assert dialled == []
-
-
-# ── connect_compute (slice 4): served compute-provider registration ──────────
-
-def test_connect_compute_fails_closed_when_unbound(monkeypatch):
-    from tinyassets import engine_mcp_server as s
-
-    monkeypatch.setattr(s, "_ACTOR_ID", "")
-    monkeypatch.setattr(s, "_GRAPH_ID", "u-x")
-    mock_engine_admission(monkeypatch, {s._GRAPH_ID})
-    out = json.loads(s.connect_compute(access_method="subscription_cli"))
-    assert "not bound" in out.get("error", "")
-
-
-def test_connect_compute_refused_without_serving_authority(monkeypatch):
-    """Registration refuses failed current-owner admission before the implementation."""
-    import tinyassets.api.compute_connection as cc
-    from tinyassets import engine_mcp_server as s
-
-    _bind_ids(monkeypatch, graph="u-not-listed")
-    mock_engine_admission(monkeypatch, {"u-other"})
-    calls = {"n": 0}
-    monkeypatch.setattr(cc, "connect_compute", lambda **kw: (calls.update(n=1), {})[1])
-    out = json.loads(s.connect_compute(access_method="subscription_cli", ref="codex"))
-    assert "current serving owner" in out.get("error", "")
-    assert calls["n"] == 0  # never reached the write
 
 
 def test_connect_compute_requires_access_method(monkeypatch):
@@ -999,48 +777,6 @@ def test_connect_compute_pins_universe_and_binds_write_caps(monkeypatch):
     assert "costly" not in captured["caps"]
 
 
-def test_connect_compute_registers_subscription_cli_end_to_end(monkeypatch, tmp_path):
-    """Full flow against the real impl: the served agent registers a candidate under
-    the founder's own universe (admin ACL required); no secret ever appears."""
-    from tinyassets import engine_mcp_server as s
-    from tinyassets.daemon_server import grant_universe_access
-
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    uid = "u-cc-e2e"
-    (tmp_path / uid).mkdir(parents=True)
-    grant_universe_access(
-        tmp_path, universe_id=uid, actor_id="founder-cc",
-        permission="admin", granted_by="founder-cc",
-    )
-    monkeypatch.setattr(s, "_ACTOR_ID", "founder-cc")
-    monkeypatch.setattr(s, "_GRAPH_ID", uid)
-    mock_engine_admission(monkeypatch, {uid})
-
-    out = json.loads(s.connect_compute(
-        access_method="subscription_cli", protocol="cli:codex",
-        model="gpt-5-codex", ref="codex",
-    ))
-    assert out["status"] == "registered", out
-    assert out["access_method"] == "subscription_cli"
-    # No credential-bearing KEY is ever projected (there is no secret to leak). The
-    # projection is a fixed, known-safe shape — assert on keys, not a substring scan
-    # (the "next" guidance text legitimately names the "api_key_http" access method).
-    assert set(out) <= {
-        "status", "definition_id", "access_method", "protocol", "model",
-        "visibility", "next",
-    }, out
-    for banned in ("secret", "token", "api_key", "apikey", "authorization",
-                   "bearer", "password", "credential", "ref", "auth_material"):
-        assert banned not in out, banned
-    # A non-admin actor on the same universe is refused (owner-gate, uniform envelope).
-    monkeypatch.setattr(s, "_ACTOR_ID", "intruder")
-    # Keep exercising the downstream owner envelope, independently of admission.
-    mock_engine_admission(monkeypatch, {uid})
-    refused = json.loads(s.connect_compute(
-        access_method="subscription_cli", protocol="cli:codex",
-        model="gpt-5-codex", ref="codex",
-    ))
-    assert refused.get("error") == "not_found"
 
 
 def test_connect_compute_api_key_http_grant_isolation_end_to_end(monkeypatch, tmp_path):
@@ -1135,44 +871,6 @@ def test_connect_compute_is_exposed_in_both_provider_allowlists():
     assert callable(getattr(s, "connect_compute", None))
 
 
-def test_read_graph_compute_target_lists_own_providers_end_to_end(monkeypatch, tmp_path):
-    """The served read_graph now accepts target=compute (pinned to this universe) and
-    lists the universe's own registered providers — the read sibling of connect_compute."""
-    from tinyassets import engine_mcp_server as s
-    from tinyassets.api.compute_connection import connect_compute
-    from tinyassets.auth.middleware import _current_identity
-    from tinyassets.auth.provider import Identity
-    from tinyassets.daemon_server import grant_universe_access
-
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    uid = "u-compute-read"
-    (tmp_path / uid).mkdir(parents=True)
-    grant_universe_access(tmp_path, universe_id=uid, actor_id="founder-cr",
-                          permission="admin", granted_by="founder-cr")
-    # Register a provider as the founder (direct impl, admin identity bound).
-    tok = _current_identity.set(Identity(user_id="founder-cr", username="founder-cr",
-                                         capabilities=["read", "list", "write"]))
-    try:
-        reg = connect_compute(universe_id=uid, payload={
-            "access_method": "subscription_cli", "protocol": "cli:codex",
-            "model": "gpt-5-codex", "ref": "codex"})
-        assert reg["status"] == "registered"
-    finally:
-        _current_identity.reset(tok)
-
-    # "compute" is now a pinned read target (not refused).
-    assert "compute" in s._PINNED_READ_TARGETS
-    monkeypatch.setattr(s, "_ACTOR_ID", "founder-cr")
-    monkeypatch.setattr(s, "_GRAPH_ID", uid)
-    mock_engine_admission(monkeypatch, {uid})
-    out = json.loads(s.read_graph(target="compute"))
-    assert out.get("count") == 1, out
-    assert out["providers"][0]["definition_id"] == reg["definition_id"]
-    # Graph-pinned: a served read cannot address another universe (the arg is fixed).
-    monkeypatch.setattr(s, "_GRAPH_ID", "u-someone-else")
-    mock_engine_admission(monkeypatch, {s._GRAPH_ID})
-    other = json.loads(s.read_graph(target="compute"))
-    assert other.get("error") == "not_found"  # no admin ACL there -> uniform not_found
 
 
 def test_read_graph_connections_target_lists_own_http_connections_end_to_end(

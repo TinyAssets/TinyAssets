@@ -41,115 +41,7 @@ def _write(root, entry):
     )
 
 
-def _codex_dials(config=None, *, child_env=None):
-    """The routes the codex adapter dials for a served turn.
 
-    The real ``_served_engine_tools`` and ``open_engine_tools`` (route read,
-    owner check, signed dial); only the MCP client is a stand-in. The child
-    process environment plays no part: the platform process dials.
-    """
-    import asyncio
-    import contextlib
-
-    from mcp.types import ListToolsResult, Tool
-
-    from tinyassets import engine_tool_client
-    from tinyassets.engine_tool_client import EngineToolError
-    from tinyassets.external_agents.runner import _engine_tools
-    from tinyassets.served_tools import FOUR_MODEL_TOOLS
-
-    dialled = []
-
-    class Client:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_):
-            return None
-
-        def is_connected(self):
-            return False
-
-        async def list_tools_mcp(self, *, cursor=None):
-            return ListToolsResult(tools=[Tool(name=name, inputSchema={"type": "object"})
-                                          for name in FOUR_MODEL_TOOLS])
-
-    def make(route, timeout):
-        dialled.append(route)
-        return Client()
-
-    async def go():
-        async with contextlib.AsyncExitStack() as stack:
-            await _engine_tools(stack, config or _config())
-
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(engine_tool_client, "_make_client", make)
-        for name, value in (child_env or {}).items():
-            patch.setenv(name, value)
-        with contextlib.suppress(EngineToolError):
-            asyncio.run(go())
-    return dialled
-
-
-def _cli_uses_http(kind, tmp_path, *, root=None):
-    if kind == "codex":
-        return bool(_codex_dials())
-    from dataclasses import replace
-
-    from tinyassets import credential_vault
-    from tinyassets.providers.claude_provider import _engine_mcp_flags
-    from tinyassets.providers.owned_process import launch_scope
-
-    snapshot = tmp_path / "u-a" / ".runtime" / "provider-launch-credentials" / "claude-1"
-    snapshot.mkdir(parents=True, exist_ok=True)
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(credential_vault, "_write_exclusive_snapshot_file",
-                      lambda path, data: path.write_bytes(data))
-        # The route is sealed only into an admitted launch's leased snapshot.
-        with launch_scope(tmp_path / "u-a", owner="actor-a", service="claude-code",
-                          credential_dir=snapshot, operation_id="op-route"):
-            flags = _engine_mcp_flags(replace(_config(), credential_snapshot_dir=snapshot),
-                                      tmp_path / "u-a")
-    # No route is no engine at all: there is no stdio fallback to run instead.
-    if not flags:
-        return False
-    data = json.loads((snapshot / "engine-mcp.json").read_text(encoding="utf-8"))
-    return "url" in data["mcpServers"]["tinyassets"]
-
-
-@pytest.mark.parametrize("kind", ["claude", "codex"])
-def test_cli_refuses_route_for_different_owner(kind, tmp_path, monkeypatch):
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    _write(tmp_path, _entry(actor_id="actor-b"))
-    assert not _cli_uses_http(kind, tmp_path, root=tmp_path)
-
-
-@pytest.mark.parametrize("kind", ["claude", "codex"])
-def test_cli_never_uses_route_from_current_working_directory(kind, tmp_path, monkeypatch):
-    from tinyassets import storage
-
-    root = tmp_path / "canonical"
-    root.mkdir()
-    monkeypatch.delenv("TINYASSETS_DATA_DIR", raising=False)
-    monkeypatch.setattr(storage, "data_dir", lambda: root)
-    monkeypatch.chdir(tmp_path)
-    _write(tmp_path, _entry())
-    assert not _cli_uses_http(kind, tmp_path)
-
-
-def _read(**changes):
-    from tinyassets.engine_mcp_http import read_engine_mcp_route
-
-    return read_engine_mcp_route(**{"actor_id": "actor-a", "graph_id": "u-a", **changes})
-
-
-@pytest.mark.parametrize("kind", ["claude", "codex"])
-def test_cli_uses_canonical_root_from_another_cwd(kind, tmp_path, monkeypatch):
-    other = tmp_path / "unrelated"
-    other.mkdir()
-    monkeypatch.chdir(other)
-    _write(tmp_path, _entry())
-    assert _cli_uses_http(kind, tmp_path)
 
 
 def test_publish_readback_binds_owner_and_hides_secret_in_repr(tmp_path):
@@ -259,19 +151,6 @@ def test_replacement_record_cannot_be_used_by_previous_owner(tmp_path):
     assert _read(actor_id="actor-b").secret == second.secret != first.secret
 
 
-def test_codex_drops_stale_bearer_and_ignores_child_env_root(tmp_path):
-    """A stale bearer in the environment never picks the route: the adapter
-    dials the canonical owner-checked route from the platform process, and
-    nothing once that route belongs to someone else. (The child has no route,
-    bearer or data root to give: test_codex_app_server's launch tests.)"""
-    _write(tmp_path, _entry())
-    stale = {"TINYASSETS_ENGINE_MCP_BEARER": "stale-" + "b" * 40}
-    (route,) = _codex_dials(child_env=stale)
-    assert route.secret == "s" * 43 and route.actor_id == "actor-a"
-    assert route.url.startswith("http://127.0.0.1:8790/mcp") and route.graph_id == "u-a"
-    assert "stale-" not in repr(route) + route.url
-    _write(tmp_path, _entry(actor_id="actor-b"))
-    assert _codex_dials(child_env=stale) == []
 
 
 def test_conflicting_serving_owners_are_not_picked_by_order(tmp_path, monkeypatch):
@@ -325,3 +204,8 @@ def test_supervisor_rejects_relative_root():
 
     with pytest.raises(ValueError, match="must be absolute"):
         start_engine_mcp_http_servers("relative")
+
+
+def _read(**changes):
+    from tinyassets.engine_mcp_http import read_engine_mcp_route
+    return read_engine_mcp_route(**{"actor_id": "actor-a", "graph_id": "u-a", **changes})

@@ -360,9 +360,8 @@ def _get_shared_router() -> Any:
     if _SHARED_ROUTER is not None:
         return _SHARED_ROUTER
     try:
-        from tinyassets.providers.base import subscription_auth_health
         from tinyassets.providers.router import ProviderRouter
-        _SHARED_ROUTER = ProviderRouter(auth_health=subscription_auth_health)
+        _SHARED_ROUTER = ProviderRouter()
     except Exception:
         pass
     return _SHARED_ROUTER

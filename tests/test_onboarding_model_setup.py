@@ -1,6 +1,6 @@
 """No-LLM sign-in routing uses owner setup, not host/native credential presence."""
 
-from tests.test_onboarding_openai_device import _drive_get, _user
+from tests.support.onboarding import _drive_get, _user
 from tests.test_onboarding_serving import _grant_admin, _seed
 from tests.test_open_serving_bind import _bound_and_serving, _setup
 

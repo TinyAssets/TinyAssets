@@ -592,19 +592,8 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
                 destination = tree / ".agent-home"
                 destination.mkdir(mode=0o700)
                 os.chown(destination, owner.uid, owner.uid)
-                # Packages write authentication into a one-run tmpfs now, but
-                # an interrupted old cell may have left its named auth file
-                # in the persistent home. Derive exclusions from every shipped
-                # package manifest rather than trusting a fixed filename list.
-                from tinyassets.external_agents.registry import PACKAGES
-
-                auth_paths = tuple(
-                    f"{package.row['auth']['home_dir']}/{name}"
-                    for package in PACKAGES.values()
-                    for name in package.row["auth"]["files"]
-                )
                 _copy(agent_home, destination, owner.uid,
-                      extra_excludes=auth_paths)
+                      extra_excludes=("codex/auth.json",))
             verify_owner(store, tree, owner.uid, owner.quota)
         broker_state = data / ".broker" / "state"
         with sqlite3.connect(broker_state / "owner-identities.db") as db:

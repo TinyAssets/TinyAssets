@@ -312,14 +312,6 @@ def test_non_integer_status_rejected(base: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_constructor_rejects_non_api_key_http() -> None:
-    bad = ProviderDefinition(
-        id="provdef_x", universe_id="u", owner_user_id="o",
-        access_method="subscription_cli", protocol="cli:codex", model="gpt-5",
-        ref="codex", visibility="private", created_at="2026-01-01T00:00:00+00:00",
-    )
-    with pytest.raises(ValueError):
-        ApiKeyHttpProvider(bad)
 
 
 # --------------------------------------------------------------------------- #

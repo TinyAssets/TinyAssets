@@ -6,7 +6,6 @@ from types import SimpleNamespace
 import pytest
 
 from tinyassets.providers.agent_capacity_boundary import (
-    NativeCompletionEvidence,
     capacity_boundary,
 )
 from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
@@ -114,46 +113,9 @@ def test_invalid_current_reference_refuses(ref):
     assert engine_boundary(ref, [diagnostic()]) is None
 
 
-def test_native_requires_complete_execution_bound_no_effect_evidence():
-    proof = NativeCompletionEvidence(CURRENT.connection_id, True, True, "none")
-    assert capacity_boundary(
-        CURRENT, [diagnostic()], execution_kind="native_agent", native_evidence=(proof,),
-    ).attempted
-    assert capacity_boundary(CURRENT, [diagnostic()], execution_kind="native_agent") is None
 
 
-@pytest.mark.parametrize("change", [
-    {"provider": "other"}, {"protocol_complete": False}, {"protocol_complete": 1},
-    {"process_reaped": False}, {"process_reaped": 1}, {"side_effect_state": "possible"},
-    {"side_effect_state": "committed"}, {"side_effect_state": None},
-])
-def test_native_incomplete_live_or_effectful_attempt_is_held(change):
-    proof = replace(NativeCompletionEvidence(CURRENT.connection_id, True, True, "none"), **change)
-    assert capacity_boundary(
-        CURRENT, [diagnostic()], execution_kind="native_agent", native_evidence=(proof,),
-    ) is None
 
 
-def test_native_skip_requires_no_synthetic_protocol_proof():
-    item = diagnostic(status="skipped", skip_class="quota_or_cooldown",
-                      side_effect_state=None, failure_class=None)
-    assert not capacity_boundary(
-        CURRENT, [item], execution_kind="native_agent", native_evidence=(None,),
-    ).attempted
-    assert capacity_boundary(
-        CURRENT, [item], execution_kind="native_agent",
-        native_evidence=(NativeCompletionEvidence(CURRENT.connection_id, True, True, "committed"),),
-    ) is None
 
 
-def test_native_evidence_slots_cannot_cover_another_unproved_attempt():
-    proof = NativeCompletionEvidence(CURRENT.connection_id, True, True, "none")
-    for proofs in ((proof,), (proof, None), (None, proof)):
-        assert capacity_boundary(
-            CURRENT, [diagnostic(), diagnostic()], execution_kind="native_agent",
-            native_evidence=proofs,
-        ) is None
-    assert capacity_boundary(
-        CURRENT, [diagnostic()], execution_kind="engine_inference", native_evidence=(proof,),
-    ) is None
-    assert capacity_boundary(CURRENT, [diagnostic()], execution_kind="unknown") is None

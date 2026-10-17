@@ -4,13 +4,13 @@ import json
 
 import pytest
 
+from tests.support.onboarding import _drive_get, _home, _user
 from tests.test_http_connection_provisioning import (  # noqa: F401
     _connect,
     _login,
     _make_universe,
     _reset_auth,
 )
-from tests.test_onboarding_openai_device import _drive_get, _home, _user
 from tinyassets.api.http_connection import remove_http
 from tinyassets.commons_catalog import create_binding, get_binding, publish_definition
 from tinyassets.provider_assignment import load_provider_assignment

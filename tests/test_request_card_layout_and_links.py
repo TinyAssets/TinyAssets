@@ -346,7 +346,7 @@ const $=id=>findById(rail,id)||els.get(id)||null;
 function text(node){return (node.textContent||'')+node.children.map(text).join(' ');}
 let railOpen=null, railCache=[], NATIVE=false, connectWasBlocking=null;
 let connectOtherOpen=false, railNodes=new Map();
-const CONNECT_REQUEST_ID="sys_connect_llm";
+const CONNECT_REQUEST_ID="sys_connect_model";
 const RECONNECT_REQUEST_PREFIX="reconnect-source:";
 const HostedModelConnect={setup:'empty',busy:false,request:null,primary:null,
  configure(p){this.primary=p;}, adopt(r){this.adopt_seen=r;}, paint(){}};
@@ -444,7 +444,7 @@ def test_a_settled_rail_still_updates_its_heading():
     The rail is read-only history now; unchanged cards must not leave the old
     Waiting on you heading behind when the pending composition changes.
     """
-    optional = {"request_id": "sys_connect_llm", "kind": "LLM", "sticky": False,
+    optional = {"request_id": "sys_connect_model", "kind": "LLM", "sticky": False,
                 "status": "optional", "title": "Connect another LLM",
                 "fields": [], "action": {"type": "connect", "use": "model",
                                          "setup": {"shapes": ["api_key"]}}}

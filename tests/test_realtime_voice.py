@@ -363,51 +363,8 @@ def test_capability_is_ready_only_for_exact_owner_and_universe(monkeypatch, tmp_
     assert rv.voice_capability(universe, "someone-else")["available"] is False
 
 
-def test_subscription_provider_routes_to_existing_connection_surface(
-    monkeypatch, tmp_path
-):
-    _enable(monkeypatch)
-    universe = _seed_binding(tmp_path, monkeypatch)
-    import tinyassets.provider_serving_binding as serving
-
-    monkeypatch.setattr(
-        serving,
-        "resolve_current_serving_provider_authority",
-        lambda *_args, **_kwargs: serving.CurrentServingProviderAuthority(
-            provider="codex", access_method="subscription_cli"
-        ),
-    )
-
-    assert rv.voice_capability(universe, "user_owner") == {
-        "available": False,
-        "state": "incompatible",
-        "reason": "provider_voice_unsupported",
-        "remediation": "existing_connection_surface",
-    }
 
 
-def test_unsupported_provider_remains_actionable_without_legacy_voice_flags(
-    monkeypatch, tmp_path
-):
-    universe = _seed_binding(tmp_path, monkeypatch)
-    import tinyassets.provider_serving_binding as serving
-
-    monkeypatch.setattr(
-        serving,
-        "resolve_current_serving_provider_authority",
-        lambda *_args, **_kwargs: serving.CurrentServingProviderAuthority(
-            provider="codex", access_method="subscription_cli"
-        ),
-    )
-    monkeypatch.delenv("TINYASSETS_REALTIME_VOICE_ENABLED", raising=False)
-    monkeypatch.delenv("TINYASSETS_ALLOW_REALTIME_VOICE_API", raising=False)
-
-    assert rv.voice_capability(universe, "user_owner") == {
-        "available": False,
-        "state": "incompatible",
-        "reason": "provider_voice_unsupported",
-        "remediation": "existing_connection_surface",
-    }
 
 
 def test_ready_capability_is_not_hidden_by_legacy_voice_flags(monkeypatch, tmp_path):

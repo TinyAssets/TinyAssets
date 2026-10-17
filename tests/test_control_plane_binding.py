@@ -233,27 +233,5 @@ def test_busy_roster_does_not_look_like_an_empty_agent_list(admitted, monkeypatc
         session.start("scout", "hello", parent)
 
 
-def test_native_launcher_uses_exact_session_and_rejects_foreign_custody(admitted):
-    from tinyassets.control_plane.native_launch import launcher
-
-    files, parent = admitted
-    bound = binding.bind_session(provider=files, limits=ExecLimits(),
-                                 universe_dir=parent.base_path / "center", owner="owner",
-                                 execution_id="stable")
-    custody = SimpleNamespace(owner_user_id="owner", universe_dir=bound.universe_dir,
-                              reference=SimpleNamespace(universe_id="center"))
-    launch = launcher(custody, binding=bound, operation_id="native:usage:3")
-    assert launch.handle is bound.handle and launch.provider is files
-    assert launch.operation_id == "native:usage:3"
-    custody.owner_user_id = "other"
-    with pytest.raises(BoxAuthError):
-        launcher(custody, binding=bound, operation_id="native:usage:3")
 
 
-def test_native_launcher_does_not_fall_back_when_binding_is_lost(admitted):
-    from tinyassets.control_plane.native_launch import launcher
-
-    _, parent = admitted
-    custody = SimpleNamespace(owner_user_id="owner", universe_dir=parent.base_path / "center")
-    with pytest.raises(BoxAuthError, match="session binding"):
-        launcher(custody, operation_id="native:usage:3")

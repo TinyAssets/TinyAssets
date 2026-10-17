@@ -96,37 +96,6 @@ def _stamp(now: datetime | None) -> str:
     return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
-def _attribute_legacy(conn: sqlite3.Connection, owner: str) -> None:
-    """Copy attributable history without changing the old writer's four-column table."""
-    from tinyassets.provider_serving_binding import _PROVIDER_SERVICE
-
-    services = set()
-    if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' "
-                    "AND name = 'llm_credential_deposit_owners'").fetchone():
-        services = {row[0] for row in conn.execute(
-            "SELECT DISTINCT service FROM llm_credential_deposit_owners "
-            "WHERE owner_user_id = ?", (owner,))}
-    providers = {provider for provider, service in _PROVIDER_SERVICE.items()
-                 if service in services}
-    subscription = next(iter(providers)) if len(providers) == 1 else None
-    for row in conn.execute(
-        "SELECT source_kind, model_id, first_verified_at "
-        "FROM learned_model_evidence WHERE owner_user_id = ?", (owner,)
-    ):
-        kind = row["source_kind"]
-        if kind.startswith("agent_"):
-            provider = kind.removeprefix("agent_").replace("_", "-") or None
-        elif kind == LEARNED_SOURCE_KIND:
-            provider = subscription
-        else:
-            provider = None
-        if provider is not None:
-            conn.execute(
-                "INSERT OR IGNORE INTO learned_model_source_evidence "
-                "(source_kind, provider_ref, model_id, owner_user_id, first_verified_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (kind, provider, row["model_id"], owner, row["first_verified_at"]),
-            )
 
 
 class OwnModelHistory:
@@ -172,7 +141,6 @@ class OwnModelHistory:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(_LEGACY_SCHEMA)
             conn.execute(_SCHEMA)
-            _attribute_legacy(conn, owner)
             added = conn.execute(
                 "INSERT OR IGNORE INTO learned_model_source_evidence "
                 "(source_kind, provider_ref, model_id, owner_user_id, first_verified_at) "
@@ -205,7 +173,6 @@ class OwnModelHistory:
                 return []
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(_SCHEMA)
-            _attribute_legacy(conn, owner)
             rows = conn.execute(
                 "SELECT source_kind, provider_ref, model_id, first_verified_at "
                 "FROM learned_model_source_evidence "

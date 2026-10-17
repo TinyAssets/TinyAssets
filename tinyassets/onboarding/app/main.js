@@ -1456,7 +1456,7 @@
   // bounded is a claim this page can no longer check — a row the server itself
   // marks `stale`, or one this page has not refreshed in three working-rate
   // polls, stops being painted rather than leaving a tab thinking forever.
-  const TURN_WORKING_STATES=["ready","inference_started","native_started","tools_pending"];
+  const TURN_WORKING_STATES=["ready","inference_started","tools_pending"];
   // 30s is a fine beat for a host dot; it is far too slow to clear a working
   // indicator for a tab that did not start the turn, where half a minute of
   // stale "thinking" reads as a hang. Faster only while a turn is believed live,
@@ -1527,7 +1527,7 @@
   // line belongs to the live tool painter).
   function waitDetail(){
     if(!serverTurnLive()||!serverTurn.round||
-       (serverTurn.state!=="inference_started"&&serverTurn.state!=="native_started"))
+       serverTurn.state!=="inference_started")
       return "";
     const mins=waitMinutes();
     return "step "+serverTurn.round+(serverTurn.model
@@ -2954,7 +2954,7 @@
     },
     reset(){
       this.epoch++;clearTimeout(this.timer);this.snapshot=null;this.draft=null;
-      this.busy=false;this.stale=true;this.recovery=null;this.nativeDrafts={};modelChoiceForNextTurn=null;
+      this.busy=false;this.stale=true;this.recovery=null;modelChoiceForNextTurn=null;
       this.actual="No answering model reported yet";
       if($("model-dialog").open) $("model-dialog").close();
       // The previous account's model list must not stay on screen either.
@@ -2980,13 +2980,13 @@
           !Array.isArray(doc.options)||!Array.isArray(doc.unavailable)||!Array.isArray(doc.order)||
           !doc.preferences||typeof doc.universe_id!=="string") throw new Error("catalogue unavailable");
         if(this.snapshot&&this.snapshot.universe_id!==doc.universe_id){
-          modelChoiceForNextTurn=null;this.draft=null;this.recovery=null;this.nativeDrafts={};this.actual="No answering model reported yet";
+          modelChoiceForNextTurn=null;this.draft=null;this.recovery=null;this.actual="No answering model reported yet";
         }
         this.snapshot=doc;this.stale=false;
         if(!this.draft) this.draft=copyModelChoice(modelChoiceForNextTurn||doc.preferences.policy||this.automatic());
         // Native catalogue age is displayed separately from the freshness of
         // this owner-authorized picker read. HTTP discovery keeps its expiry gate.
-        const expiries=(doc.sources||[]).filter(source=>source.access_method!=="subscription_cli")
+        const expiries=(doc.sources||[])
           .map(source=>Date.parse(source.expires_at)).filter(Number.isFinite);
         this.expires=Math.min(Date.now()+300000,...expiries);
         clearTimeout(this.timer);
@@ -3058,9 +3058,6 @@
       for(const source of (this.snapshot&&this.snapshot.sources||[])){
         const proposal=this.accessProposal(source),li=document.createElement("li");
         const label=document.createElement("span");label.textContent=source.provider_ref;li.appendChild(label);
-        if(source.access_method==="subscription_cli"&&this.nativeAccessProposal(source,"explicit",[])){
-          this.renderNativeAccess(source,li);accessList.appendChild(li);continue;
-        }
         if(proposal){
           const btn=document.createElement("button");btn.type="button";btn.className="btn btn--link";
           btn.textContent="Allow "+proposal.count+" compatible model"+(proposal.count===1?"":"s")+" and reconnect";
@@ -3137,48 +3134,6 @@
       return {source:copyModelChoice(source),access:copyModelChoice(snapshot.accepted_model_access||{}),
         legacy:copyModelChoice(legacy),universe_id:snapshot.universe_id,binding:copyModelChoice(snapshot.binding)};
     },
-    nativeAccessProposal(source,scope,ids){
-      const proposal=this.accessContext(source);
-      if(!proposal||source.access_method!=="subscription_cli"||!["explicit","discovered"].includes(scope)) return null;
-      if(scope==="discovered"&&source.enumeration!=="supported") return null;
-      if(!Array.isArray(ids)||ids.some(id=>typeof id!=="string"||!id||id!==id.trim()||[...id].length>200||/[\p{C}\p{Z}]/u.test(id.replace(/ /g,"")))||new Set(ids).size!==ids.length) return null;
-      if(scope==="discovered"&&ids.length) return null;
-      const membership=new Set(["source_not_accepted","model_access_optin_required","outside_accepted_model_scope"]);
-      if(!this.snapshot.options.some(row=>row.reference.provider_ref===source.provider_ref&&row.freshness==="fresh"&&
-          (row.reasons||[]).every(reason=>membership.has(reason.reason)))) return null;
-      const prior=proposal.access[source.bind_key];
-      proposal.access[source.bind_key]={model_scope:scope,model_ids:scope==="explicit"?["",...ids]:[],cost_caps:prior?prior.cost_caps:null};
-      return proposal;
-    },
-    renderNativeAccess(source,li){
-      const prior=(this.snapshot.accepted_model_access||{})[source.bind_key];
-      const draft=this.nativeDrafts[source.provider_ref]||(this.nativeDrafts[source.provider_ref]={
-        scope:prior&&prior.model_scope==="discovered"?"discovered":prior&&prior.model_ids.some(Boolean)?"named":"default",
-        text:prior&&prior.model_scope==="explicit"?prior.model_ids.filter(Boolean).join("\n"):""});
-      const mode=document.createElement("select");mode.setAttribute("aria-label","Model access for "+source.provider_ref);
-      this.option(mode,"default","Provider default",false);this.option(mode,"named","Name specific models",false);
-      if(source.enumeration==="supported"||draft.scope==="discovered") this.option(mode,"discovered","Models listed by this source",source.enumeration!=="supported");
-      mode.value=draft.scope;mode.disabled=this.busy;li.appendChild(mode);
-      const input=document.createElement("textarea");input.setAttribute("aria-label","Model IDs for "+source.provider_ref);
-      input.placeholder="One model ID per line";input.rows=2;input.value=draft.text;input.hidden=draft.scope!=="named";input.disabled=this.busy;
-      input.addEventListener("input",()=>{draft.text=input.value;});li.appendChild(input);
-      mode.addEventListener("change",()=>{draft.scope=mode.value;input.hidden=draft.scope!=="named";});
-      const note=document.createElement("p");note.textContent="Named models are unverified; an unavailable name fails without substituting the default. Named and discovered access are alternatives. "+
-        (source.enumeration==="supported"?"Discovery support is installed; the account's full list is not yet proven.":"This source cannot currently verify its full model list.");li.appendChild(note);
-      const btn=document.createElement("button");btn.type="button";btn.className="btn btn--link";btn.textContent="Review model access and reconnect";btn.disabled=this.busy;
-      btn.addEventListener("click",()=>this.allowNativeAccess(source,draft.scope==="discovered"?"discovered":"explicit",
-        draft.scope==="named"?draft.text.split(/\r?\n/).map(id=>id.trim()).filter(Boolean):[]));li.appendChild(btn);
-    },
-    async allowNativeAccess(source,scope,ids){
-      if(this.busy) return;
-      const proposal=this.nativeAccessProposal(source,scope,ids);
-      if(!proposal){this.status("Review the model IDs or refresh this source's supported access. Nothing was changed.");return;}
-      const description=scope==="discovered"?"models listed by this connected source (including future additions); account availability remains unverified until refreshed"
-        :ids.length?"the provider default and these unverified model IDs: "+ids.join(", "):"the provider default only";
-      if(!confirm("Allow "+description+"? This replaces this source's current model scope and reconnects your agent. Other sources, spending limits and saved choices stay unchanged. An unavailable named model fails; it does not silently use the default.")) return;
-      if(!this.fresh()){this.status("Model availability changed while you were confirming. Refresh and review again.");return;}
-      await this.publishAccess(proposal,{provider:source.bind_key,model_access:proposal.access});
-    },
     accessProposal(source){
       const context=this.accessContext(source);
       if(!context) return null;
@@ -3188,13 +3143,10 @@
       if(method==="api_key_http"){
         if(prior&&prior.model_scope==="discovered") return null;
         access[source.bind_key]={model_scope:"discovered",model_ids:[],cost_caps:prior?prior.cost_caps:null};
-      }else if(method==="subscription_cli"){
-        if(prior&&prior.model_scope==="explicit") return null;
-        access[source.bind_key]={model_scope:"explicit",model_ids:[""],cost_caps:prior?prior.cost_caps:null};
       }else return null;
       const membership=new Set(["source_not_accepted","model_access_optin_required","outside_accepted_model_scope"]);
       const count=snapshot.options.filter(row=>row.reference.provider_ref===source.provider_ref&&
-        row.freshness==="fresh"&&(method!=="subscription_cli"||row.reference.model_id==="")&&
+        row.freshness==="fresh"&&
         (row.reasons||[]).every(reason=>membership.has(reason.reason))).length;
       return {source:copyModelChoice(source),access,count,legacy:copyModelChoice(legacy),
         universe_id:snapshot.universe_id,binding:copyModelChoice(snapshot.binding)};
@@ -3209,8 +3161,7 @@
       const proposal=this.accessProposal(source);
       if(!proposal||proposal.count===0) return;
       const caps=proposal.access[source.bind_key].cost_caps;
-      const limits=source.access_method==="subscription_cli" ? "your connected subscription's provider default"
-        :caps===null ? "free compatible models only" : "your existing spending ceilings: "+JSON.stringify(caps);
+      const limits=caps===null ? "free compatible models only" : "your existing spending ceilings: "+JSON.stringify(caps);
       const legacy=proposal.legacy ? " This replaces fixed-provider mode. If reconnecting fails, you can restore the previous setup." : "";
       if(!confirm("Allow "+proposal.count+" compatible model(s) from "+source.provider_ref+" using "+limits+", and reconnect this agent? Other accepted sources and saved choices stay unchanged."+legacy)) return;
       if(!this.fresh()){this.status("Model availability changed while you were confirming. Refresh and review again.");return;}
@@ -4350,7 +4301,6 @@
       // peek failed, THIS is where the page finally learns its command center, so
       // the unconfirmed turn is offered here rather than lost.
       if(!inflightRestored) restoreInflight([]);
-      healServing(s);
     }catch(err){
       if(!current()) return;
       if(err.authRequired) return sessionExpired();
@@ -4385,44 +4335,6 @@
     // working, costs one hidden-check per second.
     clearInterval(workingTimer); workingTimer=setInterval(renderWorking,1000);
     pollStatus();
-  }
-
-  // The status says which engine this command center THINKS on (active_host.llm_endpoint_bound)
-  // and whether anything is serving its background work (no_serving_runtime). A mind
-  // with nothing serving on it is the deposit-without-bind state; heal it once per
-  // page rather than telling the user to reconnect (founder, 2026-09-01: a naive
-  // user would not know to).
-  let servingHealAttempted = false;
-  // Candidate engines, the one the status names first. The writer health here
-  // is host-level presence, not this command center's vault, so each candidate is an
-  // ATTEMPT: the route refuses ("held") when nothing is deposited for it.
-  function unservedCandidates(s){
-    try{
-      const live=s.supervisor_liveness||{};
-      const pump=((live.epoch2_operational||{}).consumer_pump)||[];
-      if(!pump.some(p=>p&&p.reason==="no_serving_runtime")) return [];
-      const bound=String(((s.active_host||{}).llm_endpoint_bound)||"");
-      const writers=((live.provider_auth||{}).writers)||{};
-      const ok=name=>!!(writers[name]&&writers[name].status==="ok");
-      const out=[];
-      const push=(engine,service)=>{ if(ok(engine)&&!out.includes(service)) out.push(service); };
-      if(bound==="codex") push("codex","codex"); else if(bound==="claude-code") push("claude-code","claude");
-      push("codex","codex"); push("claude-code","claude");
-      return out;
-    }catch(_e){ return []; }
-  }
-  async function healServing(s){
-    if(servingHealAttempted) return;
-    const candidates=unservedCandidates(s);
-    if(!candidates.length) return;
-    servingHealAttempted = true;
-    for(const service of candidates){
-      const sv=await serveOn(service);
-      if(sv&&sv.status==="serving"){
-        appendMessage("system","Your command center now runs its background work on your "+serviceLabel(service)+" subscription.");
-        return;
-      }
-    }
   }
 
   // Connecting a mind is part of signing in (founder 2026-08-21), and it
@@ -5808,10 +5720,7 @@
       return (await r.json()).serving||null;
     }catch(_e){ return null; }
   }
-  // The two subscription CLIs have friendly names; anything else IS its name,
-  // because the platform does not keep a vendor list to look one up in.
-  const SERVICE_LABELS={claude:"Claude",codex:"OpenAI"};
-  function serviceLabel(service){ return SERVICE_LABELS[service] || service; }
+  function serviceLabel(service){ return service; }
   function servingSentence(service, sv){
     if(sv&&sv.status==="serving") return serviceLabel(service)+" connected. Your agent thinks and works on it from the next turn.";
     const why=(sv&&(sv.detail||sv.reason))?(": "+(sv.detail||sv.reason)):"";
@@ -6599,12 +6508,10 @@
       if(b){
         // Leaving the sign-in shape stops its poll. A timer left running against a
         // flow the owner walked away from would keep polling the source forever.
-        if(b.dataset.shape!=="sign_in") SignInConnect.reset();
         ConnectShapes.select(b.dataset.shape);
       }
     });
     $("btn-endpoint-connect").addEventListener("click",connectEndpoint);
-    $("btn-signin-start").addEventListener("click",()=>SignInConnect.start());
     $("btn-signout").addEventListener("click",async()=>{ MCP.endLogin(); sessionStorage.setItem("ta_force_login","1"); await endServerSession(); enterSignedOut(); });
     // Legal links open OUTSIDE the app. In the Capacitor shell a plain <a> would
     // navigate the WebView itself to tinyassets.io and strand the user with no
@@ -7538,48 +7445,6 @@
   ConnectOAuth.resumeWhenSignedIn();
   // End connect OAuth controller.
 
-  // The connect screen's subscription sign-in: the same device client as "Sign in
-  // again", with its own elements and its own state, started from its own button.
-  // Built on first use, because that client is defined further down the page.
-  let subscriptionConnect=null;
-  function subscriptionClient(){
-    if(!subscriptionConnect) subscriptionConnect=Object.assign({},SignInConnect,{
-      ids:{code:"sub-signin-code",value:"sub-signin-code-value",link:"sub-signin-code-link",
-        result:"sub-signin-result"},
-      connectedText:"Signed in. Your agent can run on your subscription now.",
-    });
-    return subscriptionConnect;
-  }
-
-  // Subscriptions the connect screen offers for more volume (data on the setup
-  // request: a service and its words). The page names none of them itself.
-  const SubscriptionCards={
-    signature:"",
-    render(subscriptions){
-      const host=$("connect-subscriptions");
-      const valid=(Array.isArray(subscriptions)?subscriptions:[]).filter(s=>s&&
-        typeof s.service==="string"&&/^[a-z0-9_-]{1,32}$/.test(s.service)&&
-        typeof s.label==="string"&&s.label.length>0&&s.label.length<=80);
-      $("sub-signin").hidden=!valid.length;
-      const signature=JSON.stringify(valid);
-      if(this.signature===signature) return;
-      this.signature=signature;host.replaceChildren();
-      for(const subscription of valid){
-        const card=document.createElement("div");card.className="connect-source";
-        const note=document.createElement("p");note.className="connect-terms";
-        note.textContent=typeof subscription.note==="string"?subscription.note:"";card.appendChild(note);
-        const button=document.createElement("button");button.type="button";button.className="btn btn--ghost";
-        button.textContent=subscription.label;card.appendChild(button);
-        button.addEventListener("click",()=>{
-          const client=subscriptionClient();
-          client.configure(subscription.service,"");
-          client.start();
-        });
-        host.appendChild(card);
-      }
-    },
-  };
-
   // Sources completed by SIGNING IN (installed data on the setup request). One tap
   // asks the server for the platform's own connect request, then hands it to the
   // generic sign-in client: the browser names only the source's id.
@@ -7655,8 +7520,7 @@
       const names=[];
       (Array.isArray(setup.sign_in_sources)?setup.sign_in_sources:[]).forEach(s=>{
         if(s&&typeof s.name==="string") names.push(s.name); });
-      (Array.isArray(setup.subscriptions)?setup.subscriptions:[]).forEach(s=>{
-        if(s&&typeof s.name==="string") names.push("your "+s.name+" subscription"); });
+
       names.push("a key");
       return names.length>1?names.slice(0,-1).join(", ")+", or "+names[names.length-1]:names[0];
     },
@@ -8831,14 +8695,12 @@
     const setup = (req.action && req.action.setup) || {};
     // Which source this card is FOR. A reconnect card names it; the setup card does
     // not, because it is connecting something new.
-    SignInConnect.configure(setup.service || "", setup.universe_id || "");
     HostedModelConnect.configure(req.sticky ? (setup.primary || null) : null);
     // The connect screen is every setup card that names no source; a reconnect
     // card names the one it repairs and shows only that.
     const screen = !setup.service;
     $("connect-intro").hidden = !screen;
     if(typeof SignInSourceCards!=="undefined") SignInSourceCards.render(screen ? setup.sign_in_sources : []);
-    if(typeof SubscriptionCards!=="undefined") SubscriptionCards.render(screen ? setup.subscriptions : []);
     const keyCards = Array.isArray(setup.sources) ? setup.sources : [];
     $("connect-paste").hidden = !keyCards.length;
     $("connect-paste-summary").textContent = keyCards.length
@@ -8979,124 +8841,6 @@
   // called them, so a source whose saved sign-in died had no way back through the
   // app -- the founder hit exactly that. Start, show the code, poll, and let the
   // daemon deposit; the credential never touches this page.
-  const SignInConnect={
-    flow:"", timer:0, busy:false, blips:0, epoch:0, service:"", universe:"",
-    // Where this instance draws. The connect screen's subscription sign-in is a
-    // second instance of the same client with its own elements and state.
-    ids:{code:"signin-code",value:"signin-code-value",link:"signin-code-link",result:"signin-result"},
-    connectedText:"Signed in. Your agent can use this connection again.",
-    // Which source the visible card is for. Set from the card, so a reconnect for one
-    // source can never start a flow for another: switching cards resets whatever was
-    // in flight before the new service is adopted.
-    configure(service,universe){
-      const next=String(service||""), where=String(universe||"");
-      if(next!==this.service||where!==this.universe){
-        this.reset(); this.service=next; this.universe=where;
-      }
-    },
-    // A dropped poll is retried, but not forever. Without a cap an offline client
-    // kept a timer alive against a flow that had already expired, polling for as
-    // long as the page stayed open -- found by the test for this, not in review.
-    MAX_BLIPS:5,
-    status(text){ $(this.ids.result).textContent=text; },
-    stop(){ if(this.timer){ clearTimeout(this.timer); this.timer=0; } },
-    reset(){
-      // The epoch is what cancels work already in flight. Clearing the timer is not
-      // enough: a `start` whose response had not arrived yet came back AFTER the
-      // reset, restored the abandoned flow and scheduled polling against it, with
-      // `busy` false so a second start could run alongside (Codex refute-review,
-      // P1 #6). Same generation pattern the model dialog above already uses.
-      this.epoch++;
-      this.stop(); this.flow=""; this.busy=false; this.blips=0;
-      $(this.ids.code).hidden=true; $(this.ids.value).textContent="";
-      this.status("");
-    },
-    async start(){
-      if(this.busy||this.flow) return;
-      if(!this.service){
-        // No card named a source, so there is nothing to sign back in to. The route
-        // would pick the user's home command center and deposit for its own service, which
-        // is not necessarily what the owner is looking at.
-        this.status("Open this from the connection that needs signing in again.");
-        return;
-      }
-      this.busy=true; this.status("Starting sign-in…");
-      const epoch=this.epoch;
-      try{
-        const h=authHeaders(); h["Content-Type"]="application/json";
-        const r=await fetch("/app/openai/device/start",{method:"POST",headers:h,
-          credentials:"same-origin",
-          // The source the card names, and the home the rail is showing. The route
-          // validates both rather than choosing for us; before this it always picked
-          // the user's home and deposited for its own service, so it could not repair
-          // another command center's connection (Codex refute-review, P1 #5).
-          // The source AND the command center the card names. The route resolves the
-          // command center against this caller's admin ACL and refuses one they do not
-          // administer, so naming it here asks rather than asserts.
-          body:JSON.stringify({service:this.service,universe_id:this.universe})});
-        const doc=await r.json().catch(()=>({}));
-        if(epoch!==this.epoch) return;   // reset while this was in flight: drop it
-        if(!r.ok||!doc.flow){
-          // The route's own code, never a guessed cause.
-          this.busy=false;
-          this.status("Sign-in could not be started ("+(doc.error||r.status)+"). Try again.");
-          return;
-        }
-        this.flow=doc.flow; this.blips=0;
-        $(this.ids.value).textContent="Your code: "+(doc.user_code||"");
-        if(doc.verification_url) $(this.ids.link).href=doc.verification_url;
-        $(this.ids.code).hidden=false;
-        this.status("Enter the code on the sign-in page, then come back here.");
-        // The interval the SOURCE asked for, floored so a bad value cannot spin.
-        const wait=Math.max(2,Math.min(Number(doc.interval)||5,30))*1000;
-        this.timer=setTimeout(()=>this.poll(wait,epoch),wait);
-      }catch(_e){
-        if(epoch!==this.epoch) return;
-        this.busy=false; this.status("Sign-in could not be started. Check your connection.");
-      }
-    },
-    async poll(wait,epoch){
-      if(!this.flow||epoch!==this.epoch) return;
-      try{
-        const h=authHeaders(); h["Content-Type"]="application/json";
-        const r=await fetch("/app/openai/device/poll",{method:"POST",headers:h,
-          credentials:"same-origin",body:JSON.stringify({flow:this.flow})});
-        const doc=await r.json().catch(()=>({}));
-        if(epoch!==this.epoch) return;
-        if(doc.status==="pending"){
-          this.blips=0;   // the route answered, so whatever came before is over
-          this.timer=setTimeout(()=>this.poll(wait,epoch),wait);
-          return;
-        }
-        this.reset();
-        if(doc.status==="connected"){
-          this.status(doc.confirmation
-            ? "Signed in. Confirm \""+frameTitle({title:doc.confirmation.title||"Use this source"})+
-              "\" under Waiting on you to add it to your agent."
-            : doc.serving&&doc.serving.status==="serving"
-              ? this.connectedText
-              : "Signed in. Your credential was saved, but your agent's model setup still needs review. Open Change model.");
-          // The card is derived from the stored rejection, which the deposit just
-          // cleared, so refreshing the rail is what makes it disappear.
-          if(typeof refreshRail==="function") refreshRail();
-          return;
-        }
-        this.status("Sign-in did not complete ("+(doc.error||r.status)+"). Try again.");
-      }catch(_e){
-        if(epoch!==this.epoch) return;
-        // A single failed poll is not a failed sign-in; keep waiting -- up to the
-        // cap, after which the owner is told rather than left watching a spinner.
-        this.blips+=1;
-        if(this.blips>this.MAX_BLIPS){
-          this.reset();
-          this.status("Sign-in could not be checked. Check your connection and try again.");
-          return;
-        }
-        this.timer=setTimeout(()=>this.poll(wait,epoch),wait);
-      }
-    },
-  };
-
   // A declared model list needs a context size; the field is a bound for the
   // model use, not a claim about the provider. Most current chat models exceed it.
   const ENDPOINT_CONTEXT=32768;

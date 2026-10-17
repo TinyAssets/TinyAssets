@@ -113,7 +113,7 @@ def test_catalog_refuses_sql_paths_and_unbounded_limits(discovery):
 def test_actual_app_and_summary_catalogs_over_ipc(discovery, monkeypatch):
     from starlette.requests import Request
 
-    from tests.test_onboarding_openai_device import _user
+    from tests.support.onboarding import _user
     from tinyassets import daemon_server, onboarding, shared_self, universe_tools
     from tinyassets.api import status
     from tinyassets.auth.middleware import identity_context

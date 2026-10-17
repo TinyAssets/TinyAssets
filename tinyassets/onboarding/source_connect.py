@@ -106,37 +106,6 @@ def _offer_pool_access(*, base, uid, owner, preset, definition_id, models):
             "request": result, "universe_id": uid}
 
 
-def offer_subscription_source(*, base, uid, owner, service):
-    """Offer a deposited subscription missing from the accepted model setup.
-
-    Deposit is not model consent. Existing membership, caps and root stay intact
-    until the owner answers the ordinary bind_model_access request.
-    """
-    from tinyassets.onboarding import DEVICE_SIGN_IN_SERVICE
-    from tinyassets.onboarding.serving import _gesture_lock
-    from tinyassets.provider_assignment import load_provider_assignment
-    from tinyassets.providers.free_sources import subscription_cards
-    from tinyassets.shared_self import require_founder_home
-
-    if service != DEVICE_SIGN_IN_SERVICE:
-        return None
-    with _gesture_lock(uid):
-        require_founder_home(base, uid, owner)
-        assignment = load_provider_assignment(base, universe_id=uid)
-        if (assignment is None or not assignment.manifest_digest
-                or assignment.state == "unassigned"
-                or service in {member.provider for member in assignment.candidates}):
-            return None
-        cards = subscription_cards()
-        if len(cards) != 1:
-            raise HostedAuthError("model_confirmation_requires_review", 409)
-        card = cards[0]
-        return _offer_pool_access(
-            base=base, uid=uid, owner=owner, definition_id=service, models=None,
-            preset={"name": card["name"], "offer": card["note"],
-                    "billing_note": (
-                        "Uses the subscription you connected; no purchase is approved.")},
-        )
 
 
 def sign_in_client_id(preset, public_resource):

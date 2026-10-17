@@ -53,15 +53,6 @@ _BINDING_PAYLOAD = {"schema_version": 1, "name": "Your agent", "role": "writer"}
 #: re-points every one in place (design D10). Read-only: never re-published.
 RETIRED_PLATFORM_DEFINITION_AUTHOR = "platform:universe-default"
 RETIRED_BINDING_PAYLOAD = {"schema_version": 1, "name": "Your universe", "role": "writer"}
-#: Friendly ALIASES for the two subscription CLIs, not an allowlist. Anything
-#: else is passed straight through as a compute-connection id, because
-#: `bind_serving_provider` already resolves one and `_open_serving_context`
-#: already refuses a grant the caller does not own. Gating here as well only
-#: refused legitimate users: a universe could not be pointed at any LLM its
-#: owner had registered (founder, 2026-09-03: "we shouldnt have a chatgpt
-#: spacific path").
-_SERVICE_TO_PROVIDER = {"codex": "codex", "claude": "claude-code"}
-
 #: One gesture at a time per universe. `_platform_binding` is check-then-create
 #: and `agent_bindings` has no uniqueness constraint, so two first-time calls
 #: (two open tabs healing, a paste and a phone connect) both see no binding,
@@ -231,7 +222,7 @@ def ensure_founder_serving(
         return {"status": "held", "reason": "no_service_named"}
     # An alias resolves to its CLI provider; anything else is a compute
     # connection the owner registered, and the binding layer authorizes it.
-    provider = _SERVICE_TO_PROVIDER.get(asked.lower(), asked)
+    provider = asked
     base = Path(base_path)
     from tinyassets.principals import named_principal
 
@@ -255,7 +246,6 @@ def _reconnect_manifest(
 ) -> dict[str, Any]:
     """Renew an accepted source without interpreting renewal as new model consent."""
     from tinyassets.commons_catalog import reconnect_binding_candidates_in_transaction
-    from tinyassets.credential_vault import validate_llm_subscription_deposit
     from tinyassets.provider_assignment import (
         load_provider_assignment,
         load_provider_assignment_in_transaction,
@@ -263,7 +253,6 @@ def _reconnect_manifest(
     )
     from tinyassets.provider_assignment_manifest import ModelAccess
     from tinyassets.provider_serving_binding import (
-        _PROVIDER_SERVICE,
         _canonical_universe,
         _current_bound_member_authority,
         _resolve_serving_source,
@@ -331,16 +320,10 @@ def _reconnect_manifest(
                             operation="converse", role="writer",
                         ):
                             raise PermissionError("Accepted provider binding is no longer valid.")
-                        if member_source.open_grant is None:
-                            validate_llm_subscription_deposit(
-                                conn, universe_dir=universe, owner=owner, uid=uid,
-                                service=_PROVIDER_SERVICE[member.provider],
-                            )
-                        else:
-                            _source_custody(
-                                conn, member_source, base=base, universe=universe,
-                                owner=owner, uid=uid, adopt=False,
-                            )
+                        _source_custody(
+                            conn, member_source, base=base, universe=universe,
+                            owner=owner, uid=uid, adopt=False,
+                        )
                 model_access = {
                     m.provider.removeprefix("api_key_http:"): m.access
                     for m in assignment.candidates

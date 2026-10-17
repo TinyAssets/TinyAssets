@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
-from tinyassets.providers.definition import ProviderDefinition, register_definition
+from tinyassets.providers.definition import ProviderDefinition
 from tinyassets.providers.provider_resolver import (
     provider_for_definition,
     register_universe_open_providers,
@@ -47,23 +47,10 @@ def test_api_key_http_resolves_to_api_provider() -> None:
     assert prov.family == "api:openai_chat"
 
 
-def test_subscription_cli_codex_preserves_identity() -> None:
-    prov = provider_for_definition(_def("subscription_cli", "cli:codex", "codex"))
-    assert prov.name == "codex"
-    assert prov.family == "openai"
 
 
-def test_subscription_cli_claude_preserves_identity() -> None:
-    prov = provider_for_definition(
-        _def("subscription_cli", "cli:claude-code", "claude-code")
-    )
-    assert prov.name == "claude-code"
-    assert prov.family == "anthropic"
 
 
-def test_unknown_cli_ref_rejected() -> None:
-    with pytest.raises(ValueError):
-        provider_for_definition(_def("subscription_cli", "cli:codex", "kimi-cli"))
 
 
 def test_unknown_access_method_rejected() -> None:
@@ -77,29 +64,6 @@ def test_unknown_access_method_rejected() -> None:
         provider_for_definition(bad)
 
 
-def test_register_universe_open_providers_makes_them_routable(base: Path) -> None:
-    from tinyassets.providers.router import ProviderRouter
-
-    register_definition(
-        universe_id="u-x", owner_user_id="founder", access_method="api_key_http",
-        protocol="openai_chat", model="moonshotai/kimi-k2", ref="http_grant_" + "a" * 32,
-    )
-    register_definition(
-        universe_id="u-x", owner_user_id="founder", access_method="subscription_cli",
-        protocol="cli:codex", model="gpt-5-codex", ref="codex",
-    )
-
-    router = ProviderRouter()
-    names = register_universe_open_providers(router, "u-x")
-
-    assert len(names) == 2
-    assert set(names) <= set(router.available_providers)
-    assert any(n.startswith("api_key_http:") for n in names)
-    assert "codex" in names
-    # The EXISTING chain logic now routes to them — all registered, none excluded.
-    effective, excluded = router.effective_chain(names)
-    assert effective == names
-    assert excluded == []
 
 
 def test_register_universe_open_providers_empty_when_none(base: Path) -> None:

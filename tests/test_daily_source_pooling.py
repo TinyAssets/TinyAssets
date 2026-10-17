@@ -27,7 +27,7 @@ def pool(tmp_path, monkeypatch, authenticate_request, wires):
     from tinyassets.api.pending_requests import list_requests
 
     setup = next(r for r in list_requests(universe_id=parity.A_HOME)["pending"]
-                 if r["request_id"] == "sys_connect_llm")
+                 if r["request_id"] == "sys_connect_model")
     assert setup["status"] == "optional" and setup["suggestion"]
     # An unrelated healthy owner's credential must never be reached.
     authenticate_request(parity.B_OWNER)
@@ -152,6 +152,6 @@ def test_single_source_suggestion_is_optional_and_disappears_for_a_pool(pool):
     from tinyassets.api.pending_requests import list_requests
 
     rows = list_requests(universe_id=parity.A_HOME)["pending"]
-    setup = next(r for r in rows if r["request_id"] == "sys_connect_llm")
+    setup = next(r for r in rows if r["request_id"] == "sys_connect_model")
     assert setup["status"] == "optional" and "suggestion" not in setup
     assert len(setup["action"]["setup"]["sources"]) == 4

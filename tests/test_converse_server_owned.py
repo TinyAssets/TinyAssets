@@ -189,30 +189,3 @@ def test_coordinator_fault_after_reply_records_failure(tmp_path, monkeypatch):
     assert [row.speaker for row in rows] == ["founder", "platform"]
 
 
-def test_codex_silent_turn_ends_at_turn_watchdog():
-    from types import SimpleNamespace
-
-    import pytest
-
-    from tinyassets.exceptions import ProviderIdleTimeoutError
-    from tinyassets.external_agents.jsonrpc_job import JsonRpcJob
-    from tinyassets.external_agents.registry import resolve
-    from tinyassets.providers.base import ModelConfig
-
-    async def never_line():
-        await asyncio.Event().wait()
-
-    turn = JsonRpcJob(
-        SimpleNamespace(stdout=SimpleNamespace(readline=never_line), returncode=None),
-        job=resolve("codex").row["job"], agent="codex", tools=None,
-        profile=ModelConfig(idle_timeout_s=0.001).stream_timeout_profile(),
-        start=time.monotonic(), turn_wait=0.04, tool_wait=900,
-    )
-    turn._in_turn = True
-    assert turn._allowance()[0] > 0.02  # Codex keeps its longer quiet-work allowance.
-
-    async def run():
-        with pytest.raises(ProviderIdleTimeoutError):
-            await asyncio.wait_for(turn.read(), timeout=1)
-
-    asyncio.run(run())

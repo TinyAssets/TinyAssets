@@ -7,7 +7,6 @@ result is advisory: every actual launch still validates its exact member anew.
 import logging
 import sqlite3
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
 from pathlib import Path
 
 from tinyassets.commons_catalog import get_binding
@@ -19,9 +18,7 @@ from tinyassets.provider_assignment import (
     provider_assignment_admission,
 )
 from tinyassets.provider_serving_binding import (
-    _PROVIDER_SERVICE,
     ServingProviderHeld,
-    _resolve_serving_source,
     current_connected_source_custody,
 )
 from tinyassets.providers.agent_model_plan import AgentModelPlan
@@ -29,7 +26,6 @@ from tinyassets.providers.discovery_snapshot import ModelDiscoveryUnavailable
 from tinyassets.providers.model_policy import (
     Catalog,
     Charge,
-    ConnectionModels,
     Ineligible,
     Interaction,
     Model,
@@ -43,7 +39,6 @@ from tinyassets.providers.model_preferences import ModelPreferences, capture_pre
 from tinyassets.providers.wire_dialects import same_dialect
 from tinyassets.storage.current_home import check_plan_scope, current_home
 from tinyassets.storage.learned_models import (
-    LEARNED_SOURCE_KIND,
     OWN_VERIFIED_BASIS,
 )
 from tinyassets.storage.model_preferences import ModelPreferenceStore, PreferenceSnapshot
@@ -69,7 +64,6 @@ def connected_sources(base: str | Path, universe: str | Path, owner: str,
     """
     from tinyassets.broker.client import BrokerRefused
     from tinyassets.broker.ledger_queries import HAS_MODEL_SOURCE, query_ledger
-    from tinyassets.credential_vault import current_llm_subscription_custody
     from tinyassets.providers.definition import list_definitions
     from tinyassets.storage.outbound_connections import GrantResolutionError, ProxyRequestError
 
@@ -78,24 +72,6 @@ def connected_sources(base: str | Path, universe: str | Path, owner: str,
             or not owner):
         raise PermissionError("invalid connected-source scope")
     sources: set[str] = set()
-    def subscriptions(db):
-        from tinyassets.owner_runtime import current
-
-        if current() is not None:
-            return  # CLI sources have no broker_endpoint executor yet.
-        for provider, service in _PROVIDER_SERVICE.items():
-            if current_llm_subscription_custody(
-                db, universe_dir=universe, owner_user_id=owner,
-                universe_id=universe.name, service=service,
-            ) is not None:
-                sources.add(provider)
-    if conn is None:
-        with SQLiteProviderWorkAuthorityStore(base).connection() as db:
-            db.execute("BEGIN")
-            subscriptions(db)
-            db.rollback()
-    else:
-        subscriptions(conn)
     for definition in list_definitions(universe.name):
         if definition.owner_user_id != owner or definition.access_method != "api_key_http":
             continue
@@ -121,20 +97,8 @@ HELD_SOURCES = "not usable now: "
 
 def _assert_plan_snapshot(snapshot, *, display_only=False):
     from tinyassets.providers.discovery_snapshot import assert_discovery_snapshot_current
-    from tinyassets.providers.native_discovery import NativeDiscoverySnapshot
 
-    if type(snapshot) is NativeDiscoverySnapshot:
-        # The caller has just rechecked every exact member/custody chain in its
-        # transaction. Do not open another SQLite connection inside that fence.
-        if display_only:
-            # Age is advisory for an owned display, but future observations are
-            # still invalid. Execution always takes the strict default below.
-            if datetime.now(timezone.utc) < snapshot.completed_at:
-                raise ProviderError("native model discovery expired or source changed")
-        else:
-            snapshot.assert_fresh()
-    else:
-        assert_discovery_snapshot_current(snapshot)
+    assert_discovery_snapshot_current(snapshot)
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,84 +196,6 @@ class ModelSourceUnavailable(PermissionError):
         self.reason = reason
 
 
-def _native_models(base, universe, owner, member, *, native_snapshot=None, display_only=False):
-    from tinyassets.providers.call import get_provider_router
-    from tinyassets.providers.model_selection import _native_default
-
-    _resolve_serving_source(base, universe.name, owner, member.provider, member.access)
-    from tinyassets.providers.native_model_selection import accepted_native_selection
-
-    declared = member.access.model_ids if member.access.model_scope == "explicit" else ("",)
-    models = []
-    #: Ids the executor advertised AND marked unselectable. Withheld from the
-    #: choices, and also withheld from the candidate sources below: Codex found
-    #: that filtering them out of enumeration alone let the same id return as a
-    #: learned or reviewed-list candidate, because dedupe only saw the rows that
-    #: were kept. A source saying "not this one" outranks our own history of it.
-    withdrawn = set()
-    for model_id in declared:
-        if model_id:
-            accepted_native_selection(member.provider, model_id, member.access)
-        else:
-            _native_default(member.provider, model_id, member.access)
-        models.append(Model(
-            model_id, True, frozenset({"text"}), pricing=Pricing("fresh", unmetered=True),
-            availability_basis="owner_declared" if model_id else "executor_default",
-        ))
-    if native_snapshot is not None:
-        if member.access.model_scope != "discovered":
-            raise PermissionError("native discovery cannot widen an explicit model scope")
-        if not display_only:
-            native_snapshot.assert_fresh()
-        if (native_snapshot.provider != member.provider or native_snapshot.owner_id != owner
-                or native_snapshot.universe != Path(universe).resolve()
-                or native_snapshot.custody.reference_digest != member.credential_reference_digest):
-            raise PermissionError("native catalogue is outside current member custody")
-        # A row the executor itself marked unselectable must not become a normal
-        # choice. Offering it would hand the owner a pick that fails at launch,
-        # which is worse than not listing it (see the learned-id split below).
-        withdrawn.update(model.model_id for model in native_snapshot.catalogue.models
-                         if model.hidden)
-        models.extend(Model(
-            model.model_id, True, model.input_modalities,
-            pricing=Pricing("fresh", unmetered=True), availability_basis="executor_enumerated",
-            effort_levels=model.effort_levels,
-        ) for model in native_snapshot.catalogue.models if not model.hidden)
-    # The owner's verified history is source-scoped; reviewed public lists use kind.
-    # Without this the list is only what this owner typed into their own access
-    # grant, so a newly released model was invisible until someone shipped a patch
-    # (founder, 2026-09-26: "i cant seem to select fable as a user for the llm").
-    #
-    # These are NOT put through accepted_native_selection: they are candidates the
-    # platform can vouch exist, not ids this universe has granted access to. The
-    # existing access machinery marks them outside the accepted scope, so they
-    # surface as "needs access" and become selectable when the owner grants it.
-    # A catalog row is evidence, never permission.
-    # THIS OWNER's own verified ids first. The founder's rule is that an id which
-    # worked for one owner "stays on that user's own list forever" even when it
-    # never becomes public -- and Codex round 3 found the store was keeping it while
-    # nothing ever listed it, so a solo user's ARN silently vanished from their own
-    # picker as soon as they stopped declaring it. Keeping a row nobody reads is not
-    # keeping it.
-    # The reviewed list is keyed by source, including external-agent packages.
-    # The owner's history remains separately scoped by provider_ref.
-    router = get_provider_router()
-    provider = None if router is None else router._providers.get(member.provider)
-    models.extend(_own_verified_candidates(base, LEARNED_SOURCE_KIND, member.provider, owner,
-                                          already=models, excluded=withdrawn))
-    # ...then the reviewed public list for this kind of source, which is how a newly
-    # released model reaches everyone without a patch: a PR adds the id, review is the
-    # moderation, and every universe on that source kind sees it next read.
-    models.extend(_listed_candidates(LEARNED_SOURCE_KIND, source_key=member.provider,
-                                     already=models,
-                                     excluded=withdrawn))
-    if provider is None or not provider.is_available():
-        raise ModelSourceUnavailable("executor_unavailable")
-    return ConnectionModels(
-        member.provider, "native-subscription:" + member.provider, "subscription", "fresh",
-        True, True,
-        tuple(models), default_model_id="" if "" in declared else None,
-    )
 
 
 def _own_verified_candidates(base, source_kind, provider_ref, owner, *, already,
@@ -522,116 +408,30 @@ def prepare_owned_model_plan(
     for provider, chain in chains:
         member = chain[0]
         try:
-            if provider in _PROVIDER_SERVICE:
-                native_snapshot = None
-                pending = ""
-                if member.access.model_scope == "discovered":
-                    # A DISPLAY read takes whatever is warm and asks for a
-                    # refresh in the background; it never runs discovery. That
-                    # is what stops one slow or expired source delaying the
-                    # selection of a different accepted one
-                    # (concerns/2026-09-16-model-picker-global-discovery-delay).
-                    #
-                    # A served turn still discovers inline: it is about to
-                    # launch, and a plan built from a catalogue it has not
-                    # confirmed is not a saving. Execution's own fresh check in
-                    # `prepare_selected_model` is unchanged either way.
-                    if allow_empty:
-                        from tinyassets.providers.shortlist_refresh import (
-                            SHORTLIST_CACHE,
-                            USABLE_AGE,
-                        )
+            from tinyassets.providers.discovery_snapshot import refresh_model_discovery
 
-                        native_snapshot, pending = SHORTLIST_CACHE.get(
-                            base=base, owner=owner, universe_id=universe.name,
-                            provider=provider,
-                            display_only=True,
-                        )
-                        if (native_snapshot is not None
-                                and (datetime.now(timezone.utc)
-                                     - native_snapshot.observed_at).total_seconds()
-                                > USABLE_AGE):
-                            pending = "stale"
-                        if pending:
-                            rejected.append(Ineligible(ModelRef(provider, ""), pending,
-                                                       scope="source"))
-                    else:
-                        from tinyassets.providers.native_discovery import (
-                            discover_native_models_sync,
-                        )
+            snapshot = refresh_model_discovery(
+                owner_user_id=owner, universe_id=universe.name,
+                definition_id=provider.removeprefix("api_key_http:"),
+            )
+            # Discovery facts remain useful to a repair screen even when
+            # authority, pricing or the agent's contract excludes execution.
+            all_models.append(snapshot.models)
+            snapshots.append(snapshot)
+            snapshot, filtered, required, caps, denied = _http_models(
+                owner, universe.name, member, snapshot=snapshot, needs_tools=needs_tools,
+            )
+            from tinyassets.universe_intelligence import _engine_mcp_enabled
 
-                        try:
-                            native_snapshot = discover_native_models_sync(
-                                base_path=base, owner_user_id=owner,
-                                universe_id=universe.name, provider=provider,
-                            )
-                            if native_snapshot is None:
-                                rejected.append(Ineligible(
-                                    ModelRef(provider, ""), "native_enumeration_unsupported",
-                                    scope="source",
-                                ))
-                        except ProviderError:
-                            # Enumeration is not necessary to run the provider's
-                            # own default. Preserve that lane and expose the gap.
-                            rejected.append(Ineligible(
-                                ModelRef(provider, ""), "native_catalogue_unavailable",
-                                scope="source"))
-                catalog = _native_models(
-                    base, universe, owner, member, native_snapshot=native_snapshot,
-                    display_only=allow_empty,
-                )
-                # The provider/custody-checked snapshot already contributes its
-                # non-hidden rows as executor_enumerated, including during a
-                # pending/failed display refresh. History alone cannot restore a
-                # missing/hidden row or transfer access from another provider.
-                candidate_only = _CANDIDATE_ONLY_BASES
-                contributed = tuple(
-                    model for model in catalog.models
-                    if model.availability_basis in candidate_only
-                )
-                filtered = replace(catalog, models=tuple(
-                    model for model in catalog.models
-                    if model.availability_basis not in candidate_only
-                ))
-                # Unknown rows under a pending discovery grant need a catalogue
-                # result, not another consent request. Other offers need access.
-                rejected.extend(
-                    Ineligible(ModelRef(provider, model.model_id),
-                               pending or "model_access_optin_required")
-                    for model in contributed
-                )
-                if native_snapshot is not None:
-                    snapshots.append(native_snapshot)
-                # Keep snapshots for honest source timestamps and warnings.
-                # Display rechecks current member/custody through chains below;
-                # the display_only plan cannot authorize a launch.
-                required, caps = interaction, member.access.cost_caps
-            else:
-                from tinyassets.providers.discovery_snapshot import refresh_model_discovery
-
-                snapshot = refresh_model_discovery(
-                    owner_user_id=owner, universe_id=universe.name,
-                    definition_id=provider.removeprefix("api_key_http:"),
-                )
-                # Discovery facts remain useful to a repair screen even when
-                # authority, pricing or the agent's contract excludes execution.
-                all_models.append(snapshot.models)
-                snapshots.append(snapshot)
-                snapshot, filtered, required, caps, denied = _http_models(
-                    owner, universe.name, member, snapshot=snapshot, needs_tools=needs_tools,
-                )
-                from tinyassets.universe_intelligence import _engine_mcp_enabled
-
-                if needs_tools and not _engine_mcp_enabled():
-                    denied.extend(Ineligible(ModelRef(provider, model.model_id),
-                                             "engine_tools_unavailable")
-                                  for model in filtered.models)
-                    filtered = replace(filtered, models=())
-                catalog = snapshot.models
-                rejected.extend(denied)
-                benchmark = snapshot.contract().ranking_source
-                if benchmark is not None:
-                    ranking_sources.add(benchmark)
+            if needs_tools and not _engine_mcp_enabled():
+                denied.extend(Ineligible(ModelRef(provider, model.model_id),
+                                         "engine_tools_unavailable")
+                              for model in filtered.models)
+                filtered = replace(filtered, models=())
+            rejected.extend(denied)
+            benchmark = snapshot.contract().ranking_source
+            if benchmark is not None:
+                ranking_sources.add(benchmark)
         except (ModelDiscoveryUnavailable, ModelSourceUnavailable, ServingProviderHeld) as exc:
             rejected.append(Ineligible(ModelRef(provider, ""), exc.reason, scope="source"))
             continue
@@ -639,8 +439,6 @@ def prepare_owned_model_plan(
             rejected.append(Ineligible(ModelRef(provider, ""), "discovery_unavailable",
                                        scope="source"))
             continue
-        if provider in _PROVIDER_SERVICE:
-            all_models.append(catalog)
         admitted.append(filtered)
         source_policies.append(SourceModelPolicy(
             provider, required,

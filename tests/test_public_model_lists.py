@@ -81,23 +81,6 @@ def test_public_ids_are_attached_only_to_the_source_that_lists_them():
         "subscription", source_key="codex", already=())} == codex
 
 
-def test_codex_package_reads_its_public_subscription_rows(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from tinyassets.external_agents.provider import ExternalAgentProvider
-    from tinyassets.provider_assignment_manifest import ModelAccess
-    from tinyassets.providers import served_model_plan
-
-    package = ExternalAgentProvider("codex")
-    monkeypatch.setattr(served_model_plan, "_resolve_serving_source", lambda *args: None)
-    monkeypatch.setattr(served_model_plan, "_own_verified_candidates", lambda *args, **kw: ())
-    monkeypatch.setattr("tinyassets.providers.call.get_provider_router", lambda: SimpleNamespace(
-        _providers={"codex": package}))
-    member = SimpleNamespace(provider="codex", access=ModelAccess("explicit", ("",)))
-    catalog = served_model_plan._native_models(tmp_path, tmp_path, "owner", member)
-    listed = {model.model_id for model in catalog.models
-              if model.availability_basis == "publicly_listed"}
-    assert listed == {"gpt-5.6-sol", "gpt-6-astra"}
 
 
 def test_the_shipped_list_passes_its_own_ci_check():

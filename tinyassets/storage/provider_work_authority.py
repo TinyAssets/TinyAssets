@@ -469,7 +469,6 @@ def _accepted_work_access(conn, receipt, provider):
 def _current_connected_member(conn, base, receipt, selection):
     """Fence one attempt against its admission snapshot and live owner custody."""
     from tinyassets.provider_serving_binding import current_connected_source_custody
-    from tinyassets.providers.native_model_selection import NativeSelection
     from tinyassets.storage.current_home import check_current_home
 
     if (receipt.schema_version != 5 or receipt.admitted_sources is None
@@ -483,11 +482,6 @@ def _current_connected_member(conn, base, receipt, selection):
         conn, base=base, universe=base / receipt.universe_id,
         owner=receipt.principal_id, provider=selection.provider,
     )
-    evidence = selection.model_evidence()
-    if evidence is not None and evidence.get("kind") == "native":
-        NativeSelection.from_dict(evidence).assert_access(
-            _accepted_work_access(conn, receipt, selection.provider), custody.reference_digest,
-        )
     return custody
 
 
@@ -1831,26 +1825,11 @@ class SQLiteProviderWorkAuthorityStore:
         self, conn, receipt, selection, model_snapshot=None, *, needs_tools=False,
     ):
         """Validate model evidence on a source in the snapshot and live set."""
-        from tinyassets.provider_serving_binding import _PROVIDER_SERVICE
 
-        custody = _current_connected_member(conn, self.base_path, receipt, selection)
+        _current_connected_member(conn, self.base_path, receipt, selection)
         if selection.model_evidence_json is not None or selection.executor_id != selection.provider:
             raise PermissionError("work model evidence must be prepared by admission")
         access = _accepted_work_access(conn, receipt, selection.provider)
-        if selection.provider in _PROVIDER_SERVICE and selection.model_id:
-            from tinyassets.provider_work_authority import _canonical_json
-            from tinyassets.providers.work_model_selection import native_work_model
-
-            native = native_work_model(
-                model_snapshot, provider=selection.provider, owner=receipt.principal_id,
-                universe=self.base_path / receipt.universe_id, custody=custody,
-                model_id=selection.model_id, access=access,
-            )
-            return replace(selection, model_evidence_json=_canonical_json(native.to_dict()))
-        if selection.provider in _PROVIDER_SERVICE:
-            if model_snapshot is not None:
-                raise PermissionError("native model cannot use HTTP discovery")
-            return selection
 
         from tinyassets.exceptions import WorkModelExhaustedError
         from tinyassets.providers.definition import get_definition

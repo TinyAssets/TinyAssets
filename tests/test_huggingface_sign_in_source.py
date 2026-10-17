@@ -348,9 +348,9 @@ def test_the_document_never_follows_the_request_host(app):
 
 
 def test_the_connect_setup_offers_sign_in_sources_and_daily_caps(hf, universes):
-    from tinyassets.api.pending_requests import _connect_llm_request
+    from tinyassets.api.pending_requests import _model_connect_request
 
-    setup = _connect_llm_request(connected=True)["action"]["setup"]
+    setup = _model_connect_request(connected=True)["action"]["setup"]
     from tinyassets.providers.free_sources import sign_in_preset
 
     preset = sign_in_preset("huggingface")
@@ -373,12 +373,12 @@ def test_the_connect_setup_offers_sign_in_sources_and_daily_caps(hf, universes):
 
 
 def test_installed_unsafe_source_is_not_offered():
-    from tinyassets.api.pending_requests import _connect_llm_request
+    from tinyassets.api.pending_requests import _model_connect_request
     from tinyassets.providers.free_sources import sign_in_cards, sign_in_preset, source_cards
 
     assert sign_in_preset("huggingface") is None
     assert all(row["id"] != "huggingface" for row in sign_in_cards() + source_cards())
-    assert _connect_llm_request()["action"]["setup"]["sign_in_sources"] == []
+    assert _model_connect_request()["action"]["setup"]["sign_in_sources"] == []
 
 
 def test_withheld_source_cannot_start_oauth_or_create_a_request(app, monkeypatch):

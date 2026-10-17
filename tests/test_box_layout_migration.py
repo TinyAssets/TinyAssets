@@ -642,18 +642,15 @@ def test_guest_copy_omits_persistent_credential_sources(tmp_path):
     reason="real migration copy needs rsync; owner=c6-owner-box runs-in=linux-ci",
 )
 def test_guest_agent_home_omits_package_auth_files(tmp_path):
-    from tinyassets.external_agents.registry import PACKAGES
 
     source, guest = tmp_path / "agent-home", tmp_path / "guest"
     (source / "codex").mkdir(parents=True)
     guest.mkdir()
     (source / "codex" / "auth.json").write_text("old refresh token")
     (source / "codex" / "sessions.json").write_text("session state")
-    paths = tuple(f"{package.row['auth']['home_dir']}/{name}"
-                  for package in PACKAGES.values()
-                  for name in package.row["auth"]["files"])
 
-    migration._copy(source, guest, os.getuid(), extra_excludes=paths)
+
+    migration._copy(source, guest, os.getuid(), extra_excludes=("codex/auth.json",))
 
     assert not (guest / "codex" / "auth.json").exists()
     assert (guest / "codex" / "sessions.json").read_text() == "session state"

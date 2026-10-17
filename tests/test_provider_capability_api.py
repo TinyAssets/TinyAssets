@@ -134,26 +134,6 @@ def test_configure_rejects_caller_selected_authority_fields(monkeypatch, tmp_pat
     ) is None
 
 
-def test_configure_refuses_subscription_provider_without_secondary_credential_flow(
-    monkeypatch, tmp_path
-):
-    _arrange(monkeypatch, tmp_path)
-    import tinyassets.provider_serving_binding as serving
-
-    monkeypatch.setattr(
-        serving,
-        "resolve_current_serving_provider_authority",
-        lambda *_args, **_kwargs: CurrentServingProviderAuthority(
-            provider="codex", access_method="subscription_cli"
-        ),
-    )
-
-    result = configure_provider_capability(universe_id="u-home", payload=_payload())
-
-    assert result == {
-        "error": "provider_voice_unsupported",
-        "resource": "provider_capability",
-    }
 
 
 def test_configure_revoke_is_idempotent(monkeypatch, tmp_path):

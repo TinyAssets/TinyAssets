@@ -40,9 +40,6 @@ def source_cards():
                      if row.get("available", True) and "sign_in" not in row])
 
 
-def subscription_cards():
-    """Installed display copy for the existing device sign-in offer."""
-    return json.loads(Path(__file__).with_name("subscription_cards.json").read_text("utf-8"))
 
 
 def source_preset(source_id):

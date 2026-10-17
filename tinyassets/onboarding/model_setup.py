@@ -14,7 +14,6 @@ def model_setup_state(base: Path, *, universe: Path, uid: str, owner: str) -> st
     from tinyassets.api.universe import _config_yaml_is_parseable
     from tinyassets.commons_catalog import list_bindings
     from tinyassets.config import load_universe_config
-    from tinyassets.credential_vault import load_credential_vault
     from tinyassets.onboarding.serving import _require_current_admin
     from tinyassets.provider_assignment import load_provider_assignment
     from tinyassets.provider_serving_binding import (
@@ -35,20 +34,16 @@ def model_setup_state(base: Path, *, universe: Path, uid: str, owner: str) -> st
     from tinyassets.providers.connection_lifecycle import intentionally_disconnected
 
     if intentionally_disconnected(base, owner=owner, uid=uid):
-        records = load_credential_vault(universe)
-        if not any(r.get("credential_type") in {"llm_subscription", "llm_api_key"}
-                   for r in records):
-            return "disconnected"
+        return "disconnected"
     if load_provider_assignment(base, universe_id=uid) is not None:
         return "recovery"
     if list_definitions(uid) or list_bindings(base, universe_id=uid, limit=1):
         return "recovery"
-    records = load_credential_vault(universe)
-    if any(record.get("credential_type") in {"llm_subscription", "llm_api_key"}
-           for record in records):
-        return "recovery"
     # The generic hosted-model bootstrap uses an explicit destination namespace;
     # a partially registered key is not permission to start another OAuth flow.
+    from tinyassets.credential_vault import load_credential_vault
+
+    records = load_credential_vault(universe)
     if any(record.get("credential_type") == "http"
            and str(record.get("service", "")).startswith("model:") for record in records):
         return "recovery"

@@ -73,12 +73,10 @@ def prepare_captured_choices(base, *, owner, universe, document, sources):
     from pathlib import Path
     from types import SimpleNamespace
 
-    from tinyassets.exceptions import ProviderError
     from tinyassets.provider_assignment import (
         accepted_connected_model_access,
         load_provider_assignment,
     )
-    from tinyassets.provider_serving_binding import _PROVIDER_SERVICE
     from tinyassets.providers.agent_model_plan import AgentModelPlan
     from tinyassets.providers.discovery_snapshot import refresh_model_discovery
     from tinyassets.providers.model_policy import (
@@ -89,10 +87,8 @@ def prepare_captured_choices(base, *, owner, universe, document, sources):
         SourceModelPolicy,
     )
     from tinyassets.providers.model_preferences import ModelPreferences, capture_preference_policy
-    from tinyassets.providers.native_discovery import discover_native_models_sync
     from tinyassets.providers.served_model_plan import (
         _http_models,
-        _native_models,
         _refused_models,
     )
 
@@ -107,7 +103,7 @@ def prepare_captured_choices(base, *, owner, universe, document, sources):
         saved=saved, observed_generation=document["observed_generation"], current=current,
     )
     policy, source = captured or (ModelPolicy(0, "automatic", ()), "automatic")
-    base, home = Path(base), Path(base) / universe
+    base = Path(base)
     interaction = Interaction(True, frozenset({"text"}), frozenset())
     admitted, source_policies, ranking_sources = [], [], set()
     # The owner's accepted scope and cost caps are the only cost authority. A
@@ -124,43 +120,17 @@ def prepare_captured_choices(base, *, owner, universe, document, sources):
             # never a candidate, the same as the served turn's plan.
             held.append(provider)
             continue
-        if provider in _PROVIDER_SERVICE:
-            model_snapshot = None
-            if access.model_scope == "discovered":
-                try:
-                    model_snapshot = discover_native_models_sync(
-                        base_path=base, owner_user_id=owner,
-                        universe_id=universe, provider=provider,
-                    )
-                except ProviderError:
-                    pass  # The owner's native default is still runnable.
-            member = SimpleNamespace(
-                provider=provider, access=access,
-                credential_reference_digest=(
-                    model_snapshot.custody.reference_digest if model_snapshot else ""
-                ),
-            )
-            catalog = _native_models(
-                base, home, owner, member, native_snapshot=model_snapshot,
-            )
-            catalog = replace(catalog, models=tuple(
-                model for model in catalog.models
-                if model.availability_basis not in {"publicly_listed", "own_verified"}
-            ))
-            caps = None
-            required = interaction
-        else:
-            snapshot = refresh_model_discovery(
-                owner_user_id=owner, universe_id=universe,
-                definition_id=provider.removeprefix("api_key_http:"),
-            )
-            member = SimpleNamespace(provider=provider, access=access)
-            _snapshot, catalog, required, caps, _rejected = _http_models(
-                owner, universe, member, snapshot=snapshot, needs_tools=True,
-            )
-            benchmark = snapshot.contract().ranking_source
-            if benchmark:
-                ranking_sources.add(benchmark)
+        snapshot = refresh_model_discovery(
+            owner_user_id=owner, universe_id=universe,
+            definition_id=provider.removeprefix("api_key_http:"),
+        )
+        member = SimpleNamespace(provider=provider, access=access)
+        _snapshot, catalog, required, caps, _rejected = _http_models(
+            owner, universe, member, snapshot=snapshot, needs_tools=True,
+        )
+        benchmark = snapshot.contract().ranking_source
+        if benchmark:
+            ranking_sources.add(benchmark)
         admitted.append(catalog)
         source_policies.append(SourceModelPolicy(
             provider, required,

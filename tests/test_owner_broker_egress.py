@@ -228,13 +228,8 @@ def test_outbound_seam_refuses_all_direct_network(box, operation):
 
 def test_vault_and_provider_cli_refuse(box):
     from tinyassets.credential_vault import credential_vault_path
-    from tinyassets.exceptions import ProviderConfinementError
-    from tinyassets.providers.owned_process import aspawn_owned
-
     with pytest.raises(PermissionError, match="raw credential custody"):
         credential_vault_path(box.root / "center")
-    with pytest.raises(ProviderConfinementError, match="broker_endpoint"):
-        asyncio.run(aspawn_owned(["codex"]))
 
 
 def test_model_in_fresh_box_process_has_no_secret(box):

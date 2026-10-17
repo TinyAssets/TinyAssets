@@ -7,34 +7,6 @@ not a grant: the store reconstructs current member/model authority before arming
 from pathlib import Path
 
 
-def _owner_declared_native(base, universe_id, owner, provider, model_id):
-    """True when this id is an accepted explicit alias, the same fact chat uses.
-
-    A discovered-scope id returns False so preparation still enumerates. An
-    unreadable assignment returns False and leaves the existing discovery path
-    to refuse; this predicate grants nothing.
-    """
-    from tinyassets.provider_assignment import (
-        accepted_connected_model_access,
-        load_provider_assignment,
-    )
-    from tinyassets.provider_serving_binding import _PROVIDER_SERVICE
-    from tinyassets.providers.native_model_selection import accepted_native_selection
-
-    if provider not in _PROVIDER_SERVICE:
-        return False
-    try:
-        access = accepted_connected_model_access(
-            load_provider_assignment(base, universe_id=universe_id), owner, provider,
-        )
-    except PermissionError:
-        return False
-    try:
-        return accepted_native_selection(provider, model_id, access) is not None
-    except PermissionError:
-        return False
-
-
 def prepare_work_model_snapshot(*, base_path, universe_id, owner_user_id,
                                 provider, model_id=""):
     """Discover one currently connected source before the reservation transaction."""
@@ -44,20 +16,6 @@ def prepare_work_model_snapshot(*, base_path, universe_id, owner_user_id,
     universe = base / universe_id
     if provider not in connected_sources(base, universe, owner_user_id):
         raise PermissionError(f"source {provider!r} is not connected for this owner")
-    if not provider.startswith("api_key_http:"):
-        # An owner-declared alias (``opus``) is not a catalogue id. Chat admits
-        # it without enumeration; discovering here only to reject the alias
-        # later is what failed workflow nodes while converse still ran.
-        if not model_id or _owner_declared_native(
-            base, universe_id, owner_user_id, provider, model_id,
-        ):
-            return None
-        from tinyassets.providers.native_discovery import discover_native_models_sync
-
-        return discover_native_models_sync(
-            base_path=base, owner_user_id=owner_user_id,
-            universe_id=universe_id, provider=provider,
-        )
     from tinyassets.providers.discovery_snapshot import refresh_model_discovery
 
     return refresh_model_discovery(
@@ -66,28 +24,6 @@ def prepare_work_model_snapshot(*, base_path, universe_id, owner_user_id,
     )
 
 
-def native_work_model(snapshot, *, provider, owner, universe, custody, model_id, access):
-    """Admit one native workflow model the way a served turn admits it.
-
-    An owner-declared explicit id is authority by the accepted member. Fresh
-    enumeration is required only for a discovered-scope id, and that id has to
-    be in the catalogue. Requiring every id to appear in the catalogue refused
-    declared aliases: chat ran, and the workflow node died with ``native
-    catalogue does not match current model authority``.
-    """
-    from tinyassets.providers.native_discovery import NativeDiscoverySnapshot
-    from tinyassets.providers.native_model_selection import accepted_native_selection
-
-    declared = accepted_native_selection(provider, model_id, access)
-    if declared is not None:
-        declared.assert_access(access, custody.reference_digest)
-        return declared
-    if type(snapshot) is not NativeDiscoverySnapshot:
-        raise PermissionError("native workflow model requires fresh owned enumeration")
-    return snapshot.select(
-        provider=provider, owner=owner, universe=universe, custody=custody,
-        model_id=model_id, access=access,
-    )
 
 
 def selected_work_model(selection):
@@ -99,7 +35,7 @@ def selected_work_model(selection):
     if selection is None:
         return None
     evidence = selection.model_evidence()
-    if evidence is None or evidence.get("kind") == "native":
+    if evidence is None:
         return None
     contract = evidence["execution_contract"]
     if contract["kind"] == "declared":

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import threading
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +15,6 @@ from tinyassets.branches import (
     GraphNodeRef,
     NodeDefinition,
 )
-from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.platform_runtime_provenance import (
     CLOUD,
     ProcessProvenanceObservation,
@@ -557,389 +555,24 @@ def _run_branch(
     return response, provider, captured
 
 
-def test_foreground_run_launches_active_serving_provider_and_settles_once(
-    tmp_path: Path,
-    monkeypatch,
-    authenticate_request,
-) -> None:
-    response, provider, _captured = _run_branch(
-        tmp_path,
-        monkeypatch,
-        authenticate_request,
-        _branch(node_count=1),
-    )
-
-    assert response["terminal_status"] == "completed", response["terminal_error"]
-    assert len(provider.calls) == 1
-    conn = sqlite3.connect(authority_db_path(tmp_path))
-    conn.row_factory = sqlite3.Row
-    reservation = conn.execute(
-        "SELECT state, actual_total_tokens, actual_cost_microunits "
-        "FROM provider_invocation_reservations"
-    ).fetchone()
-    receipt = conn.execute(
-        "SELECT work_item_kind, work_item_id, record_json FROM provider_work_receipts"
-    ).fetchone()
-    child_count = conn.execute(
-        "SELECT COUNT(*) FROM provider_work_bindings "
-        "WHERE record_json LIKE '%\"allowed_operations\":[\"run_graph\"]%'"
-    ).fetchone()[0]
-    claim = conn.execute(
-        "SELECT state FROM provider_work_execution_claims"
-    ).fetchone()
-    conn.close()
-
-    assert dict(reservation) == {
-        "state": "succeeded",
-        "actual_total_tokens": 100,
-        "actual_cost_microunits": 5,
-    }
-    assert (receipt["work_item_kind"], receipt["work_item_id"]) == (
-        "run", response["run_id"],
-    )
-    assert json.loads(receipt["record_json"])["admitted_sources"] == ["codex"]
-    assert child_count == 0
-    assert claim["state"] == "released"
 
 
-def test_newly_connected_source_does_not_run_until_accepted(
-    tmp_path, monkeypatch, authenticate_request,
-):
-    """Connected custody is not run authority; accepted model access is.
-
-    A subscription adopted into custody with no assignment write is connected,
-    but the owner never accepted it, so a node pinned to it is refused before
-    any receipt or launch (onboarding-connection-progress: connecting does not
-    enable execution). The first run's receipt and the assignment are untouched.
-    """
-    from tinyassets.api import runs as api_runs
-    from tinyassets.credential_vault import (
-        adopt_llm_subscription_custody,
-        write_credential_vault,
-    )
-    from tinyassets.daemon_server import save_branch_definition
-    from tinyassets.runs import get_run, wait_for
-
-    first, _, captured = _run_branch(
-        tmp_path, monkeypatch, authenticate_request, _branch(node_count=1),
-    )
-    assert first["terminal_status"] == "completed", first["terminal_error"]
-    db = authority_db_path(tmp_path)
-    with sqlite3.connect(db) as conn:
-        assignment_before = conn.execute(
-            "SELECT generation, assignment_digest FROM provider_assignments "
-            "WHERE universe_id='universe_alice'"
-        ).fetchone()
-    write_credential_vault(
-        tmp_path / "universe_alice",
-        [
-            {"credential_type": "llm_subscription", "service": "codex",
-             "auth_json_b64": "e30="},
-            {"credential_type": "llm_subscription", "service": "claude",
-             "oauth_token": "synthetic-claude-test-only"},
-        ], owner_user_id="acct_alice", universe_id="universe_alice",
-    )
-    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
-
-    with SQLiteProviderWorkAuthorityStore(tmp_path).connection() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        adopt_llm_subscription_custody(
-            conn, universe_dir=tmp_path / "universe_alice",
-            owner_user_id="acct_alice", universe_id="universe_alice", service="claude",
-        )
-        conn.commit()
-    second_provider = _CountingProvider("claude-code")
-    captured["router"].register(second_provider)
-    next_branch = _branch(node_count=1, provider="claude-code")
-    next_branch.branch_def_id = "branch_connected_after_first_run"
-    save_branch_definition(tmp_path, branch_def=next_branch.to_dict())
-    next_run = json.loads(api_runs._action_run_branch({
-        "branch_def_id": next_branch.branch_def_id, "universe_id": "universe_alice",
-    }))
-    wait_for(next_run["run_id"], timeout=10)
-    result = get_run(tmp_path, next_run["run_id"])
-    assert result["status"] == "failed", result
-    assert "claude-code" in result["error"] and "not eligible" in result["error"], result["error"]
-    assert second_provider.calls == []
-    with sqlite3.connect(db) as conn:
-        assignment_after = conn.execute(
-            "SELECT generation, assignment_digest FROM provider_assignments "
-            "WHERE universe_id='universe_alice'"
-        ).fetchone()
-        receipts = [json.loads(row[0]) for row in conn.execute(
-            "SELECT record_json FROM provider_work_receipts ORDER BY rowid"
-        )]
-    assert assignment_after == assignment_before
-    assert [receipt["admitted_sources"] for receipt in receipts] == [["codex"]]
 
 
-@pytest.mark.parametrize("pin_provider", [False, True], ids=["default", "pinned"])
-def test_accepted_native_model_manifest_preserves_foreground_execution(
-    tmp_path: Path,
-    monkeypatch,
-    authenticate_request,
-    pin_provider: bool,
-) -> None:
-    """Real bind/enable/run admission must compose, not just interactive chat."""
-    from tinyassets.provider_assignment import load_provider_assignment
-    from tinyassets.provider_assignment_manifest import ModelAccess
-
-    branch = _branch(node_count=1)
-    if not pin_provider:
-        branch.node_defs[0].llm_policy = None
-    before = branch.to_dict()
-    response, provider, _captured = _run_branch(
-        tmp_path,
-        monkeypatch,
-        authenticate_request,
-        branch,
-        model_access={"codex": ModelAccess("explicit", ("",))},
-    )
-    assignment = load_provider_assignment(tmp_path, universe_id="universe_alice")
-    assert assignment is not None and assignment.manifest_digest
-    assert assignment.state == "ready"
-    assert branch.to_dict() == before
-    assert response["terminal_status"] == "completed", response["terminal_error"]
-    assert len(provider.calls) == 1
-    with sqlite3.connect(authority_db_path(tmp_path)) as conn:
-        assert conn.execute(
-            "SELECT state FROM provider_invocation_reservations"
-        ).fetchall() == [("succeeded",)]
 
 
-@pytest.mark.parametrize("rotated", [None, "codex", "claude-code"])
-def test_manifest_run_uses_independent_members_under_one_receipt(
-    tmp_path, monkeypatch, authenticate_request, rotated,
-):
-    from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.provider_assignment import load_provider_assignment
-    from tinyassets.provider_assignment_manifest import ModelAccess
-
-    branch = _branch(node_count=2)
-    branch.node_defs[1].llm_policy = {"preferred": {"provider": "claude-code"}}
-    before = branch.to_dict()
-
-    def after_call(provider, count):
-        if rotated and provider == "codex" and count == 1:
-            write_credential_vault(
-                tmp_path / "universe_alice",
-                [
-                    {"credential_type": "llm_subscription", "service": "codex",
-                     "auth_json_b64": "eyJyb3RhdGVkIjp0cnVlfQ==" if rotated == "codex" else "e30="},
-                    {"credential_type": "llm_subscription", "service": "claude",
-                     "oauth_token": "rotated-test-only" if rotated == "claude-code"
-                     else "synthetic-claude-test-only"},
-                ], owner_user_id="acct_alice", universe_id="universe_alice",
-            )
-
-    response, _provider, captured = _run_branch(
-        tmp_path, monkeypatch, authenticate_request, branch,
-        model_access={name: ModelAccess("explicit", ("",)) for name in ("codex", "claude-code")},
-        services=("codex", "claude"), after_provider_call=after_call,
-    )
-    expected_status = "failed" if rotated == "claude-code" else "completed"
-    assert response["terminal_status"] == expected_status, response["terminal_error"]
-    assert branch.to_dict() == before
-    assert {name: len(p.calls) for name, p in captured["providers"].items()} == {
-        "codex": 1, "claude-code": int(rotated != "claude-code"),
-    }
-    assignment = load_provider_assignment(tmp_path, universe_id="universe_alice")
-    assert assignment.provider == "codex"  # Work choice never rewrites the main choice.
-    with sqlite3.connect(authority_db_path(tmp_path)) as conn:
-        receipts = conn.execute("SELECT record_json FROM provider_work_receipts").fetchall()
-        assert len(receipts) == 1
-        receipt = json.loads(receipts[0][0])
-        assert receipt["authority_scope"] == "manifest"
-        assert receipt["binding_id"] is None and receipt["provider"] is None
-        records = [json.loads(row[0]) for row in conn.execute(
-            "SELECT record_json FROM provider_invocation_reservations ORDER BY ordinal"
-        )]
-    assert {r["receipt_id"] for r in records} == {receipt["receipt_id"]}
-    expected_providers = ["codex"] if rotated == "claude-code" else ["codex", "claude-code"]
-    assert [r["selection"]["provider"] for r in records] == expected_providers
-    assert all(r["schema_version"] == 3 and r["state"] == "succeeded" for r in records)
 
 
-@pytest.mark.parametrize("authority_case", ["revoked", "stale", "home_rebound"])
-def test_binding_edits_do_not_revoke_a_connected_run_but_a_stale_assignment_does(
-    tmp_path, monkeypatch, authenticate_request, authority_case,
-):
-    """The serving binding is not run authority; the accepted assignment is.
-
-    A revoked converse binding leaves the run on its connected source. A
-    tampered assignment row cannot say what the owner accepted, so the run is
-    refused before launch rather than treating connected as paid.
-    """
-    from tinyassets.provider_assignment_manifest import ModelAccess
-
-    response, provider, _captured = _run_branch(
-        tmp_path, monkeypatch, authenticate_request, _branch(node_count=1),
-        authority_case=authority_case, model_access={"codex": ModelAccess("explicit", ("",))},
-    )
-    if authority_case == "revoked":
-        assert response["terminal_status"] == "completed", response["terminal_error"]
-        assert len(provider.calls) == 1
-    else:
-        assert response["terminal_status"] == "failed"
-        assert provider.calls == []
 
 
-def test_manifest_work_model_pin_is_not_silently_replaced_by_native_default(
-    tmp_path, monkeypatch, authenticate_request,
-):
-    from tinyassets.provider_assignment_manifest import ModelAccess
-
-    branch = _branch(node_count=1)
-    branch.node_defs[0].llm_policy["preferred"]["model"] = "unaccepted-model"
-    response, provider, _captured = _run_branch(
-        tmp_path, monkeypatch, authenticate_request, branch,
-        model_access={"codex": ModelAccess("explicit", ("",))},
-    )
-    assert response["terminal_status"] == "failed"
-    assert provider.calls == []
 
 
-def test_parallel_manifest_members_share_one_work_receipt(
-    tmp_path, monkeypatch, authenticate_request,
-):
-    from tinyassets.provider_assignment_manifest import ModelAccess
-
-    branch = _branch(node_count=2)
-    branch.node_defs[1].llm_policy = {"preferred": {"provider": "claude-code"}}
-    branch.edges = [
-        EdgeDefinition(from_node="START", to_node="n1"),
-        EdgeDefinition(from_node="START", to_node="n2"),
-        EdgeDefinition(from_node="n1", to_node="END"),
-        EdgeDefinition(from_node="n2", to_node="END"),
-    ]
-    both_launched = threading.Barrier(2)
-    response, _provider, captured = _run_branch(
-        tmp_path, monkeypatch, authenticate_request, branch,
-        model_access={name: ModelAccess("explicit", ("",)) for name in ("codex", "claude-code")},
-        services=("codex", "claude"),
-        after_provider_call=lambda _provider, _count: both_launched.wait(timeout=3),
-    )
-    assert response["terminal_status"] == "completed", response["terminal_error"]
-    assert all(len(provider.calls) == 1 for provider in captured["providers"].values())
-    with sqlite3.connect(authority_db_path(tmp_path)) as conn:
-        assert conn.execute("SELECT count(*) FROM provider_work_receipts").fetchone() == (1,)
-        assert conn.execute(
-            "SELECT count(DISTINCT receipt_id), count(*), sum(actual_total_tokens) "
-            "FROM provider_invocation_reservations WHERE state = 'succeeded'"
-        ).fetchone() == (1, 2, 200)
 
 
-@pytest.mark.parametrize("manifest", [False, True], ids=["legacy", "model-access"])
-@pytest.mark.parametrize("invalidate", ["custody", "pause"])
-def test_enabled_model_access_universe_remains_visible_to_background_scheduler(
-    tmp_path: Path,
-    authenticate_request,
-    available_native_executors,
-    manifest: bool,
-    invalidate: str,
-) -> None:
-    """Successful enable cannot silently remove the universe from polling."""
-    from tinyassets.daemon_server import set_founder_home
-    from tinyassets.provider_assignment_manifest import ModelAccess
-    from tinyassets.provider_serving_binding import (
-        list_serving_universes,
-        resolve_serving_agent_binding,
-    )
-
-    authenticate_request("acct_alice")
-    set_founder_home(
-        tmp_path, founder_sub="acct_alice", universe_id="universe_alice",
-        platform_generated=True,
-    )
-    _seed_serving_assignment(
-        tmp_path,
-        model_access={"codex": ModelAccess("explicit", ("",))} if manifest else None,
-    )
-    agent = resolve_serving_agent_binding(
-        tmp_path, universe_id="universe_alice", owner_user_id="acct_alice",
-    )
-    assert agent["status"] == "serving"
-    assert list_serving_universes(tmp_path) == ["universe_alice"]
-
-    # Inventory cannot become a launch grant or mint a work receipt.
-    with sqlite3.connect(authority_db_path(tmp_path)) as conn:
-        assert conn.execute("SELECT count(*) FROM provider_work_receipts").fetchone() == (0,)
-
-    if invalidate == "pause":
-        from tinyassets.provider_serving_binding import set_serving
-
-        set_serving(
-            base_path=tmp_path, universe_dir=tmp_path / "universe_alice",
-            owner_user_id="acct_alice", universe_id="universe_alice",
-            agent_binding_id=agent["agent_binding_id"],
-            expected_revision=agent["revision"], enabled=False,
-        )
-        assert list_serving_universes(tmp_path) == []
-        return
-
-    # A credential rotation invalidates the accepted member until re-bound.
-    from tinyassets.credential_vault import write_credential_vault
-
-    write_credential_vault(
-        tmp_path / "universe_alice",
-        [{"credential_type": "llm_subscription", "service": "codex",
-          "auth_json_b64": "eyJyb3RhdGVkIjp0cnVlfQ=="}],
-        owner_user_id="acct_alice", universe_id="universe_alice",
-    )
-    assert list_serving_universes(tmp_path) == []
 
 
-def test_manifest_enable_still_refuses_missing_native_executor(
-    tmp_path: Path, authenticate_request, monkeypatch,
-) -> None:
-    from tinyassets.daemon_server import set_founder_home
-    from tinyassets.provider_assignment_manifest import ModelAccess
-    from tinyassets.provider_serving_binding import list_serving_universes
-
-    authenticate_request("acct_alice")
-    set_founder_home(
-        tmp_path, founder_sub="acct_alice", universe_id="universe_alice",
-        platform_generated=True,
-    )
-    monkeypatch.setattr(
-        "tinyassets.providers.call.get_provider_router", lambda: ProviderRouter({}),
-    )
-    with pytest.raises(PermissionError, match="no eligible model"):
-        _seed_serving_assignment(
-            tmp_path, model_access={"codex": ModelAccess("explicit", ("",))},
-        )
-    assert list_serving_universes(tmp_path) == []
 
 
-def test_scheduler_inventory_keeps_independent_member_after_anchor_rotation(
-    tmp_path: Path, authenticate_request, monkeypatch, available_native_executors,
-) -> None:
-    from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.daemon_server import set_founder_home
-    from tinyassets.provider_assignment_manifest import ModelAccess
-    from tinyassets.provider_serving_binding import list_serving_universes
-
-    authenticate_request("acct_alice")
-    set_founder_home(
-        tmp_path, founder_sub="acct_alice", universe_id="universe_alice",
-        platform_generated=True,
-    )
-    _seed_serving_assignment(
-        tmp_path, services=("codex", "claude"),
-        model_access={name: ModelAccess("explicit", ("",)) for name in ("codex", "claude-code")},
-    )
-    assert list_serving_universes(tmp_path) == ["universe_alice"]
-    write_credential_vault(
-        tmp_path / "universe_alice",
-        [
-            {"credential_type": "llm_subscription", "service": "codex",
-             "auth_json_b64": "eyJyb3RhdGVkIjp0cnVlfQ=="},
-            {"credential_type": "llm_subscription", "service": "claude",
-             "oauth_token": "synthetic-claude-test-only"},
-        ],
-        owner_user_id="acct_alice", universe_id="universe_alice",
-    )
-    assert list_serving_universes(tmp_path) == ["universe_alice"]
 
 
 def test_foreground_run_launches_selected_open_provider_and_settles_once(
@@ -1012,36 +645,6 @@ def test_foreground_open_provider_settles_fresh_resolution_refusal_before_launch
     assert reservation == ("cancelled_before_launch",)
 
 
-def test_foreground_run_mints_one_carrier_per_node_and_refuses_n_plus_one(
-    tmp_path: Path,
-    monkeypatch,
-    authenticate_request,
-) -> None:
-    response, provider, captured = _run_branch(
-        tmp_path,
-        monkeypatch,
-        authenticate_request,
-        _branch(node_count=2),
-    )
-
-    assert response["terminal_status"] == "completed", response["terminal_error"]
-    assert len(provider.calls) == 2
-    with pytest.raises(ProviderAuthorityHeldError):
-        captured["provider_call"]("one call too many")
-    with pytest.raises(PermissionError, match="operation"):
-        captured["provider_call"]("wrong operation", operation="converse")
-
-    conn = sqlite3.connect(authority_db_path(tmp_path))
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT reservation_id, invocation_key, ordinal, state "
-        "FROM provider_invocation_reservations ORDER BY ordinal"
-    ).fetchall()
-    conn.close()
-    assert [row["ordinal"] for row in rows] == [1, 2]
-    assert len({row["reservation_id"] for row in rows}) == 2
-    assert len({row["invocation_key"] for row in rows}) == 2
-    assert [row["state"] for row in rows] == ["succeeded", "succeeded"]
 
 
 #: What each held case must SAY, not merely that it was held. Every one of
@@ -1053,139 +656,14 @@ def test_foreground_run_mints_one_carrier_per_node_and_refuses_n_plus_one(
 _HELD_CASE_REASON = {"missing": "no connected model source for this owner"}
 
 
-@pytest.mark.parametrize("authority_case", sorted(_HELD_CASE_REASON))
-def test_foreground_run_authority_mismatch_launches_nothing_and_runs_no_effects(
-    authority_case: str,
-    tmp_path: Path,
-    monkeypatch,
-    authenticate_request,
-) -> None:
-    response, provider, captured = _run_branch(
-        tmp_path,
-        monkeypatch,
-        authenticate_request,
-        _branch(node_count=1),
-        authority_case=authority_case,
-        open_provider=authority_case == "registered_only",
-    )
-
-    assert response["terminal_status"] == "failed"
-    error = response["terminal_error"]
-    reason = _HELD_CASE_REASON[authority_case]
-    assert reason in error, error
-    assert provider.calls == []
-    assert captured["effects"] == []
-    with sqlite3.connect(authority_db_path(tmp_path)) as conn:
-        assert conn.execute(
-            "SELECT COUNT(*) FROM provider_work_receipts"
-        ).fetchone()[0] == 0
-        assert conn.execute(
-            "SELECT COUNT(*) FROM provider_invocation_reservations"
-        ).fetchone()[0] == 0
 
 
-@pytest.mark.parametrize("authority_case", ["registered_only", "revoked", "stale"])
-def test_connected_run_requires_accepted_assignment_not_a_serving_binding(
-    authority_case, tmp_path, monkeypatch, authenticate_request,
-) -> None:
-    """A registered-only key and a stale assignment are refused; a revoked
-    converse binding is not run authority and leaves the run on its source."""
-    proxy = None
-    if authority_case == "registered_only":
-        from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
-
-        proxy = _OpenProxy()
-        monkeypatch.setattr(
-            ApiKeyHttpProvider, "_resolve_proxy",
-            accounting_resolver(lambda _self, **_kwargs: proxy),
-        )
-    response, provider, _captured = _run_branch(
-        tmp_path, monkeypatch, authenticate_request, _branch(node_count=1),
-        authority_case=authority_case,
-        open_provider=authority_case == "registered_only",
-    )
-    calls = provider.calls if proxy is None else proxy.calls
-    if authority_case == "revoked":
-        assert response["terminal_status"] == "completed", response["terminal_error"]
-        assert len(calls) == 1
-    else:
-        assert response["terminal_status"] == "failed"
-        assert calls == []
 
 
-@pytest.mark.parametrize("policy", [
-    {"preferred": {"provider": "claude-code"}},
-    {"preferred": {"provider": "codex", "model": "gpt-x"}},
-])
-def test_foreground_run_rejects_policy_outside_active_provider_before_effects(
-    tmp_path: Path,
-    monkeypatch,
-    authenticate_request,
-    policy,
-) -> None:
-    branch = _branch(node_count=1)
-    branch.node_defs[0].llm_policy = policy
-    response, provider, captured = _run_branch(
-        tmp_path,
-        monkeypatch,
-        authenticate_request,
-        branch,
-    )
-
-    assert response["terminal_status"] == "failed"
-    assert provider.calls == []
-    assert captured["effects"] == []
 
 
-def test_foreground_run_rejects_branch_not_authored_by_authenticated_principal(
-    tmp_path: Path,
-    monkeypatch,
-    authenticate_request,
-) -> None:
-    """Now refused at RESOLUTION rather than as a failed run.
-
-    This used to create a run and let it terminate `failed`, which meant a branch the
-    caller may not read was still loaded and a run row still written under their
-    universe. The refusal now happens before the load, so there is nothing to write --
-    and it reads as "not found", because saying "exists but not yours" is itself a
-    disclosure.
-
-    The property the test was written for is unchanged and stronger: the branch is not
-    executed and no provider is called.
-
-    This asserts only that no run is created -- via the helper's own `run_id` check,
-    which is indirect and could in principle trip for another reason. The DIRECT
-    assertion on the refusal body lives in
-    `tests/test_branch_run_read_check.py::test_an_unreadable_branch_is_reported_as_not_found`,
-    which is the canonical coverage; this one is kept so the original scenario stays
-    represented at the provider-session layer.
-    """
-    with pytest.raises(AssertionError, match="run_id"):
-        _run_branch(
-            tmp_path,
-            monkeypatch,
-            authenticate_request,
-            _branch(node_count=1, author="acct_bob"),
-        )
 
 
-def test_foreground_run_rejects_unsupported_provider_role_before_launch(
-    tmp_path: Path,
-    monkeypatch,
-    authenticate_request,
-) -> None:
-    branch = _branch(node_count=1)
-    branch.node_defs[0].model_hint = "reader"
-    response, provider, captured = _run_branch(
-        tmp_path,
-        monkeypatch,
-        authenticate_request,
-        branch,
-    )
-
-    assert response["terminal_status"] == "failed"
-    assert provider.calls == []
-    assert captured["effects"] == []
 
 
 def test_settlement_failure_names_its_cause() -> None:
@@ -1220,84 +698,6 @@ def test_settlement_failure_names_its_cause() -> None:
     )
 
 
-def test_async_sub_branch_gets_its_own_session_not_the_parents(
-    tmp_path: Path, monkeypatch, authenticate_request
-) -> None:
-    """A child run must not be refused because the parent holds the session.
-
-    `graph_compiler` passes the parent's ALREADY-PREPARED `provider_call`
-    straight into `execute_branch_async` for an async sub-branch. That reaches
-    `prepare()`'s "already bound" guard, and before this fix the child run was
-    created FAILED before executing a single node.
-
-    The guard is right and stays -- one session must never serve two runs,
-    because its receipt and claim are minted against one run id. The fix is to
-    mint a SECOND session for the child.
-
-    Found by cross-family review of PR #2559 *after* it merged and deployed. It
-    shipped because no test exercised an async sub-branch through a provider
-    session -- this is that test.
-    """
-    from tinyassets.daemon_server import save_branch_definition
-    from tinyassets.foreground_run_provider import (
-        _session_from_provider_call,
-        prepare_foreground_run_provider,
-    )
-
-    active_checks = []
-
-    def check_active_parent(parent_wrapper):
-        check_index = len(active_checks)
-        active_checks.append(False)
-        parent_session = _session_from_provider_call(parent_wrapper)
-        assert parent_session is not None, "fixture did not produce a real bound session"
-
-        # A real child run row: the child must validate against ITS OWN run, so a
-        # made-up id proves nothing (and correctly fails "run record is missing").
-        from tinyassets.runs import create_run, update_run_status
-
-        child_branch = _branch(node_count=1)
-        save_branch_definition(tmp_path, branch_def=child_branch.to_dict())
-        child_run_id = create_run(
-            tmp_path,
-            branch_def_id=child_branch.branch_def_id,
-            thread_id="thread-child",
-            inputs={},
-            actor="universe:universe_alice",
-        )
-        update_run_status(tmp_path, child_run_id, status="running")
-
-        child_wrapper = prepare_foreground_run_provider(
-            parent_wrapper,
-            run_id=child_run_id,
-            branch=child_branch,
-            branch_version_id=None,
-            allowed_statuses={"running", "queued"},
-        )
-
-        child_session = _session_from_provider_call(child_wrapper)
-        assert child_session is not None, "child run got no session at all"
-        assert child_session is not parent_session, (
-            "the child reused the PARENT's session; its receipt and claim are minted "
-            "against the parent's run id"
-        )
-        # The child must carry no authority inherited from the parent.
-        assert child_session._receipt is None, "child inherited the parent's receipt"
-        assert child_session._claim is None, "child inherited the parent's claim"
-        # And the parent must be left intact for its own remaining nodes.
-        assert _session_from_provider_call(parent_wrapper) is parent_session
-        child_session.close()
-        active_checks[check_index] = True
-
-    response, _, captured = _run_branch(
-        tmp_path, monkeypatch, authenticate_request, _branch(node_count=1),
-        on_active_session=check_active_parent,
-    )
-    assert response["terminal_status"] == "completed", response
-    assert active_checks and all(active_checks), "every callback must complete its assertions"
-    parent_session = _session_from_provider_call(captured["provider_call"])
-    with pytest.raises(ProviderAuthorityHeldError):
-        parent_session._request_allocation.child()
 
 
 def test_a_session_hidden_behind_an_extra_wrapper_is_refused_not_passed_through() -> None:
@@ -1412,49 +812,6 @@ def test_the_real_wrapper_still_rebinds_and_keeps_its_binding() -> None:
     assert rebound.operation == "run_graph"
 
 
-def test_foreground_claude_node_runs_in_its_universe_without_host_tools(
-    tmp_path, monkeypatch, authenticate_request,
-):
-    """A workflow node's claude call is pinned to its owner's universe.
-
-    Production 2026-09-24: prompt nodes launched `claude -p` in the daemon's
-    cwd (`/app`) with the CLI's default builtins, and about half of a parallel
-    probe's short nodes explored the platform source for 100-300s. Driven
-    through the real foreground run path; the codex node shows the scope.
-    """
-    from tinyassets.provider_assignment_manifest import ModelAccess
-    from tinyassets.providers.base import HOST_REACH_TOOLS
-    from tinyassets.providers.claude_provider import _sandbox_cli_args
-
-    branch = _branch(node_count=2)
-    branch.node_defs[1].llm_policy = {"preferred": {"provider": "claude-code"}}
-    response, _provider, captured = _run_branch(
-        tmp_path, monkeypatch, authenticate_request, branch,
-        model_access={name: ModelAccess("explicit", ("",)) for name in ("codex", "claude-code")},
-        services=("codex", "claude"),
-    )
-    assert response["terminal_status"] == "completed", response["terminal_error"]
-
-    [claude_config] = captured["providers"]["claude-code"].calls
-    [codex_config] = captured["providers"]["codex"].calls
-    # Both node calls are marked; each provider confines in its own way.
-    assert claude_config.workflow_node is True
-    assert codex_config.workflow_node is True
-
-    universe_dir = tmp_path / "universe_alice"
-    # The fixed provider cell owns cwd; the adapter only projects tool policy.
-    # Its actual private scratch and absent host paths are image-oracle proofs.
-    flags = _sandbox_cli_args(claude_config, universe_dir)
-    assert claude_config.invocation_owner_user_id == codex_config.invocation_owner_user_id
-    assert claude_config.invocation_owner_user_id
-    assert flags[flags.index("--setting-sources") + 1] == ""
-    denied = flags[flags.index("--disallowedTools") + 1:]
-    assert set(HOST_REACH_TOOLS) <= set(denied)
-    for tool in ("Bash", "Read", "Glob", "Grep"):
-        assert tool in denied
-    # Only host reach is removed: web tools and subagents are not the host's.
-    for kept in ("WebSearch", "WebFetch", "Agent"):
-        assert kept not in denied
 
 
 @pytest.mark.parametrize("host,model,expected_calls", [

@@ -79,7 +79,7 @@ const window={};
 const location={search:'',href:'https://tinyassets.io/app',pathname:'/app'};
 const HostedModelConnect={adopt(){},configure(){},setup:null};
 // The real ids the page uses, declared above the slice.
-const CONNECT_REQUEST_ID='sys_connect_llm';
+const CONNECT_REQUEST_ID='sys_connect_model';
 function foldedModelAccess(){return null;}
 function railBody(){return node('body');}
 function autoGrow(){}

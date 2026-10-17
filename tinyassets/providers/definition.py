@@ -13,19 +13,11 @@ authority and no credential.**
 Access methods (design §3) — an executor is chosen deterministically by this field,
 with NO cross-method fallback (Hard Rule #3 evolution):
 
-- ``subscription_cli`` — references an existing CLI provider identity (e.g.
-  ``codex``); the vendor CLI adapter executes it. Subscription writers stay CLI
-  subprocesses, never an API SDK.
 - ``api_key_http`` — references a ``ConnectionLedger`` http connection (endpoint +
   credential + grant, already SSRF-validated by ``connect_http``); a protocol
   encoder executes it over the credential-blind outbound proxy — never a vendor SDK
   pointed at an arbitrary ``base_url``.
 
-The descriptor carries a ``ref`` (an indirection), never a secret: for
-``subscription_cli`` it is the provider name (``codex`` / ``claude-code``); for
-``api_key_http`` it is the ``grant_id`` of the ``ConnectionLedger`` grant that binds
-the connection to this universe (not secret — the grant is the authorization, and
-the credential lives in the vault behind the connection the grant points to). A
 ``commons`` definition is a remixable SHAPE only: remixing never carries the original
 owner's ``ref`` or credential — the remixer supplies their own.
 """
@@ -43,23 +35,17 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets.api.helpers import _universe_dir
-from tinyassets.external_agents.registry import PACKAGES
 from tinyassets.providers.wire_dialects import known_names
 
-ACCESS_METHODS = ("subscription_cli", "api_key_http")
+ACCESS_METHODS = ("api_key_http",)
 VISIBILITIES = ("private", "commons")
 
-# Protocol shapes, partitioned by the access method they are valid with. A CLI
-# protocol may only pair with subscription_cli; an HTTP protocol only with
-# api_key_http — so the descriptor cannot describe an incoherent executor.
-_CLI_PROTOCOLS = ("cli:claude-code",)
-_PACKAGE_PROTOCOLS = tuple(f"cli:{name}" for name in PACKAGES)
 # HTTP protocols are the bundled wire dialects (``providers/dialects/*.json``):
 # their structural names (``chat_messages``, ``content_blocks``) and the aliases
 # stored rows already carry (``openai_chat``, ``anthropic_messages``). A stored
 # row keeps its exact string, because the definition id content-addresses it.
 _HTTP_PROTOCOLS = known_names()
-PROTOCOLS = _CLI_PROTOCOLS + _PACKAGE_PROTOCOLS + _HTTP_PROTOCOLS
+PROTOCOLS = _HTTP_PROTOCOLS
 
 _STORE_FILENAME = "provider_definitions.json"
 
@@ -139,12 +125,6 @@ def _validate(
         raise ProviderDefinitionError(f"protocol must be one of {PROTOCOLS}")
     # Access-method / protocol coherence — a descriptor cannot name an executor
     # it could not run.
-    if access_method == "subscription_cli" and protocol not in (
-        *_CLI_PROTOCOLS, *_PACKAGE_PROTOCOLS
-    ):
-        raise ProviderDefinitionError(
-            "subscription_cli requires a cli:* protocol"
-        )
     if access_method == "api_key_http" and protocol not in _HTTP_PROTOCOLS:
         raise ProviderDefinitionError(
             "api_key_http requires a bundled wire dialect ("

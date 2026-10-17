@@ -504,7 +504,7 @@ def test_dispatch_through_the_pinned_handles(base):
         assert json.loads(raw)["status"] == "pending"
 
         rail = json.loads(us.read_graph(target="pending_requests", graph_id="u-1"))
-        asks = [r for r in rail["pending"] if r["request_id"] != "sys_connect_llm"]
+        asks = [r for r in rail["pending"] if r["request_id"] != "sys_connect_model"]
         assert len(asks) == 1
         assert asks[0]["kind"] == "API"
 
@@ -981,7 +981,7 @@ def test_a_universe_with_no_model_is_asked_to_connect_one(base):
     rail = _raw_rail("u-1")
     first = rail["pending"][0]
 
-    assert first["request_id"] == "sys_connect_llm"
+    assert first["request_id"] == "sys_connect_model"
     assert first["kind"] == "LLM"
     assert first["sticky"] is True, "it renders expanded and cannot be dismissed"
 
@@ -1004,11 +1004,11 @@ def test_the_model_ask_cannot_be_answered_or_dismissed_away(base):
     _login("alice")
 
     for doc in ({"dismiss": True}, {"values": {"anything": "x"}}):
-        out = _answer("u-1", request_id="sys_connect_llm", **doc)
+        out = _answer("u-1", request_id="sys_connect_model", **doc)
         assert out["error"] == "not_answerable"
 
     # Still there.
-    assert _raw_rail("u-1")["pending"][0]["request_id"] == "sys_connect_llm"
+    assert _raw_rail("u-1")["pending"][0]["request_id"] == "sys_connect_model"
 
 
 def test_the_model_ask_becomes_optional_once_something_serves(base, monkeypatch):
@@ -1022,7 +1022,7 @@ def test_the_model_ask_becomes_optional_once_something_serves(base, monkeypatch)
 
     _ask("u-1")
     rows = _raw_rail("u-1")["pending"]
-    assert rows[-1]["request_id"] == "sys_connect_llm"
+    assert rows[-1]["request_id"] == "sys_connect_model"
     assert rows[-1]["title"] == "Connect another LLM"
     assert rows[-1]["sticky"] is False
     assert rows[0]["kind"] == "API"

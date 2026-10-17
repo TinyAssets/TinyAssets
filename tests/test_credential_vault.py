@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import os
-import sqlite3
-import stat
 import subprocess
 from pathlib import Path
 
@@ -12,14 +10,7 @@ import pytest
 
 from tinyassets.credential_vault import (
     VAULT_FILENAME,
-    apply_provider_auth_env,
-    claude_subscription_auth_available,
-    credential_vault_path,
-    ensure_claude_config_dir_from_vault,
     load_credential_vault,
-    provider_auth_env_overrides,
-    resolve_claude_config_dir,
-    resolve_claude_oauth_token,
     write_credential_vault,
 )
 
@@ -71,36 +62,6 @@ def _make_directory_link(link: Path, target: Path) -> None:
         pytest.skip(f"directory junctions unavailable: {result.stderr.strip()}")
 
 
-def _credential_snapshot_fixture(tmp_path):
-    from tinyassets.credential_vault import adopt_llm_subscription_custody
-    from tinyassets.storage import db_path
-
-    universe_dir = tmp_path / "u-owner"
-    universe_dir.mkdir()
-    write_credential_vault(
-        universe_dir,
-        [{
-            "credential_type": "llm_subscription",
-            "service": "codex",
-            "auth_json_b64": "eyJ0b2tlbiI6InNuYXBzaG90LXNlY3JldCJ9",
-        }],
-        owner_user_id="owner-1",
-        universe_id="u-owner",
-    )
-    conn = sqlite3.connect(db_path(tmp_path), isolation_level=None)
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        custody = adopt_llm_subscription_custody(
-            conn,
-            universe_dir=universe_dir,
-            owner_user_id="owner-1",
-            universe_id="u-owner",
-            service="codex",
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    return universe_dir, custody
 
 
 def test_vault_round_trips_typed_credentials_without_secret_summary(tmp_path):
@@ -121,7 +82,7 @@ def test_vault_round_trips_typed_credentials_without_secret_summary(tmp_path):
                 "token": "social_secret",
             },
             {
-                "credential_type": "llm_subscription",
+                "credential_type": "http",
                 "service": "claude",
                 "claude_config_dir": ".credentials/claude",
             },
@@ -130,7 +91,7 @@ def test_vault_round_trips_typed_credentials_without_secret_summary(tmp_path):
 
     assert summary["path"].endswith(VAULT_FILENAME)
     assert summary["credential_count"] == 3
-    assert summary["credential_types"] == ["llm_subscription", "social", "vcs"]
+    assert summary["credential_types"] == ["http", "social", "vcs"]
     assert "ghs_secret" not in str(summary)
     loaded = load_credential_vault(tmp_path)
     assert loaded[0]["token"] == "ghs_secret"
@@ -157,7 +118,7 @@ def test_single_record_write_updates_only_matching_credential(tmp_path):
         [
             github_credential,
             {
-                "credential_type": "llm_api_key",
+                "credential_type": "http",
                 "service": "anthropic",
                 "secret_b64": "b2xkLWtleQ==",
             },
@@ -167,7 +128,7 @@ def test_single_record_write_updates_only_matching_credential(tmp_path):
     summary = write_credential_vault(
         tmp_path,
         [{
-            "credential_type": "llm_api_key",
+            "credential_type": "http",
             "service": "anthropic",
             "secret_b64": "bmV3LWtleQ==",
         }],
@@ -176,7 +137,7 @@ def test_single_record_write_updates_only_matching_credential(tmp_path):
     assert load_credential_vault(tmp_path) == [
         github_credential,
         {
-            "credential_type": "llm_api_key",
+            "credential_type": "http",
             "service": "anthropic",
             "secret_b64": "bmV3LWtleQ==",
         },
@@ -207,24 +168,6 @@ def test_single_social_write_uses_service_slot_not_unread_identity_fields(tmp_pa
     }]
 
 
-def test_single_record_write_updates_equivalent_llm_api_key_alias(tmp_path):
-    write_credential_vault(tmp_path, [{
-        "credential_type": "llm_api_key",
-        "service": "claude",
-        "secret_b64": "b2xkLWtleQ==",
-    }])
-
-    write_credential_vault(tmp_path, [{
-        "credential_type": "llm_api_key",
-        "service": "anthropic",
-        "secret_b64": "bmV3LWtleQ==",
-    }])
-
-    assert load_credential_vault(tmp_path) == [{
-        "credential_type": "llm_api_key",
-        "service": "anthropic",
-        "secret_b64": "bmV3LWtleQ==",
-    }]
 
 
 def test_single_record_write_normalizes_vcs_purpose_selector(tmp_path):
@@ -311,57 +254,8 @@ def test_single_vcs_write_reports_dropped_purpose_slots(tmp_path):
     ) == ""
 
 
-def test_single_subscription_write_preserves_sibling_fields(tmp_path):
-    configured = tmp_path / "claude_cfg"
-    custody = credential_vault_path(tmp_path).parent / "claude_cfg"
-    write_credential_vault(tmp_path, [{
-        "credential_type": "llm_subscription",
-        "service": "claude",
-        "claude_config_dir": str(configured),
-        "oauth_token": "tok-ORIGINAL",
-    }])
-
-    write_credential_vault(tmp_path, [{
-        "credential_type": "llm_subscription",
-        "service": "claude",
-        "oauth_token": "tok-ROTATED",
-    }])
-
-    assert load_credential_vault(tmp_path) == [{
-        "credential_type": "llm_subscription",
-        "service": "claude",
-        "claude_config_dir": str(configured),
-        "oauth_token": "tok-ROTATED",
-    }]
-    # A config dir named inside the center resolves into platform custody.
-    assert resolve_claude_config_dir(tmp_path) == custody
-    assert resolve_claude_oauth_token(tmp_path) == "tok-ROTATED"
 
 
-def test_single_subscription_write_replaces_reader_alias_slots(tmp_path):
-    write_credential_vault(tmp_path, [{
-        "credential_type": "llm_subscription",
-        "service": "claude",
-        "claude_config_dir": "old-config",
-        "oauth_token": "tok-OLD",
-    }])
-
-    write_credential_vault(tmp_path, [{
-        "credential_type": "llm_subscription",
-        "service": "claude",
-        "config_dir": "new-config",
-        "claude_code_oauth_token": "tok-NEW",
-    }])
-
-    assert resolve_claude_config_dir(tmp_path) == (
-        credential_vault_path(tmp_path).parent / "new-config")
-    assert resolve_claude_oauth_token(tmp_path) == "tok-NEW"
-    assert load_credential_vault(tmp_path) == [{
-        "credential_type": "llm_subscription",
-        "service": "claude",
-        "config_dir": "new-config",
-        "claude_code_oauth_token": "tok-NEW",
-    }]
 
 
 def test_single_record_write_collapses_all_matching_duplicates(tmp_path):
@@ -376,13 +270,13 @@ def test_single_record_write_collapses_all_matching_duplicates(tmp_path):
         tmp_path,
         [
             {
-                "credential_type": "llm_api_key",
+                "credential_type": "http",
                 "service": "claude",
                 "api_key": "sk-old-first",
             },
             github_credential,
             {
-                "credential_type": "llm_api_key",
+                "credential_type": "http",
                 "service": "anthropic",
                 "api_key": "sk-old-second",
             },
@@ -390,14 +284,14 @@ def test_single_record_write_collapses_all_matching_duplicates(tmp_path):
     )
 
     summary = write_credential_vault(tmp_path, [{
-        "credential_type": "llm_api_key",
+        "credential_type": "http",
         "service": "anthropic",
         "api_key": "sk-new",
     }])
 
     assert load_credential_vault(tmp_path) == [
         {
-            "credential_type": "llm_api_key",
+            "credential_type": "http",
             "service": "anthropic",
             "api_key": "sk-new",
         },
@@ -416,7 +310,7 @@ def test_two_record_write_replaces_existing_vault_exactly(tmp_path):
     }])
     replacement = [
         {
-            "credential_type": "llm_api_key",
+            "credential_type": "http",
             "service": "anthropic",
             "api_key": "sk-replacement",
         },
@@ -437,7 +331,7 @@ def test_two_record_write_replaces_existing_vault_exactly(tmp_path):
 
 def test_empty_write_clears_existing_vault(tmp_path):
     write_credential_vault(tmp_path, [{
-        "credential_type": "llm_api_key",
+        "credential_type": "http",
         "service": "anthropic",
         "api_key": "sk-to-clear",
     }])
@@ -462,174 +356,19 @@ def test_empty_write_clears_existing_vault(tmp_path):
 
 
 
-def test_claude_config_dir_from_vault_sets_provider_env(tmp_path):
-    configured = tmp_path / "durable-claude"
-    write_credential_vault(
-        tmp_path,
-        [
-            {
-                "credential_type": "llm_subscription",
-                "service": "claude",
-                "claude_config_dir": str(configured),
-            }
-        ],
-    )
-
-    custody = credential_vault_path(tmp_path).parent / "durable-claude"
-    assert ensure_claude_config_dir_from_vault(tmp_path) == custody
-    assert resolve_claude_config_dir(tmp_path) == custody
-    assert claude_subscription_auth_available(tmp_path) is True
-    assert provider_auth_env_overrides(tmp_path, "claude-code") == {
-        "CLAUDE_CONFIG_DIR": str(custody)
-    }
 
 
-def test_apply_provider_auth_env_uses_workflow_universe(tmp_path):
-    configured = tmp_path / "claude-dir"
-    write_credential_vault(
-        tmp_path,
-        [
-            {
-                "credential_type": "llm_subscription",
-                "service": "claude",
-                "claude_config_dir": str(configured),
-            }
-        ],
-    )
-    env = {"TINYASSETS_UNIVERSE": str(tmp_path)}
-
-    apply_provider_auth_env(env, "claude-code")
-
-    assert env["CLAUDE_CONFIG_DIR"] == str(credential_vault_path(tmp_path).parent / "claude-dir")
 
 
 def test_missing_vault_loads_as_empty(tmp_path: Path):
     assert load_credential_vault(tmp_path) == []
 
 
-@pytest.mark.parametrize("link_level", ["runtime", "snapshot_root"])
-def test_snapshot_refuses_symlinked_root_before_writing_secret(tmp_path, link_level):
-    from tinyassets.credential_vault import snapshot_llm_subscription_credential
-
-    universe_dir, custody = _credential_snapshot_fixture(tmp_path)
-    runtime_dir = credential_vault_path(universe_dir).parent / ".runtime"
-    outside = tmp_path / "outside-snapshot-root"
-    outside.mkdir()
-    if link_level == "runtime":
-        _make_directory_link(runtime_dir, outside)
-    else:
-        runtime_dir.mkdir()
-        _make_directory_link(runtime_dir / "provider-launch-credentials", outside)
-
-    with pytest.raises(PermissionError, match="snapshot directory"):
-        snapshot_llm_subscription_credential(
-            universe_dir=universe_dir,
-            custody=custody,
-        )
-
-    assert list(outside.iterdir()) == []
 
 
-def test_snapshot_cleanup_preserves_decoy_and_removes_renamed_plaintext(
-    tmp_path,
-    caplog,
-):
-    from tinyassets.credential_vault import (
-        cleanup_llm_credential_snapshot,
-        snapshot_llm_subscription_credential,
-    )
-
-    universe_dir, custody = _credential_snapshot_fixture(tmp_path)
-    snapshot = snapshot_llm_subscription_credential(
-        universe_dir=universe_dir,
-        custody=custody,
-    )
-    outside = tmp_path / "outside-cleanup"
-    outside.mkdir()
-    outside_marker = outside / "keep.txt"
-    outside_marker.write_text("outside the snapshot", encoding="utf-8")
-    _make_directory_link(snapshot.directory / "outside-link", outside)
-    relocated = snapshot.directory.with_name(snapshot.directory.name + "-relocated")
-    snapshot.directory.rename(relocated)
-    snapshot.directory.mkdir()
-    decoy = snapshot.directory / "keep.txt"
-    decoy.write_text("not the tracked snapshot", encoding="utf-8")
-
-    cleanup_llm_credential_snapshot(snapshot)
-
-    assert snapshot.directory.is_dir()
-    assert decoy.read_text(encoding="utf-8") == "not the tracked snapshot"
-    assert not relocated.exists()
-    assert list(snapshot.directory.parent.glob("*/auth.json")) == []
-    assert outside_marker.read_text(encoding="utf-8") == "outside the snapshot"
-    assert "credential snapshot path identity changed" in caplog.text
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Windows does not enforce POSIX modes")
-def test_snapshot_directory_and_files_are_owner_only(tmp_path):
-    from tinyassets.credential_vault import (
-        cleanup_llm_credential_snapshot,
-        snapshot_llm_subscription_credential,
-    )
-
-    universe_dir, custody = _credential_snapshot_fixture(tmp_path)
-    snapshot = snapshot_llm_subscription_credential(
-        universe_dir=universe_dir,
-        custody=custody,
-    )
-    try:
-        # The daemon's own, private: the snapshot and the two platform
-        # directories above it, and the files, are granted to nobody else.
-        assert stat.S_IMODE(snapshot.directory.stat().st_mode) == 0o700
-        assert stat.S_IMODE(snapshot.directory.parent.stat().st_mode) == 0o700
-        assert stat.S_IMODE(snapshot.directory.parent.parent.stat().st_mode) == 0o700
-        assert {
-            path.name: stat.S_IMODE(path.stat().st_mode)
-            for path in snapshot.directory.iterdir()
-        } == {".lock": 0o600, "auth.json": 0o600, "config.toml": 0o600}
-    finally:
-        cleanup_llm_credential_snapshot(snapshot)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Windows does not enforce POSIX roles")
-def test_role_snapshot_custody_is_the_owners_and_survives_reprepare(tmp_path):
-    """One identity holds a launch snapshot: the daemon, in platform custody.
-
-    Re-preparing the root must not loosen what is already published.
-    """
-    from tinyassets import credential_vault as vault
-
-    universe, custody = _credential_snapshot_fixture(tmp_path)
-    snapshot = vault.snapshot_llm_subscription_credential(universe_dir=universe, custody=custody)
-    try:
-        vault._prepare_snapshot_root(universe)
-        assert stat.S_IMODE(snapshot.directory.stat().st_mode) == 0o700
-        for path in (snapshot.directory.parent, snapshot.directory.parent.parent):
-            assert stat.S_IMODE(path.stat().st_mode) == 0o700
-        for path in snapshot.directory.iterdir():
-            assert stat.S_IMODE(path.stat().st_mode) == 0o600
-            assert not path.stat().st_mode & 0o077
-        assert (snapshot.directory / "auth.json").read_bytes()
-    finally:
-        vault.cleanup_llm_credential_snapshot(snapshot)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Windows does not enforce POSIX roles")
-@pytest.mark.parametrize("operation", ["fsync"])
-def test_role_snapshot_permission_or_sync_failure_never_returns_credentials(
-    tmp_path, monkeypatch, operation,
-):
-    from tinyassets import credential_vault as vault
-
-    universe, custody = _credential_snapshot_fixture(tmp_path)
-    original = getattr(os, operation)
-
-    def fail_file(fd, *args):
-        if stat.S_ISREG(os.fstat(fd).st_mode):
-            raise OSError("snapshot publication fixture failure")
-        return original(fd, *args)
-
-    monkeypatch.setattr(os, operation, fail_file)
-    with pytest.raises(OSError, match="publication fixture"):
-        vault.snapshot_llm_subscription_credential(universe_dir=universe, custody=custody)
-    assert not list(vault._snapshot_root_path(universe).glob("*/auth.json"))

@@ -261,12 +261,12 @@ def test_the_reconnect_card_reaches_the_connect_panel():
     html, _ = render_app_html()
     source = _js_function(html, "isSetupRequest")
     program = (
-        "const CONNECT_REQUEST_ID='sys_connect_llm';\n"
+        "const CONNECT_REQUEST_ID='sys_connect_model';\n"
         + html[html.index('  const RECONNECT_REQUEST_PREFIX='):
                html.index("  function isSetupRequest(req){")]
         + source
         + """
-const setup={request_id:'sys_connect_llm',action:{type:'connect',setup:{}}};
+const setup={request_id:'sys_connect_model',action:{type:'connect',setup:{}}};
 const card={request_id:'reconnect-source:codex',action:{type:'connect',setup:{}}};
 const other={request_id:'req_x',action:{type:'connect',setup:{}}};
 const noSetup={request_id:'reconnect-source:codex',action:{type:'connect'}};

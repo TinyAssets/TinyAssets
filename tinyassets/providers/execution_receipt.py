@@ -197,8 +197,7 @@ def receipt_from_response(
         resolved_model=_label(response.model, 200),
         reported_model=reported,
         family=_label(response.family, 200),
-        execution=("native_agent" if response.native_evidence is not None
-                   else "model_response"),
+        execution="model_response",
         outcome="failed" if response.failure_class or response.degraded else "succeeded",
         usage_provenance=("provider_reported" if response.input_tokens is not None
                           or response.output_tokens is not None else "unknown"),

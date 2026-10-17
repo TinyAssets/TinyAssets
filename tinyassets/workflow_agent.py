@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -15,7 +14,6 @@ from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityH
 from tinyassets.providers.agent_capacity_boundary import capacity_boundary
 from tinyassets.providers.base import UniverseContext
 from tinyassets.providers.model_policy import ModelRef
-from tinyassets.storage.agent_native_records import NativeInput
 from tinyassets.storage.agent_turn_records import RoundInput, dump
 
 #: How often a native activity call re-reads its activity, and how long a
@@ -48,10 +46,7 @@ class WorkAgentAdapter:
         # small (the coordinator's overflow path). Per turn, never the run's.
         self.min_context = None
         selected = self.carrier.selected_model
-        native = self.carrier.native_selection
-        model = selected.model_id if selected is not None else (
-            native.requested_model_id if native is not None else ""
-        )
+        model = selected.model_id if selected is not None else ""
         self.selection = ModelRef(self.carrier.provider, model)
         # Resolve provider-default once for this turn. Subsequent HTTP rounds
         # refresh authority for that actual model without editing the Branch.
@@ -209,60 +204,17 @@ class WorkAgentAdapter:
             ))
             return result.response
 
-        call = _infer()
-        if kind != "native_agent" or self.activity_binding is None:
-            return await call
-        return await self._until_activity_stops(call)
+        return await _infer()
 
-    async def _until_activity_stops(self, call):
-        """Run a native call for an activity only while the activity runs.
-
-        A native agent's whole tool loop is ONE provider call. Once the
-        activity yields, pauses or stops, the engine route refuses every
-        further tool (``activity_fence``) and this cancels the call: the
-        provider ends its process family and the router settles its seat,
-        exactly where an HTTP turn would not start another round. A call that
-        finished in the same instant keeps its answer.
-        """
-        task = asyncio.ensure_future(call)
-        stopped: BaseException | None = None
-        try:
-            while not task.done():
-                await asyncio.wait({task}, timeout=_ACTIVITY_POLL_S)
-                if task.done():
-                    break
-                try:
-                    await asyncio.to_thread(self.activity_binding.check)
-                except (ActivityYielded, PermissionError) as exc:
-                    stopped = exc
-                    task.cancel()
-                    await asyncio.wait({task})
-        finally:
-            if not task.done():
-                task.cancel()
-                await asyncio.wait({task}, timeout=_CANCEL_GRACE_S)
-        if stopped is not None and (task.cancelled() or task.exception() is not None):
-            raise stopped
-        return task.result()
 
     def round_input(self, authority, reservation, config, *, owner, context,
-                    prompt, system, native_input, kind):
+                    prompt, system, kind):
         if authority is not self.carrier or reservation is not None:
             raise ProviderAuthorityHeldError("workflow inference observer scope changed")
         if self.check(context, config) != owner:
             raise ProviderAuthorityHeldError("workflow inference owner changed")
         lineage = {"authority_kind": "work_invocation",
                    "work_receipt_id": self.receipt.receipt_id}
-        if kind == "native_agent":
-            if native_input is None or config.agent_request is not None:
-                raise ProviderAuthorityHeldError("workflow native input changed")
-            native_prompt, native_system = native_input
-            body = dump({"prompt": native_prompt, "system": native_system})
-            return NativeInput(
-                authority.provider, self.selection.model_id, authority.binding_id,
-                authority.reservation_id, authority.binding_generation, authority.binding_digest,
-                "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest(), **lineage,
-            )
         if kind != "engine_inference" or config.agent_request is None:
             raise ProviderAuthorityHeldError("workflow inference input changed")
         request = config.agent_request
@@ -309,8 +261,6 @@ class WorkflowAgentTurn(AgentTurnCoordinator):
                           for step in rounds for tool in step.tools)
             boundary = capacity_boundary(
                 self.context.model_selection, exc.attempts, execution_kind=self.execution_kind,
-                native_evidence=(getattr(exc, "native_evidence", ())
-                                 if self.execution_kind == "native_agent" else ()),
             )
             # Before a durable inference round exists, the observer prevented
             # transport launch. Keep the existing known-unsent retry contract;

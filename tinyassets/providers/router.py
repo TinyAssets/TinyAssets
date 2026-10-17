@@ -75,7 +75,6 @@ from tinyassets.providers.diagnostics import (
     finite_progress_age_ms,
     redacted_failure_detail,
 )
-from tinyassets.providers.owned_process import launch_scope as provider_launch_scope
 from tinyassets.providers.owner_binding import (
     CONNECT_PROVIDER_MESSAGE,
     require_owner_bound_context,
@@ -275,22 +274,6 @@ def _live_interactive_turn():
     return current()
 
 
-def _stoppable_native_turn(operation, provider):
-    """The live chat turn whose Stop may cancel this dispatch, or ``None``.
-
-    Only a NATIVE agent on the ``converse`` operation: cancellation is what ends
-    its process family. An HTTP request cannot be aborted (its provider waits for
-    it even when cancelled), so it returns and its real usage settles, and the
-    turn stops at its next boundary (``tinyassets/turn_interrupt``). A Stop
-    already asked for cancels before anything is claimed or launched, so the
-    reservation is released and the carrier settles cancelled-before-launch
-    rather than indeterminate.
-    """
-    if operation != "converse":
-        return None
-    if getattr(provider, "agent_execution_kind", None) != "native_agent":
-        return None
-    return _live_interactive_turn()
 
 
 def _sync_call_timeout_s(cfg: ModelConfig) -> float:
@@ -638,7 +621,7 @@ class ProviderRouter:
         """Advisory installed capability; actual dispatch rechecks the resolved executor."""
         provider = self._providers.get(selection.connection_id)
         kind = getattr(provider, "agent_execution_kind", None)
-        if kind not in ("native_agent", "engine_inference"):
+        if kind != "engine_inference":
             raise ProviderAuthorityHeldError("selected provider has no installed agent executor")
         return kind
 
@@ -695,7 +678,7 @@ class ProviderRouter:
             and callable(_agent_observer)
         )
         if _agent_execution_kind is not None and (
-            _agent_execution_kind not in ("native_agent", "engine_inference")
+            _agent_execution_kind != "engine_inference"
             or role != "writer" or (operation != "converse" and not work_agent)
             or config is None or not (config.engine_mcp_enabled or ordinary_text)
             or universe_context is None or universe_context.model_selection is None
@@ -849,9 +832,7 @@ class ProviderRouter:
                     )
                     raise ProviderAuthorityHeldError("Invalid requested workflow model")
                 selected = invocation_carrier.selected_model
-                native = invocation_carrier.native_selection
-                admitted_model = (selected.model_id if selected is not None else
-                                  native.requested_model_id if native is not None else "")
+                admitted_model = selected.model_id if selected is not None else ""
                 if (requested.connection_id != invocation_carrier.provider
                         or requested.model_id != admitted_model):
                     await off_loop(settle_carrier,
@@ -894,36 +875,6 @@ class ProviderRouter:
                        if invocation_carrier is not None else "")
         model_authority = served_authority or invocation_carrier
         cfg = replace(cfg, selected_model=getattr(model_authority, "selected_model", None))
-        from tinyassets.providers.native_model_selection import NativeSelection
-
-        native_selection = getattr(model_authority, "native_selection", None)
-        if native_selection is not None and (
-            type(native_selection) is not NativeSelection
-            or native_selection.provider != model_authority.provider
-        ):
-            raise PermissionError("native selection does not match serving authority")
-        cfg = replace(cfg, native_model_id=(
-            None if model_authority is None else
-            native_selection.requested_model_id if native_selection is not None else ""
-        ))
-        # Effort rides the same validated authority as the model id, for the
-        # same reason: an ordinary caller's ModelConfig must not be able to
-        # raise the effort of a served turn.
-        #
-        # Only an ENUMERATED selection speaks for effort, and it speaks
-        # absolutely -- including with "" , which means the owner saved no level
-        # and the executor's default applies. An owner-DECLARED selection has no
-        # advertised level list, so it could not have validated one and has
-        # nothing to say here; overwriting from it would erase a workflow node's
-        # own declared reasoning_effort (branch definitions set it, and a node
-        # running on a native source with an explicit model id would silently
-        # drop from `minimal` to the executor default).
-        if native_selection is not None and native_selection.basis == "executor_enumerated":
-            cfg = replace(cfg, reasoning_effort=native_selection.effort)
-        if _agent_execution_kind == "native_agent" and (
-            cfg.agent_request is not None or cfg.selected_model is not None
-        ):
-            raise PermissionError("native agent cannot use HTTP inference facts")
         if _agent_execution_kind == "engine_inference" and cfg.agent_request is None:
             raise PermissionError("engine inference requires its structured request")
         from tinyassets.providers.agent_inference import (
@@ -1102,7 +1053,6 @@ class ProviderRouter:
         # FEAT-006 / BUG-025: collect per-provider skip/failure diagnostics so
         # the final AllProvidersExhaustedError can carry structured detail.
         attempts: list[ProviderAttemptDiagnostic] = []
-        native_proofs = {}
 
         for provider_name in chain:
             # Hard Rule 15, at the launch site: only the provider the owner's
@@ -1290,9 +1240,6 @@ class ProviderRouter:
                         nested=_is_nested(universe_context),
                         parent_slot=blocking_parent_slot(),
                     ):
-                        live_turn = _stoppable_native_turn(operation, provider)
-                        if live_turn is not None and live_turn.requested():
-                            raise asyncio.CancelledError()  # Stop: nothing launched
                         before_launch = getattr(
                             served_authority, "before_provider_launch", None
                         ) if served_authority is not None else None
@@ -1323,7 +1270,7 @@ class ProviderRouter:
                             selected_id = (selected.model_id if selected is not None
                                            else provider.model
                                            if isinstance(provider, ApiKeyHttpProvider)
-                                           else cfg.native_model_id or "provider-default")
+                                           else "provider-default")
                             accounting_context = replace(universe_context, model_selection=ModelRef(
                                 provider_name, selected_id,
                             ))
@@ -1357,29 +1304,19 @@ class ProviderRouter:
                             else invocation_carrier._receipt.principal_id
                             if invocation_carrier is not None else ""
                         ))
-                        with provider_launch_scope(
-                            universe_dir, owner=cfg.invocation_owner_user_id,
-                            service=getattr(provider, "native_credential_service", None),
-                            credential_dir=cfg.credential_snapshot_dir,
-                            operation_id=_launch_operation_id(cfg, request_attempt),
-                            auth=getattr(provider, "native_launch_auth", None),
-                        ):
-                            if request_attempt is not None:
-                                from tinyassets.providers.api_key_http_provider import (
-                                    ApiKeyHttpProvider,
-                                )
-
-                                if not isinstance(provider, ApiKeyHttpProvider):
-                                    await off_loop(request_budget.dispatched, request_attempt)
-                                request_dispatched = True
-                            provider_started = True
-                            dispatch = provider.complete(
-                                prompt, system, cfg, universe_dir=universe_dir,
+                        if request_attempt is not None:
+                            from tinyassets.providers.api_key_http_provider import (
+                                ApiKeyHttpProvider,
                             )
-                            if live_turn is not None:
-                                resp = await live_turn.cancel_on_stop(dispatch)
-                            else:
-                                resp = await dispatch
+
+                            if not isinstance(provider, ApiKeyHttpProvider):
+                                await off_loop(request_budget.dispatched, request_attempt)
+                            request_dispatched = True
+                        provider_started = True
+                        dispatch = provider.complete(
+                            prompt, system, cfg, universe_dir=universe_dir,
+                        )
+                        resp = await dispatch
                 except _ProviderBusy:
                     # Not a provider failure: nothing launched, so the reservation is
                     # released untouched, no cooldown is applied, and the actionable
@@ -1455,25 +1392,10 @@ class ProviderRouter:
                                 ProviderUnavailableError,
                             ),
                         ):
-                            # Native no-effects evidence controls safe retry,
-                            # not usage: the CLI may already have spent tokens.
-                            # Without totals, keep its conservative reservation.
-                            native_unmetered = (
-                                _work_agent_observer is not None
-                                and _agent_execution_kind == "native_agent"
-                                and isinstance(
-                                    exc, (ProviderRateLimitedError, ProviderOverloadedError),
-                                )
+                            await off_loop(settle_carrier,
+                                ProviderInvocationReservationState.FAILED,
+                                input_tokens=0, output_tokens=0, cost_microunits=0,
                             )
-                            if native_unmetered:
-                                await off_loop(
-                        settle_carrier, ProviderInvocationReservationState.INDETERMINATE,
-                    )
-                            else:
-                                await off_loop(settle_carrier,
-                                    ProviderInvocationReservationState.FAILED,
-                                    input_tokens=0, output_tokens=0, cost_microunits=0,
-                                )
                         else:
                             await off_loop(settle_carrier,
                                 ProviderInvocationReservationState.INDETERMINATE
@@ -1534,7 +1456,6 @@ class ProviderRouter:
             except ProviderAuthorityHeldError:
                 raise
             except ProviderAuthenticationError as exc:
-                from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
                 from tinyassets.providers.source_health import SOURCE_HEALTH, source_key
 
                 if served_authority is not None:
@@ -1559,9 +1480,6 @@ class ProviderRouter:
                     # not quarantine another owner's credential on this host.
                     self._cool(cfg, provider_name, COOLDOWN_OTHER,
                                owner=quota_owner, reason="auth_invalid")
-                proof = getattr(exc, "native_evidence", None)
-                if type(proof) is NativeCompletionEvidence and proof.provider == provider_name:
-                    native_proofs[len(attempts)] = proof
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed", skip_class="auth_invalid",
                     detail="Provider reported a sign-in failure",
@@ -1650,12 +1568,7 @@ class ProviderRouter:
                 ))
                 continue
             except (ProviderRateLimitedError, ProviderOverloadedError) as exc:
-                from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
 
-                proof = getattr(exc, "native_evidence", None)
-                if (type(proof) is NativeCompletionEvidence
-                        and proof.provider == provider_name):
-                    native_proofs[len(attempts)] = proof
                 # A genuine rate-limit / overload IS real capacity: cool the
                 # provider until its own retry-after (+margin), keeping fallback
                 # forbidden for the sole served writer.
@@ -1806,7 +1719,6 @@ class ProviderRouter:
                 failure_class=dominant_failure_class(attempts),
                 retry_after=dominant_retry_after_s(attempts),
                 capacity_scope=dominant_capacity_scope(attempts),
-                native_evidence=tuple(native_proofs.get(i) for i in range(len(attempts))),
             )
         if invocation_carrier is not None:
             await off_loop(settle_carrier,
@@ -1833,7 +1745,6 @@ class ProviderRouter:
                 failure_class=dominant_failure_class(attempts),
                 retry_after=dominant_retry_after_s(attempts),
                 capacity_scope=dominant_capacity_scope(attempts),
-                native_evidence=tuple(native_proofs.get(i) for i in range(len(attempts))),
             )
         # Unreachable: the entry and dispatch gates guarantee exactly one owner
         # authority, and both branches above raise. There is no platform chain

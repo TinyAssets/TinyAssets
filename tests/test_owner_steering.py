@@ -153,76 +153,10 @@ def test_the_engine_route_names_the_launchs_session_and_turn():
     assert engine_steering.session_of(SimpleNamespace()) == ""
 
 
-def _codex_dialled(monkeypatch, config):
-    """What the codex served turn asks the engine route for (open_engine_tools)."""
-    import asyncio
-    import contextlib
-
-    from tinyassets.external_agents.runner import _engine_tools
-
-    opened = []
-
-    @contextlib.asynccontextmanager
-    async def record(**kwargs):
-        opened.append(kwargs)
-        yield None
-
-    monkeypatch.setattr("tinyassets.engine_tool_client.open_engine_tools", record)
-
-    async def dial():
-        async with contextlib.AsyncExitStack() as stack:
-            await _engine_tools(stack, config)
-
-    asyncio.run(dial())
-    return opened[0] if opened else None
 
 
-def test_a_codex_launch_routes_its_engine_calls_with_its_session_and_turn(monkeypatch):
-    from tinyassets import turn_interrupt
-    from tinyassets.providers.base import ModelConfig
-
-    config = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="owner-1",
-                         engine_mcp_graph_id="u-alpha", engine_tool_grant=None,
-                         agent_session=SimpleNamespace(key=THREAD))
-    with turn_interrupt.interactive_turn("owner-1", "u-alpha") as live:
-        dialled = _codex_dialled(monkeypatch, config)
-    assert dialled["session_key"] == THREAD
-    assert dialled["turn"] == live.live_id
 
 
-def test_claude_launches_of_different_sessions_never_share_a_config(tmp_path, monkeypatch):
-    """gpt-6-astra: one shared config file let a background launch read the
-    owner's route and take the owner's lines."""
-    from tinyassets.providers import claude_provider
-
-    universe = _universe(tmp_path)
-    monkeypatch.setattr("tinyassets.engine_mcp_http.read_engine_mcp_route",
-                        lambda **_kw: SimpleNamespace(url="http://127.0.0.1:1/mcp",
-                                                      secret="s"))
-    monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path / "data")
-
-    from tinyassets.providers.owned_process import launch_scope
-
-    monkeypatch.setattr("tinyassets.credential_vault._write_exclusive_snapshot_file",
-                        lambda path, data: path.write_bytes(data))
-
-    def launch(key, name):
-        # Each launch has its own one-run lease: its snapshot on the host and
-        # the job directory it lands under in the owner's box.
-        snapshot = tmp_path / f"snapshot-{name}"
-        snapshot.mkdir()
-        config = SimpleNamespace(engine_mcp_actor_id="owner-1", engine_mcp_graph_id="u-alpha",
-                                 agent_session=SimpleNamespace(key=key), selected_model=None,
-                                 credential_snapshot_dir=snapshot)
-        with launch_scope(universe, owner="owner-1", service="claude",
-                          credential_dir=snapshot, operation_id=f"launch:{name}"):
-            flags = claude_provider._engine_mcp_flags(config, universe)
-        return flags[flags.index("--mcp-config") + 1], snapshot / "engine-mcp.json"
-
-    (owner, owner_file), (node, node_file) = launch(THREAD, "owner"), launch(NODE, "node")
-    assert owner != node
-    assert "session=node" in node_file.read_text(encoding="utf-8")
-    assert "session=thread" in owner_file.read_text(encoding="utf-8")
 
 
 # -- the engine delivers on the next tool result of that session and turn ------

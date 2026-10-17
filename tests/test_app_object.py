@@ -217,7 +217,7 @@ def test_an_unattributed_home_is_listed_without_claiming_a_new_owner(tmp_path: P
 
 
 def test_apps_route_is_the_signed_in_accounts_list(tmp_path, monkeypatch) -> None:
-    from tests.test_onboarding_openai_device import _drive_get, _user
+    from tests.support.onboarding import _drive_get, _user
 
     _own(tmp_path, ALICE, HOME, name="Garden", description="Tracks the garden")
     _own(tmp_path, BOB, OTHER, name="Elsewhere")
@@ -241,7 +241,7 @@ def test_apps_route_is_absent_while_the_app_is_dark(monkeypatch) -> None:
     from starlette.requests import Request
 
     import tinyassets.onboarding as onboarding
-    from tests.test_onboarding_openai_device import _user
+    from tests.support.onboarding import _user
     from tinyassets.auth.middleware import identity_context
 
     monkeypatch.delenv("TINYASSETS_ONBOARDING_APP", raising=False)

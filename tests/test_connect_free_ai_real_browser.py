@@ -41,7 +41,7 @@ def _page_html() -> str:
 <div id="sub-signin" hidden></div>
 <script>
 const $=id=>document.getElementById(id);
-const NATIVE=false, CONNECT_REQUEST_ID="sys_connect_llm";
+const NATIVE=false, CONNECT_REQUEST_ID="sys_connect_model";
 window.opened=0; function openConnectRequest(){{window.opened++;}}
 window.calls=[];
 const ConnectOAuth={{
@@ -51,7 +51,7 @@ const ConnectOAuth={{
     window.calls.push({{begin:req.request_id,source:!!(opts&&opts.source)}});}},
 }};
 const SignInConnect={{ids:{{}},configure(){{}},start(){{}}}};
-let railCache=[{{request_id:"sys_connect_llm",
+let railCache=[{{request_id:"sys_connect_model",
   action:{{type:"connect",setup:{json.dumps(SETUP)}}}}}];
 {source}
 </script></body></html>"""

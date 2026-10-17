@@ -16,7 +16,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tests.support.owned_spawn import fake_owned_spawn
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
     ProviderError,
@@ -519,24 +518,8 @@ class TestProviderRegistration:
         router.register(FakeProvider("p", "f2", "v2"))
         assert len(router.available_providers) == 1
 
-    def test_claude_provider_not_registered_when_binary_absent(self):
-        """claude-code must not appear in available_providers when 'claude' binary is missing."""
-        from tinyassets.providers.claude_provider import ClaudeProvider
-
-        with patch("shutil.which", return_value=None):
-            assert not ClaudeProvider.is_available()
-            router = ProviderRouter()
-            if ClaudeProvider.is_available():
-                router.register(ClaudeProvider())
-            assert "claude-code" not in router.available_providers
 
 
-    def test_claude_provider_registered_when_binary_present(self):
-        """claude-code is registered when 'claude' binary is found."""
-        from tinyassets.providers.claude_provider import ClaudeProvider
-
-        with patch("shutil.which", return_value="/usr/local/bin/claude"):
-            assert ClaudeProvider.is_available()
 
 
 # =====================================================================
@@ -544,69 +527,12 @@ class TestProviderRegistration:
 # =====================================================================
 
 
-class _FakeClaudeStdout:
-    """Replays a list of (delay_s, bytes) stdout lines for the stream reader."""
-
-    def __init__(self, items):
-        self._items = list(items)
-        self._idx = 0
-
-    async def readline(self):
-        if self._idx >= len(self._items):
-            return b""
-        delay, data = self._items[self._idx]
-        self._idx += 1
-        if delay:
-            await asyncio.sleep(delay)
-        return data
 
 
-class _FakeClaudeStderr:
-    def __init__(self, data=b""):
-        self._data = data
-        self._sent = False
-
-    async def read(self, _n):
-        if self._sent:
-            return b""
-        self._sent = True
-        return self._data
 
 
-class _FakeClaudeStdin:
-    def write(self, _b): ...
-    async def drain(self): ...
-    def close(self): ...
 
 
-class _FakeClaudeProc:
-    """Stand-in for ``asyncio.subprocess.Process``.
-
-    ``returncode`` starts as ``None`` and only becomes the exit status once the
-    handle is reaped, matching the real class in the direction that teardown
-    depends on. This fake used to expose the status from construction, i.e. to
-    claim it had already been reaped while still streaming; ``kill_owned_tree``
-    then correctly declined to signal a handle it no longer owned, and every
-    ``killed`` assertion here passed only because the pre-anchor teardown
-    signalled unconditionally. Same trap documented on ``FakeStreamProcess`` in
-    ``tests/test_provider_stream_and_classify.py``.
-    """
-
-    def __init__(self, stdout_items, *, stderr=b"", returncode=0):
-        self.stdout = _FakeClaudeStdout(stdout_items)
-        self.stderr = _FakeClaudeStderr(stderr)
-        self.stdin = _FakeClaudeStdin()
-        self._exit_status = returncode
-        self.returncode = None
-        self.killed = False
-
-    def kill(self):
-        self.killed = True
-
-    async def wait(self):
-        if self.returncode is None:
-            self.returncode = self._exit_status
-        return self.returncode
 
 
 def _cl(obj) -> bytes:
@@ -615,69 +541,6 @@ def _cl(obj) -> bytes:
     return (_json.dumps(obj) + "\n").encode("utf-8")
 
 
-class TestClaudeProvider:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        from tinyassets.providers.claude_provider import ClaudeProvider
-
-        proc = _FakeClaudeProc([
-            (0.0, _cl({"type": "system", "subtype": "init"})),
-            (0.0, _cl({"type": "assistant",
-                       "message": {"content": [{"type": "text", "text": "Hello world"}]}})),
-            (0.0, _cl({"type": "result", "subtype": "success", "result": "Hello world"})),
-        ])
-
-        with (
-            patch("tinyassets.providers.claude_provider._resolve_claude_cmd",
-                  return_value=(["claude"], False)),
-            fake_owned_spawn("tinyassets.providers.claude_provider", return_value=proc),
-        ):
-            provider = ClaudeProvider()
-            resp = await provider.complete("prompt", "system", ModelConfig())
-
-        assert resp.text == "Hello world"
-        assert resp.provider == "claude-code"
-        assert resp.family == "anthropic"
-
-    @pytest.mark.asyncio
-    async def test_exit_code_1_quick_triggers_unavailable(self):
-        from tinyassets.providers.claude_provider import ClaudeProvider
-
-        proc = _FakeClaudeProc([], stderr=b"unavailable", returncode=1)
-
-        with (
-            patch("tinyassets.providers.claude_provider._resolve_claude_cmd",
-                  return_value=(["claude"], False)),
-            fake_owned_spawn("tinyassets.providers.claude_provider", return_value=proc),
-        ):
-            provider = ClaudeProvider()
-            with pytest.raises(ProviderUnavailableError):
-                await provider.complete("prompt", "system", ModelConfig())
-
-    @pytest.mark.asyncio
-    async def test_timeout_kills_process(self):
-        from tinyassets.providers.claude_provider import ClaudeProvider
-
-        # init, then a long stall past the (injected short) idle interval — the
-        # idle watchdog ends the turn as a ProviderTimeoutError subclass.
-        proc = _FakeClaudeProc([
-            (0.0, _cl({"type": "system", "subtype": "init"})),
-            (10.0, _cl({"type": "result", "subtype": "success", "result": "late"})),
-        ])
-        fast = ModelConfig(
-            init_timeout_s=0.1, first_progress_s=0.1, idle_timeout_s=0.1,
-            absolute_cap_s=2.0,
-        )
-
-        with (
-            patch("tinyassets.providers.claude_provider._resolve_claude_cmd",
-                  return_value=(["claude"], False)),
-            fake_owned_spawn("tinyassets.providers.claude_provider", return_value=proc),
-        ):
-            provider = ClaudeProvider()
-            with pytest.raises(ProviderTimeoutError):
-                await provider.complete("prompt", "system", fast)
-        assert proc.killed is True
 
 
 # =====================================================================

@@ -45,24 +45,10 @@ class CapacityBoundary:
     refusal_detail: str = ""
 
 
-@dataclass(frozen=True, slots=True)
-class NativeCompletionEvidence:
-    """Local adapter evidence for one reaped, completely observed native attempt.
-
-    This value must be supplied by the installed executor, not remote metadata.
-    A complete protocol can attest absence of effects only when every event is
-    supported. Any unknown event, truncated stream or live child stays unproved.
-    """
-
-    provider: str
-    protocol_complete: bool
-    process_reaped: bool
-    side_effect_state: str
 
 
 def capacity_boundary(
     current: ModelRef, attempts: Any, *, execution_kind: str,
-    native_evidence: Any = (),
 ) -> CapacityBoundary | None:
     """Return evidence only when every diagnostic permits this exact transition.
 
@@ -71,7 +57,7 @@ def capacity_boundary(
     it never invents account independence. Callers cannot substitute exception
     summary fields for per-attempt evidence.
     """
-    if execution_kind not in ("engine_inference", "native_agent"):
+    if execution_kind != "engine_inference":
         return None
     if (type(current) is not ModelRef or type(current.connection_id) is not str
             or not current.connection_id or not current.connection_id.isprintable()
@@ -81,19 +67,11 @@ def capacity_boundary(
         return None
     if type(attempts) not in (tuple, list) or not 1 <= len(attempts) <= 64:
         return None
-    if type(native_evidence) is not tuple:
-        return None
-    if execution_kind == "native_agent":
-        # Each proof belongs to that exact attempt slot; skipped slots need none.
-        if len(native_evidence) != len(attempts):
-            return None
-    elif native_evidence:
-        return None
     scopes = []
     delays = []
     failures = []
     attempted = False
-    for index, item in enumerate(attempts):
+    for item in attempts:
         if (type(item) is not ProviderAttemptDiagnostic
                 or item.provider != current.connection_id
                 or item.status not in ("skipped", "failed")
@@ -103,20 +81,11 @@ def capacity_boundary(
         if item.status == "skipped":
             if (item.skip_class != "quota_or_cooldown"
                     or item.side_effect_state not in (None, "none")
-                    or item.failure_class not in (None, *_FAILURES)
-                    or (execution_kind == "native_agent" and native_evidence[index] is not None)):
+                    or item.failure_class not in (None, *_FAILURES)):
                 return None
         else:
             if item.side_effect_state != "none" or item.failure_class not in _FAILURES:
                 return None
-            if execution_kind == "native_agent":
-                proof = native_evidence[index]
-                if (type(proof) is not NativeCompletionEvidence
-                        or proof.provider != current.connection_id
-                        or proof.protocol_complete is not True
-                        or proof.process_reaped is not True
-                        or proof.side_effect_state != "none"):
-                    return None
             attempted = True
         delay = item.retry_after_s
         if delay is not None:

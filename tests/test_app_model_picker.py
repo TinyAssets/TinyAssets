@@ -664,275 +664,34 @@ def test_successful_read_without_saved_policy_truthfully_shows_automatic(tmp_pat
     assert result["ui"]["model-saved"]["text"] == "Saved default: Automatic"
 
 
-def access_catalogue(*, legacy=False, native=False):
-    doc = catalogue()
-    doc["binding"] = {"id": "binding-a", "revision": 2}
-    doc["accepted_model_access"] = {}
-    source = {
-        "provider_ref": ref("first")["provider_ref"],
-        "bind_key": "server-key",
-        "access_method": "subscription_cli" if native else "api_key_http",
-        "accepted": False,
-    }
-    doc["sources"] = [source]
-    doc["legacy_source"] = {**source, "model_id": "" if native else "old-fixed"} if legacy else None
-    if legacy:
-        doc["choice_authority"] = "legacy_single_provider"
-    for row in doc["options"]:
-        row["reasons"] = [{"reason": "source_not_accepted"}]
-        row["in_candidate_catalog"] = False
-    if native:
-        doc["options"] = [doc["options"][0]]
-        doc["options"][0]["reference"]["model_id"] = ""
-    return doc
 
 
-def test_access_cancel_has_no_write_or_preference_change(tmp_path):
-    result = run_picker(
-        tmp_path,
-        "confirmed=false;await ModelPicker.allowAccess(doc.sources[0]);",
-        access_catalogue(),
-    )
-    assert result["writes"] == [] and result["requests"] == [] and result["choice"] is None
-    assert "3 compatible" in result["confirmations"][0]
 
 
-@pytest.mark.parametrize("scope,ids", [("explicit", ["future-model"]), ("discovered", [])])
-def test_native_setup_uses_named_or_discovered_scope_without_changing_preference(
-    tmp_path, scope, ids
-):
-    doc = access_catalogue(legacy=True, native=True)
-    doc["sources"][0]["enumeration"] = "supported"
-    steps = (
-        "await ModelPicker.allowNativeAccess(doc.sources[0],"
-        + json.dumps(scope)
-        + ","
-        + json.dumps(ids)
-        + ");"
-    )
-    result = run_picker(tmp_path, steps, doc)
-    assert len(result["writes"]) == 2
-    payload = json.loads(result["writes"][0]["args"]["payload_json"])
-    assert payload["model_access"]["server-key"] == {
-        "model_scope": scope,
-        "model_ids": ["", *ids] if scope == "explicit" else [],
-        "cost_caps": None,
-    }
-    assert result["requests"] == [] and result["choice"] is None
-    assert "unverified" in result["confirmations"][0]
 
 
-def test_native_setup_refuses_unknown_discovery_and_cancelled_access(tmp_path):
-    doc = access_catalogue(legacy=True, native=True)
-    result = run_picker(
-        tmp_path, "await ModelPicker.allowNativeAccess(doc.sources[0],'discovered',[]);", doc
-    )
-    assert result["writes"] == [] and result["confirmations"] == []
-    result = run_picker(
-        tmp_path,
-        "confirmed=false;"
-        "await ModelPicker.allowNativeAccess(doc.sources[0],'explicit',['future']);",
-        doc,
-    )
-    assert result["writes"] == [] and result["requests"] == []
 
 
-def test_native_scope_change_preserves_other_sources_and_cost_caps(tmp_path):
-    doc = access_catalogue(native=True)
-    doc["sources"][0]["enumeration"] = "supported"
-    old = {
-        "server-key": {"model_scope": "explicit", "model_ids": ["", "old"], "cost_caps": None},
-        "other": {
-            "model_scope": "explicit",
-            "model_ids": ["keep"],
-            "cost_caps": {"input_million_tokens_usd": 20},
-        },
-    }
-    doc["accepted_model_access"] = old
-    result = run_picker(
-        tmp_path, "await ModelPicker.allowNativeAccess(doc.sources[0],'discovered',[]);", doc
-    )
-    access = json.loads(result["writes"][0]["args"]["payload_json"])["model_access"]
-    assert access["other"] == old["other"]
-    assert access["server-key"] == {"model_scope": "discovered", "model_ids": [], "cost_caps": None}
-    assert "replaces" in result["confirmations"][0]
 
 
-def test_native_input_survives_refresh_and_clears_on_home_change(tmp_path):
-    doc = access_catalogue(legacy=True, native=True)
-    doc["sources"][0]["enumeration"] = "supported"
-    result = run_picker(tmp_path, """
-      let controls=$('model-access-sources').children[0].children;
-      const mode=controls[1],input=controls[2];
-      mode.value='named';mode.events.change();
-      if(input.hidden) throw new Error('named input hidden');
-      input.value='model-a\\nmodel-b';input.events.input();
-      await ModelPicker.refresh();
-      controls=$('model-access-sources').children[0].children;
-      if(controls[1].value!=='named'||controls[2].value!==input.value)
-        throw new Error('draft lost on refresh');
-      doc.universe_id='home-b';await ModelPicker.refresh();
-      controls=$('model-access-sources').children[0].children;
-      if(controls[2].value) throw new Error('draft crossed universe');
-    """, doc)
-    assert result["writes"] == []
 
 
-@pytest.mark.parametrize("ids", [[""], ["bad\nname"], [" leading"], ["x" * 201], ["same", "same"]])
-def test_native_setup_rejects_invalid_or_duplicate_ids_before_write(tmp_path, ids):
-    result = run_picker(
-        tmp_path,
-        "await ModelPicker.allowNativeAccess(doc.sources[0],'explicit'," + json.dumps(ids) + ");",
-        access_catalogue(legacy=True, native=True),
-    )
-    assert result["writes"] == [] and result["confirmations"] == []
 
 
-@pytest.mark.parametrize("native", [False, True])
-def test_confirmed_access_uses_server_discriminator_and_returned_revision(tmp_path, native):
-    result = run_picker(
-        tmp_path,
-        "await ModelPicker.allowAccess(doc.sources[0]);",
-        access_catalogue(legacy=True, native=native),
-    )
-    bind, enable = result["writes"]
-    args = bind["args"]
-    assert args["target"] == "agent_binding" and args["graph_id"] == "home-a"
-    assert args["expected_revision"] == 2 and args["agent_binding_id"] == "binding-a"
-    assert json.loads(args["payload_json"]) == {
-        "provider": "server-key",
-        "model_access": {
-            "server-key": {
-                "model_scope": "explicit" if native else "discovered",
-                "model_ids": [""] if native else [],
-                "cost_caps": None,
-            }
-        },
-    }
-    assert enable["args"]["operation"] == "set_serving"
-    assert enable["args"]["expected_revision"] == 3
-    assert json.loads(enable["args"]["payload_json"]) == {"enabled": True}
-    assert result["requests"] == [] and result["choice"] is None
 
 
-def test_expansion_preserves_existing_spending_and_all_other_members(tmp_path):
-    doc = access_catalogue()
-    old = {
-        "server-key": {
-            "model_scope": "explicit",
-            "model_ids": ["old"],
-            "cost_caps": {"input_million_tokens_usd": 1250000},
-        },
-        "another-key": {"model_scope": "explicit", "model_ids": ["keep"], "cost_caps": None},
-    }
-    doc["accepted_model_access"] = old
-    result = run_picker(tmp_path, "await ModelPicker.allowAccess(doc.sources[0]);", doc)
-    changed = json.loads(result["writes"][0]["args"]["payload_json"])["model_access"]
-    assert changed["another-key"] == old["another-key"]
-    assert changed["server-key"]["cost_caps"] == old["server-key"]["cost_caps"]
-    assert changed["server-key"]["model_scope"] == "discovered"
 
 
-@pytest.mark.parametrize(
-    "reason", ["cost_exceeds_cap", "source_revoked", "engine_tools_unavailable"]
-)
-def test_zero_eligible_models_cannot_begin_access_conversion(tmp_path, reason):
-    doc = access_catalogue(legacy=True)
-    for row in doc["options"]:
-        row["reasons"].append({"reason": reason})
-    result = run_picker(tmp_path, "await ModelPicker.allowAccess(doc.sources[0]);", doc)
-    assert result["writes"] == [] and result["confirmations"] == []
 
 
-def test_legacy_conversion_cannot_silently_replace_another_source(tmp_path):
-    doc = access_catalogue(legacy=True)
-    doc["legacy_source"]["provider_ref"] = "a-different-current-source"
-    result = run_picker(tmp_path, "await ModelPicker.allowAccess(doc.sources[0]);", doc)
-    assert result["writes"] == []
 
 
-def test_ambiguous_binding_is_not_retried_or_followed_by_enable(tmp_path):
-    result = run_picker(
-        tmp_path,
-        """
-      MCP.callTool=async(name,args)=>{writes.push({name,args});throw new Error("network");};
-      await ModelPicker.allowAccess(doc.sources[0]);await ModelPicker.allowAccess(doc.sources[0]);
-    """,
-        access_catalogue(legacy=True),
-    )
-    assert len(result["writes"]) == 1 and result["stale"]
-    assert result["recovery"] is None
 
 
-def test_failed_reconnect_has_explicit_fenced_legacy_restore(tmp_path):
-    result = run_picker(
-        tmp_path,
-        """
-      const original=MCP.callTool;
-      MCP.callTool=async(name,args)=>{
-        if(args.operation==="set_serving"&&writes.length===1){
-          writes.push({name,args});return {error:"held"};
-        }
-        return original(name,args);
-      };
-      await ModelPicker.allowAccess(doc.sources[0]);
-      if(!ModelPicker.recovery) throw new Error("missing recovery");
-      await ModelPicker.restoreAccess();
-    """,
-        access_catalogue(legacy=True),
-    )
-    assert len(result["confirmations"]) == 2
-    assert [w["args"].get("operation", "read") for w in result["writes"]] == [
-        "bind_serving_provider",
-        "set_serving",
-        "read",
-        "bind_serving_provider",
-        "set_serving",
-    ]
-    restore = result["writes"][3]["args"]
-    assert restore["expected_revision"] == 3
-    assert json.loads(restore["payload_json"]) == {"provider": "server-key"}
-    assert result["recovery"] is None and result["choice"] is None
 
 
-def test_signout_after_bind_prevents_followup_enable(tmp_path):
-    result = run_picker(
-        tmp_path,
-        """
-      const original=MCP.callTool;
-      MCP.callTool=async(name,args)=>{
-        const result=await original(name,args);ModelPicker.reset();return result;
-      };
-      await ModelPicker.allowAccess(doc.sources[0]);
-    """,
-        access_catalogue(legacy=True),
-    )
-    assert len(result["writes"]) == 1 and result["snapshot"] is None
 
 
-@pytest.mark.parametrize("changed", ["home", "revision", "serving"])
-def test_restore_does_not_overwrite_changed_or_working_state(tmp_path, changed):
-    mutation = {
-        "home": 'doc.universe_id="new-home";',
-        "revision": 'MCP.callTool=async()=>({binding:{revision:99,status:"configured"}});',
-        "serving": 'MCP.callTool=async()=>({binding:{revision:3,status:"serving"}});',
-    }[changed]
-    result = run_picker(
-        tmp_path,
-        """
-      const original=MCP.callTool;
-      MCP.callTool=async(name,args)=>{
-        if(args.operation==="set_serving") {writes.push({name,args});return {error:"held"};}
-        return original(name,args);
-      };
-      await ModelPicker.allowAccess(doc.sources[0]);
-    """
-        + mutation
-        + "await ModelPicker.restoreAccess();",
-        access_catalogue(legacy=True),
-    )
-    assert len(result["writes"]) == 2
-    assert "no restore was attempted" in result["ui"]["model-status"]["text"]
 
 
 def test_the_menu_is_the_route_to_connecting_another_model_source(tmp_path):

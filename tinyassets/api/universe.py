@@ -609,25 +609,6 @@ def _extract_soul_edit(
     )
 
 
-def _extract_set_engine(
-    kwargs: dict[str, Any], result: dict[str, Any],
-) -> tuple[str, str, dict[str, Any]]:
-    """Ledger extractor for set_engine. Reads only redacted fields from the
-    handler result — never the raw api_key (which lives in kwargs.inputs_json
-    and must not reach the public ledger)."""
-    from tinyassets.api.engine_helpers import _truncate
-    source = str(result.get("engine_source", ""))
-    writer = str(result.get("preferred_writer", ""))
-    return (
-        str(result.get("universe_id", "")),
-        _truncate(f"engine assigned: source={source} writer={writer}"),
-        {
-            "engine_source": source,
-            "service": str(result.get("service", "")),
-            "preferred_writer": writer,
-            "status": result.get("status", ""),
-        },
-    )
 
 
 WRITE_ACTIONS: dict[str, Any] = {
@@ -637,7 +618,6 @@ WRITE_ACTIONS: dict[str, Any] = {
     "set_visibility": (_extract_set_visibility, None),
     "soul.edit": (_extract_soul_edit, None),
     "declare_universe_loop": (_extract_declare_universe_loop, None),
-    "set_engine": (_extract_set_engine, None),
     "add_canon": (_extract_add_canon, None),
     "control_daemon": (_extract_control_daemon, {"pause", "resume"}),
     "switch_universe": (_extract_switch_universe, None),
@@ -4682,69 +4662,11 @@ def _action_create_universe(
 # keep surfacing. Only the first case becomes onboarding.
 # ───────────────────────────────────────────────────────────────────────────
 
-_ENGINE_CREDENTIAL_TYPES = frozenset({"llm_subscription", "llm_api_key"})
-
-# `UniverseConfig.engine_source` defaults to "byo_api_key" for every newborn, so
-# the default value is NOT evidence the founder chose anything. Any OTHER value
-# was written by `universe action=set_engine` and IS an explicit choice.
-_DEFAULT_ENGINE_SOURCE = "byo_api_key"
-
-
 def universe_has_assigned_engine(universe_dir: str | Path) -> bool:
-    """Return True when this command center has an engine of its own by any route.
+    """Whether HTTP model setup exists; unreadable state is a real failure."""
+    from tinyassets.providers.definition import list_definitions
 
-    Two routes count. A vault LLM credential is the fully-wired BYO path. An
-    explicit non-default ``engine_source`` is the other: ``self_hosted_endpoint``
-    / ``host_daemon`` record the founder's choice in config
-    and write NO vault record, so a vault-only test would read them as "never
-    set up" and send a founder who already chose an engine back to onboarding
-    while hiding that their engine is down.
-
-    Fail-safe direction throughout: an unreadable vault or config returns True.
-    We only ever claim "no engine is attached" from state we actually read —
-    otherwise a corrupt file becomes a setup instruction the founder already
-    followed, hiding the real fault (Hard Rule #8).
-    """
-    from tinyassets.credential_vault import load_credential_vault
-
-    try:
-        records = load_credential_vault(universe_dir)
-    except (ValueError, OSError):
-        logger.warning(
-            "credential vault unreadable for %s; not treating as engine-less",
-            universe_dir,
-        )
-        return True
-    if any(
-        record.get("credential_type") in _ENGINE_CREDENTIAL_TYPES
-        for record in records
-    ):
-        return True
-
-    config_file = Path(universe_dir) / "config.yaml"
-    if config_file.exists() and not _config_yaml_is_parseable(config_file):
-        logger.warning(
-            "command center config unreadable for %s; not treating as engine-less",
-            universe_dir,
-        )
-        return True
-
-    from tinyassets.config import load_universe_config
-
-    try:
-        engine_source = load_universe_config(Path(universe_dir)).engine_source
-    except Exception:  # noqa: BLE001 - unreadable config is not proof of absence
-        logger.warning(
-            "command center config unreadable for %s; not treating as engine-less",
-            universe_dir,
-        )
-        return True
-    # `_build_config` (config.py) assigns YAML values to fields without type
-    # coercion, so `engine_source: 7` arrives as an int. Coerce before
-    # comparing — an AttributeError here would escape while we are already
-    # handling the founder's failed turn. A non-string value is also not the
-    # default, so it lands on the fail-safe side. (Codex ADAPT round 2.)
-    return str(engine_source or "").strip() != _DEFAULT_ENGINE_SOURCE
+    return bool(list_definitions(Path(universe_dir).name))
 
 
 def _config_yaml_is_parseable(config_file: Path) -> bool:
@@ -4815,239 +4737,19 @@ def engine_setup_required_payload(
             "one thing it needs from you first. Give it one and it starts "
             "speaking on this very next turn."
         ),
-        "setup_paths": [{
-            "path": "byo_api_key",
-            "how": "Engine assignment is not exposed by the advertised handles.",
-            "inputs_json": {
-                "engine_source": "byo_api_key",
-                "service": "anthropic | openai",
-                "api_key": "<your key>",
-            },
-            "note": (
-                "Your own API key would be stored in this command center's private "
-                "vault and never echoed back. Ask the host to use the internal "
-                "engine-assignment surface."
-            ),
-        }],
+        "setup_paths": [{"path": "/app/connections",
+                         "how": "Connect a model through the secure connection flow."}],
     }
 
 
-def _action_set_engine(
-    universe_id: str = "",
-    inputs_json: str = "",
-    **_kwargs: Any,
-) -> str:
-    """Founder-only: assign the command center's engine (`universe action=set_engine`).
-
-    Deposits a BYO LLM API key into the command center's credential vault and sets the
-    preferred writer, so the command center's own intelligence runs on the founder's
-    engine (BYO API key → CLI-subprocess provider). Founder-only: gated by the
-    ``universe:admin`` scope + the command center write ACL. The key is stored in the
-    per-universe vault and injected into the CLI subprocess env at call time; it
-    is never echoed back or written to the ledger.
-
-    ``inputs_json``: ``{"service": "anthropic"|"openai", "api_key": "...",
-    "preferred_writer": "claude-code"|"codex"}`` (preferred_writer inferred from
-    service when omitted).
-    """
-    uid = _request_universe(universe_id)
-    udir = _universe_dir(uid)
-    if not udir.is_dir():
-        return json.dumps({"error": f"Command center '{uid}' not found."})
-
-    raw = (inputs_json or "").strip()
-    if not raw:
-        return json.dumps({
-            "error": "inputs_json is required.",
-            "expected": {
-                "engine_source": "byo_api_key | self_hosted_endpoint | host_daemon",
-                "byo_api_key": {"service": "anthropic|openai", "api_key": "...",
-                                "preferred_writer": "claude-code|codex (opt)"},
-                "self_hosted_endpoint": {"endpoint": "https://…",
-                                         "preferred_writer": "…"},
-                "host_daemon": {"provider": "claude-code|codex"},
-            },
-        })
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        return json.dumps({"error": f"inputs_json is not valid JSON: {exc}"})
-    if not isinstance(data, dict):
-        return json.dumps({"error": "inputs_json must decode to a JSON object."})
-
-    engine_source = str(data.get("engine_source", "byo_api_key")).strip().lower()
-    preferred_writer = str(data.get("preferred_writer", "")).strip()
-
-    if engine_source == "byo_api_key":
-        return _set_engine_byo_api_key(uid, udir, data, preferred_writer)
-    if engine_source == "self_hosted_endpoint":
-        return _set_engine_self_hosted(uid, udir, data, preferred_writer)
-    if engine_source == "host_daemon":
-        return _set_engine_host_daemon(uid, udir, data, preferred_writer)
-    if engine_source == "open_provider":
-        return _set_engine_open_provider(uid, udir, data, preferred_writer)
-    return json.dumps({
-        "error": f"unknown engine_source {engine_source!r}.",
-        "expected_engine_source": ["byo_api_key", "self_hosted_endpoint",
-                                   "host_daemon", "open_provider"],
-    })
 
 
-def _set_engine_open_provider(uid, udir, data, preferred_writer) -> str:
-    """Open compute provider (compute-agnostic) → set the command center's writer to a
-    registered ProviderDefinition.
-
-    The correct-shape replacement for the fixed-service ``byo_api_key`` path: the
-    provider was registered out of band via ``connect_compute`` (an open descriptor
-    referencing a granted connection / CLI subscription), so this sets NO credential —
-    it only points the command center's ``preferred_writer`` at the definition's resolved
-    executor name (``api_key_http:<def-id>`` / ``codex`` / ``claude-code``). The
-    per-call registration bridge then makes that name routable. No ``allowed_providers``
-    restriction is written, so other roles keep their chains."""
-    from tinyassets.config import write_universe_config_fields
-    from tinyassets.providers import definition as pd
-    from tinyassets.providers.provider_resolver import provider_for_definition
-
-    definition_id = str(data.get("definition_id", "")).strip()
-    if not definition_id:
-        return json.dumps({
-            "error": "definition_id is required for open_provider.",
-            "hint": "register the provider first with write_graph "
-                    "target=connection operation=connect_compute.",
-        })
-    definition = pd.get_definition(uid, definition_id)
-    if definition is None:
-        return json.dumps({
-            "error": f"provider definition {definition_id!r} is not registered in "
-                     "this command center.",
-            "hint": "register it with connect_compute first.",
-        })
-    try:
-        provider_name = provider_for_definition(definition).name
-    except (ValueError, KeyError) as exc:
-        return json.dumps({
-            "error": f"definition cannot resolve to an executor: {exc}",
-        })
-    try:
-        write_universe_config_fields(
-            udir, engine_source="open_provider", preferred_writer=provider_name,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"Failed to write engine config: {exc}"})
-    return json.dumps({
-        "status": "engine_set",
-        "universe_id": uid,
-        "engine_source": "open_provider",
-        "definition_id": definition_id,
-        "preferred_writer": provider_name,
-        "note": "Writer now routes to this registered provider; no credential "
-                "was set here (it lives in the connection the definition references).",
-    })
 
 
-def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
-    """BYO API key → per-universe vault + preferred_writer (fully wired)."""
-    from tinyassets.config import write_universe_config_fields
-    from tinyassets.credential_vault import (
-        supported_llm_api_key_services,
-        write_credential_vault,
-    )
-
-    service = str(data.get("service", "")).strip().lower()
-    api_key = str(data.get("api_key", "")).strip()
-    _writer_by_service = {"anthropic": "claude-code", "openai": "codex"}
-    if not preferred_writer and service in _writer_by_service:
-        preferred_writer = _writer_by_service[service]
-
-    if not api_key:
-        return json.dumps({"error": "api_key is required."})
-    if service not in supported_llm_api_key_services():
-        return json.dumps({
-            "error": f"unsupported service {service!r} — the key would never "
-                     "reach a provider.",
-            "expected_services": sorted(supported_llm_api_key_services()),
-        })
-
-    import base64
-    try:
-        vault_summary = write_credential_vault(udir, [{
-            "credential_type": "llm_api_key",
-            "service": service,
-            # base64 at rest (the vault's existing convention; _secret_value
-            # decodes secret_b64). Envelope encryption is the deferred hardening
-            # flagged in the credential-custody research.
-            "secret_b64": base64.b64encode(api_key.encode("utf-8")).decode("ascii"),
-        }])
-    except ValueError as exc:
-        return json.dumps({"error": f"Failed to store engine credential: {exc}"})
-
-    fields = {"engine_source": "byo_api_key"}
-    if preferred_writer:
-        fields["preferred_writer"] = preferred_writer
-    try:
-        write_universe_config_fields(udir, **fields)
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"Failed to write engine config: {exc}"})
-
-    return json.dumps({
-        "status": "engine_set",
-        "universe_id": uid,
-        "engine_source": "byo_api_key",
-        "service": service,
-        "preferred_writer": preferred_writer,
-        "credential_types": vault_summary.get("credential_types", []),
-        "note": "Engine credential stored in the per-universe vault (never "
-                "echoed).",
-    })
 
 
-def _set_engine_self_hosted(uid, udir, data, preferred_writer) -> str:
-    """Self-hosted endpoint → persist the endpoint + writer choice."""
-    from tinyassets.config import write_universe_config_fields
-
-    endpoint = str(data.get("endpoint", "")).strip()
-    if not endpoint:
-        return json.dumps({"error": "endpoint is required for self_hosted_endpoint."})
-    fields = {"engine_source": "self_hosted_endpoint", "engine_endpoint": endpoint}
-    if preferred_writer:
-        fields["preferred_writer"] = preferred_writer
-    try:
-        write_universe_config_fields(udir, **fields)
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"Failed to write engine config: {exc}"})
-    return json.dumps({
-        "status": "engine_set", "universe_id": uid,
-        "engine_source": "self_hosted_endpoint", "engine_endpoint": endpoint,
-        "preferred_writer": preferred_writer,
-    })
 
 
-def _set_engine_host_daemon(uid, udir, data, preferred_writer) -> str:
-    """Host-your-own daemon → persist the choice + preferred provider.
-
-    The founder hosts a daemon bound to this command center. Recording the choice is
-    the onboard step; the actual runtime instance is bound via the existing
-    ``universe action=daemon_summon`` (create + summon) — post-M1 wires a live
-    worker to consume it.
-    """
-    from tinyassets.config import write_universe_config_fields
-
-    provider = str(data.get("provider", "")).strip() or "claude-code"
-    fields = {"engine_source": "host_daemon",
-              "preferred_writer": preferred_writer or provider}
-    try:
-        write_universe_config_fields(udir, **fields)
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"Failed to write engine config: {exc}"})
-    return json.dumps({
-        "status": "engine_set", "universe_id": uid,
-        "engine_source": "host_daemon", "provider": provider,
-        "preferred_writer": fields["preferred_writer"],
-        "next_step": (
-            "Runtime-daemon binding is not exposed by the advertised handles; "
-            "ask the host to use the internal operator surface."
-        ),
-    })
 
 
 def _action_declare_universe_loop(
@@ -5288,7 +4990,6 @@ UNIVERSE_ACTIONS: dict[str, Any] = {
     "set_premise": _action_set_premise,
     "set_visibility": _action_set_universe_visibility,
     "soul.edit": _action_soul_edit,
-    "set_engine": _action_set_engine,
     "add_canon": _action_add_canon,
     "list_canon": _action_list_canon,
     "read_canon": _action_read_canon,

@@ -51,7 +51,6 @@ from tinyassets.agent_turn_coordinator import turn_effects
 from tinyassets.conversation_failure import failure_notice, turn_failure
 from tinyassets.storage import agent_turn_runner as runner
 from tinyassets.storage import db_path
-from tinyassets.storage.agent_native_records import NativeTerminal
 from tinyassets.storage.agent_turn_journal import (
     WORKING_STATES,
     AgentTurnJournal,
@@ -122,11 +121,6 @@ def _settle(journal: AgentTurnJournal, owner: str, universe: str, turn_id: str):
     if turn.state == "ready":
         transition = journal.abandon(
             owner, universe, turn_id, expected_generation=turn.generation,
-        )
-    elif turn.state == "native_started":
-        transition = journal.finish_native(
-            owner, universe, turn_id, expected_generation=turn.generation,
-            ordinal=ordinal, terminal=NativeTerminal("indeterminate"),
         )
     elif turn.state == "inference_started":
         transition = journal.finish_inference(

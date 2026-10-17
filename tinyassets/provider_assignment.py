@@ -25,7 +25,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from tinyassets.providers.model_policy import ModelRef
     from tinyassets.providers.model_selection import SelectedModel
-    from tinyassets.providers.native_model_selection import NativeSelection
 
 from tinyassets.provider_assignment_manifest import (
     AssignmentCandidate,
@@ -104,7 +103,6 @@ class ServedProviderAuthority:
         default=None, repr=False, compare=False
     )
     selected_model: SelectedModel | None = None
-    native_selection: NativeSelection | None = None
     after_provider_claim: object | None = field(default=None, repr=False, compare=False)
 
 
@@ -376,19 +374,7 @@ def reserve_served_provider_budget(
         for value in (requested_output_tokens, estimated_input_tokens)
     ):
         raise ProviderAuthorityHeldError(held)
-    # Explicit authority_kind consistency (Codex reject #5): the credential model is
-    # NEVER inferred from the provider-name prefix alone. The kind, the provider shape,
-    # and the snapshot presence must agree, or fail closed — an absent subscription
-    # snapshot must never be treated as open authority, and vice versa.
-    _kind = getattr(authority, "authority_kind", None)
-    _open = _is_open_provider(authority.provider)
-    if _kind == "connection_grant":
-        if not _open or authority.credential_snapshot_dir is not None:
-            raise ProviderAuthorityHeldError(held)
-    elif _kind == "subscription_snapshot":
-        if _open or authority.credential_snapshot_dir is None:
-            raise ProviderAuthorityHeldError(held)
-    else:
+    if authority.authority_kind != "connection_grant" or not _is_open_provider(authority.provider):
         raise ProviderAuthorityHeldError(held)
     store = SQLiteProviderWorkAuthorityStore(base_path)
     with store.connection() as conn:
@@ -1242,9 +1228,6 @@ def accepted_connected_model_access(assignment, owner, provider):
         member = next((item for item in assignment.candidates if item.provider == provider), None)
         if member is not None:
             return member.access
-    elif assignment.provider == provider and provider in _SERVED_PROVIDER_SERVICE:
-        # A legacy native binding accepted only its provider default.
-        return ModelAccess("explicit", ("",))
     elif assignment.provider == provider and provider.startswith("api_key_http:"):
         # A legacy single-provider HTTP binding accepted exactly the model the
         # owner connected it with, free-only: what the legacy lane always ran
@@ -1332,61 +1315,13 @@ async def authorize_served_provider_call_async(
     Synchronous authority and credential IO runs in a worker. Neither callers nor configuration may
     supply the prepared result, and the final fence rechecks request + custody.
     """
+    from tinyassets.agent_loop.execution import off_loop
     from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.providers.model_selection import prepare_selected_model_async
     from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
-    from tinyassets.subscription_refresh import refresh_deposited_subscriptions
 
     universe = Path(universe_dir)
-    # THE interactive launch path. Wiring only the workflow lanes left the
-    # founder's own served turn -- the surface the outage is on -- never calling
-    # the refresh at all (Codex refute-review, P1 #7).
-    #
-    # Here, at the very top: before the shared admission is taken (the refresh
-    # needs the EXCLUSIVE one, which cannot nest inside it), before `_selected_chain`
-    # resolves custody, and before the snapshot below pins the credential. A refresh
-    # after any of those would make the launch refuse with "credential changed
-    # before launch snapshot".
-    #
-    # `launching` is the source this call actually selected, so another deposited
-    # source's dead credential cannot fail this one.
-    #
-    # The owner is the request's principal, proved by the same check the launch
-    # makes, under the shared admission (released again before the refresh takes
-    # the exclusive one). It is what carries the accepted binding onto a rotated
-    # document. Passing no owner rotated the founder's sign-in and then could not
-    # renew the binding, so custody pinned the old digest and every turn after it
-    # was refused "connect your provider" (live 2026-09-28). A request that proves
-    # no owner refreshes nothing: it is refused below, and it must not spend the
-    # owner's single-use refresh token on its way there.
-    #
-    # A selection that is not a `ModelRef` is refused below, by the checks that
-    # already exist for it, and NOTHING is refreshed for it. Reading a field off an
-    # unvalidated caller-supplied object turned that refusal into an AttributeError
-    # (`test_async_unaccepted_selection_refused_before_discovery`, which passes a
-    # bare object precisely to pin the ordering) -- and more importantly, the
-    # selection decides WHICH source is refreshed and which one may fail the
-    # launch, so an unrecognized one must steer neither.
-    from tinyassets.agent_loop.execution import off_loop
-    from tinyassets.providers.model_policy import ModelRef
-
     admission = provider_assignment_admission()
-    if isinstance(model_selection, ModelRef):
-        try:
-            async with admission.shared_async(universe):
-                facts = await off_loop(
-                    _served_request_agent, base_path, universe, request_carrier, role, operation,
-                )
-                owner = facts[0].principal_id
-        except Exception:  # noqa: BLE001 - refused with its own words below
-            owner = ""
-        if owner:
-            await off_loop(
-                refresh_deposited_subscriptions,
-                base_path=base_path, universe_dir=universe, owner_user_id=owner,
-                universe_id=universe.name,
-                launching=_SERVED_PROVIDER_SERVICE.get(model_selection.connection_id, ""),
-            )
     try:
         async with admission.shared_async(universe):
             capability, agent = await off_loop(
@@ -1430,11 +1365,6 @@ async def authorize_served_provider_call_async(
         await context.__aexit__(None, None, None)
 
 
-#: Which subscription record a served provider launches from. Hoisted out of the
-#: snapshot branch below so the pre-launch refresh names the same source the
-#: launch will, rather than repeating the mapping.
-_SERVED_PROVIDER_SERVICE = {"codex": "codex", "claude-code": "claude"}
-
 #: Imported, not re-declared: `providers.owner_binding` owns the sentence.
 _SERVED_AUTHORITY_HELD = _CONNECT_PROVIDER_MESSAGE
 
@@ -1448,10 +1378,6 @@ def _authorize_served_provider_call(
 ) -> Iterator[ServedProviderAuthority]:
     """Authorize one model on the request principal's live connected set."""
     from tinyassets.commons_catalog import get_binding
-    from tinyassets.credential_vault import (
-        cleanup_llm_credential_snapshot,
-        snapshot_llm_subscription_credential,
-    )
     from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.provider_serving_binding import current_connected_source_custody
     from tinyassets.providers.model_policy import ModelRef
@@ -1462,7 +1388,6 @@ def _authorize_served_provider_call(
     universe = Path(universe_dir)
     base = Path(base_path)
     authority = None
-    snapshot = None
     try:
         with (nullcontext() if _admitted else provider_assignment_admission().shared(universe)):
             capability, agent = _served_request_agent(
@@ -1512,16 +1437,7 @@ def _authorize_served_provider_call(
                     raise PermissionError("connected source custody changed during discovery")
                 conn.rollback()
             provider = model_selection.connection_id
-            if _is_open_provider(provider):
-                kind, service, snapshot_dir = "connection_grant", "http", None
-            else:
-                service = _SERVED_PROVIDER_SERVICE.get(provider)
-                if service is None:
-                    raise PermissionError("connected subscription executor is unavailable")
-                snapshot = snapshot_llm_subscription_credential(
-                    universe_dir=universe, custody=custody,
-                )
-                kind, snapshot_dir = "subscription_snapshot", snapshot.directory
+            kind, service, snapshot_dir = "connection_grant", "http", None
             import hashlib
 
             budget_digest = "sha256:" + hashlib.sha256(
@@ -1562,8 +1478,7 @@ def _authorize_served_provider_call(
                 credential_reference_digest=custody.reference_digest,
                 credential_service=service, credential_snapshot_dir=snapshot_dir,
                 request_capability=capability, budget_owner="connected_request",
-                selected_model=selected if _is_open_provider(provider) else None,
-                native_selection=selected if not _is_open_provider(provider) else None,
+                selected_model=selected,
                 before_provider_launch=before_launch,
             )
         yield authority
@@ -1573,8 +1488,6 @@ def _authorize_served_provider_call(
         if authority is not None:
             raise
         raise ProviderAuthorityHeldError(_SERVED_AUTHORITY_HELD) from exc
-    finally:
-        cleanup_llm_credential_snapshot(snapshot)
 
 
 __all__ = [

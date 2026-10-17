@@ -115,22 +115,8 @@ def _nofollow_dirs(root: Path, parts: tuple[str, ...]) -> Path:
     return root.joinpath(*parts)
 
 
-def native_store(universe_dir: Path, adapter: str) -> Path:
-    """The persistent directory an adapter keeps its native session files in."""
-    if not _ADAPTER.match(adapter or ""):
-        raise ValueError(f"invalid adapter name for a session store: {adapter!r}")
-    return _nofollow_dirs(Path(universe_dir), (*SESSIONS_DIR.parts, "native", adapter))
 
 
-def native_file_exists(store: Path, name_suffix: str) -> bool:
-    """Whether a regular file ending in ``name_suffix`` is under ``store``.
-
-    Walks without following links and never opens what it finds.
-    """
-    for _dirpath, _dirs, files in os.walk(store, followlinks=False):
-        if any(name.endswith(name_suffix) for name in files):
-            return True
-    return False
 
 
 def load(universe_dir: Path, key: str) -> dict | None:

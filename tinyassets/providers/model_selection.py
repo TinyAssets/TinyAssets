@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from tinyassets.providers.discovery_contract import SourceContract
     from tinyassets.providers.discovery_protocols import DiscoveryProtocol
-    from tinyassets.providers.native_model_selection import NativeSelection
 
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.providers.model_policy import (
@@ -92,7 +91,7 @@ def prepare_selected_model(
     access: ModelAccess,
     needs_tools: bool = False,
     effort: str = "",
-) -> tuple[SelectedModel | NativeSelection | None, Callable[[], None] | None]:
+) -> tuple[SelectedModel, Callable[[], None] | None]:
     """Prepare an accepted source; native defaults carry no HTTP model facts.
 
     This is not an independent authority entrypoint. The caller must validate the
@@ -101,24 +100,6 @@ def prepare_selected_model(
     remains the caller's responsibility before and after this preparation.
     """
     from tinyassets.providers.discovery_snapshot import refresh_model_discovery
-    from tinyassets.providers.native_model_selection import accepted_native_selection
-
-    native = accepted_native_selection(provider, model_id, access)
-    if native is not None:
-        return native, None
-    if _native_discovery_needed(provider, model_id, access):
-        from tinyassets.providers.native_discovery import discover_native_models_sync
-
-        snapshot = discover_native_models_sync(
-            base_path=base_path, owner_user_id=owner_user_id,
-            universe_id=universe_id, provider=provider,
-        )
-        return _validate_native_snapshot(
-            snapshot, base_path, owner_user_id, universe_id, provider, model_id, access,
-            effort,
-        )
-    if _native_default(provider, model_id, access):
-        return None, None
     definition = _selection_definition(
         base_path, owner_user_id, universe_id, provider, model_id, access
     )
@@ -136,31 +117,13 @@ async def prepare_selected_model_async(
     *, base_path: Path, owner_user_id: str, universe_id: str,
     provider: str, model_id: str, access: ModelAccess,
     needs_tools: bool = False, effort: str = "",
-) -> tuple[SelectedModel | NativeSelection | None, Callable[[], None] | None]:
+) -> tuple[SelectedModel, Callable[[], None] | None]:
     """Refresh without blocking ingress; the caller re-fences authority afterward.
 
     No assignment lock or SQLite transaction may span this await. The snapshot
     is advisory data, not permission, and cancelled callers never reach launch.
     """
     from tinyassets.providers.discovery_snapshot import refresh_model_discovery_async
-    from tinyassets.providers.native_model_selection import accepted_native_selection
-
-    native = accepted_native_selection(provider, model_id, access)
-    if native is not None:
-        return native, None
-    if _native_discovery_needed(provider, model_id, access):
-        from tinyassets.providers.native_discovery import discover_native_models
-
-        snapshot = await discover_native_models(
-            base_path=base_path, owner_user_id=owner_user_id,
-            universe_id=universe_id, provider=provider,
-        )
-        return _validate_native_snapshot(
-            snapshot, base_path, owner_user_id, universe_id, provider, model_id, access,
-            effort,
-        )
-    if _native_default(provider, model_id, access):
-        return None, None
     definition = _selection_definition(
         base_path, owner_user_id, universe_id, provider, model_id, access
     )
@@ -192,44 +155,10 @@ def saved_effort_level(base_path, owner_user_id, universe_id, ref):
     return "" if policy is None else policy.effort_for(ref)
 
 
-def _native_discovery_needed(provider, model_id, access):
-    from tinyassets.provider_serving_binding import _PROVIDER_SERVICE
-
-    return (provider in _PROVIDER_SERVICE and bool(model_id)
-            and type(access) is ModelAccess and access.model_scope == "discovered")
 
 
-def _validate_native_snapshot(snapshot, base, owner, uid, provider, model_id, access,
-                              effort=""):
-    from tinyassets.providers.native_discovery import NativeDiscoverySnapshot
-
-    if type(snapshot) is not NativeDiscoverySnapshot:
-        raise PermissionError("native model requires fresh owned enumeration")
-    snapshot.assert_current()
-    selected = snapshot.select(
-        provider=provider, owner=owner, universe=Path(base) / uid, custody=snapshot.custody,
-        model_id=model_id, access=access, effort=effort,
-    )
-    return selected, snapshot.assert_current
 
 
-def _native_default(provider, model_id, access):
-    """Native defaults need member custody, not fabricated HTTP model facts.
-
-    The caller still validates the exact accepted member and snapshots its owned
-    credential. This predicate grants nothing and performs no account discovery.
-    Explicit native model IDs require their executor's discovery/selection path.
-    """
-    from tinyassets.provider_serving_binding import _PROVIDER_SERVICE
-
-    if not isinstance(provider, str) or provider not in _PROVIDER_SERVICE:
-        return False
-    if (
-        type(model_id) is not str or model_id != "" or type(access) is not ModelAccess
-        or (access.model_scope == "explicit" and "" not in access.model_ids)
-    ):
-        raise PermissionError("native model is outside the supported default selection scope")
-    return True
 
 
 def _selection_definition(base_path, owner_user_id, universe_id, provider, model_id, access):

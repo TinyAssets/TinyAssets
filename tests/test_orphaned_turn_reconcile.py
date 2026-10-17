@@ -2,7 +2,7 @@
 
 Founder, 2026-09-26: a deploy at 22:31:54Z recreated the daemon container and
 killed the in-flight turn ``652a2f31e82546a1bb56b5d158b5490f``. Its
-``agent_turns`` row still read ``native_started`` 35 minutes later, and the app's
+``agent_turns`` row still read ``inference_started`` 35 minutes later, and the app's
 server-driven status line (``get_status.active_turn``) rendered "Your universe is
 thinking... for 34m 55s" off it while nothing was running. It would have stayed
 that way until the granted-turn cap aged it out an hour in.
@@ -33,7 +33,6 @@ import pytest
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.owner_app_fixture import create_owner_app
-from tests.test_agent_native_journal import begin_native
 from tests.test_agent_turn_journal import (
     begin,
     journal,
@@ -43,7 +42,6 @@ from tests.test_agent_turn_journal import (
 )
 from tinyassets import owner_lease
 from tinyassets.agent_turn_reconcile import reconcile_orphaned_turns
-from tinyassets.storage.agent_native_records import NativeTerminal
 from tinyassets.storage.agent_turn_boot import BOOT, BootTurns
 from tinyassets.storage.agent_turn_journal import (
     WORKING_STATES,
@@ -95,10 +93,10 @@ def _home(journal):
 
 
 def _killed_native_turn(journal):
-    """One ``native_started`` turn, aged to when the deploy killed the real one."""
+    """One ``inference_started`` turn, aged to when the deploy killed the real one."""
     _home(journal)
-    turn = begin_native(journal, new(journal)).snapshot
-    assert turn.state == "native_started"
+    turn = begin(journal, new(journal))
+    assert turn.state == "inference_started"
     _age(journal, turn.turn_id)
     return turn
 
@@ -110,11 +108,11 @@ def _blockers(journal):
         return reset_blockers(conn, "owner", "home")
 
 
-def test_a_row_a_dead_boot_left_native_started_is_settled_and_stops_reading_as_active(journal):
+def test_a_row_a_dead_boot_left_inference_started_is_settled_and_stops_reading_as_active(journal):
     turn = _killed_native_turn(journal)
     # The precondition, not an assumption: this is the row the indicator painted.
     painted = _working(journal)
-    assert painted is not None and painted["state"] == "native_started"
+    assert painted is not None and painted["state"] == "inference_started"
     assert painted["age_s"] > 2000
 
     _restart(journal)
@@ -122,14 +120,14 @@ def test_a_row_a_dead_boot_left_native_started_is_settled_and_stops_reading_as_a
 
     assert settled == [{
         "universe_id": "home", "turn_id": turn.turn_id,
-        "was": "native_started", "settled": "held_native_unknown", "notified": True,
+        "was": "inference_started", "settled": "held_transport", "notified": True,
     }]
     stored = journal.get("owner", "home", turn.turn_id)
-    assert stored.state == "held_native_unknown"
+    assert stored.state == "held_transport"
     # Uncertainty is PRESERVED, not resolved: the killed round is indeterminate,
     # never completed, and it still blocks an offline reset. A settlement that
     # claimed the turn finished would be a mock result wearing a real shape.
-    assert stored.rounds[-1].reply == NativeTerminal("indeterminate")
+    assert stored.rounds[-1].reply == None
     assert stored.rounds[-1].cost_microusd is None
     assert _blockers(journal) == ["active or ambiguous agent turn references exact home"]
     # Neither the original nor a fresh boot registry can revive the terminal row.
@@ -145,7 +143,7 @@ def test_a_turn_the_current_owner_is_running_is_never_reaped(journal):
     assert _reconcile(journal) == []
 
     still = journal.get("owner", "home", turn.turn_id)
-    assert still.state == "native_started" and still.generation == turn.generation
+    assert still.state == "inference_started" and still.generation == turn.generation
     assert still.rounds[-1].reply is None
     observed = _working(journal)
     assert observed is not None and observed["turn_id"] == turn.turn_id
@@ -160,7 +158,7 @@ def test_a_standby_owner_settles_nothing_while_the_live_owner_holds_the_key(jour
     try:
         with owner_lease.using_tree(standby):
             assert _reconcile(journal) == []
-            assert journal.get("owner", "home", turn.turn_id).state == "native_started"
+            assert journal.get("owner", "home", turn.turn_id).state == "inference_started"
         # The live owner still sees its own turn as running.
         assert _working(journal)["turn_id"] == turn.turn_id
     finally:
@@ -177,13 +175,13 @@ def test_the_successor_takes_a_higher_generation_and_settles_only_older_rows(jou
 
     successor = AgentTurnJournal(journal._ledger.base_path)
     with pytest.raises(owner_lease.LeaseLost):
-        successor.finish_native(
+        successor.finish_inference(
             "owner", "home", old.turn_id, expected_generation=old.generation,
-            ordinal=len(old.rounds), terminal=NativeTerminal("indeterminate"),
+            ordinal=len(old.rounds), reply=None,
         )
-    mine = begin_native(successor, new(successor)).snapshot
+    mine = begin(successor, new(successor))
     assert _reconcile(journal) == []
-    assert journal.get("owner", "home", mine.turn_id).state == "native_started"
+    assert journal.get("owner", "home", mine.turn_id).state == "inference_started"
     assert _working(journal)["turn_id"] == mine.turn_id
 
 
@@ -207,21 +205,21 @@ def test_recovery_rejects_changed_evidence_and_resumes_after_adoption(journal):
                 "owner", "home", turn.turn_id,
                 owner_generation=wrong_generation, runner_token=wrong_token,
             )
-        assert journal.get("owner", "home", turn.turn_id).state == "native_started"
+        assert journal.get("owner", "home", turn.turn_id).state == "inference_started"
 
     successor.adopt_orphan(
         "owner", "home", turn.turn_id,
         owner_generation=generation, runner_token=token,
     )
     # This is the interruption point: adoption committed, terminal transition did not.
-    assert journal.get("owner", "home", turn.turn_id).state == "native_started"
+    assert journal.get("owner", "home", turn.turn_id).state == "inference_started"
     with pytest.raises(owner_lease.LeaseLost, match="recovery-only"):
-        successor.finish_native(
+        successor.finish_inference(
             "owner", "home", turn.turn_id, expected_generation=turn.generation,
-            ordinal=len(turn.rounds), terminal=NativeTerminal("indeterminate"),
+            ordinal=len(turn.rounds), reply=None,
         )
     agent_turn_runner.release(journal._ledger.base_path, turn.turn_id)
-    assert _reconcile(journal)[0]["settled"] == "held_native_unknown"
+    assert _reconcile(journal)[0]["settled"] == "held_transport"
     assert len(_thread(journal)) == 1
 
 
@@ -236,7 +234,7 @@ def test_the_projection_refuses_an_unowned_row_reconciliation_never_settled(jour
 
     assert _working(journal) is None
     # Proof it was the projection and not a settlement: the row is untouched.
-    assert journal.get("owner", "home", turn.turn_id).state == "native_started"
+    assert journal.get("owner", "home", turn.turn_id).state == "inference_started"
 
 
 def _ready(journal):
@@ -247,8 +245,7 @@ def _inference_started(journal):
     return begin(journal, new(journal))
 
 
-def _native_started(journal):
-    return begin_native(journal, new(journal)).snapshot
+
 
 
 def _tools_planned(journal):
@@ -262,14 +259,13 @@ def _tools_started(journal):
 @pytest.mark.parametrize(("build", "expected"), [
     (_ready, "abandoned"),
     (_inference_started, "held_transport"),
-    (_native_started, "held_native_unknown"),
     (_tools_planned, "held_tool_not_sent"),
     (_tools_started, "held_tool_unknown"),
 ])
 def test_every_progressing_shape_a_dead_boot_can_leave_is_settled(journal, build, expected):
     """Each of the four progressing states, plus both tool shapes inside one.
 
-    ``native_started`` is what the founder hit; the others reach the same visible
+    ``inference_started`` is what the founder hit; the others reach the same visible
     bug through a different step, and one settled state per shape is the journal's
     own label for what that step proves -- ``not_sent`` for a tool still
     ``planned`` (a call is recorded ``started`` before dispatch, so one that never
@@ -334,7 +330,7 @@ def test_the_notice_never_replays_the_stored_prompt_as_the_founders_message(jour
         prompt="PREVIOUS EXCHANGES\nfounder: an older line\n\nwhat did I just ask",
         system="s",
     )
-    turn = begin_native(journal, turn).snapshot
+    turn = begin(journal, turn)
     _age(journal, turn.turn_id)
     _restart(journal)
 
@@ -500,7 +496,7 @@ def test_one_unsettleable_turn_does_not_stop_the_sweep(journal, monkeypatch):
 
     doomed = _killed_native_turn(journal)
     other = _killed_native_turn(journal)
-    real = AgentTurnJournal.finish_native
+    real = AgentTurnJournal.finish_inference
 
     def refuse_one(self, owner, universe, turn_id, **kwargs):
         if turn_id == doomed.turn_id:
@@ -508,7 +504,7 @@ def test_one_unsettleable_turn_does_not_stop_the_sweep(journal, monkeypatch):
         return real(self, owner, universe, turn_id, **kwargs)
 
     _restart(journal)
-    monkeypatch.setattr(AgentTurnJournal, "finish_native", refuse_one)
+    monkeypatch.setattr(AgentTurnJournal, "finish_inference", refuse_one)
     settled = _reconcile(journal)
     monkeypatch.undo()
 
@@ -516,10 +512,10 @@ def test_one_unsettleable_turn_does_not_stop_the_sweep(journal, monkeypatch):
     assert by_turn[doomed.turn_id]["error"] == "CurrentHomeChanged"
     assert "notified" not in by_turn[doomed.turn_id], (
         "a row that was not settled must not tell the founder it was interrupted")
-    assert by_turn[other.turn_id]["settled"] == "held_native_unknown"
+    assert by_turn[other.turn_id]["settled"] == "held_transport"
     assert by_turn[other.turn_id]["notified"] is True
-    assert journal.get("owner", "home", doomed.turn_id).state == "native_started"
-    assert journal.get("owner", "home", other.turn_id).state == "held_native_unknown"
+    assert journal.get("owner", "home", doomed.turn_id).state == "inference_started"
+    assert journal.get("owner", "home", other.turn_id).state == "held_transport"
 
 
 class _Coordinator:
@@ -567,7 +563,7 @@ def test_the_coordinator_releases_its_turn_however_the_run_ends(journal, tmp_pat
     else:
         assert asyncio.run(coordinator.run()) == outcome
 
-    assert journal.get("owner", "home", turn.turn_id).state == "native_started", (
+    assert journal.get("owner", "home", turn.turn_id).state == "inference_started", (
         "release is bookkeeping; it must not touch the row")
     assert _working(journal) is None, (
         "no task in this process is running this turn any more")
@@ -599,7 +595,7 @@ def test_the_serving_lifespan_settles_the_orphan_before_anything_can_read_it(
     with TestClient(create_owner_app()):
         pass
 
-    assert journal.get("owner", "home", turn.turn_id).state == "held_native_unknown"
+    assert journal.get("owner", "home", turn.turn_id).state == "held_transport"
     assert _working(journal) is None, (
         "the indicator the founder watched for 35 minutes")
     # The whole chain, not just the half that stops the indicator: the founder

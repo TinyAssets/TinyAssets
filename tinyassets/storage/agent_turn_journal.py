@@ -22,7 +22,6 @@ from tinyassets.providers.agent_chat_codec import AgentReply, ToolRequest
 from tinyassets.storage import agent_turn_records as records
 from tinyassets.storage import agent_turn_runner as runner
 from tinyassets.storage import db_path
-from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
 from tinyassets.storage.agent_turn_boot import BOOT, BootTurns
 from tinyassets.storage.agent_turn_records import (
     RoundInput,
@@ -41,8 +40,8 @@ _SCOPE = "owner_user_id = ? AND universe_id = ? AND turn_id = ?"
 # a ``held_*`` turn is stopped, not working, so it is not something a surface may
 # report as activity. The reset blocker set below is this plus the two ambiguous
 # holds, expressed as the union so neither question has a second literal list.
-WORKING_STATES = frozenset({"ready", "inference_started", "native_started", "tools_pending"})
-_AMBIGUOUS_STATES = frozenset({"held_native_unknown", "held_tool_unknown"})
+WORKING_STATES = frozenset({"ready", "inference_started", "tools_pending"})
+_AMBIGUOUS_STATES = frozenset({"held_tool_unknown"})
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS agent_turns (
       owner_user_id TEXT NOT NULL, universe_id TEXT NOT NULL, turn_id TEXT NOT NULL,
@@ -207,13 +206,6 @@ def _read(conn: sqlite3.Connection, scope: tuple[str, str, str]) -> TurnSnapshot
         ):
             # SQL version 1 is the unchanged container. Candidate/reply payloads
             # carry their own version; old HTTP rows are neither migrated nor rewritten.
-            candidate_document = records.document(rr["candidate_json"])
-            if candidate_document.get("version") == 2 or (
-                candidate_document.get("version") == 3
-                and candidate_document.get("kind") == "native_agent"
-            ):
-                rounds.append(_read_native_round(conn, scope, ordinal, rr))
-                continue
             if (
                 rr["version"] != 1
                 or rr["ordinal"] != ordinal
@@ -305,10 +297,6 @@ def _read(conn: sqlite3.Connection, scope: tuple[str, str, str]) -> TurnSnapshot
                 and completed_round.state == "failed"
                 and completed_round.reply is None
                 and not completed_round.tools
-            ) and not (
-                type(completed_round.candidate) is NativeInput
-                and type(completed_round.reply) is NativeTerminal
-                and completed_round.reply.status == "capacity_no_effects"
             ):
                 raise records.invalid()
         expected_state = _frontier(rounds[-1]) if rounds else "ready"
@@ -335,39 +323,9 @@ def _read(conn: sqlite3.Connection, scope: tuple[str, str, str]) -> TurnSnapshot
         raise JournalUnavailable("agent turn record unavailable") from None
 
 
-def _read_native_round(conn, scope, ordinal, row) -> RoundSnapshot:
-    if (row["version"] != 1 or row["ordinal"] != ordinal
-            or row["state"] not in {"native_started", "native_received"}):
-        raise records.invalid()
-    candidate = NativeInput.from_json(row["candidate_json"])
-    reply = (None if row["reply_json"] is None
-             else NativeTerminal.from_json(row["reply_json"], candidate))
-    if (reply is not None) != (row["state"] == "native_received"):
-        raise records.invalid()
-    cost = row["cost_microusd"]
-    if cost is not None:
-        records.integer(cost)
-        if reply is None or reply.status != "completed":
-            raise records.invalid()
-    if conn.execute(
-        f"SELECT 1 FROM agent_turn_tools WHERE {_SCOPE} AND round_ordinal = ? LIMIT 1",
-        (*scope, ordinal),
-    ).fetchone() is not None:
-        raise records.invalid()
-    return RoundSnapshot(ordinal, candidate, row["state"], reply, (), cost)
 
 
 def _frontier(round_snapshot: RoundSnapshot) -> str:
-    if type(round_snapshot.candidate) is NativeInput:
-        if round_snapshot.state == "native_started":
-            return "native_started"
-        if type(round_snapshot.reply) is not NativeTerminal:
-            raise records.invalid()
-        return {
-            "completed": "completed",
-            "capacity_no_effects": "held_native_capacity",
-            "indeterminate": "held_native_unknown",
-        }[round_snapshot.reply.status]
     if round_snapshot.state == "inference_started":
         return "inference_started"
     if round_snapshot.state == "failed":
@@ -709,10 +667,10 @@ class AgentTurnJournal:
         turn_id,
         *,
         expected_generation: int,
-        candidate: RoundInput | NativeInput,
+        candidate: RoundInput,
         after_failed_inference: bool = False,
     ) -> Transition:
-        if (type(candidate) not in (RoundInput, NativeInput)
+        if (type(candidate) is not RoundInput
                 or type(after_failed_inference) is not bool):
             raise records.invalid()
         raw = candidate.canonical_json()
@@ -732,19 +690,12 @@ class AgentTurnJournal:
                 and current.rounds[-1].state == "failed"
                 and current.rounds[-1].reply is None
                 and not current.rounds[-1].tools
-            ) or (
-                after_failed_inference
-                and current.state == "held_native_capacity"
-                and current.rounds
-                and type(current.rounds[-1].candidate) is NativeInput
-                and type(current.rounds[-1].reply) is NativeTerminal
-                and current.rounds[-1].reply.status == "capacity_no_effects"
             )
             admissible = retryable if after_failed_inference else current.state == "ready"
             if current.generation != expected_generation or not admissible:
                 return Transition("conflict", current)
             ordinal = len(current.rounds) + 1
-            state = "native_started" if type(candidate) is NativeInput else "inference_started"
+            state = "inference_started"
             conn.execute(
                 "INSERT INTO agent_turn_rounds (owner_user_id, universe_id, turn_id, ordinal, "
                 "version, "
@@ -832,41 +783,6 @@ class AgentTurnJournal:
             state = "held_transport" if reply is None else records.STOP_STATE[reply.stop]
             return _advance(conn, scope, current, state)
 
-    def finish_native(
-        self, owner, universe, turn_id, *, expected_generation: int,
-        ordinal: int, terminal: NativeTerminal, cost_microusd: int | None = None,
-    ) -> Transition:
-        """Persist a native terminal union; missing effects never mean no effects."""
-        records.integer(ordinal, minimum=1)
-        if type(terminal) is not NativeTerminal:
-            raise records.invalid()
-        if cost_microusd is not None:
-            records.integer(cost_microusd)
-            if terminal.status != "completed":
-                raise records.invalid()
-        with self._mutation(owner, universe, turn_id, expected_generation) as (
-            conn, scope, current,
-        ):
-            if ordinal > len(current.rounds):
-                return Transition("conflict", current)
-            target = current.rounds[ordinal - 1]
-            if type(target.candidate) is not NativeInput:
-                return Transition("conflict", current)
-            raw = terminal.canonical_json(target.candidate)
-            if target.state != "native_started":
-                same = (terminal, cost_microusd) == (target.reply, target.cost_microusd)
-                return Transition("already_applied" if same else "conflict", current)
-            if current.generation != expected_generation or ordinal != len(current.rounds):
-                return Transition("conflict", current)
-            conn.execute(
-                f"UPDATE agent_turn_rounds SET state = 'native_received', reply_json = ?, "
-                f"cost_microusd = ? WHERE {_SCOPE} AND ordinal = ?",
-                (raw, cost_microusd, *scope, ordinal),
-            )
-            state = _frontier(RoundSnapshot(
-                ordinal, target.candidate, "native_received", terminal, (), cost_microusd,
-            ))
-            return _advance(conn, scope, current, state)
 
     def start_tool(
         self, owner, universe, turn_id, *, expected_generation: int, ordinal: int, call_ordinal: int

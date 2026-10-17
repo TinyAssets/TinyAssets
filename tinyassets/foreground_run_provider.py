@@ -526,40 +526,8 @@ class _ForegroundRunProviderSession:
             return
         with self._lock:
             if self._receipt is None:
-                self._refresh_sign_ins()
                 self._admit()
 
-    def _refresh_sign_ins(self) -> None:
-        """Bring the owner's stored sign-ins current before the receipt pins them.
-
-        The receipt `_admit` mints pins the assignment generation and credential
-        digest for the whole run, and a refresh renews the accepted source,
-        which moves both. So this runs once, before that mint, and never after
-        it. Only for a run `_admit` would accept on these grounds -- the
-        principal's own home, a Branch they authored, a run still running;
-        anything else is refused by `_admit` with its own words and refreshes
-        nothing on the way (Codex refute-review on #4082: another user's public
-        Branch refreshed the requester's sign-in and then failed).
-        """
-        if self._sign_ins_refreshed:
-            return
-        self._sign_ins_refreshed = True
-        try:
-            self._validate_founder_home()
-            author = str((self._branch_snapshot or {}).get("author") or "").strip()
-            if author != self._principal_id:
-                return
-            self._validate_run(allowed_statuses={"running"})
-        except PermissionError:
-            return
-        from tinyassets.subscription_refresh import refresh_deposited_subscriptions
-
-        refresh_deposited_subscriptions(
-            base_path=self._base_path,
-            universe_dir=self._universe_dir,
-            owner_user_id=self._principal_id,
-            universe_id=self._universe_id,
-        )
 
     def _validate_receipt_scope(self) -> None:
         receipt = self._receipt
@@ -657,18 +625,12 @@ class _ForegroundRunProviderSession:
         self, *, role: str, prompt: str, system: str,
         policy: dict[str, Any] | None,
     ) -> Iterator[tuple[ProviderInvocationCarrier, Path | None, str]]:
-        from tinyassets.credential_vault import (
-            cleanup_llm_credential_snapshot,
-            snapshot_llm_subscription_credential,
-        )
         from tinyassets.exceptions import ProviderAuthorityHeldError
-        from tinyassets.provider_serving_binding import _is_open_provider
         from tinyassets.providers.work_model_selection import prepare_work_model_snapshot
         from tinyassets.shared_self import shared_self_requested
         from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
         _admitted_cloud_class()
-        snapshot = None
         carrier = None
         try:
             if self._closed or self._receipt is None or self._claim is None:
@@ -711,7 +673,7 @@ class _ForegroundRunProviderSession:
                 try:
                     from tinyassets.storage.provider_work_authority import _current_connected_member
 
-                    custody = _current_connected_member(
+                    _current_connected_member(
                         conn, self._base_path, self._receipt, selection,
                     )
                     shares = len(_prompt_nodes(self._branch_snapshot))
@@ -724,24 +686,18 @@ class _ForegroundRunProviderSession:
                         selection=selection, model_snapshot=model_snapshot,
                         needs_tools=shared_self_requested(self._branch_snapshot),
                     )
-                    if not _is_open_provider(provider):
-                        snapshot = snapshot_llm_subscription_credential(
-                            universe_dir=self._universe_dir, custody=custody,
-                        )
                     self._validate_run(allowed_statuses={"running"})
                     conn.commit()
                 except Exception:
                     conn.rollback()
                     raise
-            yield carrier, snapshot.directory if snapshot is not None else None, provider
+            yield carrier, None, provider
         except ProviderAuthorityHeldError:
             raise
         except Exception as exc:
             if carrier is not None:
                 raise
             raise _held_authority_error(exc) from exc
-        finally:
-            cleanup_llm_credential_snapshot(snapshot)
 
     def _call(
         self,
@@ -1054,8 +1010,6 @@ class _ForegroundRunProviderSession:
                     kind = router.selected_agent_execution_kind(selected) if router else None
                     boundary = capacity_boundary(
                         selected, exc.attempts, execution_kind=kind,
-                        native_evidence=(getattr(exc, "native_evidence", ())
-                                         if kind == "native_agent" else ()),
                     )
                     if boundary is None:
                         raise _held_attempt_error(role, selected, exc) from exc

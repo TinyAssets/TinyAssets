@@ -120,24 +120,6 @@ def test_a_learned_id_is_visible_but_not_admitted_until_access_is_granted(config
     assert row["availability_basis"] == "publicly_listed"
 
 
-@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
-def test_package_codex_does_not_offer_claude_subscription_ids(configured, monkeypatch):
-    from tinyassets.external_agents.provider import ExternalAgentProvider
-    from tinyassets.providers import call as provider_calls
-
-    _learn(monkeypatch, configured, "claude-opus-5-5", source_key="claude-code")
-    OwnModelHistory(configured.rig.base).record(
-        source_kind="subscription", provider_ref="claude-code",
-        model_id="claude-haiku-5-5", owner_user_id="owner")
-    package = ExternalAgentProvider.__new__(ExternalAgentProvider)
-    package.name = "codex"
-    provider_calls.get_provider_router()._providers["codex"] = package
-
-    document = _document(configured)
-    codex = [row["reference"]["model_id"] for row in document["options"]
-             if row["reference"]["provider_ref"] == "codex"]
-    assert "claude-opus-5-5" not in codex
-    assert "claude-haiku-5-5" not in codex
 
 
 @pytest.mark.parametrize("configured", ["mixed"], indirect=True)
@@ -270,43 +252,6 @@ def test_a_requested_id_that_is_not_an_identifier_is_refused_not_raised(tmp_path
     assert _own_evidence(tmp_path, "owner-alice") == []
 
 
-def test_the_legacy_plan_also_refuses_to_admit_a_learned_id(configured_legacy_probe=None):
-    """Codex round 2: one reader of _native_models was fixed and the other was not.
-
-    `api/model_options.py` builds a LEGACY plan for a single-provider universe and
-    put the whole native catalog into it, so a learned-only id came back with
-    `in_candidate_catalog=true` and no reason there even after the
-    `served_model_plan` branch was corrected. The lesson is the one in
-    `a-delete-starts-with-every-reader`: find EVERY reader, not the one you were
-    looking at.
-    """
-    from dataclasses import replace
-
-    from tinyassets.api.model_options import _granted_only
-    from tinyassets.providers.model_policy import ConnectionModels, Model, Pricing
-    from tinyassets.providers.served_model_plan import PUBLIC_LISTED_BASIS
-
-    granted = Model("owner-typed-4-6", True, frozenset({"text"}),
-                    pricing=Pricing("fresh", unmetered=True),
-                    availability_basis="owner_declared")
-    default = Model("", True, frozenset({"text"}),
-                    pricing=Pricing("fresh", unmetered=True),
-                    availability_basis="executor_default")
-    learned = Model("vendor-newline-9-1", True, frozenset({"text"}),
-                   pricing=Pricing("fresh", unmetered=True),
-                   availability_basis=PUBLIC_LISTED_BASIS)
-    connection = ConnectionModels(
-        "a-cli", "native-subscription:a-cli", "subscription", "fresh", True, True,
-        (default, granted, learned), default_model_id="",
-    )
-    admitted = _granted_only(connection)
-    ids = [model.model_id for model in admitted.models]
-    assert "vendor-newline-9-1" not in ids, (
-        "the legacy plan must not admit a learned id either")
-    # ...and it removes ONLY that: a filter that emptied the plan would also pass
-    # the assertion above.
-    assert ids == ["", "owner-typed-4-6"]
-    assert replace(connection, models=admitted.models) == admitted
 
 
 def test_the_owner_threaded_into_the_catalog_is_the_same_identity_the_journal_uses():

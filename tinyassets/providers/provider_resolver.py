@@ -10,45 +10,6 @@ from tinyassets.providers.definition import ProviderDefinition
 if TYPE_CHECKING:
     from tinyassets.providers.router import ProviderRouter
 
-# subscription_cli provider name -> the vendor CLI adapter class. This is the ONLY
-# closed set in the compute-agnostic model: subscription access is CLI-subprocess
-# (never an API SDK), and only vendors whose CLI we run in-daemon can be subscription
-# providers. Everything else is api_key_http (open).
-_CLI_PROVIDER_CLASSES: dict[str, str] = {"claude-code": "ClaudeProvider"}
-
-
-def register_subscription_adapters(router: "ProviderRouter") -> None:
-    """Make installed CLI transports addressable; owner authority is checked per call."""
-    for ref in _CLI_PROVIDER_CLASSES:
-        try:
-            provider = _cli_provider(ref)
-        except ImportError:
-            continue
-        if provider.is_available():
-            router.register(provider)
-    from tinyassets.external_agents.registry import PACKAGES
-
-    for ref in PACKAGES:
-        router.register(_cli_provider(ref))
-
-
-def _cli_provider(ref: str) -> BaseProvider:
-    from tinyassets.external_agents.registry import PACKAGES
-
-    if ref in PACKAGES:
-        from tinyassets.external_agents.provider import ExternalAgentProvider
-
-        return ExternalAgentProvider(ref)
-    if ref == "claude-code":
-        from tinyassets.providers.claude_provider import ClaudeProvider
-
-        return ClaudeProvider()
-    raise ValueError(
-        f"unknown subscription_cli provider ref: {ref!r} "
-        f"(known: {sorted(_CLI_PROVIDER_CLASSES)})"
-    )
-
-
 def provider_for_definition(definition: ProviderDefinition) -> BaseProvider:
     """Return the executor (a ``BaseProvider``) for a registered definition.
 
@@ -60,8 +21,6 @@ def provider_for_definition(definition: ProviderDefinition) -> BaseProvider:
         from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 
         return ApiKeyHttpProvider(definition)
-    if definition.access_method == "subscription_cli":
-        return _cli_provider(definition.ref)
     raise ValueError(f"unknown access_method: {definition.access_method!r}")
 
 

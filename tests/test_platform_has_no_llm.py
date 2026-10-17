@@ -33,25 +33,11 @@ from tinyassets.providers.router import ProviderRouter
 _ALL_BUILTIN = ("claude-code", "codex", "ollama-local")
 
 
-def _builtin_executor_classes() -> dict[str, type]:
-    from tinyassets.external_agents.provider import ExternalAgentProvider
-    from tinyassets.providers.claude_provider import ClaudeProvider
-    from tinyassets.providers.ollama_provider import OllamaProvider
-
-    classes = (ClaudeProvider, OllamaProvider)
-    return {**{cls.name: cls for cls in classes}, "codex": ExternalAgentProvider}
 
 
 class _SpyProvider(BaseProvider):
     """Records calls; carries the REAL executor's declared credential source."""
 
-    def __init__(self, name: str) -> None:
-        self.name = name
-        self.family = name
-        self.calls: list[str] = []
-        real = _builtin_executor_classes().get(name)
-        if real is not None and hasattr(real, "credential_source"):
-            self.credential_source = real.credential_source
 
     async def complete(self, prompt, system, config, *, universe_dir=None):
         self.calls.append(prompt)
@@ -244,14 +230,6 @@ def test_owner_authority_cannot_launch_a_host_credential_provider(
     assert _calls(spies) == {}
 
 
-def test_exactly_the_host_credential_executors_declare_it():
-    from tinyassets.providers.owner_binding import is_host_credential_provider
-
-    host_only = sorted(
-        name for name, cls in _builtin_executor_classes().items()
-        if is_host_credential_provider(cls)
-    )
-    assert host_only == ["ollama-local"]
 
 
 def test_dispatch_rechecks_owner_source_membership_after_grant_revocation(
@@ -351,30 +329,6 @@ def test_dispatch_rechecks_owner_source_membership_after_grant_revocation(
         require_owner_bound_dispatch(source, universe_dir=universe, invocation_carrier=carrier)
 
 
-def test_unavailable_http_broker_does_not_block_owned_subscription(tmp_path, monkeypatch):
-    from tests.test_open_serving_bind import _setup
-    from tinyassets.providers.owner_binding import require_owner_bound_dispatch
-    from tinyassets.storage.outbound_connections import ProxyRequestError
-
-    universe, _agent, definition = _setup(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        "tinyassets.credential_vault.current_llm_subscription_custody",
-        lambda _conn, **scope: object() if scope["service"] == "claude" else None,
-    )
-
-    def broker_down(*_args, **_kwargs):
-        raise ProxyRequestError("broker unavailable")
-
-    monkeypatch.setattr("tinyassets.broker.ledger_queries.query_ledger", broker_down)
-    authority = SimpleNamespace(owner_user_id="owner-1", universe_id=universe.name)
-    require_owner_bound_dispatch(
-        "claude-code", universe_dir=universe, served_authority=authority,
-    )
-    with pytest.raises(PlatformLLMCallRefusedError, match="current connected source"):
-        require_owner_bound_dispatch(
-            f"api_key_http:{definition.id}", universe_dir=universe,
-            served_authority=authority,
-        )
 
 
 def test_owner_authority_without_a_universe_dir_cannot_fall_to_host_env():

@@ -53,7 +53,7 @@ def _rail():
 def test_an_unpowered_universe_still_blocks_on_its_connect_request(rig):
     """The unpowered state is unchanged: this one really is waiting on you."""
     first = _rail()[0]
-    assert first["request_id"] == "sys_connect_llm"
+    assert first["request_id"] == "sys_connect_model"
     assert first["status"] == "pending" and first["sticky"] is True
 
 
@@ -61,7 +61,7 @@ def test_a_connected_universe_reports_the_row_as_optional(rig, monkeypatch):
     monkeypatch.setattr("tinyassets.api.pending_requests._serving_llm_bound",
                         lambda *a, **k: True)
     row = _rail()[-1]
-    assert row["request_id"] == "sys_connect_llm"
+    assert row["request_id"] == "sys_connect_model"
     assert row["title"] == "Connect another LLM" and row["sticky"] is False
     # Still offered, still answerable -- just not outstanding.
     assert row["status"] == "optional"
@@ -82,7 +82,7 @@ def test_an_optional_row_is_not_counted_as_an_outstanding_ask(rig, monkeypatch):
 @pytest.mark.parametrize("remaining", [9, 0, 10, 50, None])
 def test_low_compute_is_derived_each_read(rig, monkeypatch, remaining):
     from tinyassets import request_budget as budgets
-    from tinyassets.api.pending_requests import _connect_llm_request
+    from tinyassets.api.pending_requests import _model_connect_request
     from tinyassets.storage.pending_requests import list_pending
 
     monkeypatch.setattr("tinyassets.api.pending_requests._serving_llm_bound",
@@ -91,9 +91,9 @@ def test_low_compute_is_derived_each_read(rig, monkeypatch, remaining):
         "source", budgets.RequestBudget(50 - remaining, 50, "Source", "UTC"),
     ),))
     monkeypatch.setattr(budgets, "budget_for_rail", lambda *args: pool)
-    original = _connect_llm_request(connected=True)
+    original = _model_connect_request(connected=True)
     for _ in range(2):
-        cards = [row for row in _rail() if row["request_id"] == "sys_connect_llm"]
+        cards = [row for row in _rail() if row["request_id"] == "sys_connect_model"]
         assert len(cards) == 1
         card = cards[0]
         if remaining is not None and remaining < 10:
@@ -109,7 +109,7 @@ def test_low_compute_is_derived_each_read(rig, monkeypatch, remaining):
             assert card.get("suggestion") == original.get("suggestion")
         assert card["body"] == original["body"]
         assert card["action"] == original["action"]
-        assert not any(row["request_id"] == "sys_connect_llm"
+        assert not any(row["request_id"] == "sys_connect_model"
                        for row in list_pending(rig / "u-owner"))
     pool = budgets.PooledBudget((("source", budgets.RequestBudget(0, 50, "Source", "UTC")),))
     assert _rail()[-1]["status"] == "optional"
@@ -120,7 +120,7 @@ def test_low_compute_is_derived_each_read(rig, monkeypatch, remaining):
 # --------------------------------------------------------------------------- #
 
 
-_CONNECTED = {"request_id": "sys_connect_llm", "kind": "LLM", "sticky": False,
+_CONNECTED = {"request_id": "sys_connect_model", "kind": "LLM", "sticky": False,
               "status": "optional", "title": "Connect another LLM",
               "body": "Add another model source.", "fields": [],
               "action": {"type": "connect", "use": "model",
@@ -178,7 +178,7 @@ def test_an_older_page_payload_without_a_status_is_still_treated_as_an_ask():
 @pytest.mark.skipif(_NODE is None, reason="node is not installed")
 def test_the_optional_row_renders_when_the_model_picker_opens_it():
     """``openConnectRequest`` sets ``railOpen``; that is the picker's route in."""
-    out = _run_head([_CONNECTED], "railOpen='sys_connect_llm';renderRail(railCache);")
+    out = _run_head([_CONNECTED], "railOpen='sys_connect_model';renderRail(railCache);")
     assert len(out["tabs"]) == 1, "the model picker's route had no card to show"
     assert out["tabs"][0]["hasPanel"] is True, "the optional row could not be opened"
     assert out["tabs"][0]["optional"] is True
@@ -189,14 +189,14 @@ def test_closing_the_opened_optional_row_removes_it_from_the_rail():
     """Tapping its header IS the dismiss a derived entry cannot otherwise have."""
     out = _run_head(
         [_CONNECTED],
-        "railOpen='sys_connect_llm';renderRail(railCache);"
+        "railOpen='sys_connect_model';renderRail(railCache);"
         "railOpen=null;renderRail(railCache);",
     )
     assert out["tabs"] == [], "the card the user closed stayed on the rail"
     assert out["panelHidden"] is True, "the setup panel was left on screen"
 
 
-_BLOCKING = {"request_id": "sys_connect_llm", "kind": "LLM", "sticky": True,
+_BLOCKING = {"request_id": "sys_connect_model", "kind": "LLM", "sticky": True,
              "status": "pending", "title": "Connect the model your universe runs on",
              "body": "Your universe needs a model to think with.", "fields": [],
              "action": {"type": "connect", "use": "model", "setup": {
@@ -221,7 +221,7 @@ def test_the_finished_setup_card_does_not_carry_its_expansion_across_the_connect
     # the shapes disclosure expanded as ConnectShapes leaves it.
     out = _run_head(
         [_BLOCKING],
-        "railOpen='sys_connect_llm';$('connect-other').open=true;renderRail(railCache);"
+        "railOpen='sys_connect_model';$('connect-other').open=true;renderRail(railCache);"
         # ...then the callback returns and the rail refreshes: now connected.
         "renderRail(" + json.dumps([_CONNECTED]) + ");",
     )
@@ -243,7 +243,7 @@ def test_a_still_unpowered_setup_keeps_its_expansion_across_a_refresh():
     # one-tap button. The assertion is unchanged: a refresh must not close it.
     out = _run_head(
         [_BLOCKING],
-        "railOpen='sys_connect_llm';renderRail(railCache);"
+        "railOpen='sys_connect_model';renderRail(railCache);"
         "$('connect-other').open=true;$('connect-other').ontoggle();"
         "renderRail(" + json.dumps([_BLOCKING]) + ");",
     )
@@ -256,9 +256,9 @@ def test_a_powered_user_can_still_open_connect_another_after_the_transition():
     """The reset is one-shot: adding a SECOND source still opens on demand."""
     out = _run_head(
         [_BLOCKING],
-        "railOpen='sys_connect_llm';renderRail(railCache);"
+        "railOpen='sys_connect_model';renderRail(railCache);"
         "renderRail(" + json.dumps([_CONNECTED]) + ");"
         # The user now taps "Connect another LLM" themselves.
-        "railOpen='sys_connect_llm';renderRail(railCache);",
+        "railOpen='sys_connect_model';renderRail(railCache);",
     )
     assert out["tabs"][0]["hasPanel"] is True, "an optional row could no longer be opened"
