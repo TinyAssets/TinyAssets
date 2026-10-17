@@ -93,6 +93,7 @@ ENV_READ_USER_HOME="${TINYASSETS_ENV_READ_USER_HOME-/opt/tinyassets}"
 ENV_READ_USER_SHELL="${TINYASSETS_ENV_READ_USER_SHELL-/usr/sbin/nologin}"
 DAEMON_ENV_FILE="${TINYASSETS_DAEMON_ENV_FILE-/etc/tinyassets/daemon.env}"
 DAEMON_ENV_SOURCE="${TINYASSETS_DAEMON_ENV_SOURCE-/etc/tinyassets/env}"
+BROKER_ENV_FILE="${TINYASSETS_BROKER_ENV_FILE-${DAEMON_ENV_FILE%/*}/broker.env}"
 COMPOSE_ASSIGNMENT=""
 COMPOSE_TRIMMED=""
 ATOMIC_TEMP=""
@@ -811,6 +812,33 @@ write_daemon_env() {
         refuse_render "${RENDER_REMOVED} survived into ${DAEMON_ENV_FILE}"
     fi
     assert_readable
+    # The broker needs registered OAuth clients for local refresh. Reuse the
+    # parsed daemon source, selecting only this provider-agnostic namespace.
+    local rest="${READ_CONTENT}" line selected=0 out="# GENERATED OAuth broker environment"$'\n'
+    QUOTE_OPEN=""
+    while [ -n "${rest}" ]; do
+        if [[ "${rest}" == *$'\n'* ]]; then
+            line="${rest%%$'\n'*}"
+            rest="${rest#*$'\n'}"
+        else
+            line="${rest}"
+            rest=""
+        fi
+        if [ -n "${QUOTE_OPEN}" ]; then
+            if [ "${selected}" = 1 ]; then out+="${line}"$'\n'; fi
+            if closes_open_quote "${line}"; then QUOTE_OPEN=""; fi
+            continue
+        fi
+        selected=0
+        if parse_env_assignment "${line}"; then
+            classify_env_value || true # Already validated by render_daemon_content.
+            if [[ "${ENV_KEY}" =~ ^TINYASSETS_OAUTH_[A-Z0-9_]+$ ]]; then
+                selected=1
+                out+="${line}"$'\n'
+            fi
+        fi
+    done
+    ( ENV_FILE="${BROKER_ENV_FILE}"; atomic_install "${out}"; assert_readable )
     echo "rendered ${DAEMON_ENV_FILE} from ${DAEMON_ENV_SOURCE}"
 }
 

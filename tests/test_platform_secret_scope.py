@@ -495,3 +495,22 @@ def test_a_source_that_cannot_be_read_installs_nothing(tmp_path):
 
     assert result.returncode == 7
     assert not daemon.exists()
+
+
+@_POSIX_SHELL
+def test_broker_receives_only_registered_oauth_environment(tmp_path):
+    source, daemon = tmp_path / "env", tmp_path / "daemon.env"
+    source.write_text("STRIPE_SECRET_KEY=not-for-broker\n"
+                      "TINYASSETS_OAUTH_EXAMPLE_CLIENT_ID=client\n"
+                      "TINYASSETS_OAUTH_EXAMPLE_SECRET=private-fixture\n"
+                      "TINYASSETS_OAUTH_DIRECTORY=/app/providers.json\n"
+                      "UNRELATED='line one\nTINYASSETS_OAUTH_FAKE_SECRET=not-a-variable'\n")
+    result = _helper(tmp_path, ["render-daemon-env"], source, daemon)
+    assert result.returncode == 0, result.stderr
+    broker = tmp_path / "broker.env"
+    assert _assigned(broker) == {"TINYASSETS_OAUTH_EXAMPLE_CLIENT_ID",
+                                 "TINYASSETS_OAUTH_EXAMPLE_SECRET",
+                                 "TINYASSETS_OAUTH_DIRECTORY"}
+    assert "private-fixture" not in result.stdout + result.stderr
+    service = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]["broker"]
+    assert service["env_file"] == [{"path": "/etc/tinyassets/broker.env", "required": False}]
