@@ -2080,7 +2080,8 @@ def _reconcile_connections(uid, udir):
                                            command_center=uid, grant_id=grant_id)
         except GrantResolutionError:
             continue
-        if resource.get("request_ref") != row["request_id"]:
+        if (resource.get("committed_via") != "door"
+                or resource.get("request_ref") != row["request_id"]):
             continue
         if action.get("type") == "rotate_http":
             if resource["incarnation"] != action.get("incarnation"):
@@ -3146,7 +3147,6 @@ def _deposit_answer(
         "destination": action["destination"], "auth_scheme": "none",
         "allowed_endpoints": action["endpoints"], "scopes": action.get("scopes") or [],
         "access": action.get("access") or "exact", "git_host": action.get("git_host") or "",
-        "request_ref": request_id,
     })
     if deposited.get("error"):
         return deposited

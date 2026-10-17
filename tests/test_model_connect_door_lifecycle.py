@@ -53,6 +53,9 @@ def _broker_process(root, socket_path, relay_socket, pipe, kind):
     from tinyassets.storage import outbound_connections as outbound
 
     root = Path(root)
+    from tinyassets.boxes import layout
+
+    layout.BROKER_READ_GID = os.getgid()
     seed_owner_admission(root, principal="owner", center="center")
     seed_owner_admission(root, principal="foreign", center="foreign-center")
     identities = OwnerIdentities(root / ".broker/owner-identities.db")
@@ -117,6 +120,10 @@ def _broker_process(root, socket_path, relay_socket, pipe, kind):
     acquisition.exchange_key = exchange
 
     def network(**kwargs):
+        if kwargs.get("checkpoint"):
+            kwargs["checkpoint"]()
+        if kwargs.get("on_connect"):
+            kwargs["on_connect"](None)
         if kind in DEPOSIT_SECRETS:
             assert kwargs["credential"] == DEPOSIT_SECRETS[kind]
         elif kind == "none":
@@ -124,8 +131,21 @@ def _broker_process(root, socket_path, relay_socket, pipe, kind):
         else:
             assert kwargs["credential"] in (access, refreshed, key)
         events.append(("call", os.getpid()))
+        body = b"broker response"
+        if kind == "preset":
+            from tests.test_model_bootstrap_candidate import row
+
+            if "/models/user" in kwargs["request"]["url"]:
+                body = json.dumps({"data": [row("fixture/free-model")]}).encode()
+            elif "/benchmarks" in kwargs["request"]["url"]:
+                body = json.dumps({"data": []}).encode()
+            else:
+                body = json.dumps({"model": "fixture/free-model", "choices": [{"message": {
+                    "role": "assistant", "content": "Hello from your default agent."},
+                    "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 8}}).encode()
         return outbound.UpstreamStream.complete({
-            "status": 200, "reason": "OK", "headers": {}, "body": b"broker response"}, ())
+            "status": 200, "reason": "OK", "headers": {}, "body": body}, ())
 
     outbound._TrustedNetworkDriver = lambda *_: network
     dispatchers = _Dispatchers(root, allow_test_fixtures=True)
@@ -192,6 +212,10 @@ def lifecycle(tmp_path, monkeypatch, request):
         broker_socket = relay_socket
 
         def grant(self, owner, center, purpose):
+            if center != "center":
+                from tinyassets.boxes.provider import BoxAuthError
+
+                raise BoxAuthError("center is not admitted")
             assert (owner, center) == ("owner", "center")
             return SimpleNamespace(uid=os.getuid())
 
@@ -472,11 +496,76 @@ runtime = owner_runtime.start(Path(relay))
 try:
     data = json.loads(payload)
     args = dict(principal="owner", command_center="center")
-    if operation == "connect":
+    if operation == "forge_reference":
+        from tinyassets.broker.http_connect import connect_operation
+        from tinyassets.broker.client import BrokerRefused
+        ref = data.pop("request_ref")
+        prepared = connect_operation(root, **args, **data, action="prepare")
+        try:
+            connect_operation(root, **args, **data, action="commit",
+                              expected=prepared["revision"], request_ref=ref)
+        except BrokerRefused:
+            result = {"status": "refused"}
+        else:
+            raise AssertionError("box stored a request reference")
+    elif operation == "connect":
         from tinyassets.broker.http_connect import connect_operation
         prepared = connect_operation(root, **args, **data, action="prepare")
         result = connect_operation(root, **args, **data, action="commit",
                                    expected=prepared["revision"])
+    elif operation in {"model_offer", "model_offer_unprotected", "model_approve", "chat"}:
+        import asyncio, time
+        import httpx
+        from starlette.applications import Starlette
+        from starlette.routing import Route
+        from tinyassets import onboarding
+        from tinyassets.auth.middleware import identity_context
+        from tinyassets.auth.provider import Identity
+        from tinyassets.daemon_server import grant_universe_access, set_founder_home
+        from tinyassets.onboarding.inline_requests import handle_approval
+        from tinyassets.provider_assignment import load_provider_assignment
+        # The process rig maps the deployment's metadata reader group to its own gid.
+        from tinyassets.boxes import layout
+        layout.BROKER_READ_GID = os.getgid()
+        home = root / "center"
+        home.mkdir(exist_ok=True)
+        set_founder_home(root, founder_sub="owner", universe_id="center", platform_generated=True)
+        grant_universe_access(root, universe_id="center", actor_id="owner", permission="admin")
+        onboarding.onboarding_enabled = lambda: True
+        onboarding.app_config = lambda: {"resource": "https://tinyassets.io/mcp"}
+        session = {"session_hash": "protected-session", "identity_json": '{"user_id":"owner"}',
+                   "expires_at": time.time() + 600}
+        identity = Identity(user_id="owner", username="owner", capabilities=["write"],
+                            metadata={} if operation == "model_offer_unprotected" else
+                                {"router_owner_session": session})
+        with identity_context(identity):
+            if operation == "chat":
+                from tinyassets.auth import middleware as auth
+                from tinyassets.universe_intelligence import converse
+                reserve = auth.reserve_provider_request(principal_id="owner",
+                    session_id="owner-chat", request_id="first-chat", tool_name="converse")
+                capability = auth.claim_provider_request(reserve, tool_name="converse")
+                try:
+                    result = {"reply": converse("center", "Hello", actor_id="owner")}
+                finally:
+                    auth.revoke_provider_request(capability)
+            else:
+                async def approve():
+                    app = Starlette(routes=[Route("/app/approvals/{operation}",
+                                                  handle_approval, methods=["POST"])])
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                            base_url="https://tinyassets.io") as client:
+                        response = await client.post("/app/approvals/" + (
+                            "model_connection" if operation.startswith("model_offer")
+                            else "answer"),
+                            json={"universe_id": "center", **data},
+                            headers={"Origin": "https://tinyassets.io"})
+                        assert response.status_code == (
+                            403 if operation == "model_offer_unprotected" else 200), response.text
+                        return response.json()
+                result = asyncio.run(approve())
+            assignment = load_provider_assignment(root, universe_id="center")
+            result["assignment"] = None if assignment is None else assignment.provider
     elif operation in {"ask", "reconcile", "answer"}:
         from tinyassets.auth.middleware import identity_context
         from tinyassets.auth.provider import Identity
@@ -538,8 +627,7 @@ def test_other_auth_connect_box_call_disconnect(lifecycle):
                   "methods": ["POST"]}]
     if rig.kind == "none":
         receipt = _box_operation(rig, "connect", {
-            "destination": "fixture", "policy": policy(endpoints, "none"),
-            "request_ref": "box-request"})["projection"]
+            "destination": "fixture", "policy": policy(endpoints, "none")})["projection"]
     else:
         secret = DEPOSIT_SECRETS[rig.kind]
         if rig.kind == "url_secret":
@@ -552,7 +640,7 @@ def test_other_auth_connect_box_call_disconnect(lifecycle):
         assert response.status_code == 200, response.text
         receipt = response.json()
         assert DEPOSIT_SECRETS[rig.kind] not in response.text
-    assert receipt["request_ref"] == "box-request"
+    assert receipt["request_ref"] == ("" if rig.kind == "none" else "box-request")
     grant, connection = receipt["grant_id"], receipt["connection_id"]
     _box_call(rig, grant, connection, succeeds=True)
     if rig.kind in {"none", "basic", "oauth1a"}:
@@ -624,5 +712,66 @@ def test_box_connect_schema_has_no_secret_parameters():
 
     from tinyassets.api.http_connection import CONNECT_FIELDS, connect_http
 
-    assert not CONNECT_FIELDS & {"secret", "token", "key", "password", "capability_url"}
+    assert not CONNECT_FIELDS & {
+        "secret", "token", "key", "password", "capability_url", "request_ref"}
     assert set(inspect.signature(connect_http).parameters) == {"universe_id", "payload"}
+
+
+@pytest.mark.parametrize("lifecycle", ["preset"], indirect=True)
+def test_first_preset_confirm_then_default_agent_chat_in_box(lifecycle):
+    rig = lifecycle
+    begun = rig.post("begin", {"preset_id": PRESET,
+                               "code_challenge": pkce.challenge_for(VERIFIER)})
+    assert begun.status_code == 200, begun.text
+    done = rig.post("exchange", {"flow": begun.json()["flow"], "code": "code",
+                                 "code_verifier": VERIFIER})
+    assert done.status_code == 200, done.text
+    receipt = done.json()
+    assert receipt["model_confirmation"] == {
+        "grant_id": receipt["grant_id"], "universe_id": "center"}
+    unprotected = _box_operation(rig, "model_offer_unprotected", {
+        "grant_id": receipt["grant_id"]})
+    assert unprotected == {"error": "interactive_approval_required", "assignment": None}
+    offered = _box_operation(rig, "model_offer", {"grant_id": receipt["grant_id"]})
+    assert offered["status"] == "confirmation_required"
+    assert offered["request"]["action"]["type"] == "bind_model_access"
+    assert offered["assignment"] is None
+    access = list(offered["request"]["action"]["model_access"].values())
+    assert access == [{"model_scope": "discovered", "model_ids": [], "cost_caps": None}]
+    approved = _box_operation(rig, "model_approve", {
+        "request_id": offered["request_id"], "values": {}})
+    assert approved["status"] == "answered"
+    assert approved["assignment"].startswith("api_key_http:")
+    reply = _box_operation(rig, "chat", {})
+    assert "Hello from your default agent." in reply["reply"]
+    assert all(pid == rig.broker_pid for _, pid in rig.events())
+    assert not (rig.router / "center").exists()
+    assert not (rig.router / ".platform").exists()
+
+
+@pytest.mark.parametrize("lifecycle", ["none"], indirect=True)
+def test_box_commit_cannot_carry_an_approval_reference(lifecycle):
+    from tinyassets.onboarding.connection_definition import policy
+
+    endpoints = [{"host": "api.example.com", "path_template": "/data", "methods": ["POST"]}]
+    pending = _box_operation(lifecycle, "ask", {
+        "kind": "connection", "title": "Use model", "body": "Confirm access.", "fields": [],
+        "action": {"type": "connect", "destination": "fixture", "auth_scheme": "none",
+                   "endpoints": endpoints, "uses": {"model": {"wire": "openai_chat",
+                       "billing": "free", "models": [
+                           {"id": "fixture-model", "tools": True, "context": 32768}]}}}})
+    ref = pending["request_id"]
+    result = _box_operation(lifecycle, "forge_reference", {
+        "destination": "fixture", "policy": policy(endpoints, "none"), "request_ref": ref})
+    assert result == {"status": "refused"}
+    direct = _box_operation(lifecycle, "ask", {"direct": True,
+        "destination": "fixture", "auth_scheme": "none", "allowed_endpoints": endpoints,
+        "request_ref": ref})
+    assert direct["error"] == "connection_setup_invalid"
+    connected = _box_operation(lifecycle, "connect", {
+        "destination": "fixture", "policy": policy(endpoints, "none")})["projection"]
+    assert _box_operation(lifecycle, "reconcile", {"request_id": ref})["status"] == "pending"
+    from tinyassets.broker.ledger_queries import HAS_MODEL_SOURCE, query_ledger
+
+    assert query_ledger(lifecycle.router, query=HAS_MODEL_SOURCE, principal="owner",
+        command_center="center", grant_id=connected["grant_id"]) == {"model_source": False}

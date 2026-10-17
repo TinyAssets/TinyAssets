@@ -203,7 +203,9 @@ custody; `oauth_offer`, `oauth_exchange` and `preset_exchange` keep discovery an
 exchanges in the broker. Box connect and rotate actions take no credential:
 keyless connects use the box channel; other schemes return the existing `/app`
 link with `request`, `center` and connection ID. The browser posts credentials
-only to the door. Commit and rotation record `request_ref`; box ledger polling
+only to the door. Commit and rotation record `request_ref` only at the door, with broker-stamped
+`committed_via` derived from transport; the box channel rejects request references.
+Only door-committed grants can complete asks. Box ledger polling
 through `GRANTED_RESOURCE` matches the pending request, applies its uses, resolves
 it and wakes the existing continuation. There is no push or router request read.
 The lifecycle tests exercise all nine auth variants from a separate box process,
@@ -453,3 +455,18 @@ cannot be attributed. Shared tables are not split.
 - Build what the research says to build.
 - A co-admin of a shared center is refused, as the research recommends by default. Sharing is by publishing.
 - Features not ported into the owner daemon at cutover are dropped. The list is reported to the founder before the cutover deploy.
+
+### 3c review corrections
+
+- A credential-free grant records its commit transport (`door` or `box`), chosen
+  by the broker. Only `door` plus the matching request reference completes an
+  existing connection ask; a keyless agent connection cannot approve model use.
+- Model receipts continue in the browser to the protected owner approval endpoint
+  in the box. It verifies the live door grant, prepares only credential-free
+  model metadata and raises the existing `bind_model_access` ask. The owner then
+  approves that ask. Existing automatic selection ranks all accepted sources;
+  the first source powers the default agent. No secret or flow enters the box.
+- Failed provider revocation still erases custody, but returns
+  `removed_locally_revoke_failed` and a durable provider recovery message.
+  Since the token is erased, recovery is manual revocation at the provider,
+  named from directory data; retrying removal retains that outcome.

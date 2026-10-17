@@ -67,15 +67,19 @@ def _validate_update(document):
         raise ValueError("full access changes only the mode")
 
 
-def local_operation(ledger, *, principal, command_center, document):
+def local_operation(ledger, *, principal, command_center, document, committed_via):
+    if committed_via not in {"door", "box"}:
+        raise ValueError("invalid commit transport")
+    if committed_via == "box" and "request_ref" in document:
+        raise PermissionError("request references require the door")
     if document.get("action") in {"oauth_offer", "oauth_exchange", "preset_exchange"}:
         from tinyassets.broker.model_connect import local_operation as flow_operation
 
         return flow_operation(ledger, principal=principal, command_center=command_center,
-                              document=document)
+                              document=document, committed_via=committed_via)
     if document.get("action") in {"inspect_custody", "rotate"}:
         return _custody_local(ledger, principal=principal, command_center=command_center,
-                              document=document)
+                              document=document, committed_via=committed_via)
     if document.get("action") in {"extend", "full"}:
         return _update_local(ledger, principal=principal, command_center=command_center,
                              document=document)
@@ -180,8 +184,9 @@ def local_operation(ledger, *, principal, command_center, document):
                 conn.rollback()
                 return failure
         resource = ledger._get_connection_resource(connection_id, _transaction=conn)
-        conn.execute("UPDATE outbound_connections SET request_ref=? WHERE connection_id=?",
-                     (document.get("request_ref", ""), connection_id))
+        conn.execute("UPDATE outbound_connections SET request_ref=?, committed_via=? "
+                     "WHERE connection_id=?",
+                     (document.get("request_ref", ""), committed_via, connection_id))
         return {"projection": {**_project(resource, grant),
                                "request_ref": document.get("request_ref", "")}}
 
@@ -322,7 +327,7 @@ def _validate_custody(document):
         raise ValueError("invalid custody operation")
 
 
-def _custody_local(ledger, *, principal, command_center, document):
+def _custody_local(ledger, *, principal, command_center, document, committed_via):
     from tinyassets.api.http_connection import _ids, _secret_shape_error, _unpasteable_scheme
     from tinyassets.credential_vault import http_deposit_refusal
     from tinyassets.storage.outbound_connections import GrantResolutionError
@@ -358,8 +363,9 @@ def _custody_local(ledger, *, principal, command_center, document):
                            document["secret"])
         if failure:
             return failure
-        conn.execute("UPDATE outbound_connections SET request_ref=? WHERE connection_id=?",
-                     (document.get("request_ref", ""), connection))
+        conn.execute("UPDATE outbound_connections SET request_ref=?, committed_via=? "
+                     "WHERE connection_id=?",
+                     (document.get("request_ref", ""), committed_via, connection))
         return {"rotated": True}
 
 

@@ -951,7 +951,8 @@ class _Connection:
                 raise ValueError("unsupported connect fields")
             _namespace(doc["principal"], doc["command_center"])
             validate(doc["document"])
-            if self._role == BOX and (doc["document"].get("secret")
+            if self._role == BOX and ("request_ref" in doc["document"]
+                    or doc["document"].get("secret")
                     or doc["document"]["action"] in {
                         "rotate", "oauth_offer", "oauth_exchange", "preset_exchange"}
                     or doc["document"].get("policy", {}).get("auth_scheme", "none") != "none"):
@@ -968,7 +969,8 @@ class _Connection:
                 result = local_operation(self._server._ledger_for(doc["principal"]),
                                     principal=doc["principal"],
                                     command_center=doc["command_center"],
-                                    document=doc["document"])
+                                    document=doc["document"],
+                                    committed_via="door" if self._role == OWNER else "box")
                 answer = {"op": "HTTP_CONNECT_RESULT", "result": result}
                 rf.control(rf.CONNECTION, answer)
                 return answer
