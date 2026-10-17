@@ -238,18 +238,3 @@ def test_get_status_session_boundary_uses_token_safe_fingerprint(status_env):
     ]
     # No prior activity log → prior_session_context_available is False.
     assert sb["prior_session_context_available"] is False
-
-
-def test_get_status_caveats_warn_when_no_provider_bound(status_env, monkeypatch):
-    """When no LLM env-var is set AND no CLI is on PATH, caveats warn unbound."""
-    import shutil
-    for var in (
-        "OLLAMA_HOST", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY",
-        "XAI_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY",
-    ):
-        monkeypatch.delenv(var, raising=False)
-    # Also stub which() so codex/claude CLI presence on the dev machine
-    # doesn't flip endpoint_hint away from "unset".
-    monkeypatch.setattr(shutil, "which", lambda _name: None)
-    parsed = json.loads(get_status("test-universe"))
-    assert any("No default LLM provider detected" in c for c in parsed["caveats"])

@@ -69,8 +69,6 @@ def test_live_binding_uses_shared_plan_and_preserves_accepted_constraints(catalo
     }}
 
 
-
-
 def test_newly_connected_source_is_listed_but_not_selectable_until_accepted(catalogue):
     """Connected custody is not model authority: a source the owner never
     accepted is shown so it can be offered, and nothing on it is selectable."""
@@ -305,9 +303,3 @@ def test_source_revocation_does_not_hide_independent_source(catalogue, reader, m
             if row["in_candidate_catalog"]] == result["order"]
     assert result["unavailable"] == []
     assert any("source_revoked" in row["reasons"] for row in result["sources"])
-
-
-
-
-
-

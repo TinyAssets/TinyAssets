@@ -241,10 +241,6 @@ def _activity_stops(kind: str, provider_call=None) -> bool:
         return False
 
 
-
-
-
-
 def _listed_for(url, monkeypatch):
     """The tools the engine route lists to a client that dialled ``url``."""
     from types import SimpleNamespace
@@ -266,8 +262,6 @@ def _render(kind, definition, tmp_path, monkeypatch):
     family, _, name = kind.partition(":")
     if family == "http":
         return _http(name, definition, tmp_path, monkeypatch)
-    if kind == "local:ollama":
-        return None
     raise AssertionError(f"registered provider kind {kind} has no renderer in this guard")
 
 
@@ -275,11 +269,6 @@ def _render(kind, definition, tmp_path, monkeypatch):
 
 def test_the_guard_covers_every_registered_provider_kind():
     assert set(_registered_kinds()) == {f"http:{p}" for p in _HTTP_PROTOCOLS}
-
-
-def test_unregistered_local_provider_cannot_execute_an_agent_turn():
-    assert "local:ollama" not in _registered_kinds()
-    _assert_refused_for_agent_turns("local:ollama")
 
 
 @pytest.mark.parametrize("kind", _registered_kinds())
@@ -359,5 +348,3 @@ def test_the_guard_fails_an_adapter_that_asks_for_its_grant(
     tools, _, capabilities = _render(kind, definition, tmp_path, monkeypatch)
     assert sorted(t.key() for t in tools) != list(definition.tool_keys())
     assert capabilities != AGENT_CAPABILITIES
-
-

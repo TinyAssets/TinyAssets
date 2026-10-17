@@ -67,7 +67,7 @@ class UniverseConfig:
     """Secret-free provider-to-binding projection; never request authority."""
 
     # Engine source (how this universe's intelligence is powered) — set by
-    # `universe action=set_engine`. The founder chooses at onboard.
+    # The serving binding projects the current owner assignment.
     engine_source: str = "byo_api_key"
     """How this command center sources its engine: ``byo_api_key`` (default; a BYO API
     key in the vault) / ``requester_local`` / ``self_hosted_endpoint`` /
@@ -270,7 +270,7 @@ def write_universe_config_fields(
     and writes the merged mapping back atomically (``_publish_config``). Existing
     keys not named in *fields* are preserved. This is the write path for
     per-universe engine assignment (``preferred_writer`` /
-    ``allow_api_key_providers`` set by ``universe action=set_engine``).
+    engine metadata).
 
     Fails loudly (raises) if PyYAML is unavailable or the write fails — a
     silently-dropped engine assignment would leave the universe on the wrong

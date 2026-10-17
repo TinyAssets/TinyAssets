@@ -151,12 +151,6 @@ def test_an_empty_subject_is_never_a_key():
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # The unplanned served call (no journal) and everything that is not a chat.
 # ---------------------------------------------------------------------------
@@ -212,10 +206,6 @@ def _call_sync(provider, operation):
             return model_call_sync(router, "writer", "p", "s",
                                    ModelConfig(absolute_cap_s=60.0),
                                    operation=operation, universe_context=context)
-
-
-
-
 
 
 def test_an_http_call_is_never_cancelled_so_its_usage_settles():
@@ -362,7 +352,6 @@ def test_live_run_returns_work_that_finished_before_the_stop():
         return await live.run(quick())
 
     assert asyncio.run(drive()) == "answer"
-
 
 
 def test_a_stop_reaches_the_addressed_agent_and_stop_all_reaches_every_one():

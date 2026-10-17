@@ -41,9 +41,6 @@ def _write(root, entry):
     )
 
 
-
-
-
 def test_publish_readback_binds_owner_and_hides_secret_in_repr(tmp_path):
     from tinyassets.engine_mcp_http import _EngineServer, _write_routes
 
@@ -149,8 +146,6 @@ def test_replacement_record_cannot_be_used_by_previous_owner(tmp_path):
         conn.execute("UPDATE agent_bindings SET created_by = 'actor-b'")
         conn.execute("UPDATE universe_acl SET actor_id = 'actor-b'")
     assert _read(actor_id="actor-b").secret == second.secret != first.secret
-
-
 
 
 def test_conflicting_serving_owners_are_not_picked_by_order(tmp_path, monkeypatch):

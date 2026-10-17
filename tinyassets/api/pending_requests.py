@@ -2177,8 +2177,6 @@ _RECONNECT_REQUEST_PREFIX = "reconnect-source"
 SIGN_IN_SHAPE = "sign_in"
 
 
-
-
 def list_requests(*, universe_id: str = "") -> dict[str, Any]:
     """What the app's rail renders, and what the phone reads too: EVERY pending row.
 

@@ -187,5 +187,3 @@ def test_coordinator_fault_after_reply_records_failure(tmp_path, monkeypatch):
     rows = store.load_recent_readonly(tmp_path / "u-x", "principal:founder-1")
     assert response["history_saved"] is True
     assert [row.speaker for row in rows] == ["founder", "platform"]
-
-

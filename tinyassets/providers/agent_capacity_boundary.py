@@ -45,8 +45,6 @@ class CapacityBoundary:
     refusal_detail: str = ""
 
 
-
-
 def capacity_boundary(
     current: ModelRef, attempts: Any, *, execution_kind: str,
 ) -> CapacityBoundary | None:

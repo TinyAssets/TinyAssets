@@ -89,7 +89,6 @@ def connected_sources(base: str | Path, universe: str | Path, owner: str,
     return frozenset(sources)
 
 
-
 #: Prefix of the refusal when no accepted model can run. The served turn's
 #: notice reads the held sources after ``HELD_SOURCES`` (universe_server).
 NO_ELIGIBLE_MODEL = "no eligible model in the connected sources"
@@ -194,8 +193,6 @@ class ModelSourceUnavailable(PermissionError):
             raise ValueError("invalid model source reason")
         super().__init__(reason)
         self.reason = reason
-
-
 
 
 def _own_verified_candidates(base, source_kind, provider_ref, owner, *, already,

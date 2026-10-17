@@ -92,7 +92,7 @@ def _home(journal):
     return path
 
 
-def _killed_native_turn(journal):
+def _killed_inference_turn(journal):
     """One ``inference_started`` turn, aged to when the deploy killed the real one."""
     _home(journal)
     turn = begin(journal, new(journal))
@@ -109,7 +109,7 @@ def _blockers(journal):
 
 
 def test_a_row_a_dead_boot_left_inference_started_is_settled_and_stops_reading_as_active(journal):
-    turn = _killed_native_turn(journal)
+    turn = _killed_inference_turn(journal)
     # The precondition, not an assumption: this is the row the indicator painted.
     painted = _working(journal)
     assert painted is not None and painted["state"] == "inference_started"
@@ -124,12 +124,10 @@ def test_a_row_a_dead_boot_left_inference_started_is_settled_and_stops_reading_a
     }]
     stored = journal.get("owner", "home", turn.turn_id)
     assert stored.state == "held_transport"
-    # Uncertainty is PRESERVED, not resolved: the killed round is indeterminate,
-    # never completed, and it still blocks an offline reset. A settlement that
-    # claimed the turn finished would be a mock result wearing a real shape.
+    # The inference reply and charge are unknown, but no tool was dispatched.
     assert stored.rounds[-1].reply is None
     assert stored.rounds[-1].cost_microusd is None
-    assert _blockers(journal) == ["active or ambiguous agent turn references exact home"]
+    assert _blockers(journal) == []
     # Neither the original nor a fresh boot registry can revive the terminal row.
     assert _working(journal) is None
     assert _working(journal, boot=BootTurns()) is None
@@ -138,7 +136,7 @@ def test_a_row_a_dead_boot_left_inference_started_is_settled_and_stops_reading_a
 def test_a_turn_the_current_owner_is_running_is_never_reaped(journal):
     """Age is irrelevant: the row is as old as the killed one, but its generation
     is the one the live owner holds."""
-    turn = _killed_native_turn(journal)
+    turn = _killed_inference_turn(journal)
 
     assert _reconcile(journal) == []
 
@@ -153,7 +151,7 @@ def test_a_standby_owner_settles_nothing_while_the_live_owner_holds_the_key(jour
     """The standby-start case (execution-owner-lease D2): a second owner process
     starts while the first still holds the command center and is running a turn.
     It cannot take the key, so it reconciles nothing -- however old the row."""
-    turn = _killed_native_turn(journal)
+    turn = _killed_inference_turn(journal)
     standby = owner_lease.OwnerTree.start(journal._ledger.base_path)
     try:
         with owner_lease.using_tree(standby):
@@ -168,7 +166,7 @@ def test_a_standby_owner_settles_nothing_while_the_live_owner_holds_the_key(jour
 def test_the_successor_takes_a_higher_generation_and_settles_only_older_rows(journal):
     """After the old owner dies, the successor's generation is above it: its own
     new turn survives the very sweep that settles the old owner's."""
-    old = _killed_native_turn(journal)
+    old = _killed_inference_turn(journal)
     _restart(journal)
     assert [r["turn_id"] for r in _reconcile(journal)] == [old.turn_id]
     from tinyassets.storage.agent_turn_journal import AgentTurnJournal
@@ -190,7 +188,7 @@ def test_recovery_rejects_changed_evidence_and_resumes_after_adoption(journal):
     from tinyassets.storage import agent_turn_runner
     from tinyassets.storage.agent_turn_journal import AgentTurnJournal
 
-    turn = _killed_native_turn(journal)
+    turn = _killed_inference_turn(journal)
     with journal._ledger.connection() as conn:
         generation, token = conn.execute(
             "SELECT owner_generation, runner_token FROM agent_turns WHERE turn_id = ?",
@@ -229,7 +227,7 @@ def test_the_projection_refuses_an_unowned_row_reconciliation_never_settled(jour
     Reconciliation can fail per row -- a rebound home raises ``CurrentHomeChanged``
     -- and the founder must still not see a phantom indicator.
     """
-    turn = _killed_native_turn(journal)
+    turn = _killed_inference_turn(journal)
     _restart(journal)
 
     assert _working(journal) is None
@@ -243,9 +241,6 @@ def _ready(journal):
 
 def _inference_started(journal):
     return begin(journal, new(journal))
-
-
-
 
 
 def _tools_planned(journal):
@@ -296,7 +291,7 @@ def test_the_interrupted_turn_is_left_visible_in_the_thread(journal):
     The founder sent a message, watched a phantom indicator, and then — once the
     row was settled — had nothing at all in the thread saying what happened.
     """
-    turn = _killed_native_turn(journal)
+    turn = _killed_inference_turn(journal)
     assert _thread(journal) == [], "precondition: nothing was ever stored for this turn"
 
     _restart(journal)
@@ -309,13 +304,12 @@ def test_the_interrupted_turn_is_left_visible_in_the_thread(journal):
     assert notice.speaker == "platform"
     # Composed by conversation_failure from this turn's ledger, not written here.
     assert "something broke on our side" in notice.text
-    assert "We can't tell whether actions ran" in notice.text, (
-        "a killed native round is unknown effects; claiming nothing ran would be a lie")
+    assert "Nothing ran" in notice.text
     assert turn.turn_id in notice.text, "the ref ties the notice to the journal row"
     # The structured record rides along, which is what a client reads as `failure`.
     assert notice.failure is not None
     assert (notice.failure.code, notice.failure.stage) == ("platform_fault", "platform")
-    assert notice.failure.effects == "unknown"
+    assert notice.failure.effects == "none"
     assert notice.failure.ref == turn.turn_id
 
 
@@ -344,7 +338,7 @@ def test_the_notice_never_replays_the_stored_prompt_as_the_founders_message(jour
 
 def test_a_second_sweep_over_the_same_turn_leaves_one_notice(journal):
     """Keyed on the journal's turn id, so a restart loop cannot stack notices."""
-    turn = _killed_native_turn(journal)
+    turn = _killed_inference_turn(journal)
     _restart(journal)
     _reconcile(journal)
     assert len(_thread(journal)) == 1
@@ -377,11 +371,11 @@ def test_effects_evidence_has_one_definition_for_both_callers(journal):
     """The sweep and the running coordinator answer the same ledger question."""
     from tinyassets.agent_turn_coordinator import AgentTurnCoordinator, turn_effects
 
-    turn = _killed_native_turn(journal)
+    turn = _killed_inference_turn(journal)
     running = AgentTurnCoordinator.__new__(AgentTurnCoordinator)
     running.turn = turn
     assert running.effects_evidence() == turn_effects(turn)
-    assert turn_effects(turn) == ("unknown", None, turn.turn_id)
+    assert turn_effects(turn) == ("none", None, turn.turn_id)
     assert turn_effects(None) == ("none", None, None)
 
 
@@ -494,8 +488,8 @@ def test_one_unsettleable_turn_does_not_stop_the_sweep(journal, monkeypatch):
     from tinyassets.storage.agent_turn_journal import AgentTurnJournal
     from tinyassets.storage.current_home import CurrentHomeChanged
 
-    doomed = _killed_native_turn(journal)
-    other = _killed_native_turn(journal)
+    doomed = _killed_inference_turn(journal)
+    other = _killed_inference_turn(journal)
     real = AgentTurnJournal.finish_inference
 
     def refuse_one(self, owner, universe, turn_id, **kwargs):
@@ -553,7 +547,7 @@ def test_the_coordinator_releases_its_turn_however_the_run_ends(journal, tmp_pat
     A cancelled task leaves a progressing row behind with no process on it, and
     that row is exactly the one a surface must stop painting.
     """
-    turn = _killed_native_turn(journal)
+    turn = _killed_inference_turn(journal)
     assert _working(journal) is not None
 
     coordinator = _Coordinator(turn, tmp_path / "home", outcome)
@@ -587,7 +581,7 @@ def test_the_serving_lifespan_settles_the_orphan_before_anything_can_read_it(
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     # The lifespan advertises its owner tree in the environment; keep that local.
     monkeypatch.setenv(owner_lease.TREE_ENV, "")
-    turn = _killed_native_turn(journal)
+    turn = _killed_inference_turn(journal)
     _restart(journal)  # the container that ran it is gone
     monkeypatch.setattr(us, "start_scheduler_for_serving", lambda: True)
     monkeypatch.setattr(us, "stop_scheduler_for_serving", lambda: None)
@@ -623,7 +617,7 @@ def test_the_first_leased_boot_settles_a_pre_lease_leftover(journal):
     """A row written before B1 deployed has no owner generation. The first boot
     that runs with leases must still settle it -- the boot rule this replaces
     did -- so pre-lease rows are generation 0, below every real generation."""
-    turn = _killed_native_turn(journal)
+    turn = _killed_inference_turn(journal)
     with journal._ledger.connection() as conn:
         # The pre-B1 schema: no owner_generation column at all. The next schema
         # check adds it with its backfill default, which is what production gets.
@@ -644,7 +638,7 @@ def test_the_first_leased_boot_settles_a_pre_lease_leftover(journal):
 
 def test_a_stopped_turn_stays_stopped_until_its_row_settles(journal):
     """Finding 7: no count-based eviction can paint a cancelled turn as activity."""
-    turn = _killed_native_turn(journal)
+    turn = _killed_inference_turn(journal)
     BOOT.release("home", turn.turn_id)
     for i in range(5000):
         BOOT.claim("other", f"t{i}")

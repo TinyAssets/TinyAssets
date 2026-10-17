@@ -120,8 +120,6 @@ def test_a_learned_id_is_visible_but_not_admitted_until_access_is_granted(config
     assert row["availability_basis"] == "publicly_listed"
 
 
-
-
 @pytest.mark.parametrize("configured", ["mixed"], indirect=True)
 def test_granting_access_makes_a_listed_id_selectable_and_runnable(
         configured, monkeypatch):
@@ -226,7 +224,6 @@ def test_only_the_id_this_universe_REQUESTED_is_recorded(tmp_path):
         "put a string of its choosing on the owner's list")
 
 
-
 def test_a_provider_default_position_teaches_nobody_anything(tmp_path):
     """An empty requested id is a POSITION, not a model.
 
@@ -250,8 +247,6 @@ def test_a_requested_id_that_is_not_an_identifier_is_refused_not_raised(tmp_path
     _Coordinator(tmp_path, "not an identifier")._learn_verified_model(
         SimpleNamespace(reported_model="", model=""))
     assert _own_evidence(tmp_path, "owner-alice") == []
-
-
 
 
 def test_the_owner_threaded_into_the_catalog_is_the_same_identity_the_journal_uses():

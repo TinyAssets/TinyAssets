@@ -410,14 +410,6 @@ def _extract_queue_cancel(
     )
 
 
-
-
-
-
-
-
-
-
 def _extract_set_tier_config(
     kwargs: dict[str, Any], result: dict[str, Any],
 ) -> tuple[str, str, dict[str, Any]]:
@@ -607,8 +599,6 @@ def _extract_soul_edit(
             "source": result.get("source"),
         },
     )
-
-
 
 
 WRITE_ACTIONS: dict[str, Any] = {
@@ -2845,8 +2835,6 @@ def _action_daemon_memory_status(
     return json.dumps(result, default=str)
 
 
-
-
 # ---------------------------------------------------------------------------
 # Phase H — daemon_overview + set_tier_config (aggregated MCP surface)
 # ---------------------------------------------------------------------------
@@ -2861,8 +2849,6 @@ def _non_public_goal_ids() -> set[str]:
     from tinyassets.daemon_server import non_public_goal_ids
 
     return non_public_goal_ids(_base_path())
-
-
 
 
 # Per-caller reasonable limits (R14 response-size). Overridable via `limit`.
@@ -3242,17 +3228,6 @@ def _action_queue_cancel(
                        "branch_task_id": branch_task_id})
 
 
-
-
-
-
-
-
-
-
-
-
-
 def _action_give_direction(
     universe_id: str = "",
     text: str = "",
@@ -3614,7 +3589,7 @@ def _action_set_universe_visibility(
 
     Exposing a command center to other users is not an editing operation, so it takes
     the canonical per-universe ownership predicate — ``universe_owner_actor``,
-    the explicit ``admin`` ACL row, the same signal ``connect_llm``,
+    the explicit ``admin`` ACL row, the same signal ``connect_compute``,
     ``source_channel`` and the pending-request rail use. This is a narrowing on
     top of the central gate, not a second copy of it: the ACL check still runs
     first and this only ever refuses more.
@@ -4740,16 +4715,6 @@ def engine_setup_required_payload(
         "setup_paths": [{"path": "/app/connections",
                          "how": "Connect a model through the secure connection flow."}],
     }
-
-
-
-
-
-
-
-
-
-
 
 
 def _action_declare_universe_loop(

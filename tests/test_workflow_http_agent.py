@@ -200,11 +200,12 @@ def test_cancellation_after_inference_prevents_first_tool(
 def test_member_revoked_after_known_tool_does_not_start_second_inference(
     tmp_path, monkeypatch, authenticate_request, work_agent,
 ):
+    from tinyassets.providers.definition import list_definitions
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     def revoke():
         ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
-        ledger.revoke_grant("http_grant_" + "a" * 32)
+        ledger.revoke_grant(list_definitions("universe_alice")[0].ref)
 
     work_agent.after_tool = revoke
     result = run(tmp_path, monkeypatch, authenticate_request)
@@ -313,5 +314,3 @@ def test_model_without_tools_refuses_before_inference(
         assert conn.execute(
             "SELECT COUNT(*) FROM provider_invocation_reservations",
         ).fetchone() == (0,)
-
-

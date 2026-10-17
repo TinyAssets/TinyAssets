@@ -72,7 +72,3 @@ def test_provider_pin_retains_same_source_breadth_but_exact_model_does_not(model
     next_choice = choices.next_candidate(policy, (Exhaustion("model", ModelRef("a", "A")),))
     assert next_choice == (None if model_pin else ModelRef("a", "A2"))
     assert choices.next_candidate(policy, (Exhaustion("model", ModelRef("a", "A2")),)) is None
-
-
-
-

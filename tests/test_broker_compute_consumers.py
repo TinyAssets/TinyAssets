@@ -180,7 +180,7 @@ def test_router_replaces_caller_principal_with_admitted_serving_owner(tmp_path, 
     )
     from tinyassets.auth.middleware import revoke_provider_request
 
-    _, _, capability, context = _served_context(tmp_path)
+    _, _, capability, context = _served_context(tmp_path, monkeypatch)
     seen = []
 
     class Capture(_RecordingProvider):
@@ -214,7 +214,7 @@ def test_router_releases_served_reservation_for_broker_admission_outage(tmp_path
     from tinyassets.exceptions import AllProvidersExhaustedError
     from tinyassets.providers.definition import ProviderDefinition
 
-    universe, _, capability, context = _served_context(tmp_path)
+    universe, _, capability, context = _served_context(tmp_path, monkeypatch)
     definition = ProviderDefinition(
         id="fixture", universe_id=universe.name, owner_user_id="owner-1",
         access_method="api_key_http", protocol="chat_messages", model="fixture",

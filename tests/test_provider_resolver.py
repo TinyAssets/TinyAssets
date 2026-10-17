@@ -42,12 +42,6 @@ def test_api_key_http_resolves_to_api_provider() -> None:
     assert prov.family == "api:openai_chat"
 
 
-
-
-
-
-
-
 def test_unknown_access_method_rejected() -> None:
     # Bypass registration validation by constructing the dataclass directly.
     bad = ProviderDefinition(
@@ -57,8 +51,6 @@ def test_unknown_access_method_rejected() -> None:
     )
     with pytest.raises(ValueError):
         provider_for_definition(bad)
-
-
 
 
 def test_register_universe_open_providers_empty_when_none(base: Path) -> None:

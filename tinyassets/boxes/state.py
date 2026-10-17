@@ -292,7 +292,6 @@ class BoxHostState:
             return None
 
 
-
     def update(self, cc: str, op_id: str, outcome: dict[str, Any]) -> None:
         """Attach progress to an operation still running under this incarnation."""
         with self._lock, self._conn() as conn:

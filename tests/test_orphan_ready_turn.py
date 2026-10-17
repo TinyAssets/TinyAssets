@@ -102,5 +102,3 @@ def test_failed_activity_reason_reaches_chat_and_next_agent_turn(tmp_path, monke
     rows = load_recent(root, "principal:owner")
     assert len(rows) == 1 and reason in rows[0].text
     assert any(reason in e["line"] for e in activities.undelivered_lines(root))
-
-

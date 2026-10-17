@@ -155,12 +155,6 @@ def saved_effort_level(base_path, owner_user_id, universe_id, ref):
     return "" if policy is None else policy.effort_for(ref)
 
 
-
-
-
-
-
-
 def _selection_definition(base_path, owner_user_id, universe_id, provider, model_id, access):
     from tinyassets.providers.definition import get_definition
     from tinyassets.storage import data_dir

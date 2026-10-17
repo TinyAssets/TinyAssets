@@ -115,13 +115,7 @@ PINNED: dict[str, list[str]] = {
         "pending_deletions: .read_text()",
     ],
     "tinyassets/agent_sessions.py": [
-        "_nofollow_dirs: os.open()",
-        "_nofollow_dirs: os.open()",
-        "clear: .unlink()",
-        "exclusive: os.open()",
         "load: .read_text()",
-        "save: os.replace()",
-        "save: os.unlink()",
     ],
     "tinyassets/api/pending_requests.py": [
         "_first_power_preset: .read_text()",

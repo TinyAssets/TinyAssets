@@ -178,7 +178,7 @@ class WorkAgentAdapter:
             )
 
     async def _infer_launch(self, launch, router, prompt, system, config, context, observer, kind):
-        self.carrier, snapshot_dir, provider = launch
+        self.carrier, provider = launch
         if provider != self.selection.connection_id:
             raise ProviderAuthorityHeldError("workflow agent source changed")
         await off_loop(self.check, context, config)
@@ -190,7 +190,7 @@ class WorkAgentAdapter:
                 model=self.selection, fallbacks=(),
                 context=ModelContext(
                     prompt=prompt, system=system,
-                    config=replace(config, credential_snapshot_dir=snapshot_dir),
+                    config=config,
                     operation=self.carrier.operation,
                     universe_context=replace(context, provider_invocation=self.carrier),
                     agent_observer=observer, agent_execution_kind=kind,
@@ -322,7 +322,7 @@ def _call_work_agent(session, *, prompt, system, config, policy, principal_id, u
     ):
         raise ProviderAuthorityHeldError("engine_tools_unavailable")
     config = replace(config, engine_mcp_enabled=True, engine_mcp_actor_id=principal_id,
-                     engine_mcp_graph_id=universe_id, credential_snapshot_dir=None)
+                     engine_mcp_graph_id=universe_id)
     initial_policy = policy
     candidates = getattr(session, "_work_candidates", None)
     if candidates is not None:

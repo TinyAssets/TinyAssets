@@ -39,7 +39,7 @@ started after this container booted. These are the rows
 ``runs.recover_in_flight_runs`` would interrupt after the swap.
 
 **Journal turns are reported, not gated on.** An ``agent_turns`` row in a working
-state can outlive its task -- a cancelled task leaves ``native_started`` behind,
+state can outlive its task -- a cancelled task leaves ``inference_started`` behind,
 and nothing settles it until the next boot (``agent_turn_reconcile``). Gating on
 it would hold every deploy to the cap behind a phantom. The rows are still
 printed, so a deploy log shows them next to the seats.
@@ -77,7 +77,7 @@ SEATS_DB = ".account_seats.db"
 JOURNAL_DB = ".tinyassets.db"
 MARKER = ".deploy-pending.json"
 #: ``agent_turn_journal.WORKING_STATES``, pinned the same way.
-WORKING_STATES = ("inference_started", "native_started", "ready", "tools_pending")
+WORKING_STATES = ("inference_started", "ready", "tools_pending")
 #: ``runs.RUN_STATUS_{QUEUED,RESUMED,RUNNING}``: what recovery interrupts.
 IN_FLIGHT_RUN_STATUSES = ("queued", "resumed", "running")
 RUNS_DB = ".runs.db"

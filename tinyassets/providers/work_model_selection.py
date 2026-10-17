@@ -24,8 +24,6 @@ def prepare_work_model_snapshot(*, base_path, universe_id, owner_user_id,
     )
 
 
-
-
 def selected_work_model(selection):
     """Reconstruct data covered by the carrier seal; this grants nothing alone."""
     from tinyassets.providers.discovery_contract import SourceContract

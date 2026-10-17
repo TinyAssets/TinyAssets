@@ -66,16 +66,7 @@ class ProviderAssignment:
 
 @dataclass(frozen=True, slots=True)
 class ServedProviderAuthority:
-    """Fresh, server-validated provider facts for one exact served call.
-
-    ``authority_kind`` explicitly discriminates the credential model (Codex shape
-    review of serve-open-compute-provider): ``subscription_snapshot`` carries the
-    subscription custody tuple + a required ``credential_snapshot_dir``;
-    ``connection_grant`` carries an open provider's exact definition + grant identity
-    with ``credential_snapshot_dir=None`` (the credential lives in the connection grant,
-    resolved credential-blind at call time). The kind is NEVER inferred from a missing
-    snapshot — an absent subscription snapshot must fail closed, not silently become
-    open authority."""
+    """Fresh owner-bound HTTP connection facts for one exact served call."""
 
     authority_kind: str
     provider: str
@@ -94,7 +85,6 @@ class ServedProviderAuthority:
     credential_reference_generation: int
     credential_reference_digest: str
     credential_service: str
-    credential_snapshot_dir: Path | None = field(repr=False, compare=False)
     request_capability: object = field(repr=False, compare=False)
     operation: str = "converse"
     allowed_roles: tuple[str, ...] = ("writer",)
@@ -344,7 +334,6 @@ def reconcile_served_budget_leases(base_path: str | Path) -> int:
     except sqlite3.Error:
         logger.exception("served budget: lease reconciliation failed")
         return 0
-
 
 
 def reserve_served_provider_budget(
@@ -1437,7 +1426,7 @@ def _authorize_served_provider_call(
                     raise PermissionError("connected source custody changed during discovery")
                 conn.rollback()
             provider = model_selection.connection_id
-            kind, service, snapshot_dir = "connection_grant", "http", None
+            kind, service = "connection_grant", "http"
             import hashlib
 
             budget_digest = "sha256:" + hashlib.sha256(
@@ -1476,7 +1465,7 @@ def _authorize_served_provider_call(
                 credential_reference_id=custody.reference_id,
                 credential_reference_generation=custody.generation,
                 credential_reference_digest=custody.reference_digest,
-                credential_service=service, credential_snapshot_dir=snapshot_dir,
+                credential_service=service,
                 request_capability=capability, budget_owner="connected_request",
                 selected_model=selected,
                 before_provider_launch=before_launch,

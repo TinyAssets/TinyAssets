@@ -57,12 +57,6 @@ def _scope(conn, base, owner, uid):
         raise PermissionError("model catalogue scope unavailable")
 
 
-
-
-
-
-
-
 def _collect(base, owner, uid):
     universe = _canonical_universe(base, base / uid, uid)
     store = SQLiteProviderWorkAuthorityStore(base)

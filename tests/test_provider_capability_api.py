@@ -134,8 +134,6 @@ def test_configure_rejects_caller_selected_authority_fields(monkeypatch, tmp_pat
     ) is None
 
 
-
-
 def test_configure_revoke_is_idempotent(monkeypatch, tmp_path):
     ledger = _arrange(monkeypatch, tmp_path)
     assert configure_provider_capability(

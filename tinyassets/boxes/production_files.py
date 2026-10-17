@@ -101,8 +101,6 @@ class ProductionFileProvider:
         return ExecStatus(**{**result, "state": ExecState(result["state"])})
 
 
-
-
     def close_stdin(self, handle, exec_id):
         return self._call(handle, "close_stdin", {"exec_id": exec_id})
 

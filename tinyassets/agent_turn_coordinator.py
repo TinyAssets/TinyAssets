@@ -253,7 +253,6 @@ class AgentTurnCoordinator:
         return tuple(history)
 
 
-
     def _learn_verified_model(self, response):
         """Record a model id that just answered on this owner's source.
 

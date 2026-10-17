@@ -307,10 +307,10 @@ def test_publish_shape_is_not_exposed_this_slice(monkeypatch):
     """PUBLISH is deferred to the consent-gated slice (Codex ADAPT #5) — the
     engine server must not expose it, and it is absent from the allowlist."""
     from tinyassets import engine_mcp_server as s
-    from tinyassets import universe_intelligence as ui
+    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 
     assert not hasattr(s, "publish_shape")
-    assert "publish_shape" not in ui._ENGINE_MCP_TOOLS
+    assert "publish_shape" not in SERVED_ENGINE_MCP_TOOLS
 
 
 def test_run_graph_refuses_foreign_private_branch(monkeypatch):
@@ -685,22 +685,11 @@ def test_sandboxed_config_on_when_all_conditions_met(monkeypatch):
     assert cfg.engine_mcp_graph_id == "u-9"
 
 
-
-
-
 def _seal_plainly(monkeypatch):
     from tinyassets import credential_vault
 
     monkeypatch.setattr(credential_vault, "_write_exclusive_snapshot_file",
                         lambda path, data: Path(path).write_bytes(data))
-
-
-
-
-
-
-
-
 
 
 # ── codex: no MCP server in the CLI; the platform process dials the route ─────
@@ -765,8 +754,6 @@ def test_connect_compute_pins_universe_and_binds_write_caps(monkeypatch):
     assert {"write"} == captured["caps"]
     assert "submit_request" not in captured["caps"]
     assert "costly" not in captured["caps"]
-
-
 
 
 def test_connect_compute_api_key_http_grant_isolation_end_to_end(monkeypatch, tmp_path):
@@ -858,8 +845,6 @@ def test_connect_compute_is_exposed_in_both_provider_allowlists():
     # And the server actually registers a handler by that name (exposure is real).
     from tinyassets import engine_mcp_server as s
     assert callable(getattr(s, "connect_compute", None))
-
-
 
 
 def test_read_graph_connections_target_lists_own_http_connections_end_to_end(
@@ -972,20 +957,13 @@ def test_read_graph_branches_target_lists_own_workflows_end_to_end(monkeypatch, 
 
 
 def test_served_allowlists_do_not_drift():
-    """The two served engine-MCP allowlists (codex + claude) MUST offer the SAME
-    tools — a codex-served and a claude-served universe get identical capability
-    (founder rule: all surfaces do the same things). run_graph drifting onto the
-    claude list ONLY (caught 2026-08-23) meant a codex-served founder could not run
-    automations at all; this guard prevents that class of silent divergence."""
     from types import SimpleNamespace
 
     from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS, model_tools
-    from tinyassets.universe_intelligence import _ENGINE_MCP_TOOLS as claude_tools
 
-    # Both served executors use this canonical tuple; the runner passes
+    # The HTTP executor uses this canonical tuple; the runner passes
     # model_tools(config) to its owner-pinned engine route.
     assert model_tools(SimpleNamespace(engine_tool_grant=None)) == SERVED_ENGINE_MCP_TOOLS
-    assert claude_tools is SERVED_ENGINE_MCP_TOOLS
     # run_graph is the capability that lets a universe RUN automations from the app.
     from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
     assert SERVED_ENGINE_MCP_TOOLS == ("read", "write", "edit", "bash")
@@ -1541,7 +1519,6 @@ def test_custom_agent_write_brain_refuses_main_identity_but_writes_shared_fields
     if not identity_only:
         assert out["written"]
         assert "tidepools" in (udir / "founder.md").read_text(encoding="utf-8")
-
 
 
 def test_custom_agent_write_tool_writes_through_the_owner_box(monkeypatch, tmp_path,

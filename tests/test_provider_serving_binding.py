@@ -29,30 +29,6 @@ def _seed_universe(tmp_path):
                                 select_for_serving=False, return_binding=True)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 @pytest.mark.parametrize(
     ("operation", "payload"),
     [

@@ -363,10 +363,6 @@ def test_capability_is_ready_only_for_exact_owner_and_universe(monkeypatch, tmp_
     assert rv.voice_capability(universe, "someone-else")["available"] is False
 
 
-
-
-
-
 def test_ready_capability_is_not_hidden_by_legacy_voice_flags(monkeypatch, tmp_path):
     universe = _seed_binding(tmp_path, monkeypatch)
     monkeypatch.setenv("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED", "1")

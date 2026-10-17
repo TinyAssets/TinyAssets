@@ -269,17 +269,7 @@ class ModelConfig:
 
     agent_session: object | None = field(default=None, repr=False, compare=False)
     """``agent_sessions.AgentSessionRef`` naming the thread or agent node this
-    turn continues. An adapter that declares ``native_resume`` resumes that
-    key's native session instead of starting a fresh one; every other adapter
-    ignores it."""
-
-    credential_snapshot_dir: Path | None = field(
-        default=None,
-        repr=False,
-        compare=False,
-    )
-    """Internal per-launch credential snapshot. Served adapters must use this
-    immutable copy instead of resolving mutable vault paths at use time."""
+    turn continues, used to track consumed conversation progress."""
 
     selected_model: SelectedModel | None = None
     """Router-owned selection from current serving authority, never caller policy.

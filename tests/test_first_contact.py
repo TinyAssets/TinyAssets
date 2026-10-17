@@ -1073,16 +1073,10 @@ def _policy_hard_fail() -> BaseException:
 
 
 def _attach_engine_credential(universe_dir: Path) -> None:
-    """Attach a BYO engine key the same way `universe action=set_engine` does."""
-    import base64
-
-    from tinyassets.credential_vault import write_credential_vault
-
-    write_credential_vault(universe_dir, [{
-        "credential_type": "llm_api_key",
-        "service": "anthropic",
-        "secret_b64": base64.b64encode(b"sk-founder-key").decode("ascii"),
-    }])
+    """Attach an owner-bound HTTP model through the real broker grant fixture."""
+    from tests.support.http_model import seed_http_assignment
+    seed_http_assignment(universe_dir.parent, owner_user_id="founder-1",
+                         universe_id=universe_dir.name)
 
 
 def test_newborn_without_a_credential_gets_onboarding_not_a_raw_error(
@@ -1109,7 +1103,6 @@ def test_newborn_without_a_credential_gets_onboarding_not_a_raw_error(
     assert "All providers exhausted" not in rendered
     assert "set_engine" not in rendered
     assert "not exposed by the advertised handles" in rendered
-    assert "byo_api_key" in rendered
 
 
 def test_setup_required_reply_is_platform_authored_not_the_universe_voice(
@@ -1201,12 +1194,11 @@ def test_unreadable_vault_never_claims_the_credential_is_missing(
     Claiming "no credential attached" from a read failure would send a founder
     to re-attach a key they already have, and would hide a corrupt vault.
     """
-    from tinyassets.credential_vault import credential_vault_path
     from tinyassets.universe_server import converse
 
     _login("founder-1")
     uid = _create_via_action(data_dir, monkeypatch)
-    vault = credential_vault_path(data_dir / uid)
+    vault = data_dir / uid / "provider_definitions.json"
     vault.parent.mkdir(parents=True, exist_ok=True)
     vault.write_text("{not json", encoding="utf-8")
     _engine_raises(monkeypatch, _exhausted())
@@ -1232,38 +1224,6 @@ def test_held_payload_does_not_invoke_a_second_provider_call(
     json.loads(converse(message="Hello"))
 
     assert called["count"] == 1
-
-
-@pytest.mark.parametrize(
-    ("engine_source", "extra"),
-    [
-        ("self_hosted_endpoint", {"engine_endpoint": "https://llm.internal/v1"}),
-        ("host_daemon", {}),
-    ],
-)
-def test_non_vault_engine_choice_is_an_outage_not_missing_setup(
-    data_dir, monkeypatch, engine_source, extra
-):
-    """A vault-only test misreads a configured engine outage.
-
-    `set_engine` records `self_hosted_endpoint` / `host_daemon` in config
-    and writes no vault credential. Reading an empty
-    vault as "never set up" would send a founder who already chose an engine
-    back to onboarding and hide that their engine is down.
-    """
-    from tinyassets.config import write_universe_config_fields
-    from tinyassets.universe_server import converse
-
-    _login("founder-1")
-    uid = _create_via_action(data_dir, monkeypatch)
-    write_universe_config_fields(
-        data_dir / uid, engine_source=engine_source, **extra
-    )
-    _engine_raises(monkeypatch, _exhausted())
-
-    out = json.loads(converse(message="Hello"))
-
-    _assert_reads_as_outage_not_onboarding(out)
 
 
 def test_unreadable_config_never_claims_the_engine_is_missing(

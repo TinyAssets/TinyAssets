@@ -324,5 +324,3 @@ def test_resolve_ceiling_prefers_the_override_then_the_window_then_the_default()
         assert bounds.resolve_ceiling({bounds.CONTEXT_TOKENS_ENV: junk}) == (
             bounds.DEFAULT_CEILING_BYTES
         )
-
-

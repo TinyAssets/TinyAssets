@@ -113,16 +113,12 @@ def test_owner_may_toggle_visibility_without_new_id(base: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-
-
 def test_api_key_http_rejects_cli_protocol(base: Path) -> None:
     with pytest.raises(ProviderDefinitionError):
         pd.register_definition(
             universe_id="u-x", owner_user_id="f", access_method="api_key_http",
             protocol="cli:codex", model="gpt-5", ref="http_abc",
         )
-
-
 
 
 @pytest.mark.parametrize(

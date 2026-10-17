@@ -41,5 +41,3 @@ def test_a_held_connected_source_is_named_in_the_notice(agent, monkeypatch):
     assert "reconnect one that stopped working" in notice
     assert 'Detail: "codex (' in notice
     assert "no model connected" not in notice
-
-

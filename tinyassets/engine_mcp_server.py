@@ -3733,7 +3733,6 @@ _COMMONS_LIST_KINDS = frozenset({"agents", "branches", "goals", "packages", "sys
 _COMMONS_BROWSE_MAX = 50
 
 
-
 def _untrusted(source: str, payload: str, *, own: object = None) -> str:
     """Wrap ANOTHER USER's content in the untrusted envelope.
 

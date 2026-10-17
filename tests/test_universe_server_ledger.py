@@ -109,8 +109,6 @@ def _ledger(uid: str) -> list[dict]:
     return data
 
 
-
-
 @pytest.fixture(autouse=True)
 def _restore_auth_provider():
     """Put the auth provider back after every test in this module.
@@ -191,7 +189,6 @@ def test_write_actions_table_is_exhaustive() -> None:
         "control_daemon", "switch_universe", "create_universe",
         "queue_cancel",
         "set_tier_config",  # Phase H
-        "set_engine",
         "soul.edit",  # the learn/write path (OpenSpec universe-creation 1.8)
         # Mutates soul.md from a caller-supplied universe_id. Membership here is
         # what makes the central universe-ACL gate check it at WRITE strength;

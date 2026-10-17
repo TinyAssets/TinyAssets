@@ -24,12 +24,6 @@ served = prefs.served
 agent = prefs.agent
 
 
-
-
-
-
-
-
 @pytest.mark.parametrize("error,converted", [
     ("ProviderAuthenticationError", True),
     ("ProviderAuthorityHeldError", False),

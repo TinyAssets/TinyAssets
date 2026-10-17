@@ -34,7 +34,6 @@ def owner_carrier(provider: str, *, role: str = "writer", operation: str = "run_
     carrier.max_tokens = 1000
     carrier.max_cost_microunits = 1000
     carrier.selected_model = None
-    carrier.native_selection = None
     carrier.settlement_owner = None
     carrier.validate_for_call.return_value = provider
     return carrier

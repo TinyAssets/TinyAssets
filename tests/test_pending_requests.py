@@ -965,7 +965,6 @@ def test_the_prompt_says_credentials_are_asked_for_once_not_per_action():
     assert "may_proceed=true" in src
 
 
-
 # --------------------------------------------------------------------------- #
 # The one ask the platform raises for itself.
 # Founder 2026-08-27: "if the universe doesnt have an llm to run on then a

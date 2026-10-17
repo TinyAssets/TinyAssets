@@ -184,7 +184,6 @@ class TestQuotaTracker:
         assert qt.available("claude-code") is True
 
 
-
 # =====================================================================
 # ProviderRouter -- single call routing
 # =====================================================================
@@ -214,7 +213,6 @@ class TestProviderRouterCall:
         carrier.max_tokens = max_tokens
         carrier.max_cost_microunits = max_cost_microunits
         carrier.selected_model = None
-        carrier.native_selection = None
         carrier.validate_for_call.return_value = provider
         return carrier
 
@@ -519,20 +517,9 @@ class TestProviderRegistration:
         assert len(router.available_providers) == 1
 
 
-
-
-
 # =====================================================================
 # ClaudeProvider (subprocess mock)
 # =====================================================================
-
-
-
-
-
-
-
-
 
 
 def _cl(obj) -> bytes:
@@ -541,20 +528,14 @@ def _cl(obj) -> bytes:
     return (_json.dumps(obj) + "\n").encode("utf-8")
 
 
-
-
 # =====================================================================
 # CodexProvider (subprocess mock)
 # =====================================================================
 
 
-
-
 # =====================================================================
 # OllamaProvider (HTTP mock)
 # =====================================================================
-
-
 
 
 # =====================================================================
@@ -606,7 +587,6 @@ class TestCarrierSettlementWithUnknownUsage:
         carrier.max_tokens = 77
         carrier.max_cost_microunits = 1_000
         carrier.selected_model = None
-        carrier.native_selection = None
         carrier.validate_for_call.return_value = "codex"
         # The bit that makes the router actually settle.
         carrier.settlement_owner = ProviderInvocationSettlementOwner.ROUTER

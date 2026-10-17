@@ -1,30 +1,17 @@
-"""Persistent conversation progress and locking for each thread or agent node."""
+"""Persistent conversation progress for each thread or agent node."""
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import logging
-import os
-import re
-import tempfile
-import time
-from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tinyassets.boxes.layout import PLATFORM_RUNTIME_DIR
-
 logger = logging.getLogger(__name__)
 
-#: Native session files, inside the universe's ``.runtime``.
-SESSIONS_DIR = Path(PLATFORM_RUNTIME_DIR) / "agent-sessions"
-
-#: Records and locks, in the data root beside the universes, never inside one.
+#: Progress records, in the data root beside the universes, never inside one.
 RECORDS_DIR = ".agent-sessions"
-
-_ADAPTER = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
 def digest(text: str) -> str:
@@ -62,33 +49,6 @@ def _record_path(universe_dir: Path, key: str) -> Path:
     return _records_dir(universe_dir) / f"{digest(key)[:32]}.json"
 
 
-def _nofollow_dirs(root: Path, parts: tuple[str, ...]) -> Path:
-    """Create and walk ``root/parts`` one component at a time, never following a link.
-
-    A component that already exists as a link (or as anything but a directory)
-    refuses, so a process that can write the universe cannot redirect where the
-    daemon creates directories. POSIX only: ``dir_fd`` and ``O_NOFOLLOW``.
-    """
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    fd = os.open(root, flags)
-    try:
-        for part in parts:
-            try:
-                os.mkdir(part, 0o700, dir_fd=fd)
-            except FileExistsError:
-                pass
-            child = os.open(part, flags, dir_fd=fd)
-            os.close(fd)
-            fd = child
-    finally:
-        os.close(fd)
-    return root.joinpath(*parts)
-
-
-
-
-
-
 def load(universe_dir: Path, key: str) -> dict | None:
     """The stored record for ``key``, or ``None`` when there is none or it is unreadable."""
     path = _record_path(universe_dir, key)
@@ -106,37 +66,6 @@ def load(universe_dir: Path, key: str) -> dict | None:
     return record
 
 
-def save(ref: AgentSessionRef, *, adapter: str, model: str, handle: str, system: str) -> None:
-    """Remember that ``ref.key`` now continues native session ``handle``."""
-    if not handle:
-        return
-    path = _record_path(ref.universe_dir, ref.key)
-    record = {
-        "version": 1,
-        "key": ref.key,
-        "adapter": adapter,
-        "model": model or "",
-        "handle": handle,
-        "system_digest": digest(system or ""),
-        "consumed_at": ref.built_at or time.time(),
-        "updated_at": time.time(),
-    }
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".record-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(record))
-        os.replace(tmp, path)
-    except BaseException:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(tmp)
-        raise
-
-
-def clear(ref: AgentSessionRef) -> None:
-    with contextlib.suppress(FileNotFoundError):
-        _record_path(ref.universe_dir, ref.key).unlink()
-
-
 def consumed_at(universe_dir: Path, key: str) -> float | None:
     """When the session for ``key`` last read the conversation, if it exists."""
     record = load(universe_dir, key)
@@ -146,55 +75,6 @@ def consumed_at(universe_dir: Path, key: str) -> float | None:
         return float(record.get("consumed_at"))
     except (TypeError, ValueError):
         return None
-
-
-def resumable(ref: AgentSessionRef | None, *, adapter: str, model: str,
-              prompt: str) -> dict | None:
-    """The record to resume for this launch, or ``None`` to start a new session.
-
-    A record resumes only on the same adapter and model it was made on, and only
-    when the launch is still sending the prompt the turn was built with.
-    """
-    if ref is None or digest(prompt) != ref.fresh_prompt_digest:
-        return None
-    record = load(ref.universe_dir, ref.key)
-    if record is None or not record.get("handle"):
-        return None
-    if record.get("adapter") != adapter or (record.get("model") or "") != (model or ""):
-        return None
-    return record
-
-
-@contextlib.contextmanager
-def exclusive(ref: AgentSessionRef | None) -> Iterator[bool]:
-    """Hold the session for one launch; yields ``False`` when another launch has it.
-
-    Two processes resuming one native session at once would interleave its
-    history, so the second one runs as a fresh, unrecorded session instead.
-    """
-    if ref is None:
-        yield False
-        return
-    try:
-        import fcntl
-    except ImportError:  # Windows tray: native sessions are not resumed there.
-        yield False
-        return
-    lock_path = _record_path(ref.universe_dir, ref.key).with_suffix(".lock")
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            logger.info("agent session %s is busy; this turn runs unrecorded", ref.key)
-            yield False
-            return
-        try:
-            yield True
-        finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-    finally:
-        os.close(fd)
 
 
 def unseen(history, since: float | None, *, speakers: frozenset[str] | None = None) -> list:

@@ -19,7 +19,7 @@ def test_pre_launch_refusal_preserves_request_allowance(tmp_path, monkeypatch, r
     import tinyassets.provider_assignment as assignments
     import tinyassets.providers.router as routing
 
-    _, _, capability, context = _served_context(tmp_path)
+    _, _, capability, context = _served_context(tmp_path, monkeypatch)
     auth.seal_provider_request_launch_allowance(capability, limit=2)
     provider = _RecordingProvider("codex")
     router = recording_router(monkeypatch, provider)
@@ -75,7 +75,7 @@ def test_pre_launch_refusal_preserves_request_allowance(tmp_path, monkeypatch, r
 
 
 def test_sealed_plan_can_launch_more_than_two_without_new_carriers(tmp_path, monkeypatch):
-    _, _, capability, context = _served_context(tmp_path)
+    _, _, capability, context = _served_context(tmp_path, monkeypatch)
     provider = _RecordingProvider("codex")
     router = recording_router(monkeypatch, provider)
     try:

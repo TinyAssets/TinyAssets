@@ -81,8 +81,6 @@ def test_public_ids_are_attached_only_to_the_source_that_lists_them():
         "subscription", source_key="codex", already=())} == codex
 
 
-
-
 def test_the_shipped_list_passes_its_own_ci_check():
     from scripts.check_model_lists import KNOWN_SOURCE_KINDS, findings
     from tinyassets.providers.public_model_lists import lists_directory
@@ -360,7 +358,6 @@ def test_the_lists_are_packaged_into_the_runtime_artifacts():
     assert bundled_list.is_file(), (
         "the MCPB runtime resolves models/ from its own root; stage it there"
     )
-
 
 
 def test_a_list_only_change_triggers_a_deploy():

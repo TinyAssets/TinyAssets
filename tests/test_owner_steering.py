@@ -153,12 +153,6 @@ def test_the_engine_route_names_the_launchs_session_and_turn():
     assert engine_steering.session_of(SimpleNamespace()) == ""
 
 
-
-
-
-
-
-
 # -- the engine delivers on the next tool result of that session and turn ------
 
 
@@ -431,7 +425,6 @@ def test_an_answer_that_never_arrives_requeues_every_steered_line(tmp_path):
     out = _page_run(tmp_path, {"lost": True})
     assert out["stillQueued"] == 1
     assert out["sent"] == ["start the long job"]
-
 
 
 # -- P1, live 2026-10-02: a line sent while ANOTHER window's turn ran was lost --

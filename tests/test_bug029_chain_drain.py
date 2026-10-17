@@ -212,7 +212,6 @@ _OUTCOME_ERROR_FIXTURES: tuple[tuple[str, str], ...] = (
     ("Auth expired: token refresh required", "permission_denied:auth_expired"),
     ("Approval required for source_code node", "node_not_approved"),
     ("Permission denied", "permission_denied:approval_required"),
-    ("Subprocess failure: exit code 127", "provider_subprocess_failed"),
     ("Concurrent modification conflict", "state_mutation_conflict"),
     ("Provider unavailable: no API key", "provider_unavailable"),
     ("Groq call failed: HTTP 502", "provider_error"),

@@ -238,7 +238,7 @@ class _LaunchRecorder:
 
 
 #: The native candidate the owner's order offers mid-turn.
-_NATIVE_NEXT = ModelRef("native-cli", "native-model")
+_HTTP_NEXT = ModelRef("native-cli", "native-model")
 
 
 def _live_activity_adapter(tmp_path, *, name, with_binding=True):
@@ -267,7 +267,7 @@ def _live_activity_adapter(tmp_path, *, name, with_binding=True):
     def _carrier(provider):
         return SimpleNamespace(
             _receipt=receipt, _claim=claim, provider=provider, operation="run_graph",
-            selected_model=SimpleNamespace(model_id="some-model"), native_selection=None,
+            selected_model=SimpleNamespace(model_id="some-model"),
         )
 
     authorized = []
@@ -275,18 +275,18 @@ def _live_activity_adapter(tmp_path, *, name, with_binding=True):
     @contextmanager
     def authorize_attempt(*, role, prompt, system, policy):
         authorized.append(policy["preferred"])
-        yield (_carrier(policy["preferred"]["provider"]), None,
+        yield (_carrier(policy["preferred"]["provider"]),
                policy["preferred"]["provider"])
 
     session = SimpleNamespace(
         _universe_dir=universe,
-        _work_candidates=SimpleNamespace(next_candidate=lambda *a, **k: _NATIVE_NEXT),
+        _work_candidates=SimpleNamespace(next_candidate=lambda *a, **k: _HTTP_NEXT),
         _authorize_attempt=authorize_attempt,
         _check_agent_authority=lambda _carrier: receipt.principal_id,
     )
     binding = activity_runner.ActivityRunBinding(universe, aid, generation, "run-1")
     adapter = WorkAgentAdapter(
-        session, (_carrier("owned-http"), None, "owned-http"), {},
+        session, (_carrier("owned-http"), "owned-http"), {},
         **({"activity_binding": binding} if with_binding else {}),
     )
     config = ModelConfig(
@@ -295,12 +295,6 @@ def _live_activity_adapter(tmp_path, *, name, with_binding=True):
     )
     context = UniverseContext(universe_dir=universe, model_selection=adapter.selection)
     return adapter, config, context, authorized
-
-
-
-
-
-
 
 
 def test_activity_run_still_launches_engine_inference(tmp_path):
@@ -312,9 +306,3 @@ def test_activity_run_still_launches_engine_inference(tmp_path):
     ))
     assert response.text == "launched"
     assert router.launches == [("writer", "engine_inference")]
-
-
-
-
-
-

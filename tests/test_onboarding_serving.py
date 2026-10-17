@@ -19,24 +19,10 @@ def _grant_admin(tmp_path, owner="owner-1", uid="u-owner"):
     )
 
 
-
-
 def _serving_binding(tmp_path, uid="u-owner", owner="owner-1"):
     from tinyassets.provider_serving_binding import resolve_serving_agent_binding
 
     return resolve_serving_agent_binding(tmp_path, universe_id=uid, owner_user_id=owner)
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_anonymous_or_missing_universe_is_held_not_raised(tmp_path):
@@ -77,19 +63,3 @@ def test_an_unnamed_service_is_held_rather_than_guessed(tmp_path):
         service="   ",
     )
     assert held == {"status": "held", "reason": "no_service_named"}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

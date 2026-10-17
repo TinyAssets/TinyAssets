@@ -8,6 +8,12 @@ import pytest
 
 from tests import test_interactive_http_agent as integration
 from tests import test_selected_model_authority as authority
+from tests.support.http_model import provider_name
+from tests.test_provider_served_router import (
+    _RecordingProvider,
+    _served_context,
+    recording_router,
+)
 from tinyassets import daemon_server, universe_intelligence
 from tinyassets.api.commons_catalog import commons_catalog
 from tinyassets.auth import middleware as auth
@@ -24,12 +30,12 @@ from tinyassets.providers.router import ProviderRouter
 from tinyassets.storage.model_preferences import ModelPreferenceStore
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
+OWNED_HTTP = provider_name("owner-1", "u-owner")
+
 rig = authority.rig
 reader = authority.reader
 agent = integration.agent
 REAL_GET_HOME = daemon_server.get_founder_home
-
-
 
 
 @pytest.fixture
@@ -146,16 +152,6 @@ def test_engine_disabled_allows_plain_chat_but_refuses_full_agent_task(agent, mo
     with pytest.raises(ProviderAuthorityHeldError):
         _converse(agent, monkeypatch, message="Build an app in my command center")
     assert len(agent.wires) == 1 and not agent.tools
-
-
-
-
-
-
-
-
-
-
 
 
 def test_unavailable_settings_pin_refuses_without_substituting(agent, monkeypatch):
@@ -307,14 +303,6 @@ def test_invalid_current_choice_refuses_before_provider_work(agent, monkeypatch,
     assert agent.wires == [] and agent.tools == []
 
 
-
-
-
-
-
-
-
-
 def test_corrupt_saved_preferences_are_not_treated_as_absent(agent, monkeypatch):
     _save(agent, ModelPreferences("automatic", None, ()))
     with SQLiteProviderWorkAuthorityStore(agent.served.rig.base).connection() as conn:
@@ -322,8 +310,6 @@ def test_corrupt_saved_preferences_are_not_treated_as_absent(agent, monkeypatch)
     with pytest.raises(ProviderAuthorityHeldError, match="record unavailable"):
         _converse(agent, monkeypatch)
     assert agent.wires == [] and agent.tools == []
-
-
 
 
 def test_discovery_expiry_at_final_capture_is_a_structured_hold(agent, monkeypatch):
@@ -410,3 +396,186 @@ def test_changed_preferences_during_enable_refuse_without_enabling(configured, m
         configured.rig.base, universe_id="u-models",
         binding_id=configured.binding["agent_binding_id"],
     )["status"] != "serving"
+
+
+@pytest.fixture
+def served_http_context(tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
+    return _served_context(tmp_path, monkeypatch)
+
+
+def test_other_owned_universe_keeps_legacy_path(tmp_path, monkeypatch, served_http_context):
+    from tinyassets.providers.served_model_plan import apply_served_model_preferences
+
+    universe, binding, capability, context = served_http_context
+    try:
+        daemon_server.set_founder_home(
+            tmp_path, founder_sub="owner-1", universe_id="different-home", platform_generated=True,
+        )
+        assert apply_served_model_preferences(context) is context
+        with pytest.raises(ProviderAuthorityHeldError, match="outside the current home"):
+            apply_served_model_preferences(
+                context, model_choice=ModelPreferences("automatic", None, ()).document(),
+            )
+    finally:
+        auth.revoke_provider_request(capability)
+
+
+def test_connected_home_without_preferences_builds_automatic_plan(tmp_path, served_http_context):
+    from tinyassets.providers.served_model_plan import apply_served_model_preferences
+
+    universe, binding, capability, context = served_http_context
+    try:
+        daemon_server.set_founder_home(
+            tmp_path, founder_sub="owner-1", universe_id=universe.name, platform_generated=True,
+        )
+        prepared = apply_served_model_preferences(context)
+        assert prepared is not context
+        assert prepared.agent_model_plan is not None
+        assert prepared.model_selection == ModelRef(OWNED_HTTP, "synthetic-model")
+        explicit_auto = apply_served_model_preferences(
+            context, model_choice=ModelPreferences("automatic", None, ()).document(),
+        )
+        assert explicit_auto.model_selection == prepared.model_selection
+    finally:
+        auth.revoke_provider_request(capability)
+
+
+@pytest.mark.parametrize("mode", ["absent", "automatic", "explicit", "corrupt", "deleted"])
+def test_legacy_readiness_matches_saved_home_preferences(tmp_path, mode, served_http_context):
+    from tinyassets.account_deletion import principal_digest
+    from tinyassets.storage.current_home import CurrentHomeChanged
+    from tinyassets.storage.model_preferences import PreferenceStoreUnavailable
+
+    universe, binding, capability, context = served_http_context
+    try:
+        daemon_server.set_founder_home(
+            tmp_path, founder_sub="owner-1", universe_id=universe.name, platform_generated=True,
+        )
+        disabled = set_serving(
+            base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
+            universe_id=universe.name, agent_binding_id=binding["agent_binding_id"],
+            expected_revision=binding["revision"], enabled=False,
+        )["agent_binding"]
+        store = ModelPreferenceStore(tmp_path)
+        if mode != "absent":
+            policy = (ModelPreferences("explicit", ModelRef(OWNED_HTTP, "chosen-model"), ())
+                      if mode == "explicit" else ModelPreferences("automatic", None, ()))
+            store.save("owner-1", universe.name, expected_generation=0, policy=policy,
+                       require_current_home=True)
+        with SQLiteProviderWorkAuthorityStore(tmp_path).connection() as conn:
+            if mode == "corrupt":
+                conn.execute("UPDATE universe_model_preferences SET policy_json = '{}' ")
+            if mode == "deleted":
+                conn.execute(
+                    "INSERT INTO deleted_principals (founder_sub, deleted_at) VALUES (?, ?)",
+                    (principal_digest("owner-1"), 1788998400.0),
+                )
+            before = tuple(
+                conn.execute("SELECT * FROM universe_model_preferences").fetchone() or (),
+            )
+        kwargs = dict(
+            base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
+            universe_id=universe.name, agent_binding_id=binding["agent_binding_id"],
+            expected_revision=disabled["revision"], enabled=True,
+        )
+        errors = {"explicit": PermissionError, "corrupt": PreferenceStoreUnavailable,
+                  "deleted": CurrentHomeChanged}
+        if mode in errors:
+            with pytest.raises(errors[mode]):
+                set_serving(**kwargs)
+            assert get_binding(tmp_path, universe_id=universe.name,
+                               binding_id=binding["agent_binding_id"]) == disabled
+        else:
+            assert set_serving(**kwargs)["status"] == "serving"
+        with SQLiteProviderWorkAuthorityStore(tmp_path).connection() as conn:
+            after = tuple(
+                conn.execute("SELECT * FROM universe_model_preferences").fetchone() or (),
+            )
+            assert after == before
+    finally:
+        auth.revoke_provider_request(capability)
+
+
+def test_nonhome_readiness_does_not_consume_home_preferences(tmp_path, served_http_context):
+    """A second command center serves on the owner's connected source; the
+    home's explicit choice of a missing model neither applies nor is touched."""
+    universe, binding, capability, context = served_http_context
+    try:
+        daemon_server.set_founder_home(
+            tmp_path, founder_sub="owner-1", universe_id="other-home", platform_generated=True,
+        )
+        store = ModelPreferenceStore(tmp_path)
+        saved = store.save(
+            "owner-1", "other-home", expected_generation=0,
+            policy=ModelPreferences("explicit", ModelRef("missing", "model"), ()),
+            require_current_home=True,
+        )
+        assert set_serving(
+            base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
+            universe_id=universe.name, agent_binding_id=binding["agent_binding_id"],
+            expected_revision=binding["revision"], enabled=True,
+        )["status"] == "serving"
+        assert store.get("owner-1", "other-home", require_current_home=True) == saved
+    finally:
+        auth.revoke_provider_request(capability)
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_saved_policy_on_connected_source_preserves_auto_and_explicit(
+    tmp_path, explicit, served_http_context, monkeypatch,
+):
+    from tinyassets.providers.served_model_plan import apply_served_model_preferences
+
+    universe, binding, capability, context = served_http_context
+    try:
+        daemon_server.set_founder_home(
+            tmp_path, founder_sub="owner-1", universe_id=universe.name, platform_generated=True,
+        )
+        preference = (ModelPreferences("explicit", ModelRef(OWNED_HTTP, "chosen-model"), ())
+                      if explicit else ModelPreferences("automatic", None, ()))
+        store = ModelPreferenceStore(tmp_path)
+        saved = store.save("owner-1", universe.name, expected_generation=0, policy=preference,
+                           require_current_home=True)
+        if explicit:
+            from tinyassets.exceptions import SelectedModelUnavailableError
+            from tinyassets.universe_server import _served_failure_record
+
+            with pytest.raises(
+                ProviderAuthorityHeldError, match="absent from catalogue",
+            ) as raised:
+                apply_served_model_preferences(context)
+            assert isinstance(raised.value.__cause__, SelectedModelUnavailableError)
+            record = _served_failure_record(raised.value)
+            assert (record.code, record.stage, record.effects) == (
+                "model_unavailable", "before_send", "none",
+            )
+        else:
+            prepared = apply_served_model_preferences(context)
+            assert prepared is not context
+            assert prepared.model_selection == ModelRef(OWNED_HTTP, "synthetic-model")
+            auto = apply_served_model_preferences(
+                context, model_choice=ModelPreferences("automatic", None, ()).document(),
+            )
+            assert auto.model_selection == prepared.model_selection
+            executor = _RecordingProvider(OWNED_HTTP)
+            from tinyassets.providers.base import ModelConfig
+            from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
+            from tinyassets.request_budget import TurnRequestBudget
+
+            budget = TurnRequestBudget("owner-1", universe.name)
+            budget.persist(tmp_path)
+            try:
+                response = asyncio.run(call(ModelCall(
+                    model=None, fallbacks=(), context=ModelContext(
+                        role="writer", prompt="hello", system="system", operation="converse",
+                        universe_context=prepared, router=recording_router(monkeypatch, executor),
+                        config=ModelConfig(request_budget=budget),
+                    ),
+                ), Parent(owner="owner-1", command_center=universe.name))).response
+            finally:
+                budget.close()
+            assert response.provider == executor.name and executor.calls == 1
+        assert store.get("owner-1", universe.name, require_current_home=True) == saved
+    finally:
+        auth.revoke_provider_request(capability)

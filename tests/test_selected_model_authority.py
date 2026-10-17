@@ -497,7 +497,7 @@ def test_without_selected_authority_router_discards_configuration_override(tmp_p
         recording_router,
     )
 
-    _, _, capability, context = _served_context(tmp_path)
+    _, _, capability, context = _served_context(tmp_path, monkeypatch)
     seen = []
 
     class Recording(_RecordingProvider):

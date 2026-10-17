@@ -1,28 +1,4 @@
-"""Make a deposited subscription actually SERVE the founder's own command center.
-
-``connect_llm`` is deliberately write-only (the chatbot path re-points serving
-with explicit ``bind_serving_provider`` / ``set_serving`` calls). The phone
-app's "Connect" must be the whole gesture: live test 2026-08-21 showed an
-OpenAI credential landing in the vault while every turn still failed with
-"exactly one founder serving binding is required", because nothing created
-the agent binding the serving authority hangs off.
-
-This provisions the minimal chain for the founder's OWN command center, exactly as
-the served-router tests do:
-
-    platform definition (published once, idempotent)
-      -> one agent binding created by the founder ("Your agent", writer)
-        -> bind_serving_provider(provider of the deposited service)
-          -> set_serving(enabled=True)
-
-The founder's DEDICATED platform binding is used (created once; reset to
-canonical content at an exact revision if a collaborator edited it — never an
-arbitrary rediscovered binding), re-pointed to the newly deposited provider
-(users switch Claude <-> OpenAI at will); any other serving binding the
-founder created is disabled so exactly one serves. A CURRENT admin ACL is
-re-checked before any mutation. All authority checks inside the serving module
-still run — this composes the public primitives, it does not bypass them.
-"""
+"""Make an owner-registered HTTP connection serve their command center."""
 
 from __future__ import annotations
 
@@ -41,7 +17,7 @@ _PLATFORM_DEFINITION = {
     "name": "Your agent",
     "description": (
         "The default agent in a founder's own command center: it speaks on the "
-        "subscription the founder connected. Published once by the platform; "
+        "HTTP model the founder connected. Published once by the platform; "
         "every founder's home binds to it."
     ),
     "tags": ["platform", "default"],
@@ -98,7 +74,7 @@ def _require_current_admin(base: Path, *, universe_id: str, owner: str) -> None:
 
     Re-checked immediately before any mutation (Codex 2026-08-21 #1): a bearer
     whose founder-home mapping survived an ACL revocation must not be able to
-    create or re-point serving. Same row ``connect_llm`` requires."""
+    create or re-point serving."""
     from tinyassets.daemon_server import list_universe_acl
 
     rows = [

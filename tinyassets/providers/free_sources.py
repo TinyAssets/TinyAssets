@@ -40,8 +40,6 @@ def source_cards():
                      if row.get("available", True) and "sign_in" not in row])
 
 
-
-
 def source_preset(source_id):
     return next((row for row in source_cards() if row["id"] == source_id), None)
 

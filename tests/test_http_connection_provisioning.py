@@ -969,10 +969,6 @@ def test_legacy_unowned_http_record_is_not_seizable(base: Path) -> None:
         assert len(recs) == 1 and recs[0]["token"] == "legacy-secret"  # untouched
 
 
-
-
-
-
 # --------------------------------------------------------------------------- #
 # Redaction + no advertised handle.
 # --------------------------------------------------------------------------- #

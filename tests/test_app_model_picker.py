@@ -664,36 +664,6 @@ def test_successful_read_without_saved_policy_truthfully_shows_automatic(tmp_pat
     assert result["ui"]["model-saved"]["text"] == "Saved default: Automatic"
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def test_the_menu_is_the_route_to_connecting_another_model_source(tmp_path):
     """"Optional extras live in the model picker" (founder, 2026-09-30).
 

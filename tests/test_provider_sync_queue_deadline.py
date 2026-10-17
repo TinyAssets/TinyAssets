@@ -142,7 +142,6 @@ def _owner_carrier() -> MagicMock:
     carrier.max_tokens = 1000
     carrier.max_cost_microunits = 1000
     carrier.selected_model = None
-    carrier.native_selection = None
     carrier.settlement_owner = None
     carrier.validate_for_call.return_value = "claude-code"
     return carrier

@@ -33,8 +33,6 @@ from tinyassets.providers.router import ProviderRouter
 _ALL_BUILTIN = ("claude-code", "codex", "ollama-local")
 
 
-
-
 class _SpyProvider(BaseProvider):
     """Records calls; carries the REAL executor's declared credential source."""
 
@@ -66,7 +64,6 @@ def _carrier(provider: str, *, role: str = "writer", operation: str = "run_graph
     carrier.max_tokens = 50
     carrier.max_cost_microunits = 5
     carrier.selected_model = None
-    carrier.native_selection = None
     carrier.settlement_owner = None
     carrier.validate_for_call.return_value = provider
     return carrier
@@ -230,8 +227,6 @@ def test_owner_authority_cannot_launch_a_host_credential_provider(
     assert _calls(spies) == {}
 
 
-
-
 def test_dispatch_rechecks_owner_source_membership_after_grant_revocation(
     tmp_path, monkeypatch,
 ):
@@ -327,8 +322,6 @@ def test_dispatch_rechecks_owner_source_membership_after_grant_revocation(
         require_owner_bound_dispatch(source, universe_dir=universe, served_authority=authority)
     with pytest.raises(PlatformLLMCallRefusedError, match="current connected source"):
         require_owner_bound_dispatch(source, universe_dir=universe, invocation_carrier=carrier)
-
-
 
 
 def test_owner_authority_without_a_universe_dir_cannot_fall_to_host_env():

@@ -62,8 +62,6 @@ def _make_directory_link(link: Path, target: Path) -> None:
         pytest.skip(f"directory junctions unavailable: {result.stderr.strip()}")
 
 
-
-
 def test_vault_round_trips_typed_credentials_without_secret_summary(tmp_path):
     summary = write_credential_vault(
         tmp_path,
@@ -168,8 +166,6 @@ def test_single_social_write_uses_service_slot_not_unread_identity_fields(tmp_pa
     }]
 
 
-
-
 def test_single_record_write_normalizes_vcs_purpose_selector(tmp_path):
     write_credential_vault(tmp_path, [{
         "credential_type": "vcs",
@@ -252,10 +248,6 @@ def test_single_vcs_write_reports_dropped_purpose_slots(tmp_path):
     assert _vcs_slot(
         tmp_path, "TinyAssets/TinyAssets", purpose="write"
     ) == ""
-
-
-
-
 
 
 def test_single_record_write_collapses_all_matching_duplicates(tmp_path):
@@ -342,33 +334,5 @@ def test_empty_write_clears_existing_vault(tmp_path):
     assert summary["credential_count"] == 0
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def test_missing_vault_loads_as_empty(tmp_path: Path):
     assert load_credential_vault(tmp_path) == []
-
-
-
-
-
-
-
-
-
-

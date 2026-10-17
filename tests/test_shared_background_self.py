@@ -269,7 +269,7 @@ class ProviderSeamTests(unittest.TestCase):
         def authorize(**kwargs):
             order.append("authorize")
             self.assertEqual(kwargs["system"], received_system[0])
-            yield None, None, "codex"
+            yield None, "synthetic-http"
         session._authorize_attempt = authorize
         received_system = [""]
         with patch("tinyassets.config.load_universe_config", return_value=None), \

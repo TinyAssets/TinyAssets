@@ -20,8 +20,6 @@ logger = logging.getLogger("universe_server.market")
 ENV_CAPABILITIES_VAR = "UNIVERSE_SERVER_CAPABILITIES"
 
 
-
-
 def _current_actor_grants() -> tuple[str, ...]:
     raw = os.environ.get(ENV_CAPABILITIES_VAR, "")
     return tuple(part for part in raw.replace(",", " ").split() if part)

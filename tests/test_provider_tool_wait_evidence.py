@@ -293,7 +293,6 @@ async def test_router_held_compiler_and_run_read_keep_only_valid_evidence(
     carrier.max_tokens = 10
     carrier.max_cost_microunits = 5
     carrier.selected_model = None
-    carrier.native_selection = None
     carrier.settlement_owner = None
     carrier.validate_for_call.return_value = "codex"
     monkeypatch.setattr(router_mod, "_provider_invocation_carrier",

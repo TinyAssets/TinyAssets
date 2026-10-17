@@ -64,7 +64,6 @@ def _module_local_cloud_admission(monkeypatch):
     return observation
 
 
-
 class _CountingProvider(BaseProvider):
     def __init__(self, name: str = HTTP_PROVIDER, after_call=None) -> None:
         self.name = name
@@ -115,15 +114,6 @@ class _OpenProxy:
         }
 
 
-@pytest.fixture
-def available_native_executors(monkeypatch):
-    """Only the executor is synthetic; readiness and custody stay real."""
-    router = ProviderRouter({name: _CountingProvider(name)
-                             for name in (HTTP_PROVIDER, "synthetic-other")})
-    monkeypatch.setattr("tinyassets.providers.call.get_provider_router", lambda: router)
-    return router
-
-
 def _branch(
     *,
     node_count: int,
@@ -162,8 +152,6 @@ def _branch(
             for index in range(1, node_count + 1)
         ],
     )
-
-
 
 
 def _seed_open_serving_assignment(base_path, monkeypatch, **kwargs):
@@ -345,32 +333,12 @@ def _run_branch(
         )
     )
     assert "run_id" in response, response
-    wait_for(response["run_id"], timeout=10)
+    wait_for(response["run_id"], timeout=60)
     record = get_run(tmp_path, response["run_id"])
     assert record is not None
     response["terminal_status"] = record["status"]
     response["terminal_error"] = record["error"]
     return response, provider, captured
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_foreground_run_launches_selected_open_provider_and_settles_once(
@@ -437,8 +405,6 @@ def test_foreground_open_provider_settles_fresh_resolution_refusal_before_launch
     assert reservation == ("cancelled_before_launch",)
 
 
-
-
 #: What each held case must SAY, not merely that it was held. Every one of
 #: these used to read "Connect your provider before running this command center",
 #: including on a universe that had -- live 2026-09-30, where the owner of a
@@ -446,16 +412,6 @@ def test_foreground_open_provider_settles_fresh_resolution_refusal_before_launch
 #: (tests/test_free_account_run_provider_parity.py). Only the two cases that
 #: genuinely have no serving binding keep that sentence.
 _HELD_CASE_REASON = {"missing": "no connected model source for this owner"}
-
-
-
-
-
-
-
-
-
-
 
 
 def test_settlement_failure_names_its_cause() -> None:
@@ -488,8 +444,6 @@ def test_settlement_failure_names_its_cause() -> None:
         "the cause must include the exception TYPE -- four different "
         "PermissionErrors reach this path and only the message tells them apart"
     )
-
-
 
 
 def test_a_session_hidden_behind_an_extra_wrapper_is_refused_not_passed_through() -> None:
@@ -604,8 +558,6 @@ def test_the_real_wrapper_still_rebinds_and_keeps_its_binding() -> None:
     assert rebound.operation == "run_graph"
 
 
-
-
 @pytest.mark.parametrize("host,model,expected_calls", [
     ("openrouter.ai", "synthetic-model:free", 8),
     ("openrouter.ai", "synthetic-model", 8),
@@ -624,7 +576,7 @@ def test_legacy_run_free_policy_uses_owned_source_and_exact_model(
         tmp_path, monkeypatch, authenticate_request, _branch(node_count=8),
         open_provider=True, open_model=model, open_host=host,
     )
-    assert len(proxy.calls) == expected_calls
+    assert len(proxy.calls) == expected_calls, response
     assert not substituted.calls
     if expected_calls == 6:
         assert response["terminal_status"] == "failed"

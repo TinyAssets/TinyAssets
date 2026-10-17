@@ -55,5 +55,3 @@ def test_connect_detection_uses_explicit_universe_authority(tmp_path, monkeypatc
         "universe_id": "u-owner",
         "owner_user_id": "owner-1",
     })]
-
-

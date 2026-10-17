@@ -386,8 +386,6 @@ def test_manifest_to_legacy_cannot_replay_stale_members(scene):
     assert _check_member(scene, after, None)[0] == after
 
 
-
-
 def test_stale_failure_recovery_cannot_overwrite_another_transition(scene, monkeypatch):
     import tinyassets.provider_serving_binding as module
     from tinyassets.provider_assignment import store_provider_assignment_in_transaction

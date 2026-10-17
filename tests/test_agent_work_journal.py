@@ -127,5 +127,3 @@ def test_work_tools_keep_exact_results_and_unknown_effect_reset_hold(journal):
     with journal._ledger.connection() as conn:
         assert reset_blockers(conn, "owner", "home")
     assert journal.get("owner", "home", turn.turn_id) == turn
-
-

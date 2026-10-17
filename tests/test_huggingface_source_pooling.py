@@ -111,5 +111,3 @@ def test_workflow_falls_back_to_hugging_face_after_the_openrouter_daily_cap(
 def test_chat_falls_back_to_hugging_face_after_the_openrouter_daily_cap(hf_pool, monkeypatch):
     pooling.test_chat_daily_quota_skips_sibling_and_uses_next_owned_source(hf_pool, monkeypatch)
     assert hf_pool.second_wire.sent_models == ["openai/gpt-oss-120b"]
-
-

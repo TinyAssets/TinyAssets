@@ -218,7 +218,6 @@ def test_open_provider_authorizes_and_reserves_a_served_turn(tmp_path, monkeypat
         # The CALL-side authority is the connection_grant variant — no snapshot.
         assert authority.authority_kind == "connection_grant"
         assert authority.provider == f"api_key_http:{definition.id}"
-        assert authority.credential_snapshot_dir is None
         # Budget reserves without a subscription custody re-check (open branch).
         reservation = reserve_served_provider_budget(
             tmp_path, universe_dir=universe_dir, authority=authority,

@@ -271,7 +271,9 @@ def test_a_revoked_source_refuses_the_saved_choice_rather_than_substituting(
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
-    ledger.revoke_grant("http_grant_" + "a" * 32)
+    from tinyassets.providers.definition import list_definitions
+
+    ledger.revoke_grant(list_definitions("universe_alice")[0].ref)
 
     result, _provider, captured = _run(tmp_path, monkeypatch, authenticate_request, branch)
 

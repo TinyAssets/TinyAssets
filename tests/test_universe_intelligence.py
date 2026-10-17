@@ -463,10 +463,6 @@ def test_converse_persists_worldbuilding_to_canon(tmp_path, monkeypatch):
     assert "Aurelith" in hits[0].read_text(encoding="utf-8")
 
 
-
-
-
-
 def test_generic_identity_detector():
     assert ui._is_generic_identity_boilerplate("a blank slate, a newborn mind")
     assert ui._is_generic_identity_boilerplate("I am a personified command center")

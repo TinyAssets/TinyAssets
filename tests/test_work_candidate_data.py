@@ -209,5 +209,3 @@ def test_a_graph_pin_cannot_name_a_connection_outside_the_owners_catalogue():
             {"node_defs": [{"prompt_template": "hello", "llm_policy": foreign}]},
             ceiling=10, retry_multiplier=1,
         )
-
-

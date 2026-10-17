@@ -30,10 +30,6 @@ ENTRYPOINT = REPO_ROOT / "deploy" / "docker-entrypoint.sh"
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
 def test_dockerfile_builder_has_nodejs_for_npm():
     """Builder stage must include nodejs + npm to run npm install."""
     text = DOCKERFILE.read_text(encoding="utf-8")
@@ -151,19 +147,9 @@ def test_dockerfile_does_not_pipe_remote_installers_to_shell():
     assert "NODESOURCE_REPO_CHECKSUM" in text
 
 
-
-
-
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # Dockerfile — codex flock wrapper (PR #965 Codex round-2 Finding 1)
 # ---------------------------------------------------------------------------
-
-
 
 
 def test_dockerfile_installs_util_linux_for_flock():
@@ -176,8 +162,6 @@ def test_dockerfile_installs_util_linux_for_flock():
         "Final stage must apt-install util-linux; flock(1) is part of "
         "that package and codex-flock-wrapper.sh exec's flock on every call"
     )
-
-
 
 
 def test_local_git_credentials_stay_out_of_git_and_docker_context():
@@ -365,10 +349,6 @@ def test_no_cloud_worker_module_ships_in_the_package():
         assert importlib.util.find_spec(module) is None, (
             f"{module} is importable — the host-run fleet is retired"
         )
-
-
-
-
 
 
 # ---------------------------------------------------------------------------

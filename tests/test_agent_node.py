@@ -8,7 +8,6 @@ pins, identity binding and owner checks. Only the model's HTTP wire is scripted.
 
 import json
 import sqlite3
-from dataclasses import replace
 
 import pytest
 from fastmcp import Client
@@ -377,23 +376,6 @@ def test_the_compiler_names_only_agent_nodes_and_gives_them_the_turn_backstop(
     assert config.absolute_cap_s == pytest.approx(
         UNBOUNDED_TURN_SECONDS if agent else 300.0, rel=0.01,
     )
-
-
-def test_codex_native_turn_enables_only_the_grant(tmp_path, monkeypatch):
-    from tests.test_owner_steering import _codex_dialled
-    from tinyassets.providers.base import ModelConfig
-
-    config = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="actor-a",
-                         engine_mcp_graph_id="u-a")
-
-    def enabled(cfg):
-        return tuple(_codex_dialled(monkeypatch, cfg)["enabled_tools"])
-
-    assert enabled(config) == SERVED_ENGINE_MCP_TOOLS
-    narrowed = replace(config, engine_tool_grant=("read_brain", "write_graph"))
-    assert enabled(narrowed) == ("bash",)
-
-
 
 
 # --------------------------------------------------------------------------- #

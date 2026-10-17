@@ -231,7 +231,3 @@ def test_busy_roster_does_not_look_like_an_empty_agent_list(admitted, monkeypatc
     monkeypatch.setattr(files, "list", busy)
     with pytest.raises(session.AgentUnavailable):
         session.start("scout", "hello", parent)
-
-
-
-

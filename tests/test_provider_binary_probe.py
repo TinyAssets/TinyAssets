@@ -33,8 +33,6 @@ def reset_stub():
 class TestIsAvailableClassmethod:
 
 
-
-
     def test_base_provider_defaults_to_true(self):
         from tinyassets.providers.base import BaseProvider
 
@@ -46,5 +44,3 @@ class TestIsAvailableClassmethod:
                 raise NotImplementedError
 
         assert _Dummy.is_available() is True
-
-

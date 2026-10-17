@@ -124,7 +124,7 @@ def _authority(**over):
         agent_binding_id="b", binding_revision=1, binding_id="bid",
         binding_generation=1, binding_digest="d", credential_reference_id="c",
         credential_reference_generation=1, credential_reference_digest="cd",
-        credential_service="http", credential_snapshot_dir=None, request_capability=None,
+        credential_service="http", request_capability=None,
     )
     base.update(over)
     return ServedProviderAuthority(**base)
@@ -133,13 +133,6 @@ def _authority(**over):
 @pytest.mark.parametrize(
     "authority",
     [
-        # connection_grant kind but a snapshot dir present (inconsistent).
-        _authority(credential_snapshot_dir=Path("x")),
-        # connection_grant kind but a subscription provider name (inconsistent).
-        _authority(provider="codex"),
-        # subscription_snapshot kind but an open provider name (inconsistent).
-        _authority(authority_kind="subscription_snapshot", provider="api_key_http:provdef_x",
-                   credential_snapshot_dir=Path("x")),
         # unknown kind.
         _authority(authority_kind="sdk_direct"),
     ],

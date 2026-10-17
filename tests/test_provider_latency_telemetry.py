@@ -26,10 +26,6 @@ _PROFILE = ModelConfig(
 )
 
 
-
-
-
-
 def test_provider_timing_keeps_only_allowlisted_scalars():
     from tinyassets.graph_compiler import _provider_timing
 

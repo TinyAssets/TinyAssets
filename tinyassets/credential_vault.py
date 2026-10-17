@@ -143,8 +143,6 @@ def _secret_artifact_dir(universe_dir: Path, service: str) -> Path:
     return target
 
 
-
-
 def _normalize_record(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("credential entries must be JSON objects")
@@ -283,7 +281,6 @@ def _ownership_service_keys(records: list[dict[str, Any]]) -> set[str]:
         f"http:{_service(record)}" for record in records
         if record.get("credential_type") == "http" and _service(record)
     }
-
 
 
 def _merge_single_record(
@@ -615,8 +612,6 @@ def write_credential_vault(
     return result
 
 
-
-
 def _write_identity(
     universe: Path, owner_user_id: str | None, universe_id: str | None,
 ) -> tuple[str, str]:
@@ -807,8 +802,6 @@ class LLMCredentialCustodyReference:
     _record_digest: str = field(repr=False)
 
 
-
-
 def _canonical_digest(value: object) -> str:
     canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -825,14 +818,6 @@ def _ensure_credential_owner_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-
-
-
-
-
-
-
-
 
 
 def _custody_reference_digest(
@@ -856,8 +841,7 @@ def _custody_reference_digest(
 
 
 def _connection_custody_service(connection_id: str) -> str:
-    """Custody `service` key for a connection-grant credential — namespaced so it can
-    never collide with a subscription service (`claude`/`codex`)."""
+    """Namespaced custody key for a broker connection credential."""
     return f"connection:{connection_id.strip()}"
 
 
@@ -1161,5 +1145,3 @@ def resolve_universe_from_env(env: dict[str, str] | None = None) -> Path | None:
     source = os.environ if env is None else env
     value = source.get("TINYASSETS_UNIVERSE", "").strip()
     return Path(value) if value else None
-
-

@@ -233,5 +233,3 @@ def test_finishing_setup_forgets_the_tap():
     )
     assert state["open"] is False
     assert state["remembered"] is False
-
-

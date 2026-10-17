@@ -1166,5 +1166,3 @@ def test_every_run_captures_the_owners_model_order_even_with_nothing_saved(
     assert order.automatic is True
     assert [ref.model_id for ref in order.order] == list(LIVE_MODELS)
     assert {ref.connection_id for ref in order.order} == {provider}
-
-

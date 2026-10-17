@@ -120,8 +120,6 @@ def _connect(uid: str, **doc: Any) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-
-
 def test_api_key_http_registration_against_real_grant(base: Path) -> None:
     _make_universe(base, "u-x", admin="founder")
     _seed_grant(base, owner="founder", universe="u-x")
@@ -212,8 +210,6 @@ def test_api_key_http_cross_owner_grant_hidden(base: Path) -> None:
     r = _connect("u-x", access_method="api_key_http", protocol="openai_chat",
                  model="m", ref=_GRANT_ID)
     assert r == {"error": "not_found", "resource": "connection"}
-
-
 
 
 # --------------------------------------------------------------------------- #

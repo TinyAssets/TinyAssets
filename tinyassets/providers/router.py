@@ -274,8 +274,6 @@ def _live_interactive_turn():
     return current()
 
 
-
-
 def _sync_call_timeout_s(cfg: ModelConfig) -> float:
     """Timeout for a sync-wrapper call: at least the stream absolute cap.
 
@@ -940,10 +938,6 @@ class ProviderRouter:
                 or cfg.max_tokens > served_authority.max_tokens
             ):
                 raise PermissionError("provider call exceeds served token ceiling")
-            cfg = replace(
-                cfg,
-                credential_snapshot_dir=served_authority.credential_snapshot_dir,
-            )
             chain = [served_authority.provider]
         elif invocation_carrier is not None:
             if invocation_carrier.max_tokens < 1:

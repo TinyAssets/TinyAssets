@@ -47,4 +47,3 @@ def _drive_get(path, *, identity=None, monkeypatch):
 
     resp = asyncio.run(run())
     return resp.status_code, json.loads(resp.body or b"{}")
-

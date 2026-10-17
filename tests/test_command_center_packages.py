@@ -1228,7 +1228,6 @@ def test_a_kebab_identifier_starting_sk_is_not_a_key(line):
     assert ccp.text_detection(line) is None
 
 
-
 @pytest.mark.parametrize("run,expected", [
     ("Zq8rT2vX9mK4pL7nB3wE6yH1jD5Q", True),        # random, mixed, long
     ("getVillageSnapshotAdapter2Check", False),     # camelCase identifier
@@ -1358,7 +1357,6 @@ def test_the_install_tab_without_findings_shows_no_warning():
 
     _, _, body = tab_text(_tab_plan())
     assert "Worth a careful look" not in body
-
 
 
 def test_shipped_starter_bundle_and_skills_screen_clear(tmp_path: Path):

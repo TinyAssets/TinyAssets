@@ -3817,8 +3817,6 @@ class _WikiCanaryExecutionAuthority(Middleware):
             reset_wiki_canary_authority(previous)
 
 
-
-
 class _ProviderRequestAuthority(Middleware):
     """Mint an inert, exact-message reserve before FastMCP selects a worker."""
 
@@ -3877,7 +3875,6 @@ mcp.add_middleware(CommandCenterNames(frozenset({
 # ---------------------------------------------------------------------------
 # Server Entry Point
 # ---------------------------------------------------------------------------
-
 
 
 # ---------------------------------------------------------------------------

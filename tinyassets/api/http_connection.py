@@ -5,7 +5,7 @@ a universe owner build an outbound channel to ANY HTTPS API their universe can a
 on via the ``authenticated_external_call`` effector. This handler is channel-
 agnostic by construction: it hard-codes no service. The owner supplies the host,
 path, and secret at build time, so a channel we never anticipated works the same
-way as any other — that is the whole point. It is the sibling of ``connect_llm``:
+way as any other — that is the whole point. It is the sibling of ``connect_compute``:
 an authenticated **admin** deposits a bearer secret into the per-universe vault and
 binds a validated ``http`` ``ConnectionLedger`` connection to the universe.
 
@@ -478,7 +478,7 @@ def _git_scopes_in(scopes_json: str) -> frozenset[str]:
 
 # Uniform absent-resource envelope for not-authenticated / not-admin / unknown
 # universe — a caller cannot probe existence through this surface (mirrors
-# connect_llm / cloud_connections).
+# connect_compute / cloud_connections).
 _NOT_FOUND: dict[str, Any] = {"error": "not_found", "resource": "connection"}
 
 
@@ -760,7 +760,7 @@ def _connect_http(
         return {"error": "authentication_required", "resource": "connection"}
 
     # 2. Resolve universe; require an explicit admin ACL row for THIS actor on
-    #    THIS universe (mirror connect_llm — not the public->read short-circuit).
+    #    THIS universe (mirror connect_compute — not the public->read short-circuit).
     uid = _request_universe(universe_id)
     base = _base_path()
     admin = [

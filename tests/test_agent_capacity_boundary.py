@@ -111,11 +111,3 @@ def test_result_is_detached_from_mutable_router_diagnostics():
                                  ModelRef("opaque-source", None)])
 def test_invalid_current_reference_refuses(ref):
     assert engine_boundary(ref, [diagnostic()]) is None
-
-
-
-
-
-
-
-

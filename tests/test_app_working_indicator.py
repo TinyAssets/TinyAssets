@@ -387,7 +387,7 @@ console.log(JSON.stringify({observed, afterFailure, abandoned}));
 def test_a_failed_poll_neither_clears_nor_outlives_the_claim(tmp_path, html):
     """A failed poll is not evidence the turn ended -- and not licence to claim it forever."""
     out = _run(tmp_path, html, {
-        "activeTurn": {"turn_id": "t-1", "state": "native_started",
+        "activeTurn": {"turn_id": "t-1", "state": "inference_started",
                        "age_s": 20.0, "stale": False}}, _STALLED_POLL)
     assert out["observed"]["shown"] is True
     assert out["afterFailure"]["shown"] is True, (
@@ -707,7 +707,6 @@ def test_another_universes_waiting_chat_is_not_shown_here(tmp_path, html):
     assert out["text"] == "" and out["parts"] == []
 
 
-
 # ---------------------------------------------------------------------------
 # Which step, which model, how long (turn-wait-visibility, live 2026-10-02:
 # turn c6ae56f9 waited ~10 minutes on one qwen request and the line could only
@@ -766,14 +765,6 @@ def test_a_turn_from_another_window_names_its_step_too(tmp_path, html):
     line = out["after"]["line"]
     assert "step 4 · waiting on qwen3.8-27b for 3 min" in line and "another window" in line
     assert line.count("thinking") == 1
-
-
-
-def test_a_native_agent_step_names_its_model_too(tmp_path, html):
-    """Codex: a native round is noted on the server, so it is shown too."""
-    out = _run(tmp_path, html, {"activeTurn": _step(420.0, "native_started")}, _OWN_TURN_WAIT)
-    assert out["waiting"]["line"].endswith("step 4 · waiting on qwen3.8-27b for 7 min")
-    assert out["tryHidden"] is False
 
 
 _TRANSITIONS = r"""

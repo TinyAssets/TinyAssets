@@ -452,7 +452,10 @@ def _load_deploy_pending(now: float | None = None) -> dict[str, Any]:
 def _active_host_snapshot(
     served_llm_type: str = "",
 ) -> tuple[dict[str, object], bool, list[str], str]:
-    """Return host metadata and the generic broker transport label."""
+    """Return the broker transport label, not the selected model.
+
+    Owner connections and selected models are reported by model_options.
+    """
 
     api_key_enabled = api_key_providers_enabled()
     api_key_vars_present = [

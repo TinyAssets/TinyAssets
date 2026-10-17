@@ -96,8 +96,6 @@ def _stamp(now: datetime | None) -> str:
     return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
-
-
 class OwnModelHistory:
     """One owner's verified model ids. Never shared, never published."""
 

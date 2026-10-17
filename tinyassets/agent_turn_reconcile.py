@@ -1,43 +1,8 @@
-"""Settle agent turns a dead daemon left mid-flight. Never resurrect one.
+"""Settle unfinished turns after a daemon restart without replaying effects.
 
-A deploy recreates the container, which kills whatever turn was running. The
-journal keeps the last thing that process committed, so the row stays in a
-progressing state forever: on 2026-09-26 a 22:31:54Z deploy killed the founder's
-turn ``652a2f31e82546a1bb56b5d158b5490f`` and its row read ``native_started`` 35
-minutes later, which the app's server-driven status line rendered as "your
-universe is thinking ... for 34m 55s". It would have stayed that way until the
-granted-turn cap (3600s) aged it out.
-
-This settles such a row at startup, into the terminal state the journal ALREADY
-has for "we cannot tell what ran":
-
-======================  ==========================  ===============================
-Row state               Transition                  Settled state
-======================  ==========================  ===============================
-``ready``               ``abandon``                 ``abandoned``
-``inference_started``   ``finish_inference(None)``   ``held_transport``
-``native_started``      ``finish_native`` /          ``held_native_unknown``
-                        ``indeterminate``
-``tools_pending``       ``finish_tool`` failure     ``held_tool_not_sent`` or
-                                                    ``held_tool_unknown``
-======================  ==========================  ===============================
-
-No new state, and no transition this codebase did not already perform: each one
-is what the coordinator itself writes when that step fails. The point is that
-uncertainty is PRESERVED -- a killed native round becomes indeterminate, not
-completed and not retryable -- so the surface shows the existing "we can't tell
-whether actions ran" notice instead of a thinking indicator. Nothing here
-replays an effect or lets a turn continue; a settled turn is over.
-
-A ``planned`` tool is settled ``not_sent`` rather than ``unknown`` because the
-journal PROVES it: a tool is recorded ``started`` before it is dispatched, so one
-still ``planned`` was never sent.
-
-The sweep acquires the command center's owner lease before writing. Earlier
-owner generations are recoverable; current-generation rows additionally need
-proof that their unique runner claim is dead (or absent on legacy rows).
-Unknown nonempty claims are preserved. Tokens are never reused for execution,
-so a dead runner cannot restart between observation and settlement.
+An interrupted inference becomes held_transport; a planned tool becomes
+not_sent, and a started tool retains unknown effects. Recovery holds the
+owner lease and requires proof that the runner claim is dead.
 """
 
 from __future__ import annotations

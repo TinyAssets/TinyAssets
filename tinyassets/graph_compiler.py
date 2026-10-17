@@ -56,7 +56,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-
 class CompilerError(Exception):
     """Raised when the compiler cannot produce a runnable graph.
 

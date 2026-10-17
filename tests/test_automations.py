@@ -564,8 +564,6 @@ def _registration_kwargs(**overrides):
     return kwargs
 
 
-
-
 @pytest.mark.parametrize("principal", ["", "   ", "anonymous"])
 def test_registration_refuses_an_unauthenticated_principal(
     tmp_path: Path, monkeypatch, principal: str
@@ -794,9 +792,13 @@ def test_a_revoked_connected_source_between_ticks_is_refused(
 ) -> None:
     seam = _SeamRecorder()
     monkeypatch.setattr(automations_module, "_execute", seam)
-    with sqlite3.connect(db_path(tmp_path)) as conn:
-        conn.execute("DELETE FROM llm_credential_custody WHERE universe_id = ?", (UNIVERSE,))
-        conn.commit()
+    from tinyassets.providers.definition import list_definitions
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+    definition = list_definitions(UNIVERSE)[0]
+    ConnectionLedger(
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
+        verify_authenticated_principal=lambda: OWNER,
+    ).revoke_grant(definition.ref)
 
     reason = run_due_automation(
         tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW
@@ -1099,8 +1101,6 @@ def test_one_universes_scan_failure_does_not_stop_the_poll(
     assert refusals[f"universe:{UNIVERSE}:automations"].startswith(
         "automation_scan_error:RuntimeError"
     )
-
-
 
 
 # -- Codex ADAPT 2026-08-29 folds ---------------------------------------------
@@ -2402,24 +2402,15 @@ def test_the_real_run_path_admits_through_the_live_session_and_records_a_run(
     admits on the owner's own authority, and lands a run row actored to the
     universe.
     """
-    import tinyassets.providers.call as provider_call_module
     from tests.test_background_budget_finalization_e2e import _CountingProvider
-    from tinyassets.providers.router import ProviderRouter
     from tinyassets.runs import get_run
 
     fake = _CountingProvider()
-    previous_router = provider_call_module.get_provider_router()
-    provider_call_module.set_provider_router(ProviderRouter({HTTP_PROVIDER: fake}))
-    try:
+    with _real_providers(**{HTTP_PROVIDER: fake}):
         reason = run_due_automation(
-            tmp_path,
-            registered,
-            "2026-08-29T12:10:00+00:00",
-            now=NOW,
-            consumer_id="worker_assigned_real",
+            tmp_path, registered, "2026-08-29T12:10:00+00:00",
+            now=NOW, consumer_id="worker_assigned_real",
         )
-    finally:
-        provider_call_module.set_provider_router(previous_router)
 
     assert reason.startswith("ok:ran:"), reason
     run_id = reason.split("ok:ran:", 1)[1]

@@ -61,10 +61,9 @@ def test_a_plain_prompt_node_beside_an_agent_node_shares_the_allowance():
 
 
 @pytest.mark.parametrize("agent", [False, True])
-@pytest.mark.parametrize("open_provider", [False, True])
 @pytest.mark.usefixtures("http_wire")
 def test_actual_foreground_receipt_uses_parent_allocation_ceiling(
-    tmp_path, monkeypatch, authenticate_request, agent, open_provider,
+    tmp_path, monkeypatch, authenticate_request, agent,
 ):
     from tinyassets.daemon_server import grant_universe_access
 
@@ -78,8 +77,8 @@ def test_actual_foreground_receipt_uses_parent_allocation_ceiling(
             permission="admin", granted_by="acct_alice",
         )
     _run_branch(
-        tmp_path, monkeypatch, authenticate_request, branch, open_provider=open_provider,
-        model_access=ModelAccess("discovered") if open_provider else None,
+        tmp_path, monkeypatch, authenticate_request, branch, open_provider=True,
+        model_access=ModelAccess("discovered"),
     )
     with sqlite3.connect(db_path(tmp_path)) as conn:
         receipts = [json.loads(row[0]) for row in conn.execute(
@@ -91,11 +90,8 @@ def test_actual_foreground_receipt_uses_parent_allocation_ceiling(
     assert receipt["binding_id"] is None
     assert receipt["provider"] is None
     assert receipt["principal_id"] == "acct_alice"
-    if open_provider:
-        assert len(receipt["admitted_sources"]) == 1
-        assert receipt["admitted_sources"][0].startswith("api_key_http:")
-    else:
-        assert receipt["admitted_sources"] == ["codex"]
+    assert len(receipt["admitted_sources"]) == 1
+    assert receipt["admitted_sources"][0].startswith("api_key_http:")
     # Open-provider fixture supplies a policy. The node pins a provider and no model,
     # so the run's captured automatic order is that source's whole eligible
     # catalogue (two models in this fixture), fitted under the parent allocation
@@ -107,8 +103,7 @@ def test_actual_foreground_receipt_uses_parent_allocation_ceiling(
     ceiling = allocation.max_requests or 1000
     assert receipt["max_invocations"] == (
         ceiling if agent
-        else 2 * retry_slots if open_provider
-        else 1
+        else 2 * retry_slots
     )
     assert receipt["max_tokens"] == allocation.max_tokens
     assert receipt["max_cost_microunits"] == allocation.max_cost_microunits

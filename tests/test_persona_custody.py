@@ -177,7 +177,6 @@ class TestFloorSurvivesTheFork:
         assert FOUNDER_FACT not in prompt
 
 
-
 # --------------------------------------------------------------------------- #
 # 3. Custody stays first-party — nothing ships to the host chatbot
 # --------------------------------------------------------------------------- #

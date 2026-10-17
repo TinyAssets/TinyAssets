@@ -75,8 +75,6 @@ def test_model_request_is_non_authorizing_until_owner_answers(rig):
     assert assignment.candidates[0].access == ModelAccess("explicit", ("synthetic-model",))
 
 
-
-
 @pytest.mark.parametrize("change", [
     {"expected_revision": 99}, {"agent_binding_id": "foreign-binding"},
     {"provider": "not-connected", "model_access": {"not-connected": ModelAccess().document()}},
@@ -271,5 +269,3 @@ def test_model_setup_does_not_change_existing_spending_ceilings(rig):
               model_access={SOURCE: changed.document()})
     assert row["status"] == "pending"
     assert "within spending limits you already set" in row["grant_sentence"]
-
-

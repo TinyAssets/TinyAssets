@@ -1,7 +1,7 @@
 """Resolve a node model pin's ``provider`` to one of this universe's sources.
 
 A source is addressed by its exact ref, ``<access method>:<definition id>``
-(``api_key_http:provdef_...``) or a bare subscription name (``codex``). An agent
+(``api_key_http:provdef_...``). An agent
 writing a pin naturally names the access method and the model --
 ``{"provider": "api_key_http", "model_id": "google/gemma-4-31b-it:free"}`` --
 and live 2026-10-01 every such run failed "workflow requests an unavailable

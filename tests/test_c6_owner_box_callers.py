@@ -109,8 +109,6 @@ def test_workspace_git_projects_selected_grant_to_box(tmp_path, monkeypatch):
     assert "TINYASSETS_BOX_GIT" in binding.provider.calls[0][3]["env"]
 
 
-
-
 def test_code_node_uses_box_runner(tmp_path):
     from tinyassets.boxes.node import run_in_box as _run_box
 

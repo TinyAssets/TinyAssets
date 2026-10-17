@@ -60,8 +60,6 @@ def test_the_public_connector_gains_no_top_level_tool():
             "converse"} <= public
 
 
-
-
 def test_the_four_definitions_fit_the_harness_budget():
     """Design budget: tool definitions <= 500 tokens (chars / 4)."""
     from tinyassets import engine_mcp_server as s

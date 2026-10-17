@@ -37,8 +37,6 @@ def test_actual_empty_universe_is_empty(tmp_path, monkeypatch):
     assert doc["engine_connected"] is False
 
 
-
-
 def test_unreadable_vault_is_not_empty_or_ready(tmp_path, monkeypatch):
     import tinyassets.credential_vault as vault
 

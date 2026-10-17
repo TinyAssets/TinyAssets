@@ -213,8 +213,6 @@ class FakeStreamProcess:
         return self.returncode
 
 
-
-
 # Short, injected watchdog profile so idle fires in test time.
 _FAST = ModelConfig(
     init_timeout_s=0.15,
@@ -235,55 +233,15 @@ def _root_answer(text="hello", model="actual-model", message_id="answer-1", **ex
     }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # 5.1 Behavior parity: recorded stream assembles the SAME final text
 # ---------------------------------------------------------------------------
-
-
 
 
 # ---------------------------------------------------------------------------
 # 5.2 Idle watchdog: progress keeps it alive; only real idle fails it
 # Pending native tool work is not model-idle silence. Keep this regression on
 # the real reader rather than simulating a successful ProviderResponse.
-
-
-
-
-
-
 
 
 def _started(name: str, tool_id, **extra) -> dict:
@@ -311,43 +269,12 @@ def _finished(tool_id) -> dict:
     return frame
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ---------------------------------------------------------------------------
-
-
 
 
 # ---------------------------------------------------------------------------
 # 5.3 Failure taxonomy from api_retry / exit / malformed
 # ---------------------------------------------------------------------------
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -409,7 +336,6 @@ def _bound(provider: str = "claude-code", role: str = "writer") -> dict:
     carrier.max_tokens = 1000
     carrier.max_cost_microunits = 1000
     carrier.selected_model = None
-    carrier.native_selection = None
     carrier.settlement_owner = None
     carrier.validate_for_call.return_value = provider
     return {
@@ -540,8 +466,6 @@ class TestInteractiveNoSleep:
 # ---------------------------------------------------------------------------
 
 
-
-
 # ---------------------------------------------------------------------------
 # 5.8 Heartbeat liveness (blocker C): a reasoning/thinking-only stretch stays
 #     alive; heartbeat content is never relayed.
@@ -564,8 +488,6 @@ def _signature_delta(sig: str) -> dict:
 
 def _framing(event_type: str) -> dict:
     return {"type": "stream_event", "event": {"type": event_type}}
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -592,7 +514,6 @@ class TestAbsoluteCapIsGenerous:
         assert prof.idle_s == 30
 
 
-
 # ---------------------------------------------------------------------------
 # 5.10 Cancellation / cleanup (blocker E): caller-cancel kills the subprocess
 # ---------------------------------------------------------------------------
@@ -604,13 +525,9 @@ _SLOW = ModelConfig(
 )
 
 
-
-
 # ---------------------------------------------------------------------------
 # 5.11 Failure telemetry attached to raised exceptions (blocker K)
 # ---------------------------------------------------------------------------
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -654,13 +571,10 @@ class TestSyncWrapperTimeout:
         assert _sync_call_timeout_s(ModelConfig(timeout=10)) >= DEFAULT_ABSOLUTE_CAP_S
 
 
-
 # ---------------------------------------------------------------------------
 # 5.14 NDJSON framing in the UNIT suite: blank lines, interspersed noise,
 #      concurrent stderr, an unterminated final line.
 # ---------------------------------------------------------------------------
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -668,11 +582,3 @@ class TestSyncWrapperTimeout:
 # (not injected pre-classified exceptions), which is what caught the original
 # double-execution regression.
 # ---------------------------------------------------------------------------
-
-
-
-
-
-
-
-

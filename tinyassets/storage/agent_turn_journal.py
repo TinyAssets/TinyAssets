@@ -323,8 +323,6 @@ def _read(conn: sqlite3.Connection, scope: tuple[str, str, str]) -> TurnSnapshot
         raise JournalUnavailable("agent turn record unavailable") from None
 
 
-
-
 def _frontier(round_snapshot: RoundSnapshot) -> str:
     if round_snapshot.state == "inference_started":
         return "inference_started"

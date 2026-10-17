@@ -106,8 +106,6 @@ def _offer_pool_access(*, base, uid, owner, preset, definition_id, models):
             "request": result, "universe_id": uid}
 
 
-
-
 def sign_in_client_id(preset, public_resource):
     """The OAuth client id: a configured registered client, else our metadata document."""
     from tinyassets.connection_oauth.flow import callback_origin

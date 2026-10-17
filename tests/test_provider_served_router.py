@@ -63,18 +63,13 @@ def _definition() -> dict[str, object]:
     }
 
 
-
-
-
-
-
-
 def _binding() -> dict[str, object]:
     return {"schema_version": 1, "name": "Served", "role": "writer"}
 
 
 def _served_context(
     tmp_path,
+    monkeypatch,
     *,
     capability_owner: str = "owner-1",
 ):
@@ -86,6 +81,7 @@ def _served_context(
     )
     from tinyassets.config import load_universe_config
     from tinyassets.provider_serving_binding import resolve_serving_agent_binding
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     seed_http_assignment(tmp_path, owner_user_id="owner-1", universe_id="u-owner")
     universe_dir = tmp_path / "u-owner"
     serving = resolve_serving_agent_binding(
@@ -140,28 +136,6 @@ def _fresh_served_request(universe_dir, serving, *, request_id: str):
     )
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 @pytest.mark.parametrize("operation", [None, "run_graph"])
 def test_universe_scoped_calls_never_route_from_config_without_live_authority(
     tmp_path,
@@ -196,24 +170,6 @@ def test_universe_scoped_calls_never_route_from_config_without_live_authority(
     assert provider.calls == 0
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def test_claude_serving_requires_a_valid_owner(tmp_path):
     from tinyassets.provider_serving_binding import bind_serving_provider
 
@@ -225,16 +181,16 @@ def test_claude_serving_requires_a_valid_owner(tmp_path):
             universe_id="u-owner",
             agent_binding_id="binding-1",
             expected_revision=1,
-            provider="claude-code",
+            provider="api_key_http:provdef_test",
         )
 
 
-def _claude_authority(tmp_path):
+def _http_authority(tmp_path):
     from tinyassets.provider_assignment import ServedProviderAuthority
 
     return ServedProviderAuthority(
-        authority_kind="subscription_snapshot",
-        provider="claude-code",
+        authority_kind="connection_grant",
+        provider="api_key_http:provdef_test",
         max_invocations=10,
         request_max_invocations=2,
         max_tokens=1000,
@@ -249,26 +205,9 @@ def _claude_authority(tmp_path):
         credential_reference_id="c",
         credential_reference_generation=1,
         credential_reference_digest="cd",
-        credential_service="claude-code",
-        credential_snapshot_dir=tmp_path,
+        credential_service="http",
         request_capability=object(),
     )
-
-
-def test_reserve_requires_current_claude_authority(tmp_path):
-    """An absent binding or custody refuses a subscription budget reservation."""
-    from tinyassets.exceptions import ProviderAuthorityHeldError
-    from tinyassets.provider_assignment import reserve_served_provider_budget
-
-    with pytest.raises(ProviderAuthorityHeldError) as exc:
-        reserve_served_provider_budget(
-            str(tmp_path),
-            universe_dir=str(tmp_path),
-            authority=_claude_authority(tmp_path),
-            requested_output_tokens=10,
-            estimated_input_tokens=10,
-        )
-    assert "claude-code serving is held" not in str(exc.value)
 
 
 def test_finalize_tolerates_row_already_reconciled(tmp_path):
@@ -286,7 +225,7 @@ def test_finalize_tolerates_row_already_reconciled(tmp_path):
     )
     from tinyassets.storage import db_path
 
-    authority = _claude_authority(tmp_path)  # provider irrelevant to finalize
+    authority = _http_authority(tmp_path)  # provider irrelevant to finalize
     reservation = ServedProviderBudgetReservation(
         reservation_id="r-reconciled",
         binding_id=authority.binding_id,
@@ -349,10 +288,6 @@ def test_finalize_tolerates_row_already_reconciled(tmp_path):
             output_tokens=40,
             cost_microunits=5_000,
         )
-
-
-
-
 
 
 def recording_router(monkeypatch, provider):

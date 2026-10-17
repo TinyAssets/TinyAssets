@@ -607,7 +607,7 @@ def _app_identity_required() -> Any:
     """401 JSON when the request carries no resolved named identity.
 
     The auth middleware resolves the app's bearer into the request identity
-    contextvar before the handler runs; ``connect_llm`` re-checks it too."""
+    contextvar before the handler runs; ``connect_compute`` re-checks it too."""
     from starlette.responses import JSONResponse
 
     from tinyassets.auth.middleware import current_identity_or_none
@@ -697,10 +697,6 @@ def _bootstrap_home(identity: Any) -> str:
             return ""
 
 
-
-
-
-
 def _command_center_name(home: str) -> str:
     """The command center's learned name, or "" -- never its id.
 
@@ -767,10 +763,6 @@ async def _handle_me(request: Any) -> Any:
                "setup": "unavailable", "degraded": True}
     doc["principal_id"] = identity.user_id
     return JSONResponse(doc, headers={"Cache-Control": "no-store"})
-
-
-
-
 
 
 async def _handle_voice_session(request: Any) -> Any:
@@ -966,7 +958,6 @@ async def _handle_serving_bind(request: Any) -> Any:
 
     out = await run_in_threadpool(_bind)
     return JSONResponse({"serving": out}, headers={"Cache-Control": "no-store"})
-
 
 
 async def _handle_memory(request: Any) -> Any:

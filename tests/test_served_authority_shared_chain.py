@@ -18,15 +18,11 @@ from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthori
 
 
 def _observe(authorize, root, universe, context, *, role="writer", body_error=False):
-    snapshot = None
     try:
         with authorize(
             root, universe_dir=universe, request_carrier=context.provider_request,
             role=role, operation="converse",
         ) as authority:
-            snapshot = authority.credential_snapshot_dir
-            if snapshot is not None:
-                assert snapshot.exists()
             if body_error:
                 raise LookupError("provider-body-error")
             return {
@@ -38,9 +34,6 @@ def _observe(authorize, root, universe, context, *, role="writer", body_error=Fa
     except LookupError as exc:
         assert str(exc) == "provider-body-error"
         return "body-error"
-    finally:
-        if snapshot is not None:
-            assert not snapshot.exists(), "credential snapshot leaked after authorization"
 
 
 @pytest.mark.parametrize("provider", ["http"])
@@ -142,8 +135,6 @@ def test_http_rotation_after_admission_is_fenced_before_launch(tmp_path, monkeyp
                 authority.before_provider_launch()
     finally:
         revoke_provider_request(capability)
-
-
 
 
 def test_dispatch_uses_selected_chain_with_explicit_root(tmp_path, monkeypatch):

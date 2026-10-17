@@ -691,7 +691,7 @@ class _ForegroundRunProviderSession:
                 except Exception:
                     conn.rollback()
                     raise
-            yield carrier, None, provider
+            yield carrier, provider
         except ProviderAuthorityHeldError:
             raise
         except Exception as exc:
@@ -1053,7 +1053,7 @@ class _ForegroundRunProviderSession:
             prompt=prompt,
             system=system,
             policy=policy,
-        ) as (carrier, snapshot_dir, provider):
+        ) as (carrier, provider):
             from tinyassets.config import load_universe_config
             from tinyassets.providers.base import UniverseContext
 
@@ -1066,7 +1066,6 @@ class _ForegroundRunProviderSession:
             # durable allocation at the last boundary before transport.
             call_config = replace(
                 call_config, request_budget=self._request_budget,
-                credential_snapshot_dir=snapshot_dir or call_config.credential_snapshot_dir,
                 workflow_node=True,
                 model_launch_parent=("run", self._run_id,
                                      carrier.work_receipt_id, None)

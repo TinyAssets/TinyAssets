@@ -13,10 +13,6 @@ go red is not evidence.
 """
 from __future__ import annotations
 
-import os
-import subprocess
-from pathlib import Path
-
 import pytest
 
 from tinyassets.providers.base import (
@@ -55,48 +51,6 @@ AMBIENT_ROUTING_VARS = (
 )
 
 
-def _make_directory_link(link: Path, target: Path) -> None:
-    symlink_failure = ""
-    try:
-        link.symlink_to(target, target_is_directory=True)
-        return
-    except OSError as symlink_error:
-        symlink_failure = str(symlink_error)
-        if os.name != "nt":
-            pytest.skip(f"directory symlinks unavailable: {symlink_error}")
-    result = subprocess.run(
-        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-    if result.returncode:
-        pytest.skip(
-            "directory symlinks/junctions unavailable: "
-            f"{symlink_failure}; {result.stderr.strip()}"
-        )
-
-
-def _make_file_link(link: Path, target: Path) -> None:
-    try:
-        link.symlink_to(target)
-    except OSError as exc:
-        pytest.skip(f"file symlinks unavailable: {exc}")
-
-
-def _write_outside_vault(path: Path, token: str) -> None:
-    path.write_text(
-        (
-            '{"schema_version": 1, "credentials": [{'
-            '"credential_type": "llm_api_key", '
-            '"service": "claude-code", '
-            f'"api_key": "{token}"'
-            "}]}\n"
-        ),
-        encoding="utf-8",
-    )
-
-
 @pytest.fixture
 def host_auth(monkeypatch):
     """Simulate the prod container: host subscription auth present in the env."""
@@ -104,10 +58,6 @@ def host_auth(monkeypatch):
         monkeypatch.setenv(name, f"host-value-for-{name}")
     monkeypatch.delenv("TINYASSETS_UNIVERSE", raising=False)
     monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "0")
-
-
-
-
 
 
 def test_host_local_api_key_policy_strips_all_six_variables(host_auth, monkeypatch):
@@ -121,53 +71,3 @@ def test_host_local_api_key_policy_strips_all_six_variables(host_auth, monkeypat
     assert set(API_KEY_PROVIDER_ENV_VARS).isdisjoint(env)
     for name in ("UNRELATED_SETTING",):
         assert env.get(name) == f"host-value-for-{name}"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
