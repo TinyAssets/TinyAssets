@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sqlite3
@@ -65,7 +66,52 @@ def reapply(store: Path, trees: Path, registry: Path, *, clear: bool = False) ->
             verify_owner(store, tree, project, limit)
 
 
-def fence_restore(current: Path, staged: Path) -> None:
+def _cutover_manifest(root: Path, *, exclude=()) -> dict:
+    result = {}
+    for directory, dirs, files in os.walk(root, followlinks=False):
+        for name in files + [n for n in dirs if (Path(directory) / n).is_symlink()]:
+            path = Path(directory) / name
+            relative = path.relative_to(root).as_posix()
+            if relative in exclude:
+                continue
+            if path.is_symlink():
+                result[relative] = "link:" + os.readlink(path)
+            else:
+                with path.open("rb") as stream:
+                    result[relative] = hashlib.file_digest(stream, "sha256").hexdigest()
+    return result
+
+
+def _pristine_cutover_restore(current: Path, staged: Path, store: Path | None) -> bool:
+    """Only the exact paired source before any post-cutover write can go back."""
+    path = current / ".owner-cutover.json"
+    if store is None or not path.is_file() or path.is_symlink():
+        return False
+    info = path.stat()
+    if info.st_uid != 0 or info.st_mode & 0o077:
+        raise ValueError("cutover receipt is not root-private")
+    receipt = json.loads(path.read_text())
+    if receipt.get("version") != 1 or receipt.get("phase") != "complete":
+        return False
+    if _cutover_manifest(staged, exclude=(".tinyassets.db.prebudgetrepair.bak",)) != receipt.get(
+            "source_manifest"):
+        raise ValueError("restore is not the verified cutover source")
+    if _cutover_manifest(current, exclude=(".owner-cutover.json",)) != receipt.get(
+            "final_manifest"):
+        raise ValueError("post-cutover shared writes require forward recovery")
+    expected = receipt.get("owner_manifests", {})
+    actual = {p.name for p in store.iterdir() if p.name.isdecimal()}
+    if actual != set(expected):
+        raise ValueError("cutover owner tree inventory changed")
+    for uid, manifest in expected.items():
+        if not uid.isdecimal() or (store / uid).is_symlink():
+            raise ValueError("unsafe cutover owner tree")
+        if _cutover_manifest(store / uid) != manifest:
+            raise ValueError("post-cutover owner writes require forward recovery")
+    return True
+
+
+def fence_restore(current: Path, staged: Path, *, cutover_store: Path | None = None) -> None:
     """Fence rollback receipts; never roll back permanent identities or deletion."""
     def layout(root):
         marker = root / ".layout.json"
@@ -73,6 +119,9 @@ def fence_restore(current: Path, staged: Path) -> None:
 
     if "owner-box" not in (layout(current), layout(staged)):
         return
+    if layout(current) == "owner-box" and layout(staged) in (None, "owner-split"):
+        if _pristine_cutover_restore(current, staged, cutover_store):
+            return
     if layout(current) != "owner-box" or layout(staged) != "owner-box":
         raise ValueError("owner-box restore requires reviewed forward layout recovery")
 
@@ -181,13 +230,15 @@ if __name__ == "__main__":
     parser.add_argument("--snapshot-data", type=Path)
     parser.add_argument("--quiescent", action="store_true")
     parser.add_argument("--restore-from", type=Path)
+    parser.add_argument("--cutover-store", type=Path)
     args = parser.parse_args()
     if args.snapshot_data:
         if args.store or args.trees or args.registry or args.clear:
             parser.error("snapshot verification does not accept quota mutation arguments")
         check_snapshot(args.snapshot_data.resolve(), quiescent=args.quiescent)
         if args.restore_from:
-            fence_restore(args.restore_from.resolve(), args.snapshot_data.resolve())
+            fence_restore(args.restore_from.resolve(), args.snapshot_data.resolve(),
+                          cutover_store=args.cutover_store)
     elif not all((args.store, args.trees, args.registry)) or args.quiescent or args.restore_from:
         parser.error("quota restoration requires store, trees, paired broker database")
     else:

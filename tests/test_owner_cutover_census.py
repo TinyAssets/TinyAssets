@@ -62,7 +62,9 @@ def source(tmp_path):
                                                 ('https://service.invalid/b', 'bob');
     """)
     for center, suffix in (("a1", "a"), ("b1", "b")):
-        (root / center / ".credential-vault.json").write_text(json.dumps({
+        vault = root / '.platform/credential-vaults' / center / '.credential-vault.json'
+        vault.parent.mkdir(parents=True)
+        vault.write_text(json.dumps({
             "schema_version": 1, "credentials": [
                 {"credential_type": "http", "destination": f"https://service.invalid/{suffix}",
                  "token": "secret-must-not-appear"},
@@ -262,10 +264,13 @@ def test_explicit_classes_cover_legacy_rows_and_never_admitted_tree(source):
     (source / 'never-admitted').mkdir()
     (source / 'never-admitted/history').write_text('synthetic dropped history')
     (source / '.tinyassets.db.prebudgetrepair.bak').write_bytes(b'not opened as a database')
+    (source / 'runs').mkdir()
+    (source / 'runs/legacy.jsonl').write_text('synthetic legacy transcript')
+    (source / 'runs/center-owned.jsonl').write_text('synthetic owned transcript')
     before = _fingerprint(source)
     report = census(source)
     assert report['ready'], report['refusals']
-    assert report['files']['dropped'] == 2
+    assert report['files']['dropped'] == 3
     assert report['row_totals']['regenerated'] == 8
     assert report['tables']['.runs.db/runs']['dropped'] == 1
     assert report['tables']['.runs.db/runs']['per_owner'] == {'account-0001': 1}
@@ -298,3 +303,56 @@ def test_unclassified_orphan_is_not_dropped(source):
     report = census(source)
     assert not report['ready']
     assert report['refusals']['unattributed_owner_rows'] == 1
+
+
+def test_null_owner_uses_center_and_an_unknown_paid_broker_plan_refuses(source):
+    _sql(source / '.tinyassets.db', """
+        CREATE TABLE owner_ui_prefs (owner_user_id TEXT, universe_id TEXT);
+        INSERT INTO owner_ui_prefs VALUES (NULL,'a1'), (NULL,NULL);
+    """)
+    report = census(source)
+    assert report['ready'], report['refusals']
+    table = report['tables']['.tinyassets.db/owner_ui_prefs']
+    assert table['per_owner'] == {'account-0001': 1}
+    assert table['dropped'] == 1
+    _sql(source / '.broker/plans.db', """
+        CREATE TABLE plans (owner TEXT, tier TEXT);
+        INSERT INTO plans VALUES ('unknown','paid');
+    """)
+    assert census(source)['refusals']['unattributed_paid_tier'] == 1
+
+
+def test_owner_name_cannot_collide_with_a_placement_class(source):
+    for path, statements in {
+        '.broker/state/owner-identities.db': [
+            "UPDATE owner_identities SET principal='dropped' WHERE principal='alice'",
+            "UPDATE center_admissions SET principal='dropped' WHERE principal='alice'"],
+        '.tinyassets.db': [
+            "UPDATE universe_owner SET owner_id='dropped' WHERE owner_id='alice'",
+            "UPDATE agent_turns SET owner_user_id='dropped' WHERE owner_user_id='alice'",
+            "UPDATE webhook_hooks SET owner_principal_id='dropped' "
+            "WHERE owner_principal_id='alice'"],
+        'outbound.db': [
+            "UPDATE outbound_connections SET owner_user_id='dropped' WHERE owner_user_id='alice'"],
+    }.items():
+        _sql(source / path, ';'.join(statements))
+    report = census(source)
+    assert report['ready'], report['refusals']
+    table = report['tables']['.tinyassets.db/agent_turns']
+    assert table['dropped'] == 0
+    assert sorted(table['per_owner'].values()) == [2, 2]
+
+
+def test_transcript_key_preserves_dots_and_census_never_materializes_payloads(source):
+    _sql(source / '.runs.db', """
+        CREATE TABLE runs (run_id TEXT, owner_user_id TEXT, queue_universe_id TEXT, payload TEXT);
+        INSERT INTO runs VALUES ('run.with.dot','alice','a1','private-payload'),
+                                ('run','bob','b1','other-private-payload');
+    """)
+    (source / 'runs').mkdir()
+    (source / 'runs/run.with.dot.jsonl').write_text('private transcript')
+    inventory = {}
+    report = census(source, _inventory=inventory)
+    assert report['ready'], report['refusals']
+    assert inventory['file_targets']['runs/run.with.dot.jsonl'] == ('owner', 'alice')
+    assert all('payload' not in row for row in inventory['tables']['.runs.db', 'runs'])

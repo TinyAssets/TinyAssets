@@ -519,7 +519,8 @@ if [[ -n "${BOX_STAGE}" ]]; then
         exit 4
     fi
     if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
-            --snapshot-data "${STAGE_DIR}" --restore-from "${VOLUME_DIR}"; then
+            --snapshot-data "${STAGE_DIR}" --restore-from "${VOLUME_DIR}" \
+            --cutover-store "${BOX_STORE_DIR}"; then
         log "ERROR: restore would roll back authority or replay an operation"
         exit 4
     fi

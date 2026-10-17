@@ -1,8 +1,8 @@
 """One-shot owner-split -> owner-box move, run only by deploy_fail_safe.
 
-The old trees stay in place. The new image serves only after the marker is
-published. Any failure after ``migrating`` requires the paired snapshot restore;
-there is deliberately no resume, startup hook, or reverse move.
+The new image serves only after verified copies and shared stores are published.
+A durable journal resumes build or publication after a crash; rollback still
+requires the paired snapshot. No runtime startup hook or reverse move exists.
 """
 
 from __future__ import annotations
@@ -12,11 +12,13 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 import stat
 import subprocess
 import sys
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -24,8 +26,7 @@ from deploy.box_project_readback import verify_owner, verify_tree
 from tinyassets import storage_layout
 from tinyassets.broker.owner_identities import OWNER_ID_FIRST, OWNER_ID_LAST
 from tinyassets.sqlite_readonly import readonly_db, readonly_snapshot
-from tinyassets.universe_owner import account_type_of
-from tinyassets.usage_policy import limits_for
+from tinyassets.usage_policy import account_type, limits_for
 
 PENDING = 10
 ABSENT = 4
@@ -34,7 +35,8 @@ MAX_BACKUP_AGE_S = 3600
 _CENTER = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _CREDENTIAL_ENTRIES = (".credential-vault.json", ".credentials", ".credentials.json",
                        ".oauth-refresh")
-_EPHEMERAL_ENTRIES = (".runtime",)
+_EPHEMERAL_ENTRIES = (".runtime", ".subscription_state.db",
+                      ".subscription_state.db-wal", ".subscription_state.db-shm")
 
 
 @dataclass(frozen=True)
@@ -242,7 +244,11 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
         ".langgraph_runs.db": "checkpoints writes",
     }.items():
         for name in names.split():
-            rules[database][name] = replace(rules[database][name], drop_unowned=True)
+            rule = rules[database][name]
+            rules[database][name] = replace(
+                rule, drop_unowned=True,
+                principals=tuple(dict.fromkeys((*rule.principals, "owner_user_id", "owner_id"))),
+                centers=tuple(dict.fromkeys((*rule.centers, "universe_id", "center_id"))))
     return rules
 
 
@@ -280,6 +286,10 @@ def _census_columns(database: str, table: str) -> set[str]:
         columns.update(("owner", "revoked_at"))
     if (database, table) == (".hook-owners.sqlite3", "hook_owners"):
         columns.add("owner")
+    if (database, table) == (".broker/plans.db", "plans"):
+        columns.update(("owner", "tier"))
+    if (database, table) == (".tinyassets.db", "webhook_hooks"):
+        columns.update(("token_hash", "revoked_at"))
     return columns
 
 
@@ -287,7 +297,8 @@ def _quoted(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
-def census(data: Path, *, _inventory: dict | None = None) -> dict:
+def census(data: Path, *, _inventory: dict | None = None,
+           _source_marker: dict | None = None) -> dict:
     """Read-only, count-only cutover audit, including all refusal evidence.
 
     No store initializers, live runtime readers, or default-plan readers run
@@ -315,7 +326,8 @@ def census(data: Path, *, _inventory: dict | None = None) -> dict:
             raise RuntimeError("census shared authority path is a symlink")
     with readonly_snapshot():
         marker_path = data / ".layout.json"
-        marker = json.loads(marker_path.read_text()) if marker_path.is_file() else {}
+        marker = (_source_marker if _source_marker is not None else
+                  json.loads(marker_path.read_text()) if marker_path.is_file() else {})
         if (not isinstance(marker, dict) or marker.get("layout") != 2
                 or marker.get("state") != "stable" or marker.get("split") != "owner-split"
                 or marker.get("box_layout") not in (None, "owner-split")):
@@ -417,14 +429,12 @@ def census(data: Path, *, _inventory: dict | None = None) -> dict:
                             f"PRAGMA table_info({_quoted(table)})")}
                         selected = sorted(_census_columns(relative, table) & available)
                         projection = ",".join(map(_quoted, selected)) if selected else "1"
-                        if _inventory is not None:
-                            projection = "*"
                         tables[relative, table] = [dict(item) for item in db.execute(
-                            f"SELECT {projection} FROM {_quoted(table)}")]
+                            f"SELECT {projection} FROM {_quoted(table)} NOT INDEXED")]
 
         labels = {owner: f"account-{index:04d}"
                   for index, owner in enumerate(sorted(owners), start=1)}
-        memo: dict[tuple[str, str, int], frozenset[str]] = {}
+        memo: dict[tuple[str, str, int], frozenset[str | None]] = {}
         indexes: dict[tuple[str, str, str], dict[object, list[int]]] = {}
 
         def row_owners(database, table, index, active=frozenset()):
@@ -437,7 +447,7 @@ def census(data: Path, *, _inventory: dict | None = None) -> dict:
             if rule is None:
                 return frozenset()
             row = tables[database, table][index]
-            claims: list[set[str]] = []
+            claims: list[set[str | None]] = []
             for column in rule.principals:
                 if row.get(column):
                     value = row[column]
@@ -445,7 +455,7 @@ def census(data: Path, *, _inventory: dict | None = None) -> dict:
             for column in rule.centers:
                 if row.get(column):
                     value = row[column]
-                    claims.append({"dropped"} if value in dropped_centers or (
+                    claims.append({None} if value in dropped_centers or (
                         rule.drop_unowned and value not in known_centers)
                                   else known_centers.get(value, set()))
             for column, parent_db, parent, parent_column in rule.references:
@@ -458,19 +468,24 @@ def census(data: Path, *, _inventory: dict | None = None) -> dict:
                         indexes[index_key] = lookup
                     matches = indexes[index_key].get(row[column], [])
                     if len(matches) != 1:
-                        claims.append({"dropped"} if not matches and rule.drop_unowned else set())
+                        claims.append({None} if not matches and rule.drop_unowned else set())
                     else:
                         claims.append(set(row_owners(
                             parent_db, parent, matches[0], active | {key})))
             if not claims and rule.drop_unowned:
-                claims.append({"dropped"})
-            if any(c and c != {"dropped"} for c in claims):
-                claims = [c for c in claims if c != {"dropped"}]
+                claims.append({None})
+            if any(c and c != {None} for c in claims):
+                claims = [c for c in claims if c != {None}]
             resolved = (frozenset.union(*(frozenset(c) for c in claims))
                         if claims and all(len(c) == 1 for c in claims) else frozenset())
             memo[key] = resolved if len(resolved) == 1 else frozenset()
             return memo[key]
 
+        policy_accounts = sorted({PurePosixPath(database).parts[2]
+                                  for database, _ in tables
+                                  if database.startswith(".broker/accounts/")})
+        policy_labels = {account: f"policy-account-{index:04d}"
+                         for index, account in enumerate(policy_accounts, 1)}
         table_report = {}
         totals: Counter = Counter(dict.fromkeys(
             ("owner", "router", "broker", "published", "dropped", "regenerated"), 0))
@@ -503,8 +518,8 @@ def census(data: Path, *, _inventory: dict | None = None) -> dict:
                         targets[index] = "unattributed"
                     else:
                         owner = next(iter(candidates))
-                        targets[index] = owner
-                        if owner == "dropped":
+                        targets[index] = "dropped" if owner is None else ("owner", owner)
+                        if owner is None:
                             dropped += 1
                         else:
                             counts[labels[owner]] += 1
@@ -520,7 +535,11 @@ def census(data: Path, *, _inventory: dict | None = None) -> dict:
                 totals["dropped"] += dropped
             totals["published"] += public
             assignments[database, table] = targets
-            table_report[f"{database}/{table}"] = {
+            report_database = database
+            if database.startswith(".broker/accounts/"):
+                parts = PurePosixPath(database).parts
+                report_database = f".broker/accounts/{policy_labels[parts[2]]}/policy.db"
+            table_report[f"{report_database}/{table}"] = {
                 "class": placement, "total": len(rows), "per_owner": dict(counts),
                 "published": public, "dropped": dropped,
                 "regenerated": len(rows) if placement == "regenerated" else 0,
@@ -538,11 +557,18 @@ def census(data: Path, *, _inventory: dict | None = None) -> dict:
                     candidates = row_owners(database, table, index)
                     if len(candidates) == 1 and next(iter(candidates)) in labels:
                         credential_report[labels[next(iter(candidates))]]["dropped_cli"] += 1
+        run_owners = {}
+        for index, row in enumerate(tables.get((".runs.db", "runs"), [])):
+            run_id = row.get("run_id")
+            if run_id:
+                run_owners.setdefault(run_id, set()).update(row_owners(".runs.db", "runs", index))
+        file_targets = {}
         file_report = _census_files(data, known_centers, labels, database_files, refusals,
-                                    dropped_centers)
+                                    dropped_centers, run_owners, file_targets)
         if _inventory is not None:
             _inventory.update(tables=tables, assignments=assignments, owners=permanent,
-                              centers=admitted, dropped_centers=dropped_centers, labels=labels)
+                              centers=admitted, dropped_centers=dropped_centers, labels=labels,
+                              file_targets=file_targets)
         return {
             "version": 1, "ready": not any(refusals.values()), "owners": len(owners),
             "admitted_centers": len(admitted), "explicit_centers": len(known_centers),
@@ -590,13 +616,14 @@ def _census_accounts(data, centers, labels, tables, refusals):
                 else:
                     paid[label] += 1
                     plans[label] = {"tier": "paid", "paid_sources": paid[label]}
-        vaults = [directory / ".credential-vault.json",
-                  data / ".platform/credential-vaults" / directory.name / ".credential-vault.json"]
+                    if paid[label] > 1:
+                        refusals["multiple_paid_sources"] += 1
+        if (directory / ".credential-vault.json").exists():
+            refusals["credentials_outside_broker_custody"] += 1
+        vaults = [data / ".platform/credential-vaults" / directory.name / ".credential-vault.json"]
         if any(path.is_symlink() or path.parent.is_symlink() for path in vaults):
             raise RuntimeError("census vault path is a symlink")
         present = [path for path in vaults if path.is_file()]
-        if len(present) > 1:
-            refusals["duplicate_vault_locations"] += 1
         for path in present:
             raw = json.loads(path.read_text(encoding="utf-8"))
             records = raw.get("credentials") if isinstance(raw, dict) else None
@@ -626,15 +653,30 @@ def _census_accounts(data, centers, labels, tables, refusals):
                     # VCS/social custody needs an explicit carry/drop contract;
                     # never silently treat those secrets as HTTP slots.
                     refusals["unclassified_credential_type"] += 1
+    for row in tables.get((".broker/plans.db", "plans"), []):
+        owner, tier = row.get("owner"), row.get("tier")
+        if tier not in {"free", "paid"}:
+            refusals["invalid_tier"] += 1
+        elif tier == "paid":
+            if owner not in labels:
+                refusals["unattributed_paid_tier"] += 1
+            else:
+                label = labels[owner]
+                paid[label] += 1
+                if paid[label] > 1:
+                    refusals["multiple_paid_sources"] += 1
+                plans[label] = {"tier": "paid", "paid_sources": paid[label]}
     return plans, credentials
 
 
-def _census_files(data, centers, labels, databases, refusals, dropped_centers=()):
+def _census_files(data, centers, labels, databases, refusals, dropped_centers=(),
+                  run_owners=None, file_targets=None):
     from collections import Counter
 
     counts: Counter = Counter()
     shared = {
         ".layout.json": "broker", ".layout.lock": "broker",
+        ".owner-cutover.json": "broker",
         "platform-expected-instance.json": "router", "release-state.json": "router",
         ".billing_webhook_verified.json": "router",
     }
@@ -649,9 +691,43 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
             if (relative.as_posix() == ".tinyassets.db.prebudgetrepair.bak"
                     or parts[0] in dropped_centers):
                 counts["dropped"] += 1
+            elif (parts[0] in centers and len(parts) > 1 and parts[1] in _CREDENTIAL_ENTRIES):
+                counts["dropped"] += 1
+            elif parts[0] in centers and len(parts) > 1 and parts[1] == ".runtime":
+                counts["regenerated"] += 1
+            elif (parts[0] in centers and len(parts) > 1
+                  and parts[1].startswith(".subscription_state.db")):
+                counts["broker"] += 1
             elif parts[0] in centers and len(centers[parts[0]]) == 1:
                 label = labels[next(iter(centers[parts[0]]))]
                 counts[label] += 1
+            elif (len(parts) >= 5 and parts[:2] == (".platform", "owners")
+                  and parts[2].isdecimal() and parts[3] == "agent-home"):
+                counts["dropped"] += 1
+            elif parts[0] == "runs" and len(parts) > 1:
+                # Transcript files are runs/<id>.*, runs/<id>/..., or their
+                # archived equivalents. A key with conflicting claims refuses.
+                position = 2 if parts[1] == "archived" and len(parts) > 2 else 1
+                component = parts[position]
+                names = {component}
+                if position == len(parts) - 1:
+                    while any(component.endswith(suffix)
+                              for suffix in (".jsonl", ".json", ".log", ".txt", ".gz")):
+                        component = component.rsplit(".", 1)[0]
+                        names.add(component)
+                candidates = set().union(*(run_owners[name] for name in names
+                                           if run_owners and name in run_owners))
+                if not candidates or candidates == {None}:
+                    counts["dropped"] += 1
+                    if file_targets is not None:
+                        file_targets[relative.as_posix()] = "dropped"
+                elif len(candidates) == 1 and next(iter(candidates)) in labels:
+                    owner = next(iter(candidates))
+                    counts[labels[owner]] += 1
+                    if file_targets is not None:
+                        file_targets[relative.as_posix()] = ("owner", owner)
+                else:
+                    counts["unattributed"] += 1
             elif path in databases or any(
                 path == database.with_name(database.name + suffix)
                 for database in databases for suffix in ("-wal", "-shm")
@@ -805,32 +881,24 @@ def layout_census(data: Path) -> dict:
 
 
 def check(data: Path) -> int:
-    """Print a census; 10 also covers the one-time Activities cutover."""
+    """Print the layout census; 10 requests the single final-shape cutover."""
     census = layout_census(data)
     layout = census["box_layout"]
     state = census["marker_state"]
-    activity_pending = []
-    if layout == "owner-box" and state == "stable":
-        from tinyassets.activity_shape_migration import _pending
-
-        if _marker(data).get("activity_shape") != "v1":
-            activity_pending = _pending(data)
-            census["pending"] = bool(activity_pending)
-    census["activity_shape_pending"] = activity_pending
     print(json.dumps(census, sort_keys=True))
     if layout == "absent":
         return ABSENT
     if state != "stable" or layout not in ("owner-split", "owner-box"):
         return UNREADABLE
     if layout == "owner-box":
-        return PENDING if activity_pending else 0
+        return 0 if _marker(data).get("owner_daemon") == 1 else UNREADABLE
     return PENDING
 
 
-def _verified_archive(path: Path) -> None:
+def _verified_archive(path: Path, *, fresh: bool = True) -> str:
     if not path.is_file() or path.is_symlink() or path.stat().st_size == 0:
         raise RuntimeError(f"missing complete snapshot {path}")
-    if not 0 <= time.time() - path.stat().st_mtime <= MAX_BACKUP_AGE_S:
+    if fresh and not 0 <= time.time() - path.stat().st_mtime <= MAX_BACKUP_AGE_S:
         raise RuntimeError(f"snapshot {path} is not fresh")
     digest = path.with_name(path.name + ".sha256")
     expected = digest.read_text(encoding="ascii").split()
@@ -844,19 +912,25 @@ def _verified_archive(path: Path) -> None:
             sha.update(chunk)
     if sha.hexdigest() != expected[0]:
         raise RuntimeError(f"snapshot digest mismatch {path}")
+    return sha.hexdigest()
 
 
-def _verified_pair(data_backup: Path, box_backup: Path) -> None:
+def _verified_pair(data_backup: Path, box_backup: Path, *, fresh: bool = True) -> list[str]:
     if not data_backup.name.startswith("tinyassets-snapshot-"):
         raise RuntimeError("data backup is not a full cutover snapshot")
     suffix = data_backup.name.removeprefix("tinyassets-snapshot-")
     if box_backup.name != "tinyassets-box-store-" + suffix:
         raise RuntimeError("box backup does not pair with data backup")
-    _verified_archive(data_backup)
-    _verified_archive(box_backup)
+    return [_verified_archive(data_backup, fresh=fresh),
+            _verified_archive(box_backup, fresh=fresh)]
 
 
 def _owner_plan(data: Path) -> list[OwnerMove]:
+    if not (data / ".tinyassets.db").is_file():
+        raise FileNotFoundError(data / ".tinyassets.db")
+    report = census(data)
+    if not report["ready"]:
+        raise RuntimeError(f"cutover census refused: {report['refusals']}")
     identity_db = data / ".broker" / "state" / "owner-identities.db"
     with readonly_db(identity_db) as db:
         identities = dict(db.execute(
@@ -898,54 +972,14 @@ def _owner_plan(data: Path) -> list[OwnerMove]:
             if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 1001
                     or info.st_gid != uid):
                 raise RuntimeError(f"noncanonical owner center {center}")
-        account = account_type_of(data, principal, db_reader=readonly_db)
+        label = f"account-{sorted(identities).index(principal) + 1:04d}"
+        account = account_type(report["plans"][label]["tier"])
         quota = int(limits_for(account).storage_bytes)
         quota = (quota // 1024) * 1024
         if quota <= 0:
             raise RuntimeError("owner quota is not positive")
         plan.append(OwnerMove(principal, uid, centers, quota))
-    # Refuse silently orphaned owner roots; the new image could never reach them.
-    for source in data.iterdir():
-        if source.name.startswith(".") or not source.is_dir() or source.is_symlink():
-            continue
-        info = source.lstat()
-        if OWNER_ID_FIRST <= info.st_gid <= OWNER_ID_LAST and source.name not in {
-            center for owner in plan for center in owner.centers
-        }:
-            raise RuntimeError(f"unadmitted owner center {source.name}")
     return plan
-
-
-def _boxed_activity_roots(data: Path, store: Path) -> tuple[dict[str, Path], dict[str, str]]:
-    """Resolve each owner's centers independently through committed box records."""
-    from tinyassets.activity_shape_migration import _centers, _pending
-
-    identity_db = data / ".broker" / "state" / "owner-identities.db"
-    with readonly_db(identity_db) as db:
-        records = dict(db.execute("SELECT principal, machine FROM box_records"))
-    centers = _centers(data)
-    by_owner: dict[str, list[str]] = {}
-    for center in _pending(data):
-        if not _CENTER.fullmatch(center) or center not in centers:
-            raise RuntimeError(f"activity center has no admitted owner: {center}")
-        by_owner.setdefault(centers[center], []).append(center)
-    roots = {}
-    failures = {}
-    for owner, owner_centers in by_owner.items():
-        uid = records.get(owner)
-        if type(uid) is not int or not OWNER_ID_FIRST <= uid <= OWNER_ID_LAST:
-            reason = "Activities conversion refused: owner has no box record"
-        else:
-            owner_roots = {center: store / str(uid) / center for center in owner_centers}
-            absent = [center for center, root in owner_roots.items()
-                      if root.is_symlink() or not root.is_dir()]
-            reason = (f"Activities conversion refused: owner box is absent: {absent[0]}"
-                      if absent else "")
-        if reason:
-            failures.update({center: reason for center in owner_centers})
-        else:
-            roots.update(owner_roots)
-    return roots, failures
 
 
 def _mounted(store: Path) -> None:
@@ -986,9 +1020,9 @@ def _owner_inode_preflight(data: Path, plan: list[OwnerMove]) -> None:
     _refuse_nested_mounts(data)
     for owner in plan:
         sources = [data / center for center in owner.centers]
-        home = data / ".platform" / "owners" / str(owner.uid) / "agent-home"
-        if home.exists() or home.is_symlink():
-            sources.append(home)
+        for directory in (".agent-sessions", ".universe-sidecars"):
+            sources.extend(data / directory / center for center in owner.centers
+                           if (data / directory / center).exists())
         for source in sources:
             info = source.lstat()
             if not stat.S_ISDIR(info.st_mode):
@@ -1017,7 +1051,8 @@ def _owner_inode_preflight(data: Path, plan: list[OwnerMove]) -> None:
 def _atomic_json(path: Path, value: dict) -> None:
     temporary = path.with_name(path.name + f".{os.getpid()}.tmp")
     try:
-        with temporary.open("x", encoding="utf-8") as stream:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump(value, stream, sort_keys=True)
             stream.write("\n")
             stream.flush()
@@ -1038,13 +1073,13 @@ def _atomic_json(path: Path, value: dict) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _copy(source: Path, target: Path, uid: int, *, extra_excludes=()) -> None:
+def _copy(source: Path, target: Path, uid: int) -> None:
     command = [
         "rsync", "-aH", "--xattrs", "--one-file-system", "--numeric-ids",
         "--chown", f"{uid}:{uid}", f"{source}/", f"{target}/",
     ]
     command[-2:-2] = [f"--exclude=/{name}" for name in
-                      (*_CREDENTIAL_ENTRIES, *_EPHEMERAL_ENTRIES, *extra_excludes)]
+                      (*_CREDENTIAL_ENTRIES, *_EPHEMERAL_ENTRIES)]
     subprocess.run(command, check=True)
     result = subprocess.run(
         [*command[:-2], "--checksum", "--dry-run", "--itemize-changes", *command[-2:]],
@@ -1053,43 +1088,6 @@ def _copy(source: Path, target: Path, uid: int, *, extra_excludes=()) -> None:
     if result.stdout.strip():
         raise RuntimeError(
             f"rsync verification differs for {source}: {result.stdout.strip()[:2000]}")
-
-
-def _check_credential_sources(source: Path) -> None:
-    for name in _CREDENTIAL_ENTRIES:
-        entry = source / name
-        if not entry.exists() and not entry.is_symlink():
-            continue
-        for directory, dirs, files in os.walk(entry, followlinks=False):
-            for child in (Path(directory), *(Path(directory) / item for item in dirs + files)):
-                info = child.lstat()
-                if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
-                    raise RuntimeError(f"non-regular credential source: {child}")
-        info = entry.lstat()
-        if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
-            raise RuntimeError(f"non-regular credential source: {entry}")
-
-
-def _copy_credentials(source: Path, target: Path) -> None:
-    """Copy only recognized credential artifacts into platform custody."""
-    from tinyassets.boxes.layout import BROKER_READ_GID
-
-    _check_credential_sources(source)
-    target.mkdir(mode=0o710)
-    os.chown(target, 1001, BROKER_READ_GID)
-    filters = [f"--include=/{name}" for name in _CREDENTIAL_ENTRIES]
-    filters += [f"--include=/{name}/***" for name in _CREDENTIAL_ENTRIES]
-    command = ["rsync", "-aH", "--xattrs", "--one-file-system", "--numeric-ids",
-               "--chown", f"1001:{BROKER_READ_GID}", "--chmod=D710,F640",
-               *filters, "--exclude=*", f"{source}/", f"{target}/"]
-    subprocess.run(command, check=True)
-    result = subprocess.run(
-        [*command[:-2], "--checksum", "--dry-run", "--itemize-changes", *command[-2:]],
-        check=True, capture_output=True, text=True,
-    )
-    if result.stdout.strip():
-        raise RuntimeError(
-            f"credential verification differs for {source}: {result.stdout.strip()[:2000]}")
 
 
 def _xfs_quota(store: Path, command: str) -> str:
@@ -1104,47 +1102,20 @@ def _xfs_quota(store: Path, command: str) -> str:
     return result.stdout
 
 
-def _owner_move_preconditions(
-    data: Path, store: Path, marker: dict,
-) -> list[OwnerMove] | None:
-    """Read-only checks shared by the live preflight and locked apply."""
+def _owner_move_preconditions(data: Path, store: Path, marker: dict) -> list[OwnerMove]:
+    """Read-only checks; all writers must be stopped before locked apply."""
     _mounted(store)
-    if marker.get("box_layout") == "owner-box":
-        from tinyassets.activity_shape_migration import _pending
-
-        if not _pending(data):
-            raise RuntimeError("owner-box has no pending activity conversion")
-        _boxed_activity_roots(data, store)
-        return None
     if marker.get("box_layout", "owner-split") != "owner-split":
-        raise RuntimeError("one-shot box migration requires owner-split")
+        raise RuntimeError("owner daemon migration requires owner-split")
     plan = _owner_plan(data)
-    from tinyassets.activity_shape_migration import _pending
-
-    admitted_centers = {center for owner in plan for center in owner.centers}
-    if set(_pending(data)) - admitted_centers:
-        raise RuntimeError("activity center has no admitted owner")
     _owner_inode_preflight(data, plan)
-    for owner in plan:
-        for center in owner.centers:
-            _check_credential_sources(data / center)
     if any(entry.name != "lost+found" for entry in store.iterdir()):
-        raise RuntimeError("box store must be empty before the one-shot move")
-    custody_root = data / ".platform" / "credential-vaults"
-    if custody_root.exists() or custody_root.is_symlink():
-        raise RuntimeError("private credential custody already exists")
-    custody_parent = custody_root.parent
-    if custody_parent.is_symlink() or (custody_parent.exists() and not custody_parent.is_dir()):
-        raise RuntimeError("platform credential parent is invalid")
-    journal = data / ".boxhost"
-    if journal.exists() or journal.is_symlink():
-        raise RuntimeError("boxhost journal already exists")
-    identity_db = data / ".broker" / "state" / "owner-identities.db"
-    with readonly_db(identity_db) as db:
-        if db.execute("SELECT 1 FROM sqlite_master WHERE name='box_records'").fetchone():
-            raise RuntimeError("box records already exist")
+        raise RuntimeError("box store must be empty before the cutover")
     if not _xfs_quota(store, "report -p -n").strip():
         raise RuntimeError("xfs_quota project report unavailable")
+    report = census(data)
+    if not report["ready"]:
+        raise RuntimeError(f"cutover census refused: {report['refusals']}")
     return plan
 
 
@@ -1165,97 +1136,405 @@ def _open_layout_lock(data: Path, access: int) -> int:
     return fd
 
 
+def _database_target(database: str, table: str, placement: str) -> str:
+    if placement == "published":
+        return ".published/" + database.removeprefix(".published/")
+    if placement == "broker" and database == ".tinyassets.db":
+        return ".broker/credential-custody.db"
+    if database == "outbound.db":
+        return ".broker/outbound.db"
+    return database
+
+
+def _build_databases(data: Path, store: Path, shared: Path, inventory: dict) -> dict:
+    """Extract using one census snapshot; preserve DDL and every selected value."""
+    jobs: dict[Path, dict] = {}
+    expected = {}
+    owners = inventory["owners"]
+    for (database, table), rows in inventory["tables"].items():
+        rule = _census_rule(database, table)
+        assert rule is not None
+        targets = inventory["assignments"][database, table]
+        destinations = {}
+        if rule.placement in {"owner", "regenerated"}:
+            destinations.update({("owner", owner): store / str(uid) / database
+                                 for owner, uid in owners.items()})
+        for placement in ("router", "broker", "published"):
+            if rule.placement == placement or placement in targets:
+                destinations[placement] = shared / _database_target(database, table, placement)
+        for destination, path in destinations.items():
+            selected = {index for index, target in enumerate(targets) if target == destination}
+            if table in jobs.setdefault(path, {}):
+                raise RuntimeError("multiple source tables map to one destination table")
+            jobs[path][table] = (database, selected)
+            expected[str(path)] = expected.get(str(path), 0) + len(selected)
+        total = sum(target in destinations for target in targets)
+        total += sum(target in {"dropped", "regenerated"} for target in targets)
+        if total != len(rows):
+            raise RuntimeError("cutover row reconciliation failed")
+    for path, tables in jobs.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.unlink(missing_ok=True)  # Only build-phase outputs, never the source.
+        with closing(sqlite3.connect(path)) as destination, destination:
+            destination.execute("PRAGMA synchronous=FULL")
+            destination.execute("BEGIN IMMEDIATE")
+            deferred = []
+            for table, (database, rows) in tables.items():
+                with readonly_db(data / database) as source:
+                    ddl = source.execute("SELECT sql FROM sqlite_master WHERE type='table' "
+                                         "AND name=?", (table,)).fetchone()[0]
+                    destination.execute(ddl)
+                    columns = [row[1] for row in source.execute(
+                        f"PRAGMA table_info({_quoted(table)})")]
+                    # Generated columns are not returned by table_info; SQLite
+                    # recomputes them from the verbatim stored input columns.
+                    metadata = inventory["tables"][database, table]
+                    source.row_factory = sqlite3.Row
+
+                    def selected_rows():
+                        seen = 0
+                        for index, record in enumerate(source.execute(
+                                f"SELECT * FROM {_quoted(table)} NOT INDEXED")):
+                            if index >= len(metadata):
+                                raise RuntimeError("source row count changed after census")
+                            for key, value in metadata[index].items():
+                                if key != "1" and record[key] != value:
+                                    raise RuntimeError("source attribution changed after census")
+                            seen += 1
+                            if index in rows:
+                                yield tuple(record[column] for column in columns)
+                        if seen != len(metadata):
+                            raise RuntimeError("source row count changed after census")
+
+                    destination.executemany(
+                        f"INSERT INTO {_quoted(table)} ({','.join(map(_quoted, columns))}) "
+                        f"VALUES ({','.join('?' for _ in columns)})", selected_rows())
+                    deferred.extend(row[0] for row in source.execute(
+                        "SELECT sql FROM sqlite_master WHERE tbl_name=? AND type IN "
+                        "('index','trigger') AND sql IS NOT NULL", (table,)))
+                    count = destination.execute(
+                        f"SELECT COUNT(*) FROM {_quoted(table)}").fetchone()[0]
+                    if count != len(rows):
+                        raise RuntimeError("cutover destination row count differs")
+            for ddl in deferred:
+                destination.execute(ddl)
+        with closing(sqlite3.connect(path)) as check_db:
+            if check_db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+                raise RuntimeError("cutover database integrity check failed")
+    return expected
+
+
+def _seed_shared(data: Path, shared: Path, inventory: dict, report: dict, plan) -> None:
+    from tinyassets.broker.owner_reads import Plans
+
+    plans = Plans(shared)
+    plans.initialize()
+    for owner in plan:
+        tier = report["plans"][inventory["labels"][owner.principal]]["tier"]
+        metadata = []
+        for center in owner.centers:
+            path = data / center / ".subscription_state.db"
+            if path.is_file():
+                with readonly_db(path) as db:
+                    meta = dict(db.execute("SELECT key,value FROM subscription_meta"))
+                if meta.get("tier", "free") == tier:
+                    metadata.append(meta)
+        # A census rejects conflicting paid sources before this point.
+        latest = max(metadata, key=lambda m: float(m.get("tier_event_at", 0)), default={})
+        plans.set_plan(owner.principal, tier, event_created=float(latest.get("tier_event_at", 0)),
+                       ends_at=(float(latest["tier_ends_at"])
+                                if latest.get("tier_ends_at") else None),
+                       customer_id=latest.get("customer_id"),
+                       subscription_id=latest.get("subscription_id"))
+        if plans.read(owner.principal)["tier"] != tier:
+            raise RuntimeError("seeded plan differs from census")
+    identity = shared / ".broker/state/owner-identities.db"
+    with closing(sqlite3.connect(identity)) as db, db:
+        db.execute("CREATE TABLE IF NOT EXISTS box_records (principal TEXT PRIMARY KEY, "
+                   "machine INTEGER UNIQUE NOT NULL, project_id INTEGER UNIQUE NOT NULL, "
+                   "bhard_bytes INTEGER NOT NULL)")
+        for owner in plan:
+            db.execute("INSERT INTO box_records VALUES (?,?,?,?)",
+                       (owner.principal, owner.uid, owner.uid, owner.quota))
+    from types import SimpleNamespace
+
+    from tinyassets.broker.next_wake import NextWakeIndex
+
+    wake = NextWakeIndex(SimpleNamespace(path=identity))
+    with closing(sqlite3.connect(wake.path)) as db, db:
+        db.execute("DELETE FROM next_wakes")
+    hook_path = shared / ".hook-owners.sqlite3"
+    with closing(sqlite3.connect(hook_path)) as db, db:
+        db.execute("CREATE TABLE IF NOT EXISTS hook_owners ("
+                   "token_hash TEXT PRIMARY KEY, owner TEXT NOT NULL)")
+        for row, owner in zip(inventory["tables"].get((".tinyassets.db", "webhook_hooks"), []),
+                              inventory["assignments"].get((".tinyassets.db", "webhook_hooks"), []),
+                              strict=True):
+            if isinstance(owner, tuple) and row.get("revoked_at") is None:
+                owner = owner[1]
+                previous = db.execute("SELECT owner FROM hook_owners WHERE token_hash=?",
+                                      (row["token_hash"],)).fetchone()
+                if previous and previous != (owner,):
+                    raise RuntimeError("hook digest has conflicting owners")
+                db.execute("INSERT OR IGNORE INTO hook_owners VALUES (?,?)",
+                           (row["token_hash"], owner))
+    # HTTP custody is already in its final directory. Stage a filtered document
+    # there; subscription records are counted drops, never copied into custody.
+    vaults = data / ".platform/credential-vaults"
+    if vaults.is_dir():
+        for source in vaults.rglob("*"):
+            if source.is_symlink():
+                raise RuntimeError("credential custody contains a symlink")
+            if source.is_file():
+                target = shared / source.relative_to(data)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if source.name == ".credential-vault.json":
+                    document = json.loads(source.read_text())
+                    document["credentials"] = [record for record in document["credentials"]
+                                               if record["credential_type"] == "http"]
+                    target.write_text(json.dumps(document), encoding="utf-8")
+                else:
+                    shutil.copy2(source, target)
+
+
+def _durable_tree(root: Path, *, exclude=()) -> dict[str, str]:
+    """Persist files and directory entries before publishing a resume boundary."""
+    manifest = {}
+    for directory, dirs, files in os.walk(root, followlinks=False):
+        for name in files + [name for name in dirs if (Path(directory) / name).is_symlink()]:
+            path = Path(directory) / name
+            key = path.relative_to(root).as_posix()
+            if key in exclude:
+                continue
+            if path.is_symlink():
+                manifest[key] = "link:" + os.readlink(path)
+            else:
+                with path.open("rb") as stream:
+                    manifest[key] = hashlib.file_digest(stream, "sha256").hexdigest()
+                    os.fsync(stream.fileno())
+        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    return manifest
+
+
+def _remove_tree(path: Path, root: Path) -> None:
+    # Never traverse a link or accept a computed path outside this transaction.
+    if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()) or path == root:
+        raise RuntimeError("unsafe cutover cleanup path")
+    if path.is_dir():
+        shutil.rmtree(path)
+
+
+def _build_cutover(data: Path, store: Path, journal: dict) -> None:
+    inventory = {}
+    report = census(data, _inventory=inventory, _source_marker=journal["source_marker"])
+    if not report["ready"]:
+        raise RuntimeError(f"cutover census refused: {report['refusals']}")
+    plan = [OwnerMove(**{**owner, "centers": tuple(owner["centers"])}) for owner in journal["plan"]]
+    shared = store / ".cutover-shared"
+    _remove_tree(shared, store)
+    shared.mkdir(mode=0o700)
+    for owner in plan:
+        tree = store / str(owner.uid)
+        tree.mkdir(mode=0o700, exist_ok=True)
+        _xfs_quota(store, f"project -s -p {tree} {owner.uid}")
+        verify_tree(tree, owner.uid, True)
+        _xfs_quota(store, f"limit -p bhard={owner.quota // 1024}k {owner.uid}")
+        for center in owner.centers:
+            for relative in (center, f".agent-sessions/{center}", f".universe-sidecars/{center}"):
+                source = data / relative
+                if source.exists():
+                    target = tree / relative
+                    target.mkdir(parents=True, exist_ok=True)
+                    _copy(source, target, owner.uid)
+    for relative, target in inventory["file_targets"].items():
+        if isinstance(target, tuple):
+            source = data / relative
+            destination = store / str(inventory["owners"][target[1]]) / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if not (source.is_file() or source.is_symlink()):
+                raise RuntimeError("unsupported run transcript inode")
+            shutil.copy2(source, destination, follow_symlinks=False)
+            if (source.is_symlink() and os.readlink(source) != os.readlink(destination)):
+                raise RuntimeError("run transcript symlink copy differs")
+            if not source.is_symlink():
+                with source.open("rb") as original, destination.open("rb") as copied:
+                    if hashlib.file_digest(original, "sha256").digest() != hashlib.file_digest(
+                            copied, "sha256").digest():
+                        raise RuntimeError("run transcript copy differs")
+    _build_databases(data, store, shared, inventory)
+    _seed_shared(data, shared, inventory, report, plan)
+    from tinyassets.boxes.layout import BROKER_READ_GID, BROKER_UID, DAEMON_UID
+
+    owner_manifests = {}
+    for owner in plan:
+        tree = store / str(owner.uid)
+        for directory, dirs, files in os.walk(tree, followlinks=False):
+            for path in (Path(directory), *(Path(directory) / name for name in dirs + files)):
+                mode = stat.S_IMODE(path.lstat().st_mode)
+                os.chown(path, owner.uid, owner.uid, follow_symlinks=False)
+                if not path.is_symlink():
+                    os.chmod(path, mode)
+        owner_manifests[str(owner.uid)] = _durable_tree(tree)
+        verify_owner(store, tree, owner.uid, owner.quota)
+    for directory, dirs, files in os.walk(shared, followlinks=False):
+        for path in (Path(directory), *(Path(directory) / name for name in dirs + files)):
+            relative = path.relative_to(shared).parts
+            uid = (BROKER_UID if relative and relative[0] in
+                   {".broker", ".platform", ".published"} else DAEMON_UID)
+            if relative == (".platform",):
+                uid = DAEMON_UID
+            gid = BROKER_READ_GID if relative and relative[0] == ".published" else uid
+            os.chown(path, uid, gid)
+            mode = 0o711 if relative == (".platform",) else 0o750
+            os.chmod(path, mode if path.is_dir() else 0o640)
+    for path in shared.rglob("*"):
+        if path.is_file():
+            with path.open("rb") as stream:
+                database = stream.read(16) == b"SQLite format 3\x00"
+            if database:
+                with readonly_db(path) as db:
+                    if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+                        raise RuntimeError("seeded shared database failed integrity check")
+    journal.update(phase="publish", report=report, shared=_durable_tree(shared),
+                   owner_manifests=owner_manifests,
+                   databases=sorted({database for database, _ in inventory["tables"]}),
+                   centers=sorted(set(inventory["centers"]) | inventory["dropped_centers"]),
+                   legacy_runs=bool(inventory["file_targets"]),
+                   cli_homes=[p.relative_to(data).as_posix()
+                              for p in (data / ".platform/owners").glob("*/agent-home")
+                              if p.parent.name.isdecimal()])
+    _atomic_json(data / ".owner-cutover.json", journal)
+
+
+def _publish_cutover(data: Path, store: Path, journal: dict) -> None:
+    shared = store / ".cutover-shared"
+    if _durable_tree(shared) != journal["shared"]:
+        raise RuntimeError("staged shared manifest changed")
+    for uid, manifest in journal["owner_manifests"].items():
+        if _durable_tree(store / uid) != manifest:
+            raise RuntimeError("staged owner manifest changed")
+    for directory, dirs, _ in os.walk(shared):
+        for name in dirs:
+            original = Path(directory) / name
+            destination = data / original.relative_to(shared)
+            destination.mkdir(parents=True, exist_ok=True)
+            os.chown(destination, original.stat().st_uid, original.stat().st_gid)
+            os.chmod(destination, stat.S_IMODE(original.stat().st_mode))
+    for relative, digest in journal["shared"].items():
+        source, target = shared / relative, data / relative
+        # Copy to a destination-filesystem temporary then replace, so the
+        # committed stage survives a crash and cross-device moves are atomic.
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(target.name + ".cutover")
+        shutil.copy2(source, temporary)
+        shutil.chown(temporary, user=source.stat().st_uid, group=source.stat().st_gid)
+        with temporary.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != digest:
+                raise RuntimeError("staged shared file verification failed")
+            os.fsync(stream.fileno())
+        for suffix in ("-wal", "-shm"):
+            target.with_name(target.name + suffix).unlink(missing_ok=True)
+        os.replace(temporary, target)
+    for database in journal["databases"]:
+        if database not in journal["shared"]:
+            for suffix in ("", "-wal", "-shm"):
+                (data / (database + suffix)).unlink(missing_ok=True)
+    for center in journal["centers"]:
+        for relative in (center, f".agent-sessions/{center}", f".universe-sidecars/{center}"):
+            _remove_tree(data / relative, data)
+    if journal["legacy_runs"]:
+        _remove_tree(data / "runs", data)
+    for relative in journal["cli_homes"]:
+        _remove_tree(data / relative, data)
+    (data / ".tinyassets.db.prebudgetrepair.bak").unlink(missing_ok=True)
+    from tinyassets.boxes.layout import BROKER_UID
+    from tinyassets.boxes.state import BoxHostState
+
+    vaults = data / ".platform/credential-vaults"
+    if vaults.exists():
+        for directory, dirs, files in os.walk(vaults):
+            for path in (Path(directory), *(Path(directory) / name for name in dirs + files)):
+                os.chown(path, BROKER_UID, BROKER_UID, follow_symlinks=False)
+    host = data / ".boxhost"
+    host.mkdir(mode=0o700, exist_ok=True)
+    state = BoxHostState(host / "boxhost.db", max_bytes=16 * 1024 * 1024)
+    state.close()
+    with closing(sqlite3.connect(host / "boxhost.db")) as db:
+        db.execute("PRAGMA journal_mode=DELETE")
+    for path in host.iterdir():
+        os.chown(path, 0, 0)
+        os.chmod(path, 0o600)
+    _durable_tree(data)
+    _atomic_json(storage_layout.marker_path(data), {
+        **journal["source_marker"], "box_layout": "owner-box", "state": "stable",
+        "owner_daemon": 1,
+    })
+    journal["phase"] = "complete"
+    journal["final_manifest"] = _durable_tree(data, exclude=(".owner-cutover.json",))
+    _atomic_json(data / ".owner-cutover.json", journal)
+    _remove_tree(shared, store)
+
+
 def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
+    """Copy/verify/publish with a durable boundary before source removal."""
     import fcntl
+    from dataclasses import asdict
 
     if os.geteuid() != 0:
         raise PermissionError("box layout apply requires the one-shot root container")
     lock = _open_layout_lock(data, os.O_RDWR)
     try:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        marker = _marker(data)
-        if marker.get("box_layout") == "owner-box" and marker.get("activity_shape") == "v1":
+        marker = storage_layout.read_marker(data)
+        journal_path = data / ".owner-cutover.json"
+        if marker.get("box_layout") == "owner-box" and marker.get("owner_daemon") == 1:
+            if journal_path.exists():
+                journal = json.loads(journal_path.read_text())
+                if journal.get("store") != str(store.resolve()):
+                    raise RuntimeError("cutover store changed after publication")
+                if journal.get("phase") != "complete":
+                    if _durable_tree(store / ".cutover-shared") != journal["shared"]:
+                        raise RuntimeError("staged shared manifest changed")
+                    for uid, manifest in journal["owner_manifests"].items():
+                        if _durable_tree(store / uid) != manifest:
+                            raise RuntimeError("staged owner manifest changed")
+                    journal["phase"] = "complete"
+                    journal["final_manifest"] = _durable_tree(
+                        data, exclude=(".owner-cutover.json",))
+                    _atomic_json(journal_path, journal)
+                _remove_tree(store / ".cutover-shared", store)
             return
-        _verified_pair(data_backup, box_backup)
-        plan = _owner_move_preconditions(data, store, marker)
-        from tinyassets.activity_shape_migration import _pending, convert
-
-        if marker.get("box_layout") == "owner-box":
-            roots, failures = _boxed_activity_roots(data, store)
-            _atomic_json(storage_layout.marker_path(data), {
-                **marker, "state": "migrating", "migration": "owner-box",
-            })
-            convert(data, roots, unavailable=failures)
-            for center, reason in sorted(failures.items()):
-                print(f"box layout activity cutover ended work for {center}: {reason}",
-                      file=sys.stderr)
-            _atomic_json(storage_layout.marker_path(data), {
-                **marker, "state": "stable", "activity_shape": "v1",
-            })
-            return
-        assert plan is not None
-        pending_activities = _pending(data)
-        custody_root = data / ".platform" / "credential-vaults"
-        # This is the point of no automatic restart. A failed copy remains
-        # visibly migrating until the paired snapshot is restored by an operator.
+        if journal_path.exists():
+            backup_digests = _verified_pair(data_backup, box_backup, fresh=False)
+        else:
+            backup_digests = _verified_pair(data_backup, box_backup)
+        if journal_path.exists():
+            journal = json.loads(journal_path.read_text())
+            if (journal.get("version") != 1 or journal.get("phase") not in {"build", "publish"}
+                    or journal.get("store") != str(store.resolve())
+                    or journal.get("backups") != [data_backup.name, box_backup.name]
+                    or journal.get("backup_digests") != backup_digests):
+                raise RuntimeError("unrecognized cutover resume journal")
+            _mounted(store)
+        else:
+            plan = _owner_move_preconditions(data, store, _marker(data))
+            journal = {"version": 1, "phase": "build", "source_marker": marker,
+                       "store": str(store.resolve()), "plan": [asdict(owner) for owner in plan],
+                       "backups": [data_backup.name, box_backup.name],
+                       "backup_digests": backup_digests,
+                       "source_manifest": _durable_tree(
+                           data, exclude=(".tinyassets.db.prebudgetrepair.bak",))}
+            _atomic_json(journal_path, journal)
         _atomic_json(storage_layout.marker_path(data), {
-            **marker, "state": "migrating", "migration": "owner-box",
+            **journal["source_marker"], "state": "migrating", "migration": "owner-daemon",
         })
-        if pending_activities:
-            convert(data, {center: data / center for center in pending_activities})
-        from tinyassets.boxes.layout import BROKER_READ_GID
-
-        custody_root.parent.mkdir(mode=0o711, exist_ok=True)
-        if custody_root.parent.is_symlink() or not custody_root.parent.is_dir():
-            raise RuntimeError("platform credential parent is invalid")
-        os.chown(custody_root.parent, 1001, 1001)
-        custody_root.mkdir(mode=0o710)
-        os.chown(custody_root, 1001, BROKER_READ_GID)
-        for owner in plan:
-            tree = store / str(owner.uid)
-            tree.mkdir(mode=0o700)
-            os.chown(tree, owner.uid, owner.uid)
-            _xfs_quota(store, f"project -s -p {tree} {owner.uid}")
-            verify_tree(tree, owner.uid, True)
-            _xfs_quota(store, f"limit -p bhard={owner.quota // 1024}k {owner.uid}")
-            for center in owner.centers:
-                _copy_credentials(data / center, custody_root / center)
-                destination = tree / center
-                destination.mkdir(mode=0o700)
-                os.chown(destination, owner.uid, owner.uid)
-                _copy(data / center, destination, owner.uid)
-            agent_home = data / ".platform" / "owners" / str(owner.uid) / "agent-home"
-            if agent_home.exists():
-                if not agent_home.is_dir() or agent_home.is_symlink():
-                    raise RuntimeError("owner agent home is not a real directory")
-                destination = tree / ".agent-home"
-                destination.mkdir(mode=0o700)
-                os.chown(destination, owner.uid, owner.uid)
-                _copy(agent_home, destination, owner.uid,
-                      extra_excludes=("codex/auth.json",))
-            verify_owner(store, tree, owner.uid, owner.quota)
-        broker_state = data / ".broker" / "state"
-        with sqlite3.connect(broker_state / "owner-identities.db") as db:
-            db.execute("PRAGMA synchronous=FULL")
-            db.execute("BEGIN IMMEDIATE")
-            db.execute("CREATE TABLE box_records (principal TEXT PRIMARY KEY, "
-                       "machine INTEGER UNIQUE NOT NULL, project_id INTEGER UNIQUE NOT NULL, "
-                       "bhard_bytes INTEGER NOT NULL)")
-            db.executemany(
-                "INSERT INTO box_records VALUES (?, ?, ?, ?)",
-                ((owner.principal, owner.uid, owner.uid, owner.quota) for owner in plan),
-            )
-        from tinyassets.boxes.state import BoxHostState
-
-        journal = data / ".boxhost"
-        journal.mkdir(mode=0o700)  # one-shot migration; never adopt an existing receipt root
-        host_state = BoxHostState(journal / "boxhost.db", max_bytes=16 * 1024 * 1024)
-        host_state.close()
-        os.chmod(journal / "boxhost.db", 0o600)
-        _atomic_json(storage_layout.marker_path(data), {
-            **marker, "box_layout": "owner-box", "state": "stable",
-            "activity_shape": "v1",
-        })
+        if journal["phase"] == "build":
+            _build_cutover(data, store, journal)
+        _publish_cutover(data, store, journal)
     finally:
         os.close(lock)
 
