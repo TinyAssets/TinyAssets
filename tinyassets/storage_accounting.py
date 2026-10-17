@@ -646,6 +646,10 @@ STORES: dict[str, Store] = {
 #: code creates at the data root must appear here -- the completeness test reads
 #: the source for them.
 ROOT_ENTRIES: dict[str, str] = {
+    "credential-custody.db": "platform: broker credential ownership and deletion tombstones",
+    "plans.db": "platform: broker billing plan state",
+    ".published": "platform: shared copies of explicitly published definitions",
+    ".custody.lock": "platform: broker credential publication and erasure lock",
     ".hook-owners.sqlite3": "platform: router hook token digests and authenticated owners",
     ".owner-boxd": "platform: in-box file operation generations and idempotency receipts",
     ".boxhost": "platform: root-private owner generations and idempotency receipts",

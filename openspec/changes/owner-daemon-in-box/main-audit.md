@@ -533,3 +533,71 @@ or host provisioning was added. RFC 7009 is 3c-2b. Remaining door flows, box
 secret-free actions, full CI, independent review and cutover remain with their
 respective lanes/lead. No sub-agents, external reviewers, push, merge, branch
 switch or deployment were used for this task.
+
+## Task 3c-2b partial build (2026-10-16)
+
+Local commits `5477624cf28` and `d6605267a55` implement provider revocation
+and standalone `/app/connections` controls. `SOLE_CENTER` is a fenced broker
+identity query; explicit centers still use `ADMITTED_OWNER`. Unknown, foreign,
+retired and ambiguous centers return 404 at the door. The handler reads no
+owner home, ACL, provider assignment or disconnection store. Protected-cookie
+and bearer identity agreement is retained at this now-shared handler.
+
+`DISCONNECT` erasure invokes RFC 7009 under the custody lock, with the current
+refresh token or otherwise the access token, and registered client auth from
+the trusted directory. A provider error never prevents local erasure. Its
+fixed failure code remains on the revoked connection row (`revocation_error`,
+`custody_erased`); `HTTP_CONNECT` replaces that receipt on a fresh connect.
+`CONNECTION_CATALOG(include_revoked=True)` keeps interrupted local cleanup
+reachable at the door without the former owner-side disconnection read.
+
+Deleted paths: the connection handler's `_read_home`, founder-home/admin
+checks, `remove_http` composition and `unfinished_disconnections` read. The
+box's existing removal composition is unchanged. No tests were deleted.
+Catalog and connection-lifecycle fixtures now seed broker admission; the
+deleted-account deposit fixture uses broker erasure. Structural inventories
+were reconciled with earlier custody/CLI deletions, and the platform-call spy
+fixture now uses HTTP sources instead of retired executors.
+
+New tests: `tests/test_connection_door.py` covers an empty router root,
+admission selection, foreign centers, identity conflict, stale incarnation,
+fenced cleanup retry and broker query fencing. `tests/test_broker_revocation.py`
+adds `test_disconnect_revokes_current_token_then_erases` for public and
+client_secret_post clients, each with refresh-token and access-token cases;
+it also covers HTTP/network/directory failures, absent endpoint, stale fence,
+erased-grant call refusal, idempotent removal and fresh reconnection.
+These are not the requested complete per-auth door-to-box lifecycle tests.
+
+The requested focused selection plus structural guards and touched tests was
+121 files: 2,447 passed, 17 failed, 3 setup errors and 2 root-only skips on the
+initial snapshot. Both skipped cases subsequently passed with
+`linux_oracle.py --as-root` (the two permanent-UID cases in
+`test_owner_box_destroy.py`). The first six-file implementation run passed 65;
+the subsequent door/catalog/revoke run passed 27. The eleven-file repair run
+passed 153 with one remaining provider-resolution fixture failure. No skip,
+xfail or quarantine was added; the full CI affected selection was not run.
+The final `test_platform_has_no_llm.py` rerun passed all 16 after using a real
+HTTP definition/grant and a synthetic executor. Every initial failed/error case
+is now covered by a passing repair rerun, and both skipped cases executed as
+root. Ruff passed on all 21 changed Python files. The final full selection was
+not repeated; validation is the initial selection plus these focused reruns.
+
+Remaining work, explicitly uncompleted:
+1. Move `/app/model-connect/*` (including popup, source sign-in, presets,
+   generic OAuth/DCR and registered clients) to the standalone shared door;
+   remove its home/pending/provider-store dependencies and apply admission
+   center selection there. Only `/app/connections` moved in this build.
+2. Move authorization-code/token exchanges into the broker, including preset
+   PKCE exchange, and remove router token exchange/client-secret custody.
+3. Remove secret parameters from box MCP and approval connect schemas,
+   implementations, instructions and docs; return door links for secret/sign-in
+   schemes and use bound-channel keyless HTTP_CONNECT.
+4. Carry opaque `request_ref` through broker connection/grant rows and ledger
+   queries, and resolve the box's pending connect request from that ledger.
+5. Add the full nine-auth-type separate-process door-to-box connect/call/
+   refresh/disconnect acceptance matrix and router flow-consumption assertions;
+   update/delete superseded connect tests with a deletion inventory.
+6. Tick 3c-2 and replace its partial as-built note only after those are complete.
+
+No reviewer/sub-agent, new worktree, push, merge, branch switch, git-config
+change or deployment was performed.

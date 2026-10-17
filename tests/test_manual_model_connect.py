@@ -238,10 +238,10 @@ def test_manual_full_2048_printable_key_is_accepted():
 
 
 def test_manual_deleted_account_cannot_deposit(rig):
-    from tinyassets.account_deletion import write_tombstone
+    from tinyassets.broker.account_erasure import erase_account
     from tinyassets.credential_vault import load_credential_vault
 
-    write_tombstone(rig, "owner")
+    erase_account(rig, principal="owner")
     response = deposit()
     assert response.status_code == 409
     assert load_credential_vault(rig / "u-owner") == []

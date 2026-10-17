@@ -75,6 +75,8 @@ VENDORS = (
 #: The platform acting as itself, not as a user's substrate. See the module
 #: docstring: listed by name so the exemption is visible.
 PLATFORM_OWN = {
+    "tinyassets/box_layout_migration.py",        # retires legacy credential files at cutover
+    "tinyassets/owner_runtime.py",               # rejects platform secrets at box admission
     "tinyassets/billing/stripe_adapter.py",      # bills its own customers
     "tinyassets/auto_ship.py",                   # ships its own releases
     "tinyassets/mcp_browser_cors.py",            # public connector browser origins
