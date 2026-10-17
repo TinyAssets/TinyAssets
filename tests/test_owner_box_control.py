@@ -8,11 +8,16 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from tinyassets.boxes.host_service import HostService
 
 
 def test_control_socket_uses_kernel_router_identity_and_returns_bounded_errors():
-    assert os.geteuid() == 0, "run this file with linux_oracle.py --as-root"
+    if os.geteuid() != 0:
+        pytest.skip(
+            "requires linux_oracle.py --as-root; owner=c6-owner-box runs-in=linux_oracle.py"
+        )
     calls = []
 
     def wake(owner, *, scheduled):
