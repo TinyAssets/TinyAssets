@@ -93,22 +93,16 @@ def test_graph_pin_cannot_replace_explicit_user_primary_or_discard_tail():
                    ceiling=10, retry_multiplier=3)
 
 
-def subscription_data():
-    """One subscription source whose catalogue holds more than its own default.
-
-    `order_models` deliberately gives a subscription/local connection ONE
-    advisory candidate -- its advertised default -- and keeps its other accepted
-    ids "visible in the catalogue for explicit selection". So the advisory order
-    and the admitted catalogue genuinely differ here, which is the case below.
-    """
+def http_data():
+    """One HTTP source with two admitted models."""
     from tests.test_model_policy import NEEDS, model
     from tinyassets.providers.agent_model_plan import AgentModelPlan
     from tinyassets.providers.model_policy import Catalog, ConnectionModels, ModelPolicy
     from tinyassets.providers.work_candidate_data import WorkCandidateData
 
     connection = ConnectionModels(
-        "codex", "codex-scope", "subscription", "fresh", True, True,
-        (model(""), model("future-native-model")), default_model_id="",
+        "gateway", "gateway-scope", "http", "fresh", True, True,
+        (model("a-default"), model("z-alternate")), default_model_id="a-default",
     )
     plan = AgentModelPlan(
         Catalog("owner", "universe", (connection,)),
@@ -118,7 +112,7 @@ def subscription_data():
     return WorkCandidateData(plan)
 
 
-def test_a_graph_pin_the_advisory_order_omits_is_honoured_when_nothing_was_saved():
+def test_a_graph_pin_selects_an_admitted_alternative_without_saved_preference():
     """An explicit graph pin may select any model in its admitted catalogue.
 
     The owner chose nothing, so the order ranks rather than decides, and the
@@ -126,22 +120,22 @@ def test_a_graph_pin_the_advisory_order_omits_is_honoured_when_nothing_was_saved
     ADMITTED catalogue, so it cannot reach a model the owner's own ModelAccess
     excludes.
     """
-    choices = subscription_data()
-    assert [ref.model_id for ref in choices.order] == ["", "future-native-model"]
+    choices = http_data()
+    assert [ref.model_id for ref in choices.order] == ["a-default", "z-alternate"]
 
-    pinned = {"preferred": {"provider": "codex", "model": "future-native-model"}}
+    pinned = {"preferred": {"provider": "gateway", "model": "z-alternate"}}
     choices.fit(
         {"node_defs": [{"prompt_template": "hello", "llm_policy": pinned}]},
         ceiling=10, retry_multiplier=1,
     )
 
-    assert choices.next_candidate(pinned) == ModelRef("codex", "future-native-model")
+    assert choices.next_candidate(pinned) == ModelRef("gateway", "z-alternate")
 
 
 def test_a_graph_pin_outside_the_admitted_catalogue_is_still_refused():
     """Honouring a pin the ranking omits must not honour one nobody admitted."""
-    choices = subscription_data()
-    absent = {"preferred": {"provider": "codex", "model": "never-granted"}}
+    choices = http_data()
+    absent = {"preferred": {"provider": "gateway", "model": "never-granted"}}
 
     with pytest.raises(PermissionError, match="conflicts"):
         choices.fit(
@@ -170,7 +164,7 @@ def test_explicit_pin_to_unaccepted_or_over_cap_model_is_refused():
     )))
     catalog = Catalog("owner", "universe", (
         connection("claude-code", models=[model("opus")]),
-        connection("codex", models=[model("gpt-5.6-sol"), priced]),
+        connection("gateway", models=[model("gpt-5.6-sol"), priced]),
     ))
     free_caps = tuple(Charge(name, 0, True) for name in sorted(
         ("input_million_tokens_usd", "output_million_tokens_usd")))
@@ -178,23 +172,23 @@ def test_explicit_pin_to_unaccepted_or_over_cap_model_is_refused():
         catalog, ModelPolicy(0, "explicit", (),
                              saved_default=ModelRef("claude-code", "opus")), NEEDS,
         source_policies=(SourceModelPolicy("claude-code", NEEDS, free_caps),
-                         SourceModelPolicy("codex", NEEDS, free_caps)),
+                         SourceModelPolicy("gateway", NEEDS, free_caps)),
     ))
     for model_id in ("unaccepted", "priced"):
-        pinned = {"preferred": {"provider": "codex", "model_id": model_id}}
+        pinned = {"preferred": {"provider": "gateway", "model_id": model_id}}
         with pytest.raises(PermissionError, match="conflicts"):
             choices.fit({"node_defs": [{"prompt_template": "hello",
                                        "llm_policy": pinned}]},
                         ceiling=10, retry_multiplier=1)
-    allowed = {"preferred": {"provider": "codex", "model_id": "gpt-5.6-sol"}}
+    allowed = {"preferred": {"provider": "gateway", "model_id": "gpt-5.6-sol"}}
     choices.fit({"node_defs": [{"prompt_template": "hello", "llm_policy": allowed}]},
                 ceiling=10, retry_multiplier=1)
-    assert choices.next_candidate(allowed) == ModelRef("codex", "gpt-5.6-sol")
+    assert choices.next_candidate(allowed) == ModelRef("gateway", "gpt-5.6-sol")
 
 
 def test_a_graph_pin_cannot_name_a_connection_outside_the_owners_catalogue():
     """The catalogue read is this owner's admitted sources, and only those."""
-    choices = subscription_data()
+    choices = http_data()
     foreign = {"preferred": {"provider": "api_key_http:provdef_someone_else"}}
 
     with pytest.raises(PermissionError, match="conflicts"):
