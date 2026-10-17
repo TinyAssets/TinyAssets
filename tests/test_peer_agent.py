@@ -19,6 +19,71 @@ sys.modules[SPEC.name] = peer_agent
 SPEC.loader.exec_module(peer_agent)
 
 
+@pytest.fixture(autouse=True)
+def codex_catalogue(monkeypatch, tmp_path):
+    monkeypatch.setattr(peer_agent.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(peer_agent, "resolve_codex", lambda: "codex.exe")
+    monkeypatch.delenv("WORKFLOW_CODEX_MODEL", raising=False)
+    path = tmp_path / ".codex" / "models_cache.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"models": [
+        {"slug": "gpt-5.6-sol", "visibility": "list"},
+        {"slug": "gpt-6-sol", "visibility": "list"},
+        {"slug": "gpt-7-sol", "visibility": "hide"},
+        {"slug": "gpt-6.1-sol", "visibility": "list"},
+        {"slug": "gpt-6-luna", "visibility": "list"},
+        {"slug": "gpt-5.6-luna", "visibility": "list"},
+        {"slug": "gpt-6-astra", "visibility": "list"},
+        {"slug": "gpt-5.6-terra", "visibility": "list"},
+        {"slug": "gpt-10-sprout", "visibility": "list"},
+        {"slug": "gpt-9.9-sprout", "visibility": "list"},
+        {"slug": "gpt-20-sol-preview", "visibility": "list"},
+        {"slug": "gpt-20x-sol", "visibility": "list"},
+    ]}), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("name, expected", [
+    ("sol", ["gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-sol"]),
+    ("luna", ["gpt-6-luna", "gpt-5.6-luna"]),
+    ("astra", ["gpt-6-astra"]),
+    ("terra", ["gpt-5.6-terra"]),
+    ("sprout", ["gpt-10-sprout", "gpt-9.9-sprout"]),
+])
+def test_codex_class_resolves_newest_listed_models(codex_catalogue, name, expected):
+    assert peer_agent.resolve_codex_model(name, codex_catalogue) == expected
+
+
+@pytest.mark.parametrize("name", ["gpt-6-astra", "exact-pin", "model2"])
+def test_codex_exact_pin_needs_no_catalogue(tmp_path, name):
+    assert peer_agent.resolve_codex_model(name, tmp_path / "missing.json") == [name]
+
+
+@pytest.mark.parametrize("contents", [None, "{", "[]", '{}', '{"models": {}}', "\udcff"])
+def test_codex_unavailable_catalogue_fails_loudly(tmp_path, contents):
+    path = tmp_path / "catalogue.json"
+    if contents is not None:
+        path.write_bytes(contents.encode("utf-8", errors="surrogatepass"))
+    with pytest.raises(ValueError, match=(
+        r"Codex model catalogue unavailable: run `codex` once to refresh "
+        r"~/.codex/models_cache.json"
+    )):
+        peer_agent.resolve_codex_model("sol", path)
+
+
+def test_codex_unreadable_catalogue_fails_loudly(tmp_path):
+    with pytest.raises(ValueError, match="Codex model catalogue unavailable"):
+        peer_agent.resolve_codex_model("sol", tmp_path)
+
+
+@pytest.mark.parametrize("models", [[], [{"slug": "gpt-6-sol", "visibility": "hide"}]])
+def test_codex_empty_class_fails_loudly(tmp_path, models):
+    path = tmp_path / "catalogue.json"
+    path.write_text(json.dumps({"models": models}), encoding="utf-8")
+    with pytest.raises(ValueError, match="no listed Codex model in class sol"):
+        peer_agent.resolve_codex_model("sol", path)
+
+
 def _args(*, write: bool) -> argparse.Namespace:
     return argparse.Namespace(
         cwd="C:\\worktree",
@@ -185,12 +250,18 @@ def _run_main(
     """
     out = tmp_path / "verdict.txt"
     seen = {} if seen is None else seen
+    processes = iter(proc if isinstance(proc, list) else [proc])
 
     def _popen(cmd, *a, **k):
         argv = list(cmd)
         seen["argv"] = argv
         seen["env"] = k.get("env")
-        if out_file_text is not None:
+        calls = seen.setdefault("calls", [])
+        calls.append(argv)
+        answer = (
+            out_file_text[len(calls) - 1] if isinstance(out_file_text, list) else out_file_text
+        )
+        if answer is not None:
             # Write where the IMPLEMENTATION told codex to write, not where the
             # test wishes it would. Writing to `out` directly would keep passing
             # even if `build_codex_cmd` pointed `-o` at the wrong path -- the
@@ -206,8 +277,8 @@ def _run_main(
             else:
                 target = out
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(out_file_text, encoding="utf-8")
-        return proc
+            target.write_text(answer, encoding="utf-8")
+        return next(processes)
 
     monkeypatch.setattr(peer_agent.subprocess, "Popen", _popen)
     monkeypatch.setattr(peer_agent, "kill_tree", lambda p: p.kill())
@@ -295,7 +366,7 @@ def test_nonzero_exit_carries_the_end_of_a_long_stderr(monkeypatch, tmp_path):
     rc, out, _ = _run_main(
         monkeypatch, tmp_path,
         _FakeProc(returncode=1, stderr=banner + b"ERROR: model gpt-6.1-sol is not supported"),
-        provider="codex", out_file_text=None,
+        provider="codex", extra=("--model", "gpt-6.1-sol"), out_file_text=None,
     )
     assert rc == 2
     assert out.startswith("[peer_agent] ERROR: codex exited 1")
@@ -303,14 +374,15 @@ def test_nonzero_exit_carries_the_end_of_a_long_stderr(monkeypatch, tmp_path):
     assert "config line 0" in out
 
 
-def test_codex_pins_model_and_effort_by_default(monkeypatch) -> None:
+def test_codex_resolves_default_class_and_sets_effort(monkeypatch) -> None:
     monkeypatch.setattr(peer_agent, "resolve_codex", lambda: "codex.exe")
     monkeypatch.delenv("WORKFLOW_CODEX_MODEL", raising=False)
     monkeypatch.delenv("WORKFLOW_CODEX_EFFORT", raising=False)
 
     command = peer_agent.build_codex_cmd(_args(write=False), "C:\\result.md")
 
-    assert command[command.index("-m") + 1] == "gpt-6-sol"
+    assert peer_agent.DEFAULT_CODEX_MODEL == "sol"
+    assert command[command.index("-m") + 1] == "gpt-6.1-sol"
     assert "model_reasoning_effort=medium" in command
 
 
@@ -329,6 +401,131 @@ def test_codex_model_and_effort_overrides_win(monkeypatch) -> None:
     assert command[command.index("-m") + 1] == "flag-model"
     assert "model_reasoning_effort=low" in command
     assert command.count("-m") == 1
+
+
+def test_codex_environment_class_resolves_before_dispatch(monkeypatch):
+    monkeypatch.setenv("WORKFLOW_CODEX_MODEL", "luna")
+    command = peer_agent.build_codex_cmd(_args(write=False), "result.md")
+    assert command[command.index("-m") + 1] == "gpt-6-luna"
+    args = _args(write=False)
+    args.model = "astra"
+    command = peer_agent.build_codex_cmd(args, "result.md")
+    assert command[command.index("-m") + 1] == "gpt-6-astra"
+
+
+def test_codex_default_run_prints_resolved_model(monkeypatch, tmp_path, capsys):
+    rc, out, argv = _run_main(
+        monkeypatch, tmp_path, _FakeProc(), provider="codex", out_file_text="ok\n",
+    )
+    assert rc == 0
+    assert argv[argv.index("-m") + 1] == "gpt-6.1-sol"
+    assert out == "ok\n"
+    captured = capsys.readouterr()
+    assert captured.out.startswith("[peer_agent] codex model: gpt-6.1-sol\n")
+    assert "[peer_agent] model class sol -> gpt-6.1-sol" in captured.err
+
+
+@pytest.mark.parametrize("error", [
+    "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.",
+    "model gpt-6.1-sol is not supported",
+    "The 'gpt-6.1-sol' model is not available",
+    "model `gpt-6.1-sol` is unavailable",
+])
+def test_codex_rejected_class_retries_once(monkeypatch, tmp_path, capsys, error):
+    first = _FakeProc(returncode=1, stderr=("ERROR: " + json.dumps({
+        "type": "error", "status": 400,
+        "error": {"type": "invalid_request_error", "message": error},
+    })).encode())
+    second = _FakeProc()
+    seen = {}
+    rc, out, _ = _run_main(
+        monkeypatch, tmp_path, [first, second], provider="codex", extra=("--model", "sol"),
+        out_file_text=["STALE", "ok\n"], seen=seen,
+    )
+    assert rc == 0
+    assert out == "ok\n"
+    assert [cmd[cmd.index("-m") + 1] for cmd in seen["calls"]] == [
+        "gpt-6.1-sol", "gpt-6-sol",
+    ]
+    assert first.communicate_input == second.communicate_input == b"review this"
+    captured = capsys.readouterr()
+    assert (
+        "[peer_agent] model class sol -> gpt-6.1-sol rejected, using gpt-6-sol"
+    ) in captured.err
+    assert captured.out.startswith("[peer_agent] codex model: gpt-6-sol\n")
+
+
+def test_codex_second_rejection_never_tries_third_candidate(monkeypatch, tmp_path, capsys):
+    seen = {}
+    rc, out, _ = _run_main(
+        monkeypatch, tmp_path, [
+            _FakeProc(returncode=1, stderr=b"model gpt-6.1-sol is not supported"),
+            _FakeProc(returncode=1, stderr=b"model gpt-6-sol is not supported"),
+        ], provider="codex", seen=seen,
+    )
+    assert rc == 2
+    assert len(seen["calls"]) == 2
+    assert "model gpt-6-sol is not supported" in out
+    assert "[peer_agent] codex model: gpt-6-sol" in out
+    assert "gpt-5.6-sol" not in capsys.readouterr().err
+
+
+def test_codex_retry_cannot_accept_first_attempt_output(monkeypatch, tmp_path):
+    rc, out, _ = _run_main(
+        monkeypatch, tmp_path, [
+            _FakeProc(returncode=1, stderr=b"model gpt-6.1-sol is not supported"),
+            _FakeProc(),
+        ], provider="codex", out_file_text=["STALE APPROVAL", None],
+    )
+    assert rc == 2
+    assert "empty output" in out
+    assert "STALE APPROVAL" not in out
+
+
+@pytest.mark.parametrize("model", ["gpt-6.1-sol", "astra"])
+def test_codex_pin_or_single_candidate_never_falls_back(monkeypatch, tmp_path, capsys, model):
+    slug = "gpt-6-astra" if model == "astra" else model
+    seen = {}
+    rc, out, _ = _run_main(
+        monkeypatch, tmp_path,
+        _FakeProc(returncode=1, stderr=f"The '{slug}' model is not supported".encode()),
+        provider="codex", extra=("--model", model), seen=seen,
+    )
+    assert rc == 2
+    assert len(seen["calls"]) == 1
+    assert seen["argv"][seen["argv"].index("-m") + 1] == slug
+    assert "is not supported" in out
+    assert "rejected, using" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("returncode, stdout, stderr", [
+    (1, b"model gpt-6.1-sol is not supported", b"unrelated failure"),
+    (1, b"", b"authentication failed"),
+    (1, b"", b"model gpt-6-sol is not supported"),
+    (0, b"", b"model gpt-6.1-sol is not supported"),
+])
+def test_codex_only_retries_current_model_rejection_on_failed_run(
+    monkeypatch, tmp_path, returncode, stdout, stderr,
+):
+    seen = {}
+    rc, _, _ = _run_main(
+        monkeypatch, tmp_path,
+        _FakeProc(returncode=returncode, stdout=stdout, stderr=stderr),
+        provider="codex", seen=seen,
+    )
+    assert rc == 2
+    assert len(seen["calls"]) == 1
+
+
+def test_codex_missing_catalogue_writes_error_without_launch(
+    monkeypatch, tmp_path, codex_catalogue,
+):
+    codex_catalogue.unlink()
+    seen = {}
+    rc, out, _ = _run_main(monkeypatch, tmp_path, _FakeProc(), provider="codex", seen=seen)
+    assert rc == 2
+    assert "Codex model catalogue unavailable" in out
+    assert "calls" not in seen
 
 
 def test_prompt_reaches_the_provider_on_stdin_not_argv(monkeypatch, tmp_path):
