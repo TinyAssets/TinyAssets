@@ -86,6 +86,33 @@ and SHALL read published data independently of owner-private roots.
 A box SHALL sleep when idle, and SHALL wake on an inbound request or at its
 reported next-wake time.
 
+#### Scenario: An interactive request wakes its persistent daemon
+- **WHEN** the authenticated router resolves an admitted owner
+- **THEN** it asks boxhostd to ensure that owner's broker-derived UID is awake
+- **AND** boxhostd starts one gVisor sandbox with the quota-bound owner mount, relay, read-only freshly rotated secret, static environment, null network and memory cap
+- **AND** it waits for the authenticated app socket to respond before acknowledging
+- **AND** startup or capacity timeout returns a loud 503 at the router
+
+#### Scenario: Idle sleep cannot race a turn
+- **WHEN** a box is idle for the configured interval (900 seconds by default)
+- **THEN** boxhostd asks its app socket to atomically drain only if no request or turn is active
+- **AND** a drained box admits no new work and flushes on SIGTERM
+- **AND** unknown status or a running turn prevents idle eviction
+
+#### Scenario: Crash restart and capacity
+- **WHEN** a wanted daemon crashes
+- **THEN** boxhostd restarts it with exponential backoff capped at 60 seconds and rotates its secret
+- **AND** five consecutive failures produce a loud status while automatic retries continue
+- **WHEN** the awake cap (six by default) is reached
+- **THEN** an interactive wake may evict the least recently used idle box
+- **AND** scheduled wakes queue without eviction and behind interactive wakes
+
+#### Scenario: Retirement fences stale forwards
+- **WHEN** a center is retired or a bound box requests account_revoke
+- **THEN** the broker durably revokes its box secret and requires boxhostd to stop the box before router credentials are cleared
+- **AND** a forward resolved beforehand fails at revoked ingress or the stopped socket
+- **AND** another retained center starts with a fresh secret; a deleted account can never wake or admit again
+
 #### Scenario: A scheduled run in a sleeping box
 - **WHEN** a sleeping box's next-wake time arrives
 - **THEN** the waker wakes it and the owner's tick runs the due work

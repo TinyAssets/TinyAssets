@@ -19,8 +19,8 @@ adding a check in shared code.
 ## D1. The owner daemon
 
 - **Process:** the same image and code, with entrypoint `python -m tinyassets.owner_daemon
-  --data /home/owner/data --socket /run/owner/app.sock
-  --secret-file /run/owner/secret`. It runs
+  --socket /run/owner/app.sock --relay /run/boxhostd/relay.sock
+  --secret-file /run/boxhostd/secret`. It runs
   inside the owner's gVisor box under the owner's uid. `data_dir()` is the
   owner's root. It serves the existing ASGI app (`/app/api/*`,
   `universe_server` MCP routes, `/api` handlers) on the unix socket, not TCP.
@@ -285,6 +285,76 @@ are described in the 3c-2 as-built contract above.
 - It restarts on a crash, with backoff.
 - Memory: each box gets a cgroup cap. A cap on concurrently awake boxes
   queues wakes (8 GB host).
+
+### D3 as built (slice 4)
+
+- **One lifecycle writer.** `boxes/owner_daemons.py` runs in boxhostd. The
+  existing file backend delegates wake/stop to it and lends its execution lock
+  when testing idleness; it no longer runs a competing lifecycle in the service.
+  Startup's existing private runsc census stops survivors before accepting work.
+- **Control socket.** The existing `daemon.sock` accepts `ensure_awake(owner,
+  scheduled: bool)` and `status(owner)` from kernel uid/gid 1001; only the
+  broker's 1002 peer can send `retire(owner, uid)`. Its group is the existing
+  shared 1102 group. Root replies are credential-checked. Status includes awake,
+  failure count and the last error, never a secret. Broker retirement has four
+  reserved listener workers. Eight scheduled waiters may occupy workers; the remaining listener capacity stays available for interactive
+  requests. Queue overflow refuses loudly.
+- **Admission.** Root-only broker `BOX_LIFECYCLE(principal, rotate)` reads the
+  live admissions and box record. The UID, XFS quota and centers come from the
+  broker. `rotate=true` mints the next secret. Router resolution first waits for
+  boxhostd, then obtains the current secret through `OWNER_BOX_ROUTE`; it opens
+  no owner data and starts no process. Control waits expire at 65 seconds and
+  become `box_unavailable` (503); unknown/deleted owners remain 404.
+- **Launch.** runsc starts `/opt/venv/bin/python -B -m tinyassets.owner_daemon`
+  with `--socket /run/owner/app.sock --relay /run/boxhostd/relay.sock
+  --secret-file /run/boxhostd/secret`. The only data root is `/home/owner`.
+  The app socket is exported in `/run/tinyassets-boxhostd/<uid>/app.sock`;
+  ephemeral secret files live in the root-private `secrets/` directory and are
+  owner-readable mode 0400, mounted read-only. The owner UID/GID, empty capability
+  sets, static PATH/HOME/browser environment, null network and cgroup limits are
+  explicit. `--host-uds=all` allows opening the bound relay and creating the
+  exported socket. No host credential environment is inherited.
+- **Defaults.** Idle threshold 900 seconds (`TINYASSETS_BOX_IDLE_SECONDS`),
+  awake cap 6 (`TINYASSETS_BOX_AWAKE_CAP`), memory 1 GiB per box
+  (`TINYASSETS_BOX_MEMORY_BYTES`, existing supported sizes 1 or 2 GiB).
+  The service's aggregate MemoryMax is 7G. Interactive wakes evict the least
+  recently used idle box; scheduled wakes wait without eviction and behind
+  interactive tickets. Wakes have a 60-second capacity/readiness deadline.
+- **Idle and turn truth.** `owner_activity` counts HTTP requests and all turns
+  through `control_plane.session.start`. Secret-authenticated local
+  `GET /_box/status` reports active count, idle seconds and drain/revoke state.
+  `POST /_box/drain` atomically closes admission only when no work runs and the
+  requested idle threshold has passed. New requests and turns then refuse.
+  Boxhostd uses this handshake before idle/LRU shutdown; unknown status never
+  authorizes eviction. SIGTERM uses uvicorn's existing lifespan shutdown and
+  closes the local tools. Passive MCP subscriptions do not hold the work gate;
+  graceful shutdown cancels remaining subscriptions after ten seconds. A
+  30-second flush timeout is loud, never treated as a successful sleep.
+- **Crash clock.** The existing one-second host loop checks runtime liveness,
+  sleeps idle boxes and restarts crashes. Backoff is 1, 2, 4, 8... seconds,
+  capped at 60; after five consecutive failures, wakes fail immediately with
+  a loud status while the host continues retrying without human intervention.
+  A box surviving an idle interval resets its failure count. A failed launch
+  whose cleanup cannot prove absence keeps its capacity reservation and is
+  never advertised as ready.
+- **Retirement.** Broker retirement atomically removes the secret and records a
+  revocation in its existing identity DB. A bound `RETIRE_CENTER` channel op
+  uses the relay owner; fenced `CENTER_ADMISSION(retire)` uses the same path.
+  `account_revoke` writes a permanent broker deletion fence. Both require
+  boxhostd's stop acknowledgment; account revocation clears router credentials
+  only afterward. The host revokes live ingress, then forcibly stops the box,
+  including a caller waiting for its own deletion response. That caller's
+  forwarded request can end with 503/disconnect; the broker continues clearing
+  router state. Retrying the broker-side revocation is idempotent. A stale
+  forward fails at revoked ingress or at the stopped socket. Another retained
+  center can wake the owner again with a new secret; deleted accounts cannot.
+
+- **Linux proof.** The oracle has no runsc. Lifecycle/OCI tests use the existing
+  runtime-double pattern; the router process fixture now launches actual owner
+  daemons through boxhostd, including wake, HTTP serving, SIGTERM flush, secret
+  rotation and retirement. The real control-socket proof runs as root with an
+  unprivileged router client. Native gVisor/XFS/cgroup integration still needs
+  the deployment venue; unit/protocol results are not that proof.
 
 ## D4. Waker
 
