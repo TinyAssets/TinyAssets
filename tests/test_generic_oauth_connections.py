@@ -776,6 +776,7 @@ const sessionStorage={getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),
 const window={location:{pathname:'/app',search:'',assign:u=>navigations.push(u)}};
 const history={replaceState:(a,b,u)=>{window.location.pathname=u;window.location.search='';}};
 const NATIVE=false,token=()=>'t',authHeaders=()=>({}),ensureFreshToken=async()=>{};
+const MCP={_loginEpoch:0,_assertLogin:epoch=>{if(epoch!==0)throw Error('Account changed');}};
 const randToken=()=> 'v'.repeat(43),challengeFor=async()=> 'c'.repeat(43);
 const turns=[];
 const appendMessage=()=>{},refreshRail=async()=>{},frameTitle=r=>r.title;

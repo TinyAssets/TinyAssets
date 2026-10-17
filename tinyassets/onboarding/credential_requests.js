@@ -184,5 +184,8 @@ const CredentialRequests = {
   }
 };
 window.addEventListener('pagehide',()=>CredentialRequests.clear());
-$('request-rail').addEventListener('close',()=>CredentialRequests.clear());
+$('request-rail').addEventListener('close',()=>{
+  // A queued close event can arrive after the owner has reopened the sheet.
+  if(!$('request-rail').open)CredentialRequests.clear();
+});
 if($('api-keys-refresh'))$('api-keys-refresh').onclick=()=>CredentialRequests.list();
