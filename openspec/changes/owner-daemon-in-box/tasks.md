@@ -65,6 +65,12 @@ Nothing deploys until slice 7.
       - [ ] 3c-2 lifecycle: door flows and center selection, sole broker custody,
         secret-free box connect actions, broker-only refresh and RFC 7009 revoke;
         per-auth-type door-to-box lifecycle acceptance remains outstanding.
+      3c-2 admission validation: 48 focused Linux tests passed; PR selection
+      1,192 files in eight completed chunks, 23,506 passed and 99 existing skips.
+      The 34-file heavy run exposed stale model-source fixtures/assertions;
+      after repair, its full rerun passed all 1,357 tests. The two repaired files
+      and their consumers passed 145 focused tests. Ruff passed on changed Python
+      files. Logs and the exact remaining-work inventory: scratchpad `3c2-*`.
       - 3c-3 also: `/app/billing/status|checkout|cancel|webhook` key plans
         by owner in `.broker/plans.db`, never reading a home or
         `.subscription_state.db` at the router. Seat and storage usage come
