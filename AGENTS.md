@@ -48,7 +48,7 @@ Converge a shape; add no second path. Write durable state before replying.
 5. No lane cap: fold colliding or superseded lanes; serialize merges.
 6. Done = sha asserted deployed, one naive-user pass through the app agent, spec
    synced. A pasted chat is a bug report.
-7. Same error thrice or same finding twice: hand off, don't patch.
+7. Two stalled rounds or round 3: escalate (Astra, Fable, simplify).
 8. A new rule deletes an old one; a rule a script can enforce gets no line.
 
 ## Facts (numbers are cited repo-wide)

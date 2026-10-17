@@ -374,7 +374,7 @@ def test_nonzero_exit_carries_the_end_of_a_long_stderr(monkeypatch, tmp_path):
     assert "config line 0" in out
 
 
-def test_codex_resolves_default_class_and_sets_effort(monkeypatch) -> None:
+def test_codex_pins_model_and_effort_by_default(monkeypatch) -> None:
     monkeypatch.setattr(peer_agent, "resolve_codex", lambda: "codex.exe")
     monkeypatch.delenv("WORKFLOW_CODEX_MODEL", raising=False)
     monkeypatch.delenv("WORKFLOW_CODEX_EFFORT", raising=False)
