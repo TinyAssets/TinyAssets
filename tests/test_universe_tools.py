@@ -38,8 +38,7 @@ def _universe(tmp_path: Path, name: str = "u-alpha") -> Path:
 def test_exactly_four_tools_are_served_to_the_universe_agent_on_every_adapter():
     from tinyassets import engine_mcp_server as s
     from tinyassets.providers.base import ModelConfig
-    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS, model_tools
-    from tinyassets.universe_intelligence import _ENGINE_MCP_ALLOWED
+    from tinyassets.served_tools import FOUR_MODEL_TOOLS, SERVED_ENGINE_MCP_TOOLS, model_tools
 
     assert universe_tools.TOOL_NAMES == FOUR
     registered = {tool.name for tool in asyncio.run(s.mcp.list_tools())}
@@ -49,7 +48,7 @@ def test_exactly_four_tools_are_served_to_the_universe_agent_on_every_adapter():
         assert name in registered
         assert name in SERVED_ENGINE_MCP_TOOLS  # the HTTP loop discovers from this
         assert name in codex  # codex
-        assert f"mcp__tinyassets__{name}" in _ENGINE_MCP_ALLOWED  # claude
+        assert name in FOUR_MODEL_TOOLS
 
 
 def test_the_public_connector_gains_no_top_level_tool():
@@ -61,12 +60,6 @@ def test_the_public_connector_gains_no_top_level_tool():
             "converse"} <= public
 
 
-def test_the_vendor_cli_file_and_shell_builtins_stay_denied():
-    """The platform runs the tools; the CLI's own Read/Bash never come back."""
-    from tinyassets.universe_intelligence import _ENGINE_DISALLOWED_TOOLS_WITH_MCP
-
-    for builtin in ("Bash", "Read", "Write", "Edit", "Glob", "Grep", "Monitor"):
-        assert builtin in _ENGINE_DISALLOWED_TOOLS_WITH_MCP
 
 
 def test_the_four_definitions_fit_the_harness_budget():

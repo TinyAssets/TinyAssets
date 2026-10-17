@@ -207,8 +207,7 @@ class SharedSelfTests(unittest.TestCase):
             seen.append(("tools", kwargs))
             return ModelConfig(engine_mcp_enabled=True,
                                engine_mcp_actor_id=kwargs["founder_principal"],
-                               engine_mcp_graph_id=kwargs["universe_id"], sandbox_chat=True,
-                               allowed_tools=("same",))
+                               engine_mcp_graph_id=kwargs["universe_id"])
         intelligence._sandboxed_config = config
         with patch.object(tinyassets, "universe_intelligence", intelligence, create=True), \
              patch.dict(sys.modules, {"tinyassets.universe_intelligence": intelligence}), \
@@ -223,7 +222,7 @@ class SharedSelfTests(unittest.TestCase):
             self.assertEqual(second[0], "history:newdirection")
             self.assertIn("current brain", first[1])
             self.assertNotIn("continuity", first[1])
-            self.assertEqual(first[2].allowed_tools, ("same",))
+            self.assertTrue(first[2].engine_mcp_enabled)
             self.assertEqual(first[2].engine_mcp_actor_id, "owner")
             history.assert_called_with(Path("/tmp/u-own"), "principal:owner")
             self.assertTrue(any(kind == "persona" for kind, _ in seen))

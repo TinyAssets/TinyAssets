@@ -69,7 +69,8 @@ def us_env(tmp_path, monkeypatch, authenticate_request):
             "tinyassets.extensions.costly",
         ],
     )
-    from tests.test_run_provider_session import _CountingProvider, _seed_serving_assignment
+    from tests.support.http_model import seed_http_assignment
+    from tests.test_run_provider_session import _CountingProvider
     from tinyassets.daemon_server import (
         ensure_universe_registered,
         grant_universe_access,
@@ -90,7 +91,7 @@ def us_env(tmp_path, monkeypatch, authenticate_request):
     )
     set_founder_home(base, founder_sub="tester", universe_id=_UNIVERSE,
                      platform_generated=True)
-    _seed_serving_assignment(base, owner_user_id="tester", universe_id=_UNIVERSE)
+    seed_http_assignment(base, owner_user_id="tester", universe_id=_UNIVERSE)
     provider = _CountingProvider()
     monkeypatch.setattr(provider_registry, "_router", ProviderRouter({provider.name: provider}))
 

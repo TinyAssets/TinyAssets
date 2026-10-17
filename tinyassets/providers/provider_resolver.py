@@ -1,4 +1,4 @@
-"""Resolve an owner definition to its HTTP, package, or legacy CLI executor."""
+"""Resolve an owner definition to the broker-backed HTTP executor."""
 
 from __future__ import annotations
 
@@ -11,17 +11,10 @@ if TYPE_CHECKING:
     from tinyassets.providers.router import ProviderRouter
 
 def provider_for_definition(definition: ProviderDefinition) -> BaseProvider:
-    """Return the executor (a ``BaseProvider``) for a registered definition.
+    """Return the broker-backed HTTP executor for a registered definition."""
+    from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 
-    Deterministic by ``access_method``; raises on an unknown access method or an
-    unknown subscription-CLI ref. Never falls back across access methods.
-    """
-    if definition.access_method == "api_key_http":
-        # Local import avoids a cycle (api_key_http_provider imports base).
-        from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
-
-        return ApiKeyHttpProvider(definition)
-    raise ValueError(f"unknown access_method: {definition.access_method!r}")
+    return ApiKeyHttpProvider(definition)
 
 
 def register_universe_open_providers(
@@ -30,8 +23,8 @@ def register_universe_open_providers(
     """Resolve + register a universe's registered ProviderDefinitions into `router`.
 
     The additive bridge from the open registry to live routing: once a universe's
-    open providers are registered (by name — ``api_key_http:<def-id>`` /
-    ``codex`` / ``claude-code``), the EXISTING router chain logic
+    open providers are registered (by name — ``api_key_http:<def-id>``), the router chain
+    logic
     (``effective_chain`` / ``call`` with the universe's ``allowed_providers`` +
     preference) can route to them — no router rewrite. Idempotent: ``router.register``
     replaces by name, and definition ids are stable, so repeated calls converge.

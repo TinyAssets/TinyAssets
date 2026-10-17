@@ -929,13 +929,7 @@ async def _handle_trace(request: Any) -> Any:
 
 
 async def _handle_serving_bind(request: Any) -> Any:
-    """Make a deposited subscription serve the signed-in user's own universe.
-
-    Called by the app after a Claude deposit (the OpenAI paths do it inline),
-    Body: ``{"service": "<alias or compute connection id>"}``. `claude` and
-    `codex` are aliases for the subscription CLIs; any other value is a compute
-    connection the owner registered, which the binding layer authorizes. Also
-    usable as a "fix my universe" retry."""
+    """Bind an owner-registered HTTP connection to their serving agent."""
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import JSONResponse, PlainTextResponse
 
@@ -949,17 +943,6 @@ async def _handle_serving_bind(request: Any) -> Any:
     data = await _read_small_json(request)
     if data is None:
         return JSONResponse({"error": "invalid_json"}, status_code=400)
-    # ANY LLM THE OWNER REGISTERED, not two named vendors. `claude` and `codex`
-    # stay as friendly aliases for the subscription CLIs; anything else is a
-    # compute connection id, and `_open_serving_context` beneath this refuses a
-    # grant whose owner and universe are not the caller's. Gating the NAME here
-    # as well added nothing to that check and refused every legitimate user with
-    # their own endpoint (founder, 2026-09-03: "we shouldnt have a chatgpt
-    # spacific path ... the request popup ... should allow the user to connect
-    # any llm source they want to thier universe").
-    #
-    # Case is preserved: an alias is matched case-insensitively downstream, but
-    # a connection id is not ours to lowercase.
     service = str(data.get("service", "")).strip()
     if not service:
         return JSONResponse({"error": "service_required"}, status_code=400)

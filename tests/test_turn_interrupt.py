@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,7 +24,6 @@ import pytest
 
 from tests.test_interactive_http_agent import agent, reader, rig, run, served  # noqa: F401
 from tinyassets import engine_tool_client, turn_interrupt
-from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
 from tinyassets.providers.base import ModelConfig
 from tinyassets.storage.agent_turn_boot import BOOT
 from tinyassets.turn_interrupt import TurnInterrupted, interactive_turn, request_interrupt
@@ -153,64 +151,10 @@ def test_an_empty_subject_is_never_a_key():
 # ---------------------------------------------------------------------------
 
 
-class _NativeAdapter:
-    """Only the served-authority seams are stand-ins; the provider call is real."""
-
-    def check(self, context, config):
-        return "owner"
-
-    def create_turn(self, journal, *, owner, context, prompt, system, plan):
-        return journal.create(owner, context.universe_dir.name, prompt=prompt, system=system)
-
-    def round_input(self, authority, reservation, config, *, owner, context,
-                    prompt, system, native_input, kind):
-        from tinyassets.storage.agent_native_records import NativeInput
-
-        assert kind == "native_agent"
-        return NativeInput("claude-code", "", "binding-1", "reservation-1", 1,
-                           "sha256:" + "0" * 64, "sha256:" + "1" * 64)
-
-    async def infer(self, *, router, prompt, system, config, context, observer, kind):
-        from tinyassets.providers.claude_provider import ClaudeProvider
-
-        observer(None, None, config)
-        # Generous bounds: only the owner's stop may end this call.
-        return await ClaudeProvider().complete(prompt, "", ModelConfig(
-            init_timeout_s=60.0, first_progress_s=60.0, idle_timeout_s=60.0,
-            absolute_cap_s=120.0,
-        ))
 
 
-def _native_coordinator(base: Path, live):
-    from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
-
-    uid = "u-native"
-    (base / uid).mkdir(parents=True)
-    set_founder_home(base, founder_sub="owner", universe_id=uid, platform_generated=True)
-    # The first owner check installs the starter, which needs the owner binding.
-    grant_universe_ownership(base, universe_id=uid, owner_id="owner")
-    router = SimpleNamespace(selected_agent_execution_kind=lambda selection: "native_agent")
-    context = SimpleNamespace(
-        universe_dir=base / uid, agent_model_plan=None,
-        model_selection=SimpleNamespace(connection_id="claude-code", model_id=""),
-    )
-    return AgentTurnCoordinator(
-        adapter=_NativeAdapter(), router=router, prompt="do the long thing", system="",
-        universe_context=context, config=ModelConfig(absolute_cap_s=120.0),
-        interrupt=live,
-    )
 
 
-class _ActivityNativeAdapter(_NativeAdapter):
-    """The native call run for an activity, through the work adapter's own gate."""
-
-    def __init__(self, binding):
-        self.activity_binding = binding
-
-    async def infer(self, **kwargs):
-        from tinyassets.workflow_agent import WorkAgentAdapter
-
-        return await WorkAgentAdapter._until_activity_stops(self, super().infer(**kwargs))
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +169,7 @@ def _slow_provider(kind: str, seconds: float):
     state = SimpleNamespace(cancelled=False, finished=False)
 
     class Slow(BaseProvider):
-        name = "claude-code" if kind == "native_agent" else "http-source"
+        name = "http-source"
         family = "anthropic"
         agent_execution_kind = kind
 
@@ -270,66 +214,8 @@ def _call_sync(provider, operation):
                                    operation=operation, universe_context=context)
 
 
-def test_an_unplanned_native_served_call_is_cancelled_by_the_stop():
-    provider, state = _slow_provider("native_agent", 30.0)
-    with interactive_turn("owner", "u-1") as live:
-        original_complete = provider.complete
-
-        async def stop_after_entry(*args, **kwargs):
-            # Stop only after the provider reaches its cancellable await;
-            # slow admission must not turn this into a before-launch test.
-            asyncio.get_running_loop().call_soon(live.request)
-            return await original_complete(*args, **kwargs)
-
-        provider.complete = stop_after_entry
-        started = time.monotonic()
-        with pytest.raises(TurnInterrupted):
-            _call_sync(provider, "converse")
-    assert time.monotonic() - started < 10 and state.cancelled and not state.finished
 
 
-def test_a_stop_already_asked_for_launches_nothing_and_charges_nothing(tmp_path):
-    """astra round 2: a native call cancelled before its coroutine ran was settled
-    INDETERMINATE (its reservation consumed) although nothing launched."""
-    from unittest.mock import patch
-
-    from tests.support.model_call import call_sync as model_call_sync
-    from tests.support.owner_bound import owner_carrier
-    from tinyassets.provider_work_authority import (
-        ProviderInvocationReservationState,
-        ProviderInvocationSettlementOwner,
-    )
-    from tinyassets.providers.base import UniverseContext
-    from tinyassets.providers.router import ProviderRouter
-
-    provider, state = _slow_provider("native_agent", 30.0)
-    entered = []
-    original = provider.complete
-
-    async def complete(*args, **kwargs):
-        entered.append(True)
-        return await original(*args, **kwargs)
-
-    provider.complete = complete
-    router = ProviderRouter(providers={provider.name: provider})
-    carrier = owner_carrier(provider.name, operation="converse")
-    carrier.settlement_owner = ProviderInvocationSettlementOwner.ROUTER
-    universe = tmp_path / "u-owner-bound"
-    universe.mkdir()
-    context = UniverseContext(universe_dir=universe, provider_invocation=carrier)
-    with interactive_turn("owner", "u-1") as live:
-        live.request()
-        with patch("tinyassets.providers.router._provider_invocation_carrier",
-                   return_value=carrier), patch(
-            "tinyassets.providers.served_model_plan.connected_sources",
-            return_value=frozenset({provider.name}),
-        ), pytest.raises(TurnInterrupted):
-            model_call_sync(router, "writer", "p", "s",
-                            ModelConfig(absolute_cap_s=60.0),
-                            operation="converse", universe_context=context)
-    assert entered == [], "the provider was launched after the owner's Stop"
-    settled = [call.args[0] for call in carrier.settle.call_args_list]
-    assert settled == [ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH], settled
 
 
 def test_an_http_call_is_never_cancelled_so_its_usage_settles():
@@ -351,7 +237,7 @@ def test_another_operation_inside_the_chat_turns_own_loop_is_not_stopped():
     from tests.support.owner_bound import owner_bound_call
     from tinyassets.providers.router import ProviderRouter
 
-    provider, state = _slow_provider("native_agent", 0.2)
+    provider, state = _slow_provider("http_tools", 0.2)
     router = ProviderRouter(providers={provider.name: provider})
     with interactive_turn("owner", "u-1") as live:
         live.request()
@@ -362,7 +248,7 @@ def test_another_operation_inside_the_chat_turns_own_loop_is_not_stopped():
 
 def test_a_call_that_is_not_the_chat_turn_is_never_stopped():
     """A stop already requested reaches only ``converse``: never an automation's call."""
-    provider, state = _slow_provider("native_agent", 0.2)
+    provider, state = _slow_provider("http_tools", 0.2)
     with interactive_turn("owner", "u-1") as live:
         live.request()
         assert _call_sync(provider, "run_graph").text == "done"

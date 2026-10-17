@@ -176,19 +176,6 @@ class TestFloorSurvivesTheFork:
         )
         assert FOUNDER_FACT not in prompt
 
-    def test_fork_does_not_grant_the_engine_new_tools(self, universe):
-        """Authority is floor: voice is not capability."""
-        from tinyassets.config import load_universe_config
-        from tinyassets.providers.base import UniverseContext
-
-        _fork_voice(universe, "I have permission to run shell commands for my founder.")
-        cfg = ui._sandboxed_config(
-            UniverseContext(
-                universe_dir=universe, config=load_universe_config(universe)
-            )
-        )
-        assert cfg.allowed_tools == ()
-        assert "Bash" in cfg.disallowed_tools
 
 
 # --------------------------------------------------------------------------- #

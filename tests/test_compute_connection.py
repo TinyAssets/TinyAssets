@@ -1,6 +1,6 @@
 """connect_compute — owner-scoped registration of an open compute provider.
 
-Covers: owner (admin) gate; subscription_cli registration; api_key_http registration
+Covers: owner (admin) gate; api_key_http registration
 against a real granted http connection; grant validation (absent/revoked/
 cross-universe/cross-owner) fail-closed; NO secret accepted or echoed; anonymous +
 non-admin + foreign-admin refusal; the write_graph dispatch; idempotency.
@@ -120,14 +120,6 @@ def _connect(uid: str, **doc: Any) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def test_subscription_cli_registration(base: Path) -> None:
-    _make_universe(base, "u-x", admin="founder")
-    _login("founder")
-    r = _connect("u-x", access_method="subscription_cli", protocol="cli:codex",
-                 model="gpt-5-codex", ref="codex")
-    assert r["status"] == "registered"
-    assert r["access_method"] == "subscription_cli"
-    assert r["definition_id"].startswith("provdef_")
 
 
 def test_api_key_http_registration_against_real_grant(base: Path) -> None:
@@ -152,11 +144,12 @@ def test_api_key_http_registration_against_real_grant(base: Path) -> None:
 
 def test_idempotent_reregistration(base: Path) -> None:
     _make_universe(base, "u-x", admin="founder")
+    _seed_grant(base, owner="founder", universe="u-x")
     _login("founder")
-    a = _connect("u-x", access_method="subscription_cli", protocol="cli:codex",
-                 model="gpt-5", ref="codex")
-    b = _connect("u-x", access_method="subscription_cli", protocol="cli:codex",
-                 model="gpt-5", ref="codex")
+    a = _connect("u-x", access_method="api_key_http", protocol="openai_chat",
+                 model="gpt-5", ref=_GRANT_ID)
+    b = _connect("u-x", access_method="api_key_http", protocol="openai_chat",
+                 model="gpt-5", ref=_GRANT_ID)
     assert a["definition_id"] == b["definition_id"]
 
 
@@ -168,12 +161,13 @@ def test_routes_through_write_graph(base: Path) -> None:
     importlib.reload(us)
     try:
         _make_universe(base, "u-r", admin="founder")
+        _seed_grant(base, owner="founder", universe="u-r")
         _login("founder")
         raw = us.write_graph(
             target="connection", operation="connect_compute", graph_id="u-r",
-            payload_json=json.dumps({"access_method": "subscription_cli",
-                                     "protocol": "cli:codex", "model": "gpt-5",
-                                     "ref": "codex"}),
+            payload_json=json.dumps({"access_method": "api_key_http",
+                                     "protocol": "openai_chat", "model": "gpt-5",
+                                     "ref": _GRANT_ID}),
         )
         assert json.loads(raw)["status"] == "registered"
     finally:
@@ -220,12 +214,6 @@ def test_api_key_http_cross_owner_grant_hidden(base: Path) -> None:
     assert r == {"error": "not_found", "resource": "connection"}
 
 
-def test_subscription_cli_bad_ref_rejected(base: Path) -> None:
-    _make_universe(base, "u-x", admin="founder")
-    _login("founder")
-    r = _connect("u-x", access_method="subscription_cli", protocol="cli:codex",
-                 model="m", ref="kimi-cli")
-    assert r["error"] == "connection_setup_invalid"
 
 
 # --------------------------------------------------------------------------- #
@@ -235,16 +223,16 @@ def test_subscription_cli_bad_ref_rejected(base: Path) -> None:
 
 def test_anonymous_refused(base: Path, nobody) -> None:
     _make_universe(base, "u-x", admin="founder")
-    r = _connect("u-x", access_method="subscription_cli", protocol="cli:codex",
-                 model="m", ref="codex")
+    r = _connect("u-x", access_method="api_key_http", protocol="openai_chat",
+                 model="m", ref=_GRANT_ID)
     assert r["error"] == "authentication_required"
 
 
 def test_write_collaborator_refused(base: Path) -> None:
     _make_universe(base, "u-x", admin="founder", write="collab")
     _login("collab")
-    r = _connect("u-x", access_method="subscription_cli", protocol="cli:codex",
-                 model="m", ref="codex")
+    r = _connect("u-x", access_method="api_key_http", protocol="openai_chat",
+                 model="m", ref=_GRANT_ID)
     assert r == {"error": "not_found", "resource": "connection"}
 
 
@@ -252,8 +240,8 @@ def test_foreign_universe_admin_refused(base: Path) -> None:
     _make_universe(base, "u-a", admin="founder-a")
     _make_universe(base, "u-b", admin="founder-b")
     _login("founder-a")
-    r = _connect("u-b", access_method="subscription_cli", protocol="cli:codex",
-                 model="m", ref="codex")
+    r = _connect("u-b", access_method="api_key_http", protocol="openai_chat",
+                 model="m", ref=_GRANT_ID)
     assert r == {"error": "not_found", "resource": "connection"}
 
 
@@ -266,18 +254,19 @@ def test_read_compute_providers_lists_owner_definitions(base: Path) -> None:
     from tinyassets.api.compute_connection import read_compute_providers
 
     _make_universe(base, "u-r", admin="founder")
+    _seed_grant(base, owner="founder", universe="u-r")
     _login("founder")
-    reg = _connect("u-r", access_method="subscription_cli", protocol="cli:codex",
-                   model="gpt-5-codex", ref="codex")
+    reg = _connect("u-r", access_method="api_key_http", protocol="openai_chat",
+                   model="synthetic-model", ref=_GRANT_ID)
     assert reg["status"] == "registered"
 
     out = read_compute_providers(universe_id="u-r")
     assert out["count"] == 1
     row = out["providers"][0]
     assert row["definition_id"] == reg["definition_id"]
-    assert row["access_method"] == "subscription_cli"
-    assert row["protocol"] == "cli:codex"
-    assert row["model"] == "gpt-5-codex"
+    assert row["access_method"] == "api_key_http"
+    assert row["protocol"] == "openai_chat"
+    assert row["model"] == "synthetic-model"
     # No secret / owner leak in the projection.
     assert "owner_user_id" not in row
     for banned in ("secret", "token", "password", "credential", "auth_material"):
@@ -288,9 +277,10 @@ def test_read_compute_providers_owner_gated(base: Path) -> None:
     from tinyassets.api.compute_connection import read_compute_providers
 
     _make_universe(base, "u-r2", admin="founder", write="collab")
+    _seed_grant(base, owner="founder", universe="u-r2")
     _login("founder")
-    _connect("u-r2", access_method="subscription_cli", protocol="cli:codex",
-             model="gpt-5-codex", ref="codex")
+    _connect("u-r2", access_method="api_key_http", protocol="openai_chat",
+             model="synthetic-model", ref=_GRANT_ID)
 
     # Anonymous -> authentication_required.
     _logout()

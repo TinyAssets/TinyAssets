@@ -30,26 +30,8 @@ ENTRYPOINT = REPO_ROOT / "deploy" / "docker-entrypoint.sh"
 # ---------------------------------------------------------------------------
 
 
-def test_dockerfile_installs_codex_npm():
-    """Builder stage must install @openai/codex via npm."""
-    text = DOCKERFILE.read_text(encoding="utf-8")
-    assert "@openai/codex" in text, (
-        "Dockerfile must install the pinned Codex package"
-    )
-    assert "CODEX_CLI_VERSION=0." in text, (
-        "Dockerfile must pin the Codex CLI package version for reproducible builds"
-    )
 
 
-def test_dockerfile_installs_claude_code_npm():
-    """Builder stage must install Claude Code CLI via npm."""
-    text = DOCKERFILE.read_text(encoding="utf-8")
-    assert "@anthropic-ai/claude-code" in text, (
-        "Dockerfile must install Claude Code CLI for claude_provider.py"
-    )
-    assert "CLAUDE_CODE_CLI_VERSION=2." in text, (
-        "Dockerfile must pin Claude Code CLI package version"
-    )
 
 
 def test_dockerfile_builder_has_nodejs_for_npm():
@@ -169,43 +151,12 @@ def test_dockerfile_does_not_pipe_remote_installers_to_shell():
     assert "NODESOURCE_REPO_CHECKSUM" in text
 
 
-def test_dockerfile_copies_codex_binary():
-    """Final stage must COPY codex install tree from builder."""
-    text = DOCKERFILE.read_text(encoding="utf-8")
-    assert "COPY --from=builder" in text, (
-        "Dockerfile must COPY codex from builder to final stage"
-    )
-    # Codex is installed to /opt/codex-install in the builder; that dir is COPY'd.
-    copy_lines = [
-        line for line in text.splitlines()
-        if line.strip().startswith("COPY --from=builder") and "codex-install" in line
-    ]
-    assert copy_lines, (
-        "Expected a 'COPY --from=builder /opt/codex-install ...' line in final stage"
-    )
 
 
-def test_dockerfile_copies_claude_binary():
-    """Final stage must COPY Claude Code install tree from builder."""
-    text = DOCKERFILE.read_text(encoding="utf-8")
-    assert "COPY --from=builder /opt/claude-code-install /opt/claude-code-install" in text
-    assert "ln -s /opt/claude-code-install/node_modules/.bin/claude /usr/local/bin/claude" in text
 
 
-def test_dockerfile_codex_version_smoke():
-    """Builder stage must run 'codex --version' to verify install."""
-    text = DOCKERFILE.read_text(encoding="utf-8")
-    assert "codex --version" in text, (
-        "Dockerfile must run 'codex --version' after install to catch broken installs"
-    )
 
 
-def test_dockerfile_claude_version_smoke():
-    """Builder/final stage must run 'claude --version' to verify install."""
-    text = DOCKERFILE.read_text(encoding="utf-8")
-    assert "claude --version" in text, (
-        "Dockerfile must run 'claude --version' after install to catch broken installs"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -213,30 +164,6 @@ def test_dockerfile_claude_version_smoke():
 # ---------------------------------------------------------------------------
 
 
-def test_dockerfile_installs_codex_flock_wrapper():
-    """Final stage must install deploy/codex-flock-wrapper.sh as /usr/local/bin/codex.
-
-    Every codex launch is a universe's provider child with that universe's own
-    CODEX_HOME; the wrapper serializes concurrent launches against one home.
-    Codex's official CI/CD auth guide forbids sharing one
-    auth.json across concurrent runners; the wrapper serializes
-    invocations via an exclusive flock on CODEX_HOME/.lock.
-
-    Round-1 of PR #965 used a bare symlink (`ln -s ... /usr/local/bin/codex`),
-    which is the exact pattern Codex Issue #10332 calls out as broken
-    when the auth dir is shared. The wrapper replaces it.
-    """
-    text = DOCKERFILE.read_text(encoding="utf-8")
-    assert "COPY deploy/codex-flock-wrapper.sh /usr/local/bin/codex" in text, (
-        "Dockerfile must COPY deploy/codex-flock-wrapper.sh to /usr/local/bin/codex "
-        "so every `codex` invocation goes through the cross-container flock"
-    )
-    # The legacy bare symlink must be gone. Regression guard.
-    assert "ln -s /opt/codex-install/node_modules/.bin/codex /usr/local/bin/codex" not in text, (
-        "Dockerfile must not install codex via bare symlink; concurrent "
-        "containers sharing CODEX_HOME would race the OAuth refresh "
-        "(Codex Issue #10332). Use the flock wrapper instead."
-    )
 
 
 def test_dockerfile_installs_util_linux_for_flock():
@@ -251,34 +178,6 @@ def test_dockerfile_installs_util_linux_for_flock():
     )
 
 
-def test_codex_flock_wrapper_script_present():
-    """The wrapper script itself must exist + be executable + lock the shared dir."""
-    wrapper = REPO_ROOT / "deploy" / "codex-flock-wrapper.sh"
-    assert wrapper.exists(), "deploy/codex-flock-wrapper.sh must exist"
-    text = wrapper.read_text(encoding="utf-8")
-    # Bash strict-mode header.
-    assert text.startswith("#!/usr/bin/env bash"), (
-        "wrapper must declare #!/usr/bin/env bash shebang"
-    )
-    assert "set -euo pipefail" in text, "wrapper must use strict bash"
-    # Lock target must live next to auth.json so the shared CODEX_HOME
-    # makes the lock visible across containers.
-    assert "CODEX_HOME" in text and ".lock" in text, (
-        "wrapper must lock a sentinel inside the codex auth directory"
-    )
-    assert "flock -x" in text, (
-        "wrapper must use exclusive flock (`flock -x`) — shared locks "
-        "would not serialize refresh writes"
-    )
-    # The actual codex binary should be the exec target.
-    assert "/opt/codex-install/node_modules/.bin/codex" in text, (
-        "wrapper must exec the real codex bin under flock"
-    )
-    assert text.rstrip().endswith('exec flock -x "${LOCK_FILE}" "${CODEX_BIN}" "$@"'), (
-        "wrapper's final line must `exec flock -x ... codex \"$@\"` so the "
-        "wrapper process is replaced (no double-fork) and signals + exit codes "
-        "propagate from codex to the daemon caller"
-    )
 
 
 def test_local_git_credentials_stay_out_of_git_and_docker_context():

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests.support.http_model import HTTP_PROVIDER
 from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
@@ -19,7 +20,7 @@ from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderRespons
 
 
 class _CountingProvider(BaseProvider):
-    def __init__(self, on_call=None, *, name="codex") -> None:
+    def __init__(self, on_call=None, *, name=HTTP_PROVIDER) -> None:
         self.name = name
         self.family = name
         self.calls: list[ModelConfig] = []
@@ -70,69 +71,6 @@ def _seed_branch_version(tmp_path: Path, *, policy=None, agent=False):
     return publish_branch_version(tmp_path, branch.to_dict(), publisher="acct_alice")
 
 
-def _seed_serving_assignment(tmp_path: Path, *, model_access=None, services=("codex",)) -> None:
-    from tinyassets.commons_catalog import create_binding, publish_definition
-    from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.daemon_server import set_founder_home
-    from tinyassets.provider_serving_binding import (
-        bind_serving_provider,
-        list_serving_universes,
-        set_serving,
-    )
-
-    universe_dir = tmp_path / "universe_alice"
-    universe_dir.mkdir(exist_ok=True)
-    set_founder_home(tmp_path, founder_sub="acct_alice", universe_id="universe_alice",
-                     platform_generated=True)
-    write_credential_vault(
-        universe_dir,
-        [
-            {
-                "credential_type": "llm_subscription",
-                "service": service,
-                **({"auth_json_b64": "e30="} if service == "codex"
-                   else {"oauth_token": "synthetic-claude-test-only"}),
-            }
-            for service in services
-        ],
-        owner_user_id="acct_alice",
-        universe_id="universe_alice",
-    )
-    definition = publish_definition(
-        tmp_path,
-        author_id="acct_alice",
-        payload={
-            "schema_version": 1,
-            "name": "Background agent",
-            "description": "Runs one assigned background Branch.",
-            "tags": ["test"],
-            "components": {"identity": {"kind": "soul", "config": {}}},
-        },
-    )
-    agent = create_binding(
-        tmp_path,
-        universe_id="universe_alice",
-        definition_id=definition["agent_definition_id"],
-        created_by="acct_alice",
-        payload={"schema_version": 1, "name": "Background agent", "role": "writer"},
-    )
-    connected = bind_serving_provider(
-        base_path=tmp_path,
-        universe_dir=universe_dir,
-        owner_user_id="acct_alice",
-        universe_id="universe_alice",
-        agent_binding_id=agent["agent_binding_id"],
-        expected_revision=1,
-        provider="codex",
-        model_access=model_access,
-    )
-    set_serving(
-        base_path=tmp_path,
-        universe_dir=universe_dir,
-        owner_user_id="acct_alice",
-        universe_id="universe_alice",
-        agent_binding_id=agent["agent_binding_id"],
-        expected_revision=connected["agent_binding"]["revision"],
-        enabled=True,
-    )
-    assert list_serving_universes(tmp_path) == ["universe_alice"]
+def _seed_serving_assignment(tmp_path: Path, *, model_access=None) -> str:
+    from tests.support.http_model import seed_http_assignment
+    return seed_http_assignment(tmp_path, model_access=model_access)

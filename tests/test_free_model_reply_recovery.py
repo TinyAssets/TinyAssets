@@ -203,19 +203,6 @@ def test_bad_reply_retries_are_bounded_per_turn(agent, monkeypatch):
     assert len(agent.tools) == 1
 
 
-def test_a_native_agent_round_is_never_retried_this_way():
-    """A native agent's failure can follow real work it did on its own."""
-    from types import SimpleNamespace
-
-    turn = AgentTurnCoordinator.__new__(AgentTurnCoordinator)
-    turn.execution_kind = "native_agent"
-    turn.adapter = SimpleNamespace(relaunches_same_model=True)
-    turn.turn = SimpleNamespace(state="held_transport")
-    turn.bad_reply_retries = 0
-    exc = AllProvidersExhaustedError("x", attempts=[
-        SimpleNamespace(failure_class="provider_reply_error", side_effect_state="unknown"),
-    ])
-    assert turn._next_after_bad_reply(exc) is False
 
 
 def test_a_bad_reply_mixed_with_another_class_is_not_this_paths():

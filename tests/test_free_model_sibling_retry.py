@@ -164,7 +164,7 @@ def test_sibling_retries_are_bounded_and_every_attempt_is_recorded(agent, monkey
     assert len({wire[1]["body"]["model"] for wire in agent.wires}) == 4
 
 
-@pytest.mark.parametrize("kind,narrows", [("engine_inference", True), ("native_agent", False)])
+@pytest.mark.parametrize("kind,narrows", [("engine_inference", True)])
 def test_only_engine_inference_narrows_an_unproven_account_exhaustion(kind, narrows):
     """A native executor runs on ONE subscription, so its account IS the source.
 

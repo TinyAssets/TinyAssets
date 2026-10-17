@@ -168,10 +168,6 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/credential_vault.py": [
         "_fsync_directory: os.open()",
         "_fsync_file: open()",
-        "_read_credential_material: .read_bytes()",
-        "_remove_snapshot_tree: .unlink()",
-        "_remove_snapshot_tree: .unlink()",
-        "_write_exclusive_snapshot_file: os.open()",
         "load_credential_vault: .read_text()",
     ],
     "tinyassets/daemon_brain.py": [
@@ -202,11 +198,6 @@ PINNED: dict[str, list[str]] = {
     ],
     # The refresh lock uses descriptor-relative O_NOFOLLOW opens and fstat
     # ownership/mode checks.
-    "tinyassets/external_agents/home.py": [
-        "exclusive_refresh: os.open()",
-        "exclusive_refresh: os.open()",
-        "exclusive_refresh: os.open()",
-    ],
     "tinyassets/ingestion/extractors.py": [
         "synthesize_source: .read_text()",
     ],
@@ -265,9 +256,7 @@ PINNED: dict[str, list[str]] = {
         "write_record: os.replace()",
     ],
     "tinyassets/providers/base.py": [
-        "subprocess_env_for_provider: .read_text()",
     ],
-    # ``claude_provider`` had two in ``_engine_mcp_flags``; they are gone from
     # the tree, and this ratchet only ever shrinks, so the pin goes with them.
     "tinyassets/providers/definition.py": [
         "_load: .read_text()",
@@ -277,9 +266,6 @@ PINNED: dict[str, list[str]] = {
     ],
     # The one-run credential lease is read from the platform custody snapshot
     # (never an owner tree) with O_NOFOLLOW and an fstat regular-file check.
-    "tinyassets/providers/owned_process.py": [
-        "_lease_files: os.open()",
-    ],
     "tinyassets/reset.py": [
         "reset: .unlink()",
         "reset: shutil.rmtree()",

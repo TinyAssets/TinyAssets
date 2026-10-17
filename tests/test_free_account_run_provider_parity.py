@@ -1168,33 +1168,3 @@ def test_every_run_captures_the_owners_model_order_even_with_nothing_saved(
     assert {ref.connection_id for ref in order.order} == {provider}
 
 
-def test_a_legacy_assignment_without_a_manifest_uses_connected_source_order(
-    tmp_path, monkeypatch, authenticate_request,
-):
-    """A legacy assignment is a preference over the same connected source set."""
-    from tests.test_run_provider_session import _seed_serving_assignment
-    from tinyassets.daemon_server import initialize_author_server, set_founder_home
-    from tinyassets.foreground_run_provider import captured_work_preference
-    from tinyassets.provider_assignment import load_provider_assignment
-    from tinyassets.providers.work_candidate_data import prepare_captured_choices
-
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    authenticate_request(A_OWNER)
-    initialize_author_server(tmp_path)
-    set_founder_home(tmp_path, founder_sub=A_OWNER, universe_id=A_HOME,
-                     platform_generated=True)
-    _seed_serving_assignment(tmp_path, model_access=None)
-    assignment = load_provider_assignment(tmp_path, universe_id=A_HOME)
-    assert assignment is not None and not assignment.manifest_digest
-
-    document = captured_work_preference(
-        tmp_path, universe_id=A_HOME, principal_id=A_OWNER,
-    )
-    assert document is not None and document["saved"] is None
-
-    choices = prepare_captured_choices(
-        Path(tmp_path), owner=A_OWNER, universe=A_HOME, document=document,
-        sources=("codex",),
-    )
-    assert choices is not None and choices.automatic
-    assert all(ref.connection_id == "codex" for ref in choices.order)

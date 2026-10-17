@@ -21,6 +21,7 @@ import pytest
 
 import tinyassets.automations as automations_module
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.support.http_model import HTTP_PROVIDER
 from tests.test_background_budget_finalization_e2e import _seed_serving_assignment
 from tinyassets.automations import (
     MAX_CONSECUTIVE_FAILURES,
@@ -262,57 +263,9 @@ def _seed_owner(
 
 
 def _copy_assignment_to(tmp_path: Path, *, universe_id: str, owner: str) -> None:
-    """Give a second owner a connected subscription and a ready preference.
-
-    The seeded serving path is hard-wired to one universe; the pump-isolation
-    tests need a second owner whose automation must keep running while the
-    first one's is refused.
-    """
-    from tinyassets.credential_vault import (
-        adopt_llm_subscription_custody,
-        write_credential_vault,
-    )
-    from tinyassets.provider_assignment import (
-        load_provider_assignment,
-        provider_assignment_digest,
-        store_provider_assignment_in_transaction,
-    )
-    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
-
-    write_credential_vault(
-        tmp_path / universe_id,
-        [{"credential_type": "llm_subscription", "service": "codex",
-          "auth_json_b64": "e30="}],
-        owner_user_id=owner, universe_id=universe_id,
-    )
-    with SQLiteProviderWorkAuthorityStore(tmp_path).connection() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        adopt_llm_subscription_custody(
-            conn, universe_dir=tmp_path / universe_id, owner_user_id=owner,
-            universe_id=universe_id, service="codex",
-        )
-        conn.commit()
-
-    source = load_provider_assignment(tmp_path, universe_id=UNIVERSE)
-    assert source is not None
-    clone = replace(source, universe_id=universe_id, owner_user_id=owner)
-    clone = replace(
-        clone,
-        assignment_digest=provider_assignment_digest(
-            owner_user_id=clone.owner_user_id,
-            universe_id=clone.universe_id,
-            provider=clone.provider,
-            generation=clone.generation,
-            binding_id=clone.binding_id,
-            credential_reference_id=clone.credential_reference_id,
-            credential_reference_generation=clone.credential_reference_generation,
-            credential_reference_digest=clone.credential_reference_digest,
-        ),
-    )
-    with sqlite3.connect(db_path(tmp_path)) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        store_provider_assignment_in_transaction(conn, clone)
-        conn.commit()
+    """Give another owner an independently granted HTTP model."""
+    from tests.support.http_model import seed_http_assignment
+    seed_http_assignment(tmp_path, universe_id=universe_id, owner_user_id=owner)
 
 
 def _switch_assignment_provider(tmp_path: Path, *, universe_id: str, provider: str) -> None:
@@ -589,7 +542,7 @@ def test_a_provider_switch_between_runs_needs_no_repreparation(
     assert first["constructor_inputs"] == second["constructor_inputs"]
     assert first["constructor_inputs"]["universe_id"] == UNIVERSE
     assert first["constructor_inputs"]["principal_id"] == OWNER
-    assert first["resolves_provider"] == "codex"
+    assert first["resolves_provider"] == HTTP_PROVIDER
     assert second["resolves_provider"] == "claude-code"
 
 
@@ -1156,13 +1109,16 @@ def test_one_universes_scan_failure_does_not_stop_the_poll(
 @contextmanager
 def _real_providers(**providers):
     """Install a router of fake providers for a REAL run through the session."""
+    from unittest.mock import patch
+
     import tinyassets.providers.call as provider_call_module
     from tinyassets.providers.router import ProviderRouter
-
     previous_router = provider_call_module.get_provider_router()
     provider_call_module.set_provider_router(ProviderRouter(dict(providers)))
     try:
-        yield
+        with patch("tinyassets.providers.provider_resolver.provider_for_definition",
+                   lambda definition: providers["api_key_http:" + definition.id]):
+            yield
     finally:
         provider_call_module.set_provider_router(previous_router)
 
@@ -1224,7 +1180,7 @@ def test_admin_revoked_between_precheck_and_launch_never_reaches_a_provider(
     monkeypatch.setattr(automations_module, "_runtime_authority_reason", racing)
     fake = _CountingProvider()
 
-    with _real_providers(codex=fake):
+    with _real_providers(**{HTTP_PROVIDER: fake}):
         reason = run_due_automation(
             tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW
         )
@@ -1283,7 +1239,7 @@ def test_a_nested_child_branch_is_guarded_too(
     monkeypatch.setattr(automations_module, "_runtime_authority_reason", racing)
     fake = _CountingProvider()
 
-    with _real_providers(codex=fake):
+    with _real_providers(**{HTTP_PROVIDER: fake}):
         run_due_automation(
             tmp_path, nested, "2026-08-29T12:10:00+00:00", now=NOW
         )
@@ -1356,7 +1312,7 @@ def test_an_async_child_branch_is_guarded_too(
     monkeypatch.setattr(automations_module, "_runtime_authority_reason", racing)
     fake = _CountingProvider()
 
-    with _real_providers(codex=fake):
+    with _real_providers(**{HTTP_PROVIDER: fake}):
         run_due_automation(
             tmp_path, nested, "2026-08-29T12:10:00+00:00", now=NOW
         )
@@ -1421,7 +1377,7 @@ def test_an_async_version_pinned_child_is_guarded_too(
     monkeypatch.setattr(automations_module, "_runtime_authority_reason", racing)
     fake = _CountingProvider()
 
-    with _real_providers(codex=fake):
+    with _real_providers(**{HTTP_PROVIDER: fake}):
         run_due_automation(
             tmp_path, versioned, "2026-08-29T12:10:00+00:00", now=NOW
         )
@@ -1479,7 +1435,7 @@ def test_an_owners_automation_runs_its_own_unpublished_pinned_child(
 
     monkeypatch.setattr(_ForegroundRunProviderSession, "_call", after_parent)
     fake = _CountingProvider()
-    with _real_providers(codex=fake):
+    with _real_providers(**{HTTP_PROVIDER: fake}):
         try:
             result = run_due_automation(
                 tmp_path, versioned, "2026-08-29T12:10:00+00:00", now=NOW,
@@ -1543,7 +1499,7 @@ def test_the_run_row_names_the_authority_loss_not_a_generic_cancel(
     monkeypatch.setattr(automations_module, "_runtime_authority_reason", racing)
     monkeypatch.setattr(automations_module, "_execute", capturing)
 
-    with _real_providers(codex=_CountingProvider()):
+    with _real_providers(**{HTTP_PROVIDER: _CountingProvider()}):
         run_due_automation(
             tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW
         )
@@ -2144,7 +2100,7 @@ def test_a_run_that_outlives_its_timeout_is_cancelled_not_abandoned(
     monkeypatch.setattr("tinyassets.runs.wait_for", timing_out)
     fake = _CountingProvider()
 
-    with _real_providers(codex=fake):
+    with _real_providers(**{HTTP_PROVIDER: fake}):
         reason = run_due_automation(
             tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW
         )
@@ -2261,15 +2217,15 @@ def test_the_real_admission_records_the_current_assignment_on_the_receipt(
     assert live is not None
     fake = _CountingProvider()
 
-    with _real_providers(codex=fake):
+    with _real_providers(**{HTTP_PROVIDER: fake}):
         first = run_due_automation(
             tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW
         )
     assert first.startswith("ok:ran:"), first
     # What admission recorded is what the accepted ASSIGNMENT admitted, not
     # what the automation said -- the automation says nothing about a provider.
-    assert live.provider == "codex"
-    assert _receipt_sources(tmp_path, first.split("ok:ran:", 1)[1]) == ("codex",)
+    assert live.provider == HTTP_PROVIDER
+    assert _receipt_sources(tmp_path, first.split("ok:ran:", 1)[1]) == (HTTP_PROVIDER,)
     assert len(fake.calls) == 1
 
     # Take the accepted assignment away. The subscription stays connected, and
@@ -2280,7 +2236,7 @@ def test_the_real_admission_records_the_current_assignment_on_the_receipt(
         )
         conn.commit()
 
-    with _real_providers(codex=fake):
+    with _real_providers(**{HTTP_PROVIDER: fake}):
         second = run_due_automation(
             tmp_path, registered, "2026-08-29T12:20:00+00:00", now=NOW
         )
@@ -2453,7 +2409,7 @@ def test_the_real_run_path_admits_through_the_live_session_and_records_a_run(
 
     fake = _CountingProvider()
     previous_router = provider_call_module.get_provider_router()
-    provider_call_module.set_provider_router(ProviderRouter({"codex": fake}))
+    provider_call_module.set_provider_router(ProviderRouter({HTTP_PROVIDER: fake}))
     try:
         reason = run_due_automation(
             tmp_path,

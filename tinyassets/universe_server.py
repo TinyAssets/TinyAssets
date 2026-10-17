@@ -2518,12 +2518,9 @@ _AUTH_EVIDENCE_TELLS = (
     "login required",
     "please log in",
     "please login",
-    "codex login",
-    "claude login",
     "reauthenticat",
     "re-authenticat",
     "no_credentials",
-    "auth.json",
     # Codex 0.146: "Your access token could not be refreshed. Please log out
     # and sign in again." Claude: "Not logged in · Please run /login".
     "could not be refreshed",
@@ -2761,34 +2758,6 @@ def _record_served_failure(universe_id: str, exc: BaseException, ref: str = "") 
         logger.warning("served turn failed universe=%s (diagnostics unavailable)", universe_id)
 
 
-_NATIVE_AUTH_CLUE = re.compile(
-    r"[a-zA-Z0-9_. -]{1,48} terminal result was not success "
-    r"\(subtype=(?:success|non_success), is_error=true, "
-    r"last_assistant_error=authentication_failed\)"
-)
-
-
-def _has_native_auth_clue(exc: BaseException) -> bool:
-    """Read only the last failed attempt's closed native diagnostic rendering.
-
-    This is a provider-reported clue, never a new failure class, evidence of
-    safe replay, or authority to change credentials. Adapter progress
-    supersedes prior assistant errors before constructing this rendering.
-    """
-    attempts = getattr(exc, "attempts", None)
-    if not isinstance(attempts, (list, tuple)):
-        return False
-    for attempt in reversed(attempts):
-        if getattr(attempt, "status", None) == "failed":
-            detail = getattr(attempt, "detail", "")
-            return (
-                getattr(attempt, "skip_class", None) == "provider_error"
-                and isinstance(detail, str)
-                and _NATIVE_AUTH_CLUE.fullmatch(detail) is not None
-            )
-    return False
-
-
 def _context_overflow(exc: BaseException) -> bool:
     """True when this turn, or anything it wraps, is our own context refusal."""
     seen: set[int] = set()
@@ -2839,8 +2808,6 @@ def _served_failure_code(exc: BaseException) -> str:
         for code in (getattr(exc, "failure_class", None), _attempt_class(exc)):
             if isinstance(code, str) and code in FAILURE_CODES:
                 return code
-        if _has_native_auth_clue(exc):
-            return "native_auth_clue"
     except Exception:  # Malformed diagnostic attributes are not another failure.
         pass
     return "unknown"

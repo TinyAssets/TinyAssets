@@ -146,7 +146,6 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     CallSite("tinyassets/agent_loop/box_tools.py", "BoxExecutor._collect", "self.stream"),
     # Reviewed 2026-10-14 (C6): one admitted CLI process drains the provider
     # stream already started for that handle. It starts no branch.
-    CallSite("tinyassets/boxes/cli_launcher.py", "Process._output", "self.stream"),
     # Reviewed C9: the owner-bound model proxy streams broker data after the
     # grant and usage reference are resolved; these calls create no turn root.
     CallSite("tinyassets/agent_loop/model_stream.py", "collect_stream", "proxy.stream"),

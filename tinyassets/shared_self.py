@@ -173,18 +173,7 @@ def prepare_shared_self_turn(base_path, universe_id, principal_id, prompt, confi
 
 
 def _granted_config(config, node):
-    """Narrow every tool surface to the node's grant (``None`` keeps them all)."""
-    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES, model_tools, node_tool_grant
-
+    """Narrow the HTTP agent's engine capabilities to the node's grant."""
+    from tinyassets.served_tools import node_tool_grant
     grant = node_tool_grant(node.get("tools_allowed"))
-    if grant is None:
-        return config
-    visible = model_tools(replace(config, engine_tool_grant=grant))
-    withheld = {f"mcp__tinyassets__{t}" for t in BACKEND_ENGINE_CAPABILITIES
-                if t not in grant and t not in visible}
-    return replace(
-        config,
-        engine_tool_grant=grant,
-        allowed_tools=tuple(t for t in (config.allowed_tools or ()) if t not in withheld),
-        disallowed_tools=tuple(config.disallowed_tools or ()) + tuple(sorted(withheld)),
-    )
+    return config if grant is None else replace(config, engine_tool_grant=grant)

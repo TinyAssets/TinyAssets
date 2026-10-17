@@ -63,31 +63,8 @@ def test_records_live_outside_every_universe_folder(tmp_path):
     assert len(records) == 1
 
 
-@posix_only
-def test_a_planted_runtime_link_never_redirects_the_native_store(tmp_path):
-    """A workflow provider jail binds the universe read-write, .runtime included."""
-    universe = tmp_path / "u-one"
-    (universe / ".runtime").mkdir(parents=True)
-    victim = tmp_path / "u-other"
-    victim.mkdir()
-    (universe / ".runtime" / "agent-sessions").symlink_to(victim)
-    with pytest.raises(OSError):
-        agent_sessions.native_store(universe, "codex")
-    assert not list(victim.iterdir())
 
 
-@posix_only
-def test_the_native_file_check_never_follows_a_link(tmp_path):
-    universe = tmp_path / "u-one"
-    universe.mkdir()
-    store = agent_sessions.native_store(universe, "codex")
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    (elsewhere / "rollout-x-abc.jsonl").write_text("{}")
-    (store / "linked").symlink_to(elsewhere)
-    assert not agent_sessions.native_file_exists(store, "abc.jsonl")
-    (store / "rollout-y-abc.jsonl").write_text("{}")
-    assert agent_sessions.native_file_exists(store, "abc.jsonl")
 
 
 def test_unseen_keeps_only_later_messages_of_the_named_speakers():

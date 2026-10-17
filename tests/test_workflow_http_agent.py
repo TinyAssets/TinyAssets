@@ -10,7 +10,7 @@ from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 from tests import test_work_model_selection as work_model_tests
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.inference_usage_helpers import accounting_resolver
-from tests.test_run_provider_session import _branch, _CountingProvider, _run_branch
+from tests.test_run_provider_session import _branch, _run_branch
 from tinyassets import engine_mcp_http, engine_tool_client
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
@@ -315,63 +315,3 @@ def test_model_without_tools_refuses_before_inference(
         ).fetchone() == (0,)
 
 
-@pytest.mark.parametrize("outcome", ["success", "known_capacity", "unknown_capacity"])
-def test_native_foreground_uses_work_journal_and_preserves_execution_evidence(
-    tmp_path, monkeypatch, authenticate_request, work_agent, outcome,
-):
-    from tinyassets.exceptions import ProviderRateLimitedError
-    from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
-    from tinyassets.providers.base import ProviderResponse
-
-    calls = []
-
-    async def native(self, prompt, system, config, *, universe_dir=None):
-        turn = work_agent.latest()
-        assert turn.state == "native_started" and turn.authority_kind == "work_invocation"
-        assert turn.rounds[0].candidate.work_receipt_id == turn.work_receipt_id
-        assert config.engine_mcp_actor_id == "acct_alice"
-        assert config.engine_mcp_graph_id == "universe_alice"
-        assert config.agent_request is None and config.selected_model is None
-        calls.append(prompt)
-        if outcome != "success":
-            exc = ProviderRateLimitedError("synthetic native capacity", retry_after=30)
-            exc.attempt_telemetry = {"side_effect_state": "none"}
-            if outcome == "known_capacity":
-                exc.native_evidence = NativeCompletionEvidence("codex", True, True, "none")
-            raise exc
-        return ProviderResponse(
-            text="native work completed", provider="codex", model="configured-native-model",
-            family="codex", latency_ms=1, input_tokens=3, output_tokens=4, cost_microunits=0,
-            native_evidence=NativeCompletionEvidence("codex", True, True, "committed"),
-        )
-
-    monkeypatch.setattr(_CountingProvider, "agent_execution_kind", "native_agent", raising=False)
-    monkeypatch.setattr(_CountingProvider, "complete", native)
-    branch = _branch(node_count=1)
-    branch.node_defs[0].tools_allowed = ["universe_self"]
-    result, _, _ = _run_branch(tmp_path, monkeypatch, authenticate_request, branch)
-    assert result["terminal_status"] == ("completed" if outcome == "success" else "failed"), result
-    assert len(calls) == 1 and work_agent.wires == [] and work_agent.tools == []
-    journal = AgentTurnJournal(tmp_path)
-    with journal._ledger.connection() as conn:
-        turns = [journal.get("acct_alice", "universe_alice", row[0]) for row in conn.execute(
-            "SELECT turn_id FROM agent_turns ORDER BY created_at",
-        )]
-    native_turns = [turn for turn in turns if turn.rounds]
-    assert len(native_turns) == 1
-    turn = native_turns[0]
-    assert turn.state == {
-        "success": "completed", "known_capacity": "held_native_capacity",
-        "unknown_capacity": "held_native_unknown",
-    }[outcome]
-    if outcome == "known_capacity":
-        assert turn.rounds[0].reply.evidence.protocol_complete
-    elif outcome == "unknown_capacity":
-        assert len(turns) == 1  # No whole-node replay without no-effects proof.
-    if outcome != "success":
-        with sqlite3.connect(db_path(tmp_path)) as conn:
-            reservation = json.loads(conn.execute(
-                "SELECT record_json FROM provider_invocation_reservations ORDER BY ordinal LIMIT 1",
-            ).fetchone()[0])
-        assert reservation["state"] == "indeterminate"
-        assert reservation["actual_total_tokens"] is None

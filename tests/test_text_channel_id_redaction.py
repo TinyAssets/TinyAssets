@@ -51,7 +51,8 @@ def env(tmp_path, monkeypatch, authenticate_request):
     # returns `branch_run_requires_universe`, and with an unregistered id it
     # returns `universe_access_denied` — the ACL grant is the half that is
     # easy to miss.
-    from tests.test_run_provider_session import _CountingProvider, _seed_serving_assignment
+    from tests.support.http_model import seed_http_assignment
+    from tests.test_run_provider_session import _CountingProvider
     from tinyassets.daemon_server import (
         ensure_universe_registered,
         grant_universe_access,
@@ -74,7 +75,7 @@ def env(tmp_path, monkeypatch, authenticate_request):
     )
     set_founder_home(base, founder_sub="tester", universe_id=REDACTION_UNIVERSE,
                      platform_generated=True)
-    _seed_serving_assignment(base, owner_user_id="tester", universe_id=REDACTION_UNIVERSE)
+    seed_http_assignment(base, owner_user_id="tester", universe_id=REDACTION_UNIVERSE)
     provider = _CountingProvider()
     monkeypatch.setattr(provider_registry, "_router", ProviderRouter({provider.name: provider}))
     from tinyassets import universe_server as us

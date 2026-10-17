@@ -126,7 +126,6 @@ def test_a_graph_pin_the_advisory_order_omits_is_honoured_when_nothing_was_saved
     run/chat divergence) a node pinning an accepted native model id was refused
     for not appearing in a ranking that never contained it. CI shards 5/6 and
     6/6 caught it: `test_native_model_execution` and
-    `test_native_discovery_integration` both went red with "graph model
     constraint conflicts with captured primary".
 
     The owner chose nothing, so the order ranks rather than decides, and the

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 
 import pytest
 
@@ -265,179 +264,26 @@ def test_get_status_activity_log_line_count_reflects_total(tmp_path) -> None:
 # ─────────────────────────────────────────────────────────────────────
 
 
-def _get_endpoint_hint(
-    monkeypatch,
-    env: dict,
-    which_map: dict,
-    *,
-    api_key_opt_in: bool = False,
-    home: Path | None = None,
-) -> str:
-    """Helper: patch env + shutil.which, call get_status, return endpoint hint."""
-    import shutil as _shutil
-
-    for key in (
-        "OLLAMA_HOST", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY",
-        "XAI_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY",
-        "TINYASSETS_ALLOW_API_KEY_PROVIDERS", "CODEX_HOME",
-        # claude is "bound" only with binary AND subscription auth; clear both
-        # auth sources so the default is not-authed and tests opt in explicitly.
-        "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR",
-    ):
-        monkeypatch.delenv(key, raising=False)
-    for key, val in env.items():
-        monkeypatch.setenv(key, val)
-    if api_key_opt_in:
-        monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
-
-    def _which(cmd, *args, **kwargs):
-        return which_map.get(cmd)
-
-    monkeypatch.setattr("shutil.which", _which)
-    monkeypatch.setattr(_shutil, "which", _which)
-    monkeypatch.setattr(
-        "tinyassets.api.status.Path.home",
-        lambda: home or (Path.cwd() / ".workflow-test-empty-home"),
-    )
-
-    payload = json.loads(get_status())
-    return payload["active_host"]["llm_endpoint_bound"]
 
 
-def test_llm_endpoint_bound_ollama(monkeypatch) -> None:
-    hint = _get_endpoint_hint(
-        monkeypatch,
-        env={"OLLAMA_HOST": "http://localhost:11434"},
-        which_map={},
-    )
-    assert hint == "ollama"
 
 
-@pytest.mark.parametrize(
-    "env, which_map",
-    [
-        ({"ANTHROPIC_BASE_URL": "http://relay.internal"}, {}),
-        ({"OPENAI_API_KEY": "sk-test"}, {"codex": "/usr/local/bin/codex"}),
-        ({"XAI_API_KEY": "xai-test"}, {}),
-        ({"GEMINI_API_KEY": "gemini-test"}, {}),
-        ({"GROQ_API_KEY": "groq-test"}, {}),
-        ({"XAI_API_KEY": "x", "GEMINI_API_KEY": "g", "GROQ_API_KEY": "q"}, {}),
-    ],
-)
-def test_host_api_keys_never_bind_even_with_the_retired_switch(
-    monkeypatch, env, which_map,
-) -> None:
-    """The platform has no LLM (Hard Rule 15). A host API key, with or without
-    the retired TINYASSETS_ALLOW_API_KEY_PROVIDERS=1, binds nothing."""
-    hint = _get_endpoint_hint(
-        monkeypatch, env=env, which_map=which_map, api_key_opt_in=True,
-    )
-    assert hint == "unset"
 
 
-def test_llm_endpoint_bound_ollama_takes_priority_over_anthropic(
-    monkeypatch,
-) -> None:
-    hint = _get_endpoint_hint(
-        monkeypatch,
-        env={
-            "OLLAMA_HOST": "http://localhost:11434",
-            "ANTHROPIC_BASE_URL": "http://relay.internal",
-        },
-        which_map={},
-    )
-    assert hint == "ollama"
 
 
-def test_llm_endpoint_bound_codex_subscription_auth(monkeypatch, tmp_path) -> None:
-    auth_dir = tmp_path / ".codex"
-    auth_dir.mkdir()
-    (auth_dir / "auth.json").write_text("{}", encoding="utf-8")
-    hint = _get_endpoint_hint(
-        monkeypatch,
-        env={"CODEX_HOME": str(auth_dir)},
-        which_map={"codex": "/usr/local/bin/codex"},
-        home=tmp_path,
-    )
-    assert hint == "unset"
 
 
-def test_llm_endpoint_bound_codex_honors_codex_home(monkeypatch, tmp_path) -> None:
-    codex_home = tmp_path / "persistent-codex-home"
-    codex_home.mkdir()
-    (codex_home / "auth.json").write_text("{}", encoding="utf-8")
-    empty_home = tmp_path / "empty-home"
-    empty_home.mkdir()
-
-    hint = _get_endpoint_hint(
-        monkeypatch,
-        env={"CODEX_HOME": str(codex_home)},
-        which_map={"codex": "/usr/local/bin/codex"},
-        home=empty_home,
-    )
-
-    assert hint == "unset"
 
 
-def test_llm_endpoint_bound_openai_key_without_codex_cli_falls_through(
-    monkeypatch,
-) -> None:
-    hint = _get_endpoint_hint(
-        monkeypatch,
-        env={"OPENAI_API_KEY": "sk-test", "CLAUDE_CODE_OAUTH_TOKEN": "tok"},
-        which_map={"claude": "/usr/local/bin/claude"},
-    )
-    assert hint == "claude"
 
 
-def test_llm_endpoint_bound_claude_cli(monkeypatch) -> None:
-    # claude is bound only with binary AND subscription auth (auth-aware fix).
-    hint = _get_endpoint_hint(
-        monkeypatch,
-        env={"CLAUDE_CODE_OAUTH_TOKEN": "tok"},
-        which_map={"claude": "/usr/local/bin/claude"},
-    )
-    assert hint == "claude"
 
 
-def test_llm_endpoint_bound_claude_cli_present_but_unauthed_is_unset(
-    monkeypatch,
-) -> None:
-    # Binary present, NO auth → must NOT report claude as bound (the 2026-06-25
-    # blind spot the auth-aware fix closes).
-    hint = _get_endpoint_hint(
-        monkeypatch,
-        env={},
-        which_map={"claude": "/usr/local/bin/claude"},
-    )
-    assert hint == "unset"
 
 
-def test_llm_endpoint_bound_unset_when_nothing_available(monkeypatch) -> None:
-    hint = _get_endpoint_hint(
-        monkeypatch,
-        env={},
-        which_map={},
-    )
-    assert hint == "unset"
 
 
-def test_llm_endpoint_bound_codex_takes_priority_over_claude(
-    monkeypatch, tmp_path,
-) -> None:
-    auth_dir = tmp_path / ".codex"
-    auth_dir.mkdir()
-    (auth_dir / "auth.json").write_text("{}", encoding="utf-8")
-    hint = _get_endpoint_hint(
-        monkeypatch,
-        env={"CODEX_HOME": str(auth_dir)},
-        which_map={
-            "codex": "/usr/local/bin/codex",
-            "claude": "/usr/local/bin/claude",
-        },
-        home=tmp_path,
-    )
-    assert hint == "unset"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -446,55 +292,12 @@ def test_llm_endpoint_bound_codex_takes_priority_over_claude(
 # ─────────────────────────────────────────────────────────────────────
 
 
-def test_api_key_endpoint_hints_ignored_without_opt_in(monkeypatch) -> None:
-    hint = _get_endpoint_hint(
-        monkeypatch,
-        env={
-            "OPENAI_API_KEY": "sk-test",
-            "XAI_API_KEY": "xai-test",
-            "GEMINI_API_KEY": "gemini-test",
-            "GROQ_API_KEY": "groq-test",
-        },
-        which_map={"codex": "/usr/local/bin/codex"},
-    )
-    assert hint == "unset"
 
 
-def test_llm_endpoint_bound_claude_beats_xai(monkeypatch) -> None:
-    """Claude CLI is a subprocess-bound primary writer; XAI_API_KEY
-    only feeds an SDK-keyed tertiary fallback. Claude wins."""
-    hint = _get_endpoint_hint(
-        monkeypatch,
-        env={"XAI_API_KEY": "xai-test", "CLAUDE_CODE_OAUTH_TOKEN": "tok"},
-        which_map={"claude": "/usr/local/bin/claude"},
-    )
-    assert hint == "claude"
 
 
-def test_llm_endpoint_bound_ollama_beats_all_sdk_keys(monkeypatch) -> None:
-    """Ollama is always-local; beats every SDK-key-only binding."""
-    hint = _get_endpoint_hint(
-        monkeypatch,
-        env={
-            "OLLAMA_HOST": "http://localhost:11434",
-            "XAI_API_KEY": "xai-test",
-            "GEMINI_API_KEY": "gemini-test",
-            "GROQ_API_KEY": "groq-test",
-        },
-        which_map={},
-    )
-    assert hint == "ollama"
 
 
-def test_llm_endpoint_bound_empty_xai_key_falls_through(monkeypatch) -> None:
-    """Empty-string key does not count as bound — matches OPENAI_API_KEY
-    pattern where empty string is treated as unset."""
-    hint = _get_endpoint_hint(
-        monkeypatch,
-        env={"XAI_API_KEY": ""},
-        which_map={},
-    )
-    assert hint == "unset"
 
 
 # ─────────────────────────────────────────────────────────────────────

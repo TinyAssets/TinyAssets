@@ -2836,7 +2836,7 @@
         never_run:"model list not checked yet",
         stale:"checking… (showing last known models)",
         catalogue_refresh_unavailable:"couldn't refresh (showing last known models)",
-        native_catalogue_unavailable:"couldn't refresh (showing last known models)"}[reason];
+        catalogue_unavailable:"couldn't refresh (showing last known models)"}[reason];
     },
     renderMenu(){
       const menu=$("model-menu");if(!menu||menu.hidden) return;
@@ -5302,7 +5302,7 @@
     sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(EXP_KEY); showView("signin"); }
   // The one way into model setup from anywhere in the app: the chat, with the
   // connect request open. Never a separate screen.
-  const CONNECT_REQUEST_ID="sys_connect_llm";
+  const CONNECT_REQUEST_ID="sys_connect_model";
   function openConnectRequest(guidance){
     Voice.stop(false);
     if(views.chat.hidden) showView("chat");
@@ -8020,8 +8020,7 @@
   }
 
   // The platform's own model-setup entry: the one `connect` action with the
-  // shapes the rail completes itself. An older page's "connect_llm" is the same
-  // entry without them.
+  // shapes the rail completes itself.
   // Any card the connect PANEL answers, not just the one setup card. A reconnect
   // card carries the same `connect` action with its own request id, and matching on
   // the id alone sent it to the generic Accept/Deny controls instead -- so the card
@@ -8032,7 +8031,7 @@
     if(!a) return false;
     const own=req.request_id===CONNECT_REQUEST_ID
       ||(typeof req.request_id==="string"&&req.request_id.startsWith(RECONNECT_REQUEST_PREFIX));
-    return own&&(a.type==="connect_llm"||(a.type==="connect"&&!!a.setup));
+    return own&&a.type==="connect"&&!!a.setup;
   }
   // While unpowered, exactly one pending free-model confirmation is the second
   // half of the setup in progress, so it is finished inside the setup request.

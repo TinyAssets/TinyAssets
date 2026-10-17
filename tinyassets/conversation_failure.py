@@ -82,11 +82,7 @@ _CLASS_WORDS = {
         "try another connected source or check the provider's limits"
     ),
     "timed_out": "the model attempt timed out",
-    "native_auth_clue": (
-        "your model provider reported a sign-in problem; check this command center's "
-        "provider connection and reconnect if needed, though we have not "
-        "confirmed that was the only cause"
-    ),
+
     "setup_required": (
         "this command center has no model it can use right now; connect a model, or "
         "reconnect one that stopped working, from the request under “Waiting on "
@@ -177,7 +173,6 @@ STAGE_OF_CLASS = {
     # anything was sent -- so it is a before_send fact, not a provider verdict.
     "context_window_exceeded": "before_send",
     "auth_invalid": "connection",
-    "native_auth_clue": "connection",
     "endpoint_unreachable": "connection",
     "provider_rate_limited": "model_request",
     "provider_daily_quota": "model_request",

@@ -646,8 +646,6 @@ def test_sandboxed_config_engine_mcp_off_by_default(monkeypatch):
         _fake_ctx(), founder_principal="sub", universe_id="u", granted=True
     )
     assert cfg.engine_mcp_enabled is False
-    assert "mcp__tinyassets__read_graph" not in (cfg.allowed_tools or ())
-    assert "mcp__*" in (cfg.disallowed_tools or ())
 
 
 def test_sandboxed_config_fails_closed_non_founder_or_no_principal(monkeypatch):
@@ -676,25 +674,17 @@ def test_sandboxed_config_on_when_all_conditions_met(monkeypatch):
         _fake_ctx(), founder_principal="sub-9", universe_id="u-9", granted=True
     )
     assert cfg.engine_mcp_enabled is True
-    assert "mcp__tinyassets__read" in cfg.allowed_tools
-    assert "mcp__tinyassets__bash" in cfg.allowed_tools
     # read-only commons + brain handles are admitted; remix + publish are held
     # off every served allowlist pending the closure-sanitize / consent gate.
     from tinyassets.served_tools import granted_tools
     for _h in ("browse_commons", "read_commons_shape", "read_brain", "write_brain"):
         assert _h in granted_tools(cfg), _h
-        assert f"mcp__tinyassets__{_h}" not in cfg.allowed_tools, _h
-    assert "mcp__tinyassets__publish_shape" not in cfg.allowed_tools
-    assert "mcp__tinyassets__remix_shape" not in cfg.allowed_tools
     # the wildcard deny is dropped so the tinyassets handles are admittable...
-    assert "mcp__*" not in cfg.disallowed_tools
     # ...but the resource readers stay denied (surface = exactly the handles)
-    assert "ReadMcpResourceTool" in cfg.disallowed_tools
     assert cfg.engine_mcp_actor_id == "sub-9"
     assert cfg.engine_mcp_graph_id == "u-9"
 
 
-# ── claude_provider._engine_mcp_flags: the CLI wiring ───────────────────────
 
 
 
@@ -861,11 +851,10 @@ def test_connect_compute_is_exposed_in_both_provider_allowlists():
     missing). Guard both served paths so it cannot silently drop out again."""
     from tinyassets.providers.base import ModelConfig
     from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES, model_tools
-    from tinyassets.universe_intelligence import _ENGINE_MCP_ALLOWED, _ENGINE_MCP_TOOLS
+    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS as _ENGINE_MCP_TOOLS
     assert "connect_compute" in BACKEND_ENGINE_CAPABILITIES
     assert "bash" in model_tools(ModelConfig())  # Codex reaches it through ta.
     assert "bash" in _ENGINE_MCP_TOOLS  # Claude reaches it through ta.
-    assert "mcp__tinyassets__bash" in _ENGINE_MCP_ALLOWED
     # And the server actually registers a handler by that name (exposure is real).
     from tinyassets import engine_mcp_server as s
     assert callable(getattr(s, "connect_compute", None))

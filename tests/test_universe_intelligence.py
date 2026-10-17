@@ -463,46 +463,8 @@ def test_converse_persists_worldbuilding_to_canon(tmp_path, monkeypatch):
     assert "Aurelith" in hits[0].read_text(encoding="utf-8")
 
 
-def test_sandboxed_config_locks_down_the_engine(tmp_path):
-    from tinyassets.config import load_universe_config
-    from tinyassets.providers.base import UniverseContext
-
-    udir = _seed(tmp_path)
-    ctx = UniverseContext(universe_dir=udir, config=load_universe_config(udir))
-    cfg = ui._sandboxed_config(ctx)
-
-    assert cfg.sandbox_workspace is True
-    assert cfg.allowed_tools == ()
-    for denied in ("Bash", "Read", "Write", "WebSearch", "Task"):
-        assert denied in cfg.disallowed_tools
 
 
-def test_converse_sandboxes_both_engine_turns(tmp_path, monkeypatch):
-    udir = _seed(tmp_path)
-    _become_founder(tmp_path)
-    configs: list = []
-
-    def fake_text_sync(prompt, system="", *, role="writer",
-                           universe_context=None, config=None, **_kw):
-        configs.append(config)
-        if "strict JSON" in system:  # learning-extraction turn
-            return "{}"
-        return "hi there"
-
-    monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-test")
-    monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
-    monkeypatch.setattr(ui, "text_sync", fake_text_sync)
-
-    # Founder tier, because this asserts BOTH turns happen — and the second
-    # (learning-extraction) turn only runs for a founder now that the write
-    # gate matches the read gate.
-    ui.converse("u-test", "Remember my preference", tier=interlocutor.FOUNDER)
-
-    # BOTH the reply turn and the learning-extraction turn run sandboxed.
-    assert len(configs) >= 2
-    assert all(c is not None and c.sandbox_workspace for c in configs)
-    assert all("Bash" in (c.disallowed_tools or ()) for c in configs)
-    assert all(c.allowed_tools == () for c in configs)
 
 
 def test_generic_identity_detector():

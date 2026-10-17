@@ -555,40 +555,6 @@ def _cl(obj) -> bytes:
 # =====================================================================
 
 
-class TestOllamaProvider:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        import json
-
-        from tinyassets.providers.ollama_provider import OllamaProvider
-
-        response_body = json.dumps({"response": "ollama output"}).encode()
-        mock_response = MagicMock()
-        mock_response.read.return_value = response_body
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
-
-        with patch("urllib.request.urlopen", return_value=mock_response):
-            provider = OllamaProvider()
-            resp = await provider.complete("prompt", "system", ModelConfig())
-
-        assert resp.text == "ollama output"
-        assert resp.provider == "ollama-local"
-        assert resp.family == "local"
-
-    @pytest.mark.asyncio
-    async def test_connection_refused(self):
-        import urllib.error
-
-        from tinyassets.providers.ollama_provider import OllamaProvider
-
-        with patch(
-            "urllib.request.urlopen",
-            side_effect=urllib.error.URLError("Connection refused"),
-        ):
-            provider = OllamaProvider()
-            with pytest.raises(ProviderUnavailableError):
-                await provider.complete("prompt", "system", ModelConfig())
 
 
 # =====================================================================

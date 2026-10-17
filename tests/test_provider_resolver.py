@@ -1,9 +1,4 @@
-"""provider_for_definition — resolve a ProviderDefinition to its executor.
-
-Covers: api_key_http -> ApiKeyHttpProvider; subscription_cli -> the vendor CLI
-adapter (codex/claude-code) with its stable identity preserved; unknown ref /
-access_method rejected; no cross-method fallback.
-"""
+"""Owner definitions resolve to the generic broker-backed HTTP executor."""
 
 from __future__ import annotations
 

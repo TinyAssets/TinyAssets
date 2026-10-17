@@ -236,7 +236,7 @@ def test_wrong_authenticated_context_is_refused_before_proxy(rig, kwargs):
         {"owner_user_id": "someone-else"},
         {"universe_id": "someone-else"},
         {"ref": "grant-absent"},
-        {"access_method": "subscription_cli"},
+        {"access_method": "invalid_method"},
     ],
 )
 def test_definition_cannot_borrow_another_context(rig, changes):

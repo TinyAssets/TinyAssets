@@ -2,15 +2,12 @@
 
 import asyncio
 import json
-from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
 from tests import test_interactive_http_agent as integration
 from tests import test_selected_model_authority as authority
-from tests.test_pending_requests_power import _install_native_executor
-from tests.test_provider_served_router import _RecordingProvider, _served_context
 from tinyassets import daemon_server, universe_intelligence
 from tinyassets.api.commons_catalog import commons_catalog
 from tinyassets.auth import middleware as auth
@@ -19,7 +16,6 @@ from tinyassets.config import load_universe_config
 from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.provider_serving_binding import set_serving
-from tinyassets.providers import call as provider_calls
 from tinyassets.providers import discovery_snapshot
 from tinyassets.providers.base import UniverseContext
 from tinyassets.providers.model_policy import ModelRef
@@ -34,11 +30,6 @@ agent = integration.agent
 REAL_GET_HOME = daemon_server.get_founder_home
 
 
-@pytest.fixture
-def served_native_context(tmp_path, monkeypatch):
-    """Prepare native serving without a host-installed executor."""
-    _install_native_executor(monkeypatch)
-    return _served_context(tmp_path)
 
 
 @pytest.fixture
@@ -57,34 +48,6 @@ def configured(rig, reader, monkeypatch, request):
         created_by="owner", payload={"schema_version": 1, "name": "Policy", "role": "writer"},
     )
     access = {rig.definition.id: ModelAccess("discovered")}
-    native = None
-    if getattr(request, "param", None) == "mixed":
-        from tinyassets.providers import free_sources
-
-        monkeypatch.setattr(free_sources, "daily_cap_for_host", lambda host: {
-            "requests_per_day": 50, "reset_timezone": "UTC", "name": "Limited source",
-        })
-        from tinyassets.credential_vault import write_credential_vault
-
-        write_credential_vault(
-            rig.base / "u-models", [{
-                "credential_type": "llm_subscription", "service": "codex", "auth_json_b64": "e30=",
-            }], owner_user_id="owner", universe_id="u-models",
-        )
-        from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
-
-        class NativeRecording(_RecordingProvider):
-            agent_execution_kind = "native_agent"
-
-            async def complete(self, *args, **kwargs):
-                response = await super().complete(*args, **kwargs)
-                return replace(response, native_evidence=NativeCompletionEvidence(
-                    self.name, False, True, "unknown",
-                ))
-
-        native = NativeRecording("codex")
-        monkeypatch.setattr(provider_calls, "_router", ProviderRouter({"codex": native}))
-        access["codex"] = ModelAccess("explicit", ("",))
     connected = commons_catalog(
         action="bind_serving_provider", universe_id="u-models",
         binding_id=binding["agent_binding_id"], expected_revision=binding["revision"],
@@ -92,7 +55,7 @@ def configured(rig, reader, monkeypatch, request):
                  "model_access": {name: scope.document() for name, scope in access.items()}},
     )
     assert connected["status"] == "ready"
-    return SimpleNamespace(rig=rig, binding=connected["agent_binding"], native=native)
+    return SimpleNamespace(rig=rig, binding=connected["agent_binding"])
 
 
 def enable(configured):
@@ -117,9 +80,7 @@ def served(configured):
     )
     state = SimpleNamespace(
         rig=configured.rig, agent=binding, capability=capability,
-        wire=[], router=ProviderRouter({} if configured.native is None else {
-            "codex": configured.native,
-        }), native=configured.native,
+        wire=[], router=ProviderRouter({}),
         context=UniverseContext(
             universe_dir=configured.rig.base / "u-models",
             config=load_universe_config(configured.rig.base / "u-models"),
@@ -187,130 +148,14 @@ def test_engine_disabled_allows_plain_chat_but_refuses_full_agent_task(agent, mo
     assert len(agent.wires) == 1 and not agent.tools
 
 
-@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
-def test_mixed_automatic_prefers_owned_native_default(agent, monkeypatch):
-    # Known unused HTTP allowance supplies the capacity comparison. Missing
-    # usage evidence is unknown, and does not assert native-source priority.
-    monkeypatch.setattr("tinyassets.request_budget.requests_today", lambda *a, **kw: (0, 0))
-    assert _converse(agent, monkeypatch) == "codex:hello"
-    assert agent.served.native.calls == 1 and agent.wires == []
 
 
-@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
-@pytest.mark.parametrize("recovery", ["automatic", "explicit", "reconnect"])
-@pytest.mark.parametrize("elapsed", [0, 420, 86400])
-def test_auth_failure_affects_only_new_auto_turn_not_failed_native_replay(
-    agent, monkeypatch, recovery, elapsed,
-):
-    from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthenticationError
-    from tinyassets.providers import source_health
-    from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
-    from tinyassets.providers.served_model_plan import prepare_owned_model_plan
-
-    monkeypatch.setattr("tinyassets.request_budget.requests_today", lambda *a, **kw: (0, 0))
-    now = [0]
-    monkeypatch.setattr(
-        source_health, "SOURCE_HEALTH", source_health.SourceHealth(clock=lambda: now[0]),
-    )
-    native = agent.served.native
-    original = native.complete
-
-    async def fail(*args, **kwargs):
-        native.calls += 1
-        error = ProviderAuthenticationError("fixture sign-in refusal")
-        error.attempt_telemetry = {"side_effect_state": "committed"}
-        error.native_evidence = NativeCompletionEvidence("codex", False, True, "committed")
-        raise error
-
-    monkeypatch.setattr(native, "complete", fail)
-    with pytest.raises(AllProvidersExhaustedError) as raised:
-        _converse(agent, monkeypatch)
-    assert raised.value.failure_class == "auth_invalid"
-    assert native.calls == 1 and agent.wires == [] and agent.tools == []
-    assert agent.latest().state == "held_native_unknown"
-    assert agent.served.router._quota.available("codex", owner="owner")
-
-    def prepare(current=None):
-        return prepare_owned_model_plan(
-            base=agent.served.rig.base, universe=agent.served.context.universe_dir,
-            owner="owner", agent=agent.served.agent, current=current,
-        ).plan
-
-    now[0] = elapsed
-    alternative = prepare().next_candidate("owner", "u-models")
-    assert alternative.connection_id.startswith("api_key_http:")
-    explicit = ModelPreferences("explicit", ModelRef("codex", ""), ())
-    assert prepare(explicit).next_candidate("owner", "u-models") == ModelRef("codex", "")
-    if recovery == "reconnect":
-        from tinyassets.credential_vault import write_credential_vault
-        from tinyassets.onboarding.serving import ensure_founder_serving
-
-        daemon_server.grant_universe_access(
-            agent.served.rig.base, universe_id="u-models", actor_id="owner",
-            permission="admin", granted_by="owner",
-        )
-        write_credential_vault(
-            agent.served.context.universe_dir, [{
-                "credential_type": "llm_subscription", "service": "codex",
-                "auth_json_b64": "eyJuZXciOiJjcmVkZW50aWFsIn0=",
-            }], owner_user_id="owner", universe_id="u-models",
-        )
-        result = ensure_founder_serving(
-            base_path=agent.served.rig.base, universe_dir=agent.served.context.universe_dir,
-            owner_user_id="owner", universe_id="u-models", service="codex",
-        )
-        assert result["status"] == "serving", result
-        agent.served.agent = get_binding(
-            agent.served.rig.base, universe_id="u-models",
-            binding_id=agent.served.agent["agent_binding_id"],
-        )
-        # A real renewed assignment is eligible before any successful model call.
-        assert prepare().next_candidate("owner", "u-models") == ModelRef("codex", "")
-        assert native.calls == 1
-    elif recovery == "explicit":
-        # A fresh, explicitly selected successful attempt clears only its own hint.
-        monkeypatch.setattr(native, "complete", original)
-        assert _converse(agent, monkeypatch, explicit.document()) == "codex:hello"
-        assert prepare().next_candidate("owner", "u-models") == ModelRef("codex", "")
-    else:
-        agent.requested_rounds = 0
-        assert _converse(agent, monkeypatch) == "finished exact answer"
-        assert native.calls == 1 and len(agent.wires) == 1
-        assert prepare().next_candidate("owner", "u-models") == alternative
-    assert ModelPreferenceStore(agent.served.rig.base).get("owner", "u-models").policy is None
 
 
-@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
-def test_mixed_explicit_http_overrides_native_preference(agent, monkeypatch):
-    choice = ModelPreferences("explicit", ModelRef(
-        f"api_key_http:{agent.served.rig.definition.id}", authority.MODEL,
-    ), ())
-    assert _converse(agent, monkeypatch, choice.document()) == "finished exact answer"
-    assert agent.served.native.calls == 0 and not agent.tools and len(agent.wires) == 1
 
 
-@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
-def test_agent_settings_model_runs_connected_nondefault_source(agent, monkeypatch):
-    source = f"api_key_http:{agent.served.rig.definition.id}"
-    settings = agent.served.rig.base / "u-models" / "settings.yaml"
-    settings.write_text(
-        f"schema_version: 1\nmodel: {{connection: '{source}', id: '{authority.MODEL}'}}\n"
-    )
-    assert _converse(agent, monkeypatch) == "finished exact answer"
-    assert agent.served.native.calls == 0 and len(agent.wires) == 1
-    assert agent.latest().policy_source == "current"
 
 
-@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
-def test_explicit_choice_outweighs_agent_settings_model(agent, monkeypatch):
-    settings = agent.served.rig.base / "u-models" / "settings.yaml"
-    settings.write_text(
-        f"schema_version: 1\nmodel: {{connection: 'api_key_http:{agent.served.rig.definition.id}', "
-        f"id: '{authority.MODEL}'}}\n"
-    )
-    chosen = ModelPreferences("explicit", ModelRef("codex", ""), ()).document()
-    assert _converse(agent, monkeypatch, chosen) == "codex:hello"
-    assert agent.served.native.calls == 1 and agent.wires == []
 
 
 def test_unavailable_settings_pin_refuses_without_substituting(agent, monkeypatch):
@@ -462,121 +307,12 @@ def test_invalid_current_choice_refuses_before_provider_work(agent, monkeypatch,
     assert agent.wires == [] and agent.tools == []
 
 
-def test_other_owned_universe_keeps_legacy_path(tmp_path, monkeypatch, served_native_context):
-    from tinyassets.providers.served_model_plan import apply_served_model_preferences
-
-    universe, binding, capability, context = served_native_context
-    try:
-        daemon_server.set_founder_home(
-            tmp_path, founder_sub="owner-1", universe_id="different-home", platform_generated=True,
-        )
-        assert apply_served_model_preferences(context) is context
-        with pytest.raises(ProviderAuthorityHeldError, match="outside the current home"):
-            apply_served_model_preferences(
-                context, model_choice=ModelPreferences("automatic", None, ()).document(),
-            )
-    finally:
-        auth.revoke_provider_request(capability)
 
 
-def test_connected_home_without_preferences_builds_automatic_plan(tmp_path, served_native_context):
-    from tinyassets.providers.served_model_plan import apply_served_model_preferences
-
-    universe, binding, capability, context = served_native_context
-    try:
-        daemon_server.set_founder_home(
-            tmp_path, founder_sub="owner-1", universe_id=universe.name, platform_generated=True,
-        )
-        prepared = apply_served_model_preferences(context)
-        assert prepared is not context
-        assert prepared.agent_model_plan is not None
-        assert prepared.model_selection == ModelRef("codex", "")
-        explicit_auto = apply_served_model_preferences(
-            context, model_choice=ModelPreferences("automatic", None, ()).document(),
-        )
-        assert explicit_auto.model_selection == prepared.model_selection
-    finally:
-        auth.revoke_provider_request(capability)
 
 
-@pytest.mark.parametrize("mode", ["absent", "automatic", "explicit", "corrupt", "deleted"])
-def test_legacy_readiness_matches_saved_home_preferences(tmp_path, mode, served_native_context):
-    from tinyassets.account_deletion import principal_digest
-    from tinyassets.storage.current_home import CurrentHomeChanged
-    from tinyassets.storage.model_preferences import PreferenceStoreUnavailable
-
-    universe, binding, capability, context = served_native_context
-    try:
-        daemon_server.set_founder_home(
-            tmp_path, founder_sub="owner-1", universe_id=universe.name, platform_generated=True,
-        )
-        disabled = set_serving(
-            base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
-            universe_id=universe.name, agent_binding_id=binding["agent_binding_id"],
-            expected_revision=binding["revision"], enabled=False,
-        )["agent_binding"]
-        store = ModelPreferenceStore(tmp_path)
-        if mode != "absent":
-            policy = (ModelPreferences("explicit", ModelRef("codex", "chosen-model"), ())
-                      if mode == "explicit" else ModelPreferences("automatic", None, ()))
-            store.save("owner-1", universe.name, expected_generation=0, policy=policy,
-                       require_current_home=True)
-        with SQLiteProviderWorkAuthorityStore(tmp_path).connection() as conn:
-            if mode == "corrupt":
-                conn.execute("UPDATE universe_model_preferences SET policy_json = '{}' ")
-            if mode == "deleted":
-                conn.execute(
-                    "INSERT INTO deleted_principals (founder_sub, deleted_at) VALUES (?, ?)",
-                    (principal_digest("owner-1"), 1788998400.0),
-                )
-            before = tuple(
-                conn.execute("SELECT * FROM universe_model_preferences").fetchone() or (),
-            )
-        kwargs = dict(
-            base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
-            universe_id=universe.name, agent_binding_id=binding["agent_binding_id"],
-            expected_revision=disabled["revision"], enabled=True,
-        )
-        errors = {"explicit": PermissionError, "corrupt": PreferenceStoreUnavailable,
-                  "deleted": CurrentHomeChanged}
-        if mode in errors:
-            with pytest.raises(errors[mode]):
-                set_serving(**kwargs)
-            assert get_binding(tmp_path, universe_id=universe.name,
-                               binding_id=binding["agent_binding_id"]) == disabled
-        else:
-            assert set_serving(**kwargs)["status"] == "serving"
-        with SQLiteProviderWorkAuthorityStore(tmp_path).connection() as conn:
-            after = tuple(
-                conn.execute("SELECT * FROM universe_model_preferences").fetchone() or (),
-            )
-            assert after == before
-    finally:
-        auth.revoke_provider_request(capability)
 
 
-def test_nonhome_readiness_does_not_consume_home_preferences(tmp_path, served_native_context):
-    """A second command center serves on the owner's connected source; the
-    home's explicit choice of a missing model neither applies nor is touched."""
-    universe, binding, capability, context = served_native_context
-    try:
-        daemon_server.set_founder_home(
-            tmp_path, founder_sub="owner-1", universe_id="other-home", platform_generated=True,
-        )
-        store = ModelPreferenceStore(tmp_path)
-        saved = store.save(
-            "owner-1", "other-home", expected_generation=0,
-            policy=ModelPreferences("explicit", ModelRef("missing", "model"), ()),
-            require_current_home=True,
-        )
-        assert set_serving(
-            base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
-            universe_id=universe.name, agent_binding_id=binding["agent_binding_id"],
-            expected_revision=binding["revision"], enabled=True,
-        )["status"] == "serving"
-        assert store.get("owner-1", "other-home", require_current_home=True) == saved
-    finally:
-        auth.revoke_provider_request(capability)
 
 
 def test_corrupt_saved_preferences_are_not_treated_as_absent(agent, monkeypatch):
@@ -588,64 +324,6 @@ def test_corrupt_saved_preferences_are_not_treated_as_absent(agent, monkeypatch)
     assert agent.wires == [] and agent.tools == []
 
 
-@pytest.mark.parametrize("explicit", [False, True])
-def test_saved_policy_on_connected_source_preserves_auto_and_explicit(
-    tmp_path, explicit, served_native_context,
-):
-    from tinyassets.providers.served_model_plan import apply_served_model_preferences
-
-    universe, binding, capability, context = served_native_context
-    try:
-        daemon_server.set_founder_home(
-            tmp_path, founder_sub="owner-1", universe_id=universe.name, platform_generated=True,
-        )
-        preference = (ModelPreferences("explicit", ModelRef("codex", "chosen-model"), ())
-                      if explicit else ModelPreferences("automatic", None, ()))
-        store = ModelPreferenceStore(tmp_path)
-        saved = store.save("owner-1", universe.name, expected_generation=0, policy=preference,
-                           require_current_home=True)
-        if explicit:
-            from tinyassets.exceptions import SelectedModelUnavailableError
-            from tinyassets.universe_server import _served_failure_record
-
-            with pytest.raises(
-                ProviderAuthorityHeldError, match="absent from catalogue",
-            ) as raised:
-                apply_served_model_preferences(context)
-            assert isinstance(raised.value.__cause__, SelectedModelUnavailableError)
-            record = _served_failure_record(raised.value)
-            assert (record.code, record.stage, record.effects) == (
-                "model_unavailable", "before_send", "none",
-            )
-        else:
-            prepared = apply_served_model_preferences(context)
-            assert prepared is not context
-            assert prepared.model_selection == ModelRef("codex", "")
-            auto = apply_served_model_preferences(
-                context, model_choice=ModelPreferences("automatic", None, ()).document(),
-            )
-            assert auto.model_selection == prepared.model_selection
-            native = _RecordingProvider("codex")
-            from tinyassets.providers.base import ModelConfig
-            from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
-            from tinyassets.request_budget import TurnRequestBudget
-
-            budget = TurnRequestBudget("owner-1", universe.name)
-            budget.persist(tmp_path)
-            try:
-                response = asyncio.run(call(ModelCall(
-                    model=None, fallbacks=(), context=ModelContext(
-                        role="writer", prompt="hello", system="system", operation="converse",
-                        universe_context=prepared, router=ProviderRouter({"codex": native}),
-                        config=ModelConfig(request_budget=budget),
-                    ),
-                ), Parent(owner="owner-1", command_center=universe.name))).response
-            finally:
-                budget.close()
-            assert response.provider == "codex" and native.calls == 1
-        assert store.get("owner-1", universe.name, require_current_home=True) == saved
-    finally:
-        auth.revoke_provider_request(capability)
 
 
 def test_discovery_expiry_at_final_capture_is_a_structured_hold(agent, monkeypatch):

@@ -1,19 +1,7 @@
 """Local, founder-scoped TinyAssets MCP server for the universe-intelligence turn.
 
-Spawned as a subprocess of ``claude -p`` (the command center agent, "Tiny") via
-``--mcp-config`` + ``--strict-mcp-config``, this exposes the SAME canonical MCP
-handles the founder's browser chatbot has, so the command center agent can operate its
-OWN command center through the identical MCP surface.
-
-Founder directive 2026-08-12: *"all user functions are just mcp functions ... all
-the same mcp commands whether it's through the app or through slack or the
-browser."*
-
-Security model — this is the P0 engine-sandbox surface (2026-07-03 live-test:
-the un-sandboxed engine read platform source and ran Bash). The wiring in
-``claude_provider._engine_mcp_flags`` reaches this ONLY via ``--strict-mcp-config``
-(which admits exactly this one server and excludes the logged-in claude.ai
-account connectors — verified 2026-08-13). This module then enforces:
+The HTTP agent reaches these canonical handles through its owner-bound engine route.
+Every handler enforces:
 
   * **Identity.** Every handler call runs with ``_current_identity`` bound to the
     FOUNDER (``TINYASSETS_ENGINE_ACTOR_ID``) and a LEAST-PRIVILEGE capability set.
@@ -3358,7 +3346,7 @@ def write_graph(
             (legacy, explicit, discovered), model_ids (unique string array;
             nonempty only for explicit), cost_caps (null for free-only, or a
             nonempty cost-component object with nonnegative integer ceilings).
-            Example: {"codex":{"model_scope":"explicit",
+            Example: {"api_key_http:provdef_...":{"model_scope":"explicit",
             "model_ids":["gpt-6-astra"],"cost_caps":null}}.
             Auto-detect uses model_scope="discovered", model_ids=[].
             Native provider default uses model_scope="explicit", model_ids=[""].
@@ -4514,7 +4502,7 @@ def connect_compute(
 
     Do NOT try to select it by writing ``llm_policy`` on a node: the runtime reads
     only ``{"preferred": {"provider": "<name>"}}`` — a provider NAME such as
-    ``codex`` or ``api_key_http``, never a bare ``provdef_...`` id — and a wrong key is
+    ``api_key_http:provdef_...``, never a bare ``provdef_...`` id — and a wrong key is
     ignored, so the run fails later with ``permission_denied:provider_not_bound``.
     A workflow node normally needs NO ``llm_policy`` at all: leave it off and the run
     uses whatever provider the command center serves.
@@ -4526,7 +4514,7 @@ def connect_compute(
     provider (or to one that is not bound), repair the pin IN PLACE rather than
     rebuilding the workflow: ``write_graph target="branch" operation="patch"``
     with payload ``[{"op":"update_node","node_id":"<node definition id>",
-    "llm_policy":{"preferred":{"provider":"codex"}}}]`` replaces it, and
+    "llm_policy":{"preferred":{"provider":"api_key_http:provdef_..."}}}]`` replaces it, and
     ``"llm_policy": null`` clears it so the node follows the command center's current
     serving provider. Omit ``llm_policy`` from an update_node op to leave the
     existing pin unchanged.

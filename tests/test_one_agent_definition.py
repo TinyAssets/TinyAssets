@@ -227,20 +227,15 @@ def _activity_stops(kind: str, provider_call=None) -> bool:
     with tempfile.TemporaryDirectory() as scratch:
         adapter, config, context, _ = _live_activity_adapter(Path(scratch), name="u-guard")
         try:
-            if kind == "native_agent":
-                if provider_call is None:
-                    return False
-                asyncio.run(yielded_during(adapter, config, context))
-            else:
-                binding = adapter.activity_binding
-                agent_activities.wait_on(binding.universe_dir, binding.activity_id,
-                                         "req-1", "asked")
-                router = _LaunchRecorder()
-                asyncio.run(adapter.infer(router=router, prompt="p", system="",
-                                          config=config, context=context, observer=None,
-                                          kind=kind))
+            binding = adapter.activity_binding
+            agent_activities.wait_on(binding.universe_dir, binding.activity_id,
+                                     "req-1", "asked")
+            router = _LaunchRecorder()
+            asyncio.run(adapter.infer(router=router, prompt="p", system="",
+                                      config=config, context=context, observer=None,
+                                      kind=kind))
         except ActivityYielded:
-            return kind != "native_agent" or killed == [True]
+            return True
         except Exception:  # noqa: BLE001 - anything else is not a clean stop
             return False
         return False
@@ -329,16 +324,6 @@ def _assert_refused_for_agent_turns(kind):
         assert _ineligibility(connection, model, policy, interaction, explicit=False) == (
             "executor_unsupported", "")
         return
-    from tinyassets.exceptions import ProviderAuthorityHeldError
-    from tinyassets.providers.model_policy import ModelRef
-    from tinyassets.providers.ollama_provider import OllamaProvider
-    from tinyassets.providers.router import ProviderRouter
-
-    provider = OllamaProvider()
-    assert getattr(provider, "agent_execution_kind", None) is None
-    router = ProviderRouter({provider.name: provider})
-    with pytest.raises(ProviderAuthorityHeldError):
-        router.selected_agent_execution_kind(ModelRef(provider.name, "any"))
 
 
 def test_the_definition_is_the_route_s_four_tools():

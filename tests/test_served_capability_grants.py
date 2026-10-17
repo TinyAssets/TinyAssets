@@ -43,16 +43,12 @@ def test_four_visible_tools_keep_ta_catalog_and_connection_grant(tmp_path, monke
     assert calls == ["write_graph"]
 
 
-def test_native_node_denials_do_not_depend_on_visible_registry(monkeypatch):
+def test_node_grant_does_not_depend_on_visible_registry(monkeypatch):
     from tinyassets.providers.base import ModelConfig
     from tinyassets.shared_self import _granted_config
 
     monkeypatch.setattr(subject, "SERVED_ENGINE_MCP_TOOLS", subject.FOUR_MODEL_TOOLS)
-    config = _granted_config(ModelConfig(allowed_tools=(
-        "mcp__tinyassets__read_graph", "mcp__tinyassets__write_graph",
-    )), {"tools_allowed": ["agent", "read_graph", "bash"]})
-    assert config.allowed_tools == ("mcp__tinyassets__read_graph",)
-    assert "mcp__tinyassets__write_graph" in config.disallowed_tools
+    config = _granted_config(ModelConfig(), {"tools_allowed": ["agent", "read_graph", "bash"]})
     assert config.engine_tool_grant == ("read_graph", "bash")
 
 

@@ -1,34 +1,4 @@
-"""Long-lived agent sessions: one continuing native session per thread or agent node.
-
-Founder, 2026-10-01: the universe agent should keep working like Claude Code,
-not start over on every message. Before this, every served turn was a fresh
-``--ephemeral`` process that saw a 20-message, 7,000-character text summary of
-the conversation and none of its own earlier tool calls or results, and every
-background wake rebuilt that same context from scratch (change
-``universe-agent-harness``, design §2).
-
-A *session* is keyed by what it continues: the founder's conversation thread
-(``thread:<principal>``) or one agent node (``node:<node key>``). An adapter
-that can resume declares ``native_resume`` and keeps its native session files
-under :func:`native_store`; this module only remembers which native session a
-key is on, so the next turn of the same key resumes it and sends just the new
-input. No vendor is named here: the handle is opaque to the platform.
-
-Two stores, kept apart on purpose:
-
-* The **record** (which native session a key is on) and its lock live in the
-  data root's ``.agent-sessions/<universe>/``, outside every universe folder.
-  No jail of any kind binds it, so no process the universe runs can plant a link
-  or a file the daemon then writes through or trusts (gpt-6-astra refute of
-  S1: a workflow provider jail binds the universe read-write, ``.runtime``
-  included).
-* The **native session files** must be visible to the adapter, so they live in
-  the universe's ``.runtime/agent-sessions/native/<adapter>/``. Every component
-  is created and opened without following a link, the daemon only ever
-  checks whether a file exists there (never following a link while walking),
-  and the provider jail refuses a bind whose source resolves outside the
-  universe.
-"""
+"""Persistent conversation progress and locking for each thread or agent node."""
 
 from __future__ import annotations
 

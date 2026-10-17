@@ -77,77 +77,20 @@ def _served_context(
     tmp_path,
     *,
     capability_owner: str = "owner-1",
-    path_backed: bool = False,
 ):
+    from tests.support.http_model import seed_http_assignment
     from tinyassets.auth.middleware import (
         claim_provider_request,
         mint_provider_request_carrier,
         reserve_provider_request,
     )
-    from tinyassets.commons_catalog import create_binding, publish_definition
     from tinyassets.config import load_universe_config
-    from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.daemon_server import set_founder_home
-    from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
-
+    from tinyassets.provider_serving_binding import resolve_serving_agent_binding
+    seed_http_assignment(tmp_path, owner_user_id="owner-1", universe_id="u-owner")
     universe_dir = tmp_path / "u-owner"
-    universe_dir.mkdir()
-    set_founder_home(tmp_path, founder_sub="owner-1", universe_id="u-owner",
-                     platform_generated=True)
-    credential = {
-        "credential_type": "llm_subscription",
-        "service": "codex",
-        "auth_json_b64": "e30=",
-    }
-    if path_backed:
-        from tinyassets.credential_vault import _prepare_credential_root
-
-        # Path-backed material lives in the platform custody root outside the
-        # owner's box; the record names it by its center-relative path.
-        auth_home = _prepare_credential_root(universe_dir) / "codex-auth"
-        auth_home.mkdir()
-        (auth_home / "auth.json").write_bytes(b'{"tokens":{"access_token":"first"}}')
-        credential = {
-            "credential_type": "llm_subscription",
-            "service": "codex",
-            "codex_home": str(universe_dir / "codex-auth"),
-        }
-    write_credential_vault(
-        universe_dir,
-        [credential],
-        owner_user_id="owner-1",
-        universe_id="u-owner",
+    serving = resolve_serving_agent_binding(
+        tmp_path, universe_id="u-owner", owner_user_id="owner-1",
     )
-    definition = publish_definition(
-        tmp_path,
-        author_id="owner-1",
-        payload=_definition(),
-    )
-    agent = create_binding(
-        tmp_path,
-        universe_id="u-owner",
-        definition_id=definition["agent_definition_id"],
-        created_by="owner-1",
-        payload=_binding(),
-    )
-    connected = bind_serving_provider(
-        base_path=tmp_path,
-        universe_dir=universe_dir,
-        owner_user_id="owner-1",
-        universe_id="u-owner",
-        agent_binding_id=agent["agent_binding_id"],
-        expected_revision=1,
-        provider="codex",
-    )
-    serving = set_serving(
-        base_path=tmp_path,
-        universe_dir=universe_dir,
-        owner_user_id="owner-1",
-        universe_id="u-owner",
-        agent_binding_id=agent["agent_binding_id"],
-        expected_revision=connected["agent_binding"]["revision"],
-        enabled=True,
-    )["agent_binding"]
     reserve = reserve_provider_request(
         principal_id=capability_owner,
         session_id="session-1",
@@ -410,3 +353,13 @@ def test_finalize_tolerates_row_already_reconciled(tmp_path):
 
 
 
+
+
+def recording_router(monkeypatch, provider):
+    """Keep real authority checks and replace only the HTTP transport executor."""
+    from tests.support.http_model import provider_name
+    from tinyassets.providers.router import ProviderRouter
+    provider.name = provider_name("owner-1", "u-owner")
+    monkeypatch.setattr("tinyassets.providers.provider_resolver.provider_for_definition",
+                        lambda definition: provider)
+    return ProviderRouter({provider.name: provider})

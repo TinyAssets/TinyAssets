@@ -49,8 +49,7 @@ PROTOCOLS = _HTTP_PROTOCOLS
 
 _STORE_FILENAME = "provider_definitions.json"
 
-# ``ref`` grammar: bounded ASCII, no whitespace/control. Covers both a provider
-# name (codex / claude-code) and a ConnectionLedger connection id (http_<hex>).
+# ``ref`` grammar: bounded ASCII, no whitespace/control; a connection grant id.
 _REF_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{1,190}$")
 # ``model`` is provider-defined free text but bounded and single-line.
 _MAX_MODEL_CHARS = 200

@@ -192,7 +192,7 @@ def http_deposit_refusal(
         return "incomplete_request"
     conn = sqlite3.connect(db_path(universe.parent), isolation_level=None)
     try:
-        _ensure_llm_deposit_owner_schema(conn)
+        _ensure_credential_owner_schema(conn)
         rows = conn.execute(
             "SELECT service, owner_user_id FROM llm_credential_deposit_owners "
             "WHERE universe_id = ?",
@@ -662,7 +662,7 @@ def _write_credential_vault_locked(
         # The records THIS call is depositing (pre-merge). Ownership is claimed
         # only for these — never for untouched records already in the vault.
         incoming_records = _records_from_payload(credentials)
-        _ensure_llm_deposit_owner_schema(conn)
+        _ensure_credential_owner_schema(conn)
         if owner:
             existing = conn.execute(
                 """
@@ -814,7 +814,7 @@ def _canonical_digest(value: object) -> str:
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _ensure_llm_deposit_owner_schema(conn: sqlite3.Connection) -> None:
+def _ensure_credential_owner_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS llm_credential_deposit_owners (

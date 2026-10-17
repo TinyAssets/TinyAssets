@@ -9,6 +9,7 @@ import pytest
 
 import tinyassets.platform_runtime_provenance as platform_runtime_provenance
 from tests.inference_usage_helpers import accounting_resolver
+from tests.support.http_model import HTTP_PROVIDER
 from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
@@ -65,7 +66,7 @@ def _module_local_cloud_admission(monkeypatch):
 
 
 class _CountingProvider(BaseProvider):
-    def __init__(self, name: str = "codex", after_call=None) -> None:
+    def __init__(self, name: str = HTTP_PROVIDER, after_call=None) -> None:
         self.name = name
         self.family = name
         self.calls: list[ModelConfig] = []
@@ -118,7 +119,7 @@ class _OpenProxy:
 def available_native_executors(monkeypatch):
     """Only the executor is synthetic; readiness and custody stay real."""
     router = ProviderRouter({name: _CountingProvider(name)
-                             for name in ("codex", "claude-code")})
+                             for name in (HTTP_PROVIDER, "synthetic-other")})
     monkeypatch.setattr("tinyassets.providers.call.get_provider_router", lambda: router)
     return router
 
@@ -127,7 +128,7 @@ def _branch(
     *,
     node_count: int,
     author: str = "acct_alice",
-    provider: str = "codex",
+    provider: str = HTTP_PROVIDER,
 ) -> BranchDefinition:
     nodes = [
         NodeDefinition(
@@ -163,199 +164,12 @@ def _branch(
     )
 
 
-def _seed_serving_assignment(
-    base_path: Path,
-    *,
-    owner_user_id: str = "acct_alice",
-    universe_id: str = "universe_alice",
-    model_access=None,
-    services=("codex",),
-) -> None:
-    from tinyassets.commons_catalog import create_binding, publish_definition
-    from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
-
-    universe_dir = base_path / universe_id
-    universe_dir.mkdir(exist_ok=True)
-    (universe_dir / "config.yaml").write_text(
-        "preferred_writer: codex\nallowed_providers:\n  - codex\n",
-        encoding="utf-8",
-    )
-    write_credential_vault(
-        universe_dir,
-        [
-            {
-                "credential_type": "llm_subscription",
-                "service": service,
-                **({"auth_json_b64": "e30="} if service == "codex"
-                   else {"oauth_token": "synthetic-claude-test-only"}),
-            }
-            for service in services
-        ],
-        owner_user_id=owner_user_id,
-        universe_id=universe_id,
-    )
-    definition = publish_definition(
-        base_path,
-        author_id=owner_user_id,
-        payload={
-            "schema_version": 1,
-            "name": "Foreground agent",
-            "description": "Serves foreground Branch runs.",
-            "tags": ["test"],
-            "components": {"identity": {"kind": "soul", "config": {}}},
-        },
-    )
-    agent = create_binding(
-        base_path,
-        universe_id=universe_id,
-        definition_id=definition["agent_definition_id"],
-        created_by=owner_user_id,
-        payload={"schema_version": 1, "name": "Foreground agent", "role": "writer"},
-    )
-    connected = bind_serving_provider(
-        base_path=base_path,
-        universe_dir=universe_dir,
-        owner_user_id=owner_user_id,
-        universe_id=universe_id,
-        agent_binding_id=agent["agent_binding_id"],
-        expected_revision=1,
-        provider="codex",
-        model_access=model_access,
-    )
-    set_serving(
-        base_path=base_path,
-        universe_dir=universe_dir,
-        owner_user_id=owner_user_id,
-        universe_id=universe_id,
-        agent_binding_id=agent["agent_binding_id"],
-        expected_revision=connected["agent_binding"]["revision"],
-        enabled=True,
-    )
 
 
-def _seed_open_serving_assignment(
-    base_path: Path,
-    monkeypatch,
-    *,
-    owner_user_id: str = "acct_alice",
-    universe_id: str = "universe_alice",
-    select_for_serving: bool = True,
-    model_access=None,
-    model="synthetic-model",
-    host="api.example.com",
-) -> str:
-    """Select one synthetic owner-bound HTTP provider for foreground runs."""
-    from tests.support.broker_double import seed_owner_admission
-    from tinyassets.commons_catalog import create_binding, publish_definition
-    from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
-    from tinyassets.providers.definition import register_definition
-    from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
-
+def _seed_open_serving_assignment(base_path, monkeypatch, **kwargs):
+    from tests.support.http_model import seed_http_assignment
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base_path))
-    seed_owner_admission(base_path, principal=owner_user_id, center=universe_id)
-    universe_dir = base_path / universe_id
-    universe_dir.mkdir(exist_ok=True)
-    connection_id = "http_" + "b" * 32
-    grant_id = "http_grant_" + "a" * 32
-    ledger = ConnectionLedger(
-        base_path / ".broker" / "outbound.db", data_root=base_path,
-        verify_authenticated_principal=lambda: owner_user_id,
-    )
-    ledger.create_connection(
-        connection_id=connection_id,
-        owner_user_id=owner_user_id,
-        connection_class="http",
-        connection_type="http",
-        auth_scheme="bearer",
-        scopes=("POST",) if model_access is None else ("GET", "POST"),
-        provider="http",
-        destination="compute:synthetic",
-        credential_ref="vault://http/compute:synthetic",
-        allowed_endpoints=[{
-            "host": host,
-            "path_template": "/v1/chat/completions",
-            "methods": ["POST"],
-        }] + ([{
-            "host": host, "path_template": "/api/v1/models/user", "methods": ["GET"],
-            "allowed_query": ["output_modalities"], "required_query": ["output_modalities"],
-            "query_patterns": {"output_modalities": "^all$"},
-        }] if model_access is not None else []),
-    )
-    ledger.grant_connection(
-        grant_id=grant_id,
-        connection_id=connection_id,
-        owner_user_id=owner_user_id,
-        universe_id=universe_id,
-        unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
-    )
-    definition = register_definition(
-        universe_id=universe_id,
-        owner_user_id=owner_user_id,
-        access_method="api_key_http",
-        protocol="openai_chat",
-        model=model,
-        ref=grant_id,
-    )
-    if model_access is not None:
-        ledger.configure_capability(
-            connection_id=connection_id, capability_kind="model_discovery", enabled=True,
-            descriptor={"protocol": "openrouter_user_models_v1",
-                        "catalogue_url": "https://api.example.com/api/v1/models/user?output_modalities=all",
-                        "benchmark_url": ""},
-            expected_grant=ledger.get_grant(grant_id),
-        )
-    else:
-        ledger.configure_capability(
-            connection_id=connection_id, capability_kind="model_use", enabled=True,
-            descriptor={
-                "wire": "openai_chat", "billing": "free",
-                "models": [{"id": model, "tools": True, "context": 8192}],
-            },
-        )
-    published = publish_definition(
-        base_path,
-        author_id=owner_user_id,
-        payload={
-            "schema_version": 1,
-            "name": "Foreground open-provider agent",
-            "description": "Synthetic foreground-run authority fixture.",
-            "tags": ["test"],
-            "components": {"identity": {"kind": "soul", "config": {}}},
-        },
-    )
-    agent = create_binding(
-        base_path,
-        universe_id=universe_id,
-        definition_id=published["agent_definition_id"],
-        created_by=owner_user_id,
-        payload={
-            "schema_version": 1,
-            "name": "Foreground open-provider agent",
-            "role": "writer",
-        },
-    )
-    if select_for_serving:
-        connected = bind_serving_provider(
-            base_path=base_path,
-            universe_dir=universe_dir,
-            owner_user_id=owner_user_id,
-            universe_id=universe_id,
-            agent_binding_id=agent["agent_binding_id"],
-            expected_revision=1,
-            provider=definition.id,
-            model_access=None if model_access is None else {definition.id: model_access},
-        )
-        set_serving(
-            base_path=base_path,
-            universe_dir=universe_dir,
-            owner_user_id=owner_user_id,
-            universe_id=universe_id,
-            agent_binding_id=agent["agent_binding_id"],
-            expected_revision=connected["agent_binding"]["revision"],
-            enabled=True,
-        )
-    return f"api_key_http:{definition.id}"
+    return seed_http_assignment(base_path, **kwargs)
 
 
 def _run_branch(
@@ -365,12 +179,11 @@ def _run_branch(
     branch: BranchDefinition,
     *,
     authority_case: str = "active",
-    open_provider: bool = False,
+    open_provider: bool = True,
     open_model: str = "synthetic-model",
     open_host: str = "api.example.com",
     open_router_resolution_refusal: bool = False,
     model_access=None,
-    services=("codex",),
     after_provider_call=None,
     on_active_session=None,
 ) -> tuple[dict[str, Any], _CountingProvider, dict[str, Any]]:
@@ -390,39 +203,25 @@ def _run_branch(
     )
     universe_dir = tmp_path / "universe_alice"
     universe_dir.mkdir(exist_ok=True)
-    selected_provider = "codex"
-    providers = {
-        name: _CountingProvider(name, after_provider_call)
-        for name in ("claude-code" if service == "claude" else service for service in services)
-    }
-    provider_router = ProviderRouter(providers)
-    # Readiness must see the same simulated executors used by the run, not
-    # whichever native CLIs happen to be installed on the test host.
+    selected_provider = HTTP_PROVIDER
+    provider_router = ProviderRouter({})
     monkeypatch.setattr(call_module, "get_provider_router", lambda: provider_router)
     if authority_case != "missing":
-        if open_provider:
-            selected_provider = _seed_open_serving_assignment(
-                tmp_path,
-                monkeypatch,
-                select_for_serving=authority_case != "registered_only",
-                model_access=model_access, model=open_model, host=open_host,
-            )
-        else:
-            _seed_serving_assignment(tmp_path, model_access=model_access, services=services)
-    provider_names = (
-        [selected_provider] if open_provider
-        else ["claude-code" if service == "claude" else service for service in services]
-    )
+        selected_provider = _seed_open_serving_assignment(
+            tmp_path, monkeypatch,
+            select_for_serving=authority_case != "registered_only",
+            model_access=model_access, model=open_model, host=open_host,
+        )
+    provider_names = [selected_provider]
     (universe_dir / "config.yaml").write_text(
         f"preferred_writer: {selected_provider}\n"
         "allowed_providers:\n" + "".join(f"  - {name}\n" for name in provider_names),
         encoding="utf-8",
     )
-    if open_provider:
-        for node in branch.node_defs:
-            node.llm_policy = dict(node.llm_policy or {})
-            node.llm_policy["preferred"] = dict(node.llm_policy.get("preferred") or {})
-            node.llm_policy["preferred"]["provider"] = selected_provider
+    for node in branch.node_defs:
+        node.llm_policy = dict(node.llm_policy or {})
+        node.llm_policy["preferred"] = dict(node.llm_policy.get("preferred") or {})
+        node.llm_policy["preferred"]["provider"] = selected_provider
     save_branch_definition(tmp_path, branch_def=branch.to_dict())
     if authority_case == "home_rebound":
         set_founder_home(
@@ -481,9 +280,8 @@ def _run_branch(
         lambda output: captured["effects"].append((output,)),
     )
 
-    if open_provider:
-        providers = {name: _CountingProvider(name, after_provider_call) for name in provider_names}
-        provider_router = ProviderRouter(providers)
+    providers = {name: _CountingProvider(name, after_provider_call) for name in provider_names}
+    provider_router = ProviderRouter(providers)
     provider = providers[selected_provider]
     captured["providers"] = providers
     captured["router"] = provider_router
@@ -583,15 +381,10 @@ def test_foreground_run_launches_selected_open_provider_and_settles_once(
     from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 
     proxy = _OpenProxy()
-    snapshot_calls: list[object] = []
     monkeypatch.setattr(
         ApiKeyHttpProvider,
         "_resolve_proxy",
         accounting_resolver(lambda _self, **_kwargs: proxy),
-    )
-    monkeypatch.setattr(
-        "tinyassets.credential_vault.snapshot_llm_subscription_credential",
-        lambda **kwargs: snapshot_calls.append(kwargs),
     )
     response, substituted_provider, _captured = _run_branch(
         tmp_path,
@@ -603,7 +396,6 @@ def test_foreground_run_launches_selected_open_provider_and_settles_once(
 
     assert response["terminal_status"] == "completed", response["terminal_error"]
     assert substituted_provider.calls == []
-    assert snapshot_calls == []
     assert len(proxy.calls) == 1
     verb, wire = proxy.calls[0]
     assert verb == "POST"

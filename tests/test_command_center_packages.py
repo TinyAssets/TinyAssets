@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.support.http_model import provider_name
 from tests.test_automations import (
     OWNER,
     UNIVERSE,
@@ -85,30 +86,9 @@ MEMORY = "# Memory\n- [m_pub] Prefers short summaries\n- [m_priv] Alice's bank i
 
 
 def _seed_bob_serving(base: Path) -> None:
-    """Bob's OWN connected model: his installed copies run on it, never Alice's."""
-    from tinyassets.commons_catalog import create_binding, publish_definition
-    from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
-
-    folder = base / BOB_UNIVERSE
-    folder.mkdir(exist_ok=True)
-    write_credential_vault(
-        folder, [{"credential_type": "llm_subscription", "service": "codex",
-                  "auth_json_b64": "e30="}],
-        owner_user_id=BOB, universe_id=BOB_UNIVERSE)
-    definition = publish_definition(base, author_id=BOB, payload={
-        "schema_version": 1, "name": "Bob's agent", "description": "",
-        "tags": ["test"], "components": {"identity": {"kind": "soul", "config": {}}}})
-    agent = create_binding(
-        base, universe_id=BOB_UNIVERSE, definition_id=definition["agent_definition_id"],
-        created_by=BOB, payload={"schema_version": 1, "name": "Bob's agent", "role": "writer"})
-    connected = bind_serving_provider(
-        base_path=base, universe_dir=folder, owner_user_id=BOB, universe_id=BOB_UNIVERSE,
-        agent_binding_id=agent["agent_binding_id"], expected_revision=1, provider="codex")
-    set_serving(
-        base_path=base, universe_dir=folder, owner_user_id=BOB, universe_id=BOB_UNIVERSE,
-        agent_binding_id=agent["agent_binding_id"],
-        expected_revision=connected["agent_binding"]["revision"], enabled=True)
+    """Bob's own HTTP grant runs his installed copies."""
+    from tests.support.http_model import seed_http_assignment
+    seed_http_assignment(base, universe_id=BOB_UNIVERSE, owner_user_id=BOB)
 
 
 @pytest.fixture
@@ -464,7 +444,7 @@ def test_bob_finds_installs_and_runs_alices_village(home: Path):
     assert not resumed.get("error"), resumed
     beat = AutomationStore(home).get(beat.automation_id)
     fake = _CountingProvider()
-    with _real_providers(codex=fake):
+    with _real_providers(**{provider_name(BOB, BOB_UNIVERSE): fake}):
         outcome = run_due_automation(home, beat, "2026-10-01T12:05:00+00:00")
     run_id = str(outcome).rsplit(":", 1)[-1]
     wait_for(run_id, timeout=30)

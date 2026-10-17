@@ -5,7 +5,6 @@ import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager, nullcontext
-from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -298,45 +297,10 @@ def _live_activity_adapter(tmp_path, *, name, with_binding=True):
     return adapter, config, context, authorized
 
 
-def _stage_native_switch(adapter, context):
-    """Round two of the same turn, with the order now offering a native candidate."""
-    adapter.initial_pending = False
-    adapter._staged_next = _NATIVE_NEXT
-    return replace(context, model_selection=_NATIVE_NEXT)
 
 
-def test_activity_run_launches_a_native_first_selection(tmp_path):
-    # One agent definition: an activity runs on any executor. The yield fence
-    # is the engine route's (test_activity_fence.py), not an executor refusal.
-    adapter, config, context, authorized = _live_activity_adapter(
-        tmp_path, name="u-native-first",
-    )
-    router = _LaunchRecorder()
-    response = asyncio.run(adapter.infer(
-        router=router, prompt="p", system="", config=config, context=context,
-        observer=None, kind="native_agent",
-    ))
-    assert response.text == "launched"
-    assert router.launches == [("writer", "native_agent")]
-    assert not adapter.initial_pending
 
 
-def test_activity_run_launches_a_native_mid_turn_switch(tmp_path):
-    adapter, config, context, authorized = _live_activity_adapter(
-        tmp_path, name="u-native-switch",
-    )
-    router = _LaunchRecorder()
-    # ``infer`` runs every round: a turn that started on engine inference may
-    # move onto a native candidate, through the normal staged-candidate gate.
-    switched = _stage_native_switch(adapter, context)
-    asyncio.run(adapter.infer(
-        router=router, prompt="p", system="", config=config, context=switched,
-        observer=None, kind="native_agent",
-    ))
-    assert router.launches == [("writer", "native_agent")]
-    assert authorized == [{"provider": _NATIVE_NEXT.connection_id,
-                           "model_id": _NATIVE_NEXT.model_id}]
-    assert adapter.selection == _NATIVE_NEXT
 
 
 def test_activity_run_still_launches_engine_inference(tmp_path):
@@ -350,75 +314,7 @@ def test_activity_run_still_launches_engine_inference(tmp_path):
     assert router.launches == [("writer", "engine_inference")]
 
 
-@pytest.mark.parametrize("mid_turn", [False, True])
-def test_a_non_activity_run_still_launches_native(tmp_path, mid_turn):
-    """Activity or not, a native round launches the same way."""
-    adapter, config, context, _ = _live_activity_adapter(
-        tmp_path, name=f"u-native-chat-{int(mid_turn)}", with_binding=False,
-    )
-    router = _LaunchRecorder()
-    if mid_turn:
-        context = _stage_native_switch(adapter, context)
-    response = asyncio.run(adapter.infer(
-        router=router, prompt="p", system="", config=config, context=context,
-        observer=None, kind="native_agent",
-    ))
-    assert response.text == "launched"
-    assert router.launches == [("writer", "native_agent")]
 
 
-@pytest.mark.parametrize("stop", ["yield", "pause", "stop"])
-def test_a_native_activity_call_ends_when_its_activity_stops(tmp_path, stop):
-    """A native agent's tool loop is one provider call: once the activity
-    yields, pauses or stops, that call is cancelled -- its process family
-    ended and its seat released by the provider and router -- where an HTTP
-    turn would not start another round."""
-    adapter, config, context, _ = _live_activity_adapter(tmp_path, name=f"u-native-{stop}")
-    binding = adapter.activity_binding
-    cancelled = []
-
-    class NativeRouter:
-        async def call(self, role, prompt, system, config, **kwargs):
-            assert kwargs["_agent_execution_kind"] == "native_agent"
-            try:
-                await asyncio.Event().wait()      # a tool loop that does not end itself
-            except asyncio.CancelledError:
-                cancelled.append(role)
-                raise
-
-    async def go():
-        task = asyncio.ensure_future(adapter.infer(
-            router=NativeRouter(), prompt="p", system="", config=config, context=context,
-            observer=None, kind="native_agent",
-        ))
-        await asyncio.sleep(0.3)
-        assert not task.done(), "a running activity keeps its native call"
-        if stop == "yield":
-            agent_activities.wait_on(binding.universe_dir, binding.activity_id, "req-1", "asked")
-        else:
-            agent_activities.transition(
-                binding.universe_dir, binding.activity_id,
-                agent_activities.PAUSED if stop == "pause" else agent_activities.COMPLETED,
-                generation=binding.generation)
-        await asyncio.wait_for(task, timeout=5)      # bounded: cancelled, not waited out
-
-    expected = activity_runner.ActivityYielded if stop == "yield" else PermissionError
-    with pytest.raises(expected):
-        asyncio.run(go())
-    assert cancelled == ["writer"]
 
 
-def test_a_native_call_that_finished_as_its_activity_stopped_keeps_its_answer(tmp_path):
-    adapter, config, context, _ = _live_activity_adapter(tmp_path, name="u-native-same")
-    binding = adapter.activity_binding
-
-    class AnswersThenYields:
-        async def call(self, role, prompt, system, config, **kwargs):
-            agent_activities.wait_on(binding.universe_dir, binding.activity_id, "req-1", "asked")
-            return ProviderResponse("final words", "owned-http", "some-model", "test", 0)
-
-    response = asyncio.run(adapter.infer(
-        router=AnswersThenYields(), prompt="p", system="", config=config, context=context,
-        observer=None, kind="native_agent",
-    ))
-    assert response.text == "final words"

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.owner_answer import answer_request
+from tests.support.http_model import provider_name
 from tests.test_provider_serving_binding import _seed_universe
 from tinyassets.api import pending_requests as requests
 from tinyassets.auth.middleware import identity_context
@@ -14,6 +15,8 @@ from tinyassets.auth.provider import Identity
 from tinyassets.provider_assignment import load_provider_assignment
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.storage.pending_requests import get_request
+
+SOURCE = provider_name("owner-1", "u-owner")
 
 
 @pytest.fixture
@@ -28,7 +31,7 @@ def rig(tmp_path, monkeypatch):
     # Exercise real assignment/custody/readiness logic with a deterministic
     # executor boundary, not whichever subscription CLI the test host installed.
     monkeypatch.setattr("tinyassets.providers.call.get_provider_router", lambda: SimpleNamespace(
-        _providers={"codex": SimpleNamespace(is_available=lambda: True)},
+        _providers={SOURCE: SimpleNamespace(is_available=lambda: True)},
     ))
     return tmp_path, universe, binding
 
@@ -41,12 +44,12 @@ def owner():
 
 def ask(rig, **changes):
     action = {"type": "bind_model_access", "agent_binding_id": rig[2]["agent_binding_id"],
-              "expected_revision": rig[2]["revision"], "provider": "codex",
-              "model_access": {"codex": ModelAccess("explicit", ("",)).document()}}
+              "expected_revision": rig[2]["revision"], "provider": SOURCE,
+              "model_access": {SOURCE: ModelAccess("explicit", ("synthetic-model",)).document()}}
     action.update(changes)
     with owner():
         return requests.request_from_user(universe_id="u-owner", payload={
-            "kind": "Models", "title": "Choose models", "body": "Use my connected subscription",
+            "kind": "Models", "title": "Choose models", "body": "Use my connected HTTP model",
             "action": action, "fields": [],
         })
 
@@ -69,22 +72,9 @@ def test_model_request_is_non_authorizing_until_owner_answers(rig):
     assert get_request(rig[1], row["request_id"])["status"] == "answered"
     assignment = load_provider_assignment(rig[0], universe_id="u-owner")
     assert assignment.state == "ready" and assignment.generation == 1
-    assert assignment.candidates[0].access == ModelAccess("explicit", ("",))
+    assert assignment.candidates[0].access == ModelAccess("explicit", ("synthetic-model",))
 
 
-@pytest.mark.parametrize("router", [None, SimpleNamespace(_providers={}),
-    SimpleNamespace(_providers={"codex": SimpleNamespace(is_available=lambda: False)})])
-def test_missing_executor_keeps_approved_setup_pending(rig, monkeypatch, router):
-    from tinyassets.commons_catalog import get_binding
-
-    monkeypatch.setattr("tinyassets.providers.call.get_provider_router", lambda: router)
-    row = ask(rig)
-    result = answer(row)
-    assert result["error"] == "provider_authority_denied", result
-    assert get_request(rig[1], row["request_id"])["status"] == "pending"
-    assert load_provider_assignment(rig[0], universe_id="u-owner").state == "ready"
-    binding = get_binding(rig[0], universe_id="u-owner", binding_id=rig[2]["agent_binding_id"])
-    assert binding["status"] != "serving"
 
 
 @pytest.mark.parametrize("change", [
@@ -98,7 +88,7 @@ def test_invalid_model_setup_is_refused_before_raising_a_tab(rig, change):
 
 
 def test_invalid_model_document_explains_the_exact_schema(rig):
-    result = ask(rig, model_access={"codex": {"models": ["gpt-6-astra"]}})
+    result = ask(rig, model_access={SOURCE: {"models": ["gpt-6-astra"]}})
     assert result["error"] == "request_invalid"
     message = result["detail"]
     for expected in ("model_scope", "model_ids", "cost_caps", "explicit", "discovered"):
@@ -113,7 +103,7 @@ def test_invalid_model_document_explains_the_exact_schema(rig):
     {"model_scope": "explicit", "model_ids": ["gpt-6-astra"], "cost_caps": {"tokens": True}},
 ])
 def test_document_guidance_does_not_relax_validation(rig, document):
-    assert ask(rig, model_access={"codex": document})["error"] == "request_invalid"
+    assert ask(rig, model_access={SOURCE: document})["error"] == "request_invalid"
     assert load_provider_assignment(rig[0], universe_id="u-owner") is None
 
 
@@ -247,7 +237,7 @@ def test_another_binding_cannot_replace_the_assignment_under_an_old_ask(rig):
                            payload={"schema_version": 1, "name": "Other agent", "role": "writer"})
     bind_serving_provider(base_path=rig[0], universe_dir=rig[1], universe_id="u-owner",
                           owner_user_id="owner-1", agent_binding_id=other["agent_binding_id"],
-                          expected_revision=1, provider="codex")
+                          expected_revision=1, provider=SOURCE)
     before = load_provider_assignment(rig[0], universe_id="u-owner")
     assert answer(row)["error"] == "provider_authority_denied"
     assert load_provider_assignment(rig[0], universe_id="u-owner") == before
@@ -271,14 +261,14 @@ def test_model_setup_does_not_change_existing_spending_ceilings(rig):
     existing = ModelAccess("explicit", ("",), (("input_usd", 3),))
     bound = bind_serving_provider(
         base_path=rig[0], universe_dir=rig[1], universe_id="u-owner", owner_user_id="owner-1",
-        agent_binding_id=rig[2]["agent_binding_id"], expected_revision=1, provider="codex",
-        model_access={"codex": existing},
+        agent_binding_id=rig[2]["agent_binding_id"], expected_revision=1, provider=SOURCE,
+        model_access={SOURCE: existing},
     )
     refused = ask(rig, expected_revision=bound["agent_binding"]["revision"])
     assert refused["error"] == "request_invalid"
     changed = ModelAccess("explicit", ("", "named-model"), existing.cost_caps)
     row = ask(rig, expected_revision=bound["agent_binding"]["revision"],
-              model_access={"codex": changed.document()})
+              model_access={SOURCE: changed.document()})
     assert row["status"] == "pending"
     assert "within spending limits you already set" in row["grant_sentence"]
 

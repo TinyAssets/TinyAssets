@@ -337,7 +337,7 @@ def write_provider_assignment_projection(
         if assignment_candidates is None:
             # Preserve the legacy single-source input contract. Manifest members
             # are validated/resolved upstream, not guessed from names here.
-            _is_canonical = selected in {"claude-code", "codex"} or selected.startswith(
+            _is_canonical = selected.startswith(
                 "api_key_http:"
             )
             if not _is_canonical:

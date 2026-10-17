@@ -998,12 +998,6 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
             "operator surface before running; approval is not exposed by the "
             "advertised handles.",
         )
-    if "exit code" in msg or "subprocess failure" in msg or "api likely unavailable" in msg:
-        return (
-            "provider_subprocess_failed",
-            "Provider CLI process failed; check that claude/codex binary is"
-            " installed and reachable.",
-        )
     if "concurrent" in msg or "conflict" in msg or "modified" in msg or "stale" in msg:
         return (
             "state_mutation_conflict",

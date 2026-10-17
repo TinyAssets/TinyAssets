@@ -33,7 +33,7 @@ def _project(definition: Any) -> dict[str, Any]:
             "provider, select it as the serving provider; a workflow node normally "
             "needs no llm_policy at all and uses whatever the command center serves. To "
             "pin one node to a provider, use the NAME, not this definition_id: "
-            "llm_policy={'preferred': {'provider': 'codex'}}",
+            "llm_policy={'preferred': {'provider': 'api_key_http:provdef_...'}}",
             "interactive tool-using agents can use owned CLI subscriptions or "
             "supported api_key_http models. HTTP agent selection requires "
             "accepted model_access, fresh tool-capable discovery, and enabled "

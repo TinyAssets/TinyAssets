@@ -29,13 +29,10 @@ from tinyassets.capability_health import observed
 from tinyassets.config import load_universe_config
 from tinyassets.persona import read_persona_voice, resolve_persona
 from tinyassets.providers.base import (
-    ACCOUNT_REACH_TOOLS,
-    HOST_REACH_TOOLS,
     ModelConfig,
     UniverseContext,
 )
 from tinyassets.providers.model_call import text_sync
-from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 from tinyassets.soul_edit import (
     SoulEditError,
     apply_soul_edit,
@@ -106,131 +103,6 @@ _HONESTY_FLOOR = (
 )
 
 # ── engine sandbox (2026-07-03 live-test P0) ────────────────────────────────
-# The universe intelligence is founder-facing and MUST NOT inherit the daemon's
-# checkout or keep host tools. The live test showed the un-sandboxed engine read
-# the platform source + uncommitted diff, ran Bash/gh, and cloned repos. Every
-# universe-intelligence call runs isolated: cwd pinned to the universe's own dir,
-# host tools denied.
-#
-# Served turns use only the platform's granted tools. A non-granted turn has
-# no tools on any provider; native web access is not an exception.
-_ENGINE_ALLOWED_TOOLS = ()
-# Defense in depth alongside the provider's empty native-tool inventory.
-_ENGINE_DISALLOWED_TOOLS = (
-    # shell / process execution and filesystem: the one host-reach definition
-    *HOST_REACH_TOOLS,
-    # Native web access is never part of the served agent definition.
-    "WebSearch", "WebFetch",
-    # subagents / skills / plans / deferred-tool loading
-    "Task", "Agent", "Workflow", "Skill", "ToolSearch", "SlashCommand",
-    "TodoWrite", "EnterPlanMode", "ExitPlanMode",
-    "EnterWorktree", "ExitWorktree",
-    # session-local bookkeeping: the turn's own task list and its findings
-    # report, which reports INTO the turn rather than out of it.
-    "ReportFindings",
-    "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
-    # Effects that leave the platform or outlive the turn -- the host's claude.ai
-    # account, the outside world, or a clock. The ONE definition, shared with the
-    # workflow-node denylist so the two cannot drift; it carries the names that
-    # used to be literals here (SendMessage, ScheduleWakeup, PushNotification,
-    # RemoteTrigger, Cron*, DesignSync*). Neither the OS jail nor
-    # --strict-mcp-config bounds these.
-    # Re-checked against the installed CLI 2.1.288 and its changelog for
-    # 2.1.184-2.1.288 (Codex ADAPT 2026-10-03): Artifact, ListAgents,
-    # SendFeedback, ListPlugins and EndConversation are all carried by the
-    # constant, which documents each one.
-    *ACCOUNT_REACH_TOOLS,
-    # MCP: all server tools (wildcard) + resource readers
-    "mcp__*", "ReadMcpResourceTool", "ReadMcpResourceDirTool",
-    "ListMcpResourcesTool",
-)
-
-# ── engine MCP tools (2026-08-13) ───────────────────────────────────────────
-# Founder directive: "all user functions are just mcp functions ... all the same
-# mcp commands whether its through the app or through slack or the browser." When
-# enabled (env flag, FOUNDER turn only), the engine gets a LOCAL, founder-scoped
-# TinyAssets MCP server exposing the same canonical handles the browser chatbot
-# has, acting AS the founder, pinned to its OWN universe (see
-# tinyassets.engine_mcp_server + claude_provider._engine_mcp_flags).
-#
-# Slice 1 = READ handles only (``read_graph`` + ``get_status``): inspection with
-# NO domain mutation / spend / commons blast radius (the status path may touch
-# internal infra sidecars — locks/queue markers — but no domain state or cost),
-# and enough to prove the whole mechanism end-to-end live (identity binding +
-# graph pin + CLI wiring). Both pin cleanly to the universe via their
-# ``graph_id`` / ``universe_id`` parameter, and the founder identity gates reads
-# of a PRIVATE universe.
-#
-# Slice 2 (2026-08-19): ``run_graph`` — run a branch end-to-end (founder-owned OR
-# public; foreign-private refused — NOT author-only), allowlisted + rate-limited;
-# safe execution of a public branch rests on #2498's invoke sanitization.
-#
-# Slice 3 (2026-08-22): the SHARED COMMONS. ``browse_commons`` +
-# ``read_commons_shape`` are READ-ONLY over PUBLIC cross-universe shapes (the
-# existing viewer filter + author gate enforce visibility). ``remix_shape`` forks
-# a public shape into a new PRIVATE branch the founder owns — cross-author
-# executable source approval is STRIPPED on the fork so inherited code carries
-# no forged provenance; it runs in the OS sandbox like any code node (Codex
-# ADAPT 2026-08-22 #2; gate retired by sandboxed-code-node). The writes are allowlisted +
-# rate-limited (fail-closed) like run_graph. This gives the served agent the SAME
-# commons the browser chatbot has, so it stops WebFetching n8n/Make when asked to
-# browse "our" commons.
-#
-# DEFERRED, each gated on the matching cross-family confinement review:
-#   * commons PUBLISH — make a shape public + snapshot a new best version, with
-#     the founder's "same workflow, improved, updated in place" model (founder
-#     2026-08-22). A GLOBAL write; needs a consent gate before an autonomous agent
-#     can publish (Codex ADAPT 2026-08-22 #5). Built + reverted from this slice.
-#   * fork AUTO-TRACK — let a fork opt in to auto-sync when the upstream commons
-#     shape it depends on publishes a new version (founder 2026-08-22). Needs a
-#     dependency-subscription store + a re-fork/sync mechanism.
-#   * ``read_page`` / ``write_page`` — resolve their universe from the founder's
-#     HOME, not a graph_id, and ``write_page scope=commons`` writes the GLOBAL
-#     shared commons; pinning them needs a wiki-root override not yet set.
-#   * ``converse`` — never exposed (a universe relaying to itself is a
-#     recursion / fork bomb).
-# Brain / harness read-write loop (2026-08-22): the agent reads + durably writes
-# its OWN brain (identity/founder/origin/body + name + canon) so the change is in
-# its system prompt next turn. Governed (commit_learning -> apply_soul_edit,
-# soul.edit.md whitelist; soul.md's executable frontmatter excluded), pinned to
-# its own universe, allowlisted + rate-limited. Markdown content, never executed —
-# no #2475 raw-folder RCE. This is the founder's "editable brain / project folder
-# injected into the next turn."
-#
-# remix_shape is intentionally NOT listed yet: it is cross-author (fork a foreign
-# public shape) and gets its own review slice in the served-agent-build-run
-# OpenSpec change. run_graph + write_graph ARE enabled (2026-08-23): the
-# invoke_branch closure is now sanitized (#2498 — delegated child-authority,
-# fail-closed actor, mapping/await confidentiality), so a run reaching a public
-# branch is safe. run_graph is NOT author-only (its resolver admits founder-owned
-# or public; foreign-private is refused) — the sanitization, not an author gate,
-# is what keeps that safe.
-# Served engine-MCP allowlist from the one canonical served_tools.py list.
-_ENGINE_MCP_TOOLS = SERVED_ENGINE_MCP_TOOLS
-_ENGINE_MCP_ALLOWED = tuple(f"mcp__tinyassets__{name}" for name in _ENGINE_MCP_TOOLS)
-# Denylist for an engine-MCP-on turn: identical to the tool-free floor EXCEPT
-# the ``mcp__*`` wildcard is dropped (it would also deny the tinyassets handles).
-# Isolation for the OTHER MCP servers comes from ``--strict-mcp-config`` admitting
-# only the one local server (verified 2026-08-13); the three MCP resource-reader
-# tools stay denied so the surface is EXACTLY the declared handles.
-# ``ToolSearch`` is ALSO dropped, not only ``mcp__*``: claude CLI 2.1.183
-# surfaces MCP-server tools through its DEFERRED-tool mechanism — their schemas
-# are loaded on demand via ``ToolSearch`` — so denying ``ToolSearch`` silently
-# prevents the engine ``mcp__tinyassets__*`` handles from EVER becoming callable.
-# Verified live 2026-08-19: with ``ToolSearch`` in the denylist the served turn
-# sees only ``WebFetch`` + ``AskUserQuestion``; drop it and ``read_graph`` /
-# ``run_graph`` work. Isolation for this turn does NOT rely on denying
-# ``ToolSearch``: ``--strict-mcp-config`` admits ONLY the one local engine server
-# (the ambient claude.ai account connectors are excluded), and every dangerous
-# builtin stays individually denied below — a loaded schema for a denied tool is
-# still not callable. The residual (a NEW CLI builtin not yet in this denylist
-# could be ToolSearch-loaded) is the same denylist-rot this module already
-# tracks; the durable fix remains the OS sandbox.
-_ENGINE_DISALLOWED_TOOLS_WITH_MCP = tuple(
-    t for t in _ENGINE_DISALLOWED_TOOLS if t not in ("mcp__*", "ToolSearch")
-)
-
-
 def _engine_mcp_enabled() -> bool:
     """True when the founder-scoped engine MCP tooling is switched on.
 
@@ -363,20 +235,10 @@ def _sandboxed_config(
     engine_mcp = bool(
         granted and founder_principal and universe_id and _engine_mcp_enabled()
     )
-    if engine_mcp:
-        allowed = _ENGINE_MCP_ALLOWED
-        disallowed = _ENGINE_DISALLOWED_TOOLS_WITH_MCP
-    else:
-        allowed = _ENGINE_ALLOWED_TOOLS
-        disallowed = _ENGINE_DISALLOWED_TOOLS
     return ModelConfig(
         timeout=timeout,
         absolute_cap_s=absolute_cap_s,
         idle_timeout_s=idle_timeout_s,
-        sandbox_workspace=True,
-        sandbox_chat=True,
-        allowed_tools=allowed,
-        disallowed_tools=disallowed,
         engine_mcp_enabled=engine_mcp,
         engine_mcp_actor_id=founder_principal if engine_mcp else "",
         engine_mcp_graph_id=universe_id if engine_mcp else "",
@@ -1515,7 +1377,7 @@ def converse(
 
         turn_config = replace(
             turn_config, engine_mcp_enabled=False, engine_mcp_actor_id="",
-            engine_mcp_graph_id="", allowed_tools=(), engine_tool_grant=None,
+            engine_mcp_graph_id="", engine_tool_grant=None,
             agent_session=None, agent_request=AgentInferenceRequest(tools=(), tool_choice="none"),
         )
         system += (

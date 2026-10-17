@@ -269,7 +269,7 @@ def _open_serving_context(
     definition = get_definition(universe_id, definition_id)
     if definition is None or definition.access_method != "api_key_http":
         raise UnknownServingProvider(
-            "provider must be claude-code, codex, or a registered api_key_http definition_id"
+            "provider must be a registered api_key_http definition_id"
         )
     provider_name = provider_for_definition(definition).name
     if not owner_user_id or definition.owner_user_id != owner_user_id:

@@ -24,38 +24,9 @@ def _binding() -> dict[str, object]:
 
 
 def _seed_universe(tmp_path):
-    from tinyassets.commons_catalog import create_binding, publish_definition
-    from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.daemon_server import set_founder_home
-
-    universe_dir = tmp_path / "u-owner"
-    universe_dir.mkdir()
-    set_founder_home(
-        tmp_path, founder_sub="owner-1", universe_id="u-owner", platform_generated=True,
-    )
-    write_credential_vault(
-        universe_dir,
-        [{
-            "credential_type": "llm_subscription",
-            "service": "codex",
-            "auth_json_b64": "e30=",
-        }],
-        owner_user_id="owner-1",
-        universe_id="u-owner",
-    )
-    definition = publish_definition(
-        tmp_path,
-        author_id="owner-1",
-        payload=_definition(),
-    )
-    binding = create_binding(
-        tmp_path,
-        universe_id="u-owner",
-        definition_id=definition["agent_definition_id"],
-        created_by="owner-1",
-        payload=_binding(),
-    )
-    return universe_dir, binding
+    from tests.support.http_model import seed_http_assignment
+    return seed_http_assignment(tmp_path, owner_user_id="owner-1", universe_id="u-owner",
+                                select_for_serving=False, return_binding=True)
 
 
 

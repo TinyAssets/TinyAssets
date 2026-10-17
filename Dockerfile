@@ -30,8 +30,6 @@ FROM mirror.gcr.io/library/python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093c
 
 ARG TARGETARCH
 ARG NODEJS_VERSION=22.23.3-1nodesource1
-ARG CODEX_CLI_VERSION=0.160.0
-ARG CLAUDE_CODE_CLI_VERSION=2.1.288
 ARG NODESOURCE_REPO_CHECKSUM=b42e0321dabdc24e892115da705cf061167eac12a317f23d329862d0aa0a271d
 ARG RUSTUP_VERSION=1.28.2
 ARG RUSTUP_SHA256_AMD64=20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c
@@ -40,11 +38,7 @@ ARG RUST_TOOLCHAIN=1.85.1
 
 # Native build-deps for lancedb (rust), clingo (cmake), spacy (cython),
 # and general C extensions. Removed from the final image.
-# Node.js 22 LTS via nodesource — Debian's default apt nodejs is too old
-# (Node 12/18) for either CLI. The floor is now @anthropic-ai/claude-code,
-# whose published metadata moved from engines.node >=18.0.0 at 2.1.183 to
-# >=22.0.0 at 2.1.288; @openai/codex asks only for >=16, so 22 serves both.
-# 22 is the current LTS line, and the smallest one that satisfies that floor.
+# Node supports the owner toolchain.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         build-essential \
@@ -122,32 +116,6 @@ RUN set -e; \
     /tmp/rustup-init -y --default-toolchain "${RUST_TOOLCHAIN}" --profile minimal; \
     rm -f /tmp/rustup-init
 
-# Install codex CLI to an explicit prefix so the path is deterministic
-# across distros. npm global prefix under nodesource Debian may be
-# /usr/lib/node_modules (not /usr/local/lib), so we pin to /opt/codex-install
-# — then COPY --from=builder targets a known path.
-#
-# Smoke-test the install via the absolute path. The final-stage image
-# does NOT symlink the bare codex bin to /usr/local/bin; it copies the
-# flock wrapper there instead (see below). Adding the same wrapper in
-# the builder stage would just be dead weight, so we run the binary
-# directly here.
-COPY scripts/codex_cli_smoke.py /tmp/codex_cli_smoke.py
-COPY tinyassets/external_agents/packages/codex/extension.json /tmp/codex-extension.json
-COPY tinyassets/external_agents/catalogue_rewrite.py /tmp/catalogue_rewrite.py
-RUN mkdir -p /opt/codex-install && \
-    npm install --prefix /opt/codex-install "@openai/codex@${CODEX_CLI_VERSION}" && \
-    /opt/codex-install/node_modules/.bin/codex --version && \
-    /opt/codex-install/node_modules/.bin/codex debug models --bundled > /opt/codex-install/bundled-models.json && \
-    python /tmp/codex_cli_smoke.py /opt/codex-install/node_modules/.bin/codex
-
-# Install Claude Code CLI next to Codex. It runs only as a universe's provider
-# child, on that universe's own credentials; the image holds no model login
-# (AGENTS.md Hard Rule 15).
-RUN mkdir -p /opt/claude-code-install && \
-    npm install --prefix /opt/claude-code-install "@anthropic-ai/claude-code@${CLAUDE_CODE_CLI_VERSION}" && \
-    /opt/claude-code-install/node_modules/.bin/claude --version
-
 WORKDIR /build
 
 # Copy project metadata + source so editable install works. Every COPY source
@@ -194,10 +162,6 @@ ARG NODESOURCE_REPO_CHECKSUM=b42e0321dabdc24e892115da705cf061167eac12a317f23d329
 # Runtime-only deps. No build-essential here.
 # libgomp1 is a common transitive native dep for numpy/scipy-backed
 # packages (spacy, lancedb); include it proactively.
-# Node.js 22 LTS via nodesource — same version as builder so the copied
-# codex and claude-code native addons are ABI-compatible. No npm needed at
-# runtime; both module trees are COPY'd from the builder.
-#
 # GitHub CLI (gh) — the github_pull_request effector shells out to
 # `gh pr create` (tinyassets/effectors/github_pr.py). Without gh on the
 # runtime PATH the effector fails with error_kind=gh_not_installed
@@ -261,22 +225,7 @@ RUN set -e; \
 RUN /usr/local/bin/python -m pip install --no-cache-dir "pytest==8.4.2" && \
     /usr/local/bin/python -m pytest --version
 
-# Copy the codex install tree from builder and install the flock
-# wrapper as /usr/local/bin/codex. The wrapper takes an exclusive
-# flock on a sentinel in /app/.codex before exec'ing the real codex
-# binary — required because PR #965 binds the codex auth directory
-# across the daemon + worker containers, and Codex's official CI/CD
-# auth guide forbids sharing one auth.json across concurrent runners
-# without serialization (concurrent refresh attempts race rotation
-# and trigger `refresh_token_reused`). See deploy/codex-flock-wrapper.sh.
-COPY --from=builder /opt/codex-install /opt/codex-install
-COPY --from=builder /opt/claude-code-install /opt/claude-code-install
-COPY deploy/codex-flock-wrapper.sh /usr/local/bin/codex
-RUN chmod 0755 /usr/local/bin/codex && \
-    ln -s /opt/claude-code-install/node_modules/.bin/claude /usr/local/bin/claude && \
-    /usr/local/bin/codex --version && \
-    /usr/local/bin/claude --version && \
-    git --version && rg --version && node --version && python3 --version
+RUN git --version && rg --version && node --version && python3 --version
 
 # Install the drop-first wrapper root-owned 0555 under /usr/local/libexec —
 # OUTSIDE /app and /data; /app stays root-owned and read-only.

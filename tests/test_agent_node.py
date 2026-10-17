@@ -394,20 +394,6 @@ def test_codex_native_turn_enables_only_the_grant(tmp_path, monkeypatch):
     assert enabled(narrowed) == ("bash",)
 
 
-def test_claude_native_turn_denies_what_the_grant_withholds():
-    from tinyassets.providers.base import ModelConfig
-    from tinyassets.shared_self import _granted_config
-    from tinyassets.universe_intelligence import _ENGINE_MCP_ALLOWED
-
-    base = ModelConfig(allowed_tools=("WebFetch",) + _ENGINE_MCP_ALLOWED,
-                       disallowed_tools=("Bash",))
-    assert _granted_config(base, {"tools_allowed": ["agent"]}) is base
-    narrowed = _granted_config(base, {"tools_allowed": ["agent", "read_brain"]})
-    assert narrowed.engine_tool_grant == ("read_brain",)
-    assert narrowed.allowed_tools == ("WebFetch", "mcp__tinyassets__bash")
-    assert "mcp__tinyassets__write_brain" in narrowed.disallowed_tools
-    assert "Bash" in narrowed.disallowed_tools
-    assert "mcp__tinyassets__read_brain" not in narrowed.disallowed_tools
 
 
 # --------------------------------------------------------------------------- #

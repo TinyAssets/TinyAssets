@@ -955,7 +955,8 @@ def _validate_llm_policy_shape(
             "run time (the run then fails with provider_not_bound). Either omit the "
             "policy entirely so the run uses whatever provider your command center serves "
             "- the usual choice - or pin one by NAME as "
-            "{'preferred': {'provider': 'codex'}} (a provdef_... definition id is "
+            "{'preferred': {'provider': 'api_key_http:provdef_...'}} "
+            "(a provdef_... definition id is "
             "not a provider name)."
         )
 

@@ -452,11 +452,7 @@ def _load_deploy_pending(now: float | None = None) -> dict[str, Any]:
 def _active_host_snapshot(
     served_llm_type: str = "",
 ) -> tuple[dict[str, object], bool, list[str], str]:
-    """Return host-wide provider evidence, not the selected model.
-
-    A command center's selected source belongs to model_options; this hint
-    reports only which installed and authenticated host endpoint is available.
-    """
+    """Return host metadata and the generic broker transport label."""
 
     api_key_enabled = api_key_providers_enabled()
     api_key_vars_present = [

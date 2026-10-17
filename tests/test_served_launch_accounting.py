@@ -8,11 +8,10 @@ from dataclasses import replace
 import pytest
 
 from tests.support.model_call import call as model_call
-from tests.test_provider_served_router import _RecordingProvider, _served_context
+from tests.test_provider_served_router import _RecordingProvider, _served_context, recording_router
 from tinyassets.auth import middleware as auth
 from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.provider_admission import ProviderBusy
-from tinyassets.providers.router import ProviderRouter
 
 
 @pytest.mark.parametrize("refusal", ["budget", "slot", "pre-launch"])
@@ -23,7 +22,7 @@ def test_pre_launch_refusal_preserves_request_allowance(tmp_path, monkeypatch, r
     _, _, capability, context = _served_context(tmp_path)
     auth.seal_provider_request_launch_allowance(capability, limit=2)
     provider = _RecordingProvider("codex")
-    router = ProviderRouter({"codex": provider})
+    router = recording_router(monkeypatch, provider)
     original_authorize = assignments.authorize_served_provider_call
 
     def refused(*args, **kwargs):
@@ -75,10 +74,10 @@ def test_pre_launch_refusal_preserves_request_allowance(tmp_path, monkeypatch, r
         auth.revoke_provider_request(capability)
 
 
-def test_sealed_plan_can_launch_more_than_two_without_new_carriers(tmp_path):
+def test_sealed_plan_can_launch_more_than_two_without_new_carriers(tmp_path, monkeypatch):
     _, _, capability, context = _served_context(tmp_path)
     provider = _RecordingProvider("codex")
-    router = ProviderRouter({"codex": provider})
+    router = recording_router(monkeypatch, provider)
     try:
         auth.seal_provider_request_launch_allowance(capability, limit=6)
         for index in range(6):

@@ -176,7 +176,7 @@ def classify_patch_request(
     return {
         "access": {
             "claimable_by": ["free_daemon", "paid_daemon"],
-            "code_writer_gate": "claude_or_codex",
+            "code_writer_gate": "connected_model",
             "checker_gate": "opposite_family_checker",
         },
         "meaning": meaning,

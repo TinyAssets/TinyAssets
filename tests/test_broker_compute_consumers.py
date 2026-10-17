@@ -172,10 +172,13 @@ def test_compute_keeps_usage_reference_and_closes_on_transport_failure(compute, 
     assert closed == [True]
 
 
-def test_router_replaces_caller_principal_with_admitted_serving_owner(tmp_path):
-    from tests.test_provider_served_router import _RecordingProvider, _served_context
+def test_router_replaces_caller_principal_with_admitted_serving_owner(tmp_path, monkeypatch):
+    from tests.test_provider_served_router import (
+        _RecordingProvider,
+        _served_context,
+        recording_router,
+    )
     from tinyassets.auth.middleware import revoke_provider_request
-    from tinyassets.providers.router import ProviderRouter
 
     _, _, capability, context = _served_context(tmp_path)
     seen = []
@@ -185,7 +188,7 @@ def test_router_replaces_caller_principal_with_admitted_serving_owner(tmp_path):
             seen.append(config.invocation_owner_user_id)
             return await super().complete(prompt, system, config, **kwargs)
 
-    router = ProviderRouter(providers={"codex": Capture("codex")})
+    router = recording_router(monkeypatch, Capture("synthetic"))
     from tinyassets.providers.model_call import open_allocation
 
     budget = open_allocation("owner-1", context.universe_dir)
@@ -201,12 +204,15 @@ def test_router_replaces_caller_principal_with_admitted_serving_owner(tmp_path):
 
 
 def test_router_releases_served_reservation_for_broker_admission_outage(tmp_path, monkeypatch):
-    from tests.test_provider_served_router import _RecordingProvider, _served_context
+    from tests.test_provider_served_router import (
+        _RecordingProvider,
+        _served_context,
+        recording_router,
+    )
     from tinyassets import provider_assignment
     from tinyassets.auth.middleware import revoke_provider_request
     from tinyassets.exceptions import AllProvidersExhaustedError
     from tinyassets.providers.definition import ProviderDefinition
-    from tinyassets.providers.router import ProviderRouter
 
     universe, _, capability, context = _served_context(tmp_path)
     definition = ProviderDefinition(
@@ -234,7 +240,7 @@ def test_router_releases_served_reservation_for_broker_admission_outage(tmp_path
                 compute._connection_context(universe, config)
             raise AssertionError("unavailable broker admitted a source")
 
-    router = ProviderRouter(providers={"codex": Outage("codex")})
+    router = recording_router(monkeypatch, Outage("synthetic"))
     from tinyassets.providers.model_call import open_allocation
 
     budget = open_allocation("owner-1", context.universe_dir)

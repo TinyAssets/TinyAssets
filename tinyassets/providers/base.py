@@ -171,75 +171,6 @@ class UniverseContext:
     """
 
 
-#: Claude CLI builtins that reach the host through its filesystem or a shell.
-#: The cross-user boundary is the OS jail every provider launch made for a
-#: universe runs in (``tinyassets.providers.provider_jail``): inside it these
-#: see only the owner's own universe. The deny list stays as a second, narrower
-#: layer on the chat turn and on workflow nodes (they have no use for them).
-#: The ONE definition: the universe engine's denylist starts from it and a
-#: workflow node call denies it (``ModelConfig.workflow_node``).
-HOST_REACH_TOOLS: tuple[str, ...] = (
-    # shell / process execution (Monitor also runs shell commands; PowerShell
-    # is the CLI's shell tool on hosts where it replaces Bash)
-    "Bash", "BashOutput", "KillShell", "Monitor", "PowerShell",
-    # filesystem
-    "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "NotebookRead",
-    "Glob", "Grep", "LS",
-)
-
-#: Claude CLI builtins whose effect leaves the platform or outlives the turn --
-#: the DAEMON HOST'S logged-in claude.ai account, the outside world, or a clock.
-#: Separate from :data:`HOST_REACH_TOOLS` because the boundary is a different
-#: one: these touch nothing on disk and start no shell, so the OS jail does not
-#: bound them, and they are not MCP servers, so ``--strict-mcp-config`` does not
-#: either.
-#:
-#: **Scheduling, push and remote runs belong to the user's own platform-side
-#: automations -- the channels they build -- never to the CLI's account-side
-#: features** (host decision 2026-10-03). A turn that scheduled its own wakeup
-#: or fired its own push would be running work the owner never built and cannot
-#: see, on the host's account rather than theirs.
-#:
-#: Verified against the installed CLI 2.1.288 and its changelog (2026-10-03).
-#: Account-side effects:
-#:   Artifact         publishes pages, uploads assets and reads other people's
-#:                    artifacts; artifact-database writes are visible to every
-#:                    viewer of the artifact.
-#:   SendMessage      messages another session on the machine.
-#:   ListAgents       enumerates those sessions -- SendMessage's discovery half,
-#:                    which is why they belong to one constant.
-#:   SendFeedback     drafts and sends a report off-box.
-#:   ListPlugins      reads the plugins enabled on the claude.ai account.
-#:   EndConversation  can end the turn from inside it.
-#: Scheduled, pushed or remote:
-#:   ScheduleWakeup   starts work after the turn ends, outside any automation.
-#:   PushNotification notifies out of band, not through the owner's channel.
-#:   RemoteTrigger    reaches a remote runner.
-#:   Cron*            Create/Delete/List: a schedule the owner never authored
-#:                    and cannot see in their automations.
-#:   DesignSync*      DesignSync/DesignSyncTool: remote design I/O.
-#:
-#: Deliberately NOT here, and still callable on a node: ``Task*`` (session-local
-#: bookkeeping), ``ReportFindings`` (reports into the turn, not out of it), and
-#: the MCP resource readers (already bounded by ``--strict-mcp-config``).
-#:
-#: The ONE definition, denied on BOTH confined paths: the universe engine's
-#: denylist splats it (``universe_intelligence._ENGINE_DISALLOWED_TOOLS``) and a
-#: workflow node call denies it (``ModelConfig.workflow_node``). A workflow node
-#: keeps every owner-level capability on purpose -- web tools, subagents, plans
-#: -- but it has no business acting on the host's account or on a clock, and
-#: before this it could (it denied only ``HOST_REACH_TOOLS``).
-ACCOUNT_REACH_TOOLS: tuple[str, ...] = (
-    # account-side
-    "Artifact", "SendMessage", "ListAgents", "SendFeedback", "ListPlugins",
-    "EndConversation",
-    # scheduled / pushed / remote
-    "ScheduleWakeup", "PushNotification", "RemoteTrigger",
-    "CronCreate", "CronDelete", "CronList",
-    "DesignSync", "DesignSyncTool",
-)
-
-
 @dataclass(frozen=True, slots=True)
 class ModelConfig:
     """Configuration passed to every provider call."""
@@ -300,34 +231,6 @@ class ModelConfig:
     Only an executor explicitly implementing this contract may accept it.
     This is a restriction, never authority to call a model or access credentials.
     """
-
-    sandbox_workspace: bool = False
-    # A chat turn (converse): still OS-isolated, but NOT handed the universe as a
-    # coding workspace. Codex `exec` mounted at the universe with -C /workspace
-    # behaves as a code agent on the files and replies with coding-agent output
-    # instead of a chat answer (live 2026-08-22). Chat turns run in the same
-    # bwrap jail over an EMPTY scratch workspace.
-    sandbox_chat: bool = False
-    """Run the CLI subprocess isolated to the command center's OWN dir instead of the
-    host's cwd. When True, subprocess providers set ``cwd=universe_dir`` so the
-    call does NOT inherit the daemon's working directory (which may be a source
-    checkout, exposing repo files / ``CLAUDE.md`` / other command centers). Set for the
-    founder-facing universe-intelligence turn; leave False for host-trusted engine
-    roles. The isolation is only as strong as the tool policy below — pair it with
-    ``disallowed_tools`` to deny shell escape (a Bash tool can ``cd`` out)."""
-
-    allowed_tools: tuple[str, ...] | None = None
-    """Allowlist of CLI tool names the subprocess may use (e.g.
-    ``("WebFetch", "Read")``). ``None`` = provider default (no restriction). Maps
-    to ``claude -p --allowedTools``. Default-deny: when set, only these are
-    usable."""
-
-    disallowed_tools: tuple[str, ...] | None = None
-    """Denylist of CLI tool names the subprocess must NOT use (e.g.
-    ``("Bash", "WebSearch")``). ``None`` = no explicit denies. Maps to ``claude -p
-    --disallowedTools`` and takes precedence over ``allowed_tools`` — the hard
-    floor that closes shell-escape / host-access even if a settings file would
-    grant them."""
 
     engine_mcp_enabled: bool = False
     """When True, the founder-facing universe-intelligence turn gets a LOCAL,
@@ -618,7 +521,7 @@ class BaseProvider(abc.ABC):
     """Abstract base for all LLM providers."""
 
     name: str = ""
-    """Short identifier used in fallback chains (e.g. ``'claude-code'``)."""
+    """Canonical connection identifier used in fallback chains."""
 
     family: str = ""
     """Model family for judge diversity enforcement."""
@@ -645,7 +548,7 @@ class BaseProvider(abc.ABC):
             )
         if any(getattr(config, key, None) for key in (
             "engine_mcp_enabled", "engine_mcp_actor_id", "engine_mcp_graph_id",
-            "allowed_tools", "engine_tool_grant", "agent_node_id", "agent_node_key",
+            "engine_tool_grant", "agent_node_id", "agent_node_key",
         )) or any(getattr(config, key, None) is not None for key in (
             "agent_request", "agent_session",
         )):
@@ -653,12 +556,7 @@ class BaseProvider(abc.ABC):
 
     @classmethod
     def is_available(cls) -> bool:
-        """Return True if this provider's binary/dependency is present.
-
-        Subprocess-backed providers override this to probe the binary with
-        ``shutil.which`` so the router skips registration on cloud hosts
-        where the CLI is absent — avoiding 30s+ wasted cooldowns per call.
-        """
+        """Return whether the executor is available."""
         return True
 
     @abc.abstractmethod
@@ -672,8 +570,5 @@ class BaseProvider(abc.ABC):
     ) -> ProviderResponse:
         """Send *prompt* with *system* instructions and return a response.
 
-        *universe_dir*, when supplied, scopes vault-backed subscription auth to
-        that universe (subscription-backed providers pass it into
-        :func:`subprocess_env_for_provider`); providers that never touch the
-        vault ignore it.
+        *universe_dir* scopes the connection grant to its command center.
         """

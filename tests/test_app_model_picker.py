@@ -50,7 +50,7 @@ def test_declared_models_are_not_labelled_verified_available(tmp_path):
 
 @pytest.mark.parametrize("reason,label", [
     ("refreshing", "checking…"),
-    ("failed: native_catalogue_unavailable", "couldn't refresh"),
+    ("failed: catalogue_unavailable", "couldn't refresh"),
 ])
 def test_catalogue_refresh_is_visible_without_disabling_known_choices(tmp_path, reason, label):
     doc = catalogue()
@@ -65,8 +65,8 @@ def test_catalogue_refresh_is_visible_without_disabling_known_choices(tmp_path, 
     assert any("third" in row["text"] and row["disabled"] for row in rows)
 
 
-@pytest.mark.parametrize("method,can_select", [("subscription_cli", True), ("api_key_http", False)])
-def test_retained_native_catalogue_age_does_not_expire_the_picker_read(
+@pytest.mark.parametrize("method,can_select", [("api_key_http", False)])
+def test_expired_http_catalogue_disables_selection(
     tmp_path, method, can_select,
 ):
     doc = catalogue()

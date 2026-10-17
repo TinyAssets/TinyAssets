@@ -89,14 +89,10 @@ on:
       - "tests/test_delivery_public.py"
       - "tests/test_receiver_links.py"
       - "tests/conftest.py"
-      - "tinyassets/external_agents/runner.py"
       # External-agent confinement is proved by scripts/box_acceptance.py.
-      - "tinyassets/providers/native_jsonrpc_discovery.py"
       # The box spawn point, the router that binds the owning universe and
       # the adapters.
-      - "tinyassets/providers/owned_process.py"
       - "tinyassets/providers/router.py"
-      - "tinyassets/providers/claude_provider.py"
       - "tinyassets/providers/base.py"
       # The universe agent's four tools, the engine surface that serves them
       # and the served turn that indexes its skills.
@@ -160,14 +156,10 @@ on:
       - "tests/test_delivery_public.py"
       - "tests/test_receiver_links.py"
       - "tests/conftest.py"
-      - "tinyassets/external_agents/runner.py"
       # External-agent confinement is proved by scripts/box_acceptance.py.
-      - "tinyassets/providers/native_jsonrpc_discovery.py"
       # The box spawn point, the router that binds the owning universe and
       # the adapters.
-      - "tinyassets/providers/owned_process.py"
       - "tinyassets/providers/router.py"
-      - "tinyassets/providers/claude_provider.py"
       - "tinyassets/providers/base.py"
       # The universe agent's four tools, the engine surface that serves them
       # and the served turn that indexes its skills.

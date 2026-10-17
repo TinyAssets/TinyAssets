@@ -127,7 +127,7 @@ def test_a_row_a_dead_boot_left_inference_started_is_settled_and_stops_reading_a
     # Uncertainty is PRESERVED, not resolved: the killed round is indeterminate,
     # never completed, and it still blocks an offline reset. A settlement that
     # claimed the turn finished would be a mock result wearing a real shape.
-    assert stored.rounds[-1].reply == None
+    assert stored.rounds[-1].reply is None
     assert stored.rounds[-1].cost_microusd is None
     assert _blockers(journal) == ["active or ambiguous agent turn references exact home"]
     # Neither the original nor a fresh boot registry can revive the terminal row.

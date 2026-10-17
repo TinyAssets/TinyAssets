@@ -146,7 +146,7 @@ def _storage_backend():
     ``get_backend`` auto-probes to :class:`SqliteOnlyBackend` and
     leaves the host project repo untouched.
     """
-    base = _base_path()
+    base = Path(_base_path())
     return get_backend(base, repo_root=base.parent)
 
 

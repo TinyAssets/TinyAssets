@@ -83,8 +83,8 @@ def test_vault_round_trips_typed_credentials_without_secret_summary(tmp_path):
             },
             {
                 "credential_type": "http",
-                "service": "claude",
-                "claude_config_dir": ".credentials/claude",
+                "service": "model",
+                "token": "model-secret",
             },
         ],
     )

@@ -168,9 +168,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/effectors/__init__.py::EffectChain.settle": (CALL_SCOPED, "effect settle wait"),
     "tinyassets/engine_mcp_http.py::wait_for_engine_mcp_route": (CALL_SCOPED, "startup wait"),
     "tinyassets/engine_mcp_server.py::_read_run_settled": (CALL_SCOPED, "run settle wait"),
-    "tinyassets/external_agents/home.py::exclusive_refresh": (
-        CALL_SCOPED, "owner/service refresh lease wait; 30-second deadline",
-    ),
     "tinyassets/universe_tools.py::_bash": (
         CALL_SCOPED, "one box bash call polls its activity's stop check until the call ends",
     ),
@@ -192,11 +189,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     ),
     "tinyassets/provider_assignment.py::ProviderAssignmentAdmission.shared": (
         CALL_SCOPED, "admission wait",
-    ),
-    "tinyassets/external_agents/jsonrpc_job.py::JsonRpcJob.read": (
-        CALL_SCOPED,
-        "reads one external-agent JSON-RPC turn under idle/tool/absolute "
-        "budgets; ends with the turn's terminal notification, EOF or timeout",
     ),
     "tinyassets/run_file_upload.py::StreamBridge.chunks": (CALL_SCOPED, "upload stream"),
     "tinyassets/run_file_upload.py::StreamBridge.push": (CALL_SCOPED, "upload stream"),
