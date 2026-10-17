@@ -1,29 +1,8 @@
-"""Latency evidence a completed provider turn must leave behind (2026-09-24).
-
-The parallel-probe investigation (2026-09-24-provider-latency-rootcause.md (archived in git))
-had to reconstruct node timing from CLI session transcripts because a node's
-receipt recorded ``latency_ms: null`` and nothing about tool calls, and a turn
-that went quiet for most of the idle bound and then recovered left no trace.
-These tests pin the evidence a SUCCESSFUL turn now reports:
-
-* the claude reader counts distinct native tool calls and records the longest
-  gap between protocol events, plus the event kind that preceded it;
-* a near-idle gap is logged with allowlisted scalars only;
-* a prompt node's ``ran`` event carries those scalars from the real response.
-
-Driven through the real ``ClaudeProvider._read_stream`` against the fake
-subprocess protocol of ``tests/test_provider_stream_and_classify.py``.
-"""
+"""Provider timing fields preserve only allowlisted response scalars."""
 
 from __future__ import annotations
 
-from tinyassets.providers.base import ModelConfig, ProviderResponse
-
-_IDLE_S = 0.4
-_PROFILE = ModelConfig(
-    init_timeout_s=_IDLE_S, first_progress_s=_IDLE_S, idle_timeout_s=_IDLE_S,
-    absolute_cap_s=5.0,
-)
+from tinyassets.providers.base import ProviderResponse
 
 
 def test_provider_timing_keeps_only_allowlisted_scalars():
