@@ -130,3 +130,15 @@ class OwnerRelays:
     def close(self):
         for listener in self._listeners.values():
             listener.close()
+
+    def retire(self, uid):
+        with self._lock:
+            listener = self._listeners.pop(uid, None)
+            if listener is not None:
+                try:
+                    listener.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass  # Already stopped; close and remove the socket below.
+                listener.close()
+            self._bindings.pop(uid, None)
+            (self.directory / f"{uid}.sock").unlink(missing_ok=True)

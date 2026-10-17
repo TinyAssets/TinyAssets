@@ -670,7 +670,10 @@ class _Connection:
                 raise ValueError("invalid owner retirement")
             with self._server._fence.send(doc["generation"], doc["token"]):
                 uid = self._server._owner_identities.retire_owner(doc["principal"])
-                self._stop_owner_box(doc["principal"], uid)
+                from tinyassets.boxes.daemon_control import request
+
+                if request("destroy", doc["principal"], uid=uid) != {"destroyed": True}:
+                    raise RuntimeError("boxhostd did not confirm owner destruction")
             return {"op": "OWNER_RETIRED"}
         except Exception:
             return {"op": "OWNER_RETIRE_REFUSED"}

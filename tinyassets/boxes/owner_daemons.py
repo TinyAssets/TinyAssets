@@ -6,11 +6,12 @@ import json
 import logging
 import math
 import os
+import secrets
 import socket
 import threading
 import time
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from tinyassets.boxes.provider import BoxBusy, BoxError
@@ -30,6 +31,7 @@ class Box:
     failures: int = 0
     retry_at: float = 0
     error: str = ""
+    leases: dict[str, float] = field(default_factory=dict)
 
 
 class OwnerDaemons:
@@ -66,11 +68,12 @@ class OwnerDaemons:
             except ValueError as exc:
                 raise OSError("invalid owner lifecycle status") from exc
             if (not isinstance(result, dict)
-                    or set(result) != {"active", "idle_seconds", "draining", "revoked"}
+                    or set(result) != {"active", "idle_seconds", "draining", "revoked", "deleting"}
                     or type(result["active"]) is not int or result["active"] < 0
                     or type(result["idle_seconds"]) not in (int, float)
                     or not math.isfinite(result["idle_seconds"]) or result["idle_seconds"] < 0
-                    or type(result["draining"]) is not bool or type(result["revoked"]) is not bool):
+                    or type(result["draining"]) is not bool or type(result["revoked"]) is not bool
+                    or type(result["deleting"]) is not bool):
                 raise OSError("invalid owner lifecycle status")
             return result
         finally:
@@ -155,6 +158,10 @@ class OwnerDaemons:
         self.condition.notify_all()
 
     def _sleep(self, box, *, idle):
+        now = time.monotonic()
+        box.leases = {key: end for key, end in box.leases.items() if end > now}
+        if box.leases:
+            return False
         with self.idle_guard(box.uid) as allowed:
             return self._drain(box, idle=idle) if allowed else False
 
@@ -171,7 +178,7 @@ class OwnerDaemons:
             status = self._rpc(box, "drain", idle_seconds=idle)
         except (OSError, http.client.HTTPException):
             return False  # Unknown status never authorizes idle eviction.
-        if not status["draining"]:
+        if not status["draining"] or status["active"] or status["deleting"]:
             return False
         try:
             self._stop(box)
@@ -180,7 +187,22 @@ class OwnerDaemons:
             return False  # Keep the uncertain sandbox's capacity reservation.
         return True
 
-    def ensure_awake(self, owner, *, scheduled=False):
+    def resolve(self, owner, *, cleanup=False):
+        # The same lock covers readiness and the lease: no eviction window.
+        with self.condition:
+            uid = self.ensure_awake(owner, cleanup=cleanup)
+            token = secrets.token_urlsafe(32)
+            self.boxes[uid].leases[token] = time.monotonic() + 10
+            return {"uid": uid, "lease": token}
+
+    def release(self, owner, token):
+        with self.condition:
+            for box in self.boxes.values():
+                if box.owner == owner:
+                    box.leases.pop(token, None)
+            self.condition.notify_all()
+
+    def ensure_awake(self, owner, *, scheduled=False, cleanup=False):
         if type(scheduled) is not bool:
             raise ValueError("scheduled must be boolean")
         deadline = time.monotonic() + self.wake_timeout
@@ -197,7 +219,7 @@ class OwnerDaemons:
                     if box.awake and self.runtime.alive(uid):
                         if box.error:
                             raise BoxError("owner sandbox has an unverified launch or stop")
-                        if self._rpc(box)["draining"]:
+                        if self._rpc(box)["draining"] and not cleanup:
                             raise BoxError("owner daemon is still draining")
                         box.last = time.monotonic()
                         return uid
@@ -246,6 +268,18 @@ class OwnerDaemons:
             else:
                 self._stop(box, retire=True)
             self.condition.notify_all()
+
+    def destroy(self, owner, uid):
+        """Account retirement, unlike center retirement, erases the entire volume."""
+        from tinyassets.boxes.destroy import socket_tree
+
+        with self.condition:
+            self.retire(owner, uid)
+            self.quota.destroy(uid)
+            self.relays.retire(uid)
+            socket_tree(self.directory, uid)
+            (self.directory / "secrets" / str(uid)).unlink(missing_ok=True)
+            self.boxes.pop(uid, None)
 
     def status(self, owner):
         with self.condition:

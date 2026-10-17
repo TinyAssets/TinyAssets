@@ -28,7 +28,12 @@ def test_control_socket_uses_kernel_router_identity_and_returns_bounded_errors()
             raise RuntimeError("startup failed")
         return 300001
 
-    manager = SimpleNamespace(ensure_awake=wake)
+    leases = []
+    manager = SimpleNamespace(
+        ensure_awake=wake,
+        resolve=lambda owner, cleanup: {"uid": 300001, "lease": "l" * 43},
+        release=lambda owner, token: leases.append((owner, token)),
+    )
     service = HostService(None, None, None, None, manager)
     stop = threading.Event()
     with tempfile.TemporaryDirectory(prefix="hostctl-") as directory:
@@ -48,6 +53,14 @@ os.setgid(1001)
 os.setuid(1001)
 from tinyassets.boxes.daemon_control import ensure_awake, request
 assert ensure_awake("alice", scheduled=True) == 300001
+assert request("resolve", "alice", cleanup=False) == {"uid": 300001, "lease": "l" * 43}
+assert request("release", "alice", lease="l" * 43) == {"released": True}
+try:
+    request("destroy", "alice", uid=300001)
+except RuntimeError:
+    pass
+else:
+    raise AssertionError("router destroyed a box")
 for owner, expected in (("unknown", LookupError), ("broken", RuntimeError)):
     try:
         ensure_awake(owner)
@@ -67,6 +80,7 @@ else:
                                     env={**os.environ, "TINYASSETS_BOXES_RUN": directory})
             assert result.returncode == 0, result.stderr
             assert calls == [("alice", True), ("unknown", False), ("broken", False)]
+            assert leases == [("alice", "l" * 43)]
         finally:
             stop.set()
             listener.join(5)
