@@ -15,6 +15,8 @@ custody and its platform vault directory.
 - **THEN** the census counts exactly one reason per table: `conflicting_owners`, `orphan_reference`, `unadmitted_principal`, `unknown_center`, or `no_owner_key`, in that precedence order
 - **AND** conflicting owners refuse; the other four reasons explicitly drop the row
 - **AND** parent failures propagate, while retired non-account actor markers may still follow a real parent
+- **AND** a row with an admitted center, directly or through a reviewed parent, belongs to that center's owner even if its principal is unadmitted; conflicting admitted owners still refuse and missing parents still drop
+- **AND** dropped branch versions and schedules report `workflow history` with version/schedule counts on the candidate owner's line; unresolved budget reservations and provider bindings retain their drops as `usage reservation history` and `provider bindings`
 - **AND** per-account losses report reason, class and count without identities or path lists
 
 #### Scenario: File directory kinds explain placement
@@ -23,6 +25,7 @@ custody and its platform vault directory.
 - **AND** unadmitted-center and unknown-directory contents drop, except registered stores retain their reviewed placement rules
 - **AND** account hashes alone never confer ownership; unclassified account, broker, platform and root files refuse with their kind
 - **AND** known identity, plan, key and lock files follow their creator-backed broker, router or regenerated placement
+- **AND** unclassified filenames expose only `<file>.<ext>` or `<file>`; code-constant filenames may be printed verbatim, while unknown platform vault indexes and keys still refuse
 - **AND** retired credential directories are summarized as CLI login state per account
 
 #### Scenario: Restore after owner serving writes

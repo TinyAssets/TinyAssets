@@ -51,9 +51,9 @@ def _count_loss(summary, label, reason, description, unit):
 class CensusRule:
     """A reviewed table placement, never inferred from a column's spelling.
 
-    References name the database, table and unique parent column. All populated
-    ownership fields must agree; an unknown explicit owner is not repaired by
-    an adjacent row. Empty tables still need a rule.
+    References name the database, table and unique parent column. Admitted
+    centers win over unadmitted actors, including through parents; competing
+    admitted owners still refuse. Empty tables still need a rule.
     """
 
     placement: str
@@ -471,7 +471,8 @@ def census(data: Path, *, _inventory: dict | None = None,
                   for index, owner in enumerate(sorted(owners), start=1)}
         # Keep candidate owners even when a key fails, so a missing parent can
         # never hide a conflict. One ordered reason is selected only at reporting.
-        memo: dict[tuple[str, str, int], tuple[frozenset[str], frozenset[str]]] = {}
+        memo: dict[tuple[str, str, int], tuple[
+            frozenset[str], frozenset[str], frozenset[str]]] = {}
         indexes: dict[tuple[str, str, str], dict[object, list[int]]] = {}
         admitted_principals = set(admitted.values()) | set().union(*bindings.values())
 
@@ -483,10 +484,11 @@ def census(data: Path, *, _inventory: dict | None = None,
                 raise RuntimeError("cyclic census ownership reference")
             rule = _census_rule(database, table)
             row = tables[database, table][index]
-            candidates, reasons = set(), set()
+            candidates, reasons, center_owners = set(), set(), set()
             placeholder = False
 
             def center_claim(value):
+                center_owners.update(known_centers.get(value, set()))
                 candidates.update(known_centers.get(value, set()))
                 candidates.update(bindings.get(value, set()))
                 if value not in known_centers:
@@ -531,23 +533,27 @@ def census(data: Path, *, _inventory: dict | None = None,
                 if not matches:
                     reasons.add("orphan_reference")
                 for match in matches:
-                    parent_owners, parent_reasons = evidence(
+                    parent_owners, parent_reasons, parent_centers = evidence(
                         parent_db, parent, match, active | {key})
                     candidates.update(parent_owners)
                     reasons.update(parent_reasons)
+                    center_owners.update(parent_centers)
+            if center_owners:
+                reasons.difference_update({
+                    "unadmitted_principal", "unknown_center", "no_owner_key"})
             if len(candidates) > 1:
                 reasons.add("conflicting_owners")
             if not candidates and not reasons:
                 reasons.add("unadmitted_principal" if placeholder else "no_owner_key")
-            memo[key] = frozenset(candidates), frozenset(reasons)
+            memo[key] = (frozenset(candidates), frozenset(reasons), frozenset(center_owners))
             return memo[key]
 
         def row_reason(database, table, index):
-            _, reasons = evidence(database, table, index)
+            _, reasons, _ = evidence(database, table, index)
             return next((reason for reason in ROW_REASONS if reason in reasons), None)
 
         def row_owners(database, table, index):
-            candidates, _ = evidence(database, table, index)
+            candidates, _, _ = evidence(database, table, index)
             reason = row_reason(database, table, index)
             if reason == "conflicting_owners":
                 return frozenset()
@@ -655,18 +661,24 @@ def census(data: Path, *, _inventory: dict | None = None,
             for index, target in enumerate(targets):
                 if target != "dropped":
                     continue
-                candidates, _ = evidence(database, table, index)
+                candidates, _, _ = evidence(database, table, index)
                 label = (labels[next(iter(candidates))] if len(candidates) == 1
                          and next(iter(candidates)) in labels else "unattributed")
                 key = f"{database}/{table}"
                 losses[label]["rows"][key] = losses[label]["rows"].get(key, 0) + 1
                 reason = row_reason(database, table, index) or "retired_cli_state"
-                description = ("orphaned budget reservations"
-                               if table == "served_provider_budget_reservations"
-                               and reason == "orphan_reference" else
+                description = ("usage reservation history"
+                               if table == "served_provider_budget_reservations" else
+                               "provider bindings" if table == "provider_work_bindings" else
+                               "workflow history" if table in {
+                                   "branch_versions", "branch_schedules"} else
                                "CLI login state" if _census_rule(database, table).placement
                                == "dropped" else table.replace("_", " "))
                 _count_loss(loss_summary, label, reason, description, "rows")
+                if description == "workflow history":
+                    unit = "versions" if table == "branch_versions" else "schedules"
+                    workflow_counts = loss_summary[label][reason][description]
+                    workflow_counts[unit] = workflow_counts.get(unit, 0) + 1
         file_report = _census_files(data, known_centers, labels, database_files, refusals,
                                     dropped_centers, run_owners, file_targets, patterns, losses,
                                     {str(uid): owner for owner, uid in permanent.items()},
@@ -805,7 +817,14 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
         ".owner-cutover.json": "broker",
         "platform-expected-instance.json": "router", "release-state.json": "router",
         ".billing_webhook_verified.json": "router",
+        ".broker/state/fence.json": "broker",
     }
+    # Creator-backed SQLite filenames also classify empty files and detached
+    # sidecars. Real databases still go through table-by-table schema review.
+    for database, rules in CENSUS_RULES.items():
+        placements = {rule.placement for rule in rules.values()}
+        if placements <= {"broker", "router"} and len(placements) == 1 and "*" not in database:
+            shared[database] = next(iter(placements))
     published = {"wiki", ".wiki", ".published", ".command-center-packages"}
     # Exact creator-backed roots: storage_accounting.ROOT_ENTRIES and the
     # LanceDB index writers. No suffix-wide rule can drop arbitrary user files.
@@ -816,6 +835,7 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
         ".run-file-operation-locks", ".delivery-locks", ".workspace-family-locks",
         ".run_recovery.lock", ".run_recovery.lock.pid", ".ui-preview.lock",
         ".deploy-pending.json",
+        ".runtime_status.json", ".worker_supervisor.json",
     }
     dropped_roots = {"scratch", ".active_universe", "activity.log", "activity.log.1"}
     from tinyassets.storage_accounting import ROOT_ENTRIES
@@ -868,13 +888,27 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
             if len(candidates) == 1 and next(iter(candidates)) in labels:
                 return ("owner", next(iter(candidates)))
             return "unattributed"
-        if path in databases or any(
-            path == database.with_name(database.name + suffix)
-            for database in databases for suffix in ("-wal", "-shm", "-journal")
-        ):
+        if any(path == database.with_name(database.name + suffix)
+               for database in databases for suffix in ("-wal", "-shm", "-journal")):
+            return "regenerated"
+        if path in databases:
             return "database_files"
-        if len(parts) == 1 and path.name in shared:
-            return shared[path.name]
+        name = relative.as_posix()
+        if name in shared:
+            return shared[name]
+        if any(name == database + suffix for database in CENSUS_RULES
+               for suffix in ("-wal", "-shm", "-journal")):
+            return "regenerated"
+        if (len(parts) == 4 and parts[:2] == (".broker", "accounts")
+                and parts[3] in {"policy.db", "policy.db-wal", "policy.db-shm",
+                                 "policy.db-journal"}):
+            return "broker" if parts[3] == "policy.db" else "regenerated"
+        # browser_vault._owner_key still reads this legacy key before moving
+        # it to the separate secret volume. Never infer arbitrary key custody.
+        if ((len(parts) == 3 and parts[:2] == (".broker", "browser-vault") or
+             len(parts) == 2 and parts[0] == "browser-vault")
+                and re.fullmatch(r"[a-f0-9]{64}\.key", parts[-1])):
+            return "broker"
         if parts[0] in published:
             return "published"
         if (len(parts) >= 4 and parts[:2] == (".platform", "credential-vaults")
@@ -887,6 +921,18 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
                      and re.fullmatch(r"[a-f0-9]{32}\.lock", parts[4]))):
                 return "regenerated"
         if parts[0] in regenerated:
+            return "regenerated"
+        # control_plane.tick and api.universe write one heartbeat per consumer.
+        if len(parts) == 1 and re.fullmatch(r"\.worker_supervisor\.[A-Za-z0-9_.-]+\.json",
+                                           parts[0]):
+            return "regenerated"
+        # Interrupted storage_layout / cutover / fence / custody publications.
+        if ((len(parts) == 1 and re.fullmatch(r"\.(?:layout|owner-cutover)\.json\..+\.tmp",
+                                             parts[0])) or
+                (parts[:2] == (".broker", "state") and len(parts) == 3
+                 and re.fullmatch(r"\.fence\..+", parts[2])) or
+                (parts[:2] == (".platform", "credential-vaults") and len(parts) == 4
+                 and re.fullmatch(r"\.vault-.+\.tmp", parts[3]))):
             return "regenerated"
         if parts[0] in dropped_roots:
             return "dropped"
@@ -903,11 +949,19 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
         return "unattributed"
 
     # Preserve only fixed vocabulary from code, at its known layout position.
-    # Unknown names (even dotted ones and filename extensions) never escape.
-    fixed_roots = set(shared) | published | regenerated | dropped_roots | {
+    # Unknown basenames never escape. Only a bounded conventional extension
+    # survives; a private dotted suffix must not become a report channel.
+    fixed_roots = ({name for name in shared if "/" not in name}
+                   | published | regenerated | dropped_roots)
+    fixed_roots |= {
         ".platform", ".broker", ".agent-sessions", ".universe-sidecars", "runs",
         ".tinyassets.db.prebudgetrepair.bak",
     } | {Path(database).name for database in CENSUS_RULES if "/" not in database}
+    fixed_files = {PurePosixPath(name).name for name in shared} | {
+        "policy.db", "policy.db-wal", "policy.db-shm", "policy.db-journal",
+        ".deleted", ".credential-vault.json", ".custody.lock",
+    } | {PurePosixPath(database).name + suffix for database in CENSUS_RULES
+         for suffix in ("", "-wal", "-shm", "-journal")}
 
     def masked(parts):
         result = []
@@ -929,6 +983,11 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
                 elif index == 3 and parts[1] == "owners" and part == "agent-home":
                     value = part
             result.append(value)
+        if parts[-1] in fixed_files or (len(parts) == 1 and parts[-1] in fixed_roots):
+            result[-1] = parts[-1]
+        else:
+            suffix = re.search(r"\.(db-(?:wal|shm|journal)|[A-Za-z0-9]{1,10})$", parts[-1])
+            result[-1] = "<file>" + ("." + suffix[1].lower() if suffix else "")
         return "/".join(result)
 
     for directory, dirs, files in os.walk(data, followlinks=False):

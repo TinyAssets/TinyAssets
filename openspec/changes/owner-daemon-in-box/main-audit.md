@@ -1429,3 +1429,82 @@ exactly one unresolved case: the full synthetic archive harness. Its root
 receipt is one failure with zero skips, and is not credited as a pass.
 The commands selected 65 files, including every requested filename pattern and
 all structural GUARDS keys. No test assertion, skip or quarantine was loosened.
+
+## Slice 6 round-5 census corrections (2026-10-17)
+
+Input is the lead's redacted counts-only result at `edfaab53576`: 16 file
+refusals (six root files, five platform-store files, two broker four-component
+paths, one broker three-component path, one platform two-component path and
+one other four-component path). This pass reads code and generated synthetic
+fixtures only. It does not rerun a census against real data or claim these
+16 refusals are cleared. The rehearsal harness and its outstanding acceptance
+are unchanged.
+
+Center wins in the shared row-evidence resolver. It tracks admitted center
+owners separately from principal-only candidates and carries that evidence
+through reviewed parent joins. An admitted center clears unadmitted-principal,
+unknown-center and ownerless-parent evidence. A competing admitted owner still
+refuses, and a missing parent still drops with `orphan_reference`. A named
+unknown principal cannot select an owner without an admitted center. Versions
+and schedules whose definition is gone are counted on the candidate owner's
+`workflow history` line, with separate `versions` and `schedules` counts.
+Unresolved usage rows still drop as `usage reservation history` and
+`provider bindings`; usage rows with an admitted center follow the same
+center-wins rule.
+
+| Code-backed file family | Census disposition |
+| --- | --- |
+| Broker identity, plans, policy, outbound, custody, operations and next-wake SQLite names | Existing real databases retain table-by-table review; exact shared names also classify empty files as broker. |
+| SQLite WAL/SHM/journal files at reviewed store locations, including detached sidecars and hashed policy-account directories | Regenerated; the read-only SQLite snapshot still resolves committed rows before classification. |
+| Legacy `<owner-sha256>.key` under the outbound ledger's `browser-vault` directory, at root or under `.broker` | Broker, matching `browser_vault._owner_key`; arbitrary key locations/names still refuse. |
+| Broker `fence.json`, policy `.deleted`, layout and cutover markers | Broker. |
+| `platform-expected-instance.json`, `release-state.json`, billing verification marker | Router. |
+| Custody/refresh locks, recovery PID, liveness/tree locks, runtime status and per-consumer heartbeat files | Regenerated. |
+| Interrupted layout/cutover, broker fence and vault atomic-publication files at their writer's locations | Regenerated. |
+| Existing retired CLI homes/local vaults, stale database copy, unknown directories and never-admitted centers | Existing counted drops retained. |
+| Any remaining unidentified platform/root/account file, including a purported platform vault index without a code-backed filename/location | Refused with its masked filename pattern; no extension-wide custody assumption. |
+
+Evidence comes from `CENSUS_RULES`, `broker/process.py`, `broker/owner_reads.py`,
+`broker/owner_identities.py`, `broker/policy.py`, `broker/browser_vault.py`,
+`broker/fence.py`, `broker/vault.py`, `broker/credential_refresh.py`,
+`storage_layout.py`, `platform_runtime_provenance.py`, `process_liveness.py`,
+`owner_lease.py`, `singleton_lock.py`, and the heartbeat writer in
+`control_plane/tick.py`. Unknown basenames print only `<file>.<ext>` (or
+`<file>` without a conventional extension), while known code-constant filenames
+may print verbatim. Directory identifiers remain masked. The next authorized
+counts-only census can therefore identify a remaining file family without
+exposing a basename or opening file contents for diagnosis.
+
+Synthetic coverage proves center wins directly, through a definition and into
+run dependents; a present ownerless/unknown-center definition cannot drop a
+version in an admitted center; missing definitions still drop and report
+workflow history. Unresolved usage drops and their descriptions remain exact.
+Each newly classified file family has a synthetic case, and unknown root,
+broker and platform files prove exact masked patterns and refusal. Existing
+cross-owner, missing-parent, source-immutability and redaction assertions remain.
+D6 and the owner-isolation delta spec describe the corrected rule.
+
+Validation receipts are outside the repository at
+`%TEMP%/ta-s6-round5-validation/`. Changed-file Ruff and `git diff --check`
+pass. Whole-repository Ruff has 33 existing findings in seven files verified
+unchanged from the starting head. No sub-agent, new worktree, branch change,
+host git configuration change, push, merge or deployment was used.
+
+Round-5 validation:
+- Requested census/migration patterns, touched-module cutover consumers and
+  every `GUARDS` key selected **46 files**. The unprivileged oracle recorded
+  **1,153 passed**, two broker-directory ownership failures, 27 root-fixture
+  errors and one existing root-only special-bit skip. Every nonpassing case
+  passed in the root run; none is waived or credited from a skip.
+- Final root census/layout/cutover selection: **137 passed, zero skips**,
+  `root-final.log` / `root-final.xml`. This includes all **84 census cases**
+  after the last fixture correction. XML reconciliation in `coverage.json`
+  confirms **1,184 distinct cases passed** across their required Linux venues,
+  with zero unresolved cases. The earlier root receipt is 136 passes before
+  adding the root-ledger legacy-key case.
+- All **35 structural guard files passed, 900 cases** in `user.xml`.
+- Changed-file Ruff, strict OpenSpec validation and `git diff --check` pass.
+  `ruff-all.json` records the 33 pre-existing repository-wide findings.
+- Post-commit hygiene uses `conv/c6-owner-daemon-s5` through `HEAD`, with
+  `Registry row(s): S8` and the unchanged existing `Test-Removal: retired --`
+  declaration in `hygiene-body.txt`; its receipt is `hygiene-final.log`.

@@ -140,9 +140,9 @@ def test_census_refuses_without_guessing_or_mutating(source, mutation, reason):
     if mutation == "unknown_owner":
         assert report["ready"], report["refusals"]
         table = report["tables"][".tinyassets.db/agent_turns"]
-        assert table["reasons"] == {reason: 1}
-        assert table["dropped"] == 1
-        assert table["per_owner"] == {"account-0001": 2, "account-0002": 2}
+        assert table["reasons"] == {}
+        assert table["dropped"] == 0
+        assert table["per_owner"] == {"account-0001": 3, "account-0002": 2}
     else:
         assert not report["ready"]
         assert report["refusals"][reason] > 0
@@ -503,7 +503,8 @@ def test_files_have_masked_patterns_and_legacy_vaults_are_unopened_drops(source)
     assert sum(sum(group.values()) for group in report['file_patterns'].values()) == sum(
         report['files'].values())
     assert report['file_patterns']['regenerated']['lancedb/<id>/<file>'] == 1
-    assert report['file_patterns']['owner']['.universe-sidecars/<center>/<file>'] == 1
+    assert report['file_patterns']['owner'][
+        '.universe-sidecars/<center>/.effector_consents.db'] == 1
     assert report['losses']['account-0001']['files']['<center>/.credential-vault.json'] == 1
     serialized = json.dumps(report)
     assert 'private-' not in serialized
@@ -608,7 +609,7 @@ def test_budget_parent_reason_propagates_without_losing_conflicts(source, parent
     ]
     assert report['ready'] == (reason != 'conflicting_owners')
     assert report['loss_summary']['unattributed']['orphan_reference'][
-        'orphaned budget reservations'] == {'class': 'dropped', 'rows': 1, 'files': 0}
+        'usage reservation history'] == {'class': 'dropped', 'rows': 1, 'files': 0}
 
 
 @pytest.mark.parametrize('relative,kind,placement', [
@@ -693,7 +694,7 @@ def test_conflicting_run_file_still_refuses(source):
     assert report['tables']['.runs.db/runs']['reasons'] == {'conflicting_owners': 1}
     assert inventory['file_targets']['runs/private-run.jsonl'] == 'unattributed'
     assert report['file_pattern_kinds']['unattributed'] == {
-        'runs/<file>': {'platform_store': 1},
+        'runs/<file>.jsonl': {'platform_store': 1},
     }
     assert 'private-run' not in json.dumps(report)
 
@@ -734,3 +735,116 @@ def test_orphan_foreign_key_drop_is_applied_but_retained_violation_refuses(sourc
     assert report['refusals']['database_foreign_keys'] == 1
     assert report['tables']['.tinyassets.db/owner_ui_prefs']['per_owner'] == {'account-0001': 1}
     assert report['tables']['.tinyassets.db/owner_ui_prefs']['dropped'] == 0
+
+
+def test_admitted_center_wins_through_definitions_and_reports_orphan_workflow_history(source):
+    _sql(source / '.tinyassets.db', '''
+        CREATE TABLE branch_definitions (branch_def_id TEXT, author TEXT, universe_id TEXT);
+        INSERT INTO branch_definitions VALUES ('owned','universe:a1',NULL),
+            ('ownerless','anonymous',NULL), ('unknown','universe:unknown-center',NULL);
+        CREATE TABLE provider_work_bindings (binding_id TEXT, owner_user_id TEXT, universe_id TEXT);
+        INSERT INTO provider_work_bindings VALUES ('lost','earlier-identity',NULL),
+                                                  ('kept','earlier-identity','a1');
+        CREATE TABLE served_provider_budget_reservations (binding_id TEXT);
+        INSERT INTO served_provider_budget_reservations VALUES ('lost'), ('kept');
+    ''')
+    _sql(source / '.runs.db', '''
+        CREATE TABLE branch_versions (branch_def_id TEXT, publisher TEXT, universe_id TEXT);
+        INSERT INTO branch_versions VALUES ('owned','earlier-identity',NULL),
+            ('owned','system',NULL), ('ownerless','earlier-identity','a1'),
+            ('deleted','earlier-identity','a1'), (NULL,'earlier-identity','a1'),
+            ('unknown','earlier-identity','a1');
+        CREATE TABLE branch_schedules (branch_def_id TEXT, owner_actor TEXT, universe_id TEXT);
+        INSERT INTO branch_schedules VALUES ('owned','earlier-identity',NULL),
+            ('deleted','earlier-identity','a1');
+        CREATE TABLE runs (run_id TEXT, owner_user_id TEXT, queue_universe_id TEXT);
+        INSERT INTO runs VALUES ('run','earlier-identity','a1');
+        CREATE TABLE run_events (run_id TEXT);
+        INSERT INTO run_events VALUES ('run');
+    ''')
+    before = _fingerprint(source)
+    inventory = {}
+    report = census(source, _inventory=inventory)
+    assert report['ready'], report['refusals']
+    for key, count in (('.tinyassets.db/branch_definitions', 1),
+                       ('.runs.db/branch_versions', 5), ('.runs.db/branch_schedules', 1),
+                       ('.tinyassets.db/provider_work_bindings', 1),
+                       ('.tinyassets.db/served_provider_budget_reservations', 1),
+                       ('.runs.db/runs', 1), ('.runs.db/run_events', 1)):
+        assert report['tables'][key]['per_owner'] == {'account-0001': count}
+    for table in ('branch_versions', 'branch_schedules'):
+        details = report['tables'][f'.runs.db/{table}']
+        assert details['reasons'] == {'orphan_reference': 1}
+        assert details['dropped'] == 1
+        assert inventory['assignments']['.runs.db', table].count('dropped') == 1
+    assert report['loss_summary']['account-0001']['orphan_reference']['workflow history'] == {
+        'class': 'dropped', 'rows': 2, 'files': 0, 'versions': 1, 'schedules': 1,
+    }
+    for table, description in (
+        ('provider_work_bindings', 'provider bindings'),
+        ('served_provider_budget_reservations', 'usage reservation history'),
+    ):
+        assert report['tables'][f'.tinyassets.db/{table}']['dropped'] == 1
+        assert report['loss_summary']['unattributed']['unadmitted_principal'][description] == {
+            'class': 'dropped', 'rows': 1, 'files': 0,
+        }
+    assert _fingerprint(source) == before
+    assert 'earlier-identity' not in json.dumps(report)
+
+
+@pytest.mark.parametrize('relative,placement', [
+    ('.broker/state/owner-identities.db-wal', 'regenerated'),
+    ('.broker/state/ops.db-shm', 'regenerated'),
+    ('.broker/state/next-wake.db-journal', 'regenerated'),
+    ('.broker/plans.db-wal', 'regenerated'),
+    ('.broker/credential-custody.db-shm', 'regenerated'),
+    ('.broker/outbound.db-wal', 'regenerated'),
+    ('.broker/accounts/' + 'a' * 64 + '/policy.db-shm', 'regenerated'),
+    ('.broker/accounts/' + 'a' * 64 + '/policy.db', 'broker'),
+    ('.broker/browser-vault/' + 'a' * 64 + '.key', 'broker'),
+    ('browser-vault/' + 'a' * 64 + '.key', 'broker'),
+    ('.auth.db-shm', 'regenerated'),
+    ('.api-keys.sqlite3-wal', 'regenerated'),
+    ('.broker/plans.db', 'broker'),
+    ('platform-expected-instance.json', 'router'),
+    ('.runtime_status.json', 'regenerated'),
+    ('.worker_supervisor.synthetic-consumer.json', 'regenerated'),
+    ('.consumer_liveness/synthetic.lock', 'regenerated'),
+    ('.owner_tree/synthetic/1-synthetic.lock', 'regenerated'),
+    ('.run_recovery.lock.pid', 'regenerated'),
+    ('.layout.json.synthetic.tmp', 'regenerated'),
+    ('.broker/state/.fence.synthetic', 'regenerated'),
+    ('.platform/credential-vaults/a1/.vault-synthetic.tmp', 'regenerated'),
+])
+def test_platform_writer_families_have_explicit_dispositions(source, relative, placement):
+    path = source / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('synthetic platform bytes')
+    before = _fingerprint(source)
+    inventory = {}
+    report = census(source, _inventory=inventory)
+    assert report['ready'], report['refusals']
+    assert inventory['file_targets'][relative] == placement
+    assert _fingerprint(source) == before
+    assert 'synthetic platform bytes' not in json.dumps(report)
+    assert 'a' * 64 not in json.dumps(report)
+
+
+@pytest.mark.parametrize('relative,pattern', [
+    ('private-personal-name.json', '<file>.json'),
+    ('.broker/state/private-personal-name.db-wal', '.broker/<id>/<file>.db-wal'),
+    ('.platform/private-personal-name.key', '.platform/<file>.key'),
+    ('private-personal-name', '<file>'),
+])
+def test_unknown_files_refuse_with_only_masked_filename_patterns(source, relative, pattern):
+    path = source / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('private contents')
+    before = _fingerprint(source)
+    report = census(source)
+    assert not report['ready']
+    assert report['refusals']['unattributed_files'] == 1
+    assert report['file_patterns']['unattributed'] == {pattern: 1}
+    assert 'private-personal-name' not in json.dumps(report)
+    assert 'private contents' not in json.dumps(report)
+    assert _fingerprint(source) == before

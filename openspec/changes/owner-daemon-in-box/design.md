@@ -488,9 +488,12 @@ pseudonymous. The broker admission map is authoritative; creation/home bindings
 only corroborate it. An unknown table, conflicting ownership, unclassified file,
 unattributable paid tier or HTTP slot without its owner's connection refuses.
 The census materializes attribution columns, never history/checkpoint payloads.
-Reviewed retired/platform actors remain unowned; `universe:<center>` actors
-resolve through live admission. Branch versions/schedules join their branch
-definition; interchange receipts/links join their stage and receipt, and
+An admitted center attributes its rows to its owner even when their named
+principal is unadmitted, an earlier identity or a platform actor. This applies
+through reviewed parent joins as well as direct center keys; another admitted
+owner still conflicts and a missing parent still drops as `orphan_reference`.
+`universe:<center>` actors resolve through live admission. Branch versions and
+schedules join their branch definition; interchange receipts/links join their stage and receipt, and
 published stages join their created definition's author. Idempotency uses its
 operation to select stage, receipt or definition. Checkpoints can join several
 runs only when every run resolves to the same owner.
@@ -508,13 +511,30 @@ row gets exactly one reason, counted per table. Precedence is
 `unknown_center`, `no_owner_key`. Conflicts refuse; the other four explicitly
 drop. A known center without admission reports `unadmitted_principal`;
 an absent center reports `unknown_center`. Missing-parent and parent-owner
-failures propagate to dependents. Retired non-account actor markers may still
-follow real references; named unadmitted actors never inherit a nearby owner.
+failures propagate to dependents. An admitted center, including one reached
+through a parent, clears unadmitted-principal, unknown-center and
+ownerless-parent evidence. An unadmitted actor alone cannot invent an owner.
+Dropped versions and schedules
+appear under their candidate owner's `workflow history` with separate version
+and schedule counts. Unresolved usage rows retain their drops, described as
+`usage reservation history` and `provider bindings`.
 Candidate owners survive other failures so a broken key cannot mask conflict.
 Permanent identities alone do not admit a principal. Binding/admission integrity
 checks and unknown-table/schema-review refusals remain. Foreign-key violations
 on explicitly dropped rows are accounted losses; violations on retained rows
 still refuse. No owner is invented.
+
+File placement follows exact code-backed locations: broker identity, plan,
+policy, outbound, custody and operation databases; broker fence/deletion
+markers; legacy hashed browser keys beside either outbound ledger; router
+provenance/release markers; regenerated SQLite sidecars, custody/refresh locks,
+PID/liveness/heartbeat state and interrupted atomic-publication files. Real
+SQLite files retain table-by-table schema review. Unknown files still refuse
+where required and expose only `<file>.<ext>` (or `<file>` with no conventional
+extension), with code-constant filenames allowed verbatim. No unknown platform
+vault index or key is assumed safe merely from its extension. These are code
+classifications and synthetic proofs, not a claim that the 16 redacted real-data
+refusals are cleared; the next authorized census establishes that count.
 
 The transaction holds the exclusive layout lock and verifies a fresh paired
 snapshot before its first write. A root-private `.owner-cutover.json` records
