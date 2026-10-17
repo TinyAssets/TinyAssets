@@ -85,20 +85,31 @@ def box(broker, tmp_path, monkeypatch):  # noqa: F811
     definition = ProviderDefinition(id=_definition_id(**fields), **fields,
                                     visibility="private", created_at="2026-10-16T00:00:00Z")
     calls = []
+    events = []
+    transport = {}
     reply = {"model": "reply-model", "choices": [{"message": {
         "role": "assistant", "content": "hello through the broker"}, "finish_reason": "stop"}]}
 
     def network(**kwargs):
-        calls.append(kwargs)
-        assert kwargs["credential"] == SECRET
+        if transport.get("before_connect"):
+            transport["before_connect"]()
+        if kwargs.get("checkpoint"):
+            kwargs["checkpoint"]()
         if kwargs.get("on_connect"):
             kwargs["on_connect"](None)
+        events.append("apply_credential")
+        assert kwargs["credential"] == SECRET
+        calls.append(kwargs)
         return UpstreamStream.complete({"status": 200, "reason": "OK", "headers": {},
                                         "body": json.dumps(reply).encode()}, ())
 
     def dispatch_for(owner, center, grant, resource):
+        def credential(*_):
+            events.append("resolve_credential")
+            return SECRET
+
         return CredentialBlindBroker(
-            ledger_for(owner), resolve_credential=lambda *_: SECRET,
+            ledger_for(owner), resolve_credential=credential,
             network_request=network).dispatch
 
     broker.server._roles = {os.getuid(): BOX_HOST}
@@ -143,7 +154,8 @@ def box(broker, tmp_path, monkeypatch):  # noqa: F811
     try:
         yield SimpleNamespace(root=root, shared=shared, ledger=ledger, calls=calls,
                               definition=definition, runtime=runtime, published=published,
-                              broker=broker, reply=reply)
+                              broker=broker, reply=reply, identities=identities,
+                              events=events, transport=transport)
     finally:
         runtime.tools.close()
         relay.close()
@@ -193,6 +205,72 @@ def test_authenticated_external_call_and_grant_revocation(box):
     with pytest.raises(GrantResolutionError):
         channel.request("GET", {"url": "https://models.example.com/v1/chat"})
     assert len(box.calls) == 1
+
+
+@pytest.mark.parametrize("published", [False, True])
+def test_box_raw_model_post_requires_usage_with_or_without_descriptor(box, published):
+    from tinyassets.broker.owner_sources import read
+    from tinyassets.owner_channel import request
+    from tinyassets.storage.agent_request_usage import InferenceUsageRequired
+    from tinyassets.storage.outbound_connections import _broker_channel
+
+    assert read(box.ledger, "center") == []
+    if published:
+        request("center", {"op": "MODEL_SOURCE", "definition": box.definition.as_dict()})
+    channel = _broker_channel(box.root, principal="owner", command_center="center",
+                              grant_id="grant-model", connection_id="conn-model")
+    with pytest.raises(InferenceUsageRequired):
+        channel.request("POST", {"url": "https://models.example.com/v1/chat",
+                                 "body": {"model": "reply-model"}})
+    assert not box.calls
+    assert not box.events
+
+
+def test_box_center_retired_during_connect_refuses_before_credential_send(box):
+    from tinyassets import rpc_frames as rf
+    from tinyassets.broker.ops import new_op_id
+
+    def retire():
+        box.identities.admission("retire", "owner", "center")
+
+    box.transport["before_connect"] = retire
+    # Exercise the relay's broker-side protocol directly: the relay also closes
+    # retired center channels, which must not mask a missing broker checkpoint.
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(5)
+        sock.connect(str(box.broker.path))
+        sock.sendall(rf.control(rf.CONNECTION, {
+            "op": "BOX_CHANNEL", "principal": "owner", "center": "center"}))
+        assert rf.read_frame_blocking(sock).control()["op"] == "BOX_ADMITTED"
+        sock.sendall(rf.control(1, {
+            "op": "OPEN", "op_id": new_op_id(), "grant_id": "grant-model",
+            "connection_id": "conn-model", "verb": "GET", "credit": 65536,
+            "request": {"url": "https://models.example.com/v1/chat"}}))
+        assert rf.read_frame_blocking(sock).control()["op"] == "ADMITTED"
+        end = rf.read_frame_blocking(sock).control()
+        assert end["op"] == "END" and end["error_class"] == "ProxyRequestError"
+        assert end["outcome"] == "failed"
+        assert end["stream_sent"] is False
+    assert box.identities.center_state("center") == "retired"
+    assert box.events == ["resolve_credential"]
+    assert not box.calls
+
+
+def test_box_shared_channel_rechecks_last_live_admission_on_every_read(box):
+    from tinyassets import rpc_frames as rf
+    from tinyassets.owner_channel import connect
+
+    # The same established channel must stop, even while the relay stays open.
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(5)
+        connect(sock, "")
+        document = rf.control(rf.CONNECTION, {"op": "BOX_READ", "query": "plan", "args": {}})
+        sock.sendall(document)
+        assert rf.read_frame_blocking(sock).control() == {
+            "op": "BOX_RESULT", "result": {"tier": "paid", "ends_at": None}}
+        box.identities.admission("retire", "owner", "center")
+        sock.sendall(document)
+        assert rf.read_frame_blocking(sock).control() == {"op": "BOX_REFUSED"}
 
 
 def test_plan_and_catalog_are_shared_reads_not_box_databases(box):

@@ -170,7 +170,9 @@ def ledger(tmp_path):
     ledger.create_connection(
         connection_id="conn-model", owner_user_id="owner", connection_class="http",
         connection_type="http", auth_scheme="bearer", scopes=("POST",), provider="http",
-        destination="compute:conn-model", credential_ref="vault://http/synthetic",
+        # These transport/secret-scanning cases send ordinary HTTP, with no
+        # model invocation. Model grants require the real accounting envelope.
+        destination="stream-service", credential_ref="vault://http/synthetic",
         allowed_endpoints=[{"host": "models.example.com", "path_template": "/v1/chat",
                             "methods": ["POST"]}],
     )
