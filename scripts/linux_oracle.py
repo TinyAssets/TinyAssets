@@ -209,6 +209,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run the suite on Linux, in a container, against the working tree.",
     )
+    parser.add_argument("--docker-engine", action="store_true",
+                        help="root-only disposable Docker/XFS rehearsal venue")
     parser.add_argument("--build", action="store_true", help="rebuild the image first")
     parser.add_argument("--shell", action="store_true", help="interactive shell instead of pytest")
     parser.add_argument(
@@ -460,6 +462,11 @@ def docker_command(args: argparse.Namespace, root: Path, tag: str) -> list[str]:
            "--init", "--rm", "--name",
            f"ta-oracle-{os.getpid()}-{getattr(args, 'ci_name', 'run')}",
            "-v", f"{_docker_path(root)}:/src:ro"]
+    if getattr(args, "docker_engine", False):
+        if not args.as_root or getattr(args, "required_runner", False):
+            raise SystemExit("--docker-engine requires --as-root")
+        run += ["-v", "/var/run/docker.sock:/var/run/docker.sock",
+                "-e", "TA_REHEARSAL_BASE_IMAGE=" + tag]
     for pair in args.env:
         if "=" not in pair:
             raise SystemExit(f"[oracle] --env wants KEY=VALUE, got {pair!r}")

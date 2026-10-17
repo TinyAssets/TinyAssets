@@ -1847,9 +1847,25 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
         os.close(lock)
 
 
+def verify(data: Path, store: Path) -> None:
+    """Read back the committed transaction, including its final marker and quotas."""
+    marker = _marker(data)
+    journal = json.loads((data / ".owner-cutover.json").read_text())
+    if (marker.get("owner_daemon") != 1 or marker.get("box_layout") != "owner-box"
+            or marker.get("state") != "stable" or journal.get("phase") != "complete"):
+        raise RuntimeError("owner cutover is not complete")
+    if _durable_tree(data, exclude=(".owner-cutover.json",)) != journal["final_manifest"]:
+        raise RuntimeError("committed shared manifest changed")
+    for owner in journal["plan"]:
+        tree = store / str(owner["uid"])
+        if _durable_tree(tree) != journal["owner_manifests"][str(owner["uid"])]:
+            raise RuntimeError("committed owner manifest changed")
+        verify_owner(store, tree, owner["uid"], owner["quota"])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("check", "preflight", "apply", "census"))
+    parser.add_argument("mode", choices=("check", "preflight", "apply", "census", "verify"))
     parser.add_argument("data", type=Path)
     parser.add_argument("--dry-run", action="store_true",
                         help="only read and report the detailed cutover census")
@@ -1868,6 +1884,11 @@ def main() -> int:
             if args.store is None:
                 parser.error("preflight requires store")
             preflight(args.data, args.store)
+            return 0
+        if args.mode == "verify":
+            if args.store is None:
+                parser.error("verify requires store")
+            verify(args.data, args.store)
             return 0
         if not all((args.store, args.backup, args.box_backup)):
             parser.error("apply requires store and both paired backups")

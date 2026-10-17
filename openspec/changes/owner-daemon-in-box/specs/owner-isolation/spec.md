@@ -31,6 +31,16 @@ custody and its platform vault directory.
 - **AND** post-cutover owner writes are lost as stated in the census and runbook
 - **AND** changed shared authority, deletion frontiers, source bytes or unsafe restore receipts still refuse
 
+#### Scenario: The archive rehearsal uses the deployment transaction
+- **WHEN** the operator runs the archive harness with a candidate image
+- **THEN** disposable network-less containers on a real XFS project-quota loop mount use the deployment container builder for read-only preflight, ready census, resumable apply and final manifest/quota/marker verification
+- **AND** kills between owner trees and after seeding resume to the uninterrupted generation's manifests
+- **AND** every migrated owner serves history, pending requests, pause/resume and broker plan reads through owner processes and router forwarding
+- **AND** an owner without a model source can complete shared-door connect and model-use confirmation on a disposable clone without changing the restore generation's shared authority
+- **AND** paired restores before and after a serving write compare against the original owner-split archive
+- **AND** reports contain fixed step names, counts and PASS/FAIL without identities, paths or content
+- **AND** a generated two-owner, four-center archive with rows in all six census classes and all non-conflicting drop reasons exercises the entire harness in the root Linux oracle venue
+
 
 ### Requirement: Owner work runs in the owner's box
 

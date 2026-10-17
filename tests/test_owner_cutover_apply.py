@@ -208,6 +208,25 @@ def test_refused_census_makes_no_cutover_writes(cutover):
     assert (_fingerprint(data), _fingerprint(store)) == before
 
 
+@pytest.mark.parametrize('changed', ['owner', 'shared', 'marker'])
+def test_final_verify_refuses_changed_committed_output(cutover, changed):
+    data, store, *_ = cutover
+    migration.apply(*cutover)
+    migration.verify(data, store)
+    if changed == 'owner':
+        (store / '300001/a1/notes.txt').write_text('changed owner output')
+    elif changed == 'shared':
+        _sql(data / '.broker/plans.db', "UPDATE plans SET tier='paid' WHERE owner='bob'")
+    else:
+        marker = json.loads((data / '.layout.json').read_text())
+        marker['owner_daemon'] = 0
+        (data / '.layout.json').write_text(json.dumps(marker))
+    before = _fingerprint(data), _fingerprint(store)
+    with pytest.raises(RuntimeError, match='manifest changed|not complete'):
+        migration.verify(data, store)
+    assert (_fingerprint(data), _fingerprint(store)) == before
+
+
 def test_completed_apply_restores_paired_owner_split(cutover, tmp_path):
     data, store, *_ = cutover
     before = _fingerprint(data)

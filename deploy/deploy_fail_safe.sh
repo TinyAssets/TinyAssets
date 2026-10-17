@@ -124,6 +124,64 @@
 #      bundle-dirty marker is set and normal deploys refuse until `--restore-bundle`
 #      clears it. On `rollback_needs_restore` the daemon is left stopped.
 set -uo pipefail
+
+# The disposable archive harness calls this exact container builder. Normal
+# deployments use its fixed production defaults and never enable fault injection.
+box_migration_container() {  # $1 = check|preflight|apply, then module arguments
+  local posture=(--user 0)
+  local data_mount="${BOX_MIGRATION_DATA:-tinyassets-data}:/data:ro"
+  local extra=()
+  if [ "$1" != "check" ]; then
+    local store_device
+    store_device="${BOX_MIGRATION_DEVICE:-$(findmnt --mountpoint "${BOX_MIGRATION_STORE:-/var/lib/boxhostd/owners}" -no SOURCE)}" || return 1
+    if [[ "$store_device" != /dev/* ]] || { [ "${BOX_MIGRATION_DISPOSABLE:-0}" != 1 ] && [ ! -b "$store_device" ]; }; then
+      err "box migration: owner store has no block device: ${store_device}"
+      return 1
+    fi
+    # Preflight only reads (DAC_OVERRIDE) and queries quotas (SYS_ADMIN);
+    # ownership and mode capabilities belong to apply alone.
+    posture=(--user 0 --cap-add DAC_OVERRIDE --cap-add SYS_ADMIN)
+    extra=(--device "${store_device}:${store_device}:r")
+    if [ "$1" = "apply" ]; then
+      posture+=(--cap-add CHOWN --cap-add FOWNER --cap-add FSETID)
+      data_mount="${BOX_MIGRATION_DATA:-tinyassets-data}:/data"
+      extra+=(-v "${MIGRATION_BACKUP_DIR}:/backup:ro" \
+        --mount type=bind,src=${BOX_MIGRATION_STORE:-/var/lib/boxhostd/owners},dst=/box-store)
+    else
+      extra+=(--mount type=bind,src=${BOX_MIGRATION_STORE:-/var/lib/boxhostd/owners},dst=/box-store,readonly)
+    fi
+  fi
+  local entry=(-m tinyassets.box_layout_migration)
+  if [ -n "${BOX_REHEARSAL_INTERRUPT:-}" ] && [ "$1" = apply ]; then
+    entry=(-c 'import importlib,os,sys,signal
+boundary=sys.argv.pop(1)
+migration=importlib.import_module("tinyassets.box_layout_migration")
+def trace(frame,event,arg):
+ if ((boundary=="seed" and event=="return" and frame.f_code is migration._seed_shared.__code__) or
+     (boundary=="trees" and event=="call" and frame.f_code is migration._copy.__code__ and
+      frame.f_locals["uid"]!=int(os.environ["BOX_REHEARSAL_FIRST_UID"]))):
+  os.kill(os.getpid(),signal.SIGKILL)
+sys.setprofile(trace)
+raise SystemExit(migration.main())' "$BOX_REHEARSAL_INTERRUPT")
+    extra+=(-e "BOX_REHEARSAL_FIRST_UID=${BOX_REHEARSAL_FIRST_UID}")
+  fi
+  timeout "${MIGRATION_TIMEOUT:-1800}" docker run --rm --cap-drop ALL ${posture[@]+"${posture[@]}"} \
+    --security-opt no-new-privileges=true --network none --memory=2g --memory-swap=2g \
+    --tmpfs /tmp:rw,size=512m,mode=1777 \
+    -v "$data_mount" ${extra[@]+"${extra[@]}"} \
+    --entrypoint python "$NEW_IMAGE" -B "${entry[@]}" "$@"
+}
+if [ "${1:-}" = --box-migration-container ]; then
+  [ "$#" -ge 7 ] || exit 2
+  BOX_MIGRATION_DISPOSABLE=1
+  BOX_MIGRATION_DATA="$2" BOX_MIGRATION_STORE="$3" BOX_MIGRATION_DEVICE="$4"
+  MIGRATION_BACKUP_DIR="$5" NEW_IMAGE="$6"
+  shift 6
+  box_migration_container "$@"
+  exit $?
+fi
+unset BOX_MIGRATION_DISPOSABLE BOX_MIGRATION_DATA BOX_MIGRATION_STORE BOX_MIGRATION_DEVICE
+unset BOX_REHEARSAL_INTERRUPT BOX_REHEARSAL_FIRST_UID
 # Freshness of the pre-move snapshot is measured from this process, not from
 # an earlier repair. A backup whose name is older than this epoch is not proof.
 DEPLOY_STARTED_EPOCH="${DEPLOY_STARTED_EPOCH:-$(date +%s)}"
@@ -1963,36 +2021,7 @@ rm -f "$MIGRATION_DETAIL_FILE"
 # rc 0 on that candidate is a conflict. An owner-box candidate applies on
 # rc 10 after a fresh verified paired snapshot: the single owner-daemon
 # transaction. A committed final layout is never migrated a second time.
-box_migration_container() {  # $1 = check|preflight|apply, then module arguments
-  local posture=(--user 0)
-  local data_mount="tinyassets-data:/data:ro"
-  local extra=()
-  if [ "$1" = "apply" ] || [ "$1" = "preflight" ]; then
-    local store_device
-    store_device="$(findmnt --mountpoint /var/lib/boxhostd/owners -no SOURCE)" || return 1
-    if [[ "$store_device" != /dev/* || ! -b "$store_device" ]]; then
-      err "box migration: owner store has no block device: ${store_device}"
-      return 1
-    fi
-    # Preflight only reads (DAC_OVERRIDE) and queries quotas (SYS_ADMIN);
-    # ownership and mode capabilities belong to apply alone.
-    posture=(--user 0 --cap-add DAC_OVERRIDE --cap-add SYS_ADMIN)
-    extra=(--device "${store_device}:${store_device}:r")
-    if [ "$1" = "apply" ]; then
-      posture+=(--cap-add CHOWN --cap-add FOWNER --cap-add FSETID)
-      data_mount="tinyassets-data:/data"
-      extra+=(-v "${MIGRATION_BACKUP_DIR}:/backup:ro" \
-        --mount type=bind,src=/var/lib/boxhostd/owners,dst=/box-store)
-    else
-      extra+=(--mount type=bind,src=/var/lib/boxhostd/owners,dst=/box-store,readonly)
-    fi
-  fi
-  timeout "$MIGRATION_TIMEOUT" docker run --rm --cap-drop ALL ${posture[@]+"${posture[@]}"} \
-    --security-opt no-new-privileges=true --network none --memory=2g --memory-swap=2g \
-    --tmpfs /tmp:rw,size=512m,mode=1777 \
-    -v "$data_mount" ${extra[@]+"${extra[@]}"} \
-    --entrypoint python "$NEW_IMAGE" -B -m tinyassets.box_layout_migration "$@"
-}
+
 if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
   box_probe="$(box_migration_container check /data 2>&1)"
   box_probe_rc=$?
@@ -2056,11 +2085,19 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
           fi
           log "box layout: applying one-time owner-daemon cutover using fresh snapshot ${MIGRATION_SNAPSHOT} (census, not the agent-files binding count)"
           box_backup="tinyassets-box-store-${MIGRATION_SNAPSHOT#tinyassets-snapshot-}"
+          box_detail="$(box_migration_container census /data 2>&1)"
+          if [ "$?" -ne 0 ]; then
+            migration_refused "check=owner_cutover_census ready=no"
+          fi
           box_apply="$(box_migration_container apply /data --store /box-store \
             --backup "/backup/${MIGRATION_SNAPSHOT}" \
             --box-backup "/backup/${box_backup}" 2>&1)"
           box_apply_rc=$?
           [ -z "$box_apply" ] || printf '%s\n' "$box_apply"
+          if [ "$box_apply_rc" -eq 0 ]; then
+            box_verify="$(box_migration_container verify /data --store /box-store 2>&1)"
+            box_apply_rc=$?
+          fi
           if [ "$box_apply_rc" -eq 0 ]; then
             MIGRATION_COMMITTED=1
             log "box layout committed; rollback point ${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}"

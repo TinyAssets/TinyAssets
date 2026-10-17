@@ -1354,3 +1354,78 @@ Reason-pass validation:
 No test skip, xfail, quarantine or assertion reduction was introduced. Tests
 whose expected disposition changed now assert the exact reason, counted drop
 and unchanged carried rows, in addition to source immutability/redaction.
+
+
+## Slice 6 archive-harness handoff (2026-10-17; incomplete)
+
+The old rc-10 rehearsal and owner-ID/path reports are deleted. The archive
+entry point delegates to `scripts/archive_rehearsal.py`. It stages only the
+supplied archive into disposable volumes, makes a fresh local snapshot pair,
+and creates a real XFS loop mount with `prjquota`. Development has used only
+generated synthetic archives; no production backup or data was accessed.
+
+The harness calls `deploy_fail_safe.sh --box-migration-container` directly.
+This is the same container builder used by deploy step 3d, including capability
+sets, block-device mapping, read-only preflight/census/verify mounts, writable
+apply mounts, private tmpfs, network denial and 2 GiB memory/swap bounds.
+Normal deployment clears disposable mount and interruption inputs. Step 3d now
+explicitly calls the ready census and final verification. The ordinary apply
+still owns all copying, row reconciliation, resumable publication and the final
+marker. The new verify entry point checks the sealed marker, shared/owner
+manifests and each real XFS project/quota. Mutation tests retain refusal for
+changed owner bytes, shared bytes and the final marker.
+
+The root synthetic rehearsal has demonstrated: setup, preflight, census,
+ordinary apply, final verification and paired restore before serving, including
+the existing GNU tar comparison against the original archive. The synthetic
+fixture has two owners with two centers each, rows in all six census classes,
+all four non-conflicting drop reasons and owners with no model source.
+
+**Acceptance is incomplete.** The crash profiler has returned a successful
+apply instead of the expected killed-process status. This finding recurred
+following the instrumentation change. Per AGENTS.md's repeated-finding handoff
+rule, no further crash repair was attempted, and no agent was dispatched.
+The full root test remains failing; it has not been skipped or weakened.
+The final failure is the `trees` boundary returning 0 instead of 137; the
+profiler also emits a shutdown `NoneType.__code__` exception to captured stderr.
+Its final receipt is `rehearsal-final.log` / `rehearsal-final.xml` under
+`%TEMP%/ta-s6-harness-validation/`.
+
+Serving code is implemented but has not been reached by the full harness:
+`OwnerDaemons`, separate owner mount namespaces/UIDs, the fixed owner mount,
+real router forwarding and broker Unix peer identities. It reads history and
+pending requests, exercises pause/resume and plan reads, and writes history.
+Reconnect code uses the real shared model-connect deposit and model-use
+reconciliation on an isolated disposable clone, preserving the original
+shared-authority restore fence. Neither this serving proof nor the subsequent
+paired restore is credited as passing. This venue is a process proof, not the
+separate native-sandbox isolation acceptance.
+
+Remaining: diagnose and prove both crash boundaries; reach and fix/validate
+serving, shared-door reconnect confirmation and the post-write byte-exact
+restore; obtain a completely passing root end-to-end receipt; then the lead
+runs the archive rehearsal. Task 6 remains unchecked. No push, merge, branch
+switch, new worktree, host git configuration change or deployment occurred.
+
+Required synthetic command:
+`python scripts/linux_oracle.py --as-root --docker-engine -- -q --no-header -p no:cacheprovider tests/test_box_move_rehearsal.py`.
+The explicit engine opt-in mounts the local Docker socket only for root venue
+runs; ordinary oracle invocations retain their existing posture.
+
+Lead command, **after** synthetic acceptance:
+`python scripts/rehearse_box_move.py --archive <absolute-tinyassets-data-YYYY-MM-DDTHH-MM-SSZ.tar.gz> --image tinyassets-c6-rehearsal:s6-<head>`.
+Build the image from that head beforehand. The harness does not build or pull.
+
+Harness validation receipts so far: root migration/layout/restore/deploy/oracle
+selection **203 passed, zero skips**, `root-final.log` / `root-final.xml`.
+Changed-file Ruff, strict OpenSpec validation and `git diff --check` pass.
+Whole-repository Ruff reports 33 existing findings in seven files; every one
+is byte-identical to the starting head (`ruff-all.json`). The full unprivileged
+selection finished with 1,658 passed, two root-permission failures, 27 root-fixture
+errors and two root-only skips. Every one except the new archive-harness skip
+has a passing execution in the 203-case root selection. All 35 structural guard
+files passed, covering 960 cases. XML reconciliation in `coverage.json` leaves
+exactly one unresolved case: the full synthetic archive harness. Its root
+receipt is one failure with zero skips, and is not credited as a pass.
+The commands selected 65 files, including every requested filename pattern and
+all structural GUARDS keys. No test assertion, skip or quarantine was loosened.

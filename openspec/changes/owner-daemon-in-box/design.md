@@ -444,6 +444,43 @@ or explicitly regenerated. Anything else refuses the cutover. The `--archive` re
 
 ### D6 as built (slice 6; final acceptance incomplete)
 
+The lead's archive command is:
+`python scripts/rehearse_box_move.py --archive <absolute-archive.tar.gz> --image tinyassets-c6-rehearsal:s6-<head>`.
+The archive must retain the `tinyassets-data-YYYY-MM-DDTHH-MM-SSZ.tar.gz`
+filename. The image must already be built from the checked-out head. Every
+container runs without a network. Development uses generated archives only.
+This harness implementation is not yet accepted: its root end-to-end run
+currently fails at crash injection. Serving, reconnect confirmation and the
+second restore have not been reached. The lead must wait for the synthetic
+root run to pass before using the archive command; see the audit handoff.
+The harness creates disposable Docker volumes and a real XFS loop mount with
+project quotas. It calls deploy's `box_migration_container` directly through
+the script's explicit disposable runner, sharing caps, mounts, tmpfs and memory
+limits. Both paths invoke read-only preflight, refusing census, ordinary apply
+and final manifest/quota/marker verification. Apply verifies before sealing the
+final owner-daemon marker; the extra verify command reads that sealed output.
+
+An uninterrupted generation establishes manifests, then the real paired
+restore returns to owner-split and GNU tar compares against the original input.
+The next apply is killed between owner trees, resumed and killed after shared
+seeding, then resumed to the same shared and owner manifests. Serving starts the
+real owner lifecycle manager, apps, router forwarding and broker server with
+kernel UID peers. This process venue uses private mount namespaces and the
+fixed owner mount; gVisor isolation remains separate acceptance. Every admitted
+center reads history and pending requests, pauses/resumes, reads its broker plan
+and writes history. Reconnect confirmation uses the real shared model-connect
+door and model-use reconciliation on a disposable clone: a new connection
+changes shared custody authority, which the paired restore must continue to
+fence. The original serving generation is then paired-restored with explicit
+owner-write-loss acceptance and compared again. Reports expose only fixed step
+names, numeric counts and PASS/FAIL.
+
+Synthetic proof venue:
+`python scripts/linux_oracle.py --as-root --docker-engine -- -q --no-header -p no:cacheprovider tests/test_box_move_rehearsal.py`.
+The Docker-engine opt-in is root-only and leaves ordinary oracle invocations
+without an engine socket. Task 6 remains open for the lead's archive run and
+the remaining acceptance, regardless of synthetic results.
+
 `box_layout_migration` is the sole cutover module. Census reports six classes:
 owner, router, broker, published, dropped and regenerated, with per-table totals,
 per-owner counts and report-local account labels. Policy account paths are also
