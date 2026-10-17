@@ -47,8 +47,12 @@ Nothing deploys until slice 7.
       - Stripe and plan writes go to the shared plan store. A missing plan
         fails loudly; it never reads as `free`.
       - [x] Hook create and revoke publish to the router map (slice 2).
-      3c-1 implementation removes the CLI stack and ports shared tests to HTTP;
-      Linux selection validation is in progress. No deployment in this slice.
+      3c-1 complete locally: CLI stack removed; shared tests use HTTP.
+      Linux PR selection: 1,191 files in eight completed chunks, 23,463 passed,
+      99 existing skips, zero failures. Required path/store guards: 61 passed,
+      one historical-merge skip in the oracle snapshot. Ruff: 234 changed Python
+      files pass. Retirement inventory and full logs are in the build scratchpad.
+      No deployment in this slice; 3c-2, 3c-3 and task 6 remain separate work.
       Build order: 3c-1 deletes the CLI stack and provider-specific code;
       3c-2 moves the flows to the door with broker custody, refresh and
       RFC 7009 revoke; 3c-3 adds the plan store. Decisions: design.md D3c.
