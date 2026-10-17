@@ -198,7 +198,7 @@ def test_get_status_without_home_is_repeatable_and_side_effect_free(
     assert first["active_host"] == {
         "host_id": "host",
         "served_llm_type": "any",
-        "llm_endpoint_bound": "ollama",
+        "llm_endpoint_bound": "broker",
         "api_key_providers_enabled": False,
     }
     assert first["release_state"]["git_sha"] == "candidate-sha"
@@ -1102,7 +1102,7 @@ def test_newborn_without_a_credential_gets_onboarding_not_a_raw_error(
     assert out["reason"] == "setup_required"
     assert "All providers exhausted" not in rendered
     assert "set_engine" not in rendered
-    assert "not exposed by the advertised handles" in rendered
+    assert any(path["path"] == "/app/connections" for path in out["setup_paths"])
 
 
 def test_setup_required_reply_is_platform_authored_not_the_universe_voice(
@@ -1229,18 +1229,12 @@ def test_held_payload_does_not_invoke_a_second_provider_call(
 def test_unreadable_config_never_claims_the_engine_is_missing(
     data_dir, monkeypatch
 ):
-    """Codex ADAPT round 2 (2026-07-25), reviewer's exact repro.
-
-    `load_universe_config` degrades a corrupt config to a default
-    `UniverseConfig`, whose `engine_source` is the same value that means "the
-    founder never chose an engine". Without a separate parseability probe, a
-    corrupt config reads as "no engine yet" — losing the founder's recorded
-    choice AND hiding that their config is broken.
-    """
+    """A broken config cannot hide an existing broker-backed HTTP model."""
     from tinyassets.universe_server import converse
 
     _login("founder-1")
     uid = _create_via_action(data_dir, monkeypatch)
+    _attach_engine_credential(data_dir / uid)
     (data_dir / uid / "config.yaml").write_text(
         "engine_source: [unterminated\n", encoding="utf-8"
     )
@@ -1254,16 +1248,12 @@ def test_unreadable_config_never_claims_the_engine_is_missing(
 def test_non_string_engine_source_does_not_crash_the_failing_turn(
     data_dir, monkeypatch
 ):
-    """Codex ADAPT round 2 (2026-07-25): `engine_source: 7` parses fine.
-
-    `_build_config` assigns YAML values without type coercion, so a non-string
-    reaches the comparison. An AttributeError there would escape while we are
-    already handling the founder's failed turn.
-    """
+    """Old config values cannot replace the registered HTTP model's failure."""
     from tinyassets.universe_server import converse
 
     _login("founder-1")
     uid = _create_via_action(data_dir, monkeypatch)
+    _attach_engine_credential(data_dir / uid)
     (data_dir / uid / "config.yaml").write_text("engine_source: 7\n", encoding="utf-8")
     _engine_raises(monkeypatch, _exhausted())
 

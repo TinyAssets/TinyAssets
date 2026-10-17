@@ -95,20 +95,25 @@ def runner_env(tmp_path, monkeypatch, authenticate_request):
 
     from tinyassets import universe_server as us
     provider_calls = importlib.import_module("tinyassets.providers.model_call")
-    from tests.test_run_provider_session import (
-        _CountingProvider,
-        _seed_serving_assignment,
-    )
+    from tests.support.http_model import seed_http_assignment
+    from tests.test_run_provider_session import _CountingProvider
     from tinyassets.providers.router import ProviderRouter
 
     importlib.reload(us)
-    _seed_serving_assignment(
+    provider_name = seed_http_assignment(
         base,
         owner_user_id="tester",
         universe_id=RUNNER_UNIVERSE,
     )
-    provider = _CountingProvider()
+    provider = _CountingProvider(name=provider_name)
     provider_router = ProviderRouter({provider.name: provider})
+
+    def resolve_fixture(definition):
+        assert "api_key_http:" + definition.id == provider.name
+        return provider
+
+    monkeypatch.setattr("tinyassets.providers.provider_resolver.provider_for_definition",
+                        resolve_fixture)
 
     def governed_provider_call(
         prompt,
