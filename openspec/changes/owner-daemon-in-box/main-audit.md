@@ -1176,4 +1176,47 @@ final census/migration modules after they run, their deploy wiring, and old-layo
 deploy/backup/quota/rehearsal branches. `.premigration` copying in the protected
 box migration remains owned by slice 6, then deleted with that migration.
 
-Validation and final line counts are recorded below after the Linux runs.
+Diff for this compatibility subset: **184 product lines removed, 50 added in
+10 product files** (including the two fantasy-package readers); no whole
+product module was deleted because the protected migration still imports the
+consent-move module. Across product, tests and this change record the first
+commit is 25 files, 463 deletions and 281 additions. `scripts/check_shapes.py`
+and every slice 6 protected file are unchanged.
+
+Validation:
+- Ruff on every changed Python file, diff whitespace checks and commit hooks:
+  passed. The hygiene gate against `conv/c6-owner-daemon-s5` exited **0** after
+  the product commit, using `Registry row(s): S8` and the retired-test reason.
+  Its inventory is four added test functions and 11 whole-test removals;
+  surviving assertion counts never decreased.
+- Required broad selection: **133 files**, all touched tests then present,
+  `test_owner_*`, `test_broker_*`, `test_box*`, `test_router_store_guard`, and
+  every GUARDS key from `ci_structural_guards.py`, through the Linux oracle.
+  Initial result: **2,436 passed, three failed, 11 existing skips**. Two failures
+  exposed dangling imports (the protected migration's consent-module constant
+  and the fantasy package's premise helper); both were repaired. The third
+  was the root control proof run as UID 1001; it passed in its root venue.
+- Final focused oracle, all **13 touched test files** plus the protected box
+  migration's tests: **555 passed, five existing skips**, no failures, 127.22s.
+  Four skips require rsync; the fifth is the ASP stub when the real ASP engine
+  is installed. The final SQLite mutation example was added after that
+  snapshot; the complete latest router guard is covered by the root run below.
+- Final root oracle: **43 passed, zero skipped**, 2.89s. This includes all 33
+  latest router-store/structural guard cases, the control-socket proof, four
+  real-copy cases, two quota cases, the host marker case and two descriptor
+  erasure cases. Rsync was installed only inside the disposable oracle, which
+  was closed afterwards. Across the required selection, the only unexecuted
+  existing cases are the ASP stub with the real engine installed and the local
+  driver disk-bound case when that driver declares no disk bound; neither is
+  counted as a pass.
+- An extra whole-file root run produced **35 passed, four skipped and one
+  failure**: the live-WAL preflight read test changes SHM bytes when root can
+  write its read-only fixture. That case passed in both unprivileged runs;
+  root is the wrong venue for its permission proof. No protected migration
+  code or test was changed to accommodate it.
+
+Receipts outside the repository:
+`C:/Users/Jonathan/AppData/Local/Temp/c6-s6a-validation/` (selection, broad log,
+JUnit and hygiene body), `c6-s6a-final-focused/` (final focused log/JUnit), and
+`c6-s6a-root/s6a-root-final.log|xml` (final root proof), under the same Temp root.
+No deployment, push, merge, branch switch or production access occurred.
