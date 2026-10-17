@@ -110,8 +110,7 @@ def test_account_deletion_removes_former_home_receipts_and_preserves_other_owner
     else:
         with closing(sqlite3.connect(tmp_path / DB_FILENAME)) as conn, conn:
             conn.execute("DELETE FROM founder_home WHERE founder_sub=?", (A,))
-    receipt = delete_account(tmp_path, founder_sub=A, cancel_billing=lambda home: "cancelled",
-                             delete_identity=lambda sub: "deleted")
+    receipt = delete_account(tmp_path, founder_sub=A)
     assert receipt["unfinished_phases"] == []
     with closing(sqlite3.connect(tmp_path / DB_FILENAME)) as conn:
         owners = conn.execute("SELECT owner_user_id FROM owner_view_receipts").fetchall()

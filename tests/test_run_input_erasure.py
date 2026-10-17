@@ -41,12 +41,7 @@ def test_real_account_erasure_follows_envelope_owner_after_home_rebind(tmp_path)
     daemon_server.set_founder_home(
         tmp_path, founder_sub="owner", universe_id="u-next", platform_generated=True
     )
-    receipt = account_deletion.delete_account(
-        tmp_path,
-        founder_sub="owner",
-        cancel_billing=lambda _: "none",
-        delete_identity=lambda _: "deleted",
-    )
+    receipt = account_deletion.delete_account(tmp_path, founder_sub="owner")
     assert receipt["unfinished_phases"] == []
     with runs._connect(tmp_path) as conn:
         assert [row[0] for row in conn.execute("SELECT owner_id FROM run_input_admissions")] == [

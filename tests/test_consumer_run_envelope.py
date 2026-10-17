@@ -177,8 +177,7 @@ def test_account_erasure_removes_common_envelope_after_home_rebind(store):
     reserve(store, str(uuid.uuid4()), setup(store))
     (store / "u-next").mkdir()
     set_founder_home(store, founder_sub=OWNER, universe_id="u-next", platform_generated=True)
-    receipt = delete_account(store, founder_sub=OWNER, cancel_billing=lambda _: "none",
-                             delete_identity=lambda _: "deleted")
+    receipt = delete_account(store, founder_sub=OWNER)
     assert receipt["unfinished_phases"] == []
     with sqlite3.connect(runs_db_path(store)) as conn:
         assert conn.execute("SELECT count(*) FROM run_input_admissions").fetchone()[0] == 0

@@ -265,8 +265,7 @@ def test_account_deletion_removes_the_persons_rows_everywhere_and_only_theirs(
     bobs_about_a = save_app_ui(base, owner_user_id=B, universe_id=HOME_A,
                                expected_revision=0, changes={"ui_library": [_bundle("b")]})
 
-    delete_account(base, founder_sub=A, cancel_billing=lambda home: "cancelled",
-                   delete_identity=lambda sub: "deleted")
+    delete_account(base, founder_sub=A)
 
     assert get_app_ui(base, owner_user_id=A, universe_id=HOME_A)["revision"] == 0
     assert get_app_ui(base, owner_user_id=A, universe_id=HOME_B)["revision"] == 0

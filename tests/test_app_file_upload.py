@@ -390,8 +390,7 @@ def test_expiry_binding_release_and_erasure_use_existing_custody(app):
                 [other])
     assert gone[0] == 409 and gone[2] == 0
     # Owner erasure removes the app-uploaded custody through the existing path.
-    account_deletion.delete_account(base, founder_sub=A, cancel_billing=lambda _: "none",
-                                    delete_identity=lambda _: "deleted")
+    account_deletion.delete_account(base, founder_sub=A)
     assert rows(base, "SELECT COUNT(*) FROM run_file_objects WHERE owner_id=? AND state='ready'",
                 A) == [(0,)]
     with author_connection(base) as conn:

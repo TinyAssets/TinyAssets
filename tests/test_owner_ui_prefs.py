@@ -99,8 +99,7 @@ def test_deleting_an_account_takes_its_preferences_and_no_one_elses(tmp_path, mo
     _write(tmp_path, owner=A)
     _write(tmp_path, owner=B)
 
-    receipt = delete_account(tmp_path, founder_sub=A, cancel_billing=lambda home: "cancelled",
-                             delete_identity=lambda sub: "deleted")
+    receipt = delete_account(tmp_path, founder_sub=A)
 
     assert receipt["unfinished_phases"] == []
     assert _read(tmp_path, owner=A) == {}

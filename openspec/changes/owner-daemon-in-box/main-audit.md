@@ -1520,3 +1520,84 @@ legacy launcher, box_tools/start_exec bridge modules and slice 6 migration/deplo
 cleanup remain the separately deferred work from the briefs.
 
 Validation receipts and final local commit identities are appended below.
+
+
+Native-platform validation limit: the existing
+`test_in_platform_agent_systems::test_a_directory_junction_is_never_followed`
+is Windows-only and is skipped by the Linux selection. A native Windows run
+was attempted (`windows.xml`) but failed during the existing home fixture:
+`_seed_serving_assignment` requires the Unix-only in-process broker double,
+so registration raises `the credential broker is not running` before junction
+assertions. This case is **unverified**, never counted as a pass. No skip or
+fixture bypass was added for it.
+
+
+Caller-port follow-up: remove the deleted billing/identity callback arguments
+from the 11 remaining local-erasure fixture modules without reducing any
+assertion. `test_delivery_account_deletion` now expects the local receipt's
+`not_configured`/`not_applicable` outcomes while keeping every transactional
+rollback, child-row, peer-data and durable-receipt assertion. The manual model
+connect test sends the surviving fenced ERASE_ACCOUNT protocol directly and
+retains the failed-deposit/empty-vault proof. The deleted client's unused
+response-table constant is removed. Design D3's metering text now matches the
+broker-only descriptor/capability backfill.
+
+
+The broad run also exposed an obsolete structural expectation:
+`test_universe_path_io_guard::test_owner_box_callers_never_open_host_paths`
+required BoxExecutor/run_bound in every module, including universe_tools. The
+no-raw-I/O assertion remains for every listed module. Only universe_tools now
+requires its local tools_for return and forbids BoxExecutor and current_binding;
+every deferred daemon-side route retains its original transport assertion.
+This adds assertions rather than loosening the raw-I/O guard. No probe in
+scripts/check_shapes.py changed.
+
+
+Final validation for this subset:
+
+- Code/deletion commit: `32833fecc7b`; the caller/guard/receipt follow-up is
+  recorded in the next local commit. Nothing was pushed or deployed.
+- Required patterns, touched tests and all GUARDS-key files, plus all **34**
+  heavy files: **157 unprivileged files**, **3,957 case identities**. The broad
+  snapshot returned **3,942 passed, 14 failed, one existing Windows-only skip**.
+  It also emitted one broker-connection teardown/unraisable warning. This is
+  not reported as a successful single broad invocation.
+- The 14 initial failures were seven explicit-handle fixture dependencies in
+  branch_runner, two subsequently retired tests of the removed shared broker
+  phase, four remaining local deletion callers carrying removed callbacks,
+  and the obsolete BoxExecutor structural expectation for universe_tools.
+- Corrected local-tool/deferred-backend/deletion follow-up: **250 passed**, no
+  skips. All seven branch_runner failures passed in that complete-file rerun.
+- Remaining erasure caller files: **157 passed, one failed** on an obsolete
+  billing/identity receipt expectation. After porting those two assertions,
+  the whole delivery-account-deletion file passed **seven**, no skips.
+- Manual connection file after the direct broker-protocol port: **42 passed**.
+  Whole structural file after its local-tools pin update: **five passed**.
+- Proper root venue, owner control and destruction files: **six passed**, no
+  skips. They are separate from the unprivileged selection.
+- Combined JUnit identities: **4,161 surviving cases passed**, **zero unresolved
+  failures/errors**, **one unverified Windows-only case** described above.
+  The two retired broad failures are removed identities, not counted as passes.
+  Additional touched-file cases outside the initial selection are included.
+  `coverage-summary.json` verifies this union; this is combined venue and
+  follow-up coverage, not a claim that the initial broad invocation exited zero.
+- Additional focused runs passed **71** admission/broker/owner-process cases,
+  **246** catalog/package/storage cases, **35** local tool/hook/starter cases,
+  and **82** local deletion/tool/metering cases. These overlap the union and
+  are not added to its total.
+- Ruff on every Python file changed by this pass, commit hooks and diff
+  whitespace checks pass. No surviving assertion count dropped against this
+  pass's starting sha. The post-code-commit hygiene gate against
+  `conv/c6-owner-daemon-s5` exits **0** with the requested S8 registry line and
+  cumulative retirement reason; it is rerun after the final follow-up commit.
+
+Receipts: `C:/Users/Jonathan/AppData/Local/Temp/s6a1c-validation/` holds the
+selections, `final.log/xml`, `followup.log/xml`, `deletion-followup.log/xml`,
+`deletion-recheck.xml`, `manual-recheck.xml`, `structural-recheck.xml`, `root.xml`,
+`windows.xml`, `coverage-summary.json` and `hygiene-body.txt`. `initial.*` and
+`tools.*` are explicitly abandoned intermediate snapshots, not final receipts.
+
+The task remains partial: the exact 21 classified rows above, the repository
+D7 mode-fork scan, its remaining test ports and the final dual-path tick are
+still required. The reviewed 29 role-boundary entries are documented, not an
+executable exemption for the unfinished legacy paths.

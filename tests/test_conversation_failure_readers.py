@@ -152,12 +152,7 @@ def test_account_deletion_removes_failure_bytes_and_preserves_other_user(tmp_pat
     assert store.record_failure(a, f"principal:{A}", "A failed request", "unknown")
     assert store.record_failure(b, f"principal:{B}", "B failed request", "auth_invalid")
     expected_b = store.load_recent_readonly(b, f"principal:{B}")
-    delete_account(
-        tmp_path,
-        founder_sub=A,
-        cancel_billing=lambda _: "cancelled",
-        delete_identity=lambda _: "deleted",
-    )
+    delete_account(tmp_path, founder_sub=A)
     assert not a.exists()
     assert not list((tmp_path / ".deleting").rglob(".conversation_memory.db"))
     assert store.load_recent_readonly(b, f"principal:{B}") == expected_b

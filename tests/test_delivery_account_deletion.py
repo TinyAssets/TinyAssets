@@ -44,9 +44,7 @@ def test_each_party_erasure_counts_children_and_preserves_peer(delivery_env, pri
     home = "u-" + principal
     (base / home).mkdir(exist_ok=True)
     set_founder_home(base, founder_sub=principal, universe_id=home, platform_generated=True)
-    receipt = account_deletion.delete_account(
-        base, founder_sub=principal, cancel_billing=lambda _: "cancelled",
-        delete_identity=lambda _: "deleted")
+    receipt = account_deletion.delete_account(base, founder_sub=principal)
     assert receipt["unfinished_phases"] == []
     counts = receipt["rows_deleted"]
     with deliveries.transaction(base) as conn:
@@ -86,12 +84,10 @@ def test_satellite_failure_rolls_back_delivery_children_and_receipt(delivery_env
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     (base / "u-sender").mkdir(exist_ok=True)
     set_founder_home(base, founder_sub="sender", universe_id="u-sender", platform_generated=True)
-    receipt = account_deletion.delete_account(
-        base, founder_sub="sender", cancel_billing=lambda _: "cancelled",
-        delete_identity=lambda _: "deleted")
+    receipt = account_deletion.delete_account(base, founder_sub="sender")
     assert receipt["unfinished_phases"] == ["store:runs"]
-    assert receipt["billing"] == "cancelled"
-    assert receipt["identity"] == "deleted"
+    assert receipt["billing"] == "not_configured"
+    assert receipt["identity"] == "not_applicable"
     assert list((base / ".account-deletions").glob("*.json"))
 
 

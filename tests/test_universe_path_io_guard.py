@@ -437,5 +437,12 @@ def test_owner_box_callers_never_open_host_paths():
         raw = [(name, operation) for _, name, operation in _raw_ops(source)
                if name in functions]
         assert not raw, f"{module} opens an owner host path in its box route: {raw}"
-        assert ("run_bound(" in source or "BoxExecutor(" in source
-                or module.endswith("box_process.py") or module.endswith("workspace_git.py"))
+        if module == "tinyassets/universe_tools.py":
+            # Owner tools execute locally; the deferred daemon-side routes
+            # below still require their existing bound execution transport.
+            assert "return tools_for(universe_dir)" in source
+            assert "BoxExecutor(" not in source
+            assert "current_binding" not in source
+        else:
+            assert ("run_bound(" in source or "BoxExecutor(" in source
+                    or module.endswith("box_process.py") or module.endswith("workspace_git.py"))

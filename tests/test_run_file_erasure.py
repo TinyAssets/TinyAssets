@@ -66,12 +66,7 @@ def two_owners(tmp_path, monkeypatch):
 
 
 def erase(base):
-    return account_deletion.delete_account(
-        base,
-        founder_sub="owner",
-        cancel_billing=lambda _: "none",
-        delete_identity=lambda _: "deleted",
-    )
+    return account_deletion.delete_account(base, founder_sub="owner")
 
 
 def test_real_erasure_removes_only_owned_bodies_and_rows_after_rebind(two_owners):

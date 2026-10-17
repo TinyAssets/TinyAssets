@@ -65,10 +65,7 @@ def test_inflight_consent_pin_refuses_after_account_deletion(published, monkeypa
         writing = pool.submit(write)
         try:
             assert entered.wait(20), "pin writer did not reach database entry"
-            receipt = account_deletion.delete_account(
-                data["base"], founder_sub=data["publisher"],
-                cancel_billing=lambda home: "cancelled", delete_identity=lambda sub: "deleted",
-            )
+            receipt = account_deletion.delete_account(data["base"], founder_sub=data["publisher"])
             assert receipt["unfinished_phases"] == []
             with _agent_connect(data["base"]) as conn:
                 assert conn.execute(
@@ -132,10 +129,7 @@ def test_consent_pin_holds_tombstone_exclusion_through_commit(published, monkeyp
     )
     assert observed == ["excluded", "excluded"]
     gc.collect()
-    receipt = account_deletion.delete_account(
-        data["base"], founder_sub=data["publisher"],
-        cancel_billing=lambda home: "cancelled", delete_identity=lambda sub: "deleted",
-    )
+    receipt = account_deletion.delete_account(data["base"], founder_sub=data["publisher"])
     assert receipt["unfinished_phases"] == []
     with sqlite3.connect(packages.database_path(data["base"])) as conn:
         assert conn.execute("SELECT 1 FROM pins WHERE request_id=?", (request_id,)).fetchall() == []
@@ -195,10 +189,7 @@ def test_publisher_deletion_erases_evidence_preserves_recipient_and_release_hash
     # Publication fixtures leave collectible SQLite connections; release their
     # file handles before Windows stages the publisher's home directory.
     gc.collect()
-    receipt = account_deletion.delete_account(
-        data["base"], founder_sub=data["publisher"],
-        cancel_billing=lambda home: "cancelled", delete_identity=lambda sub: "deleted",
-    )
+    receipt = account_deletion.delete_account(data["base"], founder_sub=data["publisher"])
     assert receipt["unfinished_phases"] == []
     assert receipt["rows_deleted"]["command_center_release_evidence"] == 2
     assert receipt["rows_deleted"]["command_center_release_series"] == 1

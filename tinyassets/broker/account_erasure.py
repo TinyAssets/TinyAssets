@@ -1,18 +1,12 @@
-"""The daemon's account-deletion phase for broker-owned ledger rows.
+"""Broker-local transactional erasure of one principal's ledger rows.
 
-Only a principal crosses this interface. No table, path, SQL or home supplied
-by a caller can expand the deletion. The daemon has already tombstoned the
-account; filesystem deletion and external identity cleanup remain its phases.
+Only a principal and the fixed account scope select this operation. A caller
+cannot provide a table, path, SQL statement or home to expand the deletion.
 """
 from __future__ import annotations
 
 ACCOUNT_SCOPE = "account-deletion"
-TABLES = frozenset({
-    "outbound_connections", "outbound_connection_grants", "connection_capabilities",
-    "outbound_connector_artifacts", "outbound_connector_artifact_edges",
-    "agent_request_usage", "agent_request_attempts", "agent_request_usage_links",
-    "agent_request_dispatches", "browser_vault", "owner_policy",
-})
+
 
 
 def validate(principal, command_center):

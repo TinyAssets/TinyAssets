@@ -155,9 +155,7 @@ def test_revoked_scope_refuses_projection(store, mutation):
 def test_deleted_home_is_not_recreated_by_delayed_projection(store):
     row = reserve(store, str(uuid.uuid4()))
     complete(store, row["run_id"])
-    result = account_deletion.delete_account(
-        store, founder_sub=OWNER, cancel_billing=lambda _: "none",
-        delete_identity=lambda _: "deleted")
+    result = account_deletion.delete_account(store, founder_sub=OWNER)
     assert result["unfinished_phases"] == []
     with sqlite3.connect(runs_db_path(store)) as conn:
         assert conn.execute("SELECT count(*) FROM conversation_run_admissions").fetchone()[0] == 0
@@ -197,9 +195,7 @@ def _deletion_process(base, result):
     double = install(patch)
     patch.setattr(supervisor, "get_supervisor", registry.supervisor_for)
     try:
-        receipt = account_deletion.delete_account(
-            base, founder_sub=OWNER, cancel_billing=lambda _: "none",
-            delete_identity=lambda _: "deleted")
+        receipt = account_deletion.delete_account(base, founder_sub=OWNER)
         if receipt["unfinished_phases"]:
             raise RuntimeError(str(receipt["unfinished_phases"]))
         result.put("deleted")
@@ -304,9 +300,7 @@ def test_deleted_owner_erases_former_home_admission_too(store):
     project(store, row["admission_id"])
     (store / "u-next").mkdir()
     set_founder_home(store, founder_sub=OWNER, universe_id="u-next", platform_generated=True)
-    receipt = account_deletion.delete_account(
-        store, founder_sub=OWNER, cancel_billing=lambda _: "none",
-        delete_identity=lambda _: "deleted")
+    receipt = account_deletion.delete_account(store, founder_sub=OWNER)
     assert receipt["unfinished_phases"] == []
     with sqlite3.connect(runs_db_path(store)) as conn:
         assert conn.execute("SELECT count(*) FROM conversation_run_admissions").fetchone()[0] == 0
