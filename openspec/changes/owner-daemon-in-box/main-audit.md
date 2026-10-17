@@ -1117,10 +1117,10 @@ paired snapshot. Completed markers are idempotent; intermediate markers refuse.
 The old credential copy, CLI-home copy and second activity-conversion pass are
 deleted. Nine whole tests exclusively exercising those paths were retired;
 retained copy, inode, snapshot, workflow-retirement and restore guards remain.
-The final restore adds a narrow unchanged-cutover proof: exact source, shared
-output and owner-output manifests must match before returning to owner-split.
-Changed identities, billing, owner trees, source bytes or receipt permissions
-refuse. This does not permit rollback after serving writes.
+At that head restore required an unchanged cutover: exact source, shared
+output and owner-output manifests had to match before returning to owner-split.
+The priority follow-up below adds explicit owner-write loss while preserving
+identity, billing, source and receipt guards.
 
 Validation receipts are outside the repository under `%TEMP%/ta-s6-validation/`.
 The requested migration/layout/census/backup/restore/deploy/owner/broker patterns
@@ -1156,8 +1156,127 @@ removed or relaxed. No production backup/data was accessed; the remaining
 production-archive reference was removed from an older design note. No agent,
 host git configuration change, new worktree, push, merge or deployment was used.
 
-Task 6 stays unchecked. Remaining: an explicit disposition for the ownerless
-outside_switch singleton; restore proof after the serving stage writes; and
-the lead's real-data census, real-mount rehearsal and CI shards. The synthetic
-filesystem/SQLite cutover, process serving and pristine paired restore do not
-claim those missing acceptance steps.
+Task 6 stayed unchecked at that head. The priority follow-up below records
+the switch disposition and restore-after-serving proof; the lead's real-data
+census, real-mount rehearsal and CI shards remain outstanding.
+
+
+## Slice 6 priority pass (2026-10-17)
+
+Only the supplied redacted counts and synthetic fixtures were used. No data
+archive or production tree was accessed. The census now distinguishes retired
+public-reader/platform actors from unknown named principals: the former have
+no account and still follow real keys; the latter continue to refuse, as do
+contradictory keys. No owner is supplied by default.
+
+| Table / class | Attribution and disposition, derived from schemas/writers |
+| --- | --- |
+| `served_provider_budget_reservations` | `binding_id` to `provider_work_bindings`; that schema has no run key. Missing/unowned binding is a counted drop. |
+| `provider_work_bindings` | `owner_user_id` and `universe_id` admission; no owner-bearing secondary key in its writer. |
+| `authenticated_connections` | Authenticated `owner`; `connection_id` is a one-way correlation hash, not an owner-session foreign key (`connected_agents._schema`, `observe_mcp`). |
+| `owner_devices` | Authenticated `owner_user_id`; `device_id` is a registration UUID, with no session link. Tokens may move between owners, so a token hash cannot infer ownership (`storage/owner_devices.py`). |
+| `branch_versions`, `branch_schedules` | Publisher/owner actor and center, plus `branch_def_id` to `branch_definitions`. |
+| `branch_definitions`, `goals` | `author`; `universe:<center>` resolves through broker admission. Public rows retain their explicit publication rule; unowned private rows drop. A fork's parent is not its owner's identity. |
+| `agent_conversion_receipts` | `actor_id`, then `stage_id` to `agent_import_stages`. |
+| `agent_conversion_receipt_links` (`receipt_links`) | `actor_id`, `stage_id`, `receipt_digest` to the stage/receipt. |
+| `agent_conversion_receipt_owners` (`receipt_owners`) | `actor_id`, `receipt_digest` to the receipt. |
+| `agent_import_stages` | `actor_id`, or `published_definition_id` to the created definition's `author_id`; no run/center column in historical DDL. |
+| `agent_interchange_idempotency` | `actor_id`; operation-qualified `resource_id`: `stage_import` -> stage, `convert_export` -> receipt, `publish_stage` -> definition author. |
+| `owner_ui_prefs` | Authenticated `owner_user_id`; viewport, agent and preference names are not ownership keys. |
+| Checkpoints / writes | `thread_id` to runs; multiple runs must all agree on the same owner. A mixed-owner thread refuses. |
+| `outside_switch` | Router singleton: `set_enabled` accepts no owner and `admit` reads `id=1` before any owner's grant. Never copied to each box. |
+
+The historical interchange DDL and writers were read from the parent of the
+file-based-agent deletion commit in git; no data was used to infer joins.
+All reviewed owner classes drop only when the documented keys resolve to no
+account; unknown named principals and conflicting bindings still refuse.
+The lead's next census, not these synthetic inputs, establishes the remaining
+real-data refusal count.
+
+File classification is creator-backed (`storage_accounting`, center layout,
+LanceDB writers and sidecar consumers):
+
+| File class | Treatment |
+| --- | --- |
+| Admitted center contents, `.agent-sessions/<center>/`, consent/seed sidecars | Owner by admitted center; content copied verbatim. Socket files classify as regenerated (the existing inode preflight still refuses live special inodes); consent databases remain owner data. |
+| `runs/<run>.*`, archived and per-run directories | Owner through the run; legacy/unowned runs drop; conflicting ownership refuses. |
+| Root/per-center `lancedb`, provider `.runtime`, known process locks/PIDs/liveness, transient checkout staging | Regenerated; excluded from owner outputs and removed from the source after verified publication. Router `owner-sessions.db` is still extracted as a database before runtime classification. |
+| Legacy scratch, root activity logs, never-admitted center/session trees, retired CLI homes, stale database copy | Counted drops. CLI homes use permanent UID -> account for loss reporting. |
+| Center-local vault/credential entries | Dropped; census never opens the local vault document and migration never copies it into an owner output. |
+| Platform custody, broker policy-deletion markers/fence, shared router markers and published stores | Stay in the named shared class; broker custody is UID 1002, directories 0700/files 0600. |
+| Unknown entries | Refuse, with fully masked patterns; no catch-all deletion or assumed owner. |
+
+`file_patterns` groups counts by class with variable names replaced by
+`<center>`, `<owner>`, `<id>` and `<file>`. `losses` groups dropped row-table
+classes and masked file classes by pseudonymous account, with a separate
+unattributed bucket. `credentials` retains each account's carried HTTP and
+dropped CLI counts. The first sorted JSON field, `account_model_source_summary`,
+says **every account reconnects a model source** when the carry count is zero.
+The supplied redacted input had zero carried sources for all six accounts and
+322 dropped CLI records on one; it is not presented as a new census result.
+The reconnect destination is the shared-door model-connect and model-use
+confirmation path.
+
+`credentials_outside_broker_custody` previously counted one file for each
+center-local `.credential-vault.json`, not slots or accounts. The reported
+three are now the explicit `credential_custody.outside_broker_files_dropped`
+class. The synthetic malformed-local-vault fixture proves no JSON parsing is
+needed. Existing validated HTTP slots remain under
+`.platform/credential-vaults/` with `.broker/credential-custody.db` metadata.
+The final broker identity schema (including secret/revocation tables and
+permanent-identity triggers) is initialized before the restore receipt is sealed.
+
+Restore proof uses two separate owner-daemon processes over their real HTTP
+sockets. Each of four centers reads its migrated history/request, then writes
+new chat history and a pending request through authenticated test probes calling
+the production storage operations, reads them through production app routes,
+and exercises real pause/resume and broker plan reads. After processes stop,
+the real tar/SQLite/restore shell returns every pre-cutover file byte-for-byte
+and removes both active owner-box trees. This proves storage/serving/restore;
+it does not claim model inference, real quota mounts or native sandbox isolation.
+
+`CUTOVER_ACCEPT_OWNER_WRITE_LOSS=1` explicitly accepts losing post-cutover owner
+writes. Default restore refusals are retained. The opt-in permits only owner
+output changes, ingress-secret contents and the derived next-wake index;
+logical identity schema/rows and every other shared file remain fenced. Eight
+mutation cases retain refusal for identity, admission, deletion, billing,
+destruction, receipt permissions, source bytes and unexpected owner trees.
+The census, D6 and cutover runbook state that restored owner-split data loses
+post-cutover chats, pending requests, pause and other owner changes.
+
+Implementation commit: `04918da8a6a`. Validation receipts are outside the
+repository at `%TEMP%/ta-s6-priority-validation/`. Task 6 stays unchecked:
+the lead owns the real-data census, real-mount rehearsal, CI shards and independent
+review. No agent dispatch, new worktree, git configuration change, branch change,
+push, merge or deployment was performed.
+
+
+Priority validation:
+- Final touched/root/census/restore and root control/destruction selection:
+  **66 passed, zero skipped**, `root-verified.log` / `root-verified.xml`.
+- Requested migration/layout/census/backup/restore/deploy/owner/broker patterns
+  plus every structural guard: **2,732 passed, one root-venue failure and four
+  root-venue skips**, `focused-user.log` / `focused-user.xml`. The failed kernel
+  control case and both skipped owner-destruction cases passed in the 66-test
+  root run. The remaining backup-root and special-bit copy cases passed **2/2** under
+  root (`root-remaining.log` / `.xml`); every original failure/skip now has a
+  passing execution in its required venue. No skip is credited as a pass.
+- Structural/census/restore-authority recheck at committed implementation
+  HEAD: **992 passed, zero skipped**, `guards-head.log` / `guards-head.xml`.
+  This includes every `GUARDS` key after the final broker schema/mode fix.
+- Hygiene against `conv/c6-owner-daemon-s5` at `04918da8a6a`: **exit 0**, 29 tests
+  added, nine declared P2b whole-test removals, no retained assertion reductions.
+  The only nonblocking note remains the existing 50 ms socket-readiness wait.
+- Changed-file Ruff, strict OpenSpec validation and `git diff --check` pass.
+
+Intermediate restore runs caught two actual serving changes (wake reporting and
+first-lookup ingress secret creation), followed by a fixture SQLite-handle race
+between snapshot and source-manifest creation. The final implementation fences
+all non-ephemeral shared state. Synthetic seed connections close explicitly;
+cyclic initializer handles are collected before the stopped-writer snapshot,
+and the proof additionally asserts that snapshot bytes match the journal source
+manifest. No assertion, old-path probe, skip or quarantine was weakened.
+
+The final audit-only commit repeats the same hygiene command against its own
+HEAD; `hygiene-final.log` is the final exit-code receipt. The body retains
+`Registry row(s): S8` and the existing P2b `Test-Removal: retired -- ...` line.
