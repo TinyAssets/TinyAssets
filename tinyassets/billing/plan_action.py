@@ -119,8 +119,6 @@ class AccountPlan:
     seats: int
     interactive_reserve: int
     storage_bytes: int
-    seats_running: int
-    storage_used_bytes: int
     upgrade_available: bool
     upgrade_unavailable_reason: str | None
     can_purchase_on_surface: bool
@@ -145,10 +143,6 @@ class AccountPlan:
                 "interactive_reserve": self.interactive_reserve,
                 "storage_bytes": self.storage_bytes,
             },
-            "usage": {
-                "seats_running": self.seats_running,
-                "storage_bytes": self.storage_used_bytes,
-            },
             "upgrade_available": self.upgrade_available,
             "upgrade_unavailable_reason": self.upgrade_unavailable_reason,
             "billing_enabled": self.billing_enabled,
@@ -172,8 +166,6 @@ class AccountPlan:
                 "interactive_reserve": self.interactive_reserve,
             }
         )
-        if self.upgrade_unavailable_reason == "no_home_universe":
-            body["reason"] = "no_home_universe"
         return body
 
     def checkout_body(self) -> dict[str, Any]:
@@ -229,7 +221,7 @@ def account_plan(
             error=error,
         )
     started = _start_checkout(
-        home=str(snap["home"] or ""),
+        owner=user_id,
         origin=return_origin_for(
             chosen, requested_origin, configured_resource=configured_resource
         ),
@@ -288,8 +280,6 @@ def _plan(
         seats=int(limits.seats),
         interactive_reserve=int(limits.interactive_reserve),
         storage_bytes=int(limits.storage_bytes),
-        seats_running=int(snap["seats_running"]),
-        storage_used_bytes=int(snap["storage_used"]),
         upgrade_available=bool(snap["upgrade_available"]),
         upgrade_unavailable_reason=snap["upgrade_unavailable_reason"],
         can_purchase_on_surface=can_purchase,
@@ -308,30 +298,13 @@ def _plan(
 
 def _snapshot(identity: Any, user_id: str) -> dict[str, Any]:
     """Plan, limits, usage, and eligibility. No surface argument, on purpose."""
+    from tinyassets.billing.plan_store import BillingPlans
     from tinyassets.billing.stripe_adapter import billing_enabled
-    from tinyassets.onboarding import _read_home
-    from tinyassets.storage.subscription_state import TIER_FREE, get_plan
+    from tinyassets.storage import data_dir
     from tinyassets.usage_policy import TIER_ORDER, limits_for, upgrade_url
 
-    home = _read_home(identity)
     enabled = billing_enabled()
-    if not home:
-        limits = limits_for(TIER_FREE)
-        return {
-            "home": "",
-            "tier": TIER_FREE,
-            "ends_at": None,
-            "limits": limits,
-            "seats_running": 0,
-            "storage_used": 0,
-            "billing_enabled": enabled,
-            "upgrade_url": None,
-            "upgrade_available": False,
-            "upgrade_unavailable_reason": "no_home_universe",
-        }
-    from tinyassets.api.helpers import _universe_dir
-
-    plan = get_plan(_universe_dir(home))
+    plan = BillingPlans(data_dir()).read(user_id)
     tier = str(plan["tier"])
     limits = limits_for(tier)
     ends_at = plan["ends_at"]
@@ -344,12 +317,9 @@ def _snapshot(identity: Any, user_id: str) -> dict[str, Any]:
     else:
         available, reason = True, None
     return {
-        "home": home,
         "tier": tier,
         "ends_at": ends,
         "limits": limits,
-        "seats_running": _seats_running(home),
-        "storage_used": _storage_used(user_id),
         "billing_enabled": enabled,
         "upgrade_url": link,
         "upgrade_available": available,
@@ -357,62 +327,33 @@ def _snapshot(identity: Any, user_id: str) -> dict[str, Any]:
     }
 
 
-def _seats_running(universe_id: str) -> int:
-    """Running seats, read-only. No ledger yet means nothing is running."""
-    from tinyassets.storage import data_dir
-    from tinyassets.universe_seats import account_key, ledger_path, occupancy
-
-    root = data_dir()
-    db = ledger_path(root)
-    if not db.is_file():
-        return 0
-    counted = occupancy(account_key(universe_id, root=root), db=db)
-    return int(counted.get("running") or 0)
-
-
-def _storage_used(account_id: str) -> int:
-    """Accounted storage, read-only. No ledger yet means nothing is stored."""
-    from tinyassets.storage import data_dir
-    from tinyassets.storage_accounting import ledger_path, usage
-
-    root = data_dir()
-    if not ledger_path(root).is_file():
-        return 0
-    return int(usage(root, account_id).used_bytes)
-
-
-def _start_checkout(*, home: str, origin: str) -> dict[str, Any]:
+def _start_checkout(*, owner: str, origin: str) -> dict[str, Any]:
     """The existing checkout lease, unchanged. Returns the route's dict."""
-    from tinyassets.api.helpers import _universe_dir
     from tinyassets.billing import BillingUnavailable, create_checkout_session
+    from tinyassets.billing.plan_store import BillingPlans
     from tinyassets.billing.stripe_adapter import (
         AlreadySubscribed,
         BillingAmbiguous,
         checkout_params,
         key_is_live,
     )
+    from tinyassets.storage import data_dir
     from tinyassets.storage.subscription_state import (
         CHECKOUT_SESSION_SECONDS,
         CHECKOUT_WINDOW_SECONDS,
-        begin_checkout_attempt,
-        current_checkout_attempt,
-        record_checkout_session,
-        settle_checkout_attempt,
     )
 
-    if not home:
-        return {"error": "no_home_universe"}
-    universe_dir = _universe_dir(home)
+    plans = BillingPlans(data_dir())
     now = time.time()
     mode = "live" if key_is_live() else "test"
 
-    existing = current_checkout_attempt(universe_dir, now=now)
+    existing = plans.current_checkout_attempt(owner, now=now)
     if existing is not None and existing.get("__corrupt__"):
         return {"error": "checkout_already_in_progress"}
 
     if existing is not None and existing.get("mode") != mode:
-        settle_checkout_attempt(
-            universe_dir, attempt_id=str(existing.get("attempt_id") or "")
+        plans.settle_checkout_attempt(
+            owner, attempt_id=str(existing.get("attempt_id") or "")
         )
         existing = None
 
@@ -427,7 +368,7 @@ def _start_checkout(*, home: str, origin: str) -> dict[str, Any]:
     else:
         try:
             params = checkout_params(
-                universe_id=home,
+                owner_id=owner,
                 success_url=origin + "/app?subscribed=1",
                 cancel_url=origin + "/app?subscribed=0",
                 expires_at=int(now + CHECKOUT_SESSION_SECONDS),
@@ -436,8 +377,8 @@ def _start_checkout(*, home: str, origin: str) -> dict[str, Any]:
             return {"error": "already_subscribed"}
         except BillingUnavailable as exc:
             return {"error": "billing_unavailable", "detail": str(exc)}
-        attempt = begin_checkout_attempt(
-            universe_dir,
+        attempt = plans.begin_checkout_attempt(
+            owner,
             now=now,
             attempt_id=uuid.uuid4().hex,
             mode=mode,
@@ -453,20 +394,20 @@ def _start_checkout(*, home: str, origin: str) -> dict[str, Any]:
     emit_checkout_attempt(attempt_id)
     try:
         out = create_checkout_session(
-            universe_id=home,
+            owner_id=owner,
             attempt_id=attempt_id,
             params=attempt["params"],
         )
     except AlreadySubscribed:
-        settle_checkout_attempt(universe_dir, attempt_id=attempt_id)
+        plans.settle_checkout_attempt(owner, attempt_id=attempt_id)
         return {"error": "already_subscribed"}
     except BillingAmbiguous as exc:
         return {"error": "billing_unavailable", "detail": str(exc)}
     except BillingUnavailable as exc:
-        settle_checkout_attempt(universe_dir, attempt_id=attempt_id)
+        plans.settle_checkout_attempt(owner, attempt_id=attempt_id)
         return {"error": "billing_unavailable", "detail": str(exc)}
-    record_checkout_session(
-        universe_dir,
+    plans.record_checkout_session(
+        owner,
         attempt_id=attempt_id,
         session_id=out["id"],
         url=out["url"],

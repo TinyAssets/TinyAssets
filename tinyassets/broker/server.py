@@ -373,14 +373,28 @@ class _Connection:
             if op == "BOX_PING" and self._usage_leases:
                 await self.send_async(rf.control(rf.CONNECTION, {"op": "BOX_PONG"}))
                 return
+            if op == "BOX_PUBLISH":
+                from tinyassets.broker.owner_reads import publish
+
+                try:
+                    result = await asyncio.to_thread(
+                        publish, self._server._data_root, self._box_owner, doc)
+                    answer = {"op": "BOX_RESULT", "result": result}
+                    rf.control(rf.CONNECTION, answer)
+                except Exception:
+                    answer = {"op": "BOX_REFUSED"}
+                await self.send_async(rf.control(rf.CONNECTION, answer))
+                return
             if op == "BOX_READ":
-                from tinyassets.broker.owner_reads import read
+                from tinyassets.broker.owner_reads import PlanMissing, read
 
                 try:
                     result = await asyncio.to_thread(
                         read, self._server._data_root, self._box_owner, doc)
                     answer = {"op": "BOX_RESULT", "result": result}
                     rf.control(rf.CONNECTION, answer)
+                except PlanMissing:
+                    answer = {"op": "BOX_PLAN_MISSING"}
                 except Exception:
                     answer = {"op": "BOX_REFUSED"}
                 await self.send_async(rf.control(rf.CONNECTION, answer))
@@ -407,7 +421,10 @@ class _Connection:
             doc = self._box_scope(doc)
         elif self._role != OWNER:
             raise rf.FrameError("only the owner channel may send connection operations")
-        if op == "OWNER_IDENTITY":
+        if op == "BILLING_PLAN":
+            answer = await asyncio.to_thread(self._billing_plan, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "OWNER_IDENTITY":
             answer = await asyncio.to_thread(self._owner_identity, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "CENTER_ADMISSION":
@@ -537,6 +554,27 @@ class _Connection:
             return broker_request(self._server._data_root, doc["principal"], doc["request"])
         except (OSError, ValueError, LookupError, PermissionError, RuntimeError, sqlite3.Error):
             return {"op": "ROUTER_CREDENTIAL_REFUSED"}
+
+    def _billing_plan(self, doc):
+        from tinyassets.broker.owner_reads import PlanMissing, Plans
+
+        try:
+            if (set(doc) != {"op", "action", "args", "generation", "token"}
+                    or not isinstance(doc["args"], dict)):
+                raise ValueError("invalid billing operation")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                plans = Plans(self._server._data_root)
+                operations = {name: getattr(plans, name) for name in (
+                    "read", "owner_for", "owner_for_checkout", "bind_subscription",
+                    "apply_tier_event",
+                    "current_checkout_attempt", "begin_checkout_attempt",
+                    "record_checkout_session", "settle_checkout_attempt")}
+                result = operations[doc["action"]](**doc["args"])
+                return {"op": "BILLING_RESULT", "result": result}
+        except PlanMissing:
+            return {"op": "PLAN_MISSING"}
+        except Exception:
+            return {"op": "BILLING_REFUSED"}
 
     def _owner_identity(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.owner_identities import validate_principal

@@ -13,17 +13,21 @@ import time
 
 import pytest
 
-import tinyassets.api.helpers as helpers
 from tinyassets import onboarding
 from tinyassets.billing import stripe_adapter
-from tinyassets.storage.subscription_state import (
-    CHECKOUT_WINDOW_SECONDS,
-    begin_checkout_attempt,
-    current_checkout_attempt,
-    record_checkout_session,
-    settle_checkout_attempt,
-    state_db_path,
-)
+from tinyassets.broker.owner_reads import Plans
+from tinyassets.storage.subscription_state import CHECKOUT_WINDOW_SECONDS
+
+OWNER = "billing-owner"
+
+
+@pytest.fixture(autouse=True)
+def plans(tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    store = Plans(tmp_path)
+    store.set_plan(OWNER, "free", event_created=0)
+    return store
+
 
 PARAMS = {
     "price_id": "price_x",
@@ -40,12 +44,12 @@ PARAMS = {
 
 def test_two_concurrent_checkouts_cannot_both_begin(tmp_path):
     now = time.time()
-    first = begin_checkout_attempt(
-        tmp_path, now=now, attempt_id="a", mode="test", params=PARAMS,
+    first = Plans(tmp_path).begin_checkout_attempt(
+        OWNER, now=now, attempt_id="a", mode="test", params=PARAMS,
         lease_seconds=CHECKOUT_WINDOW_SECONDS,
     )
-    second = begin_checkout_attempt(
-        tmp_path, now=now, attempt_id="b", mode="test", params=PARAMS,
+    second = Plans(tmp_path).begin_checkout_attempt(
+        OWNER, now=now, attempt_id="b", mode="test", params=PARAMS,
         lease_seconds=CHECKOUT_WINDOW_SECONDS,
     )
     assert first is not None and first["attempt_id"] == "a"
@@ -54,16 +58,16 @@ def test_two_concurrent_checkouts_cannot_both_begin(tmp_path):
 
 def test_a_lease_expires_so_an_abandoned_checkout_does_not_lock_forever(tmp_path):
     now = time.time()
-    begin_checkout_attempt(
-        tmp_path, now=now, attempt_id="a", mode="test", params=PARAMS,
+    Plans(tmp_path).begin_checkout_attempt(
+        OWNER, now=now, attempt_id="a", mode="test", params=PARAMS,
         lease_seconds=60,
     )
-    assert begin_checkout_attempt(
-        tmp_path, now=now + 30, attempt_id="b", mode="test", params=PARAMS,
+    assert Plans(tmp_path).begin_checkout_attempt(
+        OWNER, now=now + 30, attempt_id="b", mode="test", params=PARAMS,
         lease_seconds=60,
     ) is None
-    assert begin_checkout_attempt(
-        tmp_path, now=now + 120, attempt_id="b", mode="test", params=PARAMS,
+    assert Plans(tmp_path).begin_checkout_attempt(
+        OWNER, now=now + 120, attempt_id="b", mode="test", params=PARAMS,
         lease_seconds=60,
     ) is not None
 
@@ -75,22 +79,21 @@ def test_settling_releases_only_the_lease_it_names(tmp_path):
     a session that is pending right now.
     """
     now = time.time()
-    begin_checkout_attempt(
-        tmp_path, now=now, attempt_id="live-one", mode="test", params=PARAMS,
+    Plans(tmp_path).begin_checkout_attempt(
+        OWNER, now=now, attempt_id="live-one", mode="test", params=PARAMS,
         lease_seconds=CHECKOUT_WINDOW_SECONDS,
     )
-    record_checkout_session(
-        tmp_path, attempt_id="live-one", session_id="cs_live", url="https://c/live"
+    Plans(tmp_path).record_checkout_session(OWNER, attempt_id="live-one", session_id="cs_live", url="https://c/live"
     )
 
     # An event for a DIFFERENT, older session arrives.
-    assert settle_checkout_attempt(tmp_path, session_id="cs_old") is False
-    assert settle_checkout_attempt(tmp_path, attempt_id="old-attempt") is False
-    assert current_checkout_attempt(tmp_path, now=now) is not None
+    assert Plans(tmp_path).settle_checkout_attempt(OWNER, session_id="cs_old") is False
+    assert Plans(tmp_path).settle_checkout_attempt(OWNER, attempt_id="old-attempt") is False
+    assert Plans(tmp_path).current_checkout_attempt(OWNER, now=now) is not None
 
     # Its own event does release it.
-    assert settle_checkout_attempt(tmp_path, session_id="cs_live") is True
-    assert current_checkout_attempt(tmp_path, now=now) is None
+    assert Plans(tmp_path).settle_checkout_attempt(OWNER, session_id="cs_live") is True
+    assert Plans(tmp_path).current_checkout_attempt(OWNER, now=now) is None
 
 
 def test_a_terminal_event_can_settle_before_the_session_id_was_recorded(tmp_path):
@@ -100,117 +103,47 @@ def test_a_terminal_event_can_settle_before_the_session_id_was_recorded(tmp_path
     match, the handler would 200, and the lease would sit until it expired.
     """
     now = time.time()
-    begin_checkout_attempt(
-        tmp_path, now=now, attempt_id="pending", mode="test", params=PARAMS,
+    Plans(tmp_path).begin_checkout_attempt(
+        OWNER, now=now, attempt_id="pending", mode="test", params=PARAMS,
         lease_seconds=CHECKOUT_WINDOW_SECONDS,
     )
-    assert current_checkout_attempt(tmp_path, now=now)["session_id"] is None
+    assert Plans(tmp_path).current_checkout_attempt(OWNER, now=now)["session_id"] is None
 
-    assert settle_checkout_attempt(tmp_path, session_id="", attempt_id="pending")
-    assert current_checkout_attempt(tmp_path, now=now) is None
+    assert Plans(tmp_path).settle_checkout_attempt(OWNER, session_id="", attempt_id="pending")
+    assert Plans(tmp_path).current_checkout_attempt(OWNER, now=now) is None
 
 
 def test_recording_a_session_onto_a_replaced_attempt_writes_nothing(tmp_path):
     """A Stripe call in flight must not revive a lease that has since been settled."""
     now = time.time()
-    begin_checkout_attempt(
-        tmp_path, now=now, attempt_id="gone", mode="test", params=PARAMS,
+    Plans(tmp_path).begin_checkout_attempt(
+        OWNER, now=now, attempt_id="gone", mode="test", params=PARAMS,
         lease_seconds=CHECKOUT_WINDOW_SECONDS,
     )
-    settle_checkout_attempt(tmp_path, attempt_id="gone")
+    Plans(tmp_path).settle_checkout_attempt(OWNER, attempt_id="gone")
 
-    assert record_checkout_session(
-        tmp_path, attempt_id="gone", session_id="cs_x", url="https://c/x"
+    assert Plans(tmp_path).record_checkout_session(OWNER, attempt_id="gone", session_id="cs_x", url="https://c/x"
     ) is False
-    assert current_checkout_attempt(tmp_path, now=now) is None
+    assert Plans(tmp_path).current_checkout_attempt(OWNER, now=now) is None
 
 
 def test_a_corrupt_attempt_blocks_rather_than_being_overwritten(tmp_path):
     """Whatever it was may still be payable."""
     now = time.time()
-    begin_checkout_attempt(
-        tmp_path, now=now, attempt_id="a", mode="test", params=PARAMS,
+    Plans(tmp_path).begin_checkout_attempt(
+        OWNER, now=now, attempt_id="a", mode="test", params=PARAMS,
         lease_seconds=CHECKOUT_WINDOW_SECONDS,
     )
     import sqlite3
 
-    with sqlite3.connect(state_db_path(tmp_path)) as conn:
+    with sqlite3.connect(Plans(tmp_path).path) as conn:
         conn.execute(
-            "UPDATE subscription_meta SET value = ? WHERE key = ?",
-            ("{not json", "checkout_attempt_v1"),
+            "UPDATE plans SET attempt = ? WHERE owner = ?",
+            ("{not json", OWNER),
         )
-    assert current_checkout_attempt(tmp_path, now=now).get("__corrupt__") is True
-    assert begin_checkout_attempt(
-        tmp_path, now=now, attempt_id="b", mode="test", params=PARAMS,
-        lease_seconds=CHECKOUT_WINDOW_SECONDS,
-    ) is None
-
-
-# --- migration from the pre-lease claim --------------------------------------
-
-
-def test_a_fresh_legacy_claim_still_blocks(tmp_path):
-    """Ignoring it on deploy would allow a second payable session immediately."""
-    import sqlite3
-
-    now = time.time()
-    state_db_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(state_db_path(tmp_path)) as conn:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS subscription_meta "
-            "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
-        conn.execute(
-            "INSERT INTO subscription_meta (key, value) VALUES (?, ?)",
-            ("checkout_claim_at", str(now - 60)),
-        )
-    assert begin_checkout_attempt(
-        tmp_path, now=now, attempt_id="a", mode="test", params=PARAMS,
-        lease_seconds=CHECKOUT_WINDOW_SECONDS,
-    ) is None, "a legacy claim inside its original window must keep blocking"
-
-
-def test_a_stale_legacy_claim_is_cleared_and_replaced(tmp_path):
-    import sqlite3
-
-    now = time.time()
-    state_db_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(state_db_path(tmp_path)) as conn:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS subscription_meta "
-            "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
-        conn.execute(
-            "INSERT INTO subscription_meta (key, value) VALUES (?, ?)",
-            ("checkout_claim_at", str(now - CHECKOUT_WINDOW_SECONDS - 10)),
-        )
-    assert begin_checkout_attempt(
-        tmp_path, now=now, attempt_id="a", mode="test", params=PARAMS,
-        lease_seconds=CHECKOUT_WINDOW_SECONDS,
-    ) is not None
-    with sqlite3.connect(state_db_path(tmp_path)) as conn:
-        left = conn.execute(
-            "SELECT COUNT(*) FROM subscription_meta WHERE key = 'checkout_claim_at'"
-        ).fetchone()[0]
-    assert left == 0, "the migrated claim must not linger"
-
-
-def test_a_corrupt_legacy_claim_fails_closed(tmp_path):
-    import sqlite3
-
-    now = time.time()
-    state_db_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(state_db_path(tmp_path)) as conn:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS subscription_meta "
-            "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
-        conn.execute(
-            "INSERT INTO subscription_meta (key, value) VALUES (?, ?)",
-            ("checkout_claim_at", "not-a-timestamp"),
-        )
-    assert begin_checkout_attempt(
-        tmp_path, now=now, attempt_id="a", mode="test", params=PARAMS,
+    assert Plans(tmp_path).current_checkout_attempt(OWNER, now=now).get("__corrupt__") is True
+    assert Plans(tmp_path).begin_checkout_attempt(
+        OWNER, now=now, attempt_id="b", mode="test", params=PARAMS,
         lease_seconds=CHECKOUT_WINDOW_SECONDS,
     ) is None
 
@@ -220,14 +153,15 @@ def test_a_corrupt_legacy_claim_fails_closed(tmp_path):
 
 @pytest.fixture
 def route(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from tinyassets.auth import middleware
+
     monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
     monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
-    monkeypatch.setattr(onboarding, "current_identity", lambda: None, raising=False)
-    monkeypatch.setattr(onboarding, "_read_home", lambda _i: "u-1")
-    monkeypatch.setattr(helpers, "_universe_dir", lambda u: tmp_path / u)
+    monkeypatch.setattr(middleware, "current_identity", lambda: SimpleNamespace(user_id=OWNER))
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
-    (tmp_path / "u-1").mkdir()
-    return tmp_path / "u-1"
+    return tmp_path
 
 
 class _Request:
@@ -237,7 +171,7 @@ class _Request:
 def _install_stripe(monkeypatch, *, create, params=None):
     import tinyassets.billing as billing
 
-    def _params(*, universe_id, success_url, cancel_url, expires_at):
+    def _params(*, owner_id, success_url, cancel_url, expires_at):
         return {**PARAMS, "expires_at": int(expires_at)}
 
     monkeypatch.setattr(stripe_adapter, "checkout_params", params or _params)
@@ -251,7 +185,7 @@ def test_a_second_click_returns_the_SAME_session(route, monkeypatch):
     is just the same checkout again."""
     calls: list[str] = []
 
-    def _create(*, universe_id, attempt_id, params):
+    def _create(*, owner_id, attempt_id, params):
         calls.append(attempt_id)
         return {"id": "cs_1", "url": "https://checkout.stripe.com/one"}
 
@@ -276,7 +210,7 @@ def test_an_ambiguous_failure_keeps_the_lease_so_a_retry_replays(route, monkeypa
     """
     seen: list[str] = []
 
-    def _create(*, universe_id, attempt_id, params):
+    def _create(*, owner_id, attempt_id, params):
         seen.append(attempt_id)
         if len(seen) == 1:
             raise stripe_adapter.BillingAmbiguous("Stripe unreachable: TimeoutError")
@@ -286,7 +220,7 @@ def test_an_ambiguous_failure_keeps_the_lease_so_a_retry_replays(route, monkeypa
 
     failed = asyncio.run(onboarding._handle_billing_checkout(_Request()))
     assert failed.status_code == 503
-    assert current_checkout_attempt(route, now=time.time()) is not None
+    assert Plans(route).current_checkout_attempt(OWNER, now=time.time()) is not None
 
     retried = asyncio.run(onboarding._handle_billing_checkout(_Request()))
     assert json.loads(bytes(retried.body))["url"].endswith("/one")
@@ -297,27 +231,27 @@ def test_a_definite_refusal_releases_the_lease(route, monkeypatch):
     """Stripe answered, so no session exists. A misconfiguration must not lock the
     universe out for the whole lease."""
 
-    def _create(*, universe_id, attempt_id, params):
+    def _create(*, owner_id, attempt_id, params):
         raise stripe_adapter.BillingUnavailable("Stripe rejected the request")
 
     _install_stripe(monkeypatch, create=_create)
 
     assert asyncio.run(onboarding._handle_billing_checkout(_Request())).status_code == 503
-    assert current_checkout_attempt(route, now=time.time()) is None
+    assert Plans(route).current_checkout_attempt(OWNER, now=time.time()) is None
 
 
 def test_a_test_mode_lease_is_never_resumed_against_a_live_key(route, monkeypatch):
     """Going live must not hand anyone a sandbox checkout URL."""
-    def _create(*, universe_id, attempt_id, params):
+    def _create(*, owner_id, attempt_id, params):
         return {"id": "cs_test", "url": "https://checkout.stripe.com/TEST"}
 
     _install_stripe(monkeypatch, create=_create)
     asyncio.run(onboarding._handle_billing_checkout(_Request()))
-    assert current_checkout_attempt(route, now=time.time())["mode"] == "test"
+    assert Plans(route).current_checkout_attempt(OWNER, now=time.time())["mode"] == "test"
 
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_live_x")
 
-    def _create_live(*, universe_id, attempt_id, params):
+    def _create_live(*, owner_id, attempt_id, params):
         return {"id": "cs_live", "url": "https://checkout.stripe.com/LIVE"}
 
     _install_stripe(monkeypatch, create=_create_live)
@@ -336,8 +270,8 @@ def test_a_subscription_event_no_longer_releases_the_lease(route, monkeypatch):
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", secret)
 
     now = time.time()
-    begin_checkout_attempt(
-        route, now=now, attempt_id="pending", mode="test", params=PARAMS,
+    Plans(route).begin_checkout_attempt(
+        OWNER, now=now, attempt_id="pending", mode="test", params=PARAMS,
         lease_seconds=CHECKOUT_WINDOW_SECONDS,
     )
 
@@ -350,7 +284,7 @@ def test_a_subscription_event_no_longer_releases_the_lease(route, monkeypatch):
                       "usage_type": "licensed"},
     }
     claim = stripe_adapter._entitlement_claim(
-        "u-1", "price_x", secret=secret, version="1"
+        OWNER, "price_x", secret=secret, version="1"
     )
     event = {
         "type": "customer.subscription.created",
@@ -359,7 +293,7 @@ def test_a_subscription_event_no_longer_releases_the_lease(route, monkeypatch):
         "data": {"object": {
             "id": "sub_1", "status": "active",
             "metadata": {
-                "universe_id": "u-1",
+                "owner_id": OWNER,
                 "tinyassets_entitlement_version": "1",
                 "tinyassets_entitlement_claim": claim,
             },
@@ -379,7 +313,7 @@ def test_a_subscription_event_no_longer_releases_the_lease(route, monkeypatch):
             yield payload
 
     assert asyncio.run(onboarding._handle_billing_webhook(_Hook())).status_code == 200
-    assert current_checkout_attempt(route, now=now) is not None, (
+    assert Plans(route).current_checkout_attempt(OWNER, now=now) is not None, (
         "only a terminal Checkout Session event may release a lease"
     )
 

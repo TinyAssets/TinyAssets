@@ -7,8 +7,6 @@ import re
 from pathlib import Path
 from urllib.parse import quote
 
-from tinyassets.universe_files import write_data_path
-
 _ID = re.compile(r"[A-Za-z0-9_-]{1,160}\Z")
 
 
@@ -28,11 +26,6 @@ def preview_path(base: str | Path, definition_id: str) -> Path:
     return Path(base) / "published_previews" / (digest + ".png")
 
 
-def save_preview(base: str | Path, definition_id: str, png: bytes) -> None:
-    """Only called with the renderer's public-component output after publication."""
-    write_data_path(preview_path(base, definition_id), png)
-
-
 async def handle_public_run(request):
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import FileResponse, HTMLResponse, Response
@@ -45,7 +38,7 @@ async def handle_public_run(request):
     ident = request.path_params["listing"]
     if not onboarding_enabled() or not public_path(request.url.path):
         return Response(status_code=404, headers=headers)
-    base = _base_path()
+    base = Path(_base_path()) / ".published"
     listing = await run_in_threadpool(get_definition, base, ident)
     if listing is None:
         return Response(status_code=404, headers=headers)
@@ -63,7 +56,7 @@ async def handle_public_run(request):
             # this path passes no publisher home, identity or private asset.
             try:
                 report = await run_in_threadpool(preview_public_component, screen)
-                await run_in_threadpool(save_preview, base, ident, report["png"])
+                return Response(report["png"], media_type="image/png", headers=headers)
             except PreviewUnavailable:
                 return Response(status_code=503, headers=headers)
         return FileResponse(picture, media_type="image/png", headers=headers)

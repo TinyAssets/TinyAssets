@@ -27,7 +27,7 @@ def resolve(identities, request: dict) -> dict:
 
 def provision(identities, data_root, owner: str, center: str) -> None:
     """Idempotent completion of authenticated CENTER_ADMISSION, never an RPC quota."""
-    from tinyassets.universe_owner import account_type_of
+    from tinyassets.broker.owner_reads import Plans
     from tinyassets.usage_policy import limits_for
 
     validate_principal(owner)
@@ -48,7 +48,7 @@ def provision(identities, data_root, owner: str, center: str) -> None:
             if row != (uid, uid):
                 raise PermissionError("permanent box reservation changed")
             return  # center admission must never overwrite migrated paid limits
-        quota = int(limits_for(account_type_of(data_root, owner)).storage_bytes)
+        quota = int(limits_for(Plans(data_root).read(owner)["tier"]).storage_bytes)
         if quota <= 0 or quota % 1024:
             raise PermissionError("invalid canonical owner box bound")
         db.execute("INSERT INTO box_records VALUES (?,?,?,?)", (owner, uid, uid, quota))

@@ -106,6 +106,7 @@ class _InProcessBroker:
             roles={os.getuid(): OWNER},
             owner_identities=self.identities,
             policy_store=policy_store,
+            data_root=data_root,
         )
         self._loop = asyncio.new_event_loop()
         self._listener: asyncio.AbstractServer | None = None

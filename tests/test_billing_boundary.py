@@ -64,7 +64,7 @@ def test_calls_fail_soft_rather_than_crashing_when_billing_is_off(monkeypatch, c
     monkeypatch.delenv("STRIPE_SECRET_KEY", raising=False)
     with pytest.raises(BillingUnavailable):
         create_checkout_session(
-            universe_id="u-1",
+            owner_id="u-1",
             attempt_id="attempt-one",
             params={
                 "price_id": "price_x",
@@ -111,7 +111,7 @@ def _plan_price(*, price_id: str = PRICE_ID, **overrides):
 
 def _subscription_object(
     *,
-    universe_id: str = "u-1",
+    owner_id: str = "u-1",
     status: str = "active",
     secret: str = SECRET,
     price: dict | None = None,
@@ -127,10 +127,10 @@ def _subscription_object(
         "id": "sub_tinyassets",
         "status": status,
         "metadata": {
-            "universe_id": universe_id,
+            "owner_id": owner_id,
             "tinyassets_entitlement_version": version,
             "tinyassets_entitlement_claim": _entitlement_claim(
-                universe_id, selected_price["id"], secret=secret, version=version
+                owner_id, selected_price["id"], secret=secret, version=version
             ),
         },
         "items": {"data": [{"quantity": 1, "price": selected_price}]},
@@ -240,7 +240,7 @@ def test_an_unrelated_event_moves_no_tier():
 
 
 def test_an_event_without_a_universe_is_ignored():
-    event = _subscription_event(universe_id="")
+    event = _subscription_event(owner_id="")
     assert subscription_state_from_event(event, secret=SECRET) is None
 
 
@@ -253,8 +253,8 @@ def test_an_authentic_but_unclaimed_subscription_cannot_move_a_tier():
 
 
 def test_an_entitlement_claim_cannot_be_moved_to_another_universe():
-    obj = _subscription_object(universe_id="u-1")
-    obj["metadata"]["universe_id"] = "u-2"
+    obj = _subscription_object(owner_id="u-1")
+    obj["metadata"]["owner_id"] = "u-2"
     event = {"type": "customer.subscription.updated", "data": {"object": obj}}
     assert subscription_state_from_event(event, secret=SECRET) is None
 
@@ -330,7 +330,7 @@ def test_checkout_refuses_a_second_subscription_for_one_universe(monkeypatch, ch
 
     with pytest.raises(stripe_adapter.AlreadySubscribed) as caught:
         stripe_adapter.create_checkout_session(
-            universe_id="u-1",
+            owner_id="u-1",
             attempt_id="attempt-one",
             params={
                 "price_id": "price_x",
@@ -388,7 +388,7 @@ def test_exhausting_pagination_fails_loudly_instead_of_reporting_none(monkeypatc
 
 
 def _capture_checkout(
-    monkeypatch, *, anchor: float, universe_id: str = "u-1",
+    monkeypatch, *, anchor: float, owner_id: str = "u-1",
     attempt_id: str = "attempt-one",
 ):
     """Run create_checkout_session against a stub Stripe and return what it sent."""
@@ -423,13 +423,13 @@ def _capture_checkout(
 
     monkeypatch.setattr(stripe_adapter.urllib.request, "urlopen", _urlopen)
     params = stripe_adapter.checkout_params(
-        universe_id=universe_id,
+        owner_id=owner_id,
         success_url="https://x/ok",
         cancel_url="https://x/no",
         expires_at=int(anchor + 2100),
     )
     stripe_adapter.create_checkout_session(
-        universe_id=universe_id,
+        owner_id=owner_id,
         attempt_id=attempt_id,
         params=params,
     )
@@ -464,7 +464,7 @@ def test_checkout_sends_an_idempotency_key(monkeypatch, checkout_anchor):
 
     monkeypatch.setattr(stripe_adapter.urllib.request, "urlopen", _urlopen)
     stripe_adapter.create_checkout_session(
-            universe_id="u-1",
+            owner_id="u-1",
             attempt_id="attempt-one",
             params={
                 "price_id": "price_x",
@@ -486,7 +486,12 @@ def test_checkout_sends_an_idempotency_key(monkeypatch, checkout_anchor):
 
 def test_a_stale_event_cannot_resurrect_a_cancelled_tier(tmp_path):
     """Stripe does not guarantee delivery order and retries deliveries."""
-    from tinyassets.storage.subscription_state import apply_tier_event, get_tier
+    from tinyassets.broker.owner_reads import Plans
+
+    def apply_tier_event(root, **kw):
+        return Plans(root).apply("owner", **kw)
+    def get_tier(root):
+        return Plans(root).read("owner")["tier"]
 
     assert apply_tier_event(tmp_path, tier="free", event_created=200.0) is True
     assert apply_tier_event(tmp_path, tier="paid", event_created=100.0) is False
@@ -497,20 +502,28 @@ def test_a_stale_event_cannot_resurrect_a_cancelled_tier(tmp_path):
 
 def test_a_same_second_cancel_beats_a_same_second_activate(tmp_path):
     """Stripe timestamps are second-granularity, so ties are ordinary."""
-    from tinyassets.storage.subscription_state import apply_tier_event, get_tier
+    from tinyassets.broker.owner_reads import Plans
+
+    def apply_tier_event(root, **kw):
+        return Plans(root).apply("owner", **kw)
+    def get_tier(root):
+        return Plans(root).read("owner")["tier"]
 
     apply_tier_event(tmp_path, tier="free", event_created=500.0)
     assert apply_tier_event(tmp_path, tier="paid", event_created=500.0) is False
     assert get_tier(tmp_path) == "free"
 
 
-def test_an_unreadable_state_db_reads_as_free_never_paid(tmp_path):
-    """A database we cannot read must never silently grant the paid tier."""
-    from tinyassets.storage.subscription_state import get_tier, state_db_path
+def test_an_unreadable_shared_plan_fails_loudly(tmp_path):
+    import sqlite3
 
-    state_db_path(tmp_path).write_bytes(b"this is not a sqlite database")
-    assert get_tier(tmp_path) == "free"
+    from tinyassets.broker.owner_reads import Plans
 
+    plans = Plans(tmp_path)
+    plans.initialize()
+    plans.path.write_bytes(b"not a database")
+    with pytest.raises(sqlite3.DatabaseError):
+        plans.read("owner")
 
 
 
@@ -688,7 +701,6 @@ def test_no_metering_machinery_is_exported():
         ({"url": "https://checkout.stripe.com/c/pay/cs_test_x"}, 200),
         ({"error": "already_subscribed"}, 409),
         ({"error": "checkout_already_in_progress"}, 409),
-        ({"error": "no_home_universe"}, 409),
         ({"error": "billing_unavailable", "detail": "no key"}, 503),
     ],
 )
@@ -890,9 +902,14 @@ def test_the_checkout_route_actually_applies_the_origin_allowlist(
     monkeypatch.setattr(onboarding, "_read_home", lambda _i: "u-origin")
     monkeypatch.setattr(helpers, "_universe_dir", lambda u: tmp_path / u)
 
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.broker.owner_reads import Plans
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    Plans(tmp_path).set_plan(current_identity().user_id, "free", event_created=0)
     sent: dict = {}
 
-    def _params(*, universe_id, success_url, cancel_url, expires_at):
+    def _params(*, owner_id, success_url, cancel_url, expires_at):
         # The return URLs are frozen HERE, which is the point: whatever the route
         # decided the origin was is what gets persisted and later replayed.
         sent["success"] = success_url
@@ -906,7 +923,7 @@ def test_the_checkout_route_actually_applies_the_origin_allowlist(
             "entitlement_claim": "claim",
         }
 
-    def _create(*, universe_id, attempt_id, params):
+    def _create(*, owner_id, attempt_id, params):
         return {"id": "cs_1", "url": "https://checkout.stripe.com/x"}
 
     import tinyassets.billing as billing
@@ -971,48 +988,28 @@ def test_an_unclaimed_subscription_cannot_inject_an_end_date():
 
 
 def test_the_end_date_is_stored_and_cleared_with_the_tier(tmp_path):
-    """One transaction, one ordering. Two would drift apart out of order."""
-    import sqlite3
+    from tinyassets.broker.owner_reads import Plans
 
-    from tinyassets.storage.subscription_state import (
-        apply_tier_event,
-        get_plan,
-        state_db_path,
-    )
-
-    apply_tier_event(tmp_path, tier="paid", event_created=100.0, ends_at=500.0)
-    assert get_plan(tmp_path) == {"tier": "paid", "ends_at": 500.0}
-
-    # Reactivating CLEARS the date rather than leaving a stale one behind.
-    apply_tier_event(tmp_path, tier="paid", event_created=200.0, ends_at=None)
-    assert get_plan(tmp_path) == {"tier": "paid", "ends_at": None}
-
-    # Assert the ROW is gone, not merely that it parses back as absent. Writing the
-    # string "None" also reads as absent -- get_plan's float() raises and it falls
-    # back -- so a version that stored garbage instead of deleting passed this test
-    # until it checked the row. (Caught by mutation, 2026-08-28.)
-    with sqlite3.connect(state_db_path(tmp_path)) as conn:
-        stored = conn.execute(
-            "SELECT COUNT(*) FROM subscription_meta WHERE key = 'tier_ends_at'"
-        ).fetchone()[0]
-    assert stored == 0, "a cleared end date must leave no row behind"
+    plans = Plans(tmp_path)
+    plans.set_plan("owner", "paid", event_created=100, ends_at=500)
+    assert plans.read("owner")["ends_at"] == 500
+    plans.set_plan("owner", "paid", event_created=200)
+    assert plans.read("owner")["ends_at"] is None
 
 
 def test_a_rejected_event_cannot_leave_its_end_date_behind(tmp_path):
     """The date must never outlive the tier decision it belonged to."""
-    from tinyassets.storage.subscription_state import apply_tier_event, get_plan
+    from tinyassets.broker.owner_reads import Plans
+
+    def apply_tier_event(root, **kw):
+        return Plans(root).apply("owner", **kw)
+    def get_plan(root):
+        return {k: Plans(root).read("owner")[k] for k in ("tier", "ends_at")}
 
     apply_tier_event(tmp_path, tier="free", event_created=300.0)
     assert apply_tier_event(
         tmp_path, tier="paid", event_created=100.0, ends_at=999.0
     ) is False
-    assert get_plan(tmp_path) == {"tier": "free", "ends_at": None}
-
-
-def test_an_unreadable_db_reports_no_end_date(tmp_path):
-    from tinyassets.storage.subscription_state import get_plan, state_db_path
-
-    state_db_path(tmp_path).write_bytes(b"not a database")
     assert get_plan(tmp_path) == {"tier": "free", "ends_at": None}
 
 
@@ -1023,7 +1020,7 @@ def test_the_webhook_persists_the_end_date_through_the_route(tmp_path, monkeypat
 
     import tinyassets.api.helpers as helpers
     from tinyassets import onboarding
-    from tinyassets.storage.subscription_state import get_plan
+    from tinyassets.broker.owner_reads import Plans
 
     monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
     monkeypatch.setattr(helpers, "_universe_dir", lambda u: tmp_path / u)
@@ -1031,8 +1028,9 @@ def test_the_webhook_persists_the_end_date_through_the_route(tmp_path, monkeypat
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
 
     universe = "u-ending"
-    (tmp_path / universe).mkdir()
-    event = _cancelling_event(universe_id=universe)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    Plans(tmp_path).set_plan(universe, "free", event_created=0)
+    event = _cancelling_event(owner_id=universe)
     event["created"] = 1_000
     payload = _json.dumps(event).encode()
 
@@ -1048,7 +1046,7 @@ def test_the_webhook_persists_the_end_date_through_the_route(tmp_path, monkeypat
     assert asyncio.run(
         onboarding._handle_billing_webhook(_Request())
     ).status_code == 200
-    assert get_plan(tmp_path / universe) == {
+    assert {k: Plans(tmp_path).read(universe)[k] for k in ("tier", "ends_at")} == {
         "tier": "paid",
         "ends_at": 1_790_000_000.0,
     }
@@ -1082,7 +1080,7 @@ def test_an_event_from_the_wrong_stripe_mode_is_refused(tmp_path, monkeypatch):
 
     import tinyassets.api.helpers as helpers
     from tinyassets import onboarding
-    from tinyassets.storage.subscription_state import get_tier
+    from tinyassets.broker.owner_reads import Plans
 
     monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
     monkeypatch.setattr(helpers, "_universe_dir", lambda u: tmp_path / u)
@@ -1090,9 +1088,10 @@ def test_an_event_from_the_wrong_stripe_mode_is_refused(tmp_path, monkeypatch):
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
 
     universe = "u-mode"
-    (tmp_path / universe).mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    Plans(tmp_path).set_plan(universe, "free", event_created=0)
     # A LIVE-mode event arriving at a TEST-mode deployment.
-    event = _subscription_event(universe_id=universe, livemode=True)
+    event = _subscription_event(owner_id=universe, livemode=True)
     payload = _json.dumps(event).encode()
 
     class _Request:
@@ -1106,7 +1105,7 @@ def test_an_event_from_the_wrong_stripe_mode_is_refused(tmp_path, monkeypatch):
 
     response = asyncio.run(onboarding._handle_billing_webhook(_Request()))
     assert response.status_code == 400
-    assert get_tier(tmp_path / universe) == "free", "no cross-mode entitlement"
+    assert Plans(tmp_path).read(universe)["tier"] == "free", "no cross-mode entitlement"
 
 
 def test_a_test_mode_event_cannot_entitle_a_live_deployment(tmp_path, monkeypatch):
@@ -1116,7 +1115,7 @@ def test_a_test_mode_event_cannot_entitle_a_live_deployment(tmp_path, monkeypatc
 
     import tinyassets.api.helpers as helpers
     from tinyassets import onboarding
-    from tinyassets.storage.subscription_state import get_tier
+    from tinyassets.broker.owner_reads import Plans
 
     monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
     monkeypatch.setattr(helpers, "_universe_dir", lambda u: tmp_path / u)
@@ -1124,8 +1123,9 @@ def test_a_test_mode_event_cannot_entitle_a_live_deployment(tmp_path, monkeypatc
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_live_pretend")
 
     universe = "u-livemode"
-    (tmp_path / universe).mkdir()
-    event = _subscription_event(universe_id=universe, livemode=False)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    Plans(tmp_path).set_plan(universe, "free", event_created=0)
+    event = _subscription_event(owner_id=universe, livemode=False)
     payload = _json.dumps(event).encode()
 
     class _Request:
@@ -1140,7 +1140,7 @@ def test_a_test_mode_event_cannot_entitle_a_live_deployment(tmp_path, monkeypatc
     assert asyncio.run(
         onboarding._handle_billing_webhook(_Request())
     ).status_code == 400
-    assert get_tier(tmp_path / universe) == "free"
+    assert Plans(tmp_path).read(universe)["tier"] == "free"
 
 
 @pytest.mark.parametrize("livemode", [None, "true", 1, "", {}])
@@ -1175,41 +1175,41 @@ def test_matching_modes_pass(monkeypatch):
 ENTITLEMENT_KEY = "tinyassets_entitlement_key_for_tests"
 
 
-def _v2_subscription(monkeypatch, *, universe_id="u-1"):
+def _v2_subscription(monkeypatch, *, owner_id="u-1"):
     from tinyassets.billing import stripe_adapter
 
     monkeypatch.setenv("TINYASSETS_BILLING_ENTITLEMENT_KEY", ENTITLEMENT_KEY)
     assert stripe_adapter.entitlement_key() == ENTITLEMENT_KEY
-    return _subscription_object(universe_id=universe_id, version="2")
+    return _subscription_object(owner_id=owner_id, version="2")
 
 
 def test_a_v2_claim_survives_rolling_the_stripe_webhook_secret(monkeypatch):
     """The property the whole change exists for."""
-    from tinyassets.billing.stripe_adapter import _authorized_subscription_universe
+    from tinyassets.billing.stripe_adapter import _authorized_subscription_owner
 
     obj = _v2_subscription(monkeypatch)
-    assert _authorized_subscription_universe(obj, secret=SECRET) == "u-1"
+    assert _authorized_subscription_owner(obj, secret=SECRET) == "u-1"
 
     # Stripe's signing secret is rolled. The subscription must still authorize.
-    assert _authorized_subscription_universe(obj, secret="whsec_rolled") == "u-1"
+    assert _authorized_subscription_owner(obj, secret="whsec_rolled") == "u-1"
 
 
 def test_a_v1_claim_does_not_survive_it(monkeypatch):
     """Stated, not assumed. This is exactly why v1 had to be replaced."""
-    from tinyassets.billing.stripe_adapter import _authorized_subscription_universe
+    from tinyassets.billing.stripe_adapter import _authorized_subscription_owner
 
     obj = _subscription_object()  # v1, signed with SECRET
-    assert _authorized_subscription_universe(obj, secret=SECRET) == "u-1"
-    assert _authorized_subscription_universe(obj, secret="whsec_rolled") == ""
+    assert _authorized_subscription_owner(obj, secret=SECRET) == "u-1"
+    assert _authorized_subscription_owner(obj, secret="whsec_rolled") == ""
 
 
 def test_v1_subscriptions_keep_working_after_the_upgrade(monkeypatch):
     """Upgrading the scheme must not orphan what is already sold."""
-    from tinyassets.billing.stripe_adapter import _authorized_subscription_universe
+    from tinyassets.billing.stripe_adapter import _authorized_subscription_owner
 
     monkeypatch.setenv("TINYASSETS_BILLING_ENTITLEMENT_KEY", ENTITLEMENT_KEY)
     obj = _subscription_object()  # sold under v1
-    assert _authorized_subscription_universe(obj, secret=SECRET) == "u-1"
+    assert _authorized_subscription_owner(obj, secret=SECRET) == "u-1"
 
 
 def test_new_checkouts_issue_v2_once_the_key_exists(monkeypatch, checkout_anchor):
@@ -1227,7 +1227,7 @@ def test_new_checkouts_issue_v2_once_the_key_exists(monkeypatch, checkout_anchor
 
 @pytest.mark.parametrize("version", ["", "0", "3", "v2", None])
 def test_an_unrecognised_entitlement_version_authorizes_nothing(version, monkeypatch):
-    from tinyassets.billing.stripe_adapter import _authorized_subscription_universe
+    from tinyassets.billing.stripe_adapter import _authorized_subscription_owner
 
     monkeypatch.setenv("TINYASSETS_BILLING_ENTITLEMENT_KEY", ENTITLEMENT_KEY)
     obj = _v2_subscription(monkeypatch)
@@ -1235,16 +1235,16 @@ def test_an_unrecognised_entitlement_version_authorizes_nothing(version, monkeyp
         obj["metadata"].pop("tinyassets_entitlement_version")
     else:
         obj["metadata"]["tinyassets_entitlement_version"] = version
-    assert _authorized_subscription_universe(obj, secret=SECRET) == ""
+    assert _authorized_subscription_owner(obj, secret=SECRET) == ""
 
 
 def test_a_v2_claim_cannot_be_verified_with_the_v1_key(monkeypatch):
     """The version selects the key; a mismatched pairing must not validate."""
-    from tinyassets.billing.stripe_adapter import _authorized_subscription_universe
+    from tinyassets.billing.stripe_adapter import _authorized_subscription_owner
 
     obj = _v2_subscription(monkeypatch)
     obj["metadata"]["tinyassets_entitlement_version"] = "1"
-    assert _authorized_subscription_universe(obj, secret=SECRET) == ""
+    assert _authorized_subscription_owner(obj, secret=SECRET) == ""
 
 
 def test_every_stripe_request_pins_the_api_version(monkeypatch, checkout_anchor):

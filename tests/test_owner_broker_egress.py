@@ -37,7 +37,10 @@ SECRET = "broker-only-synthetic-provider-secret"
 
 @pytest.fixture
 def box(broker, tmp_path, monkeypatch):  # noqa: F811
+    from tinyassets.boxes import layout
     from tinyassets.boxes import relay as relays
+
+    monkeypatch.setattr(layout, "BROKER_READ_GID", os.getgid())
     from tinyassets.broker.owner_reads import Plans
     from tinyassets.broker.policy import PolicyStore
     from tinyassets.commons_catalog import publish_definition
@@ -127,6 +130,12 @@ def box(broker, tmp_path, monkeypatch):  # noqa: F811
     monkeypatch.setattr(owner_runtime, "OWNER_MOUNT", root)
     monkeypatch.setattr(owner_runtime, "_is_owner_mount", lambda candidate: candidate == root)
     runtime = owner_runtime.start(path)
+    import threading
+
+    box_thread = threading.get_ident()
+    actual_refuse = owner_runtime.refuse_router_store
+    monkeypatch.setattr(owner_runtime, "refuse_router_store", lambda name: (
+        actual_refuse(name) if threading.get_ident() == box_thread else None))
     from tinyassets.broker import supervisor
 
     monkeypatch.setattr(supervisor, "get_supervisor", lambda root: owner_runtime.broker_egress())
@@ -223,14 +232,16 @@ def test_center_creation_admits_through_bound_relay(box, monkeypatch):
     assert not (box.root / ".broker").exists()
 
 
-def test_center_admission_rejects_foreign_retired_and_identity_fields(box):
+def test_center_admission_rejects_foreign_retired_and_identity_fields(box, monkeypatch):
     from tinyassets.owner_channel import request
 
     identities = box.broker.server._owner_identities
-    identities.resolve("other", allocate=True)
-    identities.admission("admit", "other", "foreign")
-    identities.admission("admit", "owner", "retired")
-    identities.admission("retire", "owner", "retired")
+    with monkeypatch.context() as broker_context:
+        broker_context.setattr(owner_runtime, "_runtime", None)
+        identities.resolve("other", allocate=True)
+        identities.admission("admit", "other", "foreign")
+        identities.admission("admit", "owner", "retired")
+        identities.admission("retire", "owner", "retired")
     for center in ("foreign", "retired", "../invalid"):
         with pytest.raises(PermissionError):
             admit_center(box.root, principal="owner", center=center)
@@ -240,7 +251,7 @@ def test_center_admission_rejects_foreign_retired_and_identity_fields(box):
     assert identities.admitted_owner("foreign") == "other"
 
 
-def test_retired_owner_cannot_admit_on_an_already_open_channel(box):
+def test_retired_owner_cannot_admit_on_an_already_open_channel(box, monkeypatch):
     from tinyassets import rpc_frames as rf
     from tinyassets.owner_channel import connect
 
@@ -248,7 +259,9 @@ def test_retired_owner_cannot_admit_on_an_already_open_channel(box):
         channel.settimeout(5)
         connect(channel, "")
         identities = box.broker.server._owner_identities
-        identities.admission("retire", "owner", "center")
+        with monkeypatch.context() as broker_context:
+            broker_context.setattr(owner_runtime, "_runtime", None)
+            identities.admission("retire", "owner", "center")
         channel.sendall(rf.control(rf.CONNECTION, {"op": "ADMIT_CENTER", "center": "late"}))
         assert rf.read_frame_blocking(channel).control() == {"op": "BOX_REFUSED"}
     assert identities.center_state("late") == "unadmitted"

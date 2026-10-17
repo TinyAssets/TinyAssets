@@ -9,6 +9,7 @@ import pytest
 from tinyassets import owner_runtime
 from tinyassets.api_keys import ApiKeyStore
 from tinyassets.auth.provider import OAuthProvider
+from tinyassets.broker.owner_reads import Plans
 from tinyassets.connection_oauth.pkce import flows_db
 from tinyassets.onboarding import (
     approval_handoff,
@@ -28,6 +29,7 @@ def oauth_connection(root):
 
 
 OPENERS = [
+    ("plans", Plans),
     ("owner_sessions", lambda root: owner_sessions.store()),
     ("owner_sessions", lambda root: inline_model_connect.flows()),
     ("owner_sessions", lambda root: approval_handoff.flows()),
@@ -44,7 +46,7 @@ OPENERS = [
 
 
 @pytest.mark.parametrize("name,opener", OPENERS, ids=[
-    "owner_sessions", "inline_flows", "handoffs", "refresh_sessions", "native_sign_in",
+    "plans", "owner_sessions", "inline_flows", "handoffs", "refresh_sessions", "native_sign_in",
     "canary_sign_in", "oauth_pkce", "api_keys", "hook_owners", "deleted_owners", "mcp_oauth",
     "mcp_oauth_connect",
 ])

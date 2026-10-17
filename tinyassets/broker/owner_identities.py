@@ -148,7 +148,11 @@ class OwnerIdentities:
             raise ValueError("invalid admission event")
         validate_principal(principal)
         validate_center(center)
+        from tinyassets.broker.owner_reads import Plans
+
+        plans = Plans(broker_dir=self.path.parent)
         with closing(self._connect(write=True)) as db, db:
+            plans.attach_admission(db)
             db.execute("PRAGMA synchronous=FULL")
             db.execute("BEGIN IMMEDIATE")
             rows = {row[1]: row for row in db.execute(
@@ -167,6 +171,10 @@ class OwnerIdentities:
                 if found is None:
                     raise LookupError("owner identity is not allocated")
                 machine = found[0]
+                first_admission = db.execute(
+                    "SELECT 1 FROM center_admissions WHERE principal=? AND event='admit'",
+                    (principal,)).fetchone() is None
+                plans.admit_free(db, principal, first_admission=first_admission)
                 db.execute("INSERT OR IGNORE INTO owner_box_secrets VALUES (?, ?)",
                            (principal, secrets.token_urlsafe(32)))
             else:

@@ -55,6 +55,11 @@ def request(center, document):
         connect(sock, center)
         sock.sendall(rf.control(rf.CONNECTION, document))
         answer = rf.read_frame_blocking(sock)
+    if (answer is not None and answer.kind == rf.CONTROL and answer.stream == rf.CONNECTION
+            and answer.control() == {"op": "BOX_PLAN_MISSING"}):
+        from tinyassets.broker.owner_reads import PlanMissing
+
+        raise PlanMissing("bound owner has no shared plan")
     if (answer is None or answer.kind != rf.CONTROL or answer.stream != rf.CONNECTION
             or answer.control().get("op") != "BOX_RESULT"):
         raise PermissionError("owner broker operation refused")

@@ -1844,7 +1844,6 @@ _CHECKOUT_STATUS = {
     # already open. Both are conflicts with existing state, not failures.
     "already_subscribed": 409,
     "checkout_already_in_progress": 409,
-    "no_home_universe": 409,
     # This surface's purchase policy is off (Android). Not an outage.
     "unavailable_in_app": 403,
     # Genuinely us: billing is unconfigured or the processor is unreachable.
@@ -1909,7 +1908,7 @@ async def _handle_billing_cancel(request: Any) -> Any:
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import JSONResponse, PlainTextResponse
 
-    from tinyassets.auth.middleware import current_identity, identity_context
+    from tinyassets.auth.middleware import current_identity
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
@@ -1920,23 +1919,18 @@ async def _handle_billing_cancel(request: Any) -> Any:
 
     def _cancel() -> dict[str, Any]:
         from tinyassets.billing import BillingUnavailable, cancel_subscription
-        from tinyassets.billing.stripe_adapter import find_active_subscription
+        from tinyassets.billing.plan_store import BillingPlans
+        from tinyassets.storage import data_dir
 
-        with identity_context(identity):
-            home = _read_home(identity)
-            if not home:
-                return {"error": "no_home_universe"}
-            try:
-                subscription_id = find_active_subscription(home)
-                if not subscription_id:
-                    return {"cancelled": False, "reason": "no_active_subscription"}
-                cancel_subscription(subscription_id)
-                # The tier itself moves on the WEBHOOK, which is the single
-                # authority - writing it here too would let the UI and Stripe
-                # disagree whenever a cancellation is later reversed.
-                return {"cancelled": True, "at_period_end": True}
-            except BillingUnavailable as exc:
-                return {"error": "billing_unavailable", "detail": str(exc)}
+        plan = BillingPlans(data_dir()).read(identity.user_id)
+        subscription_id = plan["subscription_id"]
+        if not subscription_id or plan["tier"] == "free":
+            return {"cancelled": False, "reason": "no_active_subscription"}
+        try:
+            cancel_subscription(subscription_id)
+            return {"cancelled": True, "at_period_end": True}
+        except BillingUnavailable as exc:
+            return {"error": "billing_unavailable", "detail": str(exc)}
 
     out = await run_in_threadpool(_cancel)
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
@@ -2017,65 +2011,10 @@ async def _handle_billing_webhook(request: Any) -> Any:
         )
         return JSONResponse({"error": "wrong_stripe_mode"}, status_code=400)
 
-    def _settle_checkout() -> dict[str, Any] | None:
-        """A terminal Checkout Session event releases exactly its own lease."""
-        from tinyassets.api.helpers import _universe_dir
-        from tinyassets.billing.stripe_adapter import checkout_settlement_from_event
-        from tinyassets.storage.subscription_state import settle_checkout_attempt
+    from tinyassets.billing.events import apply_event
+    from tinyassets.storage import data_dir
 
-        identified = checkout_settlement_from_event(event)
-        if identified is None:
-            return None
-        session_id, attempt_id = identified
-        obj = (event.get("data") or {}).get("object") or {}
-        universe_id = str(obj.get("client_reference_id") or "")
-        if not universe_id:
-            # Routing hint only; without it we cannot find the record to release.
-            return {"settled": False, "reason": "no_universe_reference"}
-        settled = settle_checkout_attempt(
-            _universe_dir(universe_id),
-            session_id=session_id,
-            attempt_id=attempt_id,
-        )
-        return {"settled": settled}
-
-    def _apply() -> dict[str, Any]:
-        from tinyassets.api.helpers import _universe_dir
-        from tinyassets.billing import (
-            subscription_end_from_event,
-            subscription_state_from_event,
-        )
-        from tinyassets.storage.subscription_state import apply_tier_event
-
-        mapped = subscription_state_from_event(event)
-        if mapped is None:
-            return {"applied": False}
-        universe_id, tier = mapped
-        universe_dir = _universe_dir(universe_id)
-        # Ordered by the event's own created time: Stripe does not guarantee
-        # delivery order, and a delayed `active` must not overwrite a newer cancel.
-        created = float(event.get("created") or 0.0)
-        applied = apply_tier_event(
-            universe_dir,
-            tier=tier,
-            event_created=created,
-            # Display only, and stored with the tier it describes so the two cannot
-            # disagree. A cancellation leaves the subscription ACTIVE until the period
-            # ends, so without this the user sees an unchanged "Paid plan" and cannot
-            # tell their cancellation took.
-            ends_at=subscription_end_from_event(event),
-        )
-        # NOTE: releasing the checkout lease is NOT done here. A subscription event
-        # says nothing about WHICH pending session it belongs to, so any rule based on
-        # it -- even one gated on the tier moving -- could release the lease protecting
-        # a different session that is open right now. The lease is released only by a
-        # terminal Checkout Session event naming its own id (see `_settle_checkout`).
-        return {"applied": applied, "tier": tier if applied else None}
-
-    settled = await run_in_threadpool(_settle_checkout)
-    if settled is not None:
-        return JSONResponse(settled)
-    return JSONResponse(await run_in_threadpool(_apply))
+    return JSONResponse(await run_in_threadpool(apply_event, data_dir(), event))
 
 
 def onboarding_routes() -> list[Any]:

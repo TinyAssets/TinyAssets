@@ -112,7 +112,6 @@ def start_receipt_preview(completion: dict[str, Any], *, universe_id: str,
         return
     result = dict(completion)
     udir = _universe_dir(universe_id)
-    base = _base_path()
 
     def finish():
         try:
@@ -143,9 +142,6 @@ def start_receipt_preview(completion: dict[str, Any], *, universe_id: str,
         try:
             try:
                 report = ui_preview.preview_public_component(screen, universe_dir=udir)
-                from tinyassets.onboarding.public_run import save_preview
-
-                save_preview(base, result["listing_id"], report["png"])
                 digest = hashlib.sha256(result["listing_id"].encode()).hexdigest()[:32]
                 name = "publication-" + digest
                 result["preview_image_path"] = ui_preview.write_preview(udir, name, report["png"])

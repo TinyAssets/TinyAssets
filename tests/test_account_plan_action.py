@@ -25,20 +25,15 @@ PARAMS = {
 
 
 @pytest.fixture
-def home(tmp_path, monkeypatch):
-    import tinyassets.api.helpers as helpers
-    from tinyassets import onboarding
-    from tinyassets.billing import plan_action
+def home(tmp_path, monkeypatch, _signed_in_operator):
+    from tinyassets.broker.owner_reads import Plans
 
-    universe = tmp_path / "home-1"
-    universe.mkdir()
-    monkeypatch.setattr(onboarding, "_read_home", lambda _identity: "home-1")
-    monkeypatch.setattr(helpers, "_universe_dir", lambda _uid: universe)
-    monkeypatch.setattr(plan_action, "_seats_running", lambda _uid: 2)
-    monkeypatch.setattr(plan_action, "_storage_used", lambda _account: 4096)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
-    return universe
+    plans = Plans(tmp_path)
+    plans.set_plan(_signed_in_operator.user_id, "free", event_created=0)
+    return plans
 
 
 def _plans(identity):
@@ -55,7 +50,7 @@ def test_every_surface_gets_the_same_plan_limits_and_eligibility(home, _signed_i
     assert first["upgrade_unavailable_reason"] is None
     assert first["limits"]["seats"] == expected.seats
     assert first["limits"]["storage_bytes"] == int(expected.storage_bytes)
-    assert first["usage"] == {"seats_running": 2, "storage_bytes": 4096}
+    assert "usage" not in first
     for surface, plan in plans.items():
         assert plan.eligibility() == first, surface.value
 
@@ -94,10 +89,8 @@ def test_billing_off_is_the_same_refusal_on_every_surface(home, monkeypatch, _si
 
 
 def test_a_paid_plan_is_not_an_upgrade_on_any_surface(home, monkeypatch, _signed_in_operator):
-    monkeypatch.setattr(
-        "tinyassets.storage.subscription_state.get_plan",
-        lambda _path: {"tier": "paid", "ends_at": 1_700_000_000.0},
-    )
+    home.set_plan(_signed_in_operator.user_id, "paid", event_created=1,
+                  ends_at=1_700_000_000.0)
     plans = _plans(_signed_in_operator)
     first = plans[Surface.WEB].eligibility()
     expected = limits_for("paid")
@@ -141,10 +134,10 @@ def test_web_checkout_returns_a_session_and_api_returns_to_the_canonical_app(
 
     seen: dict[str, str] = {}
 
-    def _params(*, universe_id, success_url, cancel_url, expires_at):
+    def _params(*, owner_id, success_url, cancel_url, expires_at):
         seen["success"] = success_url
         seen["cancel"] = cancel_url
-        seen["universe"] = universe_id
+        seen["universe"] = owner_id
         return {
             **PARAMS,
             "success_url": success_url,
@@ -152,7 +145,7 @@ def test_web_checkout_returns_a_session_and_api_returns_to_the_canonical_app(
             "expires_at": int(expires_at),
         }
 
-    def _create(*, universe_id, attempt_id, params):
+    def _create(*, owner_id, attempt_id, params):
         return {"id": "cs_test_1", "url": "https://checkout.stripe.com/c/pay/cs_test_1"}
 
     monkeypatch.setattr(stripe_adapter, "checkout_params", _params)
@@ -179,13 +172,8 @@ def test_web_checkout_returns_a_session_and_api_returns_to_the_canonical_app(
     assert again.checkout_url == web.checkout_url
 
     seen.clear()
-    from tinyassets.storage.subscription_state import (
-        current_checkout_attempt,
-        settle_checkout_attempt,
-    )
-
-    attempt = current_checkout_attempt(home, now=time.time())
-    settle_checkout_attempt(home, attempt_id=str(attempt["attempt_id"]))
+    attempt = home.current_checkout_attempt(_signed_in_operator.user_id, now=time.time())
+    home.settle_checkout_attempt(_signed_in_operator.user_id, attempt_id=str(attempt["attempt_id"]))
 
     api = account_plan(
         _signed_in_operator,
@@ -206,7 +194,7 @@ def test_a_configured_web_origin_is_the_only_non_canonical_return(
 
     seen: dict[str, str] = {}
 
-    def _params(*, universe_id, success_url, cancel_url, expires_at):
+    def _params(*, owner_id, success_url, cancel_url, expires_at):
         seen["success"] = success_url
         return {
             **PARAMS,
@@ -236,13 +224,8 @@ def test_a_configured_web_origin_is_the_only_non_canonical_return(
     )
     assert seen["success"] == "https://staging.example/app?subscribed=1"
 
-    from tinyassets.storage.subscription_state import (
-        current_checkout_attempt,
-        settle_checkout_attempt,
-    )
-
-    attempt = current_checkout_attempt(home, now=time.time())
-    settle_checkout_attempt(home, attempt_id=str(attempt["attempt_id"]))
+    attempt = home.current_checkout_attempt(_signed_in_operator.user_id, now=time.time())
+    home.settle_checkout_attempt(_signed_in_operator.user_id, attempt_id=str(attempt["attempt_id"]))
     seen.clear()
     account_plan(
         _signed_in_operator,
@@ -254,16 +237,10 @@ def test_a_configured_web_origin_is_the_only_non_canonical_return(
     assert seen["success"] == "https://tinyassets.io/app?subscribed=1"
 
 
-def test_no_home_is_not_an_upgrade_on_any_surface(monkeypatch, _signed_in_operator):
-    from tinyassets import onboarding
+def test_missing_plan_fails_on_every_surface(tmp_path, monkeypatch, _signed_in_operator):
+    from tinyassets.broker.owner_reads import PlanMissing
 
-    monkeypatch.setattr(onboarding, "_read_home", lambda _identity: "")
-    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
-    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
-    plans = _plans(_signed_in_operator)
-    first = plans[Surface.WEB].eligibility()
-    assert first["upgrade_available"] is False
-    assert first["upgrade_unavailable_reason"] == "no_home_universe"
-    assert first["usage"] == {"seats_running": 0, "storage_bytes": 0}
-    for surface, plan in plans.items():
-        assert plan.eligibility() == first, surface.value
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    for surface in Surface:
+        with pytest.raises(PlanMissing):
+            account_plan(_signed_in_operator, surface)
