@@ -53,31 +53,23 @@ The following API routes are useful when setup-free OAuth is available or the
 user wants an API. Read current service docs; establish the actual API host,
 authentication shape and a harmless verification read.
 
-1. **Try sign-in first.** Discover `write_graph` with `ta search connect`, then
-   `ta describe write_graph`. Raise a `pending_request` with operation `ask`
-   and action type `connect`. This checks the registered provider directory
-   (`providers.json`) first, then standard OAuth discovery on the API host.
-   Name the actual API host in `action.endpoints` and the needed scopes in
-   `action.oauth.scopes` (or a declared `action.oauth.use`), never invented
-   OAuth endpoints. For Calendar reads, use `www.googleapis.com` with
-   `"oauth":{"scopes":["https://www.googleapis.com/auth/calendar.readonly"]}`;
-   a shared API host alone cannot identify which API's scope is needed.
-   The directory maps covered API hosts to their provider's sign-in issuer.
-   If the reply says `primary: sign_in`, point to the inline
-   one-tap Connect/sign-in card and wait for completion.
-2. **Use a key when sign-in is unavailable.** If the service offers an API key,
-   include a field of type `secret` in that same request, labelled as the
-   service labels it, with a link and steps to create it. The user enters it
-   only in the platform's secure inline entry; the platform deposits it in the
-   vault and creates the generic HTTP connection. Never ask for a secret in
-   chat or put one in a tool argument, file, extension or saved skill. If the
-   card is unavailable, explain that secure entry is missing and stop there.
+1. **Open the secure door.** Discover `write_graph` with `ta search connect`,
+   then `ta describe write_graph`. Raise a `pending_request` with operation
+   `ask`, action type `connect` and `fields:[]`. Name the actual API host in
+   `action.endpoints` and the needed scopes in `action.oauth.scopes` (or a
+   declared `action.oauth.use`), never invented OAuth endpoints. The browser
+   door asks the broker to resolve registered clients or standard OAuth discovery.
+2. **Keep credentials at the door.** The owner signs in or enters a key in the
+   secure browser form. Box tools and approval answers take no secret values.
+   Never ask for a secret in chat or put one in a tool argument, file, extension
+   or saved skill. Return the request's door link and wait for the matching grant
+   to complete it through the broker ledger.
 
 Example request body for a previously unknown bearer-key API (replace the
-service, host, path and key-creation link with what its docs actually say):
+service, host and path with what its docs actually say):
 
 ```json
-{"kind":"API","title":"Connect Example service","body":"Enter your key in this secure card so I can check your account.","action":{"type":"connect","destination":"example-service","auth_scheme":"bearer","endpoints":[{"host":"api.example.com","path_template":"/v1/me","methods":["GET"]}]},"fields":[{"name":"token","type":"secret","label":"API key","help":"Create a key in your account's API settings.","url":"https://example.com/settings/api"}]}
+{"kind":"API","title":"Connect Example service","body":"Open the secure connection form so I can check your account.","action":{"type":"connect","destination":"example-service","auth_scheme":"bearer","endpoints":[{"host":"api.example.com","path_template":"/v1/me","methods":["GET"]}]},"fields":[]}
 ```
 
 Pass that body as `payload_json` to `ta write_graph --json` with

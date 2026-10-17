@@ -111,7 +111,7 @@ GITHUB_ENDPOINT = {
 
 def _deposit(uid, *, scopes=None, endpoints=None, destination="github"):
     """connect_http through its own API, the way the rail's answer does."""
-    from tinyassets.api.http_connection import connect_http
+    from tests.support.connection_door import connect_http
 
     document = {
         "destination": destination,

@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 import pytest
 
 from tests.support import model_connect as bootstrap
-from tinyassets.onboarding.source_connect import connect_source
+from tests.support.connection_door import post
 from tinyassets.providers.free_sources import discovered_agent_models, source_cards, source_preset
 
 rig = bootstrap.rig
@@ -63,35 +63,33 @@ def test_cards_do_not_promise_cerebras_is_permanently_free():
 
 
 @pytest.mark.parametrize("source", [card["id"] for card in source_cards()])
-def test_card_connects_with_one_key_and_returns_unanswered_consent(rig, monkeypatch, source):
+def test_card_connects_with_one_key_at_door(rig, monkeypatch, source):
     from tinyassets.provider_assignment import load_provider_assignment
     from tinyassets.providers.definition import list_definitions
 
-    card = source_preset(source)
-    reads = []
-    def read(**kwargs):
-        reads.append(kwargs)
-        return {"data": [{"id": card["models"][0]}]}
-    monkeypatch.setattr("tinyassets.providers.discovery_http.read_granted_discovery_document", read)
-    result = connect_source(base=rig, uid="u-owner", owner="owner", preset=card, key="own-test-key")
-    assert result["status"] == "confirmation_required"
-    assert "own-test-key" not in json.dumps(result)
-    assert load_provider_assignment(rig, universe_id="u-owner") is None
-    definition, = list_definitions("u-owner")
-    assert definition.access_method == "api_key_http" and definition.protocol == "openai_chat"
-    assert reads[0]["url"] == card["base_url"] + "/models"
-    assert reads[0]["owner_user_id"] == "owner" and reads[0]["universe_id"] == "u-owner"
-    access = result["request"]["action"]["model_access"]
-    assert next(iter(access.values()))["cost_caps"] is None
-
-
-def test_foreign_owner_cannot_deposit_or_read_models(rig, monkeypatch):
     reads = []
     monkeypatch.setattr("tinyassets.providers.discovery_http.read_granted_discovery_document",
                         lambda **kw: reads.append(kw))
-    with pytest.raises(PermissionError):
-        connect_source(base=rig, uid="u-owner", owner="other", preset=source_preset("groq"),
-                       key="foreign-key")
+    result = post("deposit_key", {"center": "u-owner", "preset_id": source,
+                                  "key": "own-test-key"})
+    assert result["status"] == "provisioned", result
+    assert "own-test-key" not in json.dumps(result)
+    assert load_provider_assignment(rig, universe_id="u-owner") is None
+    assert list_definitions("u-owner") == []
+    assert reads == []  # Discovery and model consent belong to the box.
+
+
+def test_foreign_owner_cannot_deposit_or_read_models(rig, monkeypatch):
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+
+    reads = []
+    monkeypatch.setattr("tinyassets.providers.discovery_http.read_granted_discovery_document",
+                        lambda **kw: reads.append(kw))
+    with identity_context(Identity(user_id="other", username="other", capabilities=["write"])):
+        result = post("deposit_key", {"center": "u-owner", "preset_id": "groq",
+                                      "key": "foreign-key"})
+    assert result == {"error": "not_found"}
     assert reads == []
 
 

@@ -17,7 +17,9 @@ pytestmark = pytest.mark.usefixtures("cloud_runtime")
 @pytest.fixture
 def pool(tmp_path, monkeypatch, authenticate_request, wires):
     from tests.owner_answer import answer_request
-    from tinyassets.onboarding.source_connect import connect_source
+    from tests.support.connection_door import post
+    from tinyassets.api.connection_uses import apply_connection_uses
+    from tinyassets.onboarding.source_connect import _offer_pool_access
     from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
     from tinyassets.providers.free_sources import source_preset
 
@@ -39,8 +41,19 @@ def pool(tmp_path, monkeypatch, authenticate_request, wires):
     second_wire = parity._Wire(models=("openai/gpt-oss-120b",))
     monkeypatch.setattr("tinyassets.providers.discovery_http.read_granted_discovery_document",
                         second_wire.read)
-    result = connect_source(base=tmp_path, uid=parity.A_HOME, owner=parity.A_OWNER,
-                            preset=source_preset("groq"), key="alice-own-second-key")
+    preset = source_preset("groq")
+    deposit = post("deposit_key", {"center": parity.A_HOME, "preset_id": preset["id"],
+                                   "key": "alice-own-second-key"})
+    assert deposit["status"] == "provisioned", deposit
+    applied = apply_connection_uses(
+        base=tmp_path, uid=parity.A_HOME, actor=parity.A_OWNER, grant_id=deposit["grant_id"],
+        uses={"model": {"wire": preset["wire"], "billing": "free", "models": [
+            {"id": model, "tools": True, "context": 32768} for model in second_wire.models]}},
+        constant_headers={}, owner_confirmed=True)
+    assert applied.get("provider"), applied
+    result = _offer_pool_access(base=tmp_path, uid=parity.A_HOME, owner=parity.A_OWNER,
+                                preset=preset, definition_id=applied["definition_id"],
+                                models=list(second_wire.models))
     response = answer_request(universe_id=parity.A_HOME,
                               payload={"request_id": result["request_id"], "values": {}})
     assert response.get("status") == "answered", response

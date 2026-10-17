@@ -1114,7 +1114,8 @@ class CredentialBlindBroker:
             _validate_connection_credential_scheme(
                 resource.connection_type, resource.credential_ref
             )
-            credential = self._resolve_credential(
+            keyless = resource.connection_type == "http" and resource.auth_scheme == "none"
+            credential = "" if keyless else self._resolve_credential(
                 resource.credential_ref, resource.connection_type
             )
         except Exception:
@@ -1122,7 +1123,7 @@ class CredentialBlindBroker:
             raise ProxyRequestError(
                 "outbound request failed: credential unavailable"
             ) from None
-        if not credential:
+        if not credential and not keyless:
             self._record_error(resource, grant_id, verb, "credential unavailable")
             raise ProxyRequestError("outbound request failed: credential unavailable")
         # The request may ASK for a longer budget; whether it gets one is read

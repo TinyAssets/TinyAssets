@@ -1577,127 +1577,35 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
             To connect ANY model or platform, ask with pending_request action
             type "connect": the connect_http fields plus "uses" and
             "constant_headers". An LLM is just a connection with uses.model.
-            When the provider offers OAuth (found ONLY by standard discovery on
-            the connection's own host; say what the use needs with "oauth":
-            {"scopes": [...], optional public "client_id"}; endpoints are never
-            supplied), signing in is the ask's primary action and key fields are
-            optional; the reply says primary "sign_in", or oauth_unavailable
-            with the reason.
+            Sign-in discovery runs at the shared connection door. Provide public
+            endpoints and optional OAuth scopes as data; never send a secret,
+            token, password or capability URL through a tool or approval answer.
 
-    **Outbound channel node — the channel-agnostic way to add Slack, a webhook, or
-    ANY HTTPS API with no service-specific code.** A node declaring
-    ``effects: ["authenticated_external_call"]`` fires ONE outbound HTTP call after
-    the run, reading its instruction from one of its ``output_keys``. Prereqs, done
-    once (they carry secrets, so NOT through this chat): the owner deposits the
-    credential IN THE APP. **ASK THEM FOR IT — do not send them hunting for a
-    form.** You know the exact endpoints you are about to call, so state them:
+    **Outbound channel node.** A node declaring
+    effects: ["authenticated_external_call"] sends the request through the broker.
+    Ask for a connection with a fieldless request:
 
         write_graph target="pending_request" operation="ask" payload_json={
-          "kind": "API",                      # the tab header they will see
-          "title": "GitHub key so I can open your pull request",
-          "body":  "why you need it, in one or two sentences",
-          "action": {"type": "connect_http", "destination": "github",
+          "kind": "API", "title": "Connect the service",
+          "body": "Why this connection is needed",
+          "action": {"type": "connect_http", "destination": "service",
                      "auth_scheme": "bearer",
-                     "endpoints": [{"host": "api.github.com",
-                                    "path_template": "/repos/o/r/pulls",
-                                    "methods": ["POST"]}, ...]},
-          "fields": [                         # REQUIRED -- see below
-            {"name": "token", "type": "secret",
-             "label": "Personal access token",
-             "help": "Settings -> Developer settings -> Personal access tokens",
-             "url": "https://github.com/settings/tokens"}]}
+                     "endpoints": [{"host": "api.example.com",
+                                    "path_template": "/messages",
+                                    "methods": ["POST"]}]},
+          "fields": []}
 
-    That opens a tab in their app with the exact grant spelled out; they paste
-    the key there and it goes straight to the vault under those endpoints. List
-    EVERY call the flow needs in ONE ask so they paste once (a GitHub pull
-    request needs the main ref, a branch ref, the file contents, and the pull).
+    The connect answer returns a secure door link carrying request, center and
+    connection identifiers. The owner enters credentials or signs in there.
+    The box learns completion from its broker grant's request_ref; the pending
+    request closes and its asking agent continues. A keyless auth_scheme "none"
+    connect commits directly on the box channel. Auth stays data: bearer, basic,
+    header, oauth1a, oauth2 and url_secret all use this same boundary.
 
-    **ONE FIELD PER CREDENTIAL, NAMED THE WAY THE SITE NAMES IT.** Never make
-    the owner work out what goes where. If a service needs four values, ask for
-    four, each labelled as that service labels it, each with the path to find it
-    and a link straight there::
-
-        "fields": [
-          {"name": "api_key", "type": "secret",
-           "label": "API Key",
-           "help": "Developer Portal -> your app -> Keys and tokens -> "
-                   "Consumer Keys -> API Key",
-           "url": "https://developer.x.com/en/portal/dashboard"},
-          {"name": "api_secret", "type": "secret",
-           "label": "API Key Secret", "help": "shown beside the API Key, once",
-           "url": "https://developer.x.com/en/portal/dashboard"},
-          ...
-        ]
-
-    The LABEL is the site's wording; the NAME is what the deposit reads. For
-    most schemes the name is yours to choose, but ``oauth1a`` has a fixed
-    four-value shape and the names must be exactly ``api_key``, ``api_secret``,
-    ``access_token``, ``access_token_secret`` -- label them however the service
-    words them, but name them these or the deposit refuses with "oauth1a secret
-    is missing". For ``basic``, name them ``username`` and ``password``.
-
-    ``label`` is the service's OWN name for it, not yours -- if the site says
-    "Consumer Key" then say "Consumer Key", because that is the words the owner
-    is looking at. ``help`` is the click path (400 chars). ``url`` is a plain
-    ``https://`` link to the page that issues it. Up to 16 fields.
-
-    **LOOK IT UP FIRST. Do not ask from memory.** You have WebFetch and
-    WebSearch. Before you raise a credential ask, read the service's OWN current
-    documentation and build the ask from what you find there:
-
-      * WHICH values it actually needs -- and which it does not. Do not ask for
-        a value the flow will never use; every extra box is work you are giving
-        the owner for nothing.
-      * WHAT THAT SITE CALLS EACH ONE, in its own words. If the page says
-        "Consumer Key" then the label is "Consumer Key", because that is the
-        text the owner is looking at while they fill your form.
-      * WHERE each one is found -- the actual click path, today, not the one
-        from a year ago.
-      * THE LINK to the page that issues it.
-
-    Portals get reorganised and auth schemes change; a click path you remember
-    is a click path that sends the owner somewhere that no longer exists. Read
-    it, then ask.
-
-    There is no built-in list of services and there is not going to be one. A
-    site nobody has heard of gets the same ask as a famous one, because the ask
-    is built the same way both times: by going and reading.
-
-    If the docs are unclear, say so in the ask rather than guessing at a label
-    -- "their page calls this either X or Y" is honest and the owner can resolve
-    it in a second. A confidently wrong label is worse than an uncertain one.
-
-    **A WEBHOOK LINK IS NOT A TOKEN.** When the owner hands you a link whose
-    secret is IN the address — a Slack ``hooks.slack.com/services/T…/B…/<token>``,
-    a Discord ``discord.com/api/webhooks/<id>/<token>``, a Zapier catch hook, a
-    TinyAssets ``/hooks/inbound/<token>`` — there is no bearer token to ask for and
-    NOTHING about that link goes in ``path_template``. Use
-    ``"auth_scheme": "url_secret"``, write ``{secret}`` where the code is, and
-    ask for the WHOLE LINK in one field named ``capability_url``::
-
-        "action": {"type": "connect_http", "destination": "bug-reports",
-                   "auth_scheme": "url_secret",
-                   "endpoints": [{"host": "hooks.slack.com",
-                                  "path_template": "/services/{secret+}",
-                                  "methods": ["POST"]}]},
-        "fields": [{"name": "capability_url", "type": "secret",
-                    "label": "Webhook URL",
-                    "help": "the whole link they gave you, starting https://"}]
-
-    ``{secret}`` is one path segment; ``{secret+}`` is the rest of the path (use
-    it when the code is several segments, as Slack's is). It takes NO
-    ``param_patterns`` entry — the value comes from the vault. The platform
-    checks the pasted link against the host and template and pulls the code out
-    itself, so never ask the owner to "paste the part after the last slash".
-    Then the node's packet addresses the PLACEHOLDER, not the code::
-
-        "request": {"method": "POST", "path": "/services/{secret+}",
-                    "body": {"text": "..."}}
-
-    The real address only exists for the instant the call is made. That is why
-    a real code in ``path_template`` (or in a packet) is refused: a grant is
-    stored in the clear and shown to the owner, and a packet is part of the
-    graph anyone you share it with can read.
+    For a capability URL, specify auth_scheme "url_secret" and a placeholder
+    path such as "/hooks/{secret}" or "/services/{secret+}". The owner pastes
+    the whole URL only at the door; the broker inserts its secret at dispatch.
+    Packets use the placeholder. No credential belongs in a stored endpoint.
 
     **Ask for the whole channel, not a path list.** Add ``"access": "full"`` to
     a ``connect_http`` or ``extend_http`` ask and it means: everything this key
@@ -1765,8 +1673,9 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
 
         "action": {"type": "rotate_http", "destination": "github"}
 
-    with one secret field (the ``external_write_errors`` row names the
-    destination). It replaces only the key: same connection, same endpoints, same
+    with no fields (the ``external_write_errors`` row names the
+    destination). The owner follows its link to replace the key at the door.
+    It replaces only the key: same connection, same endpoints, same
     scopes, same consents, nothing to re-approve, one paste. Never use
     ``remove_http`` for this -- an owner reads a removal card as deletion, and a
     remove-then-connect pair makes them approve reach they already approved.
@@ -4523,9 +4432,8 @@ def connect_compute(
     pass that grant's id as ``ref``. ASK THEM FOR IT — raise a request with
     ``write_graph target="pending_request" operation="ask"`` and an
     ``action={"type":"connect_http", ...}`` naming the exact endpoints you need. It
-    appears as a tab on the right of their app, they paste the key into it, and the
-    deposit happens there (that is ``connect_http``). Never send them hunting for a
-    control: the nav button was cut on 2026-08-27 and asking is the route now.
+    appears as a tab with a secure door link. Credentials go directly to the
+    door; matching request_ref grants complete the box's pending request.
     Args:
         access_method: ``api_key_http`` (any Kimi/OpenRouter/OpenAI-compatible
             endpoint, over an http connection already granted to this command center) or

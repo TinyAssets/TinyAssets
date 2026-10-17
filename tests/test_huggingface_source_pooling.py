@@ -28,7 +28,6 @@ def hf_pool(tmp_path, monkeypatch, authenticate_request, wires):
 
     from tests.owner_answer import answer_request
     from tinyassets.api.connection_uses import apply_connection_uses
-    from tinyassets.api.http_connection import connect_http
     from tinyassets.connection_oauth.tokens import TokenBundle, encode
     from tinyassets.onboarding.source_connect import _offer_pool_access, sign_in_action
     from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
@@ -55,9 +54,14 @@ def hf_pool(tmp_path, monkeypatch, authenticate_request, wires):
     bundle = TokenBundle(access_token="hf_oauth_alice", token_url="https://huggingface.co/oauth/token",
                          client_id=action["oauth"]["client_id"], refresh_token="hf_rt_alice",
                          expires_at=None, scope="openid profile inference-api")
-    deposit = connect_http(universe_id=parity.A_HOME, allow_oauth2=True, payload={
-        "destination": action["destination"], "secret": encode(bundle), "auth_scheme": "oauth2",
-        "allowed_endpoints": action["endpoints"], "access": "exact"})
+    from tinyassets.broker.http_connect import connect_operation
+    from tinyassets.onboarding.connection_definition import policy
+
+    args = dict(principal=parity.A_OWNER, command_center=parity.A_HOME,
+                destination=action["destination"], policy=policy(action["endpoints"], "oauth2"))
+    prepared = connect_operation(tmp_path, **args, action="prepare")
+    deposit = connect_operation(tmp_path, **args, action="commit",
+                                expected=prepared["revision"], secret=encode(bundle))["projection"]
     assert deposit.get("status") == "provisioned", deposit
     applied = apply_connection_uses(base=tmp_path, uid=parity.A_HOME, actor=parity.A_OWNER,
                                     grant_id=deposit["grant_id"], uses=action["uses"],

@@ -517,7 +517,7 @@ def test_dispatch_through_the_pinned_handles(base):
         assert json.loads(done)["error"] == "interactive_approval_required"
         done = json.dumps(_owner_answer("u-1", request_id=rid,
                                   values={"secret": "ghp_" + "z" * 36}))
-        assert json.loads(done)["status"] == "answered"
+        assert json.loads(done).get("status") == "answered", done
     finally:
         importlib.reload(us)
 
@@ -858,7 +858,7 @@ def test_two_asks_differing_only_by_destination_are_distinguishable(base):
 
 def _seed_connection(uid, destination="github", path="/repos/o/r/pulls"):
     """A deposited connection, as if the user had already pasted once."""
-    from tinyassets.api.http_connection import connect_http
+    from tests.support.connection_door import connect_http
 
     return connect_http(universe_id=uid, payload=json.dumps({
         "destination": destination, "secret": "ghp_" + "x" * 36,

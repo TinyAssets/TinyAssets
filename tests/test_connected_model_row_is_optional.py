@@ -29,14 +29,13 @@ import subprocess
 
 import pytest
 
-from tests import test_model_bootstrap as _bootstrap
 from tests.app_sheet_harness import rail_source
+from tests.support import model_connect as _fixture
 from tests.test_notification_is_the_setup import _RAIL_HARNESS
 from tinyassets.onboarding import render_app_html
 
 _NODE = shutil.which("node")
-rig = _bootstrap.rig
-finish = _bootstrap.finish
+rig = _fixture.rig
 
 
 def _rail():

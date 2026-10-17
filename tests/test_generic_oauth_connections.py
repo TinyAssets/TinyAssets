@@ -277,7 +277,8 @@ def _post(operation, data, *, home=UID, cookie=None):
             "endpoints": action.get("endpoints") or [
                 {"host": action["host"], "path_template": action["path_template"],
                  "methods": action["methods"]}],
-            "oauth": {"scopes": offer.get("scopes", [])}}
+            "oauth": {k: v for k, v in offer.items()
+                      if k in {"scopes", "client_id", "use"}}}
         if offer.get("registration_method") == "existing" and offer.get("client_id"):
             data["definition"]["oauth"]["client_id"] = offer["client_id"]
     from tests.owner_answer import session_cookie
@@ -379,7 +380,7 @@ def _vault_bundle(base, uid=UID):
 def _connected(provider, app, tmp_path):
     with _as(OWNER):
         asked = _ask()
-    assert asked.get("primary") == "sign_in", asked
+    assert asked.get("primary") == "connect", asked
     _begun, _back, done = _sign_in(provider, asked["request_id"])
     assert done.status_code == 200, done.text
     from tinyassets.api.http_connection import _ids
@@ -472,36 +473,33 @@ def test_discovery_via_the_connection_host_still_works_with_a_client_id(provider
 # --------------------------------------------------------------------------- #
 
 
-def test_oauth_is_the_primary_action_when_the_provider_offers_it(provider, universes):
+def test_oauth_discovery_begins_at_the_door(provider, app):
     with _as(OWNER):
-        asked = _ask()
-        assert asked["primary"] == "sign_in"
-        assert asked["action"]["oauth"]["authorize_url"] == f"https://{AUTH}/authorize"
-        assert "Sign in at auth.tasklark.io" in asked["grant_sentence"]
-        # Every host the sign-in talks to is shown, not only where the owner clicks.
-        assert "Tokens come from tokens.tasklark.io" in asked["grant_sentence"]
-        assert "paste a key instead" in asked["grant_sentence"]
-        # With sign-in on offer, the ask needs no key field at all.
-        bare = _ask(fields=[], action={**TASKS_ASK, "destination": "tasklark-2"})
-        assert bare["primary"] == "sign_in" and bare["fields"] == []
-        # And that ask cannot be "accepted" with nothing: it is completed by signing in.
+        asked = _ask(fields=[])
+        assert asked["primary"] == "connect" and asked["fields"] == []
+        assert "authorize_url" not in asked["action"]["oauth"]
         from tests.owner_answer import answer_request
 
-        refused = answer_request(universe_id=UID, payload=json.dumps(
-            {"request_id": bare["request_id"], "values": {}}))
-        assert refused["error"] == "request_invalid" and "signing in" in refused["detail"]
+        linked = answer_request(universe_id=UID, payload={
+            "request_id": asked["request_id"], "values": {}})
+        assert linked["status"] == "connect_required"
+        assert "request=" + asked["request_id"] in linked["connect_url"]
+        begun = _post("oauth_begin", {"request_id": asked["request_id"],
+                                      "code_challenge": CHALLENGE})
+    assert begun.status_code == 200, begun.text
+    assert begun.json()["authorize_url"].startswith(f"https://{AUTH}/authorize")
 
 
-def test_key_paste_when_the_provider_offers_no_oauth(provider, universes):
+def test_key_paste_when_the_provider_offers_no_oauth(provider, app):
     provider.advertise = False
     with _as(OWNER):
-        asked = _ask()
-        assert "oauth" not in asked["action"] and "primary" not in asked
-        assert asked["oauth_unavailable"] == "no_authorization_server_metadata"
-        # Without an offer, a key field is required: nothing to sign in with.
-        bare = _ask(fields=[], action={**TASKS_ASK, "destination": "tasklark-2"})
-        assert bare["error"] == "request_invalid"
-        assert "no sign-in is offered" in bare["detail"]
+        asked = _ask(fields=[])
+        assert asked["primary"] == "connect"
+        assert "oauth_unavailable" not in asked
+        begun = _post("oauth_begin", {"request_id": asked["request_id"],
+                                      "code_challenge": CHALLENGE})
+    assert begun.status_code != 200
+    assert begun.json()["error"] == "no_authorization_server_metadata"
 
 
 def test_an_agent_cannot_forge_a_discovered_offer(universes):
@@ -676,7 +674,7 @@ def test_a_failed_refresh_is_a_connection_auth_failure_record(provider, app, tmp
 
 
 def test_oauth2_cannot_be_pasted_and_a_bundle_is_never_sent_as_a_key(universes):
-    from tinyassets.api.http_connection import connect_http
+    from tests.support.connection_door import connect_http
     from tinyassets.connection_oauth.tokens import TokenBundle, encode
     from tinyassets.storage.outbound_connections import (
         SsrfValidationError,
@@ -824,7 +822,7 @@ console.log(JSON.stringify({first:first.textContent,folded:b.box.children[1].tag
  saved:JSON.parse(storage.get('ta_connect_oauth')),plainFirst:plain.box.children[0].tag,
  onlyAcceptHidden:only.acc.hidden,keyAcceptHidden:b.acc.hidden}));
 """)
-    assert out["first"] == "Sign in with auth.tasklark.io"
+    assert out["first"] == "Sign in with the provider"
     assert out["folded"] == "details" and out["foldedHoldsKey"] is True
     assert out["posts"] == [{"url": "/app/model-connect/oauth_begin",
                              "body": {"request_ref": "r1", "code_challenge": "c" * 43,
@@ -890,33 +888,11 @@ def test_no_vendor_names_in_the_oauth_code():
 # --------------------------------------------------------------------------- #
 
 
-def test_the_stored_token_url_is_pinned_to_the_discovered_one(provider, app):
-    from tinyassets.api.pending_requests import answer_connect_with_token
-    from tinyassets.connection_oauth.tokens import TokenBundle, encode
-
-    with _as(OWNER):
-        asked = _ask()
-        elsewhere = encode(TokenBundle(
-            access_token="at-x", refresh_token="rt-x", client_id="c",
-            token_url="https://collector.example.net/token"))
-        refused = answer_connect_with_token(universe_id=UID, request_id=asked["request_id"],
-                                            token=elsewhere, owner_session={"test": "owner"})
-    assert refused["error"] == "request_invalid"
-    assert "token endpoint" in refused["detail"]
-    from tinyassets.credential_vault import load_credential_vault
-
-    assert not [r for r in load_credential_vault(app / UID) if r.get("destination") == "tasklark"]
-
-    _begun, _back, done = _sign_in(provider, asked["request_id"])
-    assert done.status_code == 200, done.text
-    assert _vault_bundle(app).token_url == asked["action"]["oauth"]["token_url"]
-
-
 def test_rfc9207_issuer_is_checked_when_the_server_supports_it(provider, app):
     provider.iss = True
     with _as(OWNER):
         asked = _ask()
-    assert asked["action"]["oauth"]["iss_parameter_supported"] is True
+    assert "iss_parameter_supported" not in asked["action"]["oauth"]
 
     def attempt(**extra):
         with _as(OWNER):

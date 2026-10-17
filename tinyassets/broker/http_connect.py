@@ -306,9 +306,12 @@ def _deposit(ledger, center, principal, destination, secret):
 
 
 def _validate_custody(document):
+    ref = document.get("request_ref", "")
+    if not isinstance(ref, str) or len(ref) > 512 or any(ord(c) < 33 for c in ref):
+        raise ValueError("invalid request reference")
     from tinyassets.api.http_connection import _DESTINATION_RE, _MAX_SECRET_CHARS
 
-    if (set(document) != {"action", "destination", "incarnation", "secret"}
+    if (set(document) - {"request_ref"} != {"action", "destination", "incarnation", "secret"}
             or not isinstance(document["destination"], str)
             or not _DESTINATION_RE.fullmatch(document["destination"])
             or not isinstance(document["incarnation"], str)
@@ -351,12 +354,17 @@ def _custody_local(ledger, *, principal, command_center, document):
         error = _secret_shape_error(row["auth_scheme"], document["secret"])
         if error:
             return {"error": "connection_setup_invalid", "detail": error}
-        return _deposit(ledger, command_center, principal, document["destination"],
-                        document["secret"]) or {"rotated": True}
+        failure = _deposit(ledger, command_center, principal, document["destination"],
+                           document["secret"])
+        if failure:
+            return failure
+        conn.execute("UPDATE outbound_connections SET request_ref=? WHERE connection_id=?",
+                     (document.get("request_ref", ""), connection))
+        return {"rotated": True}
 
 
 def custody_operation(data_root, *, principal, command_center, destination,
-                      incarnation="", secret="", action="inspect_custody"):
+                      incarnation="", secret="", action="inspect_custody", request_ref=""):
     from tinyassets.broker.client import BrokerClient
     from tinyassets.broker.supervisor import get_supervisor
     from tinyassets.storage.outbound_connections import ProxyRequestError
@@ -365,6 +373,8 @@ def custody_operation(data_root, *, principal, command_center, destination,
     if supervisor is None:
         raise ProxyRequestError("the credential broker is not running")
     document = dict(action=action, destination=destination, incarnation=incarnation, secret=secret)
+    if request_ref:
+        document["request_ref"] = request_ref
     validate(document)
     return BrokerClient(supervisor.socket_path, principal=principal,
         command_center=command_center, fence=supervisor.fence,

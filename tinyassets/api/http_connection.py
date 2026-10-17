@@ -1,47 +1,7 @@
-"""Owner-scoped provisioning of a generic outbound ``http`` connection.
+"""Credential-free box connection actions and shared HTTP policy validation.
 
-``write_graph target=connection operation=connect_http`` — the keystone that lets
-a universe owner build an outbound channel to ANY HTTPS API their universe can act
-on via the ``authenticated_external_call`` effector. This handler is channel-
-agnostic by construction: it hard-codes no service. The owner supplies the host,
-path, and secret at build time, so a channel we never anticipated works the same
-way as any other — that is the whole point. It is the sibling of ``connect_compute``:
-an authenticated **admin** deposits a bearer secret into the per-universe vault and
-binds a validated ``http`` ``ConnectionLedger`` connection to the universe.
-
-Slice 1 scope + security posture (grounded in the outbound substrate):
-- **bearer only.** Most HTTPS APIs authenticate with ``Authorization: Bearer``.
-  This keeps the credential single-secret (what the general vault resolver returns)
-  and avoids the ``none``/``basic``/``header``/``oauth1a`` edge cases. Others are
-  deferred.
-- **SSRF is already enforced by the substrate, not re-implemented here.**
-  ``create_connection``/``_parse_allowed_endpoints`` reject IP-literals,
-  single-label/``localhost`` hosts, wildcards, userinfo, traversal paths, and
-  unsafe methods (``CONNECT``/``TRACE`` excluded) at creation; the SSRF-hardened
-  broker enforces HTTPS-only, private/loopback/link-local/metadata-IP blocking
-  (IPv4+IPv6), DNS-rebinding revalidation, disabled redirects, and per-request
-  endpoint match at request time. This handler passes the caller's endpoints
-  through and maps validation failures to a clean, secret-free error.
-- **Identity is (universe, destination)**, never the actor — so a second admin
-  cannot mint a rival connection under the same consent key.
-- **Provision-or-rotate, policy-immutable.** A repeat call for the same
-  destination rotates the secret and reuses the (idempotent) connection/grant ONLY
-  when every immutable field matches (owner, type, class, auth scheme, scopes,
-  destination, credential_ref, and the endpoint allow-list — the last compared as
-  an unordered set, so a reorder alone is not a change). Any real change to the
-  policy — a different endpoint allow-list included — is refused as a conflict
-  before any vault write, so a re-provision can never silently keep the old egress
-  policy under a rotated secret. Changing an existing connection's policy is
-  possible through the dedicated extension operation or by explicit removal
-  followed by a new deposit. Removal fences dependent model authority and erases
-  the old grants/custody; it never silently revives them under a replacement key.
-- **Never echoes the secret or the credential_ref.** Errors carry no secret.
-
-A live outbound call additionally requires the owner's effector consent for the
-destination AND the daemon flag ``TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED``;
-this handler returns those as explicit next steps rather than implying a live
-channel. Exposing this on the served surface (so the universe builds channels
-itself) is Slice 2.
+Keyless connections commit on the admitted broker channel. Other connections
+open the existing request deep link; only the shared door accepts credentials.
 """
 
 from __future__ import annotations
@@ -117,17 +77,12 @@ _DEPOSITABLE_AUTH_SCHEMES = frozenset(
 #: words it ("Webhook URL"), name it this.
 URL_SECRET_FIELD_NAME = "capability_url"
 #: ``oauth2`` is deposited ONLY by a completed sign-in (``connection_oauth.flow``
-#: through ``pending_requests.answer_connect_with_token``), never pasted: its
+#: through the broker authorization-code exchange), never pasted: its
 #: token bundle names the token URL a refresh token is sent to, so only the
 #: owner's own sign-in may write it.
 _SIGN_IN_AUTH_SCHEME = "oauth2"
-#: A public endpoint that takes no key (a keyless remote MCP server, an open
-#: API). Created ONLY by the owner approving a fieldless connect ask
-#: (``allow_keyless``), never at this door directly. The broker resolves a
-#: vault value for every http connection, so a fixed non-secret marker is
-#: stored and ``_build_http_secret_bundle`` signs ``none`` with no header.
+#: Public endpoints use the broker channel without custody or credential lookup.
 KEYLESS_AUTH_SCHEME = "none"
-_KEYLESS_MARKER = "keyless"
 _OAUTH1A_FIELDS = ("api_key", "api_secret", "access_token", "access_token_secret")
 
 
@@ -593,14 +548,12 @@ def _canonical_policy(endpoints: list[dict[str, Any]]) -> str:
 
 
 def connect_http(
-    *, universe_id: str = "", payload: Any = None, allow_oauth2: bool = False,
-    allow_keyless: bool = False,
+    *, universe_id: str = "", payload: Any = None,
 ) -> dict[str, Any]:
     from tinyassets.onboarding.serving import _gesture_lock
 
     with _gesture_lock(_request_universe(universe_id)):
-        return _connect_http(universe_id=universe_id, payload=payload,
-                             allow_oauth2=allow_oauth2, allow_keyless=allow_keyless)
+        return _connect_http(universe_id=universe_id, payload=payload)
 
 
 def _connect_plan(*, resource, raw_policy, existing_grant, actor, uid, destination,
@@ -705,22 +658,9 @@ def _connect_plan(*, resource, raw_policy, existing_grant, actor, uid, destinati
 
 
 def _connect_http(
-    *, universe_id: str = "", payload: Any = None, allow_oauth2: bool = False,
-    allow_keyless: bool = False,
+    *, universe_id: str = "", payload: Any = None,
 ) -> dict[str, Any]:
-    """Provision (or rotate) a generic http connection for the owner's universe.
-
-    Returns a redacted projection on success and a sanitized error otherwise.
-
-    Fail-closed model: every *refusal* (auth, validation, conflict) happens before
-    any write, so a refusal leaves zero vault / connection / grant mutation. A rare
-    mid-provision infrastructure fault (e.g. the grant write fails after the vault +
-    connection landed) leaves only INERT partial state — a connection with no grant,
-    or a vault record with no connection, neither of which can authorize a call —
-    which the idempotent, deterministic-id retry completes (self-heal). It never
-    leaves a usable half-connection, and it never rotates a live credential on a
-    conflicting re-provision (the conflict-check below refuses first).
-    """
+    """Connect public endpoints or open a credential-free door handoff."""
     from tinyassets.api import permissions
     from tinyassets.daemon_server import list_universe_acl
 
@@ -751,6 +691,63 @@ def _connect_http(
     except ValueError as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
 
+    if set(document) - CONNECT_FIELDS:
+        return {"error": "connection_setup_invalid", "detail": "unsupported connection fields"}
+    definition = connection_definition(document)
+    if "error" in definition:
+        return definition
+    if definition["policy"]["auth_scheme"] != "none":
+        from tinyassets.api.pending_requests import request_from_user
+
+        policy = definition["policy"]
+        row = request_from_user(universe_id=uid, payload={
+            "kind": "connection", "title": "Connect " + definition["destination"],
+            "body": "Connect through the secure browser form.",
+            "fields": [], "action": {
+                "type": "connect", "uses": {"call": {}},
+                "destination": definition["destination"],
+                "auth_scheme": policy["auth_scheme"],
+                **({"hosts": [e["host"] for e in policy["endpoints"]]}
+                   if policy["access_mode"] == "full" else {"endpoints": policy["endpoints"]}),
+                "access": policy["access_mode"], "scopes": document.get("scopes", []),
+                "git_host": policy["git_host"]}})
+        if row.get("error"):
+            return row
+        return connection_door_link(uid, definition["destination"], row["request_id"])
+
+    from tinyassets.broker.http_connect import connect_operation
+
+    args = dict(principal=actor, command_center=uid, **definition,
+                request_ref=document.get("request_ref", ""))
+    prepared = connect_operation(base, **args, action="prepare")
+    if "error" in prepared:
+        return prepared
+    committed = connect_operation(base, **args, action="commit", expected=prepared["revision"])
+    return committed if "error" in committed else committed["projection"]
+
+
+CONNECT_FIELDS = frozenset({
+    "destination", "auth_scheme", "allowed_endpoints", "access", "scopes",
+    "git_host", "request_ref",
+})
+
+
+def connection_door_link(center, destination, request_ref):
+    """Existing request deep link; all values are credential-free identifiers."""
+    from tinyassets.onboarding import app_config
+
+    resource = urllib.parse.urlsplit(str(app_config().get("resource") or "https://tinyassets.io/mcp"))
+    connection_id, _ = _ids(universe_id=center, destination=destination)
+    query = urllib.parse.urlencode({
+        "request": request_ref, "center": center, "connection": connection_id})
+    return {"status": "connect_required", "request_ref": request_ref,
+            "connect_url": urllib.parse.urlunsplit(
+                (resource.scheme, resource.netloc, "/app", query, "")),
+            "request_pending": True}
+
+
+def connection_definition(document):
+    """Validate credential-free HTTP policy for the box and shared door."""
     destination = str(document.get("destination") or "").strip().lower()
     try:
         asked_access = normalize_access_mode(document.get("access"))
@@ -784,9 +781,9 @@ def _connect_http(
         # An explicit non-string / empty scheme is a malformed request, NOT an
         # invitation to silently default to bearer (Codex: falsy schemes defaulted).
         scheme = ""
-    keyless = allow_keyless and scheme == KEYLESS_AUTH_SCHEME
+    keyless = scheme == KEYLESS_AUTH_SCHEME
     if scheme not in _DEPOSITABLE_AUTH_SCHEMES and not keyless and not (
-        allow_oauth2 and scheme == _SIGN_IN_AUTH_SCHEME
+        scheme == _SIGN_IN_AUTH_SCHEME
     ):
         return {
             "error": "unsupported_auth_scheme",
@@ -796,26 +793,6 @@ def _connect_http(
             ),
             "allowed_auth_schemes": sorted(_DEPOSITABLE_AUTH_SCHEMES),
         }
-
-    secret = document.get("secret")
-    if keyless:
-        if secret is not None:
-            return {"error": "connection_setup_invalid",
-                    "detail": "a keyless connection carries no secret"}
-        secret = _KEYLESS_MARKER
-    if not isinstance(secret, str) or not secret.strip():
-        return {"error": "connection_setup_invalid", "detail": "secret is required"}
-    if len(secret) > _MAX_SECRET_CHARS:
-        return {"error": "connection_setup_invalid", "detail": "secret is too large"}
-    # Validate the secret's SHAPE for the scheme at the door, mirroring exactly what
-    # the broker child will demand at request time — so a malformed multi-value
-    # credential is rejected BEFORE anything is written, not discovered as a failed
-    # outbound call later. The vault stores one opaque string per connection; for
-    # oauth1a that string is a JSON object of the four OAuth values, for basic it is
-    # "username:password". The values themselves are never inspected or echoed.
-    shape_error = _secret_shape_error(scheme, secret)
-    if shape_error:
-        return {"error": "connection_setup_invalid", "detail": shape_error}
 
     endpoints = document.get("allowed_endpoints")
     if not isinstance(endpoints, list) or not endpoints:
@@ -857,14 +834,6 @@ def _connect_http(
         )
     except SsrfValidationError as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
-    if scheme == _URL_SECRET_SCHEME:
-        # THE extraction: the owner pasted the whole link, the platform finds the
-        # secret in it, and only the segment is written. Replaces `secret` for
-        # every write below, so no code path can store the full URL.
-        extracted, extract_error = extract_url_secret(secret, parsed_endpoints)
-        if extract_error:
-            return {"error": "connection_setup_invalid", "detail": extract_error}
-        secret = extracted
     # The connection SCOPE for an http connection is the set of HTTP methods it
     # permits — that is the "connection scope string" the authenticated_external_call
     # effector matches the packet ``verb`` against (proxy/broker check
@@ -902,21 +871,9 @@ def _connect_http(
     except GitScopeError as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
 
-    from tinyassets.broker.http_connect import connect_operation
-
-    # The broker rechecks the prepared revision, writes custody and commits
-    # the grant in one operation. The router never persists the secret.
-    policy = {"auth_scheme": scheme, "scopes": list(http_scopes),
-              "endpoints": requested_endpoints, "access_mode": asked_access,
-              "git_host": git_host}
-    prepared = connect_operation(base, principal=actor, command_center=uid,
-                                 destination=destination, policy=policy, action="prepare")
-    if "error" in prepared:
-        return prepared
-    committed = connect_operation(base, principal=actor, command_center=uid,
-                                  destination=destination, policy=policy, action="commit",
-                                  expected=prepared["revision"], secret=secret)
-    return committed if "error" in committed else committed["projection"]
+    return {"destination": destination, "policy": {
+        "auth_scheme": scheme, "scopes": list(http_scopes),
+        "endpoints": requested_endpoints, "access_mode": asked_access, "git_host": git_host}}
 
 
 def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
@@ -1274,157 +1231,32 @@ def rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
 
 
 def _rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
-    """Replace the SECRET of an existing connection, and nothing else.
-
-    Founder-visible failure, 2026-09-16: a connection's key died on the provider
-    side (one expired, one was revoked by its user) and the owner had no way to
-    put a new one in. The repair paths were ``remove_http`` + ``connect_http``
-    re-carrying every endpoint and scope, or a ``connect_http`` whose whole
-    allow-list matched the stored one exactly -- and the owner read "remove" as
-    deletion, dismissed three such cards, and the connection stayed dead for ten
-    days.
-
-    This is the one-step replace. It makes EXACTLY ONE state change: the vault
-    upsert for ``(http, destination)``. No ``create_connection``, no
-    ``grant_connection``, no ``set_access_mode``, no endpoint extension -- so the
-    connection id, grant, endpoints, scopes, access mode, git host, effector
-    consents and workspace consents survive by the ABSENCE of a code path rather
-    than by care. The next outbound call presents the new secret with no
-    invalidation, because the broker child resolves the vault per request.
-
-    Two narrower statements than "it never touches the ledger", because that one
-    is not quite true and a claim a reviewer can falsify is worse than a smaller
-    one (Codex refute-review, P2 #8): constructing ``ConnectionLedger`` runs the
-    schema migration and backfills an empty incarnation, as it does for every
-    reader; and the vault upsert READS the existing record in order to merge it,
-    though this handler never looks at the old secret itself.
-
-    Every refusal happens before that write, so a refused rotation leaves the old
-    secret exactly as it was. The auth scheme is the STORED one: a rotation
-    carries none, because a caller who could name it could turn a multi-value
-    connection into a bearer one wearing the same name -- and a scheme outside the
-    deposit door's own set cannot be replaced by pasting at all
-    (``_unpasteable_scheme``).
-    """
+    """Open the protected door for replacement of an existing credential."""
     from tinyassets.api import permissions
-    from tinyassets.broker.http_connect import custody_operation
-    from tinyassets.daemon_server import list_universe_acl
+    from tinyassets.api.pending_requests import _owner_gate
 
-    if not permissions.is_authenticated_request():
-        return {"error": "authentication_required", "resource": "connection"}
-    from tinyassets.principals import named_principal
-
-    actor = named_principal(permissions.current_actor_id())
-    if not actor:
-        return {"error": "authentication_required", "resource": "connection"}
-
-    # Same gate as the deposit and the removal: an explicit admin ACL row for
-    # THIS actor on THIS universe, and the uniform absent envelope, so this
-    # surface cannot be used to probe which destinations exist.
-    uid = _request_universe(universe_id)
-    admin = [
-        row
-        for row in list_universe_acl(_base_path(), universe_id=uid)
-        if row.get("actor_id") == actor and row.get("permission") == "admin"
-    ]
-    if not admin:
-        return dict(_NOT_FOUND)
-
+    uid, _, denied = _owner_gate(universe_id)
+    if denied is not None:
+        return denied
     try:
         document = _payload(payload)
     except ValueError as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
-
-    destination = str(document.get("destination") or "").strip().lower()
-    if not _DESTINATION_RE.match(destination):
-        return {
-            "error": "connection_setup_invalid",
-            "detail": "destination must name the connection whose key is being replaced",
-        }
-
-    secret = document.get("secret")
-    if not isinstance(secret, str) or not secret.strip():
-        return {"error": "connection_setup_invalid", "detail": "secret is required"}
-    if len(secret) > _MAX_SECRET_CHARS:
-        return {"error": "connection_setup_invalid", "detail": "secret is too large"}
-
-    found = _rotation_target(uid=uid, actor=actor, destination=destination)
+    if set(document) - {"destination", "incarnation", "request_ref"}:
+        return {"error": "connection_setup_invalid", "detail": "unsupported connection fields"}
+    destination = str(document.get("destination") or "")
+    found = _rotation_target(uid=uid, actor=permissions.current_actor_id(), destination=destination)
     if isinstance(found, dict):
         return found
-    resource, _grant, connection_id, grant_id, current_incarnation = found
+    from tinyassets.api.pending_requests import request_from_user
 
-    scheme = str(resource.auth_scheme or "").strip().lower()
-    refusal = _unpasteable_scheme(scheme)
-    if refusal:
-        return refusal
-    legacy = custody_operation(_base_path(), principal=actor, command_center=uid,
-                               destination=destination)["refusal"]
-    if legacy:
-        # The write would refuse this on its own; refusing HERE means the
-        # preview refuses it too, so the owner is never shown a card that
-        # cannot be honoured (Codex refute-review, P2 #4).
-        return {
-            "error": "credential_ownership_transfer_unsupported",
-            "detail": (
-                "this destination's credential is owned by another principal"
-                if legacy == "foreign_owner" else
-                "this destination's stored credential has no recorded depositor, "
-                "so it cannot be proved to be yours to replace; removing and "
-                "depositing it again is the way back"
-            ),
-        }
-    shape_error = _secret_shape_error(scheme, secret)
-    if shape_error:
-        return {"error": "connection_setup_invalid", "detail": shape_error}
-    if scheme == _URL_SECRET_SCHEME:
-        # A capability URL is rotated by pasting the NEW link, which is what a
-        # service hands out when one is regenerated -- so the same extraction as
-        # the deposit runs here, against the STORED endpoints. Without it the
-        # whole URL would land in the vault and every later call would send
-        # `https://host/hooks/inbound/https://host/hooks/inbound/<token>`.
-        extracted, extract_error = extract_url_secret(
-            secret, resource.allowed_endpoints
-        )
-        if extract_error:
-            return {"error": "connection_setup_invalid", "detail": extract_error}
-        secret = extracted
-
-    # Which DEPOSIT this card was raised against. The id and credential_ref are
-    # both derived from (universe, destination), so neither changes when a key is
-    # removed and a different one put in its place -- the incarnation is the only
-    # thing that does.
-    observed = document.get("incarnation")
-    incarnation = current_incarnation()
-    if observed is not None and observed != incarnation:
-        return {"error": "connection_changed", "resource": "connection"}
-
-    result = custody_operation(_base_path(), principal=actor, command_center=uid,
-                               destination=destination, incarnation=incarnation,
-                               secret=secret, action="rotate")
-    if "error" in result:
-        return result
-
-    return {
-        "status": "rotated",
-        "destination": destination,
-        "connection_id": connection_id,
-        "grant_id": grant_id,
-        "auth_scheme": scheme,
-        # Read from the row this call did NOT write, so the receipt is evidence
-        # that the policy survived rather than a restatement of the request.
-        "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
-        "git_scopes": _rotation_git_scopes(resource),
-        "access": getattr(resource, "access_mode", ACCESS_EXACT) or ACCESS_EXACT,
-        "git_host": getattr(resource, "git_host", "") or "",
-        "unchanged": (
-            "Only the key changed. The connection, its endpoints, its scopes and "
-            "its consents are the same ones; nothing needs re-approving."
-        ),
-        "in_flight": (
-            "A request already dispatched with the old key may still finish; "
-            "every later call uses the new one."
-        ),
-    }
+    row = request_from_user(universe_id=uid, payload={
+        "kind": "connection", "title": "Reconnect " + destination,
+        "body": "Replace this connection's credential at the secure door.",
+        "fields": [], "action": {"type": "rotate_http", "destination": destination}})
+    if row.get("error"):
+        return row
+    return connection_door_link(uid, destination, row["request_id"])
 
 
 def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
@@ -1434,10 +1266,7 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     *"why would we have the user need to reput the api in again? you said it was
     safe in the vault so why would the user give it again?"*
 
-    They were right, and the answer was that nothing could widen a grant without
-    a secret. ``connect_http`` stores one secret PER DESTINATION and requires
-    ``secret`` on every call, so both routes to "let it also reach X" — a second
-    destination, or extending the first — demanded a key the vault already held.
+    Existing custody is reused; widening never asks for a credential again.
 
     This is the missing verb. It touches no vault record at all: the connection
     keeps its existing ``credential_ref``, and only the endpoint allow-list

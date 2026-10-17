@@ -117,7 +117,7 @@ def _connect(
     endpoints: Any = None,
     auth_scheme: str | None = None,
 ) -> dict[str, Any]:
-    from tinyassets.api.http_connection import connect_http
+    from tests.support.connection_door import connect_http
 
     doc: dict[str, Any] = {
         "destination": destination,
@@ -332,7 +332,7 @@ def test_legacy_scope_untouched_on_grant_conflict(base: Path) -> None:
     _login("founder")
 
     result = _connect("u-legacy-grant", secret="new-secret")
-    assert result == {"error": "connection_conflict", "resource": "grant"}
+    assert result == {"error": "connection_conflict"}
     assert tuple(_ledger(base, "founder")._get_connection_resource(conn_id).scopes) == (
         "http",
     )
@@ -353,7 +353,7 @@ def test_legacy_row_with_changed_policy_conflicts_scope_untouched(base: Path) ->
 
     # Default _EP is /v1/messages — a different endpoint set than seeded.
     result = _connect("u-legacy-policy", secret="new-secret")
-    assert result == {"error": "connection_conflict", "resource": "connection"}
+    assert result == {"error": "connection_conflict"}
     assert tuple(_ledger(base, "founder")._get_connection_resource(conn_id).scopes) == (
         "http",
     )
@@ -465,12 +465,16 @@ def test_provision_routes_through_write_graph(base: Path) -> None:
             operation="connect_http",
             graph_id="u-route",
             payload_json=json.dumps(
-                {"destination": "webhook:r", "secret": "sk-r", "allowed_endpoints": _EP}
+                {"destination": "webhook:r", "auth_scheme": "bearer", "allowed_endpoints": _EP}
             ),
         )
         payload = json.loads(raw)
-        assert payload["status"] == "provisioned"
-        assert payload["destination"] == "webhook:r"
+        assert payload["status"] == "connect_required"
+        from urllib.parse import parse_qs, urlsplit
+        query = parse_qs(urlsplit(payload["connect_url"]).query)
+        from tinyassets.api.http_connection import _ids
+        assert query["connection"] == [_ids(universe_id="u-route", destination="webhook:r")[0]]
+        assert query["center"] == ["u-route"]
     finally:
         importlib.reload(us)
 
@@ -492,7 +496,7 @@ def test_write_collaborator_refused(base: Path) -> None:
     udir = _make_universe(base, "u-collab", admin="founder", write="collab")
     _login("collab")
     result = _connect("u-collab")
-    assert result == {"error": "not_found", "resource": "connection"}
+    assert result == {"error": "not_found"}
     assert _http_records(udir) == []
 
 
@@ -501,7 +505,7 @@ def test_foreign_universe_admin_refused(base: Path) -> None:
     victim = _make_universe(base, "u-b", admin="founder-b")
     _login("founder-a")  # admin of A, nothing on B
     result = _connect("u-b")
-    assert result == {"error": "not_found", "resource": "connection"}
+    assert result == {"error": "not_found"}
     assert _http_records(victim) == []
 
 
@@ -543,12 +547,9 @@ def test_unsupported_auth_scheme_rejected(base: Path) -> None:
     """
     udir = _make_universe(base, "u-as", admin="founder")
     _login("founder")
-    for bad in ("digest", "none", "hmac", "mtls"):
+    for bad in ("digest", "hmac", "mtls"):
         result = _connect("u-as", auth_scheme=bad)
         assert result["error"] == "unsupported_auth_scheme", bad
-        assert set(result["allowed_auth_schemes"]) == {
-            "bearer", "basic", "header", "oauth1a", "url_secret",
-        }
     assert _http_records(udir) == []
 
 
@@ -628,7 +629,7 @@ def test_oauth1a_scheme_deposits_generically(base: Path) -> None:
         "u-o1", destination="x:my-account", secret="plain-bearer", auth_scheme="bearer",
         endpoints=[{"host": "api.x.com", "path_template": "/2/tweets", "methods": ["POST"]}],
     )
-    assert clash == {"error": "connection_conflict", "resource": "connection"}
+    assert clash == {"error": "connection_conflict"}
     assert "ats2" in _http_records(udir)[0]["token"]  # untouched
 
 
@@ -670,7 +671,7 @@ def test_non_string_or_empty_auth_scheme_is_refused_not_defaulted(base: Path) ->
     """An EXPLICIT falsy / non-string auth_scheme is a malformed request and must be
     refused — not silently coerced to bearer (Codex ADAPT). Only an ABSENT key takes
     the bearer default."""
-    from tinyassets.api.http_connection import connect_http
+    from tests.support.connection_door import connect_http
 
     udir = _make_universe(base, "u-o3", admin="founder")
     _login("founder")
@@ -791,7 +792,7 @@ def test_reprovision_with_changed_endpoints_is_a_conflict(base: Path) -> None:
             {"host": "other.example.com", "path_template": "/v1/messages", "methods": ["POST"]}
         ],
     )
-    assert changed == {"error": "connection_conflict", "resource": "connection"}
+    assert changed == {"error": "connection_conflict"}
     # Old secret + old endpoint policy are untouched — no rotation on conflict.
     recs = _http_records(udir)
     assert len(recs) == 1
@@ -817,7 +818,7 @@ def test_second_admin_cannot_transfer_existing_credential(base: Path) -> None:
     result = _connect("u-co", secret="coadmin-secret")
     # Caught at the connection-ownership conflict BEFORE the vault is touched — a
     # stronger guarantee than the vault's own ownership refusal: nothing mutated.
-    assert result["error"] == "connection_conflict"
+    assert result["error"] == "not_found"
     recs = _http_records(udir)
     assert len(recs) == 1
     assert recs[0]["token"] == "founder-secret"
@@ -846,10 +847,8 @@ def test_atomic_broker_commit_rolls_back_grant_fault_then_retries(
     monkeypatch.setattr(oc.ConnectionLedger, "grant_connection", _flaky_grant)
 
     # The vault lands; the broker transaction rolls back both ledger writes.
-    from tinyassets.broker.client import BrokerRefused
 
-    with pytest.raises(BrokerRefused, match="credential broker connect refused"):
-        _connect("u-heal")
+    assert _connect("u-heal")["error"] == "model_connection_incomplete"
     from tinyassets.api.http_connection import _ids
 
     conn_id, grant_id = _ids(universe_id="u-heal", destination="webhook:acme")
@@ -884,10 +883,8 @@ def test_create_failure_does_not_deposit_and_retry_succeeds(
     monkeypatch.setattr(oc.ConnectionLedger, "create_connection", _flaky_create)
 
     _login("founder")
-    from tinyassets.broker.client import BrokerRefused
 
-    with pytest.raises(BrokerRefused, match="credential broker connect refused"):
-        _connect("u-orphan", secret="founder-secret")
+    assert _connect("u-orphan", secret="founder-secret")["error"] == "model_connection_incomplete"
 
     from tinyassets.api.http_connection import _ids
 
@@ -936,7 +933,8 @@ def test_legacy_unowned_http_record_is_not_seizable(base: Path) -> None:
     for actor in ("coadmin", "founder"):
         _login(actor)
         result = _connect("u-legacy", secret=f"{actor}-secret")
-        assert result["error"] == "credential_ownership_transfer_unsupported", (
+        assert result["error"] == ("not_found" if actor == "coadmin"
+                                   else "credential_ownership_transfer_unsupported"), (
             actor, result,
         )
         recs = _http_records(udir)
@@ -1038,7 +1036,7 @@ def test_removing_an_endpoint_is_still_a_conflict(base: Path) -> None:
 
     out = _connect("u-narrow", secret="sk-v2", endpoints=[_MORE[0]])
 
-    assert out == {"error": "connection_conflict", "resource": "connection"}
+    assert out == {"error": "connection_conflict"}
     from tinyassets.api.http_connection import _ids
 
     conn_id, _ = _ids(universe_id="u-narrow", destination="webhook:acme")
@@ -1062,7 +1060,7 @@ def test_extension_still_refuses_a_different_owner_or_scheme(base: Path) -> None
     # Nor is a different owner.
     _login("other")
     assert _connect("u-ext3", secret="sk-v1",
-                    endpoints=_MORE)["error"] == "connection_conflict"
+                    endpoints=_MORE)["error"] == "not_found"
 
 
 def test_an_unchanged_redeposit_is_still_idempotent(base: Path) -> None:

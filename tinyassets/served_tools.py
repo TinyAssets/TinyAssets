@@ -90,7 +90,7 @@ from __future__ import annotations
 #:       revoke (change agent-access-controls: revoke narrows, so it may take back any
 #:       sink, including a workspace consent the agent cannot grant). approve/revoke are
 #:       now the ONLY source_channel operations: set_policy/get_policy were deleted with
-#:       their store (2026-09-25), having read nothing. The raw-secret connect_http stays
+#:       their store (2026-09-25), having read nothing. The browser credential form stays
 #:       off-surface. What the agent holds reads back through
 #:       read_graph target=access. Gated to the same u-tiny run
 #:       allowlist; the outbound call also needs TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED.
@@ -115,7 +115,7 @@ from __future__ import annotations
 #: Deliberately EXCLUDED pending their own review (tracked by the
 #: ``served-agent-build-run`` OpenSpec change):
 #:   remix_shape   — cross-author commons remix
-#:   connect_http  — deposits a RAW SECRET; stays on the browser deposit form
+#:   connect_http  - external credential-free connection navigation
 #:   a proper per-root-run effect-dispatch cap (all surfaces) — the served build cap on
 #:       effect-node count is the interim structural bound
 BACKEND_ENGINE_CAPABILITIES: tuple[str, ...] = (

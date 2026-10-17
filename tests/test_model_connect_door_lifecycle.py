@@ -28,6 +28,14 @@ from tinyassets.owner_router import OwnerRouter
 PRESET = "openrouter_user_models_v1"
 VERIFIER = "v" * 64
 ORIGIN = "https://tinyassets.io"
+DEPOSIT_SECRETS = {
+    "bearer": "fixture-bearer-value",
+    "basic": "fixture-user:fixture-password",
+    "header": "fixture-header-value",
+    "oauth1a": json.dumps(dict(api_key="fixture-api-key", api_secret="fixture-api-secret",
+                             access_token="fixture-access", access_token_secret="fixture-secret")),
+    "url_secret": "fixture-url-token",
+}
 
 
 def _broker_process(root, socket_path, relay_socket, pipe, kind):
@@ -109,7 +117,12 @@ def _broker_process(root, socket_path, relay_socket, pipe, kind):
     acquisition.exchange_key = exchange
 
     def network(**kwargs):
-        assert kwargs["credential"] in (access, refreshed, key)
+        if kind in DEPOSIT_SECRETS:
+            assert kwargs["credential"] == DEPOSIT_SECRETS[kind]
+        elif kind == "none":
+            assert not kwargs["credential"]
+        else:
+            assert kwargs["credential"] in (access, refreshed, key)
         events.append(("call", os.getpid()))
         return outbound.UpstreamStream.complete({
             "status": 200, "reason": "OK", "headers": {}, "body": b"broker response"}, ())
@@ -154,6 +167,7 @@ def lifecycle(tmp_path, monkeypatch, request):
     from tinyassets.broker import supervisor
     from tinyassets.connection_oauth import directory, discovery, tokens
     from tinyassets.onboarding import owner_sessions
+    from tinyassets.onboarding.connections import handle_connections
 
     kind = request.param
     router = tmp_path / "router"
@@ -232,6 +246,7 @@ def lifecycle(tmp_path, monkeypatch, request):
     app = OwnerRouter(Starlette(routes=[
         Route("/app/model-connect/{operation}", handle_model_connect, methods=["POST"]),
         Route("/app/oauth/client-metadata.json", handle_client_metadata),
+        Route("/app/connections", handle_connections, methods=["GET", "POST"]),
     ]), resolver=forbidden)
 
     def post(operation, body):
@@ -240,7 +255,8 @@ def lifecycle(tmp_path, monkeypatch, request):
             with identity_context(identity):
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                              base_url=ORIGIN) as client:
-                    return await client.post("/app/model-connect/" + operation, json=body,
+                    return await client.post(("/app/connections" if operation == "disconnect" else
+                        "/app/model-connect/" + operation), json=body,
                         headers={"Origin": ORIGIN, "Cookie": "__Host-ta-owner=owner-cookie"})
         return asyncio.run(run())
 
@@ -284,7 +300,7 @@ from tinyassets.effectors.authenticated_external_call import (
     run_authenticated_external_call_effector,
 )
 from tinyassets.storage.effector_consents import grant_consent
-root, relay, grant, connection, url, succeeds = sys.argv[1:]
+root, relay, grant, connection, url, succeeds, kind = sys.argv[1:]
 root = Path(root)
 home = root / "center"
 home.mkdir(parents=True, exist_ok=True)
@@ -301,6 +317,8 @@ runtime = owner_runtime.start(Path(relay))
 try:
     packet = {"sink": SINK, "grant_id": grant, "connection_id": connection,
               "verb": "POST", "request": {"url": url, "body": {"input": "hello"}}}
+    if kind == "header":
+        packet["request"]["header_name"] = "X-Api-Key"
     with identity_context(Identity(user_id="owner", username="owner", capabilities=["write"])):
         result = run_authenticated_external_call_effector(
             node_id="call", output_keys=["out"], run_state={"out": json.dumps(packet)},
@@ -313,12 +331,13 @@ finally:
     runtime.tools.close()
 """
     url = ("https://openrouter.ai/api/v1/chat/completions" if rig.kind == "preset"
+           else "https://api.example.com/data/{secret}" if rig.kind == "url_secret"
            else "https://api.example.com/data")
     environment = child_env(os.environ)
     for name in CHILD_FORBIDDEN_ENV | ENGINE_REQUIRED_SECRET_ENV.keys():
         environment.pop(name, None)
     result = subprocess.run([sys.executable, "-c", code, str(rig.router.parent / "box"),
-        str(rig.relay), grant, connection, url, str(succeeds)],
+        str(rig.relay), grant, connection, url, str(succeeds), rig.kind],
         env=environment, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
 
@@ -430,3 +449,180 @@ def test_inline_popup_flow_at_empty_door_polls_and_cancels(lifecycle):
     with pkce.flows_db(lifecycle.router) as (db, _):
         assert db.execute("SELECT COUNT(*) FROM hosted_model_flows").fetchone()[0] == 0
     assert lifecycle.events() == []
+
+
+def _box_operation(rig, operation, payload):
+    """Run a credential-free operation in an admitted box process."""
+    from tinyassets.platform_secrets import (
+        CHILD_FORBIDDEN_ENV,
+        ENGINE_REQUIRED_SECRET_ENV,
+        child_env,
+    )
+
+    code = """
+import json, os, sys
+from pathlib import Path
+from tinyassets import owner_runtime
+root, relay, operation, payload = sys.argv[1:]
+root = Path(root)
+root.mkdir(parents=True, exist_ok=True)
+owner_runtime.OWNER_MOUNT = root
+owner_runtime._is_owner_mount = lambda p: p == root
+runtime = owner_runtime.start(Path(relay))
+try:
+    data = json.loads(payload)
+    args = dict(principal="owner", command_center="center")
+    if operation == "connect":
+        from tinyassets.broker.http_connect import connect_operation
+        prepared = connect_operation(root, **args, **data, action="prepare")
+        result = connect_operation(root, **args, **data, action="commit",
+                                   expected=prepared["revision"])
+    elif operation in {"ask", "reconcile", "answer"}:
+        from tinyassets.auth.middleware import identity_context
+        from tinyassets.auth.provider import Identity
+        from tinyassets.api.pending_requests import (
+            request_from_user, reconcile_connections, _answer_request,
+        )
+        from tinyassets.daemon_server import grant_universe_access
+        from tinyassets.storage.pending_requests import get_request
+        from tinyassets.onboarding import owner_sessions
+        owner_sessions.store = lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("box read router state"))
+        home = root / "center"
+        home.mkdir(exist_ok=True)
+        with identity_context(Identity(user_id="owner", username="owner", capabilities=["write"])):
+            grant_universe_access(root, universe_id="center", actor_id="owner",
+                                  permission="admin", granted_by="owner")
+            if operation == "ask":
+                if data.pop("direct", False):
+                    from tinyassets.api.http_connection import connect_http
+                    result = connect_http(universe_id="center", payload=data)
+                else:
+                    result = request_from_user(universe_id="center", payload=data)
+            elif operation == "answer":
+                result = _answer_request(universe_id="center", payload={
+                    "request_id":data["request_id"], "values":data.get("values", {})},
+                    owner_session={"owner":"owner"})
+            else:
+                reconcile_connections("center", home)
+                result = get_request(home, data["request_id"])
+    else:
+        from tinyassets.broker.disconnect import disconnect
+        snap = disconnect(root, **args, **data)
+        disconnect(root, **args, **data, action="fence", incarnation=snap["incarnation"])
+        result = disconnect(root, **args, **data, action="erase", incarnation=snap["incarnation"])
+    print(json.dumps(result))
+finally:
+    runtime.tools.close()
+"""
+    env = child_env(os.environ)
+    for name in CHILD_FORBIDDEN_ENV | ENGINE_REQUIRED_SECRET_ENV.keys():
+        env.pop(name, None)
+    result = subprocess.run([sys.executable, "-c", code, str(rig.router.parent / "box"),
+        str(rig.relay), operation, json.dumps(payload)], env=env,
+        capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+@pytest.mark.parametrize("lifecycle",
+    ["none", "bearer", "basic", "header", "oauth1a", "url_secret"], indirect=True)
+def test_other_auth_connect_box_call_disconnect(lifecycle):
+    from tinyassets.broker.catalog import connections
+    from tinyassets.broker.ledger_queries import granted_resource_row
+    from tinyassets.onboarding.connection_definition import policy
+
+    rig = lifecycle
+    endpoints = [{"host": "api.example.com",
+                  "path_template": "/data/{secret}" if rig.kind == "url_secret" else "/data",
+                  "methods": ["POST"]}]
+    if rig.kind == "none":
+        receipt = _box_operation(rig, "connect", {
+            "destination": "fixture", "policy": policy(endpoints, "none"),
+            "request_ref": "box-request"})["projection"]
+    else:
+        secret = DEPOSIT_SECRETS[rig.kind]
+        if rig.kind == "url_secret":
+            secret = "https://api.example.com/data/" + secret
+        body = {"center": "center", "request_ref": "box-request", "secret": secret,
+                "definition": {"destination": "fixture", "auth_scheme": rig.kind,
+                               "endpoints": endpoints}}
+        assert rig.post("deposit", {**body, "center": "foreign-center"}).status_code == 404
+        response = rig.post("deposit", body)
+        assert response.status_code == 200, response.text
+        receipt = response.json()
+        assert DEPOSIT_SECRETS[rig.kind] not in response.text
+    assert receipt["request_ref"] == "box-request"
+    grant, connection = receipt["grant_id"], receipt["connection_id"]
+    _box_call(rig, grant, connection, succeeds=True)
+    if rig.kind in {"none", "basic", "oauth1a"}:
+        erased = _box_operation(rig, "disconnect", {"destination": "fixture"})
+        assert erased["removed"]
+    else:
+        rows = connections(rig.router, principal="owner", command_center="center")
+        incarnation = next(i for _, r, i in rows if r.connection_id == connection)
+        response = rig.post("disconnect", {"universe_id": "center",
+            "destination": "fixture", "incarnation": incarnation})
+        assert response.status_code == 200, response.text
+        assert response.json()["connection_removed"]
+    _box_call(rig, grant, connection, succeeds=False)
+    from tinyassets.storage.outbound_connections import GrantResolutionError
+
+    with pytest.raises(GrantResolutionError):
+        granted_resource_row(rig.router, principal="owner", command_center="center",
+                             grant_id=grant)
+    assert rig.events() == [("call", rig.broker_pid)]
+    assert not (rig.router / "center").exists()
+    assert not (rig.router / ".platform").exists()
+
+
+@pytest.mark.parametrize("lifecycle", ["bearer"], indirect=True)
+def test_box_action_and_approval_link_then_ledger_completion(lifecycle):
+    from tinyassets.api.http_connection import _ids
+
+    rig = lifecycle
+    endpoints = [{"host": "api.example.com", "path_template": "/data", "methods": ["POST"]}]
+    direct = _box_operation(rig, "ask", {"direct": True, "destination": "direct",
+        "auth_scheme": "bearer", "allowed_endpoints": endpoints})
+    assert direct["status"] == "connect_required"
+    refused = _box_operation(rig, "ask", {"direct": True, "destination": "leak",
+        "auth_scheme": "bearer", "allowed_endpoints": endpoints, "secret": "never-in-box"})
+    assert refused["error"] == "connection_setup_invalid"
+    query = parse_qs(urlsplit(direct["connect_url"]).query)
+    assert query == {"request": [direct["request_ref"]], "center": ["center"],
+                     "connection": [_ids(universe_id="center", destination="direct")[0]]}
+    pending = _box_operation(rig, "ask", {
+        "kind": "connection", "title": "Connect fixture", "body": "Allow this endpoint.",
+        "fields": [], "action": {"type": "connect", "destination": "fixture",
+            "auth_scheme": "bearer", "endpoints": endpoints, "uses": {"call": {}}}})
+    ref = pending["request_id"]
+    answer = _box_operation(rig, "answer", {"request_id": ref})
+    assert answer["status"] == "connect_required"
+    refused = _box_operation(rig, "answer", {
+        "request_id": ref, "values": {"secret": "never-in-box"}})
+    assert refused["error"] == "request_invalid"
+    assert parse_qs(urlsplit(answer["connect_url"]).query) == {
+        "request": [ref], "center": ["center"],
+        "connection": [_ids(universe_id="center", destination="fixture")[0]]}
+    assert _box_operation(rig, "reconcile", {"request_id": ref})["status"] == "pending"
+    body = {"center": "center", "request_ref": "unrelated-request",
+            "secret": DEPOSIT_SECRETS["bearer"], "definition": {
+                "destination": "fixture", "auth_scheme": "bearer", "endpoints": endpoints}}
+    assert rig.post("deposit", body).status_code == 200
+    assert _box_operation(rig, "reconcile", {"request_id": ref})["status"] == "pending"
+    response = rig.post("deposit", {**body, "request_ref": ref})
+    assert response.status_code == 200, response.text
+    done = _box_operation(rig, "reconcile", {"request_id": ref})
+    assert done["status"] == "answered"
+    assert not done.get("answer")
+    assert _box_operation(rig, "reconcile", {"request_id": ref})["status"] == "answered"
+    assert not (rig.router / "center").exists()
+
+
+def test_box_connect_schema_has_no_secret_parameters():
+    import inspect
+
+    from tinyassets.api.http_connection import CONNECT_FIELDS, connect_http
+
+    assert not CONNECT_FIELDS & {"secret", "token", "key", "password", "capability_url"}
+    assert set(inspect.signature(connect_http).parameters) == {"universe_id", "payload"}

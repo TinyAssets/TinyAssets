@@ -855,8 +855,8 @@ def test_read_graph_connections_target_lists_own_http_connections_end_to_end(
     connection_id / grant_id / host / path for an authenticated_external_call node
     instead of asking the owner to paste them back. Channel-agnostic: any deposited
     destination appears identically, and no secret is included."""
+    from tests.support.connection_door import connect_http
     from tinyassets import engine_mcp_server as s
-    from tinyassets.api.http_connection import connect_http
     from tinyassets.auth.middleware import _current_identity
     from tinyassets.auth.provider import Identity
     from tinyassets.daemon_server import grant_universe_access

@@ -1222,16 +1222,15 @@ def write_graph(
             automation, webhook, schedule, goal binding, invoking branch or a
             command center loop still depends on is refused with the dependents named.
 
-            vault (owner-only; see payload_json). Also with target=connection,
-            connect_http provisions a generic outbound http connection to ANY
-            HTTPS API the command center can then act on via the
+            With target=connection, connect_http provisions a generic outbound
+            http connection to any HTTPS API the command center can then act on via the
             authenticated_external_call effect — the channel-agnostic way an
             owner builds an outbound channel (chat webhook, ticketing API, etc.)
             without any service-specific code (owner-only; see payload_json). Also
             with target=connection, connect_compute registers an open COMPUTE
             HTTP provider the command center's automations can run on — registration
             only, no secret (the credential is deposited out of band via the
-            secure browser form / connect_http); owner-only, see payload_json.
+            secure shared-door browser form); owner-only, see payload_json.
             Also with target=connection, remove_http TAKES BACK a deposited http
             connection: it deletes the secret from the vault and the connection
             and its grants from the ledger, and the destination name is free to
@@ -1294,12 +1293,15 @@ def write_graph(
             document. The authenticated actor's current home is required;
             saving preferences never grants model or spending access.
             For target=connection operation=connect_http, pass
-            {"destination": "<stable key, e.g. webhook:acme>", "secret":
-            "<bearer token>", "allowed_endpoints": [{"host": "api.example.com",
-            "path_template": "/v1/messages", "methods": ["POST"]}]} to provision a
-            generic http connection (auth_scheme bearer). Owner-only; the secret is
-            vaulted and never echoed. Then grant effector consent for the
-            destination and build a node whose effect is authenticated_external_call.
+            {"destination": "<stable key, e.g. webhook:acme>", "auth_scheme":
+            "bearer", "allowed_endpoints": [{"host": "api.example.com",
+            "path_template": "/v1/messages", "methods": ["POST"]}]}.
+            This action takes no credential. For a secret or sign-in, return the
+            connect_url to the owner. It carries request, center and connection;
+            the request completes when its grant arrives through the broker ledger.
+            auth_scheme "none" connects through the box channel with no key.
+            Then grant effector consent for the destination and build a node
+            whose effect is authenticated_external_call.
             To WRITE A FILE through an API that takes base64 (a contents API),
             NEVER generate base64 and NEVER re-type the file - both corrupt it.
             Build two nodes in one branch, both with that effect: `fetch` (a GET

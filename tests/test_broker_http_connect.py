@@ -19,7 +19,7 @@ EXTRA = {"host": "models.example.com", "path_template": "/extra", "methods": ["G
 
 
 def connect(**changes):
-    from tinyassets.api.http_connection import connect_http
+    from tests.support.connection_door import connect_http
     with identity_context(Identity(user_id="alice", username="alice", capabilities=["write"])):
         return connect_http(universe_id="cc-alice", payload=dict(
             destination="fresh", secret="synthetic-fixture", auth_scheme="bearer",
@@ -118,8 +118,7 @@ def test_lost_commit_ack_is_not_replayed(removal, monkeypatch):
             raise ProxyRequestError("lost acknowledgement")
         return result
     monkeypatch.setattr(BrokerClient, "http_connect", lost)
-    with pytest.raises(ProxyRequestError):
-        connect()
+    assert connect()["error"] == "model_connection_incomplete"
     assert calls == ["prepare", "commit"]
     connection, grant = _ids(universe_id="cc-alice", destination="fresh")
     assert removal.ledger._get_connection_resource(connection) is not None
@@ -131,12 +130,9 @@ def test_lost_commit_ack_is_not_replayed(removal, monkeypatch):
 def test_outage_precedes_vault_write_without_local_ledger(removal, monkeypatch):
     from tinyassets.broker import supervisor
     from tinyassets.broker import vault as credential_vault
-    from tinyassets.storage.outbound_connections import ProxyRequestError
-
     def forbidden(*args, **kwargs):
         raise AssertionError("outage changed vault")
     monkeypatch.setattr(credential_vault, "write_credential_vault", forbidden)
     monkeypatch.setattr(supervisor, "get_supervisor", lambda root: None)
-    with pytest.raises(ProxyRequestError):
-        connect()
+    assert connect()["error"] == "model_connection_incomplete"
     assert not (removal.root / "outbound.db").exists()

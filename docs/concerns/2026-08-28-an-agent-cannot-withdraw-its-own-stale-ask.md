@@ -18,8 +18,8 @@ Four tabs under **WAITING ON YOU**. Two of them are wrong:
 
 | kind | title | action | fields |
 |---|---|---|---|
-| API | GitHub endpoint so I can update request_theme.json | `connect_http` | `secret` |
-| API | GitHub endpoint so I can update request_theme.json | `connect_http` | `secret` |
+| API | GitHub endpoint so I can update request_theme.json | `connect_http` | door link |
+| API | GitHub endpoint so I can update request_theme.json | `connect_http` | door link |
 | GitHub | Set Contents to Read and write on the key you already gave me | `answer` | `acknowledgement` |
 | GitHub | Extend the existing github connection to request_theme.json | `extend_http` | *(none)* |
 

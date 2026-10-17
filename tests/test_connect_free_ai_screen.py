@@ -42,7 +42,8 @@ const ConnectOAuth={
   async post(op,payload){calls.push({op,payload});
     if(this.reply instanceof Error) throw this.reply; return this.reply;},
   async begin(req,note,button,opts){
-    calls.push({begin:req.request_id,source:!!(opts&&opts.source)});},
+    calls.push({begin:opts.preset_id,source:!!(opts&&opts.source)});
+    if(this.reply instanceof Error)throw this.reply;},
 };
 const SignInConnect={ids:{},configure(s,u){calls.push({configure:s,universe:u});},
   start(){calls.push({start:this.ids.result});}};
@@ -164,7 +165,7 @@ await button.listeners.click();
 const ok={text:text(host),label:button.textContent,calls:calls.slice(),
   children:host.children[0].children.map(n=>({tag:n.tag,text:n.textContent,cls:n.className}))};
 calls.length=0;
-ConnectOAuth.reply={request:{request_id:'req-2',action:{type:'connect'}}};
+ConnectOAuth.reply=new Error('sign_in_unavailable');
 await button.listeners.click();
 const status=find(host,n=>n.attrs.role==='status');
 console.log(JSON.stringify({ok,refused:{calls,status:status.textContent,disabled:button.disabled}}));
@@ -177,12 +178,9 @@ console.log(JSON.stringify({ok,refused:{calls,status:status.textContent,disabled
                            "text": SETUP["sign_in_sources"][0]["billing_note"]}
     assert children[3]["tag"] == "button"
     assert out["ok"]["calls"] == [
-        {"op": "source_sign_in", "payload": {"preset_id": "huggingface"}},
-        {"begin": "req-1", "source": True}]
-    # A request without a discovered sign-in is never handed to the sign-in client.
-    assert out["refused"]["calls"] == [
-        {"op": "source_sign_in", "payload": {"preset_id": "huggingface"}}]
-    assert "sign_in_unavailable" in out["refused"]["status"]
+        {"begin": "huggingface", "source": True}]
+    # Each tap starts the shared door flow; no owner request is manufactured.
+    assert out["refused"]["calls"] == [{"begin": "huggingface", "source": True}]
     assert out["refused"]["disabled"] is False
 
 

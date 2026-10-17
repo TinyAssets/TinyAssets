@@ -23,6 +23,12 @@ def removal(discovery, monkeypatch):
     from tinyassets.daemon_server import grant_universe_access
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(discovery.root))
+    from tests.support.broker_double import seed_owner_admission
+    from tinyassets.broker.owner_identities import OwnerIdentities
+
+    seed_owner_admission(discovery.root, principal="alice", center="cc-alice")
+    discovery.broker.server._owner_identities = OwnerIdentities(
+        discovery.root / ".broker/owner-identities.db")
     (discovery.root / "cc-alice").mkdir()
     grant_universe_access(discovery.root, universe_id="cc-alice", actor_id="alice",
                           permission="admin")
@@ -217,7 +223,8 @@ def test_lifecycle_status_uses_broker_and_outage_is_not_disconnected(removal, mo
 
 
 def test_rotation_keeps_ledger_policy_and_writes_only_owner_vault(removal, monkeypatch):
-    from tinyassets.api.http_connection import preview_rotate_http, rotate_http
+    from tests.support.connection_door import rotate_http
+    from tinyassets.api.http_connection import preview_rotate_http
     from tinyassets.auth.middleware import identity_context
     from tinyassets.auth.provider import Identity
     from tinyassets.broker import supervisor
@@ -246,7 +253,7 @@ def test_rotation_keeps_ledger_policy_and_writes_only_owner_vault(removal, monke
 
 
 def test_rotation_refuses_revoked_grant_before_vault_write(removal):
-    from tinyassets.api.http_connection import rotate_http
+    from tests.support.connection_door import rotate_http
     from tinyassets.auth.middleware import identity_context
     from tinyassets.auth.provider import Identity
 

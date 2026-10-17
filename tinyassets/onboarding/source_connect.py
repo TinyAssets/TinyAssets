@@ -12,46 +12,6 @@ _PAID_USAGE_NOTE = ("Use a free/trial account with paid usage disabled. "
                     "TinyAssets cannot enforce the provider's billing settings.")
 
 
-def connect_source(*, base, uid, owner, preset, key):
-    from tinyassets.api.connection_uses import apply_connection_uses
-    from tinyassets.api.http_connection import connect_http
-    from tinyassets.onboarding.serving import _gesture_lock
-    from tinyassets.providers.discovery_http import read_granted_discovery_document
-    from tinyassets.providers.free_sources import discovered_agent_models
-    from tinyassets.shared_self import require_founder_home
-
-    with _gesture_lock(uid):
-        require_founder_home(base, uid, owner)
-        urls = [(preset["base_url"] + "/chat/completions", "POST"),
-                (preset["base_url"] + "/models", "GET")]
-        endpoints = [{"host": urlsplit(url).netloc, "path_template": urlsplit(url).path,
-                      "methods": [method]} for url, method in urls]
-        # This is the same deposit/authority path as every connect card. No
-        # bearer token ever enters a provider definition or a browser response.
-        deposit = connect_http(universe_id=uid, payload={
-            "destination": "model-" + preset["id"], "secret": key,
-            "auth_scheme": "bearer", "allowed_endpoints": endpoints, "access": "exact",
-        })
-        if deposit.get("status") != "provisioned":
-            raise HostedAuthError("model_connection_deposit_incomplete", 409)
-        payload = read_granted_discovery_document(
-            db_path=base / "outbound.db", grant_id=deposit["grant_id"],
-            owner_user_id=owner, universe_id=uid, url=urls[1][0],
-        )
-        models = discovered_agent_models(preset, payload)
-        require_founder_home(base, uid, owner)
-        applied = apply_connection_uses(
-            base=base, uid=uid, actor=owner, grant_id=deposit["grant_id"],
-            uses={"model": {"wire": preset["wire"], "billing": "free", "models": models}},
-            constant_headers={}, owner_confirmed=True,
-        )
-        if applied.get("error") or not applied.get("provider"):
-            raise HostedAuthError("model_connection_requires_recovery", 409)
-        return _offer_pool_access(base=base, uid=uid, owner=owner, preset=preset,
-                                  definition_id=applied["definition_id"],
-                                  models=[m["id"] for m in models])
-
-
 def _offer_pool_access(*, base, uid, owner, preset, definition_id, models):
     """Raise the owner's explicit confirmation adding this source to their agent.
 

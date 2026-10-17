@@ -110,3 +110,22 @@ The broker SHALL own its custody locks, ownership metadata and deletion tombston
 - **AND** registered client authentication is resolved only in the broker
 - **AND** the consumed router flow cannot be replayed and the broker response contains no credential
 - **AND** box channels cannot invoke these exchanges
+
+#### Scenario: Box connect actions carry no secret
+- **WHEN** a box invokes a connection action or answers a connect approval
+- **THEN** its accepted fields contain no secret, token, key, password or capability URL value
+- **AND** a keyless connection uses HTTP_CONNECT on the bound box channel
+- **AND** a secret or sign-in connection returns a door link carrying request, center and source or connection ID
+- **AND** browser credential submissions go directly to the shared door
+
+#### Scenario: A grant completes the requesting box's pending connection
+- **WHEN** the box sees a live GRANTED_RESOURCE with the pending connection's request_ref and matching policy
+- **THEN** it applies the requested uses and resolves the pending request through the existing answer and continuation path
+- **AND** a different request_ref leaves it pending and repeated polling does not deliver a second answer
+- **AND** a completion-storage or model-acceptance failure leaves the request pending with an explicit failure
+- **AND** completion needs neither push delivery nor a router read of a pending request
+
+#### Scenario: Every supported authentication type completes its lifecycle
+- **WHEN** none, bearer, basic, header, oauth1a, url_secret, DCR, registered-client or preset authentication is connected
+- **THEN** a model or authenticated effector call from a separate box process succeeds through the broker
+- **AND** disconnect through the shared door or box DISCONNECT makes the next box call fail

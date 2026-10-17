@@ -365,7 +365,7 @@ def test_expired_registration_on_pending_card_registers_again(provider, app, mon
     assert _sign_in(provider, first["request_id"])[2].status_code == 200
     with _as(OWNER):
         second = _ask(action={**TASKS_ASK, "destination": "second"})
-    assert second["action"]["oauth"]["registration_method"] == "cached"
+    assert "registration_method" not in second["action"]["oauth"]
     now = pkce.time.time()
     monkeypatch.setattr(pkce.time, "time", lambda: now + 3601)
     assert _sign_in(provider, second["request_id"])[2].status_code == 200
@@ -477,9 +477,8 @@ def test_unlisted_mcp_through_connect_card(
         asked = _ask(
             action={**TASKS_ASK, "path_template": "/tenants/a/mcp", "oauth": oauth}, fields=[]
         )
-    assert asked.get("primary") == "sign_in", asked
-    assert asked["action"]["oauth"]["source"] == "discovered"
-    assert asked["action"]["oauth"]["scopes"] == ["tools.read"]
+    assert asked.get("primary") == "connect", asked
+    assert "source" not in asked["action"]["oauth"]
     _, _, done = _sign_in(provider, asked["request_id"])
     assert done.status_code == 200, done.text
     bundle = _vault_bundle(app)

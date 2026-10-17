@@ -39,6 +39,8 @@ async def handle_model_connect(request):
               "inline_cancel": {"flow"}, "begin": {"preset_id", "code_challenge"},
               "exchange": {"flow", "code", "code_verifier"}, "resume": {"preset_id"},
               "deposit_key": {"preset_id", "key"},
+              "deposit": {"definition", "secret"},
+              "rotate": {"destination", "incarnation", "secret"},
               "oauth_begin": {"code_challenge"},
               "source_sign_in": {"preset_id", "code_challenge"},
               "oauth_exchange": {"flow", "code", "code_verifier"}}
@@ -102,6 +104,14 @@ async def handle_model_connect(request):
                     approval = require(request, owner=owner)
                 except PermissionError:
                     raise FlowError("interactive_approval_required", 403) from None
+
+            if operation == "rotate":
+                return rotate_connection(base, owner=owner, center=center,
+                    destination=data["destination"], incarnation=data["incarnation"],
+                    secret=data["secret"], request_ref=ref)
+            if operation == "deposit":
+                return deposit_connection(base, owner=owner, center=center,
+                    definition=data["definition"], secret=data["secret"], request_ref=ref)
 
             def exchange(code, verifier):
                 flow = hosted.take_flow(handle=data["flow"], owner=owner,
@@ -175,7 +185,9 @@ async def handle_model_connect(request):
         result = await run_in_threadpool(run)
         return JSONResponse(result, headers=_HEADERS)
     except (hosted.HostedAuthError, FlowError) as exc:
-        return JSONResponse({"error": exc.code}, exc.status, headers=_HEADERS)
+        detail = getattr(exc, "detail", "") if operation in {"deposit", "rotate"} else ""
+        return JSONResponse({"error": exc.code, **({"detail": detail} if detail else {})},
+                            exc.status, headers=_HEADERS)
     except ValueError:
         return JSONResponse({"error": "invalid_model_connection"}, 400, headers=_HEADERS)
     except LookupError:
@@ -230,3 +242,73 @@ async def handle_client_metadata(request):
         "token_endpoint_auth_method": "none",
         "application_type": "web",
     }, headers={"Cache-Control": "public, max-age=3600"})
+
+
+def deposit_connection(base, *, owner, center, definition, secret, request_ref=""):
+    """Generic shared-door deposit; no owner file or pending-request read."""
+    from tinyassets.api.http_connection import (
+        _DEPOSITABLE_AUTH_SCHEMES,
+        _secret_shape_error,
+        connection_definition,
+        extract_url_secret,
+    )
+    from tinyassets.broker.http_connect import connect_operation
+    from tinyassets.connection_oauth.flow import FlowError
+    from tinyassets.storage.outbound_connections import _parse_allowed_endpoints
+
+    allowed = {"destination", "auth_scheme", "endpoints", "access", "scopes", "git_host"}
+    if (set(definition) - allowed
+            or not {"destination", "endpoints"} <= set(definition)):
+        raise ValueError("invalid connection definition")
+    scheme = definition.get("auth_scheme", "bearer")
+    if not isinstance(scheme, str) or scheme not in _DEPOSITABLE_AUTH_SCHEMES:
+        raise FlowError("unsupported_auth_scheme", 400)
+    result = connection_definition({
+        **{k: v for k, v in definition.items() if k != "endpoints"},
+        "allowed_endpoints": definition["endpoints"]})
+    if result.get("error"):
+        raise FlowError(result["error"], 400, result.get("detail", ""))
+    endpoints = _parse_allowed_endpoints(result["policy"]["endpoints"])
+    if scheme == "url_secret":
+        secret, error = extract_url_secret(secret, endpoints)
+    else:
+        error = _secret_shape_error(scheme, secret)
+    if error or not secret.strip():
+        raise FlowError("connection_setup_invalid", 400, error or "secret is required")
+    args = dict(principal=owner, command_center=center, **result, request_ref=request_ref)
+    prepared = connect_operation(base, **args, action="prepare")
+    if prepared.get("error"):
+        raise FlowError(prepared["error"], 409)
+    result = connect_operation(base, **args, action="commit",
+                               expected=prepared["revision"], secret=secret)
+    if result.get("error"):
+        raise FlowError(result["error"], 409)
+    return result["projection"]
+
+
+def rotate_connection(base, *, owner, center, destination, incarnation, secret, request_ref=""):
+    from tinyassets.api.http_connection import extract_url_secret
+    from tinyassets.broker.catalog import connections
+    from tinyassets.broker.http_connect import custody_operation
+    from tinyassets.connection_oauth.flow import FlowError
+
+    found = next(((g, r, i) for g, r, i in connections(
+        base, principal=owner, command_center=center) if r.destination == destination), None)
+    if found is None:
+        raise FlowError("not_found", 404)
+    grant, resource, current = found
+    if current != incarnation:
+        raise FlowError("connection_changed", 409)
+    if resource.auth_scheme == "url_secret":
+        secret, error = extract_url_secret(secret, resource.allowed_endpoints)
+        if error:
+            raise FlowError("connection_setup_invalid", 400, error)
+    result = custody_operation(base, principal=owner, command_center=center,
+        destination=destination, incarnation=incarnation, secret=secret,
+        action="rotate", request_ref=request_ref)
+    if result.get("error"):
+        raise FlowError(result["error"], 409)
+    from tinyassets.api.http_connection import _git_scopes_in, _project
+
+    return {**_project(resource, grant), "status": "rotated", "request_ref": request_ref,
+            "git_scopes": sorted(_git_scopes_in(json.dumps(list(resource.scopes))))}

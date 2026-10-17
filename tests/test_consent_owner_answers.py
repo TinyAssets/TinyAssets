@@ -121,14 +121,6 @@ def test_plain_questions_keep_bearer_answers(home):
     })["status"] == "answered"
 
 
-def test_oauth_token_answer_requires_owner_proof_before_deposit(home):
-    row = ask(home, "connect")
-    result = api.answer_connect_with_token(universe_id=home.name,
-                                           request_id=row["request_id"], token="agent-token")
-    assert result["error"] == "interactive_approval_required"
-    assert store.get_request(home, row["request_id"])["status"] == "pending"
-
-
 @pytest.mark.parametrize("door",
                          ["oauth_begin", "inline_begin", "policy", "preview", "decide", "edit"])
 def test_bearer_cannot_mint_retry_or_write_authority(home, monkeypatch, door):
@@ -149,14 +141,26 @@ def test_bearer_cannot_mint_retry_or_write_authority(home, monkeypatch, door):
             raise BrokerRefused("owner session required")
 
         monkeypatch.setattr("tinyassets.broker.client.owner_policy_operation", refused)
-    body = json.dumps({"expected_generation": 1, "policy": {}} if door == "policy" else
-                      {"owner_session": {"user_id": "owner"}, "scope": "always"}).encode()
+    document = ({"expected_generation": 1, "policy": {}} if door == "policy" else
+                {"owner_session": {"user_id": "owner"}, "scope": "always"})
+    if door in {"oauth_begin", "inline_begin"}:
+        from tests.support.broker_double import seed_owner_admission
+
+        seed_owner_admission(home.parent, principal="owner", center=home.name)
+        from tinyassets.broker.owner_identities import OwnerIdentities
+        from tinyassets.broker.supervisor import get_supervisor
+
+        get_supervisor(home.parent).server._owner_identities = OwnerIdentities(
+            home.parent / ".broker" / "owner-identities.db")
+        document = {"center": home.name, **(
+            {"code_challenge": "a" * 43} if door == "oauth_begin" else {"preset_id": "sample"})}
+    body = json.dumps(document).encode()
 
     async def receive():
         return {"type": "http.request", "body": body, "more_body": False}
 
     request = Request({"type": "http", "method": "POST", "path": "/app/" + door,
-                       "path_params": {"operation": door}, "headers": [
+                       "query_string": b"", "path_params": {"operation": door}, "headers": [
                            (b"origin", b"https://tinyassets.io"),
                            (b"content-type", b"application/json"),
                        ]}, receive)

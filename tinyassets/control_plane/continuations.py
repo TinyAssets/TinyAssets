@@ -200,6 +200,17 @@ def tick(base):
                     "('request_wake_dedupe','request_answer_deliveries')"
                 ).fetchone():
                     continue
+            from tinyassets import owner_runtime
+
+            runtime = owner_runtime.current()
+            if runtime is not None:
+                from tinyassets.api.pending_requests import reconcile_connections
+                from tinyassets.auth.middleware import identity_context
+                from tinyassets.auth.provider import Identity
+
+                with identity_context(Identity(user_id=runtime.principal,
+                        username=runtime.principal, capabilities=["write"])):
+                    reconcile_connections(home.name, home)
             recover(home)
         except Exception:
             logging.getLogger(__name__).exception("Request continuation recovery failed")

@@ -26,6 +26,16 @@ def answer_request(*, universe_id="", payload=None, cookie=None, origin="https:/
     from tinyassets.onboarding.inline_requests import handle_approval
 
     document = json.loads(payload) if isinstance(payload, str) else dict(payload or {})
+    if (document.get("values") and not document.get("feedback")
+            and cookie is None and origin == "https://tinyassets.io"):
+        from tests.support.connection_door import answer_connect
+        from tinyassets.api.helpers import _base_path
+        from tinyassets.storage.pending_requests import get_request
+
+        row = get_request(_base_path() / universe_id, document.get("request_id", ""))
+        if row and row["status"] == "pending" and row["action"].get("type") in {
+                "connect", "connect_http", "rotate_http"}:
+            return answer_connect(universe_id, row, document["values"])
     body = json.dumps({**document, "universe_id": universe_id}).encode()
     cookie = session_cookie() if cookie is None else cookie
 

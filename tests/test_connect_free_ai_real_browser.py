@@ -48,7 +48,7 @@ const ConnectOAuth={{
   async post(op,payload){{window.calls.push({{op,payload}});
     return {{request:{{request_id:"req-1",action:{{type:"connect",oauth:{{}}}}}}}};}},
   async begin(req,note,button,opts){{
-    window.calls.push({{begin:req.request_id,source:!!(opts&&opts.source)}});}},
+    window.calls.push({{begin:opts.preset_id,source:!!(opts&&opts.source)}});}},
 }};
 const SignInConnect={{ids:{{}},configure(){{}},start(){{}}}};
 let railCache=[{{request_id:"sys_connect_model",
@@ -111,7 +111,6 @@ def test_sign_in_source_card_is_one_tap_in_a_real_browser(page):
     assert note.evaluate("el => el.nextElementSibling.tagName") == "BUTTON"
     assert note.bounding_box()["y"] < button.bounding_box()["y"]
     button.click()
-    page.wait_for_function("window.calls.length === 2")
+    page.wait_for_function("window.calls.length === 1")
     assert page.evaluate("window.calls") == [
-        {"op": "source_sign_in", "payload": {"preset_id": "huggingface"}},
-        {"begin": "req-1", "source": True}]
+        {"begin": "huggingface", "source": True}]

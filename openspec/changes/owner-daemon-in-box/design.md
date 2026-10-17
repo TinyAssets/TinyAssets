@@ -188,16 +188,20 @@ provider-specific code.
 | One writer per state | Flow rows: router. Custody and grants: broker. Plans: billing at the broker |
 | Isolation is the box, not shared checks | No per-owner filter is added; the owner comes from authentication or the bound channel |
 
-### 3c-2 as built (partial)
+### 3c-2 as built
 
-`ADMIT_CENTER` on the bound box channel registers a new center using only the
-relay's owner. An existing box no longer calls host provisioning to create a
-center. Admission remains append-only and rejects retired or foreign centers.
-Policy rules, authenticated effectors, source display and `ta_capabilities`
-use the existing broker channel; relay tests cover these consumers and center
-creation from a separate owner process. Model-connect placement and pending
-request completion remain outstanding; connection controls and provider
-revocation are described below.
+`ADMIT_CENTER` registers new centers on the bound box channel. `/app/connections`
+and `/app/model-connect/*` run at the shared door using broker admission and catalog
+state, without owner-store reads. `HTTP_CONNECT` prepares, commits and rotates
+custody; `oauth_offer`, `oauth_exchange` and `preset_exchange` keep discovery and
+exchanges in the broker. Box connect and rotate actions take no credential:
+keyless connects use the box channel; other schemes return the existing `/app`
+link with `request`, `center` and connection ID. The browser posts credentials
+only to the door. Commit and rotation record `request_ref`; box ledger polling
+through `GRANTED_RESOURCE` matches the pending request, applies its uses, resolves
+it and wakes the existing continuation. There is no push or router request read.
+The lifecycle tests exercise all nine auth variants from a separate box process,
+then disconnect at the door or on the box channel and prove the next call fails.
 
 ### 3c-2a custody and refresh
 
@@ -226,7 +230,7 @@ revocation are described below.
   refresh never calls the router for a secret or token.
 - RFC 7009 provider revocation is task 3c-2b, not part of this slice.
 
-### 3c-2b connection controls and revoke (partial task)
+### 3c-2b connection controls and revoke
 
 `/app/connections` is standalone at the shared door. Explicit centers use
 `ADMITTED_OWNER`; omitted centers use the fenced `SOLE_CENTER` identity read
@@ -236,9 +240,8 @@ rows on request so interrupted cleanup stays reachable without an owner store.
 RFC 7009 endpoint under the custody lock, then erases locally even on provider
 failure. A failure leaves a revoked, credential-free connection receipt with
 `revocation_error` and `custody_erased`; `HTTP_CONNECT` can replace it with a
-fresh incarnation. Model-connect/OAuth exchange placement, secret-free box
-actions, ledger `request_ref` completion and the full per-auth lifecycle matrix
-are not implemented by this step. The lifecycle checkbox remains open.
+fresh incarnation. Model-connect placement, box actions and ledger completion
+are described in the 3c-2 as-built contract above.
 
 ## D3. Lifecycle (boxhostd)
 

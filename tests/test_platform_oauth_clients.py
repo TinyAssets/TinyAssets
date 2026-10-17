@@ -112,8 +112,10 @@ def test_google_api_connect_ask_uses_directory_scopes(monkeypatch, universes, ho
             "path_template": "/calendar/v3/calendars/primary/events", "methods": ["GET"],
             "oauth": {"scopes": scopes},
         })
-    assert asked["primary"] == "sign_in"
-    offer = asked["action"]["oauth"]
+    assert asked["primary"] == "connect"
+    assert "source" not in asked["action"]["oauth"]
+    offer, reason = discovery.resolve_offer(asked["action"]["oauth"], [host])
+    assert reason == ""
     assert offer["source"] == "directory" and offer["provider_id"] == "google"
     assert offer["issuer"] == "https://accounts.google.com"
     assert offer["scopes"] == scopes
@@ -175,7 +177,8 @@ def test_missing_configuration_retains_key_paste(configured, monkeypatch, provid
     provider.advertise = False
     with _as(OWNER):
         result = _ask()
-    assert result.get("oauth_unavailable")
+    assert result["primary"] == "connect"
+    assert discovery.resolve_offer(result["action"]["oauth"], [API])[0] is None
 
 
 def test_directory_matches_all_hosts_exactly_and_selects_scope_sets(configured):
@@ -558,7 +561,9 @@ def test_invalid_directory_connect_ask_keeps_key_paste(configured, provider, uni
     configured[1].write_text("invalid", encoding="utf-8")
     provider.advertise = False
     with _as(OWNER):
-        assert _ask().get("oauth_unavailable")
+        asked = _ask()
+        assert asked["primary"] == "connect"
+        assert discovery.resolve_offer(asked["action"]["oauth"], [API])[0] is None
 
 
 def test_failed_engine_endpoint_mints_no_child_oauth_capability(configured, app, monkeypatch):

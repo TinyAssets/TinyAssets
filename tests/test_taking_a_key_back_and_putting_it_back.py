@@ -47,7 +47,7 @@ REPO = "tinyassets/tinyassets"
 
 
 def _deposit(uid, *, scopes=(), secret="ghp_" + "x" * 36):
-    from tinyassets.api.http_connection import connect_http
+    from tests.support.connection_door import connect_http
 
     return connect_http(universe_id=uid, payload=json.dumps({
         "destination": "github", "secret": secret, "auth_scheme": "bearer",
@@ -241,7 +241,7 @@ def test_a_rotation_restores_itself_from_the_RAILS_readback_alone(base):
     what answering the removal tab returned, and the only new input is the new
     key.
     """
-    from tinyassets.api.http_connection import connect_http
+    from tests.support.connection_door import connect_http
     from tinyassets.storage.workspace_authority import has_git_scope
 
     _make_universe(base, "u-1", admin="alice")
@@ -272,7 +272,7 @@ def test_an_oauth1a_connection_with_a_PATTERNED_endpoint_rotates_too(base):
     omitting `auth_scheme` re-deposits an OAuth connection as a bearer one. Both
     produce a connection that provisions cleanly and is not the one destroyed.
     """
-    from tinyassets.api.http_connection import connect_http
+    from tests.support.connection_door import connect_http
 
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
@@ -403,7 +403,7 @@ def test_an_endpoint_with_QUERY_policy_survives_the_round_trip(base):
     validator parses. The rule: never hand-write the inverse of a parser that
     publishes one.
     """
-    from tinyassets.api.http_connection import connect_http
+    from tests.support.connection_door import connect_http
 
     _make_universe(base, "u-1", admin="alice")
     _login("alice")

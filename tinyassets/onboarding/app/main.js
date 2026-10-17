@@ -997,16 +997,13 @@
       if(agentId && agentId!=="main") args.agent_id=String(agentId);
       return this.callTool("converse",args,{onModelEvent});
     },
-    // Deposit a generic outbound HTTP connection (an API key + the endpoints it
-    // may call) DIRECTLY over /mcp — the secret rides the tool payload, never a
-    // converse/chat turn — so the command center can then register a model
-    // compute provider on it, or build a channel (Slack/X/...) via the
-    // authenticated_external_call effect. The channel-agnostic way to add any API.
+    // Credentials travel directly to the shared door.
     connectHTTP(destination,secret,allowedEndpoints,authScheme){
-      const payload={destination,secret,allowed_endpoints:allowedEndpoints};
-      if(authScheme) payload.auth_scheme=authScheme;   // bearer (default) | basic | oauth1a
-      return this.callTool("write_graph",{target:"connection",operation:"connect_http",
-        payload_json:JSON.stringify(payload)});
+      if(authScheme==="none")return this.callTool("write_graph",{
+        target:"connection",operation:"connect_http",payload_json:JSON.stringify({
+          destination,auth_scheme:"none",allowed_endpoints:allowedEndpoints})});
+      return ConnectOAuth.post("deposit",{secret,definition:{
+        destination,auth_scheme:authScheme||"bearer",endpoints:allowedEndpoints}});
     },
     // Ask the command center what a pasted credential IS, from its SHAPE only. The
     // credential itself never rides this call — see extractShape() below.
@@ -1119,7 +1116,10 @@
     },
     // The agent's pending asks: EVERY one. Same read from every surface, which
     // is what makes them answerable from the phone with no second mechanism.
-    listRequests(){ return this.read({target:"pending_requests"}); },
+    listRequests(){
+      const center=new URLSearchParams(location.search).get("center");
+      return this.read({target:"pending_requests",...(center?{graph_id:center}:{})});
+    },
   };
 
   // ---- UI ----
@@ -7346,11 +7346,14 @@
         sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title,source}));
         const action=req.action||{};
         const payload={code_challenge};
+        if(req.universe_id)payload.center=req.universe_id;
         if(req.request_id)payload.request_ref=req.request_id;
         if(opts&&opts.preset_id)payload.preset_id=opts.preset_id;
         else payload.definition={destination:action.destination,
           endpoints:action.endpoints||[{host:action.host,path_template:action.path_template,
-            methods:action.methods}],oauth:{scopes:(action.oauth||{}).scopes||[]}};
+            methods:action.methods}],oauth:{scopes:(action.oauth||{}).scopes||[],
+              ...(action.oauth?.client_id?{client_id:action.oauth.client_id}:{}),
+              ...(action.oauth?.use?{use:action.oauth.use}:{})}};
         const result=await this.post(opts&&opts.preset_id?"source_sign_in":"oauth_begin",payload);
         const url=new URL(result.authorize_url);
         if(url.protocol!=="https:"||url.username||url.password||
@@ -7410,9 +7413,8 @@
     // any key fields fold under "Paste a key instead".
     decorate(req,box,row,note){
       const action=req&&req.action,offer=action&&action.type==="connect"&&action.oauth;
-      if(NATIVE||!offer||typeof offer.authorize_url!=="string") return;
-      let host="";
-      try{ host=new URL(offer.authorize_url).host; }catch(_e){ return; }
+      if(NATIVE||!offer||action.auth_scheme==="none") return;
+      const host=(action.endpoints||[])[0]?.host||"the provider";
       const go=document.createElement("button");
       go.type="button"; go.className="btn btn--primary"; go.style.width="100%";
       // The HOST, not friendly words: the owner sees where the click goes.
@@ -8846,35 +8848,26 @@
     try{
       const asked=await MCP.requestFromUser({
         kind:"LLM", title:"Connect "+host+" as a model",
-        body:"You asked for this under Connect a model. The key goes straight to your command center's vault.",
-        fields:[{name:"key",label:"API key",type:"secret"}],
+        body:"You asked to connect this model through the secure connection door.",
+        fields:[],
         action:{type:"connect",destination,auth_scheme:"bearer",host,path_template:path,methods:["POST"],
           uses:{model:{wire,models:[{id:model,tools:true,context:ENDPOINT_CONTEXT}],billing:"flat"}}},
       });
       if(epoch!==MCP._loginEpoch) return;
       if(!asked||asked.error||!asked.request_id){
         out.textContent="Couldn't connect: "+((asked&&(asked.detail||asked.error))||"no answer")+"."; return; }
-      const answered=await MCP.answerRequest({request_id:asked.request_id,values:{key}});
+      const connected=await ConnectOAuth.post("deposit",{
+        secret:key,request_ref:asked.request_id,definition:{
+          destination,auth_scheme:"bearer",
+          endpoints:[{host,path_template:path,methods:["POST"]}]}});
       key="";
       if(epoch!==MCP._loginEpoch) return;
-      if(!answered||answered.error||answered.status!=="answered"){
-        out.textContent="Not connected yet"+(answered&&answered.detail?": "+answered.detail:"")
-          +". The request is waiting in this list; paste the key there to finish.";
-        refreshRail(); return;
+      if(!connected||connected.error||connected.status!=="provisioned"){
+        out.textContent="Not confirmed. The request is waiting in this list.";
+        await refreshRail(); return;
       }
-      const serving=answered.serving||{};
-      if(serving.status==="serving"){
-        out.textContent="";
-        $("endpoint-url").value=""; $("endpoint-model").value="";
-        await enterSignedIn();
-        appendMessage("system","Your command center now runs on "+model+". Say hello.");
-      }else if(serving.status==="unchanged"){
-        out.textContent="Connected. Your command center keeps its current model; pick "+model+" in Change model when you want it.";
-        refreshRail();
-      }else{
-        out.textContent="Saved, but your command center is not running on it yet"+(serving.detail?": "+serving.detail:"")+".";
-        refreshRail();
-      }
+      await refreshRail();
+      out.textContent="Connection saved. Setup completes when its grant is confirmed.";
     }catch(err){
       if(err&&err.authRequired) return enterSignedOut();
       out.textContent="Couldn't confirm the connection: "+((err&&err.message)||"unknown error")+". Check the list above before trying again.";
@@ -8939,6 +8932,15 @@
   }
 
   function railBody(req){
+    if(["connect","connect_http","rotate_http"].includes(req.action?.type)
+        &&req.action.auth_scheme!=="none"&&!(req.fields||[]).length){
+      const names=req.action.auth_scheme==="oauth1a"
+        ?["api_key","api_secret","access_token","access_token_secret"]
+        :req.action.auth_scheme==="basic"?["username","password"]
+        :[req.action.auth_scheme==="url_secret"?"capability_url":"secret"];
+      req.fields=names.map(name=>({name,type:"secret",
+        label:name==="capability_url"?"Webhook URL":name.replaceAll("_"," ")}));
+    }
     const box = document.createElement("div"); box.className = "rtab-body";
     const asker=document.createElement("p");
     asker.textContent="From: "+(req.agent_name||req.agent||"Your agent");box.appendChild(asker);
@@ -9134,7 +9136,8 @@
       finally{buttons.forEach(b=>{b.disabled=false;});}
       return;
     }
-    const payload = { request_id: req.parent_request_id || req.request_id };
+    const payload = { request_id: req.parent_request_id || req.request_id,
+      universe_id:req.universe_id||queueScope };
     if(req.item_id) payload.item_id=req.item_id;
     if(mode === "reply" && !text){ note.textContent = "Type something to send."; return; }
     if(text) payload.feedback = text;
@@ -9164,6 +9167,22 @@
         r=await InlineApprovals.post('answer',payload);
       }else if(req.action?.type==='grant_patch_intake'){
         r=await InlineApprovals.post('answer',payload);
+      }else if(mode==="accept"&&["connect","connect_http","rotate_http"].includes(req.action?.type)
+               &&req.action.auth_scheme!=="none"){
+        const action=req.action, values=payload.values||{};
+        const keys=Object.keys(values);
+        const secret=action.auth_scheme==="basic"&&keys.includes("username")
+          ?String(values.username||"")+":"+String(values.password||"")
+          :keys.length===1?String(values[keys[0]]):JSON.stringify(values);
+        delete payload.values;
+        const common={secret,request_ref:req.request_id,center:req.universe_id||queueScope};
+        r=await ConnectOAuth.post(action.type==="rotate_http"?"rotate":"deposit",
+          action.type==="rotate_http"?{...common,destination:action.destination,
+            incarnation:action.incarnation}:{...common,definition:{
+            destination:action.destination,auth_scheme:action.auth_scheme,
+            endpoints:action.endpoints,access:action.access||"exact",
+            scopes:action.scopes||[],git_host:action.git_host||""}});
+        await refreshRail();
       }else r=await MCP.answerRequest(payload);
       if(installAsk&&(installLogin!==MCP._loginEpoch||installScope!==queueScope))return;
       if(r && r.error){
@@ -9240,7 +9259,7 @@
     if(loginEpoch!==MCP._loginEpoch) return;
     if(!failure && r && Array.isArray(r.pending)){
       railFailed(null);
-      renderRail(r.pending, options);
+      renderRail(r.pending.map(row=>({...row,universe_id:r.universe_id})), options);
       InlineApprovals.history(r.recently_answered, r.pending);
       return;
     }

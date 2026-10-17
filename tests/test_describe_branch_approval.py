@@ -7,6 +7,14 @@ check, through the one definition in graph_compiler.source_code_problems."""
 import json
 from unittest.mock import patch  # noqa: E402
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolated_root(tmp_path, monkeypatch):
+    # Module imports may retain a patched helper; use its supported environment input.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -62,7 +70,6 @@ def _call_validate_real(branch_dict):
 
     with (
         patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_dict),
-        patch("tinyassets.api.helpers._base_path", return_value="/fake"),
         patch(
             "tinyassets.providers.base.get_sandbox_status",
             return_value={"bwrap_available": True},
@@ -80,7 +87,6 @@ def _call_describe(branch_dict, validate_errors=None):
 
     with (
         patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_dict),
-        patch("tinyassets.api.helpers._base_path", return_value="/fake"),
         patch(
             "tinyassets.api.branches._related_wiki_pages",
             return_value={"items": [], "truncated_count": 0},
@@ -98,7 +104,6 @@ def _call_get(branch_dict):
 
     with (
         patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_dict),
-        patch("tinyassets.api.helpers._base_path", return_value="/fake"),
         patch("tinyassets.api.engine_helpers._current_actor", return_value="tester"),
         patch("tinyassets.api.engine_helpers._current_actor", return_value="tester"),
         patch("tinyassets.api.market._gates_enabled", return_value=False),
@@ -120,7 +125,6 @@ def _call_validate(branch_dict, validate_errors=None):
 
     with (
         patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_dict),
-        patch("tinyassets.api.helpers._base_path", return_value="/fake"),
         patch("tinyassets.branches.BranchDefinition.validate", return_value=validate_errors),
         patch(
             "tinyassets.providers.base.get_sandbox_status",
@@ -208,7 +212,8 @@ class TestDescribeBranchApproval:
             text = pathlib.Path(mod.__file__).read_text(encoding="utf-8")
             assert "isn't approved" not in text, mod.__name__
             assert "must be approved before it can run" not in text, mod.__name__
-        assert "approval never gates a run" in pathlib.Path(prompts.__file__).read_text(encoding="utf-8")
+        text = pathlib.Path(prompts.__file__).read_text(encoding="utf-8")
+        assert "approval never gates a run" in text
 
     def test_a_syntax_refusal_keeps_its_cause(self):
         from tinyassets.graph_compiler import CompilerError, _validate_source_code
