@@ -601,3 +601,113 @@ Remaining work, explicitly uncompleted:
 
 No reviewer/sub-agent, new worktree, push, merge, branch switch, git-config
 change or deployment was performed.
+
+
+## Task 3c-2c build (2026-10-16)
+
+Implementation commit: `d8fa40b9dae`.
+
+`/app/model-connect/` is a shared door prefix. Preset PKCE begin/exchange/resume,
+key deposit, inline popup begin/poll/cancel, generic OAuth with public DCR,
+registered clients, source sign-in and the public client metadata document now
+work without a home, pending-request, provider-assignment or universe-store read.
+The authenticated owner selects a live admitted center, using `SOLE_CENTER` when
+omitted; unknown/foreign centers return 404. Definitions come from installed
+source/acquisition data, credential-free input or a broker catalog query. The
+browser preserves the selected center across authorization redirects.
+
+`HTTP_CONNECT` adds door-only `oauth_offer`, `oauth_exchange` and
+`preset_exchange` actions. The broker resolves registered-client metadata and
+performs authorization-code/token and preset-key exchanges, then commits custody
+and the grant. Registered client secrets remain in `broker.env`; the environment
+installer now excludes the OAuth namespace from `daemon.env`. Browser redirects,
+state/challenges, frozen public definitions and sealed popup verifiers remain at
+the door. Redemption consumes the flow before IPC; responses contain only a
+credential-free projection. Key deposits use the existing prepare/commit action.
+The opaque `request_ref` is stored on the connection row and returned by commit,
+resume and `GRANTED_RESOURCE`; the door never resolves a pending request.
+
+Deleted production paths: router token exchange and token-bundle encoding in
+`connection_oauth.flow`; router preset exchange transport (moved into
+`broker/acquisition.py`); home/ACL/pending composition in `model_connect`;
+`model_bootstrap.complete_bootstrap` and `_resume_key`; source sign-in's
+`raise_sign_in_ask`, `is_canonical_sign_in` and `offer_signed_in_source`.
+Owner-side model-access helpers remain for the next task. No provider-specific
+exchange code was introduced.
+
+Deleted tests asserting those removed compositions:
+- Entire `tests/test_model_bootstrap.py`: `test_catalogue_failure_is_resumable_without_another_oauth_exchange`,
+  `test_concurrent_manual_and_oauth_keys_have_one_deposit_winner`,
+  `test_deposit_composes_existing_request_but_does_not_answer_or_serve`,
+  `test_disconnect_then_guided_reconnect_requires_fresh_approval`,
+  `test_empty_resume_requires_authorization_not_generic_server_error`,
+  `test_home_rebinding_refuses_new_deposit`,
+  `test_owner_approval_uses_existing_enable_path`,
+  `test_partial_activation_resumes_same_request_without_rotating_custody`,
+  `test_partial_bootstrap_removal_invalidates_old_pending_approval`, and
+  `test_second_oauth_result_cannot_replace_first_deposit`. Its shared fixture
+  moved to `tests/support/model_connect.py`.
+- `test_manual_catalogue_never_selects_paid_model` in the manual-connect suite.
+- `test_sign_in_on_a_powered_command_center_asks_to_add_it` and
+  `test_post_sign_in_database_failure_preserves_success` in the source sign-in
+  suite. Direct source authorization and broker custody replace the old
+  pending-ask/automatic-serving assertions in the remaining source tests.
+
+Replaced/renamed tests (their former names no longer assert the deleted path):
+`test_manual_owner_reaches_existing_approval_then_connects`,
+`test_manual_does_not_replace_existing_setup`,
+`test_deletion_between_ingress_scope_and_durable_begin_cannot_recreate_metadata`,
+`test_new_owner_begin_provisions_own_empty_home_without_llm`,
+`test_one_tap_raises_the_platforms_ask_from_installed_data`,
+`test_sign_in_on_an_unpowered_command_center_serves_on_it`, and
+`test_rail_sign_in_uses_server_provenance_for_relay`.
+
+Manual reconnect/approval tests now verify broker grant reuse and resume.
+New-owner tests require admission without bootstrapping a home; retirement
+races are tested against the admission map. OAuth, popup, persistence and
+router-schema fixtures now use the standalone definition and broker contract.
+
+New acceptance tests in `tests/test_model_connect_door_lifecycle.py`:
+- `test_door_exchange_box_call_refresh_disconnect[dcr]`
+- `test_door_exchange_box_call_refresh_disconnect[registered]`
+- `test_door_exchange_box_call_refresh_disconnect[preset]`
+- `test_source_sign_in_uses_client_metadata_without_owner_state[dcr]`
+- `test_inline_popup_flow_at_empty_door_polls_and_cancels[preset]`
+
+The three lifecycle cases use separate broker and box processes with fake
+providers and no provider network. They cover door connect, a box effector
+call, broker refresh for OAuth, disconnect, RFC 7009 when configured and refusal
+of the next box call. Credentials are generated only inside the broker process;
+router token/secret/store access seams fail the test. The router root contains
+only shared runtime/flow state, and flow consumption, opaque request references,
+replay refusal and foreign-center 404s are asserted.
+
+Remaining scope is unchanged: box-side secret-free connect actions and door
+links, completion of the box's pending request from `request_ref`, and the other
+six authentication lifecycle cases are the next task. Do not tick all of 3c-2
+until that work is complete. Full CI, independent review, migration/cutover,
+deployed-SHA assertion and the live naive-user pass remain with the lead.
+This build is local only; no sub-agents, new worktree, push, merge, branch switch,
+git-config change or deployment was performed.
+
+Validation: the requested patterns, every structural-guard test and the touched
+tests comprised a 115-file focused Linux selection: **2,327 passed, 3 failed,
+2 root-only skips**. The three failures were a source-card admission fixture and
+two deployment assertions that still expected registered clients in daemon.env.
+The final six-file repair run passed **164 tests**, including all three failed
+cases, all five new door tests using the real box effector, hosted PKCE, generic
+OAuth/browser callback tests and source sign-in. Both root-only cases in
+`test_owner_box_destroy.py` passed separately with `--as-root` (**2 passed**).
+The additional source-pooling run passed 48 with one normalized-policy assertion
+failure subsequently fixed and covered by the final 164-pass run. The prior
+six-file door run passed 130 with one exact response-shape assertion failure,
+also fixed and covered by the final run. All failures in the focused selection and all root-only skips now have
+a passing execution; obsolete path assertions are deleted as listed above.
+No skip, xfail or quarantine was introduced. The full CI affected selection was not run or claimed. Ruff passed on
+all **33 changed Python files**, the background-authority inventory is clean,
+and `git diff --check` passed.
+
+After the implementation commit restored the original non-ASCII verifier test
+value caught by the commit hook, the complete hosted-auth file passed again:
+**51 passed** on Linux. The commit's import-graph, path-resolver, provider-drift
+and skill hooks passed; final ruff still passed all 33 changed Python files.
