@@ -5529,6 +5529,10 @@
           if(current())this.status("Your setup answered late. Tap Finish connecting to complete it; nothing was approved yet.");
           return;
         }
+        if(result.status==="provisioned"){
+          this.keyOpen=false;this.status("Connection saved.");
+          await refreshRail();return;
+        }
         req=result.request;
         if(result.status!=="confirmation_required"||!req||req.request_id!==result.request_id||
            !req.action||req.action.type!=="bind_model_access")throw new Error("invalid_connection_response");
@@ -5565,7 +5569,9 @@
         return {error:true};
       }
       this.preset=saved.preset;
-      return {flow:saved.flow,code:query.get("code"),code_verifier:saved.verifier};
+      const out={flow:saved.flow,code:query.get("code"),code_verifier:saved.verifier};
+      if(saved.center)out.center=saved.center;
+      return out;
     },
     async post(operation,payload){
       const epoch=this.epoch;
@@ -5573,6 +5579,7 @@
       if(epoch!==this.epoch)throw new Error("sign_in_required");
       if(!token()) throw new Error("sign_in_required");
       // No automatic retry: exchange outcomes may be uncertain.
+      if(!payload.center&&typeof queueScope!=="undefined"&&queueScope)payload.center=queueScope;
       const response=await fetch("/app/model-connect/"+operation,{
         method:"POST",credentials:"same-origin",cache:"no-store",referrerPolicy:"no-referrer",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
@@ -5600,7 +5607,7 @@
            !/^[A-Za-z0-9_-]{43}$/.test(result.flow)||
            !Number.isFinite(result.expires_in)||result.expires_in<=0||result.expires_in>600) throw new Error("invalid_connection_response");
         sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,preset,
-          flow:result.flow,expires:Date.now()+result.expires_in*1000}));
+          flow:result.flow,center:result.center,expires:Date.now()+result.expires_in*1000}));
         window.location.assign(url.href);
       }catch(_e){
         if(epoch!==this.epoch) return;
@@ -5623,6 +5630,10 @@
       try{
         const result=await this.post(callback?"exchange":"resume",callback||{preset_id:this.preset});
         if(epoch!==this.epoch) return;
+        if(result.status==="provisioned"){
+          this.busy=false;this.status("Connection saved.");
+          await refreshRail();return;
+        }
         if(result.status==="connected"){ this.busy=false; await enterSignedIn(); return; }
         req=result.request;
         if(result.status!=="confirmation_required"||!req||req.request_id!==result.request_id||
@@ -7301,6 +7312,7 @@
       }
       const out={flow:saved.flow,code:query.get("code"),code_verifier:saved.verifier,title:saved.title};
       if(saved.source===true) out.source=true;
+      if(saved.center)out.center=saved.center;
       // RFC 9207: the server's own issuer, checked server-side against discovery.
       const iss=query.get("iss");
       if(iss&&iss.length<=2048) out.iss=iss;
@@ -7310,6 +7322,7 @@
       await ensureFreshToken();
       if(!token()) throw new Error("sign_in_required");
       // No automatic retry: a code is redeemed at most once.
+      if(!payload.center&&typeof queueScope!=="undefined"&&queueScope)payload.center=queueScope;
       const response=await fetch("/app/model-connect/"+operation,{
         method:"POST",credentials:"same-origin",cache:"no-store",referrerPolicy:"no-referrer",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
@@ -7331,7 +7344,14 @@
       try{
         const verifier=randToken(32),code_challenge=await challengeFor(verifier);
         sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title,source}));
-        const result=await this.post("oauth_begin",{request_id:req.request_id,code_challenge});
+        const action=req.action||{};
+        const payload={code_challenge};
+        if(req.request_id)payload.request_ref=req.request_id;
+        if(opts&&opts.preset_id)payload.preset_id=opts.preset_id;
+        else payload.definition={destination:action.destination,
+          endpoints:action.endpoints||[{host:action.host,path_template:action.path_template,
+            methods:action.methods}],oauth:{scopes:(action.oauth||{}).scopes||[]}};
+        const result=await this.post(opts&&opts.preset_id?"source_sign_in":"oauth_begin",payload);
         const url=new URL(result.authorize_url);
         if(url.protocol!=="https:"||url.username||url.password||
            !/^[A-Za-z0-9_-]{43}$/.test(result.flow)||url.searchParams.get("state")!==result.flow||
@@ -7339,7 +7359,7 @@
           throw new Error("invalid_sign_in_response");
         }
         sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title,source,
-          flow:result.flow,expires:Date.now()+result.expires_in*1000}));
+          flow:result.flow,center:result.center,expires:Date.now()+result.expires_in*1000}));
         window.location.assign(url.href);
       }catch(err){
         sessionStorage.removeItem(this.storageKey);
@@ -7363,23 +7383,14 @@
       try{
         const payload={flow:cb.flow,code:cb.code,code_verifier:cb.code_verifier};
         if(cb.iss) payload.iss=cb.iss;
+        if(cb.center)payload.center=cb.center;
         const result=await this.post("oauth_exchange",payload);
-        if(cb.source){
-          // The platform's own ask: nothing for the agent to hear, and no turn
-          // spent telling it. A powered command center adds the source on the
-          // owner's explicit yes, which is now waiting in the rail.
-          appendMessage("system",result.confirmation
-            ?"Signed in. Confirm \""+frameTitle({title:result.confirmation.title||cb.title})+
-              "\" under Waiting on you to add it to your agent."
-            :result.confirmation_error
-              ?"Signed in, but adding it to your agent needs a look: open Change model."
-              :"Signed in. Your agent can use it now.");
+        if(result.status==="provisioned"){
+          appendMessage("system","Connection saved.");
           await refreshRail();
           return;
         }
-        appendMessage("system","Connected. "+(result.receipt||""));
-        await refreshRail();
-        // The shared answer transaction wakes the asking agent, on every device.
+        throw new Error("invalid_connection_response");
       }catch(err){
         appendMessage("system","The sign-in did not finish: "+((err&&err.message)||"unknown error")+". The request is still waiting; open it and sign in again.");
         refreshRail();
@@ -7463,11 +7474,8 @@
       if(this.busy||NATIVE) return;
       this.busy=true;button.disabled=true;status.textContent="Opening the sign-in…";
       try{
-        const result=await ConnectOAuth.post("source_sign_in",{preset_id:source.id});
-        const req=result&&result.request;
-        if(!req||typeof req.request_id!=="string"||!req.action||req.action.type!=="connect"||
-           !req.action.oauth) throw new Error("sign_in_unavailable");
-        await ConnectOAuth.begin(req,status,button,{source:true});
+        await ConnectOAuth.begin({title:source.name,origin:"platform"},status,button,
+          {source:true,preset_id:source.id});
       }catch(error){
         status.textContent="Sign-in could not be started ("+((error&&error.message)||"unknown error")+
           "). Nothing was connected; try again in a moment.";
@@ -8736,8 +8744,8 @@
             const pending=HostedModelConnect.post("deposit_key",{preset_id:source.id,key});key="";
             const result=await pending;
             if(epoch!==MCP._loginEpoch)return;
-            if(result.status!=="confirmation_required")throw new Error("model_confirmation_required");
-            status.textContent="Key saved. Confirm model access in the request below to add it to your pool.";
+            if(result.status!=="provisioned")throw new Error("invalid_connection_response");
+            status.textContent="Connection saved.";
             refreshRail();
           }catch(error){
             if(epoch===MCP._loginEpoch)status.textContent="Not connected yet ("+(error.message||"unknown error")+"). Check your key and model access, then try again.";

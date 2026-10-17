@@ -9,8 +9,8 @@ import pytest
 from tests.support.broker_ipc import discovery  # noqa: F401
 from tests.test_broker_server import broker  # noqa: F401
 from tinyassets.broker.ledger_queries import BOOTSTRAP_RECOVERY, query_ledger
-from tinyassets.onboarding.hosted_model_auth import HostedAuthError, load_preset
-from tinyassets.onboarding.model_bootstrap import _pending_confirmation, endpoint_policy
+from tinyassets.onboarding.hosted_model_auth import HostedAuthError, endpoint_policy, load_preset
+from tinyassets.onboarding.model_bootstrap import _pending_confirmation
 from tinyassets.onboarding.model_bootstrap_candidate import prepare_candidate
 
 pytestmark = pytest.mark.skipif(

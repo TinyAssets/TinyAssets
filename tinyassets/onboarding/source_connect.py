@@ -1,10 +1,4 @@
-"""Connect-card composition: owned key, granted /models, explicit model consent.
-
-Two ways in: a pasted key (:func:`connect_source`) and signing in
-(:func:`raise_sign_in_ask`, answered by the generic OAuth flow, then
-:func:`offer_signed_in_source`). Both end in the same explicit model-access
-confirmation (:func:`_offer_pool_access`).
-"""
+"""Source definitions and owner-side model-access composition."""
 
 import os
 from urllib.parse import urlsplit
@@ -133,73 +127,3 @@ def _ask_body(preset):
     return " ".join((preset["offer"], preset["billing_note"],
                      "You approve at " + preset["sign_in"]["issuer_host"]
                      + "; there is no key to copy."))
-
-
-def raise_sign_in_ask(*, uid, preset, public_resource):
-    """The platform's own ``connect`` ask for a sign-in source; returns the row.
-
-    The discovery root (the issuer host) is passed server-side, so an agent
-    raising the same payload gets no sign-in offer and no row.
-    """
-    from tinyassets.api.pending_requests import request_from_user
-
-    result = request_from_user(
-        universe_id=uid, origin="platform",
-        sign_in_hosts=(preset["sign_in"]["issuer_host"],),
-        payload={"kind": "LLM", "title": "Use your " + preset["name"] + " models",
-                 "body": _ask_body(preset), "fields": [],
-                 "action": sign_in_action(preset, public_resource)},
-    )
-    if result.get("error") or not result.get("request_id"):
-        raise HostedAuthError("sign_in_unavailable", 503)
-    if not (isinstance(result.get("action"), dict) and result["action"].get("oauth")):
-        raise HostedAuthError("sign_in_unavailable", 503)
-    return result
-
-
-def is_canonical_sign_in(row, preset, public_resource):
-    """Whether a redeemed request is the platform's own ask for this source.
-
-    Destination alone is agent-controllable; this compares the stored action
-    with the one rebuilt from installed data, the offer's issuer and origin.
-    """
-    from tinyassets.api.pending_requests import _validated_action
-
-    if not isinstance(row, dict) or row.get("origin") != "platform":
-        return False
-    expected = _validated_action(sign_in_action(preset, public_resource))
-    requested = expected.pop("oauth_request")
-    stored = row.get("action") or {}
-    offer = stored.get("oauth") or {}
-    return (all(stored.get(key) == value for key, value in expected.items())
-            and offer.get("source") == "discovered"
-            and offer.get("scopes") == requested.get("scopes")
-            and offer.get("client_id") == requested.get("client_id")
-            and offer.get("issuer") == "https://" + preset["sign_in"]["issuer_host"])
-
-
-def offer_signed_in_source(*, base, uid, owner, request_id, completed, public_resource):
-    """After a sign-in answered the platform's ask: offer the source to the agent.
-
-    Returns the confirmation, or None when there is nothing to offer (not the
-    platform's canonical ask, or it already serves an unpowered command center).
-    """
-    from tinyassets.api.helpers import _universe_dir
-    from tinyassets.onboarding.serving import _gesture_lock
-    from tinyassets.providers.free_sources import sign_in_preset
-    from tinyassets.shared_self import require_founder_home
-    from tinyassets.storage.pending_requests import get_request
-
-    destination = str(completed.get("destination") or "")
-    preset = sign_in_preset(destination.removeprefix("model-"))
-    if (preset is None or not completed.get("definition_id")
-            or (completed.get("serving") or {}).get("status") != "unchanged"):
-        return None
-    row = get_request(_universe_dir(uid), request_id)
-    if not is_canonical_sign_in(row, preset, public_resource):
-        return None
-    with _gesture_lock(uid):
-        require_founder_home(base, uid, owner)
-        return _offer_pool_access(base=base, uid=uid, owner=owner, preset=preset,
-                                  definition_id=completed["definition_id"],
-                                  models=list(preset["models"]))

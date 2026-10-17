@@ -1,12 +1,4 @@
-"""The Hugging Face source card: one tap raises the platform's own ``connect``
-ask, signing in answers it through the generic OAuth flow, and the source then
-joins the owner's agent (openspec change ``huggingface-sign-in-source``).
-
-Hugging Face is played by one local fake: ``huggingface.co`` is the issuer
-(OpenID + RFC 8414 metadata, authorize, token) and ``router.huggingface.co`` is
-the inference host, which publishes no RFC 9728 document -- the shape measured
-live on 2026-10-01. Everything else is production code.
-"""
+"""Installed source data drives a standalone door OAuth authorization."""
 
 from __future__ import annotations
 
@@ -15,7 +7,6 @@ import hashlib
 import http.server
 import json
 import secrets
-import sqlite3
 import threading
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
@@ -163,12 +154,13 @@ def hf(monkeypatch):
 
 def _tap(preset_id="huggingface"):
     with _as(OWNER):
-        return _post("source_sign_in", {"preset_id": preset_id})
+        return _post("source_sign_in", {"preset_id": preset_id, "code_challenge": CHALLENGE})
 
 
 def _sign_in(hf, request_id):
     with _as(OWNER):
-        begun = _post("oauth_begin", {"request_id": request_id, "code_challenge": CHALLENGE})
+        begun = (request_id if hasattr(request_id, "json") else
+                 _post("oauth_begin", {"request_id": request_id, "code_challenge": CHALLENGE}))
         assert begun.status_code == 200, begun.text
         back = urlsplit(hf.authorize(begun.json()["authorize_url"]))
         assert _get(back.path + "?" + back.query).status_code == 200
@@ -177,28 +169,23 @@ def _sign_in(hf, request_id):
                                         "code_verifier": VERIFIER})
 
 
-def test_one_tap_raises_the_platforms_ask_from_installed_data(hf, app):
+def test_one_tap_begins_authorization_from_installed_data(hf, app):
+    from tinyassets.connection_oauth.pkce import flows_db
+
     tapped = _tap()
     assert tapped.status_code == 200, tapped.text
-    request = tapped.json()["request"]
-    action = request["action"]
-    assert request["origin"] == "platform" and request["fields"] == []
-    # ONE host: inference needs exactly one, and no profile endpoint is granted.
-    assert action["endpoints"] == [{"host": ROUTER, "path_template": "/v1/chat/completions",
-                                    "methods": ["POST"]}]
-    assert action["uses"]["model"]["billing"] == "free"
-    assert [m["id"] for m in action["uses"]["model"]["models"]] == [
-        "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
-    offer = action["oauth"]
+    with flows_db(app) as (db, _):
+        row = db.execute("SELECT definition_json FROM connection_oauth_flows").fetchone()
+    definition = json.loads(row[0])
+    endpoint, = definition["policy"]["endpoints"]
+    assert {k: endpoint[k] for k in ("host", "path_template", "methods")} == {
+        "host": ROUTER, "path_template": "/v1/chat/completions", "methods": ["POST"]}
+    offer = definition["oauth"]
     assert offer["issuer"] == f"https://{ISSUER}"
     assert offer["token_url"] == f"https://{ISSUER}/oauth/token"
     assert offer["client_id"] == CIMD and offer["registration_url"] == ""
     assert offer["scopes"] == ["openid", "profile", "inference-api"]
-    # The owner reads the billing truth on the ask itself.
-    assert "$0.10" in request["body"] and "cannot enforce" in request["body"]
-    # A second tap reuses the same pending ask.
-    again = _tap()
-    assert again.json()["request"]["request_id"] == request["request_id"]
+    assert "request" not in tapped.json()
 
 
 def test_unknown_or_key_card_ids_are_refused_before_any_home(hf, app):
@@ -209,7 +196,8 @@ def test_unknown_or_key_card_ids_are_refused_before_any_home(hf, app):
 def test_a_configured_registered_client_replaces_the_metadata_document(hf, app, monkeypatch):
     monkeypatch.setenv("TINYASSETS_HUGGINGFACE_OAUTH_CLIENT_ID", "registered-public-client")
     tapped = _tap()
-    assert tapped.json()["request"]["action"]["oauth"]["client_id"] == "registered-public-client"
+    query = dict(parse_qsl(urlsplit(tapped.json()["authorize_url"]).query))
+    assert query["client_id"] == "registered-public-client"
 
 
 def test_an_agent_cannot_raise_the_sign_in_ask_itself(hf, app):
@@ -229,17 +217,16 @@ def test_an_agent_cannot_raise_the_sign_in_ask_itself(hf, app):
     assert all(r.get("action", {}).get("destination") != "model-huggingface" for r in pending)
 
 
-def test_sign_in_on_an_unpowered_command_center_serves_on_it(hf, app):
+def test_source_sign_in_commits_the_broker_grant(hf, app):
     from tinyassets.connection_oauth.tokens import decode
     from tinyassets.credential_vault import load_credential_vault
 
-    request_id = _tap().json()["request"]["request_id"]
-    done = _sign_in(hf, request_id)
+    done = _sign_in(hf, _tap())
     assert done.status_code == 200, done.text
     body = done.json()
-    assert body["status"] == "answered" and body["signed_in"] is True
+    assert body["status"] == "provisioned"
     assert body["destination"] == "model-huggingface"
-    assert body["serving"]["status"] != "unchanged" and "confirmation" not in body
+    assert "serving" not in body and "confirmation" not in body
     for token in hf.issued:
         assert token not in done.text
     authorize = hf.authorize_queries[0]
@@ -251,43 +238,6 @@ def test_sign_in_on_an_unpowered_command_center_serves_on_it(hf, app):
     bundle = decode(records[0]["token"])
     assert bundle.token_url == f"https://{ISSUER}/oauth/token" and bundle.client_id == CIMD
     assert bundle.access_token == hf.issued[0] and bundle.refresh_token
-
-
-def test_sign_in_on_a_powered_command_center_asks_to_add_it(hf, app, monkeypatch):
-    from tinyassets.api import connection_uses
-
-    monkeypatch.setattr(connection_uses, "select_model_if_unpowered",
-                        lambda **_: {"status": "unchanged", "reason": "already_powered"})
-    done = _sign_in(hf, _tap().json()["request"]["request_id"])
-    assert done.status_code == 200, done.text
-    confirmation = done.json()["confirmation"]
-    assert confirmation["action"]["type"] == "bind_model_access"
-    assert confirmation["origin"] == "platform"
-    access = confirmation["action"]["model_access"]
-    (entry,) = access.values()
-    assert entry["model_ids"] == ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
-    assert entry["cost_caps"] is None
-    assert "$0.10" in confirmation["body"]
-
-
-def test_post_sign_in_database_failure_preserves_success(hf, app, monkeypatch):
-    from tinyassets.api import connection_uses
-    from tinyassets.onboarding import source_connect
-
-    monkeypatch.setattr(connection_uses, "select_model_if_unpowered",
-                        lambda **_: {"status": "unchanged", "reason": "already_powered"})
-
-    def broken_offer(**kwargs):
-        raise sqlite3.OperationalError("private database failure detail")
-
-    monkeypatch.setattr(source_connect, "_offer_pool_access", broken_offer)
-    done = _sign_in(hf, _tap().json()["request"]["request_id"])
-    assert done.status_code == 200, done.text
-    assert done.json()["status"] == "answered"
-    assert done.json()["signed_in"] is True
-    assert done.json()["confirmation_error"] == "model_confirmation_requires_review"
-    assert "private database failure detail" not in done.text
-    assert "confirmation" not in done.json()
 
 
 def test_an_agent_ask_under_the_same_name_gets_no_pool_offer(hf, app, monkeypatch):
@@ -391,7 +341,8 @@ def test_withheld_source_cannot_start_oauth_or_create_a_request(app, monkeypatch
     monkeypatch.setattr(onboarding, "_bootstrap_home", forbidden)
     with _as(OWNER):
         before = list_requests(universe_id=UID)
-        response = _post("source_sign_in", {"preset_id": "huggingface"})
+        response = _post("source_sign_in", {
+            "preset_id": "huggingface", "code_challenge": CHALLENGE})
         after = list_requests(universe_id=UID)
     assert response.status_code == 404
     assert before == after

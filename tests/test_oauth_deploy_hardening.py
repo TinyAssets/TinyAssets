@@ -150,7 +150,7 @@ def helper_env(tmp_path):
 @pytest.mark.parametrize("failure", ["none", "env", "daemon.env"])
 def test_pair_is_atomic_even_when_commit_fails(tmp_path, failure):
     old = f"KEEP=yes\n{ID}=old-id\n{SECRET}=old-secret\n"
-    for name in ("env", "daemon.env"):
+    for name in ("env", "daemon.env", "broker.env"):
         (tmp_path / name).write_text(old)
     # Inject a rename failure at either commit; use the actual writer otherwise.
     prelude = r'''
@@ -168,11 +168,13 @@ export -f mv
              "SECRET_KEY": SECRET, "FAIL_DEST": (tmp_path / failure).as_posix()},
     )
     assert proc.returncode == (0 if failure == "none" else 3), proc.stderr
-    for name in ("env", "daemon.env"):
+    for name in ("env", "daemon.env", "broker.env"):
         content = (tmp_path / name).read_text()
         assert (f"{ID}=new-id\n" in content) == (f"{SECRET}=GOCSPX-new-secret\n" in content)
-        assert content.count(f"{ID}=") == content.count(f"{SECRET}=") == 1
-        assert "KEEP=yes" in content
+        expected = 0 if name == "daemon.env" and failure == "none" else 1
+        assert content.count(f"{ID}=") == content.count(f"{SECRET}=") == expected
+        if name != "broker.env" or failure != "none":
+            assert "KEEP=yes" in content
     assert b"GOCSPX-new-secret" not in proc.stdout + proc.stderr
     assert not list(tmp_path.glob(".*.tmp.*"))
 
@@ -197,7 +199,7 @@ def test_workflow_transport_lock_and_rollback_cleanup(tmp_path, action, protecte
     step = next(s for s in STEPS if s.get("name") == "Install OAuth provider client credentials")
     assert step["env"]["OAUTH_ACTION"] == "${{ steps.oauth.outputs.action }}"
     assert step["env"]["PREV_IMAGE"] == "${{ steps.capture.outputs.prev_image }}"
-    for name in ("env", "daemon.env"):
+    for name in ("env", "daemon.env", "broker.env"):
         (tmp_path / name).write_text(f"KEEP=yes\n{ID}=old-id\n{SECRET}=old-secret\n")
     package = tmp_path / "tinyassets"
     package.mkdir()
@@ -256,7 +258,9 @@ export -f sudo flock timeout docker bash env
     content = (tmp_path / "env").read_text()
     assert (ID in content) == (SECRET in content) == installed
     daemon_content = (tmp_path / "daemon.env").read_text()
-    assert (ID in daemon_content) == (SECRET in daemon_content) == installed
+    assert (ID in daemon_content) == (SECRET in daemon_content) == (action == "skip" and protected)
+    broker_content = (tmp_path / "broker.env").read_text()
+    assert (ID in broker_content) == (SECRET in broker_content) == installed
     if action == "install" and protected:
         assert f"{ID}=client-id\n{SECRET}=GOCSPX-secret\n" in content
     if not protected and action != "remove":

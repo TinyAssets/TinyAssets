@@ -11,7 +11,7 @@ import httpx
 import pytest
 from starlette.applications import Starlette
 
-from tests.test_model_bootstrap import rig  # noqa: F401
+from tests.support.model_connect import rig  # noqa: F401
 from tests.test_onboarding_model_connect import ingress, post  # noqa: F401
 from tinyassets import onboarding
 from tinyassets.auth.provider import Identity

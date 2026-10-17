@@ -67,12 +67,13 @@ reported next-wake time.
 ### Requirement: Credential custody and refresh have one broker writer
 
 Only the broker SHALL persist, rotate or erase connection credential material.
-The router SHALL hand deposits and OAuth token bundles to HTTP_CONNECT over
-its private broker channel. The broker SHALL own its custody locks, ownership
-metadata and deletion tombstones independently of daemon and owner stores.
+The router SHALL hand key deposits or authorization codes and PKCE verifiers
+to HTTP_CONNECT over its private broker channel. Token-endpoint requests SHALL
+run only in the broker, using broker-owned registered-client configuration.
+The broker SHALL own its custody locks, ownership metadata and deletion tombstones independently of daemon and owner stores.
 
 #### Scenario: The door deposits a credential
-- **WHEN** the router commits a prepared HTTP connection with a secret or OAuth bundle
+- **WHEN** the door deposits a key or the broker exchanges an authorization code
 - **THEN** the broker rechecks the revision before writing custody and committing its grant
 - **AND** a refused deposit leaves no new grant
 - **AND** the router performs no vault write
@@ -95,3 +96,17 @@ metadata and deletion tombstones independently of daemon and owner stores.
 - **THEN** an explicit center must name that owner in broker admission, or the broker must find exactly one live center for that owner; otherwise the door returns 404
 - **AND** the router uses CONNECTION_CATALOG and DISCONNECT without reading a home, owner database, pending request or provider assignment
 - **AND** the catalog can include fenced connections whose local custody cleanup needs retry
+
+#### Scenario: Model connection flows need no owner store at the door
+- **WHEN** an authenticated owner starts preset PKCE, inline popup, generic OAuth, source sign-in or a key deposit at `/app/model-connect/*`
+- **THEN** the door selects the center only through broker admission, using SOLE_CENTER when omitted and returning 404 for a foreign, missing or ambiguous center
+- **AND** source and connection definitions come from data or the broker catalog; request_ref is opaque and no home, pending request, universe file or owner database is read
+- **AND** the router stores only bounded flow state and public definition metadata, with inline verifier and callback code sealed
+
+#### Scenario: Broker exchanges and commits a grant
+- **WHEN** the door consumes an OAuth or preset PKCE flow
+- **THEN** it sends code, verifier, redirect_uri and request_ref to the broker
+- **AND** the broker prepares the policy, exchanges at the selected endpoint, writes custody and commits the grant with request_ref on its credential-free connection row
+- **AND** registered client authentication is resolved only in the broker
+- **AND** the consumed router flow cannot be replayed and the broker response contains no credential
+- **AND** box channels cannot invoke these exchanges

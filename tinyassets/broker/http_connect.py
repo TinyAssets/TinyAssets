@@ -8,13 +8,21 @@ import json
 def validate(document):
     from tinyassets.api.http_connection import _DESTINATION_RE, _MAX_ENDPOINTS, _MAX_SECRET_CHARS
 
+    if isinstance(document, dict) and document.get("action") in {
+            "oauth_offer", "oauth_exchange", "preset_exchange"}:
+        from tinyassets.broker.model_connect import validate as validate_flow
+
+        return validate_flow(document)
     if isinstance(document, dict) and document.get("action") in {"inspect_custody", "rotate"}:
         return _validate_custody(document)
     if isinstance(document, dict) and document.get("action") in {"extend", "full"}:
         return _validate_update(document)
-    if not isinstance(document, dict) or set(document) != {
+    if not isinstance(document, dict) or set(document) - {"request_ref"} != {
             "action", "destination", "policy", "expected", "secret"}:
         raise ValueError("invalid HTTP connect fields")
+    ref = document.get("request_ref", "")
+    if not isinstance(ref, str) or len(ref) > 512 or any(ord(c) < 33 for c in ref):
+        raise ValueError("invalid request reference")
     if not isinstance(document["secret"], str) or len(document["secret"]) > _MAX_SECRET_CHARS:
         raise ValueError("invalid HTTP credential")
     if document["action"] == "prepare" and document["secret"]:
@@ -60,6 +68,11 @@ def _validate_update(document):
 
 
 def local_operation(ledger, *, principal, command_center, document):
+    if document.get("action") in {"oauth_offer", "oauth_exchange", "preset_exchange"}:
+        from tinyassets.broker.model_connect import local_operation as flow_operation
+
+        return flow_operation(ledger, principal=principal, command_center=command_center,
+                              document=document)
     if document.get("action") in {"inspect_custody", "rotate"}:
         return _custody_local(ledger, principal=principal, command_center=command_center,
                               document=document)
@@ -167,17 +180,22 @@ def local_operation(ledger, *, principal, command_center, document):
                 conn.rollback()
                 return failure
         resource = ledger._get_connection_resource(connection_id, _transaction=conn)
-        return {"projection": _project(resource, grant)}
+        conn.execute("UPDATE outbound_connections SET request_ref=? WHERE connection_id=?",
+                     (document.get("request_ref", ""), connection_id))
+        return {"projection": {**_project(resource, grant),
+                               "request_ref": document.get("request_ref", "")}}
 
 
 def connect_operation(data_root, *, principal, command_center, destination, policy, action,
-                      expected="", secret=""):
+                      expected="", secret="", request_ref=""):
     from tinyassets.broker.client import BrokerClient
     from tinyassets.broker.supervisor import get_supervisor
     from tinyassets.storage.outbound_connections import ProxyRequestError
 
     document = dict(action=action, destination=destination, policy=policy,
                     expected=expected, secret=secret)
+    if request_ref:
+        document["request_ref"] = request_ref
     validate(document)
     supervisor = get_supervisor(data_root)
     if supervisor is None:

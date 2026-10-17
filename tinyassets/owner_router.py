@@ -28,7 +28,7 @@ _SHARED_APP = {
     "/app/approval-handoff", "/app/connections",
 }
 _SHARED_APP_PREFIXES = ("/app/billing/", "/app/run/", "/app/m/", "/app/model-callback/",
-                        "/app/approval-handoff/")
+                        "/app/approval-handoff/", "/app/model-connect/")
 
 
 def hook_token(path: str) -> str | None:

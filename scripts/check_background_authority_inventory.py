@@ -103,7 +103,7 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     # and hosted key exchange reads an httpx response with `client.stream()`.
     # Neither touches a compiled graph stream or grants execution authority.
     CallSite("tinyassets/onboarding/__init__.py", "_handle_billing_webhook", "request.stream"),
-    CallSite("tinyassets/onboarding/hosted_model_auth.py", "exchange_key", "client.stream"),
+    CallSite("tinyassets/broker/acquisition.py", "exchange_key", "client.stream"),
     # The router relays opaque HTTP bytes to an admitted Unix socket; neither
     # stream invokes a model or executes an owner's work in the shared process.
     CallSite("tinyassets/owner_router.py", "forward", "Request().stream"),

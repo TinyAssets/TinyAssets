@@ -9,7 +9,7 @@ import httpx
 import pytest
 from starlette.applications import Starlette
 
-from tests.test_model_bootstrap import rig  # noqa: F401
+from tests.support.model_connect import rig  # noqa: F401
 from tests.test_onboarding_model_connect import ingress, post  # noqa: F401
 from tinyassets import onboarding
 from tinyassets.auth.middleware import identity_context
@@ -51,33 +51,25 @@ def deposit(key="synthetic-private-key", **kwargs):
     return post("deposit_key", {"preset_id": PRESET, "key": key}, **kwargs)
 
 
-def test_manual_owner_reaches_existing_approval_then_connects(rig, monkeypatch):
-    from tests.owner_answer import answer_request
+def test_manual_deposit_commits_and_resumes_broker_grant(rig, monkeypatch):
+    from tinyassets.broker import acquisition
     from tinyassets.credential_vault import load_credential_vault
-    from tinyassets.onboarding.model_setup import model_setup_state
-    from tinyassets.provider_assignment import load_provider_assignment
 
     async def forbidden(**kwargs):
         raise AssertionError("manual acquisition must not exchange OAuth")
-    monkeypatch.setattr(hosted, "exchange_key", forbidden)
-    response = deposit()
+    monkeypatch.setattr(acquisition, "exchange_key", forbidden)
+    response = post("deposit_key", {"preset_id": PRESET, "key": "synthetic-private-key",
+                                    "request_ref": "opaque-request"})
     assert response.status_code == 200, response.text
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["referrer-policy"] == "no-referrer"
     result = response.json()
-    assert result["status"] == "confirmation_required"
-    assert result["request"]["action"]["type"] == "bind_model_access"
+    assert result["status"] == "provisioned"
+    assert result["request_ref"] == "opaque-request"
     assert "synthetic-private-key" not in response.text
-    assert load_provider_assignment(rig, universe_id="u-owner") is None
     assert load_credential_vault(rig / "u-owner")[0]["token"] == "synthetic-private-key"
     resumed = post("resume", {"preset_id": PRESET})
-    assert resumed.json()["request_id"] == result["request_id"]
-    answered = answer_request(universe_id="u-owner", payload={
-        "request_id": result["request_id"], "values": {},
-    })
-    assert not answered.get("error"), answered
-    assert model_setup_state(rig, universe=rig / "u-owner", uid="u-owner",
-                             owner="owner") == "connected"
+    assert resumed.json()["grant_id"] == result["grant_id"]
 
 
 @pytest.mark.parametrize("data", [
@@ -191,26 +183,27 @@ def test_manual_requires_authenticated_home_owner(rig, principal):
     identity = (Identity(user_id=principal, username=principal, capabilities=["write"])
                 if principal else None)
     with identity_context(identity):
-        assert deposit().status_code == (409 if principal else 401)
+        assert deposit().status_code == (404 if principal else 401)
     assert load_credential_vault(rig / "u-owner") == []
 
 
-def test_manual_does_not_replace_existing_setup(rig):
+def test_manual_redeposit_uses_the_existing_broker_grant(rig):
     from tinyassets.credential_vault import load_credential_vault
 
-    assert deposit("first-key").status_code == 200
+    first = deposit("first-key")
+    assert first.status_code == 200
     response = deposit("replacement-key")
-    assert response.status_code == 409
-    assert response.json()["error"] == "model_setup_changed"
-    assert load_credential_vault(rig / "u-owner")[0]["token"] == "first-key"
+    assert response.status_code == 200
+    assert response.json()["grant_id"] == first.json()["grant_id"]
+    assert load_credential_vault(rig / "u-owner")[0]["token"] == "replacement-key"
 
 
 def test_manual_unexpected_error_never_echoes_or_logs_secret(monkeypatch, caplog):
-    from tinyassets.onboarding import model_bootstrap
+    from tinyassets.broker import http_connect
 
-    def broken(**kwargs):
-        raise RuntimeError(kwargs["key"])
-    monkeypatch.setattr(model_bootstrap, "complete_bootstrap", broken)
+    def broken(*args, **kwargs):
+        raise RuntimeError(kwargs.get("secret", "synthetic-private-key"))
+    monkeypatch.setattr(http_connect, "connect_operation", broken)
     response = deposit()
     assert response.status_code == 503
     assert response.json() == {"error": "model_connection_incomplete"}
@@ -245,25 +238,3 @@ def test_manual_deleted_account_cannot_deposit(rig):
     response = deposit()
     assert response.status_code == 409
     assert load_credential_vault(rig / "u-owner") == []
-
-
-@pytest.mark.parametrize("free", [True, False])
-def test_manual_catalogue_never_selects_paid_model(monkeypatch, free):
-    from tests.test_model_bootstrap_candidate import row
-    from tinyassets.providers import discovery_http
-    from tinyassets.providers.definition import get_definition, list_definitions
-
-    models = [row("paid-first", "1")]
-    if free:
-        models.append(row("eligible-free", "0"))
-    monkeypatch.setattr(discovery_http, "read_granted_discovery_document",
-                        lambda **kwargs: {"data": models})
-    response = deposit()
-    if not free:
-        assert response.status_code == 409
-        assert response.json()["error"] == "no_eligible_free_agent_model"
-        assert not list_definitions("u-owner")
-    else:
-        assert response.status_code == 200, response.text
-        did = response.json()["request"]["action"]["provider"]
-        assert get_definition("u-owner", did).model == "eligible-free"

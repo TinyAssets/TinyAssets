@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from tests import test_model_bootstrap as bootstrap
+from tests.support import model_connect as bootstrap
 from tinyassets.onboarding.source_connect import connect_source
 from tinyassets.providers.free_sources import discovered_agent_models, source_cards, source_preset
 
@@ -113,7 +113,7 @@ const MCP={_loginEpoch:1};let refreshed=0,sent=null,cleared=false;
 const refreshRail=()=>{refreshed++;};
 const HostedModelConnect={post:async(op,p)=>{
   sent={op,p};cleared=input.value==='';
-  return {status:'confirmation_required'};
+  return {status:'provisioned'};
 }};
 __SOURCE__
 const cards=__CARDS__;
@@ -142,13 +142,15 @@ FreeSourceCards.render(cards);
     assert observed["type"] == "password" and observed["value"] == ""
     assert observed["sent"] == {"op": "deposit_key", "p": {
         "preset_id": "groq", "key": "private-own-key"}}
-    assert observed["refreshed"] == 1 and "Confirm model access" in observed["status"]
+    assert observed["refreshed"] == 1 and observed["status"] == "Connection saved."
 
 
 def test_authenticated_card_ingress_reuses_same_origin_gate(rig, monkeypatch):
+    from tests.support.broker_double import seed_owner_admission
     from tests.test_onboarding_model_connect import post
     from tinyassets import onboarding
 
+    seed_owner_admission(rig, principal="owner", center="u-owner")
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     monkeypatch.setattr(onboarding, "app_config", lambda: {"resource": "https://tinyassets.io/mcp"})
     monkeypatch.setattr(onboarding, "_read_home", lambda *a, **kw: "u-owner")
@@ -160,7 +162,7 @@ def test_authenticated_card_ingress_reuses_same_origin_gate(rig, monkeypatch):
     assert denied.status_code == 403
     response = post("deposit_key", document)
     assert response.status_code == 200, response.text
-    assert response.json()["status"] == "confirmation_required"
+    assert response.json()["status"] == "provisioned"
     assert "my-private-key" not in response.text
 
 

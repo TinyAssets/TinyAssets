@@ -4997,6 +4997,7 @@ class ConnectionLedger:
                 ("incarnation", "TEXT NOT NULL DEFAULT ''"),
                 ("revocation_error", "TEXT NOT NULL DEFAULT ''"),
                 ("custody_erased", "INTEGER NOT NULL DEFAULT 0"),
+                ("request_ref", "TEXT NOT NULL DEFAULT ''"),
                 # Empty for every existing row: a migration never names a host
                 # the owner did not.
                 ("git_host", "TEXT NOT NULL DEFAULT ''"),

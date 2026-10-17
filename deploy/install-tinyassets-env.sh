@@ -718,6 +718,7 @@ RETIRED_ENV=(
 )
 
 is_daemon_forbidden() {
+    [[ "$1" =~ ^TINYASSETS_OAUTH_[A-Z0-9_]+$ ]] && return 0
     local name
     for name in "${DAEMON_FORBIDDEN_ENV[@]}" "${RETIRED_ENV[@]}"; do
         [ "$1" = "${name}" ] && return 0
@@ -812,8 +813,9 @@ write_daemon_env() {
         refuse_render "${RENDER_REMOVED} survived into ${DAEMON_ENV_FILE}"
     fi
     assert_readable
-    # The broker needs registered OAuth clients for local refresh. Reuse the
-    # parsed daemon source, selecting only this provider-agnostic namespace.
+    # Only the broker receives registered OAuth configuration.
+    read_file_exactly "${DAEMON_ENV_SOURCE}" \
+        || refuse_render "${DAEMON_ENV_SOURCE} is unreadable"
     local rest="${READ_CONTENT}" line selected=0 out="# GENERATED OAuth broker environment"$'\n'
     QUOTE_OPEN=""
     while [ -n "${rest}" ]; do

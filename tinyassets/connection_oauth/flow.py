@@ -1,26 +1,7 @@
-"""The sign-in half of a ``connect`` request: authorization code + PKCE.
+"""Router PKCE state over credential-free definitions; exchanges run in the broker.
 
-This is the hosted first-power PKCE transport, generalized. The same store
-(``pkce.flows_db``), handle grammar and callback route serve both; what changes
-is that endpoints come from the offer recorded on the owner's pending request
-(from the platform directory or the connection's own host, never supplied), and the
-exchange is standard RFC 6749 §4.1.
-
-1. **begin** (the owner tapped "Sign in"): the browser made a verifier and sends
-   only its S256 challenge. The server re-checks the pending request is the one
-   the owner was shown, gets a client id (supplied, or RFC 7591 registration of
-   a public client), stores a hashed handle bound to owner, universe, request
-   and the exact action, and returns the provider's authorize URL with the
-   handle as ``state``.
-2. The provider sends the browser back to the fixed callback
-   ``/app/model-callback/connect?code=..&state=..`` (public shell only).
-3. **complete**: the signed-in app posts ``state``, ``code``, the verifier and
-   any RFC 9207 ``iss``. The flow is taken exactly once, ``iss`` is checked
-   against the discovered issuer (required when the server advertises it), the
-   code is exchanged at the DISCOVERED token URL the owner was shown, and the
-   token bundle is deposited through the same answer path a pasted key uses,
-   under auth scheme ``oauth2``, pinned to that token URL. The response never
-   carries a token.
+The flow freezes the offered endpoints and policy at the owner's protected gesture.
+Its request reference is opaque: the door never opens a pending-request store.
 """
 
 from __future__ import annotations
@@ -34,7 +15,6 @@ from urllib.parse import urlencode, urlsplit
 
 from tinyassets.connection_oauth import pkce
 from tinyassets.connection_oauth.discovery import register_public_client
-from tinyassets.connection_oauth.tokens import encode, exchange_code
 from tinyassets.connection_oauth.transport import OAuthError
 
 MAX_PER_OWNER = 10
@@ -83,32 +63,10 @@ def action_digest(action: dict[str, Any]) -> str:
                           .encode("utf-8")).hexdigest()
 
 
-def _pending_connect(universe_id: str, request_id: str) -> dict[str, Any]:
-    """The owner's pending ``connect`` request with an OAuth offer, as shown."""
-    from tinyassets.api.pending_requests import _owner_gate, displayed_row_matches
-    from tinyassets.storage.pending_requests import get_request
-
-    _uid, udir, denied = _owner_gate(universe_id)
-    if denied is not None:
-        raise FlowError("unknown_request", 404)
-    row = get_request(udir, request_id) if request_id else None
-    if row is None:
-        raise FlowError("unknown_request", 404)
-    if row["status"] != "pending":
-        raise FlowError("request_already_resolved", 409)
-    action = row.get("action") or {}
-    from tinyassets.api.pending_requests import _has_sign_in
-
-    if not _has_sign_in(action):
-        raise FlowError("request_has_no_sign_in", 409)
-    if not displayed_row_matches(row):
-        raise FlowError("request_changed", 409)
-    return row
-
-
 def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
-          public_resource: str, owner_session: dict | None = None) -> dict[str, Any]:
-    """Start one sign-in for the owner's pending request. No token is involved."""
+          public_resource: str, owner_session: dict | None = None,
+          definition: dict[str, Any]) -> dict[str, Any]:
+    """Start one sign-in for the offered definition. No token is involved."""
     if (owner_session is None
             or json.loads(owner_session.get("identity_json", "{}")).get("user_id") != owner):
         raise FlowError("interactive_approval_required", 403)
@@ -116,9 +74,12 @@ def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
         raise FlowError("current_home_required", 409)
     if not isinstance(challenge, str) or not pkce.HANDLE_RE.fullmatch(challenge):
         raise FlowError("invalid_pkce_challenge")
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.broker.owner_identities import connection_center
+
+    connection_center(_base_path(), principal=owner, center=universe_id)
     callback = redirect_uri(public_resource)
-    row = _pending_connect(universe_id, request_id)
-    offer = row["action"]["oauth"]
+    offer = definition["oauth"]
     scopes = list(offer.get("scopes") or [])
     from tinyassets.connection_oauth.pkce import cached_client, remember_client
 
@@ -136,8 +97,6 @@ def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
         except (OAuthError, KeyError) as exc:
             code = exc.code if isinstance(exc, OAuthError) else "client_registration_failed"
             raise FlowError(code, 502, getattr(exc, "detail", "")) from None
-    from tinyassets.api.helpers import _base_path
-
     handle = secrets.token_urlsafe(32)
     with pkce.flows_db(_base_path()) as (conn, now):
         total, mine = conn.execute(
@@ -149,11 +108,11 @@ def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
         conn.execute(
             "INSERT INTO connection_oauth_flows "
             "(handle_digest, owner_user_id, universe_id, request_id, action_digest, challenge, "
-            "client_id, redirect_uri, created_at, expires_at, approved_owner) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "client_id, redirect_uri, created_at, expires_at, approved_owner, definition_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (pkce.handle_digest(handle), owner, universe_id, request_id,
-             action_digest(row["action"]), challenge, client_id, callback, now,
-             now + pkce.FLOW_TTL_SECONDS, owner),
+             action_digest(definition), challenge, client_id, callback, now,
+             now + pkce.FLOW_TTL_SECONDS, owner, json.dumps(definition)),
         )
     query = {
         **offer.get("extra_auth_params", {}),
@@ -165,7 +124,7 @@ def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
     if scopes:
         query["scope"] = " ".join(scopes)
     return {
-        "flow": handle,
+        "flow": handle, "center": universe_id,
         "authorize_url": offer["authorize_url"] + "?" + urlencode(query),
         "authorize_host": urlsplit(offer["authorize_url"]).hostname or "",
         "expires_in": pkce.FLOW_TTL_SECONDS,
@@ -174,7 +133,7 @@ def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
 
 def complete(*, owner: str, universe_id: str, handle: str, code: str,
              verifier: str, iss: str = "") -> dict[str, Any]:
-    """Redeem the code once and deposit the tokens as the owner's answer."""
+    """Consume the flow once and ask the broker to exchange and commit custody."""
     if not isinstance(handle, str) or not pkce.HANDLE_RE.fullmatch(handle) or not owner:
         raise FlowError("unknown_sign_in", 404)
     if (not isinstance(code, str) or not 1 <= len(code) <= 2048
@@ -183,7 +142,9 @@ def complete(*, owner: str, universe_id: str, handle: str, code: str,
     if not isinstance(verifier, str) or not pkce.VERIFIER_RE.fullmatch(verifier):
         raise FlowError("invalid_pkce_verifier")
     from tinyassets.api.helpers import _base_path
+    from tinyassets.broker.owner_identities import connection_center
 
+    connection_center(_base_path(), principal=owner, center=universe_id)
     digest = pkce.handle_digest(handle)
     with pkce.flows_db(_base_path()) as (conn, now):
         flow = conn.execute("SELECT * FROM connection_oauth_flows WHERE handle_digest = ?",
@@ -201,10 +162,10 @@ def complete(*, owner: str, universe_id: str, handle: str, code: str,
         # in again, never a replay of the code.
         conn.execute("DELETE FROM connection_oauth_flows WHERE handle_digest = ?", (digest,))
         flow = dict(flow)
-    row = _pending_connect(universe_id, flow["request_id"])
-    if not hmac.compare_digest(action_digest(row["action"]), flow["action_digest"]):
+    definition = json.loads(flow["definition_json"])
+    if not definition or action_digest(definition) != flow["action_digest"]:
         raise FlowError("request_changed", 409)
-    offer = row["action"]["oauth"]
+    offer = definition["oauth"]
     # RFC 9207: the authorization response names its issuer. A mismatch means
     # the code came from some other server (a mix-up); a server that
     # advertises the parameter must send it.
@@ -212,29 +173,16 @@ def complete(*, owner: str, universe_id: str, handle: str, code: str,
         raise FlowError("issuer_mismatch", 409)
     if not iss and offer.get("iss_parameter_supported") is True:
         raise FlowError("issuer_missing", 409)
-    try:
-        bundle = exchange_code(token_url=offer["token_url"], client_id=flow["client_id"],
-                               code=code, verifier=verifier, redirect_uri=flow["redirect_uri"],
-                               provider_id=offer.get("provider_id", ""),
-                               resource=offer.get("resource", ""), issuer=offer.get("issuer", ""),
-                               scope=" ".join(offer.get("scopes") or []))
-    except OAuthError as exc:
-        if exc.code == "registration_required":
-            from tinyassets.connection_oauth.pkce import forget_client
+    from tinyassets.broker.model_connect import request
 
-            forget_client(offer["issuer"], flow["client_id"])
-        raise FlowError(exc.code, 502, exc.detail) from None
-    if offer.get("source") == "discovered" and offer.get("registration_method") == "dcr":
-        from tinyassets.connection_oauth.pkce import remember_client
-
-        remember_client(offer["issuer"], flow["redirect_uri"], flow["client_id"],
-                        offer.get("registration_method", "existing"))
-    from tinyassets.api.pending_requests import answer_connect_with_token
-
-    result = answer_connect_with_token(
-        universe_id=universe_id, request_id=flow["request_id"], token=encode(bundle),
-        owner_session={"approved_owner": owner, "flow_digest": digest},
-    )
+    result = request(_base_path(), owner=owner, center=universe_id, document={
+        "action": "oauth_exchange", "offer": offer, "client_id": flow["client_id"],
+        "code": code, "verifier": verifier, "redirect_uri": flow["redirect_uri"],
+        "request_ref": flow["request_id"], "destination": definition["destination"],
+        "policy": definition["policy"],
+    })
     if result.get("error"):
-        raise FlowError(str(result["error"]), 409, str(result.get("detail") or ""))
-    return result
+        if result["error"] == "registration_required":
+            pkce.forget_client(offer["issuer"], flow["client_id"])
+        raise FlowError(result["error"], 502)
+    return result["projection"]

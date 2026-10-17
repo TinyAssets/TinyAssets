@@ -1,27 +1,19 @@
-"""Bounded hosted PKCE transport; no serving, consent or credential persistence.
+"""Installed acquisition data and admission-bound door PKCE state.
 
-Only bundled acquisition data selects endpoints. HTTP handlers must separately
-check the current authenticated home/admin and empty setup before begin, before
-exchange, and before depositing through the existing connection primitives.
-The returned key is server-only: never serialize it into an app response.
+The broker owns the exchange transport and credential custody.
 """
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import hmac
 import json
 import secrets
 import sqlite3  # noqa: F401 - the flow store's driver, patched here by tests
-import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
-from urllib.parse import urlencode, urlsplit
-
-import httpx
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from tinyassets.connection_oauth import pkce
 from tinyassets.providers.discovery_presets import bundled_discovery_documents
@@ -31,8 +23,6 @@ from tinyassets.providers.discovery_presets import bundled_discovery_documents
 FLOW_TTL_SECONDS = pkce.FLOW_TTL_SECONDS
 MAX_PENDING = 1000
 MAX_PER_OWNER = 10
-MAX_RESPONSE_BYTES = 16384
-EXCHANGE_TIMEOUT = 20.0
 CALLBACK_PREFIX = pkce.CALLBACK_PREFIX
 _HANDLE = pkce.HANDLE_RE
 _VERIFIER = pkce.VERIFIER_RE
@@ -134,26 +124,18 @@ class PendingFlow:
     challenge: str
     callback_url: str
     expires_at: float
+    request_ref: str = ""
 
 
 @contextmanager
 def _authority(owner: str, universe_id: str):
-    """Fence deletion/home/ACL changes through the short satellite commit."""
-    from tinyassets.daemon_server import initialize_author_server
-    from tinyassets.shared_self import require_founder_home
-    from tinyassets.storage import _connect, data_dir
-    from tinyassets.storage.current_home import CurrentHomeChanged, check_current_home
+    """Resolve only broker admission; no owner store is available at the door."""
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.broker.owner_identities import connection_center
 
-    base = data_dir()
-    initialize_author_server(base)
-    with _connect(base) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            check_current_home(conn, owner, universe_id)
-            require_founder_home(base, universe_id, owner)
-        except (CurrentHomeChanged, PermissionError):
-            raise HostedAuthError("current_home_changed", 409) from None
-        yield base
+    base = _base_path()
+    connection_center(base, principal=owner, center=universe_id)
+    yield base
 
 
 _flows = pkce.flows_db
@@ -162,7 +144,7 @@ is_callback_path = pkce.is_callback_path
 
 
 def begin_flow(*, owner: str, universe_id: str, preset_id: str,
-               challenge: str, public_resource: str) -> dict[str, str | int]:
+               challenge: str, public_resource: str, request_ref: str = "") -> dict[str, str | int]:
     """No network; caller resolves home and empty state before durable binding."""
     if not owner or not universe_id:
         raise HostedAuthError("current_home_required", 409)
@@ -188,12 +170,12 @@ def begin_flow(*, owner: str, universe_id: str, preset_id: str,
         handle = secrets.token_urlsafe(32)
         callback_origin = f"{origin.scheme}://{origin.netloc}"
         callback = f"{callback_origin}{CALLBACK_PREFIX}{handle}"
-        conn.execute("INSERT INTO hosted_model_flows VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        conn.execute("INSERT INTO hosted_model_flows VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                      (pkce.handle_digest(handle), owner, universe_id,
                       preset.id, preset.digest, challenge, callback_origin, now,
-                      now + FLOW_TTL_SECONDS))
+                      now + FLOW_TTL_SECONDS, request_ref))
     return {
-        "flow": handle,
+        "flow": handle, "center": universe_id,
         "authorize_url": preset.authorize_url + "?" + urlencode({
             **dict(preset.authorize_params),
             "callback_url": callback, "code_challenge": challenge,
@@ -221,7 +203,8 @@ def take_flow(*, handle: str, owner: str, universe_id: str, verifier: str) -> Pe
             raise HostedAuthError("unknown_model_connection", 404)
         flow = PendingFlow(row["owner_user_id"], row["bound_home_id"], row["preset_id"],
                            row["preset_digest"], row["challenge"],
-                           row["callback_origin"] + CALLBACK_PREFIX + handle, row["expires_at"])
+                           row["callback_origin"] + CALLBACK_PREFIX + handle, row["expires_at"],
+                           row["request_ref"])
         if not (row["created_at"] <= now < flow.expires_at
                 and 0 < flow.expires_at - row["created_at"] <= FLOW_TTL_SECONDS):
             raise HostedAuthError("model_connection_expired", 409)
@@ -239,49 +222,23 @@ def take_flow(*, handle: str, owner: str, universe_id: str, verifier: str) -> Pe
         return flow
 
 
-def _default_client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(timeout=EXCHANGE_TIMEOUT, follow_redirects=False)
 
 
-async def exchange_key(*, flow: PendingFlow, code: str, verifier: str,
-                       client_factory: Callable[[], httpx.AsyncClient] = _default_client) -> str:
-    """Exchange exactly once; returns a SERVER-ONLY key, never user-facing JSON."""
-    if (not isinstance(code, str) or not 1 <= len(code) <= 2048
-            or any(ord(c) < 33 or ord(c) > 126 for c in code)):
-        raise HostedAuthError("invalid_authorization_code")
-    if not isinstance(verifier, str) or not _VERIFIER.fullmatch(verifier):
-        raise HostedAuthError("invalid_pkce_verifier")
-    if not hmac.compare_digest(_challenge(verifier), flow.challenge):
-        raise HostedAuthError("invalid_pkce_verifier")
-    preset = load_preset(flow.preset_id)
-    if preset.digest != flow.preset_digest or flow.expires_at <= time.time():
-        raise HostedAuthError("model_connection_expired", 409)
-    try:
-        async with asyncio.timeout(EXCHANGE_TIMEOUT):
-            async with client_factory() as client:
-                async with client.stream(
-                    "POST", preset.exchange_url, follow_redirects=False,
-                    headers={"Accept": "application/json", "Accept-Encoding": "identity"},
-                    json={"code": code, "code_verifier": verifier, "code_challenge_method": "S256"},
-                ) as response:
-                    if response.status_code != 200:
-                        # No retry: a provider may already have consumed the code.
-                        raise HostedAuthError("model_authorization_not_completed", 502)
-                    if response.headers.get("content-encoding", "identity").lower() != "identity":
-                        raise HostedAuthError("model_authorization_response_invalid", 502)
-                    body = bytearray()
-                    async for chunk in response.aiter_bytes(chunk_size=MAX_RESPONSE_BYTES + 1):
-                        if len(body) + len(chunk) > MAX_RESPONSE_BYTES:
-                            raise HostedAuthError("model_authorization_response_invalid", 502)
-                        body.extend(chunk)
-    except (httpx.HTTPError, TimeoutError):
-        raise HostedAuthError("model_authorization_outcome_unknown", 502) from None
-    try:
-        doc = json.loads(body)
-    except (ValueError, UnicodeError, RecursionError):
-        raise HostedAuthError("model_authorization_response_invalid", 502) from None
-    key = doc.get("key") if isinstance(doc, dict) else None
-    if (not isinstance(key, str) or not 1 <= len(key) <= 4096
-            or any(ord(c) < 33 or ord(c) > 126 for c in key)):
-        raise HostedAuthError("model_authorization_response_invalid", 502)
-    return key
+def endpoint_policy(preset: AcquisitionPreset) -> list[dict]:
+    """Exact installed endpoints, never catalogue-provided URLs or wildcard scope."""
+    import re
+
+    endpoints = []
+    for url, method in ((preset.inference_url, "POST"), (preset.catalogue_url, "GET"),
+                        (preset.benchmark_url, "GET")):
+        parts = urlsplit(url)
+        endpoint = {"host": parts.netloc, "path_template": parts.path, "methods": [method]}
+        query = parse_qs(parts.query, strict_parsing=True)
+        if query:
+            if any(len(values) != 1 for values in query.values()):
+                raise HostedAuthError("invalid_acquisition_preset", 503)
+            endpoint.update(allowed_query=sorted(query), required_query=sorted(query),
+                            query_patterns={key: "^" + re.escape(value[0]) + "$"
+                                            for key, value in query.items()})
+        endpoints.append(endpoint)
+    return endpoints

@@ -856,12 +856,19 @@ class _Connection:
             _namespace(doc["principal"], doc["command_center"])
             validate(doc["document"])
             if self._role == BOX and (doc["document"].get("secret")
-                    or doc["document"]["action"] == "rotate"
+                    or doc["document"]["action"] in {
+                        "rotate", "oauth_offer", "oauth_exchange", "preset_exchange"}
                     or doc["document"].get("policy", {}).get("auth_scheme", "none") != "none"):
                 raise PermissionError("credential deposits require the door")
             if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
                 raise Fenced("invalid fence")
             with self._server._fence.send(doc["generation"], doc["token"]):
+                if doc["document"]["action"] in {
+                        "oauth_offer", "oauth_exchange", "preset_exchange"}:
+                    if (self._server._owner_identities is None
+                            or self._server._owner_identities.admitted_owner(
+                                doc["command_center"]) != doc["principal"]):
+                        raise PermissionError("connection requires live center admission")
                 result = local_operation(self._server._ledger_for(doc["principal"]),
                                     principal=doc["principal"],
                                     command_center=doc["command_center"],

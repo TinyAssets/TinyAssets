@@ -66,13 +66,14 @@ def unseal(handle, value):
     return json.loads(AESGCM(seal_key()).decrypt(value[:12], value[12:], handle.encode()))
 
 
-def begin(*, owner, home, preset_id, resource, owner_session=None):
+def begin(*, owner, home, preset_id, resource, owner_session=None, request_ref=""):
     if (owner_session is None
             or json.loads(owner_session.get("identity_json", "{}")).get("user_id") != owner):
         raise hosted.HostedAuthError("interactive_approval_required", 403)
     verifier = secrets.token_urlsafe(32)
     result = hosted.begin_flow(owner=owner, universe_id=home, preset_id=preset_id,
-                               challenge=hosted._challenge(verifier), public_resource=resource)
+                               challenge=hosted._challenge(verifier), public_resource=resource,
+                               request_ref=request_ref)
     handle = result["flow"]
     with flows() as conn:
         conn.execute("INSERT INTO inline_model_flows "

@@ -507,6 +507,8 @@ def test_broker_receives_only_registered_oauth_environment(tmp_path):
                       "UNRELATED='line one\nTINYASSETS_OAUTH_FAKE_SECRET=not-a-variable'\n")
     result = _helper(tmp_path, ["render-daemon-env"], source, daemon)
     assert result.returncode == 0, result.stderr
+    assert not any(name.startswith("TINYASSETS_OAUTH_")
+                   for name in _compose_environment(daemon, tmp_path))
     broker = tmp_path / "broker.env"
     assert _assigned(broker) == {"TINYASSETS_OAUTH_EXAMPLE_CLIENT_ID",
                                  "TINYASSETS_OAUTH_EXAMPLE_SECRET",

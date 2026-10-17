@@ -12,11 +12,12 @@ import httpx
 import pytest
 from starlette.applications import Starlette
 
-from tests.test_model_bootstrap import rig  # noqa: F401
+from tests.support.model_connect import rig  # noqa: F401
 from tests.test_onboarding_model_connect import ingress, post  # noqa: F401
 from tinyassets import onboarding
 from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity
+from tinyassets.broker import acquisition
 from tinyassets.frontend import Frontend
 from tinyassets.onboarding import hosted_model_auth as hosted
 from tinyassets.onboarding import inline_model_connect as inline
@@ -77,12 +78,11 @@ def test_popup_callback_and_once_only_server_held_exchange(monkeypatch):
         calls.append(kw)
         return "synthetic-private-key"
 
-    monkeypatch.setattr(hosted, "exchange_key", exchange)
+    monkeypatch.setattr(acquisition, "exchange_key", exchange)
     assert callback(flow).status_code == 200
     reply = post("inline_poll", {"flow": flow["flow"]})
     assert reply.status_code == 200, reply.text
-    assert reply.json()["status"] == "confirmation_required"
-    assert reply.json()["answer"]["status"] == "answered"
+    assert reply.json()["status"] == "provisioned"
     assert "owner_session" not in reply.text
     assert "synthetic-private-key" not in reply.text
     assert "verifier" not in reply.text
@@ -102,7 +102,7 @@ def test_hosted_roundtrip_through_worker_frontend_and_owner(monkeypatch, keep_bi
         calls.append(kwargs)
         return "synthetic-private-key"
 
-    monkeypatch.setattr(hosted, "exchange_key", exchange)
+    monkeypatch.setattr(acquisition, "exchange_key", exchange)
     # Execute the actual Worker against the actual frontend/owner response.
     # No public service is contacted; only the external provider exchange is stubbed.
     program = """
@@ -158,7 +158,7 @@ console.log(JSON.stringify(headers));
 
     asyncio.run(run())
     reply = post("inline_poll", {"flow": flow["flow"]})
-    assert reply.json()["status"] == ("confirmation_required" if keep_binding else "waiting")
+    assert reply.json()["status"] == ("provisioned" if keep_binding else "waiting")
     assert len(calls) == int(keep_binding)
     assert post("inline_poll", {"flow": flow["flow"]}).json() == {
         "status": "consumed" if keep_binding else "waiting"
@@ -174,10 +174,10 @@ def test_foreign_user_cannot_see_consume_or_cancel_flow(operation, monkeypatch):
     async def forbidden(**kw):
         raise AssertionError("no foreign exchange")
 
-    monkeypatch.setattr(hosted, "exchange_key", forbidden)
+    monkeypatch.setattr(acquisition, "exchange_key", forbidden)
     stranger = Identity(user_id="stranger", username="stranger", capabilities=["write"])
     with identity_context(stranger):
-        assert post(operation, {"flow": flow["flow"]}).status_code == 409
+        assert post(operation, {"flow": flow["flow"]}).status_code == 404
     # Also exercise storage isolation even if the caller has its own valid home.
     with pytest.raises(hosted.HostedAuthError):
         inline.take(owner="stranger", home="u-stranger", handle=flow["flow"])
@@ -192,7 +192,7 @@ def test_cancel_or_wrong_callback_browser_never_exchanges(kind, monkeypatch):
     async def forbidden(**kw):
         raise AssertionError("must not exchange")
 
-    monkeypatch.setattr(hosted, "exchange_key", forbidden)
+    monkeypatch.setattr(acquisition, "exchange_key", forbidden)
     if kind == "app":
         assert post("inline_cancel", {"flow": flow["flow"]}).json()["status"] == "cancelled"
     else:
@@ -246,8 +246,8 @@ def test_failed_exchange_is_not_replayed(monkeypatch):
         calls.append(kwargs)
         raise hosted.HostedAuthError("model_authorization_not_completed", 503)
 
-    monkeypatch.setattr(hosted, "exchange_key", unavailable)
-    assert post("inline_poll", {"flow": flow["flow"]}).status_code == 503
+    monkeypatch.setattr(acquisition, "exchange_key", unavailable)
+    assert post("inline_poll", {"flow": flow["flow"]}).status_code == 502
     assert post("inline_poll", {"flow": flow["flow"]}).json() == {"status": "consumed"}
     assert len(calls) == 1
 
@@ -256,8 +256,9 @@ def test_failed_exchange_is_not_replayed(monkeypatch):
                                   "__Host-ta-owner=stranger-cookie"])
 def test_inline_start_without_owner_proof_creates_no_flow(cookie):
     result = post("inline_begin", {"preset_id": PRESET}, cookie=cookie)
-    assert result.status_code == 403
-    assert result.json()["error"] == "interactive_approval_required"
+    assert result.status_code == (401 if "stranger" in cookie else 403)
+    assert result.json()["error"] == (
+        "identity_conflict" if "stranger" in cookie else "interactive_approval_required")
     with inline.flows() as conn:
         assert conn.execute("SELECT COUNT(*) FROM inline_model_flows").fetchone()[0] == 0
 

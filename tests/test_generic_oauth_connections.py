@@ -225,7 +225,10 @@ def universes(tmp_path, monkeypatch):
         (base / uid).mkdir(parents=True)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED", "1")
+    from tests.support.broker_double import seed_owner_admission
+
     for owner, uid in ((OWNER, UID), (OTHER, OTHER_UID)):
+        seed_owner_admission(base, principal=owner, center=uid)
         grant_universe_access(base, universe_id=uid, actor_id=owner, permission="admin",
                               granted_by=owner)
         set_founder_home(base, founder_sub=owner, universe_id=uid, platform_generated=True)
@@ -260,6 +263,23 @@ def _ask(action=None, fields=None, uid=UID):
 
 
 def _post(operation, data, *, home=UID, cookie=None):
+    if operation == "oauth_begin" and "request_id" in data:
+        data = {**data}
+        data["request_ref"] = data.pop("request_id")
+        data["center"] = home
+        from tinyassets.api.helpers import _universe_dir
+        from tinyassets.storage.pending_requests import get_request
+
+        row = get_request(_universe_dir(home), data["request_ref"])
+        action = row["action"] if row else TASKS_ASK
+        offer = action.get("oauth") or {}
+        data["definition"] = {"destination": action["destination"],
+            "endpoints": action.get("endpoints") or [
+                {"host": action["host"], "path_template": action["path_template"],
+                 "methods": action["methods"]}],
+            "oauth": {"scopes": offer.get("scopes", [])}}
+        if offer.get("registration_method") == "existing" and offer.get("client_id"):
+            data["definition"]["oauth"]["client_id"] = offer["client_id"]
     from tests.owner_answer import session_cookie
     from tinyassets import onboarding
 
@@ -268,7 +288,7 @@ def _post(operation, data, *, home=UID, cookie=None):
             app=Starlette(routes=onboarding.onboarding_routes())),
             base_url="https://tinyassets.io",
         ) as client:
-            proof = (session_cookie() if operation == "oauth_begin" else "")
+            proof = (session_cookie() if operation in {"oauth_begin", "source_sign_in"} else "")
             return await client.post("/app/model-connect/" + operation, json=data,
                                      headers={"Origin": "https://tinyassets.io",
                                               "Cookie": proof if cookie is None else cookie})
@@ -306,7 +326,8 @@ def app(monkeypatch, universes):
 def _sign_in(provider, request_id, *, owner=OWNER):
     """Tap Sign in, approve at the provider, come back: the whole owner gesture."""
     with _as(owner):
-        begun = _post("oauth_begin", {"request_id": request_id, "code_challenge": CHALLENGE})
+        begun = _post("oauth_begin", {"request_id": request_id, "code_challenge": CHALLENGE},
+                      home=UID if owner == OWNER else OTHER_UID)
         assert begun.status_code == 200, begun.text
         back = urlsplit(provider.authorize(begun.json()["authorize_url"]))
         # The provider returns the browser to the fixed callback: a public shell.
@@ -517,20 +538,8 @@ def test_sign_in_round_trip_through_the_real_callback(provider, app, tmp_path):
 
     assert done.status_code == 200, done.text
     body = done.json()
-    assert body["status"] == "answered" and body["signed_in"] is True
-    assert body["server_continuation"] is True
-    from contextlib import closing
-
-    from tinyassets.storage.pending_requests import _db
-
-    with closing(_db(app / UID)) as conn:
-        delivery, = conn.execute(
-            "SELECT origin_json,outcome_json FROM request_answer_deliveries WHERE request_id=?",
-            (asked["request_id"],),
-        ).fetchall()
-    assert json.loads(delivery[0])["owner"] == OWNER
-    assert json.loads(delivery[0])["agent"] == asked["agent"]
-    assert json.loads(delivery[1])["status"] == "answered"
+    assert body["status"] == "provisioned"
+    assert body["request_ref"] == asked["request_id"]
     for token in list(provider.access) + list(provider.refresh_live):
         assert token not in done.text  # no token ever crosses back to the app
 
@@ -775,7 +784,7 @@ const appendMessage=()=>{},refreshRail=async()=>{},frameTitle=r=>r.title;
 const sendTurn=(...args)=>turns.push(args);
 let historyLoaded=true;
 const fetch=async(url,o)=>{posts.push({url,body:JSON.parse(o.body)});
- return {ok:true,json:async()=>({flow:'f'.repeat(43),expires_in:600,
+ return {ok:true,json:async()=>({flow:'f'.repeat(43),center:'center-a',expires_in:600,
   authorize_url:'https://auth.tasklark.io/authorize?state='+'f'.repeat(43)})};};
 const setTimeout=()=>{};
 __SOURCE__
@@ -802,6 +811,7 @@ function body(fields){const box=new El('div');
 def test_the_rail_puts_sign_in_first_and_folds_the_key_under_it():
     out = _run_rail("""
 const req={request_id:'r1',title:'Connect tasklark',action:{type:'connect',
+  destination:'tasklark',host:'api.tasklark.io',path_template:'/tasks',methods:['POST'],
   oauth:{authorize_url:'https://auth.tasklark.io/authorize'}}};
 const b=body(['textarea']);ConnectOAuth.decorate(req,b.box,b.row,b.note);
 const first=b.box.children[0];
@@ -817,7 +827,10 @@ console.log(JSON.stringify({first:first.textContent,folded:b.box.children[1].tag
     assert out["first"] == "Sign in with auth.tasklark.io"
     assert out["folded"] == "details" and out["foldedHoldsKey"] is True
     assert out["posts"] == [{"url": "/app/model-connect/oauth_begin",
-                             "body": {"request_id": "r1", "code_challenge": "c" * 43}}]
+                             "body": {"request_ref": "r1", "code_challenge": "c" * 43,
+                                      "definition": {"destination": "tasklark", "endpoints": [
+                                          {"host": "api.tasklark.io", "path_template": "/tasks",
+                                           "methods": ["POST"]}], "oauth": {"scopes": []}}}}]
     assert out["navigations"][0].startswith("https://auth.tasklark.io/authorize")
     assert out["saved"]["flow"] == "f" * 43 and out["saved"]["verifier"] == "v" * 43
     assert out["plainFirst"] == "label"  # no offer: the key ask is untouched
@@ -825,7 +838,7 @@ console.log(JSON.stringify({first:first.textContent,folded:b.box.children[1].tag
 
 
 @pytest.mark.parametrize("origin,source,turn_count", [("platform", True, 0), ("agent", False, 0)])
-def test_rail_sign_in_uses_server_provenance_for_relay(origin, source, turn_count):
+def test_rail_sign_in_keeps_center_and_does_not_relay_a_chat(origin, source, turn_count):
     out = _run_rail("""
 const req={request_id:'r1',title:'Connect source',origin:__ORIGIN__,action:{type:'connect',
   oauth:{authorize_url:'https://auth.tasklark.io/authorize'}}};
@@ -835,19 +848,21 @@ const saved=JSON.parse(storage.get('ta_connect_oauth'));
 window.location.pathname='/app/model-callback/connect';
 window.location.search='?code=abc&state='+saved.flow;
 ConnectOAuth.pending=ConnectOAuth.takeCallback();
-ConnectOAuth.post=async()=>({status:'answered',signed_in:true,server_continuation:true});
+let exchange;
+ConnectOAuth.post=async(op,payload)=>{exchange=payload;return {status:'provisioned'};};
 await ConnectOAuth.finish();
-console.log(JSON.stringify({saved,turns}));
+console.log(JSON.stringify({saved,turns,exchange}));
 """.replace("__ORIGIN__", json.dumps(origin)))
     assert out["saved"]["source"] is source
-    # Both kinds use server-bound delivery; the selected chat is never a relay.
+    assert out["saved"]["center"] == out["exchange"]["center"] == "center-a"
+    # The box completes its opaque reference; browser chat is never a relay.
     assert len(out["turns"]) == turn_count
 
 
 def test_the_callback_is_taken_before_account_sign_in_and_only_once():
     out = _run_rail("""
 storage.set('ta_connect_oauth',JSON.stringify({verifier:'v'.repeat(43),flow:'f'.repeat(43),
-  title:'Connect tasklark',expires:Date.now()+60000}));
+  title:'Connect tasklark',center:'center-a',expires:Date.now()+60000}));
 window.location.pathname='/app/model-callback/connect';
 window.location.search='?code=abc&state='+'f'.repeat(43);
 const taken=ConnectOAuth.takeCallback();
@@ -856,7 +871,7 @@ console.log(JSON.stringify({taken,again,path:window.location.pathname,search:win
   left:storage.has('ta_connect_oauth')}));
 """)
     assert out["taken"] == {"flow": "f" * 43, "code": "abc", "code_verifier": "v" * 43,
-                            "title": "Connect tasklark"}
+                            "title": "Connect tasklark", "center": "center-a"}
     assert out["again"] is None  # the URL is stripped; nothing is left to redeem
     assert out["path"] == "/app" and out["search"] == "" and out["left"] is False
 
