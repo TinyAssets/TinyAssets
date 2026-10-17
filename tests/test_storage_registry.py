@@ -212,6 +212,9 @@ def test_the_wiki_write_records_its_writer(base, signed_in, monkeypatch):
     """The real write path, not the helper: `_wiki_write` records the actor."""
     from tinyassets.api import wiki as api_wiki
 
+    # The configured wiki store is provisioned before an owner-local write.
+    # A write cannot create an unadmitted top-level command center.
+    (base / "wiki").mkdir()
     signed_in(A)
     out = api_wiki._wiki_write(
         category="notes", filename="from-a.md", content="# A\n" + "a" * (6 * KIB),

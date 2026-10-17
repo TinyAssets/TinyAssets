@@ -1295,4 +1295,34 @@ Remaining 1b work (all unchanged by this subset):
 Validation receipts for this subset are under
 `C:/Users/Jonathan/AppData/Local/Temp/s6a1b-validation/`.
 `initial.log/xml` describe a discarded intermediate tree, not this commit.
-Final retained-tree validation is recorded below when complete.
+Validation for product commit `384b9305d6b` and the final fixture port:
+- Required selection: **110 files, 2,090 cases**, including every GUARDS-key
+  file, all requested owner/broker/session/deletion files and the touched tests.
+  Unprivileged broad run: **2,085 passed, three failed, two skipped**. The three
+  failures were the root-only control proof and two incomplete fixtures: the
+  new directory test omitted its admitted center, and the wiki attribution
+  test relied on the deleted shared branch's binding double to provision its
+  configured wiki root. Both fixtures now explicitly provision those roots;
+  the existing wiki success/attribution assertions are unchanged.
+- Final focused oracle: **92 passed, zero skipped**, including all new helper
+  tests, engine-route tests and the router/file-I/O guards.
+- Final wiki fixture recheck, the whole `test_storage_registry.py` file:
+  **13 passed, zero skipped**.
+- Root oracle: **three passed, zero skipped**: the control-socket proof and
+  both descriptor/UID-erasure cases skipped by the unprivileged run.
+- All **2,090 required case identities ultimately passed** across the broad
+  run and these targeted follow-ups. `coverage-summary.json` asserts the
+  follow-ups cover only identities in that required selection and leave no
+  failed, errored or skipped case. This is combined venue coverage, not a
+  claim that the initial broad invocation exited zero.
+- Heavy selection: all **34 files, 1,358 passed, zero skipped**.
+- Ruff on every changed Python file, `git diff --check`, commit hooks and
+  strict OpenSpec validation pass. The hygiene gate against
+  `conv/c6-owner-daemon-s5` exits **0** using `Registry row(s): S8` and the
+  cumulative retired-test reason. Its 11 whole-test removals are the prior
+  pass's retirement inventory; no surviving assertion count was reduced.
+- No additional tests were retired or quarantined, and no skip/xfail was added.
+
+The validation/fixture follow-up changes no product behavior beyond
+`384b9305d6b`. D7's full static scan and the remaining 1b fork inventory above
+are still incomplete.
