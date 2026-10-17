@@ -29,6 +29,7 @@ INFRASTRUCTURE: frozenset[str] = frozenset({
     # Broker-held shared state (plans, credential-free source descriptors),
     # likewise outside every owner's box.
     "tinyassets/broker/vault.py",
+    "tinyassets/broker/http_connect.py",
     "tinyassets/broker/owner_reads.py",
     "tinyassets/broker/owner_sources.py",
 })

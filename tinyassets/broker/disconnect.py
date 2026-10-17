@@ -44,6 +44,9 @@ def local_operation(ledger, *, principal, command_center, document):
                 or row["destination"] != document["destination"]
                 or row["credential_ref"] != "vault://http/" + document["destination"]):
             raise GrantResolutionError("outbound connection identity mismatch")
+        if row["custody_erased"]:
+            return {"resource": None, "incarnation": "", "removed": False,
+                    "secrets_removed": 0}
         incarnation = row["incarnation"]
         fields = ("connection_id", "owner_user_id", "connection_class", "scopes_json",
                   "provider", "destination", "credential_ref", "revoked_at",
@@ -61,13 +64,29 @@ def local_operation(ledger, *, principal, command_center, document):
         else:
             if row["revoked_at"] is None:
                 raise GrantResolutionError("outbound connection must be fenced before erase")
+            from tinyassets.broker.revocation import revoke
             from tinyassets.broker.vault import forget_credential
 
+            failure = ""
+
+            def before_erase(credential):
+                nonlocal failure
+                if row["auth_scheme"] == "oauth2":
+                    failure = revoke(credential) or failure
+
             result["secrets_removed"] = forget_credential(ledger._data_root / command_center,
-                credential_type="http", destination=document["destination"])
-            for table in ("connection_capabilities", "outbound_connection_grants",
-                          "outbound_connections"):
+                credential_type="http", destination=document["destination"],
+                before_erase=before_erase)
+            for table in ("connection_capabilities", "outbound_connection_grants"):
                 conn.execute(f"DELETE FROM {table} WHERE connection_id=?", (connection_id,))
+            if failure:
+                # Retain only a denied, credential-free connection receipt. A
+                # fresh connect may replace it; retries never resend the token.
+                conn.execute("UPDATE outbound_connections SET revocation_error=?, "
+                             "custody_erased=1 WHERE connection_id=?", (failure, connection_id))
+            else:
+                conn.execute("DELETE FROM outbound_connections WHERE connection_id=?",
+                             (connection_id,))
             result["removed"] = True
         return result
 

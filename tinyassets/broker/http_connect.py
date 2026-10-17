@@ -105,6 +105,10 @@ def local_operation(ledger, *, principal, command_center, document):
         resource = ledger._get_connection_resource(connection_id, _transaction=conn)
         grant = ledger.get_grant(grant_id, _transaction=conn)
         raw_policy = (row["allowed_endpoints_json"], row["scopes_json"]) if row else None
+        erased = bool(row and row["custody_erased"] and row["revoked_at"] is not None
+                      and row["owner_user_id"] == principal and grow is None)
+        if erased:
+            resource, raw_policy = None, None
         plan = _connect_plan(
             resource=resource, raw_policy=raw_policy, existing_grant=grant,
             actor=principal, uid=command_center, destination=destination,
@@ -123,6 +127,8 @@ def local_operation(ledger, *, principal, command_center, document):
         if error:
             return {"error": "connection_setup_invalid", "detail": error}
         scopes = plan["http_scopes"]
+        if erased:
+            conn.execute("DELETE FROM outbound_connections WHERE connection_id=?", (connection_id,))
         if resource is None:
             ledger.create_connection(
                 connection_id=connection_id, owner_user_id=principal, connection_class="http",

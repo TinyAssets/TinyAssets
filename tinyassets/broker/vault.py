@@ -173,6 +173,7 @@ def forget_credential(
     *,
     credential_type: str,
     destination: str,
+    before_erase: Callable[[str], None] | None = None,
 ) -> int:
     """Remove every vault record matching ``(credential_type, destination)``.
 
@@ -212,6 +213,10 @@ def forget_credential(
         ]
         removed = len(records) - len(kept)
         if removed:
+            if before_erase is not None:
+                for record in records:
+                    if record not in kept:
+                        before_erase(str(record.get("token") or ""))
             _persist_credential_vault_file(universe, kept)
     return removed
 
