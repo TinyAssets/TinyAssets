@@ -2062,8 +2062,13 @@ async def _handle_account_delete(request: Any) -> Any:
             status_code=409,
             headers=_NO_STORE,
         )
-    from tinyassets.onboarding.owner_sessions import revoke_owner
-    await run_in_threadpool(revoke_owner, identity.user_id)
+    from tinyassets import owner_runtime
+
+    if owner_runtime.current() is not None:
+        await run_in_threadpool(owner_runtime.router_credential, "account_revoke")
+    else:
+        from tinyassets.onboarding.owner_sessions import revoke_owner
+        await run_in_threadpool(revoke_owner, identity.user_id)
     # The account is gone; end this device's renewable session the way logout
     # does. Other devices' refresh handles die with the identity or expire.
     if session_ref:

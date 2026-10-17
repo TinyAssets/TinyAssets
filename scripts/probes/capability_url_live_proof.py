@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LIVE PROOF: a capability-URL connection posts to a real ``/mcp/hooks`` receiver.
+"""LIVE PROOF: a capability-URL connection posts to a real ``/hooks/inbound`` receiver.
 
 Runs INSIDE the production container against ``/data``, as
 ``/app/scripts/probes/capability_url_live_proof.py --universe <uid>``. It proves
@@ -69,7 +69,7 @@ DESTINATION = "capability-url-live-proof"
 BRANCH_ID = "capurlproof01"
 BRANCH_NAME = "Capability URL live proof"
 HOOK_HOST_DEFAULT = "tinyassets.io"
-TEMPLATE = "/mcp/hooks/{secret}"
+TEMPLATE = "/hooks/inbound/{secret}"
 
 BASE = os.environ.get("PROOF_BASE", "/data")
 os.environ["TINYASSETS_DATA_DIR"] = BASE
@@ -247,8 +247,8 @@ def main(universe_id: str, hook_host: str) -> int:
     token = webhook_hooks.mint(
         BASE, universe_id=universe_id, branch_def_id=BRANCH_ID, owner_principal_id=actor
     )
-    pasted = f"https://{hook_host}/mcp/hooks/{token}"
-    print(f"minted: https://{hook_host}/mcp/hooks/<{len(token)}-char token>")
+    pasted = f"https://{hook_host}/hooks/inbound/{token}"
+    print(f"minted: https://{hook_host}/hooks/inbound/<{len(token)}-char token>")
 
     try:
         deposited = connect_http(
@@ -354,7 +354,7 @@ def main(universe_id: str, hook_host: str) -> int:
         # The negative: a node that hardcodes the real token is refused, so the
         # secret cannot reach the run record through a packet.
         bad = json.loads(json.dumps(packet))
-        bad["request"]["path"] = f"/mcp/hooks/{token}"
+        bad["request"]["path"] = f"/hooks/inbound/{token}"
         refused = run_authenticated_external_call_effector(
             node_id="proof-negative",
             output_keys=["packet"],

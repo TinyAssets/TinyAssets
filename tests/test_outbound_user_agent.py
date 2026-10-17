@@ -11,7 +11,7 @@ build channels to are CDN-fronted: Slack, Discord, Zapier, Make, and
 ``tinyassets.io``.
 
 WHAT WAS SEEN, and what was not. On 2026-09-30 a UA-less POST to this
-platform's own ``/mcp/hooks`` receiver was answered ``403 "error code: 1010"``
+platform's own ``/hooks/inbound`` receiver was answered ``403 "error code: 1010"``
 by Cloudflare, and the same request carrying a User-Agent reached the
 application (``404 {"error":"not_found"}``) — 40 seconds apart, one header
 different. **That A/B did not reproduce hours later**, from either the dev host

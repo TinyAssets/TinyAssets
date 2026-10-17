@@ -281,7 +281,7 @@ def test_flag_off_means_no_route_and_no_enqueue(env, monkeypatch):
 
     app = create_streamable_http_app()
     paths = _route_paths(app)
-    assert not any("/mcp/hooks/" in p for p in paths)           # route not mounted
+    assert not any("/hooks/inbound/" in p for p in paths)           # route not mounted
 
     # And even a direct call refuses + enqueues nothing (defense in depth).
     status, _ = wh.handle_hook(token=token, body=b"{}", headers={}, base_path=base)
@@ -535,21 +535,15 @@ def test_every_non_deliverable_state_answers_404(env, monkeypatch):
     assert _runs_for_universe(base, uid) == []
 
 
-def test_mcp_hooks_auth_carveout_exact_and_flag_gated(monkeypatch):
-    """The /mcp/hooks/<token> receiver is exempt from the MCP bearer challenge
-    ONLY when inbound is enabled and ONLY for a single-segment token — never a
-    deeper path, never an empty token, never when inbound is off. The unguessable
-    per-branch token + author-gated handler is the sole boundary (webhook Codex
-    review); this mirrors the /app carve-out with exact scoping."""
-    from tinyassets.auth.middleware import _auth_challenge_path
-
-    monkeypatch.delenv("TINYASSETS_INBOUND_ENABLED", raising=False)
-    assert _auth_challenge_path("/mcp/hooks/abc123") is True  # off -> challenged
+def test_inbound_hook_path_is_exact(monkeypatch):
+    """Only one non-empty token segment bypasses foreign bearer interpretation."""
+    from tinyassets.auth.middleware import _auth_challenge_path, _is_inbound_hook_path
 
     monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "1")
-    assert _auth_challenge_path("/mcp/hooks/abc123") is False  # exact token -> exempt
-    assert _auth_challenge_path("/mcp/hooks/a/b") is True      # deeper -> challenged
-    assert _auth_challenge_path("/mcp/hooks/") is True         # empty token
-    assert _auth_challenge_path("/mcp/hooks") is True          # no token
-    assert _auth_challenge_path("/mcp/tools") is True          # unrelated /mcp/*
+    assert _is_inbound_hook_path("/hooks/inbound/abc123") is True
+    for path in ("/hooks/inbound/a/b", "/hooks/inbound/", "/hooks/inbound",
+                 "/mcp/hooks/abc123"):
+        assert _is_inbound_hook_path(path) is False
+    assert _auth_challenge_path("/mcp/hooks/abc123") is True
+    assert _auth_challenge_path("/mcp/tools") is True
     assert _auth_challenge_path("/mcp") is True

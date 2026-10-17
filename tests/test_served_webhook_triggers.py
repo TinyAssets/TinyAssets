@@ -94,7 +94,7 @@ def test_app_agent_creates_a_webhook_that_runs_the_branch_as_its_owner(bound, en
     created = create()
     assert created.get("error") is None, created
     token = created["token"]
-    assert created["url"].endswith("/mcp/hooks/" + token)
+    assert created["url"].endswith("/hooks/inbound/" + token)
     assert created["token_prefix"] == token[:12]
     assert created["branch_def_id"] == BRANCH
 

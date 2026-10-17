@@ -69,7 +69,9 @@ def main():
 
         data = await request.json()
         operation = data["operation"]
-        if operation == "key_list":
+        if operation == "account_revoke":
+            result = owner_runtime.router_credential(operation)
+        elif operation == "key_list":
             result = current_store().list(owner, authority=authority)
         elif operation == "key_revoke":
             result = current_store().revoke(owner, data["key_id"], authority=authority)

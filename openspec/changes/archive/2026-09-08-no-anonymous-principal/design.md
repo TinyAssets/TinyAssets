@@ -133,7 +133,7 @@ The routes that exist today, not a sketch:
 | `/.well-known/*` and `/mcp/.well-known/*` (both are mounted by `starlette_discovery_routes`; production challenges advertise the `/mcp/` variant; the `/oauth/*` descriptor in `create_wellknown_routes` is unmounted and gets no exemption) | OAuth discovery | none: no handler reads state |
 | `/mcp/app` static shell; `/mcp/app/token` (PKCE exchange, refresh, logout) | the app's PKCE flow / refresh cookie | the signed-in user, or the flow itself; every other `/mcp/app/*` route requires the bearer through `_app_identity_required` |
 | `/mcp/connect/*` (the existing traversal-safe predicate, not a prefix) | connect-deposit session | the depositing user |
-| `/mcp/hooks/<id>` (the existing exactly-one-segment predicate, not a prefix) | per-hook secret | the hook's OWNER, stamped on the emitted event (D2) |
+| `/hooks/inbound/<id>` (the existing exactly-one-segment predicate, not a prefix) | per-hook secret | the hook's OWNER, stamped on the emitted event (D2) |
 | `/mcp/app/billing/webhook` | Stripe signature (already exempt with its own auth) | none: the handler binds the customer from the event |
 
 Everything else, including `POST /mcp` `initialize`, is 401 without a valid

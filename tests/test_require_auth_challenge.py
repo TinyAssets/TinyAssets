@@ -309,16 +309,13 @@ def test_exempt_table_is_exact_paths_not_prefixes(path, challenged, monkeypatch)
     assert _auth_challenge_path(path) is challenged, path
 
 
-def test_hook_routes_are_exempt_only_when_their_feature_is_on(monkeypatch):
+def test_retired_hook_door_is_challenged_even_when_inbound_is_on(monkeypatch):
     from tinyassets.auth import middleware as mw
 
-    monkeypatch.setattr(mw, "_inbound_hooks_enabled", lambda: False)
-    assert _auth_challenge_path("/mcp/hooks/abc123") is True
-
-    monkeypatch.setattr(mw, "_inbound_hooks_enabled", lambda: True)
-    assert _auth_challenge_path("/mcp/hooks/abc123") is False
-    assert _auth_challenge_path("/mcp/hooks/abc123/deeper") is True   # one segment only
-    assert _auth_challenge_path("/mcp/hooks/") is True
+    for enabled in (False, True):
+        monkeypatch.setattr(mw, "_inbound_hooks_enabled", lambda: enabled)
+        assert _auth_challenge_path("/mcp/hooks/abc123") is True
+        assert _auth_challenge_path("/hooks/inbound/abc123") is False
 
 
 def test_the_retired_connect_deposit_paths_are_challenged(monkeypatch):

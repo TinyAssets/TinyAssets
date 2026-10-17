@@ -416,12 +416,11 @@ def test_hook_map_is_router_state_and_unknown_owners_open_no_socket(admitted, tm
     async def exercise():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                      base_url="http://test") as client:
-            for path in ("/hooks/inbound/hook-secret", "/mcp/hooks/hook-secret"):
-                assert (await client.post(path, headers={"authorization": "Bearer foreign"},
-                                          content=b"untouched")).status_code == 404
-            assert selected == ["alice", "alice"]
+            assert (await client.post("/hooks/inbound/hook-secret", headers={
+                "authorization": "Bearer foreign"}, content=b"untouched")).status_code == 404
+            assert selected == ["alice"]
             assert (await client.post("/hooks/inbound/unknown")).status_code == 404
-            assert selected == ["alice", "alice"]
+            assert selected == ["alice"]
 
     asyncio.run(exercise())
 
@@ -472,9 +471,8 @@ def test_box_created_hooks_route_then_all_revocation_paths_refuse(router, monkey
                     **source,
                 })
                 assert revoked.status_code == 200 and revoked.json()["revoked"], revoked.text
-                for prefix in ("/hooks/inbound/", "/mcp/hooks/"):
-                    refused = await client.post(prefix + token, content=b"delivery")
-                    assert refused.status_code == 404
+                refused = await client.post("/hooks/inbound/" + token, content=b"delivery")
+                assert refused.status_code == 404
 
     asyncio.run(exercise())
 
@@ -502,6 +500,8 @@ def test_box_channel_cannot_supply_owner_or_revoke_another_owners_credentials(
     assert request("bob", {"operation": "key_list", "owner": "alice"}) == {
         "op": "ROUTER_CREDENTIAL_REFUSED"}
     assert request("bob", {"operation": "key_list"}, principal="alice") is None
+    assert request("alice", {"operation": "account_revoke", "owner": "bob"}) == {
+        "op": "ROUTER_CREDENTIAL_REFUSED"}
     token = request("alice", {"operation": "hook_mint"})["result"]["token"]
     request("bob", {"operation": "hook_revoke", "token_hash": hashlib.sha256(token.encode())
             .hexdigest()})
@@ -572,3 +572,115 @@ def test_router_key_rows_stay_bounded_across_mint_revoke_cycles(tmp_path, monkey
     with closing(sqlite3.connect(keys.path)) as db:
         rows = dict(db.execute("SELECT owner, COUNT(*) FROM api_keys GROUP BY owner"))
     assert rows == {"alice": 2, "bob": 1}
+
+
+def test_account_revoke_from_box_removes_only_bound_owners_router_state(
+    router, boxes, tmp_path, monkeypatch,
+):
+    from tinyassets import router_credentials
+    from tinyassets.api_keys import ApiKeyStore
+    from tinyassets.connection_oauth.pkce import flows_db
+    from tinyassets.onboarding import (
+        app_config,
+        approval_handoff,
+        inline_model_connect,
+        owner_sessions,
+    )
+
+    monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "1")
+    requests = []
+    dispatch = router_credentials.dispatch
+
+    def recorded(root, owner, request):
+        requests.append((root, owner, request))
+        return dispatch(root, owner, request)
+
+    monkeypatch.setattr(router_credentials, "dispatch", recorded)
+    for owner in ("alice", "bob"):
+        with owner_sessions.store() as db:
+            db.execute("INSERT INTO owner_sessions VALUES (?,?,?)", (
+                owner_sessions.hashed(owner + "-cookie"),
+                json.dumps(Identity(user_id=owner, username=owner).to_dict()), time.time() + 600))
+        with approval_handoff.flows() as db:
+            db.execute("INSERT INTO approval_handoffs VALUES (?,?,?,?,?)", (
+                owner_sessions.hashed(owner[0] * 43), owner, "request", "web", time.time() + 600))
+        with inline_model_connect.flows() as db:
+            db.execute("INSERT INTO inline_model_flows VALUES (?,?,?,?,?,?,?)", (
+                owner, owner, "home", b"secret", "browser", "ready", time.time() + 600))
+        with flows_db(tmp_path) as (db, now):
+            db.execute("INSERT INTO hosted_model_flows VALUES (?,?,?,?,?,?,?,?,?)", (
+                owner, owner, "home", "preset", "digest", "challenge", "origin", now, now + 500))
+            db.execute("INSERT INTO connection_oauth_flows VALUES (?,?,?,?,?,?,?,?,?,?,?)", (
+                owner, owner, "home", "request", "digest", "challenge", "client", "redirect",
+                now, now + 500, owner))
+    # Multiple live keys must all be revoked, including keys beyond the fixture key.
+    extra = ApiKeyStore(tmp_path).mint("alice", name="extra", scopes=[], authority=None)
+    resource = urlsplit(app_config()["resource"])
+    origin = resource.scheme + "://" + resource.netloc
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=router),
+                                     base_url="http://test") as client:
+            tokens = {}
+            for owner in ("alice", "bob"):
+                minted = await client.post("/app/test-credentials", headers={
+                    "authorization": "Bearer " + owner}, json={"operation": "hook_mint"})
+                assert minted.status_code == 200, minted.text
+                tokens[owner] = minted.json()["token"]
+                assert (await client.post("/hooks/inbound/" + tokens[owner])).status_code == 202
+                assert (await client.post("/app/test-session", headers={
+                    "cookie": owner_sessions.COOKIE + "=" + owner + "-cookie",
+                    "origin": origin}, json={})).status_code == 200
+            requests.clear()
+            revoked = await client.post("/app/test-credentials", headers={
+                "authorization": "Bearer alice"}, json={"operation": "account_revoke"})
+            assert revoked.status_code == 200, revoked.text
+            assert revoked.json() == {"revoked": True}
+            assert requests == [(tmp_path, "alice", {"operation": "account_revoke"})]
+            for owner in ("alice", "bob"):
+                session = await client.post("/app/test-session", headers={
+                    "cookie": owner_sessions.COOKIE + "=" + owner + "-cookie",
+                    "origin": origin}, json={})
+                assert session.status_code == (401 if owner == "alice" else 200)
+                api = await client.get("/api/command-centers/cc-" + owner + "/status", headers={
+                    "authorization": "Bearer " + boxes.keys[owner]})
+                assert api.status_code == (401 if owner == "alice" else 200)
+                hook = await client.post("/hooks/inbound/" + tokens[owner])
+                assert hook.status_code == (404 if owner == "alice" else 202)
+            assert (await client.get("/api/command-centers/cc-alice/status", headers={
+                "authorization": "Bearer " + extra["key"]})).status_code == 401
+
+    asyncio.run(exercise())
+    assert owner_sessions.lookup("alice-cookie") is None
+    assert owner_sessions.lookup("bob-cookie") is not None
+    assert approval_handoff.load("a" * 43) is None
+    assert approval_handoff.load("b" * 43)["owner"] == "bob"
+    with inline_model_connect.flows() as db:
+        rows = {row["owner"]: (row["status"], row["sealed"]) for row in
+                db.execute("SELECT * FROM inline_model_flows")}
+    assert rows == {"alice": ("cancelled", b""), "bob": ("ready", b"secret")}
+    with flows_db(tmp_path) as (db, _):
+        for table in ("hosted_model_flows", "connection_oauth_flows"):
+            assert [r[0] for r in db.execute(f"SELECT owner_user_id FROM {table}")] == ["bob"]
+    for root in boxes.roots.values():
+        assert not (root / ".runtime" / "owner-sessions.db").exists()
+
+
+def test_retired_hook_door_never_delivers_a_valid_token(router, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "1")
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=router),
+                                     base_url="http://test") as client:
+            minted = await client.post("/app/test-credentials", headers={
+                "authorization": "Bearer alice"}, json={"operation": "hook_mint"})
+            assert minted.status_code == 200, minted.text
+            token = minted.json()["token"]
+            for headers in ({}, {"authorization": "Bearer alice"}):
+                retired = await client.post("/mcp/hooks/" + token, headers=headers)
+                assert retired.status_code in {401, 404}
+            delivered = await client.post("/hooks/inbound/" + token, content=b"still delivered")
+            assert delivered.status_code == 202
+            assert delivered.json() == {"owner": "alice", "payload": "still delivered"}
+
+    asyncio.run(exercise())

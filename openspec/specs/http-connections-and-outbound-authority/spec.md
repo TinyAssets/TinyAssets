@@ -103,7 +103,7 @@ optional model review or be bypassable by an owner rule or review verdict.
 
 The reserved placeholder SHALL NOT accept a caller-declared value pattern. The
 platform SHALL declare it as the anchored literal token, so a stored
-`/mcp/hooks/{secret}` endpoint matches the concrete path `/mcp/hooks/{secret}`
+`/hooks/inbound/{secret}` endpoint matches the concrete path `/hooks/inbound/{secret}`
 and nothing else.
 
 The reserved placeholder SHALL be the ONLY placeholder in a `url_secret`
@@ -112,7 +112,7 @@ endpoint's template: a capability URL is a fixed path plus a secret. A
 any path on a matching host, so the placeholder would never be enforced.
 
 #### Scenario: a webhook connection is deposited
-- **WHEN** an owner deposits `auth_scheme: "url_secret"` with one endpoint whose `path_template` is `/mcp/hooks/{secret}` and `methods: ["POST"]`
+- **WHEN** an owner deposits `auth_scheme: "url_secret"` with one endpoint whose `path_template` is `/hooks/inbound/{secret}` and `methods: ["POST"]`
 - **THEN** the connection is created, the vault holds only the secret segment, and the stored `allowed_endpoints` hold `{secret}`
 
 #### Scenario: a caller tries to pattern the reserved placeholder
@@ -137,11 +137,11 @@ again at dispatch against the row as re-read — so a row mutated after a proxy
 opened is refused before any credential is resolved.
 
 #### Scenario: a header scheme with a secret placeholder
-- **WHEN** a `bearer` deposit declares `path_template: "/mcp/hooks/{secret}"`
+- **WHEN** a `bearer` deposit declares `path_template: "/hooks/inbound/{secret}"`
 - **THEN** it is refused, and the error names `url_secret`
 
 #### Scenario: url_secret with no placeholder
-- **WHEN** a `url_secret` deposit declares `path_template: "/mcp/hooks/x"`
+- **WHEN** a `url_secret` deposit declares `path_template: "/hooks/inbound/x"`
 - **THEN** it is refused
 
 #### Scenario: the row is mutated after deposit
@@ -160,7 +160,7 @@ A refusal SHALL NOT echo any part of the pasted value. It SHALL name the
 declared template instead.
 
 #### Scenario: the whole link is pasted
-- **WHEN** the owner answers a `url_secret` ask with `https://tinyassets.io/mcp/hooks/<token>`
+- **WHEN** the owner answers a `url_secret` ask with `https://tinyassets.io/hooks/inbound/<token>`
 - **THEN** the vault holds `<token>` and nothing holds the full URL
 
 #### Scenario: a link for the wrong host
@@ -209,11 +209,11 @@ immediately before substitution, and a segment that fails SHALL refuse the
 request.
 
 #### Scenario: the substituted URL reaches the wire
-- **WHEN** a node emits a packet whose path is `/mcp/hooks/{secret}` on a `url_secret` connection
-- **THEN** the request on the wire is `https://<host>/mcp/hooks/<segment>`
+- **WHEN** a node emits a packet whose path is `/hooks/inbound/{secret}` on a `url_secret` connection
+- **THEN** the request on the wire is `https://<host>/hooks/inbound/<segment>`
 
 #### Scenario: a node supplies its own value in the secret's position
-- **WHEN** a node emits a packet whose path is `/mcp/hooks/<anything-but-the-token>`
+- **WHEN** a node emits a packet whose path is `/hooks/inbound/<anything-but-the-token>`
 - **THEN** the allowlist refuses the request and nothing is sent
 
 #### Scenario: a reserved token in a position the template did not reserve
@@ -267,7 +267,7 @@ Reading a **stored** template SHALL NOT apply this check, so a connection
 deposited before it existed stays readable and removable.
 
 #### Scenario: the live failure
-- **WHEN** an ask declares `path_template: "/mcp/hooks/MRL8k3nZ-Ht9xWq2vB7pC4dF6gJ0sYaT1u"`
+- **WHEN** an ask declares `path_template: "/hooks/inbound/MRL8k3nZ-Ht9xWq2vB7pC4dF6gJ0sYaT1u"`
 - **THEN** the ask is refused and the error names `url_secret` and `{secret}`
 
 #### Scenario: an ordinary API path

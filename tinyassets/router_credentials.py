@@ -43,6 +43,12 @@ class HookOwners:
             db.execute("DELETE FROM hook_owners WHERE token_hash=? AND owner=?",
                        (token_hash, owner))
 
+    def revoke_owner(self, owner: str):
+        if not self.path.exists():
+            return
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("DELETE FROM hook_owners WHERE owner=?", (owner,))
+
     def resolve(self, token: str) -> str | None:
         if not self.path.exists():
             return None
@@ -94,6 +100,18 @@ def dispatch(root: Path, owner: str, request: dict) -> dict:
         raise ValueError("invalid credential operation")
     operation = request.get("operation")
     keys = ApiKeyStore(root)
+    if operation == "account_revoke" and set(request) == {"operation"}:
+        from tinyassets.onboarding import approval_handoff, owner_sessions
+
+        # This process's data_dir is the router root, never the requesting box.
+        owner_sessions.revoke_owner(owner)
+        with approval_handoff.flows() as db:
+            db.execute("DELETE FROM approval_handoffs WHERE owner=?", (owner,))
+        for key in keys.list(owner, authority=None)["keys"]:
+            if key["revoked_at"] is None:
+                keys.revoke(owner, key["key_id"], authority=None)
+        HookOwners(root).revoke_owner(owner)
+        return {"revoked": True}
     if operation == "key_mint" and set(request) == {"operation", "name", "request_ref"}:
         if not isinstance(request["request_ref"], str) or len(request["request_ref"]) > 4096:
             raise ValueError("invalid key request reference")
