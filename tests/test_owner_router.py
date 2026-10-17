@@ -714,3 +714,58 @@ def test_retired_hook_door_never_delivers_a_valid_token(router, monkeypatch):
             assert delivered.json() == {"owner": "alice", "payload": "still delivered"}
 
     asyncio.run(exercise())
+
+
+def test_a_deleted_owner_can_never_mint_again(tmp_path, monkeypatch):
+    from tinyassets import router_credentials
+    from tinyassets.router_credentials import dispatch
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    mint = {"operation": "key_mint", "name": "k", "request_ref": "ref-1"}
+    assert dispatch(tmp_path, "alice", {"operation": "hook_mint"})["token"]
+    assert dispatch(tmp_path, "alice", {"operation": "account_revoke"}) == {"revoked": True}
+    assert router_credentials.DeletedOwners(tmp_path).contains("alice")
+    # The tombstone is durable and checked under the dispatch lock, so a box
+    # request racing the revocation lands either before it (and is revoked)
+    # or after it (and is refused).
+    for request in (mint, {"operation": "hook_mint"}, {"operation": "key_list"}):
+        with pytest.raises(PermissionError, match="deleted"):
+            dispatch(tmp_path, "alice", request)
+    assert dispatch(tmp_path, "bob", {"operation": "hook_mint"})["token"]
+    assert router_credentials._DISPATCH.acquire(blocking=False)
+    router_credentials._DISPATCH.release()
+
+
+def test_a_failed_account_revoke_can_be_retried_to_completion(tmp_path, monkeypatch):
+    from tinyassets import router_credentials
+    from tinyassets.api_keys import ApiKeyStore
+    from tinyassets.onboarding import session_store
+    from tinyassets.router_credentials import HookOwners, dispatch
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    key = dispatch(tmp_path, "alice", {"operation": "key_mint", "name": "k",
+                                       "request_ref": "ref-1"})
+    token = dispatch(tmp_path, "alice", {"operation": "hook_mint"})["token"]
+    real = session_store.revoke_owner
+    calls = []
+
+    def fails_once(owner):
+        calls.append(owner)
+        if len(calls) == 1:
+            raise OSError("unlink failed")
+        real(owner)
+
+    monkeypatch.setattr(session_store, "revoke_owner", fails_once)
+    with pytest.raises(OSError):
+        dispatch(tmp_path, "alice", {"operation": "account_revoke"})
+    # The tombstone already refuses new mints while the revocation is incomplete.
+    assert router_credentials.DeletedOwners(tmp_path).contains("alice")
+    with pytest.raises(PermissionError, match="deleted"):
+        dispatch(tmp_path, "alice", {"operation": "hook_mint"})
+    assert HookOwners(tmp_path).resolve(token) == "alice"
+    # The retry completes: no live key or hook token survives.
+    assert dispatch(tmp_path, "alice", {"operation": "account_revoke"}) == {"revoked": True}
+    assert HookOwners(tmp_path).resolve(token) is None
+    live = [k for k in ApiKeyStore(tmp_path).list("alice", authority=None)["keys"]
+            if k["revoked_at"] is None]
+    assert live == [] and key["key_id"]

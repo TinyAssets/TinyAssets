@@ -12,6 +12,8 @@ import re
 import secrets
 import socket
 import sqlite3
+import threading
+import time
 from contextlib import asynccontextmanager, closing
 from pathlib import Path
 
@@ -20,6 +22,35 @@ from tinyassets.boxes.layout import BROKER_READ_GID, BROKER_UID, DAEMON_UID
 
 #: Router rows one owner may hold, so no box can grow the shared map unbounded.
 MAX_HOOKS_PER_OWNER = 200
+
+#: One router process answers every box's credential request. Serializing them
+#: means no mint can interleave with an account revocation.
+_DISPATCH = threading.Lock()
+
+
+class DeletedOwners:
+    """Durable tombstones: a deleted account's box can never mint again."""
+
+    def __init__(self, root: Path):
+        from tinyassets.owner_runtime import refuse_router_store
+
+        refuse_router_store("deleted_owners")
+        self.path = root / ".router-deleted-owners.sqlite3"
+
+    def add(self, owner: str):
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("PRAGMA synchronous=FULL")
+            db.execute("CREATE TABLE IF NOT EXISTS deleted_owners ("
+                       "owner TEXT PRIMARY KEY, deleted_at REAL NOT NULL)")
+            db.execute("INSERT OR IGNORE INTO deleted_owners VALUES (?, ?)",
+                       (owner, time.time()))
+
+    def contains(self, owner: str) -> bool:
+        if not self.path.exists():
+            return False
+        with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)) as db:
+            return db.execute("SELECT 1 FROM deleted_owners WHERE owner=?",
+                              (owner,)).fetchone() is not None
 
 
 class HookOwners:
@@ -95,15 +126,28 @@ def broker_request(root: Path, owner: str, request: dict) -> dict:
 
 def dispatch(root: Path, owner: str, request: dict) -> dict:
     """Only router state; the owner argument comes from the authenticated broker."""
-    from tinyassets.api_keys import ApiKeyStore
     from tinyassets.broker.owner_identities import validate_principal
 
     validate_principal(owner)
     if not isinstance(request, dict):
         raise ValueError("invalid credential operation")
+    with _DISPATCH:
+        deleted = DeletedOwners(root)
+        # Revocation is idempotent and must stay retryable after a partial
+        # failure; everything else is refused once the tombstone exists.
+        if deleted.contains(owner) and request.get("operation") != "account_revoke":
+            raise PermissionError("owner account is deleted")
+        return _dispatch(root, owner, request, deleted)
+
+
+def _dispatch(root: Path, owner: str, request: dict, deleted: DeletedOwners) -> dict:
+    from tinyassets.api_keys import ApiKeyStore
+
     operation = request.get("operation")
     keys = ApiKeyStore(root)
     if operation == "account_revoke" and set(request) == {"operation"}:
+        # The tombstone lands first, so nothing minted later can survive.
+        deleted.add(owner)
         from tinyassets.onboarding import (
             approval_handoff,
             canary_sign_in,
