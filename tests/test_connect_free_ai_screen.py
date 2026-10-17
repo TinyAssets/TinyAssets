@@ -236,5 +236,3 @@ def test_connect_screen_markup_and_entry_points():
     assert '$("btn-connect-free-ai").addEventListener("click",()=>openConnectRequest());' in html
     # The page still names no provider: names come from the setup request.
     assert "openrouter" not in html.lower() and "hugging face" not in html.lower()
-
-

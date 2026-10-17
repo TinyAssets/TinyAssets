@@ -17,7 +17,6 @@ universe, serving or not.
 """
 from __future__ import annotations
 
-import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -160,11 +159,3 @@ def test_the_new_reason_says_the_universe_IS_serving_in_words_a_user_can_use():
 # ::test_a_poll_beats_for_a_serving_universe_with_no_runtime_at_all, which
 # drives the real poll against a universe with a READY assignment and now
 # expects `legacy_control_tasks_parked`.
-
-
-# ------------------------------------------------ the app heal keys on the truth
-
-
-_NODE = shutil.which("node")
-
-

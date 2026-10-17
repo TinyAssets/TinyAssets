@@ -223,11 +223,11 @@ def test_host_cgroup_membership_and_rss_use_fake_sys_and_proc(tmp_path, monkeypa
 
 def test_workload_error_preserves_fixed_step_category() -> None:
     def fail():
-        raise box_preflight.WorkloadTrialError("cli_job")
+        raise box_preflight.WorkloadTrialError("node_tool_job")
 
     with pytest.raises(box_preflight.WorkloadTrialError) as raised:
         box_preflight.gate(fail)
-    assert raised.value.step == "cli_job"
+    assert raised.value.step == "node_tool_job"
 
 
 def test_harness_deadline_escapes_gate_for_outer_cleanup() -> None:
@@ -260,16 +260,16 @@ def test_g3_reserves_unused_daemon_allowance() -> None:
 
 
 @pytest.mark.parametrize(
-    ("cli_rc", "browser_rc", "failed_steps"),
+    ("node_rc", "browser_rc", "failed_steps"),
     [
         (0, 0, []),
-        (1, 0, ["cli_job"]),
+        (1, 0, ["node_tool_job"]),
         (0, 1, ["chromium_render"]),
-        (1, 1, ["cli_job", "chromium_render"]),
+        (1, 1, ["node_tool_job", "chromium_render"]),
     ],
 )
 def test_g3_fails_when_daemon_cap_reservation_consumes_host_headroom(
-    monkeypatch, tmp_path: Path, cli_rc: int, browser_rc: int, failed_steps: list[str]
+    monkeypatch, tmp_path: Path, node_rc: int, browser_rc: int, failed_steps: list[str]
 ) -> None:
     class Boxes:
         state = tmp_path
@@ -278,13 +278,13 @@ def test_g3_fails_when_daemon_cap_reservation_consumes_host_headroom(
             owner = tmp_path / name
             owner.mkdir()
             if name == "cap0":
-                (owner / "cli-ready").touch()
+                (owner / "node-ready").touch()
                 (owner / "render.png").write_bytes(b"image")
                 (owner / "tree.bin").touch()
             return 0.01, owner, owner
 
         def exec(self, *_args, **_kwargs):
-            return subprocess.CompletedProcess([], cli_rc if "--bundled" in _args else 0)
+            return subprocess.CompletedProcess([], node_rc if "--version" in _args else 0)
 
     class Process:
         returncode = 0

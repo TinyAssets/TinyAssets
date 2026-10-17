@@ -511,7 +511,7 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
         for _ in range(1024):
             output.write(chunk)
     try:
-        cli = boxes.exec(
+        node_version = boxes.exec(
             "cap0",
             "/usr/bin/node",
             "--version",
@@ -519,15 +519,15 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
             check=False,
         )
     except Exception as error:
-        raise WorkloadTrialError("cli_job") from error
-    (owners[0] / "cli.js").write_text(
+        raise WorkloadTrialError("node_tool_job") from error
+    (owners[0] / "node-tool.js").write_text(
         "const fs=require('fs');const p='/home/owner/';"
-        "fs.writeFileSync(p+'cli-ready','1');"
-        "const t=setInterval(()=>{if(fs.existsSync(p+'cli-stop')){"
+        "fs.writeFileSync(p+'node-ready','1');"
+        "const t=setInterval(()=>{if(fs.existsSync(p+'node-stop')){"
         "clearInterval(t);process.exit(0)}},100);\n"
     )
     try:
-        cli_process = subprocess.Popen(
+        node_process = subprocess.Popen(
             [
                 str(RUNSC),
                 "--root",
@@ -539,19 +539,19 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
                 "exec",
                 "cap0",
                 "/usr/bin/node",
-                "/home/owner/cli.js",
+                "/home/owner/node-tool.js",
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
         )
         deadline = time.monotonic() + 20
-        while not (owners[0] / "cli-ready").exists():
-            if cli_process.poll() is not None or time.monotonic() > deadline:
+        while not (owners[0] / "node-ready").exists():
+            if node_process.poll() is not None or time.monotonic() > deadline:
                 raise RuntimeError("Node tool process failed to start")
             time.sleep(0.1)
     except Exception as error:
-        raise WorkloadTrialError("cli_job") from error
+        raise WorkloadTrialError("node_tool_job") from error
     try:
         browser = chromium(boxes, "cap0", owners[0])
     except Exception as error:
@@ -575,8 +575,8 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
         except Exception as error:
             raise WorkloadTrialError("chromium_render") from error
     without_browser = pss_mib(cgroups[0])
-    (owners[0] / "cli-stop").touch()
-    cli_process.wait(timeout=20)
+    (owners[0] / "node-stop").touch()
+    node_process.wait(timeout=20)
     g3_result = {
         "boxes": 4,
         "owner_tree_bytes": (owners[0] / "tree.bin").stat().st_size,
@@ -606,13 +606,13 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
     except OSError as error:
         raise WorkloadTrialError("chromium_render") from error
     failed_steps = []
-    if cli.returncode or cli_process.returncode:
-        failed_steps.append("cli_job")
+    if node_version.returncode or node_process.returncode:
+        failed_steps.append("node_tool_job")
     if browser.returncode or not render_bytes:
         failed_steps.append("chromium_render")
     g6_result = {
-        "cli_exit": cli.returncode,
-        "node_process_exit": cli_process.returncode,
+        "node_version_exit": node_version.returncode,
+        "node_process_exit": node_process.returncode,
         "chromium_exit": browser.returncode,
         "render_bytes": render_bytes,
         "pass": not failed_steps,

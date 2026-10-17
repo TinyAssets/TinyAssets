@@ -34,5 +34,3 @@ def test_readiness_and_inventory_check_independent_http_members(configured, monk
     assert _serving_llm_bound(base, "u-models", "owner") is False
     assert list_serving_universes(base) == []
     assert _serving_llm_bound(base, "u-models", "another-owner") is False
-
-

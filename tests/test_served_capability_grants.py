@@ -68,5 +68,3 @@ def test_coordinator_passes_four_handles_and_full_backend_grant(monkeypatch):
     agent_turn_coordinator.AgentTurnCoordinator._open_tools(turn, 60)
     assert captured[0]["enabled_tools"] == subject.FOUR_MODEL_TOOLS
     assert captured[0]["capability_grant"] == subject.BACKEND_ENGINE_CAPABILITIES
-
-

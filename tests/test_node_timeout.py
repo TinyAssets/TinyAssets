@@ -439,5 +439,3 @@ def test_node_config_no_longer_buys_the_sync_wrapper_a_600s_budget():
 
     cfg = _bridge_config(300.0)
     assert _sync_call_timeout_s(cfg) == pytest.approx(330.0)
-
-
