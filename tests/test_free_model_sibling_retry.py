@@ -166,20 +166,7 @@ def test_sibling_retries_are_bounded_and_every_attempt_is_recorded(agent, monkey
 
 @pytest.mark.parametrize("kind,narrows", [("engine_inference", True)])
 def test_only_engine_inference_narrows_an_unproven_account_exhaustion(kind, narrows):
-    """A native executor runs on ONE subscription, so its account IS the source.
-
-    Its rate limit carries no capacity scope, so it observes as ``unknown``, and
-    narrowing would mean nothing for a source where the account IS the source:
-    unmetered-per-subscription is not free-per-model. Live proof this matters:
-    narrowing there replaced the account exclusion that was letting a mixed
-    universe fall through to its HTTP source, and two
-    ``test_mixed_agent_execution`` cases went red in CI.
-
-    The gate that stops it is ``execution_kind``, which describes the SOURCE, not
-    the owner's plan -- so this survives removing the price gate unchanged
-    (2026-09-25), and `test_one_path_for_every_account` pins that both kinds
-    behave the same way whatever the account pays.
-    """
+    """HTTP inference may narrow an unproven account exhaustion to one model."""
     from types import SimpleNamespace
 
     from tinyassets.agent_turn_coordinator import AgentTurnCoordinator

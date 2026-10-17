@@ -35,7 +35,8 @@ outbound connections at its socket seam.
 #### Scenario: Missing channel and direct egress fail
 - **WHEN** a model call has no broker channel, or an SDK or raw HTTP call attempts direct outbound access
 - **THEN** it fails without a direct provider or credential-store fallback
-- **AND** provider CLIs refuse until their broker-endpoint authentication exists
+- **AND** `api_key_http` is the only model access method; provider CLI executors and their connection actions are absent
+- **AND** users reconnect through the broker HTTP connection flow at cutover
 
 #### Scenario: An authenticated effector uses its grant
 - **WHEN** the owner invokes an authenticated external call

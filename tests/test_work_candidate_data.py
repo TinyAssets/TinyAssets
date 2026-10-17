@@ -119,14 +119,7 @@ def subscription_data():
 
 
 def test_a_graph_pin_the_advisory_order_omits_is_honoured_when_nothing_was_saved():
-    """A node naming an accepted native id must still run.
-
-    The advisory order for a subscription source is only its advertised default,
-    so once EVERY run began capturing an order (the fix for the free-account
-    run/chat divergence) a node pinning an accepted native model id was refused
-    for not appearing in a ranking that never contained it. CI shards 5/6 and
-    6/6 caught it: `test_native_model_execution` and
-    constraint conflicts with captured primary".
+    """An explicit graph pin may select any model in its admitted catalogue.
 
     The owner chose nothing, so the order ranks rather than decides, and the
     graph pin IS the explicit choice. The pin still comes from the plan's

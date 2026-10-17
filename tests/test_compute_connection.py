@@ -129,7 +129,7 @@ def test_api_key_http_registration_against_real_grant(base: Path) -> None:
     assert r["status"] == "registered"
     assert r["protocol"] == "openai_chat"
     guidance = " ".join(r["next"])
-    assert "supported api_key_http models" in guidance
+    assert "owned api_key_http models" in guidance
     assert "accepted model_access" in guidance
     assert "fresh tool-capable discovery" in guidance
     assert "enabled engine-tool execution" in guidance

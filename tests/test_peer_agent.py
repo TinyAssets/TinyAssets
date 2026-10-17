@@ -135,15 +135,6 @@ def test_read_only_codex_command_never_grants_git_metadata(monkeypatch) -> None:
 # provider failure, timeout, or non-launchable CLI SHALL produce a non-zero
 # exit and an explicit error marker rather than a silent empty result."
 #
-# That contract used to be covered by 11 tests against `scripts/codex_review.py`
-# in `tests/test_codex_dispatch.py`. The 2026-08-26 cut consolidated the two
-# dispatchers onto `peer_agent.py` and deleted those tests with the script,
-# leaving the surviving file testing only console flags and worktree
-# permissions -- so every fail-closed path could regress to silent success with
-# CI green. Found by cross-family review of PR #2561. Ported here against the
-# surviving implementation.
-
-
 class _FakeProc:
     """Stand-in for Popen: scripted returncode / output / timeout."""
 
