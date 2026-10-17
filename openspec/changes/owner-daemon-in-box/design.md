@@ -442,17 +442,15 @@ or explicitly regenerated. Anything else refuses the cutover. The `--archive` re
   pause after the move;
 - prove a restore of the paired backup returns today's layout.
 
-### D6 as built (slice 6; final acceptance incomplete)
+### D6 as built (slice 6; synthetic harness accepted)
 
 The lead's archive command is:
-`python scripts/rehearse_box_move.py --archive <absolute-archive.tar.gz> --image tinyassets-c6-rehearsal:s6-<head>`.
+`python scripts/rehearse_box_move.py --archive <absolute-tinyassets-data-YYYY-MM-DDTHH-MM-SSZ.tar.gz> --image tinyassets-c6-rehearsal:s6-<head>`.
 The archive must retain the `tinyassets-data-YYYY-MM-DDTHH-MM-SSZ.tar.gz`
 filename. The image must already be built from the checked-out head. Every
 container runs without a network. Development uses generated archives only.
-This harness implementation is not yet accepted: its root end-to-end run
-currently fails at crash injection. Serving, reconnect confirmation and the
-second restore have not been reached. The lead must wait for the synthetic
-root run to pass before using the archive command; see the audit handoff.
+The synthetic root end-to-end run passes every step, including both crash
+boundaries, reconnect confirmation, the post-write restore and report privacy.
 The harness creates disposable Docker volumes and a real XFS loop mount with
 project quotas. It calls deploy's `box_migration_container` directly through
 the script's explicit disposable runner, sharing caps, mounts, tmpfs and memory
@@ -462,18 +460,33 @@ final owner-daemon marker; the extra verify command reads that sealed output.
 
 An uninterrupted generation establishes manifests, then the real paired
 restore returns to owner-split and GNU tar compares against the original input.
-The next apply is killed between owner trees, resumed and killed after shared
-seeding, then resumed to the same shared and owner manifests. Serving starts the
-real owner lifecycle manager, apps, router forwarding and broker server with
+Two independent restored generations crash at `after_owner_tree:1` and
+`after_seeding`. Each resumes to the uninterrupted shared and owner manifests.
+The test-only `CUTOVER_CRASH_AT` hook calls `os._exit(137)` inside apply; the
+former self-SIGKILL was ignored because Python was namespace PID 1. Deploy
+and restore entry points refuse the variable before host actions and override
+image defaults with an empty value. Only the explicit disposable runner can
+forward it, after checking the generated volume family and mountpoints.
+Serving starts the real owner lifecycle manager, apps, router and broker with
 kernel UID peers. This process venue uses private mount namespaces and the
 fixed owner mount; gVisor isolation remains separate acceptance. Every admitted
 center reads history and pending requests, pauses/resumes, reads its broker plan
 and writes history. Reconnect confirmation uses the real shared model-connect
-door and model-use reconciliation on a disposable clone: a new connection
-changes shared custody authority, which the paired restore must continue to
-fence. The original serving generation is then paired-restored with explicit
-owner-write-loss acceptance and compared again. Reports expose only fixed step
-names, numeric counts and PASS/FAIL.
+door and model-use reconciliation on a disposable shared-store clone: a new
+connection changes shared custody authority, which the paired restore must continue to
+fence. Reconnect owner writes remain on the migrated XFS trees. The original
+serving generation is then paired-restored with explicit owner-write-loss
+acceptance and compared again. Reports expose only fixed step
+names, numeric counts and PASS/FAIL, one line per reached step:
+`<step> PASS [<counter>=<nonnegative integer> ...]` or `<step> FAIL`.
+The ten steps are setup, preflight, census, apply, verify,
+restore_before_write, crash_resume, serving, restore_after_write and cleanup.
+The synthetic run records 2 owners, 4 centers, 27 census rows, 3 manifests,
+2 interruptions and 2 resume comparisons; serving records 4 history reads,
+4 history turns, 4 pending reads, 4 saved requests, 8 controls, 8 plan reads,
+4 verified writes and 2 reconnect confirmations. Both restores record one
+byte comparison. Tests scan stdout and the report for identifiers, paths and
+content, enforce numeric counters, and check the redacted failure report.
 
 Synthetic proof venue:
 `python scripts/linux_oracle.py --as-root --docker-engine -- -q --no-header -p no:cacheprovider tests/test_box_move_rehearsal.py`.
@@ -481,7 +494,17 @@ The Docker-engine opt-in is root-only and leaves ordinary oracle invocations
 without an engine socket. Task 6 remains open for the lead's archive run and
 the remaining acceptance, regardless of synthetic results.
 
-`box_layout_migration` is the sole cutover module. Census reports six classes:
+`box_layout_migration` is the sole cutover module.
+Host admission reads deletion tombstones from the canonical broker custody
+database (`deleted_principals.digest`); it must not reopen the retired shared
+owner table. Missing custody state still refuses admission and destruction.
+Seeding creates the broker-owned credential directory even when no HTTP
+credentials survive, so a source-free owner can reconnect after cutover.
+Provider definitions remain private owner files (0600); registration already
+publishes the credential-free descriptor through the broker channel. An owner
+process never changes a definition file to the retired broker-reader group.
+
+The census reports six classes:
 owner, router, broker, published, dropped and regenerated, with per-table totals,
 per-owner counts and report-local account labels. Policy account paths are also
 pseudonymous. The broker admission map is authoritative; creation/home bindings

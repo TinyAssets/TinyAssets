@@ -7,6 +7,7 @@ use private mount namespaces, the fixed owner mount and their assigned UIDs.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import subprocess
@@ -122,6 +123,7 @@ def broker(directory):
         fence=Fence(
             run / "fence.json",
             verify_lease_proof=lambda _, proof: proof == "synthetic-rehearsal-proof" * 2,
+            lease_sha256=hashlib.sha256(("synthetic-rehearsal-proof" * 2).encode()).hexdigest(),
         ),
         roles={0: BOX_HOST, 1001: "owner"},
         owner_identities=identities,
@@ -174,11 +176,9 @@ def smoke(confirm=False):
 
     from tinyassets.auth.middleware import identity_context
     from tinyassets.auth.provider import Identity
+    from tinyassets.boxes.admission import OwnerRegistry
     from tinyassets.boxes.owner_daemons import OwnerDaemons
     from tinyassets.boxes.relay import OwnerRelays
-    from tinyassets.broker.box_admission import owner_record
-    from tinyassets.broker.owner_identities import OwnerIdentities
-    from tinyassets.broker.owner_reads import Plans
     from tinyassets.owner_router import BoxRoute, OwnerRouter
 
     os.environ["TINYASSETS_DATA_DIR"] = "/data"
@@ -186,7 +186,8 @@ def smoke(confirm=False):
     os.environ["UNIVERSE_SERVER_URL"] = "https://rehearsal.invalid/mcp"
     journal = json.loads(Path("/data/.owner-cutover.json").read_text())
     counts = dict.fromkeys(
-        ("owners", "centers", "history", "pending", "controls", "plans", "writes", "reconnect"), 0
+        ("owners", "centers", "history", "history_turns", "pending", "pending_saved",
+         "controls", "plans", "writes", "reconnect"), 0
     )
     Path("/home/owner").mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="/tmp/s6-") as directory:
@@ -246,13 +247,8 @@ def smoke(confirm=False):
             if process.poll() is not None:
                 raise RuntimeError("broker failed")
             time.sleep(0.05)
-        identities = OwnerIdentities(
-            Path("/data/.broker/state/owner-identities.db"), plans=Plans("/data")
-        )
-        relays = OwnerRelays(run / "relay", SimpleNamespace(broker_socket=state / "broker.sock"))
-        admission = SimpleNamespace(
-            owner=lambda name, rotate=False: owner_record(identities, name, rotate=rotate)
-        )
+        admission = OwnerRegistry(Path("/data"), state / "broker.sock")
+        relays = OwnerRelays(run / "relay", admission)
 
         # Migration already provisioned and verified every quota. The lifecycle
         # read checks that exact record instead of creating a second box tree.
@@ -261,6 +257,7 @@ def smoke(confirm=False):
 
             verify_owner(Path("/box-store"), Path("/box-store") / str(uid), uid, quota)
 
+        (run / "apps").mkdir(mode=0o755)
         manager = OwnerDaemons(
             runtime,
             admission,
@@ -322,9 +319,13 @@ def smoke(confirm=False):
                             if (
                                 response.status_code != 200
                                 or "recent_conversation" not in response.json()
+                                or "error" in response.json()["recent_conversation"]
                             ):
                                 raise RuntimeError("history failed")
                             counts["history"] += 1
+                            counts["history_turns"] += response.json()["recent_conversation"][
+                                "turn_count"
+                            ]
                             response = client.post(
                                 "/app/api/read",
                                 json={"target": "pending_requests", "graph_id": center},
@@ -333,6 +334,9 @@ def smoke(confirm=False):
                                 raise RuntimeError("pending failed")
                             counts["pending"] += 1
                             entries = response.json()["pending"]
+                            counts["pending_saved"] += sum(
+                                not row["request_id"].startswith("sys_") for row in entries
+                            )
                             for row in entries:
                                 if (
                                     row.get("request_id") == "sys_connect_model"
@@ -349,6 +353,9 @@ def smoke(confirm=False):
                                 if (
                                     response.status_code != 200
                                     or "error" in result["control"]
+                                    or result["control"]["status"] != (
+                                        "signal_written" if action == "pause" else "resumed"
+                                    )
                                     or result["plan"]["tier"] not in {"paid", "free"}
                                 ):
                                     raise RuntimeError("control failed")
@@ -359,6 +366,15 @@ def smoke(confirm=False):
                             )
                             if response.status_code != 200 or response.json() != {"written": 1}:
                                 raise RuntimeError("write failed")
+                            readback = client.post(
+                                "/app/api/status",
+                                json={"universe_id": center, "include_conversation": True},
+                            )
+                            if (readback.status_code != 200 or not any(
+                                row["text"] == "rehearsal write" for row in readback.json().get(
+                                    "recent_conversation", {}).get("turns", [])
+                            )):
+                                raise RuntimeError("serving write readback failed")
                             counts["writes"] += 1
                             counts["centers"] += 1
                         counts["owners"] += 1
@@ -372,7 +388,9 @@ def smoke(confirm=False):
                                 raise RuntimeError("model use confirmation failed")
                             with httpx.Client(
                                 transport=httpx.HTTPTransport(uds=str(run / "door.sock")),
-                                base_url="https://rehearsal.invalid",
+                                # Like the tunnel hop, the local Unix transport
+                                # is HTTP; the public Origin remains HTTPS.
+                                base_url="http://rehearsal.invalid",
                                 headers={
                                     "origin": "https://rehearsal.invalid",
                                     "x-rehearsal-owner": name,
@@ -398,6 +416,8 @@ def smoke(confirm=False):
                                     },
                                 )
                             if deposited.status_code != 200 or "error" in deposited.json():
+                                sys.stderr.write(f"door status={deposited.status_code} "
+                                                 f"response={deposited.text}\n")
                                 raise RuntimeError("shared model connect failed")
                             # This rail read reconciles the explicitly confirmed
                             # request through the real model-use capability writer.
@@ -412,8 +432,17 @@ def smoke(confirm=False):
                             if reconciled.status_code != 200 or connected.json() != {
                                 "connected": True
                             }:
+                                sys.stderr.write(f"reconciliation={reconciled.text}\n"
+                                                 f"serving={connected.text}\n")
                                 raise RuntimeError("confirmed source did not become serving")
                             counts["reconnect"] += 1
+        except BaseException:
+            # Captured by the parent harness, never included in its report.
+            # Synthetic tests retain this evidence when a child fails startup.
+            for stream in logs:
+                stream.seek(0)
+                sys.stderr.write(stream.read().decode(errors="replace"))
+            raise
         finally:
             for child in children:
                 if child.poll() is None:
@@ -424,14 +453,11 @@ def smoke(confirm=False):
                 stream.close()
         if not confirm:
             # Connecting a source changes shared authority. Exercise that gesture
-            # on a disposable clone so paired restore still proves the original
-            # shared-state fence, without surrendering billing or custody writes.
+            # on a disposable shared-store clone so paired restore still proves
+            # the original authority fence. Owner writes stay on the migrated
+            # XFS trees and are covered by explicit owner-write-loss acceptance.
             with tempfile.TemporaryDirectory(prefix="/tmp/s6-connect-") as clone:
-                for original, copied in (
-                    ("/data", clone + "/data"),
-                    ("/box-store", clone + "/store"),
-                ):
-                    subprocess.run(["cp", "-a", original, copied], check=True)
+                subprocess.run(["cp", "-a", "/data", clone + "/data"], check=True)
                 result = subprocess.run(
                     [
                         "unshare",
@@ -447,14 +473,14 @@ def smoke(confirm=False):
                     text=True,
                 )
                 if result.returncode:
+                    sys.stderr.write(result.stderr)
                     raise RuntimeError("reconnect failed")
                 counts["reconnect"] = json.loads(result.stdout)["reconnect"]
         print(json.dumps(counts))
 
 
 def reconnect(clone):
-    for source, target in ((clone + "/data", "/data"), (clone + "/store", "/box-store")):
-        subprocess.run(["mount", "--bind", source, target], check=True)
+    subprocess.run(["mount", "--bind", clone + "/data", "/data"], check=True)
     smoke(confirm=True)
 
 

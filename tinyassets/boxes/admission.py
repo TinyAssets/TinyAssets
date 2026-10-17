@@ -6,6 +6,7 @@ import hashlib
 import socket
 import sqlite3
 import struct
+from contextlib import closing
 from pathlib import Path
 
 from tinyassets import rpc_frames as rf
@@ -76,9 +77,11 @@ class OwnerRegistry:
     def tombstoned(self, owner: str) -> bool:
         # Only this fixed platform table is read on the host. Inability to read
         # it is an error, never an empty tombstone set or permission to erase.
-        path = self.data_root / ".tinyassets.db"
-        with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as db:
-            return db.execute("SELECT 1 FROM deleted_principals WHERE founder_sub=?",
+        from tinyassets.credential_vault import custody_metadata_path
+
+        path = custody_metadata_path(self.data_root)
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+            return db.execute("SELECT 1 FROM deleted_principals WHERE digest=?",
                               (hashlib.sha256(owner.strip().encode()).hexdigest(),)).fetchone() \
                 is not None
 

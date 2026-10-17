@@ -1584,6 +1584,9 @@ def _seed_shared(data: Path, shared: Path, inventory: dict, report: dict, plan) 
                            (row["token_hash"], owner))
     # HTTP custody is already in its final directory. Stage a filtered document
     # there; subscription records are counted drops, never copied into custody.
+    # A source-free archive still needs the broker's writable custody parent;
+    # the broker cannot create it under the daemon-owned platform directory.
+    (shared / ".platform/credential-vaults").mkdir(parents=True, exist_ok=True)
     vaults = data / ".platform/credential-vaults"
     if vaults.is_dir():
         for source in vaults.rglob("*"):
@@ -1651,6 +1654,12 @@ def _remove_tree(path: Path, root: Path) -> None:
         shutil.rmtree(path)
 
 
+def _crash_at(boundary: str) -> None:
+    """Synthetic rehearsal only; the deploy runner explicitly clears this input."""
+    if os.environ.get("CUTOVER_CRASH_AT") == boundary:
+        os._exit(137)
+
+
 def _build_cutover(data: Path, store: Path, journal: dict) -> None:
     inventory = {}
     report = census(data, _inventory=inventory, _source_marker=journal["source_marker"])
@@ -1660,7 +1669,7 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
     shared = store / ".cutover-shared"
     _remove_tree(shared, store)
     shared.mkdir(mode=0o700)
-    for owner in plan:
+    for index, owner in enumerate(plan, 1):
         tree = store / str(owner.uid)
         tree.mkdir(mode=0o700, exist_ok=True)
         _xfs_quota(store, f"project -s -p {tree} {owner.uid}")
@@ -1673,6 +1682,7 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
                     target = tree / relative
                     target.mkdir(parents=True, exist_ok=True)
                     _copy(source, target, owner.uid)
+        _crash_at(f"after_owner_tree:{index}")
     for relative, target in inventory["file_targets"].items():
         if isinstance(target, tuple):
             parts = PurePosixPath(relative).parts
@@ -1703,6 +1713,7 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
                     destination.unlink()
     _build_databases(data, store, shared, inventory)
     _seed_shared(data, shared, inventory, report, plan)
+    _crash_at("after_seeding")
     from tinyassets.boxes.layout import BROKER_READ_GID, BROKER_UID, DAEMON_UID
 
     owner_manifests = {}

@@ -162,14 +162,13 @@ class Venue:
             BOX_ARCHIVE,
         )
 
-    def migration(self, mode, *, interrupt="", first_uid=0):
+    def migration(self, mode, *, interrupt=""):
         bash = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash")
         if not bash:
             raise RuntimeError("shell unavailable")
         env = {
             **os.environ,
-            "BOX_REHEARSAL_INTERRUPT": interrupt,
-            "BOX_REHEARSAL_FIRST_UID": str(first_uid),
+            "CUTOVER_CRASH_AT": interrupt,
             "MSYS_NO_PATHCONV": "1",
             "MSYS2_ARG_CONV_EXCL": "*",
         }
@@ -397,17 +396,21 @@ def archive_rehearsal(image, archive, *, store_bytes):
         )
         if len(plan) < 2:
             raise RuntimeError("two owners required for tree interruption")
-        for boundary in ("trees", "seed"):
-            result = venue.migration("apply", interrupt=boundary, first_uid=plan[0])
+        for boundary in ("after_owner_tree:1", "after_seeding"):
+            result = venue.migration("apply", interrupt=boundary)
             if result.returncode != 137:
                 raise RuntimeError(
                     f"interruption did not fire boundary={boundary} rc={result.returncode}"
                 )
-        required(venue.migration("apply"))
-        required(venue.migration("verify"))
-        if venue.manifests() != baseline:
-            raise RuntimeError("resumed manifests differ")
-        passed(step, interruptions=2, comparisons=1)
+            required(venue.migration("apply"))
+            required(venue.migration("verify"))
+            if venue.manifests() != baseline:
+                raise RuntimeError("resumed manifests differ")
+            if boundary == "after_owner_tree:1":
+                venue.restore(False)
+                required(venue.migration("preflight"))
+                required(venue.migration("census"))
+        passed(step, interruptions=2, comparisons=2)
         step = "serving"
         result = venue.container(
             "--rm",
@@ -433,7 +436,9 @@ def archive_rehearsal(image, archive, *, store_bytes):
             "owners",
             "centers",
             "history",
+            "history_turns",
             "pending",
+            "pending_saved",
             "controls",
             "plans",
             "writes",
@@ -458,9 +463,10 @@ def archive_rehearsal(image, archive, *, store_bytes):
         try:
             venue.close()
         except BaseException:
+            report["cleanup"] = {"status": "FAIL"}
             print("cleanup FAIL", flush=True)
             raise
-    passed("cleanup")
+        passed("cleanup")
     return report
 
 

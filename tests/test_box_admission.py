@@ -42,16 +42,26 @@ def test_broker_admission_requires_permanent_mapping_live_center_and_migrated_qu
 
 
 def test_tombstone_is_required_for_destroy_and_checked_again_after_binding(tmp_path, monkeypatch):
+    from tinyassets.credential_vault import custody_metadata_path
+
     admission = OwnerRegistry(tmp_path, tmp_path / "broker.sock")
     monkeypatch.setattr(admission, "record", lambda *args: {"uid": 300001})
-    with pytest.raises(sqlite3.Error):
-        admission.grant("alice", "a", "session")
+    # A retired shared table must neither substitute for missing custody state
+    # nor overrule the canonical broker tombstone below.
     with sqlite3.connect(tmp_path / ".tinyassets.db") as db:
         db.execute("CREATE TABLE deleted_principals (founder_sub TEXT)")
+        db.execute("INSERT INTO deleted_principals VALUES (?)",
+                   (hashlib.sha256(b"alice").hexdigest(),))
+    with pytest.raises(sqlite3.Error):
+        admission.grant("alice", "a", "session")
+    path = custody_metadata_path(tmp_path)
+    path.parent.mkdir()
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE deleted_principals (digest TEXT PRIMARY KEY)")
     grant = admission.grant("alice", "a", "session")
     with pytest.raises(BoxAuthError):
         admission.grant("alice", "a", "delete", destroying=True)
-    with sqlite3.connect(tmp_path / ".tinyassets.db") as db:
+    with sqlite3.connect(path) as db:
         db.execute("INSERT INTO deleted_principals VALUES (?)",
                    (hashlib.sha256(b"alice").hexdigest(),))
     with pytest.raises(BoxAuthError):

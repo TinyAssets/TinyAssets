@@ -151,37 +151,43 @@ box_migration_container() {  # $1 = check|preflight|apply, then module arguments
       extra+=(--mount type=bind,src=${BOX_MIGRATION_STORE:-/var/lib/boxhostd/owners},dst=/box-store,readonly)
     fi
   fi
-  local entry=(-m tinyassets.box_layout_migration)
-  if [ -n "${BOX_REHEARSAL_INTERRUPT:-}" ] && [ "$1" = apply ]; then
-    entry=(-c 'import importlib,os,sys,signal
-boundary=sys.argv.pop(1)
-migration=importlib.import_module("tinyassets.box_layout_migration")
-def trace(frame,event,arg):
- if ((boundary=="seed" and event=="return" and frame.f_code is migration._seed_shared.__code__) or
-     (boundary=="trees" and event=="call" and frame.f_code is migration._copy.__code__ and
-      frame.f_locals["uid"]!=int(os.environ["BOX_REHEARSAL_FIRST_UID"]))):
-  os.kill(os.getpid(),signal.SIGKILL)
-sys.setprofile(trace)
-raise SystemExit(migration.main())' "$BOX_REHEARSAL_INTERRUPT")
-    extra+=(-e "BOX_REHEARSAL_FIRST_UID=${BOX_REHEARSAL_FIRST_UID}")
+  # Override even an image-baked ENV. Only the explicit disposable entry point
+  # can forward a fault; ordinary deployment refuses it before any host action.
+  local crash=""
+  if [ "${BOX_MIGRATION_DISPOSABLE:-0}" = 1 ] && [ "$1" = apply ]; then
+    crash="${CUTOVER_CRASH_AT:-}"
   fi
+  extra+=(-e "CUTOVER_CRASH_AT=$crash")
   timeout "${MIGRATION_TIMEOUT:-1800}" docker run --rm --cap-drop ALL ${posture[@]+"${posture[@]}"} \
     --security-opt no-new-privileges=true --network none --memory=2g --memory-swap=2g \
     --tmpfs /tmp:rw,size=512m,mode=1777 \
     -v "$data_mount" ${extra[@]+"${extra[@]}"} \
-    --entrypoint python "$NEW_IMAGE" -B "${entry[@]}" "$@"
+    --entrypoint python "$NEW_IMAGE" -B -m tinyassets.box_layout_migration "$@"
 }
 if [ "${1:-}" = --box-migration-container ]; then
   [ "$#" -ge 7 ] || exit 2
   BOX_MIGRATION_DISPOSABLE=1
   BOX_MIGRATION_DATA="$2" BOX_MIGRATION_STORE="$3" BOX_MIGRATION_DEVICE="$4"
   MIGRATION_BACKUP_DIR="$5" NEW_IMAGE="$6"
+  if [ -n "${CUTOVER_CRASH_AT:-}" ]; then
+    # Faults are admitted only for the harness's generated volume family,
+    # never arbitrary host paths supplied to this shared runner.
+    if ! [[ "$BOX_MIGRATION_DATA" =~ ^ta-s6-[0-9a-f]{12}-data$ ]] ||
+       [ "$BOX_MIGRATION_STORE" != "$(docker volume inspect --format '{{ .Mountpoint }}' "${BOX_MIGRATION_DATA%-data}-store")" ] ||
+       [ "$MIGRATION_BACKUP_DIR" != "$(docker volume inspect --format '{{ .Mountpoint }}' "${BOX_MIGRATION_DATA%-data}-backup")" ]; then
+      echo 'rehearsal fault requires disposable volumes' >&2
+      exit 1
+    fi
+  fi
   shift 6
   box_migration_container "$@"
   exit $?
 fi
+if [ -n "${CUTOVER_CRASH_AT:-}" ]; then
+  echo 'deploy refused: rehearsal fault injection is forbidden' >&2
+  exit 1
+fi
 unset BOX_MIGRATION_DISPOSABLE BOX_MIGRATION_DATA BOX_MIGRATION_STORE BOX_MIGRATION_DEVICE
-unset BOX_REHEARSAL_INTERRUPT BOX_REHEARSAL_FIRST_UID
 # Freshness of the pre-move snapshot is measured from this process, not from
 # an earlier repair. A backup whose name is older than this epoch is not proof.
 DEPLOY_STARTED_EPOCH="${DEPLOY_STARTED_EPOCH:-$(date +%s)}"
