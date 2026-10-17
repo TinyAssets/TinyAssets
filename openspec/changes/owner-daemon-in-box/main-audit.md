@@ -4,7 +4,7 @@
 
 This pass starts at `01331dd575f` on the single cutover branch. No production
 tree, data, backup or service was accessed; all fixtures are synthetic. No
-delegation, Git configuration edit, branch change, push, merge, rebase, amend
+delegation, host Git configuration edit, branch change, push, merge, rebase, amend
 or workflow execution occurred. The independent review remains one later round.
 
 ### Migration account-type API
@@ -29,6 +29,13 @@ five-failure account-type limitation is superseded by this combined branch.
 | Broker outbound dispatch through `resolve_inference_usage` / `claim_reference` | Consumes the already-issued private reference; it does not call `_validate_source` or read owner definitions. Retries remain on that same broker record. |
 | Direct `_validate_source` calls in synthetic tests | Broker-local fixtures now inject their ledger and publish descriptors. Changed/outage/fence tests use actual accounting IPC. There is no production owner-local caller of this helper. |
 | Router | Forwards owner model work; no router handler invokes source validation. Router connection operations publish shared descriptors without opening owner definition files. |
+
+Clean production box leases are minted with `box_` by broker `_usage_lease`;
+normal owner calls therefore need no non-box branch. Old same-UID fixtures
+created `proc_` rows over the shared OWNER protocol, and direct helper tests
+without an accounting connection also selected the fallback. Both cases put
+the file reader in broker-side accounting code, never an owner-local module.
+The obsolete shared compatibility path is deleted rather than rehomed.
 
 All accounting rows now validate against `broker.owner_sources.read` and the
 live grant, regardless of liveness-token prefix. The source check no longer
@@ -77,6 +84,35 @@ comparisons, serving, reconnect and both restores remain required.
 
 Validation receipts and selections are outside the repository at
 `C:/Users/Jonathan/AppData/Local/Temp/c6-final-items-validation/`.
+
+Completed validation at the implementation commit:
+- The first 171-file broad snapshot recorded **2,890 passed, 50 failed,
+  nine fixture errors and 36 existing venue skips**. Its 26 API-provider and
+  21 usage-store failures are fixed fixture ports, retaining every assertion;
+  the nine descriptor cases needed their imported discovery/broker fixtures
+  registered. The remaining three failures require actual root control peers.
+  All failures/errors and all 36 skipped cases have passing receipts below;
+  `coverage.json` reconciles **4,298 distinct cases, zero unresolved cases**.
+  No skip is credited as a pass.
+- Required root selection: **152 passed, zero failed, zero skipped**.
+- Required root Docker-engine archive rehearsal: **6 passed, zero failed,
+  zero skipped**. All ten steps, both crash comparisons, serving, reconnect
+  and both paired restores passed.
+- All **35 structural guard files: 961 passed, zero failed, zero skipped**.
+- All **34 affected heavy files: 1,358 passed, zero failed, zero skipped**.
+  Deleting the old broker reader makes the conservative selector choose ALL;
+  every heavy file was therefore executed.
+- Additional root quota, entrypoint and backup files: **17 passed, zero
+  failed, zero skipped**.
+- Final accounting/descriptor selection: **102 passed, zero failed, zero
+  skipped**. API-provider selection: **35 passed, zero failed, zero skipped**.
+- Ruff passes all **12 touched surviving Python files**; `check_shapes.py`
+  and whitespace checks pass with all probes intact.
+- Post-commit hygiene against `conv/c6-owner-daemon-s3c` exits **0**. Its
+  external body has `Registry row(s): S8`, the comprehensive
+  `Test-Removal: retired --` rationale and all **190 retired names in 32 files**
+  across slices 4-6b and this reconciliation. It finds **196 added tests**,
+  no reduced assertion counts in retained tests. This pass adds no skip/xfail.
 
 ## Merge 6a into 6b (2026-10-17)
 
