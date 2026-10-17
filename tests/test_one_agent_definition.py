@@ -1,17 +1,4 @@
-"""One agent definition, every provider (founder rule 2026-10-06).
-
-For every registered provider kind, render the ONE definition through that
-kind's real launch code and compare what the model would see -- tools with
-their schemas, instructions, capabilities -- with the definition itself. A
-kind that cannot run an agent must be refused for agent turns, never run one
-with less. Provider-specific translation (flags, MCP config, app-server
-protocol, model catalog, wire envelope) is allowed; a difference in what the
-agent can do is not.
-
-The rendered launch is the adapter's own; the real CLIs' request captures
-(``scripts/native_cli_payload.py``, ``scripts/codex_cli_smoke.py``) are the
-evidence that each CLI then sends exactly that.
-"""
+"""Every registered HTTP dialect renders the same agent definition."""
 
 from __future__ import annotations
 

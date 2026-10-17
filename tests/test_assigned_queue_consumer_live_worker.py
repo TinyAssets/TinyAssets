@@ -60,6 +60,7 @@ def test_flag_on_poll_publishes_the_beat_but_registers_no_fleet_worker(
     """The beat is what the watchdog reads, so it always goes out. The fleet-era
     runtime row and queue descriptor retired with the legacy pump (plan C1):
     the consumer no longer advertises itself as a fleet worker."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     _seed_serving_assignment(tmp_path)
     # The epoch-2 queue store exists on every served daemon; its claim pass
     # reads it until plan C3 retires that pass.

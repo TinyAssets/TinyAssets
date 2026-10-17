@@ -728,7 +728,6 @@ def test_a_token_LIMIT_error_is_not_reported_as_an_expired_credential():
     "status 401",
     "oauth error: invalid_grant",
     "token expired; please reauthenticate",
-    "credential file auth.json is unreadable",
     # Codex 0.146 and Claude 2.1, verbatim (Codex, review round 3, V2).
     "Your access token could not be refreshed. Please log out and sign in again.",
     "Not logged in \u00b7 Please run /login",

@@ -859,8 +859,6 @@ async def _handle_voice_status(request: Any) -> Any:
 
 
 _TRACE_STEPS = frozenset({
-    "openai.listener", "openai.browser", "openai.callback", "openai.deeplink",
-    "openai.complete", "openai.exchange", "openai.finish",
     "voice_output_mismatch",
 })
 _TRACE_BUCKET_MAX = 60          # lines per identity per window

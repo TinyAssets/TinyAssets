@@ -1040,7 +1040,7 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
             "provider_unavailable",
             _no_provider_advice(),
         )
-    if "call failed" in msg or "groq" in msg or "gemini" in msg or "grok" in msg:
+    if "call failed" in msg:
         return (
             "provider_error",
             "Provider returned an unexpected error; check provider logs"
