@@ -32,11 +32,11 @@ _SHARED_APP_PREFIXES = ("/app/billing/", "/app/run/", "/app/m/", "/app/model-cal
 
 
 def hook_token(path: str) -> str | None:
-    for prefix in ("/hooks/inbound/", "/mcp/hooks/"):
-        if path.startswith(prefix):
-            token = path[len(prefix):]
-            if token and "/" not in token:
-                return token
+    prefix = "/hooks/inbound/"
+    if path.startswith(prefix):
+        token = path[len(prefix):]
+        if token and "/" not in token:
+            return token
     return None
 
 
@@ -45,7 +45,7 @@ def forwarded_path(path: str) -> bool:
     if path.startswith("/app/"):
         return path not in _SHARED_APP and not path.startswith(_SHARED_APP_PREFIXES)
     return (path in {"/mcp", "/mcp/", "/mcp/events", "/api"}
-            or path.startswith(("/api/", "/hooks/inbound/", "/mcp/hooks/")))
+            or path.startswith(("/api/", "/hooks/inbound/")))
 
 
 @dataclass(frozen=True)

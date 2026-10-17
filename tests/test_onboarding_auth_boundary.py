@@ -392,16 +392,16 @@ def _drive_h(path: str, method: str = "POST", headers: dict | None = None) -> in
 
 
 def test_hook_route_ignores_foreign_bearer(require_auth_provider, monkeypatch):
-    """A generic channel POSTing to /mcp/hooks/<token> with its OWN Authorization:
+    """A generic channel POSTing to /hooks/inbound/<token> with its OWN Authorization:
     Bearer must NOT be 401'd by the MCP challenge — the unguessable URL token +
     author-gated handler are the boundary (Codex inbound review). Without the
     carve-out an invalid bearer returned 401 before the hook handler ran."""
     tok = "a" * 43
     monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "1")
     # foreign bearer + valid hook path -> reaches the downstream app (200)
-    assert _drive_h("/mcp/hooks/" + tok, headers={"Authorization": "Bearer foreign.xyz"}) == 200
+    assert _drive_h("/hooks/inbound/" + tok, headers={"Authorization": "Bearer foreign.xyz"}) == 200
     # the same foreign bearer on the MCP endpoint is still challenged (401)
     assert _drive_h("/mcp", headers={"Authorization": "Bearer foreign.xyz"}) == 401
     # inbound OFF -> no carve-out, the hook path with a foreign bearer is 401'd
     monkeypatch.delenv("TINYASSETS_INBOUND_ENABLED", raising=False)
-    assert _drive_h("/mcp/hooks/" + tok, headers={"Authorization": "Bearer foreign.xyz"}) == 401
+    assert _drive_h("/hooks/inbound/" + tok, headers={"Authorization": "Bearer foreign.xyz"}) == 401

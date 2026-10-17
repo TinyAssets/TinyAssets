@@ -29,7 +29,7 @@ Reserved placeholder names: **`{secret}`** (exactly one segment) and
 **It must be the template's ONLY placeholder** (added by self-review after
 review round 2). A capability URL is a fixed path plus a secret, which is
 exactly what all four real shapes are — `/services/{secret+}`,
-`/api/webhooks/{secret+}`, `/hooks/catch/{secret+}`, `/mcp/hooks/{secret}` — so
+`/api/webhooks/{secret+}`, `/hooks/catch/{secret+}`, `/hooks/inbound/{secret}` — so
 the restriction costs nothing real and buys two things. It removes the shape
 review round 1's FINDING 3 attacked, making the positioned substituter defence
 in depth rather than the only line. And it makes the pasted-link parser
@@ -46,13 +46,13 @@ correct answer is wrong is the failure this change exists to stop.
 - **injects** the pattern `re.escape("{secret}")` (or `re.escape("{secret+}")`).
 
 That injected pattern is the whole security argument. The stored allowlist
-entry for `/mcp/hooks/{secret}` matches **only** the concrete path
-`/mcp/hooks/{secret}` — the literal token. So:
+entry for `/hooks/inbound/{secret}` matches **only** the concrete path
+`/hooks/inbound/{secret}` — the literal token. So:
 
 ```
-node packet path   /mcp/hooks/{secret}            -> matches, substituted
-node packet path   /mcp/hooks/<a-real-secret>      -> REFUSED by the allowlist
-node packet path   /mcp/hooks/../../admin          -> REFUSED (upstream + allowlist)
+node packet path   /hooks/inbound/{secret}            -> matches, substituted
+node packet path   /hooks/inbound/<a-real-secret>      -> REFUSED by the allowlist
+node packet path   /hooks/inbound/../../admin          -> REFUSED (upstream + allowlist)
 ```
 
 **Order at call time** (`_SsrfHardenedHttpDriver.__call__`):
@@ -110,7 +110,7 @@ because a capability secret shorter than that is not one; maximum 512 is
 - **a bare segment.** Validated against D3 and stored as-is.
 
 A refusal **never echoes the pasted value** — it echoes the *template* the ask
-declared (`expected POST https://tinyassets.io/mcp/hooks/{secret}`). Two
+declared (`expected POST https://tinyassets.io/hooks/inbound/{secret}`). Two
 candidate endpoints that both match is also a refusal: which one holds the
 secret would be a guess.
 
@@ -205,13 +205,13 @@ So the only additive work is: put the segment in the bundle (so declassify and
 outbound/deposit files where the seam already has a home.
 
 1. **Ask validates.** `connect_http` with `auth_scheme: url_secret`,
-   `path_template: /mcp/hooks/{secret}`, one `capability_url` secret field →
+   `path_template: /hooks/inbound/{secret}`, one `capability_url` secret field →
    pending row, grant sentence renders the template.
 2. **Accept stores the segment.** Answer with the full pasted link → the vault
    holds **only** the segment; `allowed_endpoints_json` holds `{secret}`; the
    projected view and the grant sentence hold no part of the secret.
 3. **Wire.** An injected HTTP-layer transport records the URL actually sent:
-   `https://host/mcp/hooks/<segment>`. Mutation check: break the substitution
+   `https://host/hooks/inbound/<segment>`. Mutation check: break the substitution
    and this test must fail.
 4. **Redaction.** One table over every channel in D7 asserting the segment is
    absent — success path and failure path (a far-side 500 with the URL in its

@@ -36,6 +36,30 @@ CODE_EXCHANGE = {
 }
 
 
+def test_refresh_owner_is_authenticated_and_legacy_handles_cannot_renew():
+    handle = session_store.mint("RT-owner", owner="alice")
+    path = session_store._record_path(handle)
+    record = json.loads(path.read_text())
+    record["owner"] = "bob"
+    path.write_text(json.dumps(record))
+    assert session_store.read(handle) == ("", "")
+
+    legacy = session_store.mint("RT-legacy", owner="alice")
+    path = session_store._record_path(legacy)
+    record = json.loads(path.read_text())
+    record.pop("owner")
+    record["v"] = 1
+    path.write_text(json.dumps(record))
+    assert session_store.read(legacy) == ("", "")
+
+
+def test_revoked_handle_cannot_rotate_back_into_a_session():
+    handle = session_store.mint("RT-owner", owner="alice")
+    session_store.revoke_owner("alice")
+    assert session_store.rotate(handle, "RT-new") == ""
+    assert session_store.read(handle) == ("", "")
+
+
 @pytest.fixture(autouse=True)
 def _isolated_store(tmp_path, monkeypatch):
     """A fresh data dir AND a fresh key singleton for every test.
@@ -61,14 +85,14 @@ def _records() -> list:
 def test_the_stored_token_is_nowhere_in_the_file():
     """The plaintext store wrote `{"rt": "<the token>"}`. Nothing may carry it."""
     token = "RT-" + secrets.token_urlsafe(24)
-    handle = session_store.mint(token)
+    handle = session_store.mint(token, owner="owner")
     files = _records()
     assert len(files) == 1, files
     blob = files[0].read_bytes()
     assert token.encode("utf-8") not in blob, "the refresh token is on disk in clear"
     record = json.loads(blob.decode("utf-8"))
     assert "rt" not in record, record
-    assert set(record) == {"v", "kind", "nonce", "ct", "exp"}
+    assert set(record) == {"v", "kind", "owner", "nonce", "ct", "exp"}
     assert record["kind"] == "session"
     assert token not in json.dumps(record)
     # ...and it still opens for its own handle.
@@ -78,7 +102,7 @@ def test_the_stored_token_is_nowhere_in_the_file():
 def test_no_file_under_the_store_contains_the_token_bytes():
     """Belt and braces: scan the whole directory, including any stray temp file."""
     token = "RT-" + secrets.token_urlsafe(24)
-    handle = session_store.mint(token)
+    handle = session_store.mint(token, owner="owner")
     session_store.rotate(handle, token + "-next")
     for path in session_store.store_dir().iterdir():
         assert token.encode("utf-8") not in path.read_bytes(), path
@@ -90,7 +114,7 @@ def test_no_file_under_the_store_contains_the_token_bytes():
 def test_a_record_copied_onto_another_handle_does_not_open():
     """AAD is the handle. Without it, moving the file moves the session."""
     victim_token = "RT-victim"
-    victim = session_store.mint(victim_token)
+    victim = session_store.mint(victim_token, owner="owner")
     attacker = secrets.token_urlsafe(32)
     assert session_store.valid_handle(attacker)
     source = session_store._record_path(victim)
@@ -252,9 +276,9 @@ def test_logout_kills_the_successor_too(monkeypatch, tmp_path):
 
 def test_logout_revokes_only_that_independent_session_chain():
     """One device signing out must not silently sign out another device."""
-    first = session_store.mint("RT-device-one")
+    first = session_store.mint("RT-device-one", owner="owner")
     first_successor = session_store.rotate(first, "RT-device-one-rotated")
-    second = session_store.mint("RT-device-two")
+    second = session_store.mint("RT-device-two", owner="owner")
 
     session_store.drop(first)
 
@@ -318,7 +342,7 @@ def test_the_key_is_scrubbed_at_IMPORT_before_any_store_call(monkeypatch):
     assert isinstance(child_env, dict), "api-key providers must be disabled here"
     assert session_store.SEAL_KEY_ENV not in child_env
     # ...and it is the CONFIGURED key, not a fresh ephemeral that happens to work.
-    handle = session_store.mint("RT-configured")
+    handle = session_store.mint("RT-configured", owner="owner")
     session_store._key = None
     monkeypatch.setenv(session_store.SEAL_KEY_ENV, raw)
     assert session_store.read(handle) == ("RT-configured", handle)
@@ -383,7 +407,7 @@ def test_a_malformed_configured_key_fails_the_daemon_loudly(monkeypatch):
 def test_an_unconfigured_key_warns_once_and_still_round_trips(monkeypatch, caplog):
     monkeypatch.delenv(session_store.SEAL_KEY_ENV, raising=False)
     with caplog.at_level(logging.WARNING, logger="tinyassets.onboarding"):
-        handle = session_store.mint("RT-ephemeral")
+        handle = session_store.mint("RT-ephemeral", owner="owner")
         assert session_store.read(handle) == ("RT-ephemeral", handle)
         session_store.rotate(handle, "RT-ephemeral-2")
     warnings = [
@@ -402,7 +426,7 @@ def test_records_sealed_with_a_lost_ephemeral_key_are_unreadable(monkeypatch):
     stops resolving and the app re-logs-in. What is left behind is sealed and no
     longer addressable (the filename digest is keyed too); it ages out at its TTL.
     """
-    handle = session_store.mint("RT-ephemeral")
+    handle = session_store.mint("RT-ephemeral", owner="owner")
     session_store._reset_for_tests()  # a new process = a new ephemeral key
     assert session_store.read(handle) == ("", "")
     orphans = _records()
@@ -492,7 +516,7 @@ def test_a_rotation_never_writes_the_successor_handle_in_plaintext():
     cross-user disclosure, delivered as directly usable bearer handles. The
     successor now lives inside the seal, under the OLD handle's AAD.
     """
-    first = session_store.mint("RT1")
+    first = session_store.mint("RT1", owner="owner")
     second = session_store.rotate(first, "RT2")
     assert second and second != first
 
@@ -502,7 +526,7 @@ def test_a_rotation_never_writes_the_successor_handle_in_plaintext():
         assert first.encode("ascii") not in blob, f"handle in clear: {path}"
 
     record = json.loads(session_store._record_path(first).read_text(encoding="utf-8"))
-    assert set(record) == {"v", "kind", "nonce", "ct", "exp"}
+    assert set(record) == {"v", "kind", "owner", "nonce", "ct", "exp"}
     assert record["kind"] == "tombstone"
     # Nothing handle-shaped anywhere in the plaintext fields.
     for key, value in record.items():
@@ -515,7 +539,7 @@ def test_the_tombstone_expires_at_the_end_of_grace_not_at_the_session_ttl():
     """It used to inherit the 7-day `exp`, so a dead handle's record sat on disk
     for a week. Its `exp` IS the grace deadline now, so the sweep removes it."""
     now = int(time.time())
-    first = session_store.mint("RT1")
+    first = session_store.mint("RT1", owner="owner")
     session_store.rotate(first, "RT2")
     tomb = json.loads(session_store._record_path(first).read_text(encoding="utf-8"))
     assert now <= tomb["exp"] <= now + session_store.GRACE_SECONDS + 2
@@ -525,7 +549,7 @@ def test_the_tombstone_expires_at_the_end_of_grace_not_at_the_session_ttl():
 def test_a_tombstone_does_not_open_under_another_handle():
     """AAD binds the successor to the OLD handle: moving the tombstone file does
     not move the pointer."""
-    first = session_store.mint("RT1")
+    first = session_store.mint("RT1", owner="owner")
     session_store.rotate(first, "RT2")
     attacker = secrets.token_urlsafe(32)
     session_store._record_path(attacker).write_bytes(
@@ -543,7 +567,7 @@ def test_a_record_relabelled_to_the_other_kind_fails_closed():
     relabel fails on the payload format alone, so on its own it proves nothing
     about the AAD; it is asserted second only as a completeness check.)
     """
-    first = session_store.mint("RT1")
+    first = session_store.mint("RT1", owner="owner")
     second = session_store.rotate(first, "RT2")
     tomb_path = session_store._record_path(first)
     tomb = json.loads(tomb_path.read_text(encoding="utf-8"))
@@ -564,7 +588,7 @@ def test_a_record_relabelled_to_the_other_kind_fails_closed():
 
 def test_two_rotations_inside_grace_kill_the_oldest_handle():
     """One hop, never a chain: the oldest handle lands on a tombstone and stops."""
-    first = session_store.mint("RT1")
+    first = session_store.mint("RT1", owner="owner")
     second = session_store.rotate(first, "RT2")
     third = session_store.rotate(second, "RT3")
     assert session_store.read(first) == ("", "")
@@ -634,7 +658,7 @@ def test_a_legacy_store_that_cannot_be_deleted_returns_503_and_retries(
 
 
 def test_a_tampered_ciphertext_is_refused_and_the_record_removed():
-    handle = session_store.mint("RT-x")
+    handle = session_store.mint("RT-x", owner="owner")
     path = session_store._record_path(handle)
     record = json.loads(path.read_text(encoding="utf-8"))
     raw = bytearray(base64.urlsafe_b64decode(record["ct"]))
@@ -646,7 +670,7 @@ def test_a_tampered_ciphertext_is_refused_and_the_record_removed():
 
 
 def test_a_truncated_record_is_refused_and_removed():
-    handle = session_store.mint("RT-x")
+    handle = session_store.mint("RT-x", owner="owner")
     path = session_store._record_path(handle)
     path.write_bytes(b'{"v": 1, "kind": "sess')
     assert session_store.read(handle) == ("", "")
@@ -654,7 +678,7 @@ def test_a_truncated_record_is_refused_and_removed():
 
 
 def test_a_record_whose_json_is_not_an_object_is_refused():
-    handle = session_store.mint("RT-x")
+    handle = session_store.mint("RT-x", owner="owner")
     path = session_store._record_path(handle)
     path.write_text('["not", "an", "object"]', encoding="utf-8")
     assert session_store.read(handle) == ("", "")
@@ -663,7 +687,7 @@ def test_a_record_whose_json_is_not_an_object_is_refused():
 def test_the_expiry_boundary_is_inclusive_of_now(monkeypatch):
     """`exp == now` is still live; `exp == now - 1` is gone. An off-by-one here
     either logs people out a second early or serves a second past the deadline."""
-    handle = session_store.mint("RT-x")
+    handle = session_store.mint("RT-x", owner="owner")
     path = session_store._record_path(handle)
     record = json.loads(path.read_text(encoding="utf-8"))
     now = int(time.time())
@@ -777,7 +801,7 @@ def test_editing_the_outer_exp_cannot_extend_a_session(monkeypatch):
     """The plaintext `exp` is a sweep hint. The deadline that admits a record is
     sealed with it; pushing the hint ten years out buys an attacker with write
     access to the data dir nothing once the sealed deadline has passed."""
-    handle = session_store.mint("RT-live")
+    handle = session_store.mint("RT-live", owner="owner")
     path = session_store._record_path(handle)
     record = json.loads(path.read_text(encoding="utf-8"))
     record["exp"] = int(time.time()) + 10 * 365 * 24 * 3600
@@ -789,7 +813,7 @@ def test_editing_the_outer_exp_cannot_extend_a_session(monkeypatch):
 
 
 def test_editing_the_outer_exp_cannot_extend_a_tombstone(monkeypatch):
-    old = session_store.mint("RT-1")
+    old = session_store.mint("RT-1", owner="owner")
     new = session_store.rotate(old, "RT-2")
     path = session_store._record_path(old)
     record = json.loads(path.read_text(encoding="utf-8"))
@@ -810,7 +834,7 @@ def test_malformed_metadata_fails_closed_instead_of_raising(field, value):
     """A record whose metadata is not exactly what we wrote is not ours: it is
     deleted and the read returns nothing -- never a ValueError that turns one bad
     file into a standing 500 on the token endpoint."""
-    handle = session_store.mint("RT-m")
+    handle = session_store.mint("RT-m", owner="owner")
     path = session_store._record_path(handle)
     record = json.loads(path.read_text(encoding="utf-8"))
     record[field] = value
@@ -820,13 +844,13 @@ def test_malformed_metadata_fails_closed_instead_of_raising(field, value):
 
 
 def test_expired_tombstones_are_swept_without_a_restart(monkeypatch):
-    old = session_store.mint("RT-1")
+    old = session_store.mint("RT-1", owner="owner")
     session_store.rotate(old, "RT-2")
     tomb = session_store._record_path(old)
     assert tomb.exists()
     later = time.time() + session_store.GRACE_SECONDS + session_store._SWEEP_INTERVAL + 1
     monkeypatch.setattr(session_store.time, "time", lambda: later)
-    session_store.mint("RT-3")  # any store use after the interval sweeps
+    session_store.mint("RT-3", owner="owner")  # any store use after the interval sweeps
     assert not tomb.exists()
 
 

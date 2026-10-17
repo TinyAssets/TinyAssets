@@ -1343,3 +1343,37 @@ def test_failed_two_pass_owner_tree_keeps_the_binding_and_retry_resumes(
     assert retry["home_removed"] and not retry["unfinished_phases"]
     assert not (two_users / HOME_A).exists() and not get_founder_home(two_users, A)
     assert (two_users / HOME_B / "soul.md").exists()
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_owner_mode_account_delete_uses_router_revocation_and_surfaces_failure(
+    app_route, monkeypatch, fail,
+):
+    from tinyassets import owner_runtime
+
+    onboarding, calls = app_route
+    requests = []
+    monkeypatch.setattr(owner_runtime, "current", lambda: object())
+
+    def revoke(operation, **fields):
+        assert calls["deleted"], "local deletion must finish before router revocation"
+        requests.append((operation, fields))
+        if fail:
+            raise RuntimeError("router revocation failed")
+        return {"revoked": True}
+
+    def local_revoke(owner):
+        raise AssertionError("box opened local session store")
+
+    monkeypatch.setattr(owner_runtime, "router_credential", revoke)
+    monkeypatch.setattr("tinyassets.onboarding.owner_sessions.revoke_owner", local_revoke)
+    monkeypatch.setattr(onboarding, "_drop_refresh_session", local_revoke)
+    request = _Request({"confirm": "DELETE", "session_ref": "r" * 43})
+    with _as(A):
+        if fail:
+            with pytest.raises(RuntimeError, match="router revocation failed"):
+                asyncio.run(onboarding._handle_account_delete(request))
+        else:
+            response = asyncio.run(onboarding._handle_account_delete(request))
+            assert response.status_code == 200
+    assert requests == [("account_revoke", {})]

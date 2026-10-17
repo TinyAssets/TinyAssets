@@ -28,7 +28,7 @@ branch `claude/capability-url-auth`, head `d8dc1986`), which reproduced it.
 > CONCRETE ATTACK OR REPAIR: Pause dispatch before credential resolution; remove
 > the connection; redeposit `https://new.example.com/new/NewSecret87654321`;
 > resume. The captured request was
-> `https://hooks.example.com/mcp/hooks/NewSecret87654321`. Bind vault lookup to
+> `https://hooks.example.com/hooks/inbound/NewSecret87654321`. Bind vault lookup to
 > an immutable connection incarnation and revalidate authority before dialing.
 
 ## Why it is filed rather than fixed in PR #4115

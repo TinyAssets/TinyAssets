@@ -67,6 +67,13 @@ def _drive(
             "openai": {},
         },
     )
+    from types import SimpleNamespace
+
+    from tinyassets.auth import middleware
+    from tinyassets.auth.provider import Identity
+
+    monkeypatch.setattr(middleware, "_get_provider", lambda: SimpleNamespace(
+        resolve_token=lambda token: Identity(user_id="owner", username="owner")))
     calls: list[dict] = []
 
     def handler(req: httpx.Request) -> httpx.Response:

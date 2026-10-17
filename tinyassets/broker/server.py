@@ -711,7 +711,7 @@ class _Connection:
                     else "refused"}
 
     def _owner_policy(self, doc: dict[str, Any]) -> dict[str, Any]:
-        """An owner-channel message is not owner authority; verify the cookie here."""
+        """Recheck the protected-session proof against the router's live rows."""
         from tinyassets.broker.owner_identities import validate_principal
         from tinyassets.broker.policy import PolicyRefused
 
@@ -724,6 +724,9 @@ class _Connection:
                 raise PolicyRefused("invalid policy request")
             validate_principal(owner)
             store = self._server._policy_store
+            proof_key = "session_proof" if "session_proof" in doc else "cookie"
+            if proof_key == "session_proof" and not isinstance(doc[proof_key], dict):
+                raise PolicyRefused("interactive owner session required")
             if action == "read" and set(doc) == {"op", "action", "principal"}:
                 result = store.read(owner).projection()
             elif action == "receipts" and set(doc) == {"op", "action", "principal"}:
@@ -732,8 +735,8 @@ class _Connection:
                     "op", "action", "principal", "center", "change"}:
                 result = store.receipt_proposal(owner, doc["center"], doc["change"])
             elif action == "write" and set(doc) == {
-                    "op", "action", "principal", "cookie", "expected_generation", "policy"}:
-                result = store.write(owner, doc["cookie"], doc["expected_generation"],
+                    "op", "action", "principal", proof_key, "expected_generation", "policy"}:
+                result = store.write(owner, doc[proof_key], doc["expected_generation"],
                                      doc["policy"]).projection()
             elif action == "classify" and set(doc) == {
                     "op", "action", "principal", "center", "connection", "method", "path"}:
@@ -741,7 +744,7 @@ class _Connection:
                     owner, doc["center"], doc["connection"], doc["method"], doc["path"])
                 result = {"action_class": action_class, "operation": operation}
             elif action == "issue_once" and set(doc) == {
-                    "op", "action", "principal", "cookie", "expected_generation",
+                    "op", "action", "principal", proof_key, "expected_generation",
                     "center", "grant_id", "connection_id", "verb", "request",
                     "destination"}:
                 self._server._ledger_for(owner).authorize_exact(
@@ -759,7 +762,7 @@ class _Connection:
                 digest = request_digest(grant_id=doc["grant_id"],
                                         connection_id=doc["connection_id"],
                                         verb=doc["verb"], request=wire)
-                result = store.issue_once(owner, doc["cookie"], doc["expected_generation"],
+                result = store.issue_once(owner, doc[proof_key], doc["expected_generation"],
                                           digest)
             elif action == "decide" and set(doc) == {"op", "action", "principal", "request"}:
                 request = doc["request"]
@@ -777,7 +780,8 @@ class _Connection:
             if action in {"write", "issue_once"}:
                 try:
                     self._server._policy_store.receipt_refusal(
-                        owner, action, {k: v for k, v in doc.items() if k != "cookie"})
+                        owner, action, {k: v for k, v in doc.items()
+                                        if k not in {"cookie", "session_proof"}})
                 except Exception:  # noqa: BLE001 - refuse regardless of receipt failure
                     _LOG.exception("policy refusal receipt unavailable")
             reason = str(exc) if isinstance(exc, PolicyRefused) else "policy unavailable"

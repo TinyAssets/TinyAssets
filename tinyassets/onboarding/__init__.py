@@ -92,8 +92,8 @@ def _handle_path_key(handle: str) -> str:
 # it must not exist for a future caller to reach for.
 
 
-def _mint_refresh_session(refresh_token: str) -> str:
-    return _session_store.mint(refresh_token)
+def _mint_refresh_session(refresh_token: str, *, owner: str) -> str:
+    return _session_store.mint(refresh_token, owner=owner)
 
 
 def _read_refresh_session(handle: str) -> str:
@@ -532,6 +532,14 @@ async def _handle_token(request: Any) -> Any:
     # under a value that arrived in the request body.
     may_reuse_handle = bool(current_handle) and refresh_came_from_handle
     if refresh_token and len(refresh_token) <= 4096:
+        from starlette.concurrency import run_in_threadpool
+
+        from tinyassets.auth.middleware import _get_provider
+
+        identity = await run_in_threadpool(_get_provider().resolve_token, access)
+        if identity is None or not identity.user_id:
+            return JSONResponse({"error": "identity_unresolved"}, status_code=401,
+                                headers=_NO_STORE)
         if may_reuse_handle:
             # Rotate to a NEW handle rather than rewriting the presented one. The
             # old handle keeps resolving for a short grace (multi-tab race), so a
@@ -544,7 +552,7 @@ async def _handle_token(request: Any) -> Any:
                 # is not theirs to keep using: drop it rather than leave a stale
                 # token renewable under an identifier a third party may know.
                 _drop_refresh_session(session_ref)
-            handle = _mint_refresh_session(refresh_token)
+            handle = _mint_refresh_session(refresh_token, owner=identity.user_id)
     elif may_reuse_handle:
         # AuthKit rotated without returning a new token (rare): nothing to store,
         # so hand back the handle the token already lives under. No write.
@@ -1105,7 +1113,7 @@ async def _handle_policy(request: Any) -> Any:
     from tinyassets.api.helpers import _base_path
     from tinyassets.auth.middleware import current_identity
     from tinyassets.broker.client import BrokerRefused, owner_policy_operation
-    from tinyassets.onboarding.owner_sessions import COOKIE
+    from tinyassets.onboarding.owner_sessions import require
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
@@ -1125,6 +1133,12 @@ async def _handle_policy(request: Any) -> Any:
     if not _same_origin_json(request, str(app_config().get("resource") or "")):
         return JSONResponse({"error": "cross_origin_rejected"}, status_code=403,
                             headers=_NO_STORE)
+    try:
+        session = require(request, owner=owner)
+    except PermissionError:
+        return JSONResponse({"error": "interactive_owner_session_required"},
+                            status_code=403, headers=_NO_STORE)
+    session_proof = {"session_hash": session["session_hash"]}
     data = await _read_small_json(request)
     if not isinstance(data, dict):
         return JSONResponse({"error": "invalid_policy"}, status_code=400,
@@ -1155,7 +1169,7 @@ async def _handle_policy(request: Any) -> Any:
         try:
             result = await run_in_threadpool(
                 owner_policy_operation, _base_path(), owner, "write",
-                cookie=request.cookies.get(COOKIE, ""),
+                session_proof=session_proof,
                 expected_generation=proposal["expected_generation"],
                 policy=proposal["policy"])
         except BrokerRefused:
@@ -1181,7 +1195,7 @@ async def _handle_policy(request: Any) -> Any:
     try:
         result = await run_in_threadpool(
             owner_policy_operation, _base_path(), owner, action,
-            cookie=request.cookies.get(COOKIE, ""), **fields)
+            session_proof=session_proof, **fields)
     except BrokerRefused:
         return JSONResponse({"error": "interactive_owner_session_required"},
                             status_code=403, headers=_NO_STORE)
@@ -1732,12 +1746,15 @@ async def _handle_account_delete(request: Any) -> Any:
             status_code=409,
             headers=_NO_STORE,
         )
-    from tinyassets.onboarding.owner_sessions import revoke_owner
-    await run_in_threadpool(revoke_owner, identity.user_id)
-    # The account is gone; end this device's renewable session the way logout
-    # does. Other devices' refresh handles die with the identity or expire.
-    if session_ref:
-        _drop_refresh_session(session_ref)
+    from tinyassets import owner_runtime
+
+    if owner_runtime.current() is not None:
+        await run_in_threadpool(owner_runtime.router_credential, "account_revoke")
+    else:
+        from tinyassets.onboarding.owner_sessions import revoke_owner
+        await run_in_threadpool(revoke_owner, identity.user_id)
+        if session_ref:
+            _drop_refresh_session(session_ref)
     response = JSONResponse(
         {
             "deleted": True,

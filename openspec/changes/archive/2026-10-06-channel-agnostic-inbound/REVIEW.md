@@ -34,8 +34,7 @@ consider hashing at rest); all non-Authorization/Cookie headers persist into ten
 (a proxy-injected Access/OIDC assertion would too — tighten the forward set).
 
 Floor 1 stays DARK until `TINYASSETS_INBOUND_ENABLED` is flipped; the receiver mounts at
-`/mcp/hooks/<token>` (under `/mcp`, reached by the EXISTING `/mcp/*` tunnel — no tunnel/infra
-change), so these gate the flag-flip step, not the code landing. Status: store + receiver + route + ops built, 20 tests (mock ownership/enqueue
+`/hooks/inbound/<token>` (the single hook door at the owner-daemon cutover), so these gate the flag-flip step, not the code landing. Status: store + receiver + route + ops built, 20 tests (mock ownership/enqueue
 + streaming — Codex notes those boundaries are untested). Fixes owed before go-live.
 
 ## Round 2 → VERDICT: adapt (6 findings + tests were self-confirming). NOW RESOLVED.
@@ -141,4 +140,4 @@ NOT to be chased further before ship:
   of the side-channel is post-live.
 
 Gating to LIFT before PUBLIC (multi-tenant / publicly-routed) exposure: revisit each deferred item,
-and only then flip `TINYASSETS_INBOUND_ENABLED` (the /mcp/hooks receiver rides the existing /mcp tunnel — no tunnel change).
+and only then flip `TINYASSETS_INBOUND_ENABLED` (integrations must target the single /hooks/inbound door at cutover).

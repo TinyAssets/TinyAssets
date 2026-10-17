@@ -154,7 +154,7 @@ SECRETS = [
     ("AQVN0rPuQG_Xk9mLp2Zt8WsYbCdEfGhIjKlM", "opaque_high_entropy"),
     ("0x4fA2b91Cd83e7B6a15D0c2E94f8A73bC6d05E1f2", "base64_key_material"),
     # URLs: the founder named path and query segments explicitly.
-    ("https://tinyassets.io/mcp/hooks/girbY_SuCx9Qp2LmVnRtZw", "url_path_secret"),
+    ("https://tinyassets.io/hooks/inbound/girbY_SuCx9Qp2LmVnRtZw", "url_path_secret"),
     (_shape("https://hooks.", "slack.com/services",
             "/T0A1B2C3D4/B5E6F7G8H9/zQ8mNvRtYw3LpXk2JdHs9Fb4"), "url_path_secret"),
     ("https://api.example.com/v1/data?api_key=abcd1234efgh", "url_secret_parameter"),

@@ -503,11 +503,11 @@ def auth_middleware(token: str | None) -> Identity | None:
 
 
 def _is_inbound_hook_path(path: str) -> bool:
-    """Exactly ``/mcp/hooks/<one-segment-token>`` (non-empty, no deeper path).
+    """Exactly ``/hooks/inbound/<one-segment-token>`` (non-empty, no deeper path).
 
     The token is variable so this can't be an equality check like ``/app``;
     it is pinned to a single non-empty segment after the fixed prefix so no
-    deeper ``/mcp/hooks/...`` path is ever exempted.
+    deeper ``/hooks/inbound/...`` path is ever exempted.
     """
     from tinyassets.owner_router import hook_token
 
@@ -722,7 +722,7 @@ def _auth_challenge_path(path: str) -> bool:
         # from the configured resource, never the request). Exactly one path.
         return False
     # Billing webhook: Stripe POSTs here with no MCP bearer, so like /app and
-    # /mcp/hooks it must not be swept into the /mcp bearer 401. The handler requires
+    # /hooks/inbound it must not be swept into the /mcp bearer 401. The handler requires
     # both Stripe provenance (signed, replay-bounded payload) and entitlement
     # authority (our HMAC-claimed exact plan). Exactly one path is opened; no deeper
     # /app/billing/... route is exempt, so checkout and cancel stay identity-gated.
@@ -733,13 +733,13 @@ def _auth_challenge_path(path: str) -> bool:
     # challenged.
     if path == "/app/client-error":
         return False
-    # Inbound webhook receiver: /mcp/hooks/<token> is a public POST endpoint whose
+    # Inbound webhook receiver: /hooks/inbound/<token> is a public POST endpoint whose
     # UNGUESSABLE per-branch token is the sole boundary (the run is author-gated,
     # durably rate-limited, and revocable — webhook Codex findings #1/#3/#5). It
     # carries no MCP bearer, so — like /app — it must not be
     # swept into the /mcp/* bearer 401. Only exempt when inbound is enabled (the
-    # route only exists then) and only the exact /mcp/hooks/<one-segment-token>
-    # shape — no deeper /mcp/hooks/... path is opened.
+    # route only exists then) and only the exact /hooks/inbound/<one-segment-token>
+    # shape — no deeper /hooks/inbound/... path is opened.
     if _inbound_hooks_enabled() and _is_inbound_hook_path(path):
         return False
     return path == "/mcp" or path.startswith("/mcp/") or _is_app_path(path)

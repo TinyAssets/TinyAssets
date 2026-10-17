@@ -23,7 +23,7 @@
 ## Floor 1 — universal inbound webhook (this change's shippable slice)
 
 **Model:** a per-branch, unguessable **hook token** binds one URL to one (branch, universe). A
-`POST /mcp/hooks/<token>` resolves the binding and enqueues a run of that branch, as that universe,
+`POST /hooks/inbound/<token>` resolves the binding and enqueues a run of that branch, as that universe,
 with the body as input. This is the direct "layer 1" of the design (per-branch URL → branch);
 the event-bus fan-out is layer 3 (Source nodes), a separate trigger type — NOT this slice.
 
@@ -33,7 +33,7 @@ the event-bus fan-out is layer 3 (Source nodes), a separate trigger type — NOT
    `secrets.token_urlsafe(32)`; `resolve(token)` → `(universe_id, branch_def_id)` or None (active
    only); `revoke(token)`; `list_for_universe(universe_id)`. Content is only identifiers; the
    token is the secret. Store under the universe's data dir so it is per-universe.
-2. **The receiver** (`webhook_inbound.py::handle_hook`, mounted as `Route("/mcp/hooks/{token}", …,
+2. **The receiver** (`webhook_inbound.py::handle_hook`, mounted as `Route("/hooks/inbound/{token}", …,
    methods=["POST"])` in `create_streamable_http_app`): read the body (size-capped), resolve the
    token → 404 (indistinct) if unknown/revoked/malformed, else enqueue via the SAME gated run
    path `_action_run_branch`-equivalent with `actor=universe:<uid>`, `inputs={"webhook": {body,
@@ -44,7 +44,7 @@ the event-bus fan-out is layer 3 (Source nodes), a separate trigger type — NOT
    `mint_webhook(branch_def_id)` / `revoke_webhook(token)` / `list_webhooks`, authorized to the
    caller's OWN universe only (a token can only be minted for a branch the caller's universe
    owns — author check via the same ownership the run path uses). Returns the full
-   `https://<domain>/mcp/hooks/<token>` URL.
+   `https://<domain>/hooks/inbound/<token>` URL.
 
 **Security invariants:**
 - The token is the only authority; unguessable; per (branch, universe). No header/body field can
@@ -54,11 +54,10 @@ the event-bus fan-out is layer 3 (Source nodes), a separate trigger type — NOT
   branch the universe already authored + explicitly minted a hook for.
 - Body size cap; per-token rate limit; the body is passed as input verbatim (user uploads
   authoritative) but never interpreted as identity.
-- **Reachable via the existing tunnel (2026-08-20 update):** the receiver is mounted at
-  `/mcp/hooks/<token>` (under `/mcp`, like the onboarding app at `/mcp/app`), so the Cloudflare
-  tunnel — which already serves `/mcp/*` — reaches it with NO tunnel/infra change. Its auth
-  carve-out exempts exactly `/mcp/hooks/<one-segment-token>` from the MCP bearer challenge (and
-  skips any foreign bearer) only when inbound is enabled; the unguessable per-branch token +
+- **Single receiver door (owner-daemon cutover):** the receiver is mounted at
+  `/hooks/inbound/<token>`. Integrations must re-point at cutover. Its auth
+  carve-out skips any foreign bearer for exactly `/hooks/inbound/<one-segment-token>`
+  only when inbound is enabled; the unguessable per-branch token +
   author-gated handler is the boundary. The code lands safe/dark; going live is a single
   `TINYASSETS_INBOUND_ENABLED` flip (env-file via apply-daemon-env), followed by the canary.
 
