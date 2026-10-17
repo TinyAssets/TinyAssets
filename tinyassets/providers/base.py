@@ -11,7 +11,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, get_args
+from typing import TYPE_CHECKING, Literal
 
 from tinyassets.addressed_agents import MAIN_AGENT
 
@@ -33,53 +33,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Streamed-attempt taxonomy (Slice 1: stream-and-classify-provider-attempts)
 # ---------------------------------------------------------------------------
-
-#: Normalized kinds a raw provider stream line collapses to. Only the "real
-#: protocol event" kinds reset the idle watchdog; ``ignored`` (whitespace,
-#: internal reasoning/thinking, unknown-but-well-formed) never does.
-StreamEventKind = Literal[
-    "init",            # system/init — CLI + MCP came up
-    "text_delta",      # assistant text produced (partial delta or full message)
-    "tool_use",        # a tool call started
-    "tool_result",     # a tool call returned
-    "api_retry",       # documented provider retry event (rate-limit/overload/…)
-    "heartbeat",       # any OTHER recognized protocol event (thinking, hooks,
-                       # status, notification, stream framing, tool_progress,
-                       # tool_heartbeat, an informational rate_limit_event) — it
-                       # proves the CLI is alive and working, so it resets the
-                       # idle watchdog, but its content is NEVER relayed.
-    "result",          # terminal result event (canonical response)
-    "declared_busy",   # a DOCUMENTED provider busy status (system/status
-                       # ``compacting``): liveness + opens a bounded declared-
-                       # busy allowance in the reader; never relayed.
-    "declared_clear",  # the explicit clear of that status (``status: null`` /
-                       # ``compact_boundary``): liveness, ends the allowance.
-    "ignored",         # whitespace / unparseable-suppressed / non-liveness —
-                       # do NOT reset
-]
-
-#: The event kinds that count as real progress (reset the idle deadline). Note
-#: ``heartbeat`` is included: a reasoning-only stretch emits ONLY thinking +
-#: framing events (verified against a real Claude 2.1.236 trace), so excluding
-#: them false-killed a working turn at the idle boundary. They are liveness,
-#: never relayed.
-LIVENESS_EVENT_KINDS: frozenset[str] = frozenset({
-    "init", "text_delta", "tool_use", "tool_result", "api_retry",
-    "heartbeat", "result",
-    # A DOCUMENTED provider busy status (``system/status`` ``compacting``) and
-    # its explicit clear (``status: null`` / ``compact_boundary``). Liveness,
-    # never relayed; the busy one also opens a bounded declared-busy allowance
-    # in the reader (same bound shape as a tool wait, never past the cap).
-    "declared_busy", "declared_clear",
-})
-
-# Internal-contract guard: every liveness kind is a declared stream event kind,
-# and ``ignored`` never counts as liveness. Import-time so a drift between the
-# two definitions fails loudly instead of silently never resetting the watchdog.
-assert LIVENESS_EVENT_KINDS <= frozenset(get_args(StreamEventKind)), (
-    sorted(LIVENESS_EVENT_KINDS - frozenset(get_args(StreamEventKind)))
-)
-assert "ignored" not in LIVENESS_EVENT_KINDS
 
 #: Structured failure classes derived from the stream + process exit. These
 #: replace the substring ``"exhausted" -> capacity`` heuristic.

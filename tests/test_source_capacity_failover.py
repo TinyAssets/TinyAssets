@@ -37,8 +37,8 @@ def test_exact_saved_primary_recovers_on_ranked_connected_models():
     assert refs(selected.order("owner", "universe")) == [ModelRef("primary", "chosen")]
     assert not selected.order("owner", "universe", failed).candidates
     assert refs(selected.capacity_order("owner", "universe", failed)) == [
-        ModelRef("free", "stronger"), ModelRef("free", "weaker"),
-        ModelRef("secondary", "strongest"),
+        ModelRef("secondary", "strongest"), ModelRef("free", "stronger"),
+        ModelRef("free", "weaker"),
     ]
     assert selected.policy.fallbacks == ()
     assert selected.policy.saved_default == ModelRef("primary", "chosen")
