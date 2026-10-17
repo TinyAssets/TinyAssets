@@ -7,13 +7,14 @@ from dataclasses import asdict
 PAGE_SIZE = 64
 
 
-def validate(cursor, limit):
+def validate(cursor, limit, include_revoked=False):
     if (not isinstance(cursor, str) or len(cursor) > 512 or "\0" in cursor
-            or type(limit) is not int or not 1 <= limit <= PAGE_SIZE):
+            or type(limit) is not int or not 1 <= limit <= PAGE_SIZE
+            or type(include_revoked) is not bool):
         raise ValueError("invalid connection catalog page")
 
 
-def local_page(ledger, *, principal, command_center, cursor, limit):
+def local_page(ledger, *, principal, command_center, cursor, limit, include_revoked=False):
     from tinyassets.broker.ledger_queries import GRANTED_RESOURCE, validate_query
     from tinyassets.storage.outbound_connections import (
         ActionCap,
@@ -21,7 +22,7 @@ def local_page(ledger, *, principal, command_center, cursor, limit):
         _resource_from_row,
     )
 
-    validate(cursor, limit)
+    validate(cursor, limit, include_revoked)
     validate_query(GRANTED_RESOURCE, principal, command_center, "catalog", "")
     with ledger._connect() as conn:
         conn.execute("BEGIN")
@@ -30,9 +31,9 @@ def local_page(ledger, *, principal, command_center, cursor, limit):
             "FROM outbound_connection_grants g "
             "JOIN outbound_connections c ON c.connection_id=g.connection_id "
             "WHERE g.owner_user_id=? AND c.owner_user_id=? AND g.universe_id=? "
-            "AND g.revoked_at IS NULL AND c.revoked_at IS NULL AND g.grant_id>? "
+            "AND g.revoked_at IS NULL AND (c.revoked_at IS NULL OR ?) AND g.grant_id>? "
             "ORDER BY g.grant_id LIMIT ?",
-            (principal, principal, command_center, cursor, limit + 1),
+            (principal, principal, command_center, include_revoked, cursor, limit + 1),
         ).fetchall()
         items = []
         for row in rows[:limit]:
@@ -46,7 +47,7 @@ def local_page(ledger, *, principal, command_center, cursor, limit):
                 if len(rows) > limit else None}
 
 
-def connections(data_root, *, principal, command_center, limit=None):
+def connections(data_root, *, principal, command_center, limit=None, include_revoked=False):
     """Yield (grant, redacted view, incarnation); no silent catalog truncation."""
     from tinyassets.broker.client import BrokerClient
     from tinyassets.broker.supervisor import get_supervisor
@@ -69,7 +70,8 @@ def connections(data_root, *, principal, command_center, limit=None):
                           verify_peer=supervisor.verify_broker, timeout=30)
     while limit is None or count < limit:
         page_size = PAGE_SIZE if limit is None else min(PAGE_SIZE, limit - count)
-        answer = client.connection_catalog(cursor=cursor, limit=page_size)
+        answer = client.connection_catalog(cursor=cursor, limit=page_size,
+                                           include_revoked=include_revoked)
         try:
             if (not isinstance(answer, dict) or set(answer) != {"items", "next_cursor"}
                     or not isinstance(answer["items"], list)
@@ -89,7 +91,8 @@ def connections(data_root, *, principal, command_center, limit=None):
                 if not all((grant.owner_user_id == view.owner_user_id == principal,
                             grant.universe_id == command_center,
                             grant.connection_id == view.connection_id,
-                            grant.revoked_at is None, view.revoked_at is None,
+                            grant.revoked_at is None,
+                            view.revoked_at is None or include_revoked,
                             isinstance(grant.grant_id, str), grant.grant_id > previous,
                             isinstance(item["incarnation"], str))):
                     raise ValueError("invalid scope")

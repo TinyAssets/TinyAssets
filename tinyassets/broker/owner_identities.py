@@ -234,6 +234,20 @@ class OwnerIdentities:
         validate_principal(rows['admit'])
         return rows['admit']
 
+    def sole_center(self, principal: str) -> str:
+        """Resolve only this identity's sole live admission, never an owner store."""
+        validate_principal(principal)
+        with closing(self._connect(write=False)) as db:
+            rows = db.execute(
+                "SELECT a.center FROM center_admissions a WHERE a.event='admit' "
+                "AND a.principal=? AND NOT EXISTS (SELECT 1 FROM center_admissions r "
+                "WHERE r.center=a.center AND r.event='retire') LIMIT 2",
+                (principal,),
+            ).fetchall()
+        if len(rows) != 1:
+            raise LookupError("owner has no unique live center")
+        return rows[0][0]
+
     def admission_row(self, generation: int) -> AdmissionRow | None:
         if type(generation) is not int or generation < 1:
             raise ValueError("invalid admission generation")
@@ -333,6 +347,25 @@ def admitted_owner(data_root: Path, *, center: str) -> str:
         raise PermissionError('center owner admission refused')
     validate_principal(answer['principal'])
     return answer['principal']
+
+
+def connection_center(data_root: Path, *, principal: str, center: str = "") -> str:
+    """Select the door's center from broker identity state alone."""
+    validate_principal(principal)
+    if center:
+        try:
+            if admitted_owner(data_root, center=center) == principal:
+                return center
+        except (PermissionError, ValueError):
+            pass
+        raise LookupError("center not found")
+    answer = _owner_request(data_root, {"op": "SOLE_CENTER", "principal": principal})
+    if answer == {"op": "SOLE_CENTER_UNADMITTED"}:
+        raise LookupError("center not found")
+    if set(answer) != {"op", "center"} or answer["op"] != "SOLE_CENTER_IS":
+        raise RuntimeError("center admission unavailable")
+    validate_center(answer["center"])
+    return answer["center"]
 
 
 def owner_box_route(data_root: Path, *, principal: str,

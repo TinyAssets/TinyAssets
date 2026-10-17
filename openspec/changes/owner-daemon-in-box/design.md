@@ -195,8 +195,9 @@ relay's owner. An existing box no longer calls host provisioning to create a
 center. Admission remains append-only and rejects retired or foreign centers.
 Policy rules, authenticated effectors, source display and `ta_capabilities`
 use the existing broker channel; relay tests cover these consumers and center
-creation from a separate owner process. Door lifecycle placement and provider
-revocation remain separate work.
+creation from a separate owner process. Model-connect placement and pending
+request completion remain outstanding; connection controls and provider
+revocation are described below.
 
 ### 3c-2a custody and refresh
 
@@ -224,6 +225,20 @@ revocation remain separate work.
   service. Router exchange still needs its existing client configuration;
   refresh never calls the router for a secret or token.
 - RFC 7009 provider revocation is task 3c-2b, not part of this slice.
+
+### 3c-2b connection controls and revoke (partial task)
+
+`/app/connections` is standalone at the shared door. Explicit centers use
+`ADMITTED_OWNER`; omitted centers use the fenced `SOLE_CENTER` identity read
+and require exactly one live admission. `CONNECTION_CATALOG` includes fenced
+rows on request so interrupted cleanup stays reachable without an owner store.
+`DISCONNECT` revokes the current OAuth token through the trusted directory's
+RFC 7009 endpoint under the custody lock, then erases locally even on provider
+failure. A failure leaves a revoked, credential-free connection receipt with
+`revocation_error` and `custody_erased`; `HTTP_CONNECT` can replace it with a
+fresh incarnation. Model-connect/OAuth exchange placement, secret-free box
+actions, ledger `request_ref` completion and the full per-auth lifecycle matrix
+are not implemented by this step. The lifecycle checkbox remains open.
 
 ## D3. Lifecycle (boxhostd)
 

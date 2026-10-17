@@ -69,6 +69,10 @@ Nothing deploys until slice 7.
       - [ ] 3c-2 lifecycle: door flows and center selection,
         secret-free box connect actions and RFC 7009 revoke;
         per-auth-type door-to-box lifecycle acceptance remains outstanding.
+        Connection inventory/disconnect now run at the shared door using only
+        broker admission and catalog state. RFC 7009 revoke and local erasure
+        on provider failure are implemented. Model-connect placement, box
+        action schemas, request_ref completion and per-auth lifecycles remain.
       3c-2 admission validation: 48 focused Linux tests passed; PR selection
       1,192 files in eight completed chunks, 23,506 passed and 99 existing skips.
       The 34-file heavy run exposed stale model-source fixtures/assertions;

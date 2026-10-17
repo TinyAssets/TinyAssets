@@ -99,7 +99,7 @@ def test_catalog_refuses_sql_paths_and_unbounded_limits(discovery):
     from tinyassets import rpc_frames as rf
 
     for extra in ({"sql": "SELECT * FROM outbound_connections"}, {"path": "/data"},
-                  {"limit": 1000}, {"cursor": "\0"}):
+                  {"limit": 1000}, {"cursor": "\0"}, {"include_revoked": 1}):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
             connection.settimeout(5)
             connection.connect(str(discovery.broker.path))
@@ -114,27 +114,28 @@ def test_actual_app_and_summary_catalogs_over_ipc(discovery, monkeypatch):
     from starlette.requests import Request
 
     from tests.support.onboarding import _user
-    from tinyassets import daemon_server, onboarding, shared_self, universe_tools
+    from tinyassets import daemon_server, onboarding, universe_tools
     from tinyassets.api import status
     from tinyassets.auth.middleware import identity_context
-    from tinyassets.onboarding import serving
     from tinyassets.onboarding.connections import handle_connections
-    from tinyassets.providers import connection_lifecycle
 
     root = discovery.root
     (root / "cc-alice").mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
     monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
     monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
-    monkeypatch.setattr(onboarding, "_read_home", lambda *a, **k: "cc-alice")
-    monkeypatch.setattr(shared_self, "require_founder_home", lambda *a: None)
-    monkeypatch.setattr(serving, "_require_current_admin", lambda *a, **k: None)
-    monkeypatch.setattr(connection_lifecycle, "unfinished_disconnections", lambda *a, **k: [])
+    from tinyassets.broker.owner_identities import OwnerIdentities
+
+    identities = OwnerIdentities(root / "identities.db", initialize=True)
+    identities.resolve("alice", allocate=True)
+    identities.admission("admit", "alice", "cc-alice")
+    discovery.broker.server._owner_identities = identities
 
     async def app():
         with identity_context(_user("alice")):
             return await handle_connections(Request({"type": "http", "method": "GET",
-                                                       "path": "/app/connections", "headers": []}))
+                                                       "path": "/app/connections", "headers": [],
+                                                       "query_string": b""}))
 
     response = asyncio.run(app())
     assert response.status_code == 200

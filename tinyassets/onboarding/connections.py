@@ -1,10 +1,12 @@
-"""Unpowered-safe owner connection controls; no LLM and no upstream key mutation."""
+"""Standalone shared-door connection inventory and broker disconnect controls."""
 
 import json
 from urllib.parse import urlsplit
 
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse, PlainTextResponse
+
+from tinyassets.broker.client import BrokerRefused
 
 _HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
 
@@ -67,49 +69,56 @@ async def handle_connections(request):
 
     def run():
         from tinyassets.api.helpers import _base_path
-        from tinyassets.api.http_connection import _project, remove_http
+        from tinyassets.api.http_connection import _project
         from tinyassets.broker.catalog import connections
-        from tinyassets.onboarding.serving import _require_current_admin
-        from tinyassets.providers.connection_lifecycle import unfinished_disconnections
-        from tinyassets.shared_self import require_founder_home
+        from tinyassets.broker.disconnect import disconnect
+        from tinyassets.broker.owner_identities import connection_center
+        from tinyassets.onboarding.owner_sessions import COOKIE, lookup
 
         with identity_context(identity):
-            uid = onboarding._read_home(identity, raise_errors=True)
-            if not uid or (data is not None and data["universe_id"] != uid):
-                return {"error": "current_home_changed"}, 409
+            session = lookup(request.cookies.get(COOKIE, ""))
+            if (session is not None
+                    and json.loads(session["identity_json"])["user_id"] != identity.user_id):
+                return {"error": "identity_conflict"}, 401
             base = _base_path()
-            require_founder_home(base, uid, identity.user_id)
-            _require_current_admin(base, universe_id=uid, owner=identity.user_id)
+            requested_center = request.query_params.get("center", "")
+            if data is not None and requested_center and requested_center != data["universe_id"]:
+                raise LookupError("center not found")
+            uid = connection_center(
+                base, principal=identity.user_id,
+                center=data["universe_id"] if data is not None else
+                requested_center)
             if data is not None:
-                result = remove_http(
-                    universe_id=uid,
-                    payload={
-                        "destination": data["destination"],
-                        "incarnation": data["incarnation"],
-                    },
-                )
-                return result, 409 if result.get("error") else 200
+                args = dict(principal=identity.user_id, command_center=uid,
+                            destination=data["destination"])
+                snapshot = disconnect(base, **args)
+                if snapshot["resource"] is not None:
+                    if snapshot["incarnation"] != data["incarnation"]:
+                        return {"error": "connection_changed"}, 409
+                    disconnect(base, **args, action="fence",
+                               incarnation=data["incarnation"])
+                result = disconnect(base, **args, action="erase",
+                                    incarnation=data["incarnation"])
+                return {"status": "removed", "connection_removed": result["removed"],
+                        "secrets_removed": result["secrets_removed"]}, 200
             inventory = connections(
-                base, principal=identity.user_id, command_center=uid, limit=100)
-            rows = []
-            for grant, resource, incarnation in inventory:
-                if (
-                    resource
-                    and resource.owner_user_id == identity.user_id
-                    and resource.connection_type == "http"
-                ):
-                    rows.append({**_project(resource, grant), "incarnation": incarnation})
-            known = {row["connection_id"] for row in rows}
-            rows.extend(
-                row
-                for row in unfinished_disconnections(base, owner=identity.user_id, uid=uid)
-                if row["connection_id"] not in known
-            )
+                base, principal=identity.user_id, command_center=uid, limit=100,
+                include_revoked=True)
+            rows = [{**_project(resource, grant), "incarnation": incarnation,
+                     "cleanup_pending": resource.revoked_at is not None,
+                     "status": "cleanup_pending" if resource.revoked_at is not None
+                     else "provisioned"}
+                    for grant, resource, incarnation in inventory
+                    if resource.connection_type == "http"]
             return {"universe_id": uid,
                     "connections": [{**row, "label": connection_label(row)} for row in rows]}, 200
 
     try:
         result, status = await run_in_threadpool(run)
+    except LookupError:
+        return JSONResponse({"error": "not_found"}, 404, headers=_HEADERS)
+    except BrokerRefused:
+        return JSONResponse({"error": "connection_result_unconfirmed"}, 503, headers=_HEADERS)
     except PermissionError:
         return JSONResponse({"error": "connection_access_denied"}, 403, headers=_HEADERS)
     except Exception:  # noqa: BLE001 - no credentials or provider payload in errors

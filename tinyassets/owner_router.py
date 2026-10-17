@@ -25,7 +25,7 @@ _SHARED_APP = {
     "/app/owner-sign-in", "/app/owner-sign-in/complete", "/app/canary-sign-in",
     "/app/oauth/client-metadata.json", "/app/ui-frame", "/app/sw.js",
     # Sign-in navigation: its rows live in the router's owner-sessions store.
-    "/app/approval-handoff",
+    "/app/approval-handoff", "/app/connections",
 }
 _SHARED_APP_PREFIXES = ("/app/billing/", "/app/run/", "/app/m/", "/app/model-callback/",
                         "/app/approval-handoff/")

@@ -26,6 +26,9 @@ def rig(tmp_path, monkeypatch):
     from tinyassets.daemon_server import set_founder_home
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    from tests.support.broker_double import seed_owner_admission
+
+    seed_owner_admission(tmp_path, principal="owner", center="u-owner")
     universe = _make_universe(tmp_path, "u-owner", admin="owner")
     set_founder_home(tmp_path, founder_sub="owner", universe_id="u-owner", platform_generated=True)
     _login("owner")
@@ -263,7 +266,7 @@ def test_app_foreign_owner_cannot_inspect_or_remove(rig, monkeypatch):
     status, doc = _drive_get(
         "/app/connections", identity=_user("foreign"), monkeypatch=monkeypatch
     )
-    assert status == 403, doc
+    assert status == 404, doc
     ledger = ConnectionLedger(rig[0] / ".broker" / "outbound.db", data_root=rig[0])
     assert ledger.get_connection(conn["connection_id"]) is not None
 

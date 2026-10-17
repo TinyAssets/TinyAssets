@@ -416,6 +416,9 @@ class _Connection:
         elif op == "ADMITTED_OWNER":
             answer = await asyncio.to_thread(self._admitted_owner, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "SOLE_CENTER":
+            answer = await asyncio.to_thread(self._sole_center, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "OWNER_BOX_ROUTE":
             answer = await asyncio.to_thread(self._owner_box_route, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
@@ -580,6 +583,19 @@ class _Connection:
         except Exception:  # noqa: BLE001 - never expose broker state on refusal
             return {"op": "OWNER_BOX_ROUTE_REFUSED"}
 
+    def _sole_center(self, doc: dict[str, Any]) -> dict[str, Any]:
+        try:
+            if (set(doc) != {"op", "principal", "generation", "token"}
+                    or type(doc["generation"]) is not int or type(doc["token"]) is not str):
+                raise ValueError("invalid center request")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                center = self._server._owner_identities.sole_center(doc["principal"])
+                return {"op": "SOLE_CENTER_IS", "center": center}
+        except LookupError:
+            return {"op": "SOLE_CENTER_UNADMITTED"}
+        except Exception:  # noqa: BLE001 - no persisted state on refusal
+            return {"op": "SOLE_CENTER_REFUSED"}
+
     def _center_admission(self, doc: dict[str, Any]) -> dict[str, Any]:
         """DA1: append-only admit/retire; machine always from the reservation."""
         from tinyassets.broker.owner_identities import CenterUnadmitted
@@ -678,18 +694,21 @@ class _Connection:
         from tinyassets.broker.catalog import local_page, validate
 
         try:
-            if set(doc) != {"op", "principal", "command_center", "generation", "token",
-                            "cursor", "limit"}:
+            if not {"op", "principal", "command_center", "generation", "token",
+                    "cursor", "limit"} <= set(doc) <= {
+                    "op", "principal", "command_center", "generation", "token",
+                    "cursor", "limit", "include_revoked"}:
                 raise ValueError("unsupported catalog fields")
             _namespace(doc["principal"], doc["command_center"])
-            validate(doc["cursor"], doc["limit"])
+            validate(doc["cursor"], doc["limit"], doc.get("include_revoked", False))
             if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
                 raise Fenced("invalid fence")
             with self._server._fence.send(doc["generation"], doc["token"]):
                 result = local_page(self._server._ledger_for(doc["principal"]),
                                     principal=doc["principal"],
                                     command_center=doc["command_center"],
-                                    cursor=doc["cursor"], limit=doc["limit"])
+                                    cursor=doc["cursor"], limit=doc["limit"],
+                                    include_revoked=doc.get("include_revoked", False))
                 answer = {"op": "CATALOG_RESULT", "result": result}
                 rf.control(rf.CONNECTION, answer)
                 return answer

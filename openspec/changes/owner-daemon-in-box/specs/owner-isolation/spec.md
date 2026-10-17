@@ -85,5 +85,13 @@ metadata and deletion tombstones independently of daemon and owner stores.
 
 #### Scenario: Disconnect erases custody
 - **WHEN** DISCONNECT erases a fenced connection with the expected incarnation
-- **THEN** the broker erases its custody before removing the ledger rows
+- **THEN** the broker calls the directory's RFC 7009 endpoint under the custody lock, using the current refresh token or otherwise the access token and the registered client authentication
+- **AND** it erases custody and grants even when provider revocation fails
+- **AND** a provider failure leaves a credential-free, revoked connection row with `revocation_error` and `custody_erased`; a fresh connect may replace that receipt
 - **AND** a failed erase leaves the connection fenced and retryable
+
+#### Scenario: Connection controls need no owner store at the router
+- **WHEN** the authenticated owner opens `/app/connections` or disconnects a listed connection
+- **THEN** an explicit center must name that owner in broker admission, or the broker must find exactly one live center for that owner; otherwise the door returns 404
+- **AND** the router uses CONNECTION_CATALOG and DISCONNECT without reading a home, owner database, pending request or provider assignment
+- **AND** the catalog can include fenced connections whose local custody cleanup needs retry

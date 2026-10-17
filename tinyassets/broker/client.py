@@ -143,15 +143,17 @@ class BrokerClient:
             raise ProxyRequestError("invalid credential broker query response")
         return answer["result"]
 
-    def connection_catalog(self, *, cursor: str, limit: int) -> dict[str, Any]:
+    def connection_catalog(self, *, cursor: str, limit: int,
+                           include_revoked: bool = False) -> dict[str, Any]:
         from tinyassets.broker.catalog import validate
         from tinyassets.storage.outbound_connections import ProxyRequestError
 
-        validate(cursor, limit)
+        validate(cursor, limit, include_revoked)
         generation, token = self._fence()
         wire = {"op": "CONNECTION_CATALOG", "principal": self._principal,
                 "command_center": self._command_center, "generation": generation,
-                "token": token, "cursor": cursor, "limit": limit}
+                "token": token, "cursor": cursor, "limit": limit,
+                "include_revoked": include_revoked}
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
             try:
