@@ -99,8 +99,9 @@ async def handle_connections(request):
                                incarnation=data["incarnation"])
                 result = disconnect(base, **args, action="erase",
                                     incarnation=data["incarnation"])
-                return {"status": "removed", "connection_removed": result["removed"],
-                        "secrets_removed": result["secrets_removed"]}, 200
+                from tinyassets.broker.revocation import removal_result
+
+                return removal_result(result), 200
             inventory = connections(
                 base, principal=identity.user_id, command_center=uid, limit=100,
                 include_revoked=True)

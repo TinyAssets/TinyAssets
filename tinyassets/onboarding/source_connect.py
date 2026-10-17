@@ -40,8 +40,9 @@ def _offer_pool_access(*, base, uid, owner, preset, definition_id, models):
     access = ({m.provider.removeprefix("api_key_http:"): m.access.document()
                for m in assignment.candidates}
               if assignment is not None else {})
-    access[definition_id] = (ModelAccess("explicit", tuple(models), None)
-                             if models is not None else ModelAccess()).document()
+    proposed = (ModelAccess("explicit", tuple(models), None)
+                if models is not None else ModelAccess("discovered"))
+    access.setdefault(definition_id, proposed.document())
     root = (assignment.provider.removeprefix("api_key_http:") if assignment is not None
             else definition_id)
     result = request_from_user(universe_id=uid, origin="platform", payload={
@@ -87,3 +88,83 @@ def _ask_body(preset):
     return " ".join((preset["offer"], preset["billing_note"],
                      "You approve at " + preset["sign_in"]["issuer_host"]
                      + "; there is no key to copy."))
+
+
+def model_source(endpoints):
+    """Recognize installed model data only when its full policy is granted."""
+    from tinyassets.api.http_connection import _canonical_endpoint_set
+    from tinyassets.onboarding.connection_definition import preset_definition
+    from tinyassets.onboarding.hosted_model_auth import load_preset
+    from tinyassets.providers.discovery_presets import bundled_discovery_documents
+    from tinyassets.providers.free_sources import sign_in_cards, sign_in_preset, source_cards
+
+    actual = _canonical_endpoint_set(endpoints)
+    for ident in bundled_discovery_documents():
+        try:
+            preset = load_preset(ident)
+        except HostedAuthError:
+            continue
+        if _canonical_endpoint_set(preset_definition(ident)["policy"]["endpoints"]) <= actual:
+            return preset
+    for preset in source_cards() + [sign_in_preset(p["id"]) for p in sign_in_cards()]:
+        base = urlsplit(preset["base_url"])
+        required = [{"host": base.netloc, "path_template": base.path + path,
+                     "methods": [method]}
+                    for path, method in (("/chat/completions", "POST"), ("/models", "GET"))]
+        if _canonical_endpoint_set(required) <= actual:
+            return preset
+    return None
+
+
+def offer_connection_access(*, base, uid, owner, grant_id):
+    """Protected owner action in the box; consumes no credential or flow state."""
+    import json
+
+    from tinyassets.broker.ledger_queries import granted_resource_row
+    from tinyassets.onboarding.hosted_model_auth import AcquisitionPreset
+    from tinyassets.onboarding.serving import _gesture_lock, _require_current_admin
+    from tinyassets.shared_self import require_founder_home
+
+    with _gesture_lock(uid):
+        require_founder_home(base, uid, owner)
+        _require_current_admin(base, universe_id=uid, owner=owner)
+        resource = granted_resource_row(base, principal=owner, command_center=uid,
+                                       grant_id=grant_id)
+        if resource.get("committed_via") != "door":
+            raise PermissionError("model confirmation requires a door connection")
+        preset = model_source(json.loads(resource["allowed_endpoints_json"]))
+        if preset is None:
+            raise HostedAuthError("unknown_model_connection", 404)
+        if isinstance(preset, AcquisitionPreset):
+            from tinyassets.onboarding.model_bootstrap_candidate import prepare_candidate
+
+            definition_id = prepare_candidate(base=base, uid=uid, owner=owner,
+                                              grant_id=grant_id, preset=preset)
+            card = {"name": preset.display_name,
+                    "offer": "Use the free models this account offers.",
+                    "billing_note": "Only free models are approved."}
+            models = None
+        else:
+            from tinyassets.api.connection_uses import _definition_for
+            from tinyassets.broker.capabilities import capability_operation
+            from tinyassets.providers.discovery_http import read_granted_discovery_document
+            from tinyassets.providers.free_sources import discovered_agent_models
+
+            payload = read_granted_discovery_document(
+                db_path=base / "outbound.db", grant_id=grant_id, owner_user_id=owner,
+                universe_id=uid, url=preset["base_url"].rstrip("/") + "/models")
+            entries = discovered_agent_models(preset, payload)
+            definition_id = _definition_for(uid, owner, grant_id, preset["wire"],
+                                            entries[0]["id"]).id
+            descriptor = {"wire": preset["wire"], "models": entries, "billing": "free"}
+            args = dict(principal=owner, command_center=uid, grant_id=grant_id,
+                        connection_id=resource["connection_id"], capability_kind="model_use")
+            existing = capability_operation(base, **args)
+            if existing is not None and existing.descriptor() != descriptor:
+                raise HostedAuthError("model_candidate_requires_review", 409)
+            if existing is None:
+                capability_operation(base, **args, action="configure", enabled=True,
+                                     descriptor=descriptor)
+            card, models = preset, [entry["id"] for entry in entries]
+        return _offer_pool_access(base=base, uid=uid, owner=owner, preset=card,
+                                  definition_id=definition_id, models=models)

@@ -158,7 +158,7 @@ The broker SHALL own its custody locks, ownership metadata and deletion tombston
 - **AND** browser credential submissions go directly to the shared door
 
 #### Scenario: A grant completes the requesting box's pending connection
-- **WHEN** the box sees a live GRANTED_RESOURCE with the pending connection's request_ref and matching policy
+- **WHEN** the box sees a live GRANTED_RESOURCE committed through the door with the pending connection's request_ref and matching policy
 - **THEN** it applies the requested uses and resolves the pending request through the existing answer and continuation path
 - **AND** a different request_ref leaves it pending and repeated polling does not deliver a second answer
 - **AND** a completion-storage or model-acceptance failure leaves the request pending with an explicit failure
@@ -168,3 +168,19 @@ The broker SHALL own its custody locks, ownership metadata and deletion tombston
 - **WHEN** none, bearer, basic, header, oauth1a, url_secret, DCR, registered-client or preset authentication is connected
 - **THEN** a model or authenticated effector call from a separate box process succeeds through the broker
 - **AND** disconnect through the shared door or box DISCONNECT makes the next box call fail
+
+#### Scenario: Agent connections cannot approve requests
+- **WHEN** a box channel submits a request_ref in HTTP_CONNECT
+- **THEN** the broker refuses it; only the door can store a request reference
+- **AND** reconciliation ignores a box-committed grant even if its reference matches an ask
+
+#### Scenario: First model connection continues to owner confirmation
+- **WHEN** a door flow commits a model source
+- **THEN** the browser continues with its credential-free grant to the protected owner approval endpoint
+- **AND** the box prepares a candidate and raises the existing model-access ask
+- **AND** owner approval powers the default agent through the broker, using automatic selection across accepted sources
+
+#### Scenario: Provider revocation fails after local erasure
+- **WHEN** RFC 7009 revocation fails
+- **THEN** removal returns removed_locally_revoke_failed with a message naming the provider and its recovery URL
+- **AND** custody is erased and retrying removal retains the manual-revocation instruction

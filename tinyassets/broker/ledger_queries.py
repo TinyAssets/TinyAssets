@@ -145,7 +145,7 @@ def local_query(ledger, *, query: str, principal: str, command_center: str,
         fields = ("connection_id", "owner_user_id", "connection_class", "scopes_json",
                   "provider", "destination", "credential_ref", "revoked_at",
                   "connection_type", "auth_scheme", "allowed_endpoints_json", "access_mode",
-                  "git_host", "incarnation", "request_ref")
+                  "git_host", "incarnation", "request_ref", "committed_via")
         resource = {key: row[key] for key in fields}
         if query == GRANTED_RESOURCE:
             return {"resource": resource}

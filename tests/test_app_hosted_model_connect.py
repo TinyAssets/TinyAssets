@@ -181,14 +181,16 @@ def test_native_does_not_start_web_callback_flow():
     assert not result["requests"]
 
 
-# --- the return from the provider finishes by itself: 2 taps, not 3 ----------
+# --- provider return waits for explicit model-access confirmation ----------
 
 
-def test_return_from_the_provider_finishes_the_free_model_request_itself():
+def test_return_from_the_provider_waits_for_model_access_confirmation():
     result = run_browser(saved_callback() + confirmation() + """
 answerResult=()=>{me={setup:'connected',universe_id:'u',principal_id:'p'};
  return {status:'answered'};};
-await boot();""")
+await boot();
+if(answers.length)throw Error('model access approved without confirmation');
+await HostedModelConnect.finish();""")
     assert result["workosCalls"] == 0
     assert result["path"] == "/app" and not result["search"]
     assert not result["stored"] and not result["navigations"]
@@ -196,7 +198,7 @@ await boot();""")
     assert result["requests"][0]["url"].endswith("/exchange")
     assert result["requests"][0]["options"]["referrerPolicy"] == "no-referrer"
     assert result["answers"] == [{"request_id": "request-a", "values": {}}], \
-        "the owner had to approve twice"
+        "the explicit model-access approval did not finish"
     assert result["request"] is None and result["setup"] == "connected"
     assert any("connected" in line for line in result["system"])
     assert result["chatCount"] >= 1
@@ -211,7 +213,8 @@ await boot();""")
 def test_an_unconfirmed_answer_is_not_success_and_stays_one_tap_away(lost):
     """Live 2026-09-24: a deploy restarted the daemon mid-approval, the page read
     the non-answer as done, and the universe stayed unpowered."""
-    result = run_browser(saved_callback() + confirmation() + lost + "await boot();")
+    result = run_browser(saved_callback() + confirmation() + lost
+                         + "await boot();await HostedModelConnect.finish();")
     assert len(result["answers"]) == 1
     assert result["request"]["request_id"] == "request-a", "the request was dropped"
     assert result["finishHidden"] is False, "no one-tap way to finish"
@@ -223,14 +226,14 @@ def test_an_unconfirmed_answer_is_not_success_and_stays_one_tap_away(lost):
 def test_an_answer_whose_reply_was_lost_but_landed_reads_as_connected():
     result = run_browser(saved_callback() + confirmation() + """
 answerResult=()=>{me={setup:'connected',universe_id:'u',principal_id:'p'};return {};};
-await boot();""")
+await boot();await HostedModelConnect.finish();""")
     assert result["setup"] == "connected" and result["request"] is None
     assert any("connected" in line for line in result["system"])
 
 
 def test_finish_connecting_retries_the_same_request_once_per_tap():
     result = run_browser(saved_callback() + confirmation() + """
-answerResult={};await boot();
+answerResult={};await boot();await HostedModelConnect.finish();
 answerResult=()=>{me={setup:'connected'};return {status:'answered'};};
 await HostedModelConnect.finish();""")
     assert result["answers"] == [{"request_id": "request-a", "values": {}}] * 2
@@ -298,9 +301,11 @@ def test_missing_authorization_on_existing_setup_keeps_it():
     assert not result["answers"] and not result["navigations"]
 
 
-def test_resume_reads_the_saved_setup_then_finishes_it_in_the_same_tap():
+def test_resume_reads_saved_setup_then_owner_confirms_model_access():
     result = run_browser(confirmation() + "me={setup:'recovery'};await boot();"
                          "answerResult=()=>{me={setup:'connected'};return {status:'answered'};};"
+                         "await HostedModelConnect.finish();"
+                         "if(answers.length)throw Error('approved before confirmation');"
                          "await HostedModelConnect.finish();")
     assert len(result["requests"]) == 1
     assert result["requests"][0]["url"].endswith("/resume")
@@ -344,6 +349,7 @@ const realFetch=fetch;fetch=async(...args)=>{
  assert.equal($('hosted-key-input').value,'');return realFetch(...args);
 };
 await HostedModelConnect.depositKey();await HostedModelConnect.depositKey();
+assert.equal(answers.length,0);await HostedModelConnect.finish();
 assert.equal($('hosted-key-input').value,'');
 """)
     assert len(result["requests"]) == 1
@@ -420,7 +426,7 @@ globalThis.AppUI={init(){layoutCalls.push(['init']);},
  enable(home,principal){layoutCalls.push(['enable',home,principal]);}};
 answerResult=()=>{me={setup:'connected',universe_id:'u-owner',principal_id:'owner'};
  return {status:'answered'};};
-await boot();
+await boot();await HostedModelConnect.finish();
 assert(layoutCalls.some(call=>call[0]==='init'));
 assert(layoutCalls.some(call=>call[0]==='reset'));
 assert.deepEqual(layoutCalls.filter(call=>call[0]==='enable'),[['enable','u-owner','owner']]);
