@@ -136,3 +136,40 @@ def test_outage_precedes_vault_write_without_local_ledger(removal, monkeypatch):
     monkeypatch.setattr(supervisor, "get_supervisor", lambda root: None)
     assert connect()["error"] == "model_connection_incomplete"
     assert not (removal.root / "outbound.db").exists()
+
+
+def test_only_door_commit_can_complete_a_model_ask(removal, monkeypatch):
+    from tinyassets.api import pending_requests
+    from tinyassets.api.http_connection import _ids
+    from tinyassets.storage.pending_requests import get_request
+
+    uses = {"model": {"wire": "openai_chat", "billing": "free", "models": [
+        {"id": "fixture-model", "tools": True, "context": 32768}]}}
+    endpoint = {**FIRST, "methods": ["POST"]}
+    applied = []
+    monkeypatch.setattr(pending_requests, "_complete_connect",
+                        lambda *args: applied.append(args) or {})
+    with identity_context(Identity(user_id="alice", username="alice", capabilities=["write"])):
+        asked = pending_requests.request_from_user(universe_id="cc-alice", payload={
+            "kind": "connection", "title": "Use models", "body": "Approve model access.",
+            "fields": [], "action": {"type": "connect", "destination": "fresh",
+                "auth_scheme": "bearer", "endpoints": [endpoint], "uses": uses}})
+        assert "error" not in asked, asked
+        ref = asked["request_id"]
+        result = connect(request_ref=ref, allowed_endpoints=[endpoint])
+        assert result["status"] == "provisioned"
+        connection, _ = _ids(universe_id="cc-alice", destination="fresh")
+        # Defense in depth: even a forged/stale reference on a box grant cannot approve.
+        with removal.ledger._connect() as db:
+            assert db.execute("SELECT committed_via FROM outbound_connections "
+                              "WHERE connection_id=?", (connection,)).fetchone()[0] == "door"
+            db.execute("UPDATE outbound_connections SET committed_via='box' "
+                       "WHERE connection_id=?", (connection,))
+        home = removal.root / "cc-alice"
+        pending_requests.reconcile_connections("cc-alice", home)
+        assert get_request(home, ref)["status"] == "pending"
+        assert applied == []
+        assert connect(request_ref=ref, allowed_endpoints=[endpoint])["status"] == "provisioned"
+        pending_requests.reconcile_connections("cc-alice", home)
+        assert get_request(home, ref)["status"] == "answered"
+        assert len(applied) == 1

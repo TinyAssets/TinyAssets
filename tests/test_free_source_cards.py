@@ -107,11 +107,13 @@ class Element {
   addEventListener(k,v){this.listeners[k]=v;}
 }
 const host=new Element('div'), $=()=>host, document={createElement:t=>new Element(t)};
-const MCP={_loginEpoch:1};let refreshed=0,sent=null,cleared=false;
+const answers=[],MCP={_loginEpoch:1,answerRequest:async p=>{answers.push(p);}};
+let refreshed=0,sent=null,cleared=false,painted=0;
 const refreshRail=()=>{refreshed++;};
-const HostedModelConnect={post:async(op,p)=>{
+const confirmation={request_id:'model-use-request',action:{type:'bind_model_access'}};
+const HostedModelConnect={paint:()=>{painted++;},post:async(op,p)=>{
   sent={op,p};cleared=input.value==='';
-  return {status:'provisioned'};
+  return {status:'confirmation_required',request_id:confirmation.request_id,request:confirmation};
 }};
 __SOURCE__
 const cards=__CARDS__;
@@ -126,6 +128,8 @@ FreeSourceCards.render(cards);
   await button.listeners.click();
   console.log(JSON.stringify({count:host.children.length,preserved,cleared,refreshed,sent,
     type:input.type,value:input.value,
+    setup:HostedModelConnect.setup,request:HostedModelConnect.request,painted,answers,
+    busy:FreeSourceCards.busy,disabled:button.disabled,
     status:initial.children[initial.children.length-1].textContent}));
 })().catch(e=>{console.error(e);process.exitCode=1;});
 """
@@ -140,7 +144,13 @@ FreeSourceCards.render(cards);
     assert observed["type"] == "password" and observed["value"] == ""
     assert observed["sent"] == {"op": "deposit_key", "p": {
         "preset_id": "groq", "key": "private-own-key"}}
-    assert observed["refreshed"] == 1 and observed["status"] == "Connection saved."
+    assert observed["refreshed"] == 1 and observed["status"] == (
+        "Connection saved. Review model access, then confirm.")
+    assert observed["setup"] == "recovery" and observed["painted"] == 1
+    assert observed["request"] == {
+        "request_id": "model-use-request", "action": {"type": "bind_model_access"}}
+    assert observed["answers"] == []
+    assert observed["busy"] is False and observed["disabled"] is False
 
 
 def test_authenticated_card_ingress_reuses_same_origin_gate(rig, monkeypatch):

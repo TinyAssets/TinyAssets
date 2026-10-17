@@ -83,7 +83,9 @@ def test_disconnect_revokes_current_token_then_erases(oauth, registered, refresh
 
 
 @pytest.mark.parametrize("failure", ["http", "network", "directory"])
-def test_revocation_failure_is_recorded_without_secrets_and_local_erase_wins(oauth, failure):
+@pytest.mark.parametrize("surface", ["box", "door"])
+def test_revocation_failure_is_recorded_without_secrets_and_local_erase_wins(
+        oauth, failure, surface, monkeypatch):
     from tinyassets.broker.http_connect import connect_operation
     from tinyassets.credential_vault import load_credential_vault
 
@@ -95,7 +97,13 @@ def test_revocation_failure_is_recorded_without_secrets_and_local_erase_wins(oau
         reply["raise"] = True
     else:
         path.write_text("invalid")
-    result = rig.remove()
+    remove = rig.remove if surface == "box" else lambda: _door_remove(rig, monkeypatch)
+    result = remove()
+    assert result["status"] == "removed_locally_revoke_failed"
+    assert result["recovery"] == "revoke_at_provider"
+    assert "provider-side revocation failed" in result["message"]
+    assert "revoke it at fixture (https://service.example.com)" in result["message"]
+    assert "cannot retry" in result["message"]
     assert result["connection_removed"] and result["secrets_removed"] == 1
     assert load_credential_vault(rig.root / "cc-alice") == []
     assert rig.ledger.get_grant(rig.grant) is None
@@ -107,7 +115,10 @@ def test_revocation_failure_is_recorded_without_secrets_and_local_erase_wins(oau
     assert "refresh-value" not in json.dumps(row) and "registered-secret" not in json.dumps(row)
     assert operation(rig)["resource"] is None
     count = len(calls)
-    assert rig.remove()["connection_removed"] is False
+    repeated = remove()
+    assert repeated["connection_removed"] is False
+    assert repeated["status"] == "removed_locally_revoke_failed"
+    assert repeated["message"] == result["message"]
     assert len(calls) == count
     args = dict(principal="alice", command_center="cc-alice", destination="fixture",
                 policy={"auth_scheme": "bearer", "scopes": ["GET"], "git_host": "",
@@ -138,3 +149,30 @@ def test_stale_or_unfenced_disconnect_never_calls_provider(oauth):
         with pytest.raises(GrantResolutionError):
             operation(rig, action="erase", incarnation=incarnation)
     assert calls == []
+
+
+def _door_remove(rig, monkeypatch):
+    import asyncio
+
+    from starlette.requests import Request
+
+    from tinyassets import onboarding
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+    from tinyassets.onboarding.connections import handle_connections
+
+    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
+    monkeypatch.setattr(onboarding, "app_config", lambda: {"resource": "https://tinyassets.io/mcp"})
+    raw = json.dumps({"universe_id": "cc-alice", "destination": "fixture",
+                      "incarnation": rig.incarnation}).encode()
+
+    async def receive():
+        return {"type": "http.request", "body": raw, "more_body": False}
+
+    request = Request({"type": "http", "method": "POST", "path": "/app/connections",
+        "query_string": b"", "headers": [(b"origin", b"https://tinyassets.io"),
+        (b"content-type", b"application/json"), (b"host", b"tinyassets.io")]}, receive)
+    with identity_context(Identity(user_id="alice", username="alice", capabilities=["write"])):
+        response = asyncio.run(handle_connections(request))
+    assert response.status_code == 200, response.body
+    return json.loads(response.body)
