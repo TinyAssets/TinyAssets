@@ -152,7 +152,6 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
         "owner", principals=("owner",))
     add(".owner_devices.db", "owner_devices owner_notify_settings request_notifications", "owner",
         principals=("owner_user_id",))
-    add(".source_channel_policy.db", "source_channel_policy", "owner", centers=("universe_id",))
     add(".broker/state/owner-identities.db", "owner_identities center_admissions box_records "
         "owner_box_secrets owner_box_revocations", "broker")
     add(".broker/plans.db", "plans", "broker")

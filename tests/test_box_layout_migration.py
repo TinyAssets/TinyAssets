@@ -11,11 +11,18 @@ import stat
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 
 import pytest
 
 from tinyassets import box_layout_migration as migration
 from tinyassets.usage_policy import AccountType, limits_for
+
+
+def _root_migration(monkeypatch) -> None:
+    # Only the migration entry point impersonates root. Identity stores must
+    # still validate the real uid that owns this unprivileged fixture.
+    monkeypatch.setattr(migration, "os", SimpleNamespace(**(vars(os) | {"geteuid": lambda: 0})))
 
 
 def _archive(path: Path, data: bytes) -> None:
@@ -75,7 +82,7 @@ def _cutover_root(tmp_path: Path) -> tuple[Path, Path]:
 def test_read_only_preflight_refuses_without_changing_the_layout(tmp_path, monkeypatch, refusal):
     data, store = _cutover_root(tmp_path)
     original = (data / ".layout.json").read_bytes()
-    monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
+    _root_migration(monkeypatch)
     monkeypatch.setattr(migration, "_owner_plan", lambda _, **_kwargs: [
         migration.OwnerMove("alice", 300001, ("c1",), 1024**3)])
     monkeypatch.setattr(migration, "_mounted", lambda _: None)
@@ -106,7 +113,7 @@ def test_read_only_preflight_accepts_clean_owner_split(tmp_path, monkeypatch):
     _identities(data / '.broker/state/owner-identities.db', 'alice', 300001, 'c1')
     with sqlite3.connect(data / '.tinyassets.db') as db:
         db.execute('CREATE TABLE founder_home (founder_sub TEXT, universe_id TEXT)')
-    monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
+    _root_migration(monkeypatch)
     monkeypatch.setattr(migration, "_mounted", lambda _: None)
     monkeypatch.setattr(migration, "_owner_plan", lambda _, **_kwargs: [
         migration.OwnerMove("alice", 300001, ("c1",), 1024**3)])
@@ -193,7 +200,7 @@ def test_preflight_reads_wal_without_writing_data(tmp_path, monkeypatch, live_wr
             return info
 
         monkeypatch.setattr(Path, "lstat", owner_lstat)
-        monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
+        _root_migration(monkeypatch)
         monkeypatch.setattr(migration, "_mounted", lambda _: None)
         monkeypatch.setattr(migration, "_owner_inode_preflight", lambda *_: None)
         monkeypatch.setattr(migration, "_xfs_quota", lambda *_: "project report")
@@ -235,7 +242,7 @@ def test_apply_refuses_unreadable_founder_home_before_any_write(tmp_path, monkey
         return info
 
     monkeypatch.setattr(Path, "lstat", owner_lstat)
-    monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
+    _root_migration(monkeypatch)
     monkeypatch.setattr(migration, "_verified_pair", lambda *args, **kwargs: None)
     monkeypatch.setattr(migration, "_mounted", lambda *args, **kwargs: None)
     with pytest.raises(FileNotFoundError, match=r"\.tinyassets\.db"):
@@ -305,7 +312,7 @@ def test_cross_owner_inode_refuses_before_marker_or_destination_write(tmp_path, 
     (data / "c2").mkdir()
     os.link(data / "c1/note.txt", data / "c2/borrowed.txt")
     original = (data / ".layout.json").read_bytes()
-    monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
+    _root_migration(monkeypatch)
     monkeypatch.setattr(migration, "_verified_pair", lambda *args, **kwargs: None)
     monkeypatch.setattr(migration, "_mounted", lambda *args, **kwargs: None)
     monkeypatch.setattr(migration, "_owner_plan", lambda *args: [
@@ -360,7 +367,7 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
     _identities(data / '.broker/state/owner-identities.db', 'person', 300001, 'c1')
     with sqlite3.connect(data / '.tinyassets.db') as db:
         db.execute('CREATE TABLE founder_home (founder_sub TEXT, universe_id TEXT)')
-    monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
+    _root_migration(monkeypatch)
     monkeypatch.setattr(migration.os, "chown", lambda *args, **kwargs: None)
     monkeypatch.setattr(migration, "_verified_pair", lambda *args, **kwargs: None)
     monkeypatch.setattr(migration, "_mounted", lambda *args, **kwargs: None)
@@ -551,7 +558,7 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
 
     monkeypatch.setattr(os, "stat", stat)
     monkeypatch.setattr(os, "chown", lambda *args, **kwargs: None)
-    monkeypatch.setattr(migration.os, "geteuid", lambda: 0)
+    _root_migration(monkeypatch)
     monkeypatch.setattr(migration, "_mounted", lambda *args, **kwargs: None)
     monkeypatch.setattr(migration.subprocess, "run", run)
     monkeypatch.setattr(migration, "_xfs_quota", lambda _store, command:

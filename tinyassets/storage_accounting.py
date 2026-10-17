@@ -726,7 +726,6 @@ ROOT_ENTRIES: dict[str, str] = {
     ".auth.db": "platform: sessions (never gated)",
     ".hosted-model-auth.db": "platform: credential vault (never gated)",
     ".owner_devices.db": "platform: device registrations",
-    ".source_channel_policy.db": "platform: legacy per-center source-channel policy, census only",
     ".effector_consents.db": "platform: consent records",
     ".outbound-proxy": "platform: egress proxy state",
     ".broker": "platform: credential broker socket, owner fence and operation bookkeeping",
