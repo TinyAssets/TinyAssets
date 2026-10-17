@@ -207,18 +207,33 @@ def test_authenticated_external_call_and_grant_revocation(box):
     assert len(box.calls) == 1
 
 
-@pytest.mark.parametrize("published", [False, True])
-def test_box_raw_model_post_requires_usage_with_or_without_descriptor(box, published):
+@pytest.mark.parametrize("source", ["capability", "descriptor"])
+def test_box_raw_model_post_requires_usage_after_metadata_removed(box, source):
     from tinyassets.broker.owner_sources import read
     from tinyassets.owner_channel import request
     from tinyassets.storage.agent_request_usage import InferenceUsageRequired
     from tinyassets.storage.outbound_connections import _broker_channel
 
     assert read(box.ledger, "center") == []
-    if published:
-        request("center", {"op": "MODEL_SOURCE", "definition": box.definition.as_dict()})
     channel = _broker_channel(box.root, principal="owner", command_center="center",
                               grant_id="grant-model", connection_id="conn-model")
+    assert not box.ledger.grant_requires_inference_usage("grant-model")
+    assert channel.request("POST", {"url": "https://models.example.com/v1/chat",
+                                    "body": {"model": "reply-model"}})["status"] == 200
+    box.calls.clear()
+    box.events.clear()
+    if source == "descriptor":
+        request("center", {"op": "MODEL_SOURCE", "definition": box.definition.as_dict()})
+        with box.ledger._connect() as conn:
+            conn.execute("DELETE FROM box_model_sources")
+        assert read(box.ledger, "center") == []
+    else:
+        box.ledger.configure_capability(
+            connection_id="conn-model", capability_kind="model_use", enabled=True,
+            descriptor={"wire": "openai_chat", "models": [
+                {"id": "reply-model", "tools": True, "context": 4096}], "billing": "flat"})
+        box.ledger.configure_capability(connection_id="conn-model", capability_kind="model_use",
+                                        enabled=False)
     with pytest.raises(InferenceUsageRequired):
         channel.request("POST", {"url": "https://models.example.com/v1/chat",
                                  "body": {"model": "reply-model"}})
@@ -268,7 +283,10 @@ def test_box_shared_channel_rechecks_last_live_admission_on_every_read(box):
         sock.sendall(document)
         assert rf.read_frame_blocking(sock).control() == {
             "op": "BOX_RESULT", "result": {"tier": "paid", "ends_at": None}}
-        box.identities.admission("retire", "owner", "center")
+        # Retirement is a broker operation; run it outside the box runtime.
+        with pytest.MonkeyPatch.context() as broker_context:
+            broker_context.setattr(owner_runtime, "_runtime", None)
+            box.identities.admission("retire", "owner", "center")
         sock.sendall(document)
         assert rf.read_frame_blocking(sock).control() == {"op": "BOX_REFUSED"}
 
@@ -372,14 +390,16 @@ def test_policy_source_display_and_capabilities_use_bound_channel(box):
 
 @pytest.mark.parametrize("operation", ["connect", "connect_ex", "udp", "http", "sdk"])
 def test_outbound_seam_refuses_all_direct_network(box, operation):
-    with pytest.raises((PermissionError, httpx.ConnectError, URLError)):
+    # HTTP clients wrap the audit hook's PermissionError; require it in the chain
+    # so a real connection attempt can never satisfy this test.
+    with pytest.raises((PermissionError, httpx.ConnectError, URLError)) as refused:
         if operation == "http":
-            httpx.get("https://203.0.113.1", trust_env=False)
+            httpx.get("https://203.0.113.1", trust_env=False)  # hermetic-ok: hook refuses
         elif operation == "sdk":
             # urllib is also the transport used by provider adapters.
             import urllib.request
 
-            urllib.request.urlopen("https://203.0.113.1", timeout=1)
+            urllib.request.urlopen("https://203.0.113.1", timeout=1)  # hermetic-ok: hook refuses
         else:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM if operation == "udp"
                                else socket.SOCK_STREAM) as sock:
@@ -388,12 +408,23 @@ def test_outbound_seam_refuses_all_direct_network(box, operation):
                 else:
                     getattr(sock, operation)(("203.0.113.1", 443))
     assert not box.calls
+    error, chain = refused.value, []
+    while error is not None:
+        chain.append(error)
+        error = error.__cause__ or error.__context__ or getattr(error, "reason", None)
+        if error in chain:
+            break
+    assert any(isinstance(e, PermissionError) and "broker egress" in str(e)
+               for e in chain), chain
 
 
 def test_vault_and_provider_cli_refuse(box):
     from tinyassets.credential_vault import credential_vault_path
     with pytest.raises(PermissionError, match="raw credential custody"):
         credential_vault_path(box.root / "center")
+    import importlib.util
+
+    assert importlib.util.find_spec("tinyassets.providers.owned_process") is None
 
 
 def test_model_in_fresh_box_process_has_no_secret(box):

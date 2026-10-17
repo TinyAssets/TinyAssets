@@ -87,6 +87,8 @@ def test_popup_callback_and_once_only_server_held_exchange(monkeypatch):
     assert "synthetic-private-key" not in reply.text
     assert "verifier" not in reply.text
     assert len(calls) == 1
+    assert calls[0]["code"] == "synthetic-code"
+    assert hosted._challenge(calls[0]["verifier"]) == calls[0]["flow"].challenge
     assert post("inline_poll", {"flow": flow["flow"]}).json() == {"status": "consumed"}
     assert len(calls) == 1
 

@@ -13,7 +13,7 @@ configured = integration.configured
 
 
 def test_actual_owned_catalog_projects_without_enabling_serving(configured, monkeypatch):
-    # The native-first expectation below depends on a known finite HTTP cap.
+    # Make the HTTP model catalogue independent of prior request usage.
     monkeypatch.setattr("tinyassets.request_budget.requests_today", lambda *a, **kw: (0, 0))
     base = configured.rig.base
     before = get_binding(base, universe_id="u-models",
@@ -33,3 +33,8 @@ def test_actual_owned_catalog_projects_without_enabling_serving(configured, monk
     assert str(base) not in encoded
     assert "source_digest" not in encoded
     assert "authenticated_account_id" not in encoded
+    from tinyassets.provider_serving_binding import list_serving_universes
+
+    assert {item["provider_ref"] for item in result["order"]} == {
+        f"api_key_http:{configured.rig.definition.id}"}
+    assert list_serving_universes(base) == []

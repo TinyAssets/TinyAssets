@@ -995,6 +995,17 @@ def test_the_end_date_is_stored_and_cleared_with_the_tier(tmp_path):
     assert plans.read("owner")["ends_at"] == 500
     plans.set_plan("owner", "paid", event_created=200)
     assert plans.read("owner")["ends_at"] is None
+    import sqlite3
+    from contextlib import closing
+
+    from tinyassets.broker.owner_reads import PlanMissing
+
+    # Inspect storage too: a string that merely reads as absent is not SQL NULL.
+    with closing(sqlite3.connect(plans.path)) as db:
+        assert db.execute("SELECT tier, ends_at FROM plans WHERE owner=?",
+                          ("owner",)).fetchone() == ("paid", None)
+    with pytest.raises(PlanMissing):
+        plans.read("another-owner")
 
 
 def test_a_rejected_event_cannot_leave_its_end_date_behind(tmp_path):

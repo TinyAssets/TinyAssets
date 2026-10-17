@@ -548,6 +548,10 @@ def test_sign_in_round_trip_through_the_real_callback(provider, app, tmp_path):
     ledger = ConnectionLedger(app / ".broker" / "outbound.db", data_root=app)
     resource = ledger._get_connection_resource(connection_id)
     assert resource.auth_scheme == "oauth2"
+    grant = ledger.require_active_grant(grant_id)
+    assert grant.owner_user_id == OWNER
+    assert grant.universe_id == UID
+    assert grant.connection_id == connection_id
     bundle = _vault_bundle(app)
     assert bundle.token_url == f"https://{TOKEN}/token"
     assert bundle.refresh_token in provider.refresh_live

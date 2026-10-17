@@ -26,6 +26,9 @@ def base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root = tmp_path / "data"
     root.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
+    # These are descriptor serialization/identity tests with synthetic refs;
+    # real grant publication and its permanent latch are covered over broker IPC.
+    monkeypatch.setattr(pd, "_publish_source", lambda definition: None)
     return root
 
 

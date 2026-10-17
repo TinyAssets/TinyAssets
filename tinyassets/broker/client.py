@@ -111,6 +111,31 @@ class BrokerClient:
         else:
             sock.connect(os.fspath(self._path))
 
+    def publish_model_source(self, definition: dict[str, Any]) -> dict[str, Any]:
+        """Accept a source and latch its grant in the broker before registration succeeds."""
+        from tinyassets.storage.outbound_connections import ProxyRequestError
+
+        generation, token = self._fence()
+        wire = {"op": "MODEL_SOURCE", "principal": self._principal,
+                "command_center": self._command_center, "generation": generation,
+                "token": token, "definition": definition}
+        with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(self._timeout)
+            try:
+                self._connect(sock)
+                if self._verify_peer is not None and not self._owner_mode():
+                    self._verify_peer(sock)
+                sock.sendall(rf.control(rf.CONNECTION, wire))
+                frame = rf.read_frame_blocking(sock)
+                if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
+                    raise rf.FrameError("invalid source response")
+                answer = frame.control()
+            except (OSError, rf.FrameError):
+                raise ProxyRequestError("broker source publication outcome unavailable") from None
+        if answer.get("op") != "BOX_RESULT" or not isinstance(answer.get("result"), dict):
+            raise BrokerRefused("credential broker source publication refused")
+        return answer["result"]
+
     def ledger_query(self, *, query: str, grant_id: str,
                      connection_id: str = "") -> dict[str, Any]:
         """One named, read-only operation; never retry through a local ledger."""

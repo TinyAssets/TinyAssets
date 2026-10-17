@@ -1103,6 +1103,7 @@ def test_newborn_without_a_credential_gets_onboarding_not_a_raw_error(
     assert "All providers exhausted" not in rendered
     assert "set_engine" not in rendered
     assert any(path["path"] == "/app/connections" for path in out["setup_paths"])
+    assert "byo_api_key" not in rendered  # No retired box-side key-deposit instructions.
 
 
 def test_setup_required_reply_is_platform_authored_not_the_universe_voice(

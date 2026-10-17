@@ -32,10 +32,15 @@ def consumers(tmp_path, monkeypatch):
         protocol="chat_messages", model="fixture", ref="grant-alice",
     )
     provider = f"api_key_http:{definition.id}"
-    foreign_definition = register_definition(
-        universe_id="cc-alice", owner_user_id="alice", access_method="api_key_http",
-        protocol="chat_messages", model="foreign-fixture", ref="grant-bob",
-    )
+    from tests.support.broker_double import seed_unchecked_definition
+
+    # Inject an already-stored foreign reference; broker registration rejects it.
+    fields = dict(universe_id="cc-alice", owner_user_id="alice", access_method="api_key_http",
+                  protocol="chat_messages", model="foreign-fixture", ref="grant-bob")
+    foreign_definition = seed_unchecked_definition(**fields)
+    other_owner = register_definition(
+        universe_id="cc-alice", owner_user_id="bob", access_method="api_key_http",
+        protocol="chat_messages", model="foreign-owner", ref="grant-bob")
     calls = []
 
     class Client:
@@ -56,7 +61,8 @@ def consumers(tmp_path, monkeypatch):
 
     monkeypatch.setattr("tinyassets.storage.outbound_connections.ConnectionLedger", no_local)
     return SimpleNamespace(root=tmp_path, ledger=ledger, provider=provider, calls=calls,
-                           foreign_provider=f"api_key_http:{foreign_definition.id}")
+                           foreign_provider=f"api_key_http:{foreign_definition.id}",
+                           other_owner=other_owner)
 
 
 def test_all_resource_consumers_use_scoped_query_without_local_ledger(consumers):
@@ -77,10 +83,7 @@ def test_all_resource_consumers_use_scoped_query_without_local_ledger(consumers)
 
 def test_display_uses_admitted_owner_even_when_definition_names_another(consumers):
     c = consumers
-    definition = register_definition(
-        universe_id="cc-alice", owner_user_id="bob", access_method="api_key_http",
-        protocol="chat_messages", model="foreign-owner", ref="grant-bob",
-    )
+    definition = c.other_owner
     assert source_display_name(base=c.root, universe_id="cc-alice",
                                provider=f"api_key_http:{definition.id}") == ""
     assert c.calls[-1][0] == "alice"

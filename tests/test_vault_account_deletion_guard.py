@@ -48,6 +48,8 @@ def test_deletion_waits_for_inflight_vault_persist_then_erases(tmp_path, monkeyp
             writing.result(timeout=10)
             deleting.result(timeout=10)
     assert_no_credentials(home)
+    with pytest.raises(PermissionError, match="deleted"):
+        write(home)  # The broker tombstone also fences a writer arriving after erasure.
 
 
 def test_delayed_write_after_deletion_refuses_without_key_or_owner_rows(tmp_path):
