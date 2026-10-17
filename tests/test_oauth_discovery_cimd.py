@@ -479,6 +479,7 @@ def test_unlisted_mcp_through_connect_card(
         )
     assert asked.get("primary") == "connect", asked
     assert "source" not in asked["action"]["oauth"]
+    assert fetched == []  # Asking in the box must not perform OAuth discovery.
     _, _, done = _sign_in(provider, asked["request_id"])
     assert done.status_code == 200, done.text
     bundle = _vault_bundle(app)

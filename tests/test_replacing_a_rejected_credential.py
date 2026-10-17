@@ -797,14 +797,7 @@ def test_a_connection_that_does_not_read_this_vault_slot_is_refused(base):
 
 
 def test_a_scheme_with_no_pasted_key_is_refused_in_both_places(base):
-    """Fail closed on the SET the deposit door accepts, not on a list of known
-    exceptions (Codex refute-review, P2 #5).
-
-    `none` sends no credential at all, so storing a pasted value would report a
-    repair that cannot have repaired anything. `connect_http` cannot create such a
-    connection; a lower-level path can, and hard rule 8 says the answer is a
-    refusal, not a receipt.
-    """
+    """A keyless connection refuses pasted rotation at both door and request rail."""
     from tests.support.connection_door import rotate_http
 
     _make_universe(base, "u-1", admin="alice")
@@ -820,6 +813,9 @@ def test_a_scheme_with_no_pasted_key_is_refused_in_both_places(base):
         action={"type": "rotate_http", "destination": "acme"})
     assert railed["error"] == "ask_cannot_be_granted", railed
     assert "no pasted key" in railed["detail"]
+    from tinyassets.credential_vault import load_credential_vault
+
+    assert load_credential_vault(base / "u-1") == []
 
 
 def test_a_record_with_no_recorded_depositor_is_refused_before_the_card(base):

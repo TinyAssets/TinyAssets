@@ -316,14 +316,7 @@ def test_authkit_returning_no_new_token_reuses_the_current_handle_without_writin
 
 
 def test_the_key_is_scrubbed_at_IMPORT_before_any_store_call(monkeypatch):
-    """Lazy loading left the key in os.environ until the first token request.
-
-    Provider children are spawned with a wholesale copy of os.environ, so every
-    `claude -p` / `codex exec` started in that window inherited the key that
-    opens every user's session. The discriminator is that `_key` is already
-    populated and the var already gone with NO store call having happened --
-    under the lazy shape both are the opposite.
-    """
+    """Import scrubs the configured seal key before any child can inherit it."""
     import importlib
 
     from tinyassets.providers import base as provider_base
@@ -343,6 +336,7 @@ def test_the_key_is_scrubbed_at_IMPORT_before_any_store_call(monkeypatch):
     assert session_store.SEAL_KEY_ENV not in child_env
     # ...and it is the CONFIGURED key, not a fresh ephemeral that happens to work.
     handle = session_store.mint("RT-configured", owner="owner")
+    assert "RT-configured" not in session_store._record_path(handle).read_text()
     session_store._key = None
     monkeypatch.setenv(session_store.SEAL_KEY_ENV, raw)
     assert session_store.read(handle) == ("RT-configured", handle)

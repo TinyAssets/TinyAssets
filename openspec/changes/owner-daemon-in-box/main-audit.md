@@ -994,3 +994,53 @@ Receipt files are outside the repository under
 `3c-regression-root.log`, and `3c-regression-reopen-final.log`.
 The original chunk lists and original failure logs remain unchanged in the
 supplied scratch directory.
+
+
+## D3c test hygiene: restore 24 retained tests
+
+Compared each named test with `conv/c6-owner-daemon-s3` and the D3c decisions.
+All 24 still cover retained behavior, so none was deleted. No product code,
+gate, skip, xfail or quarantine changed. The counts below use the hygiene
+gate's own assertion counter (including expected exceptions and assertion helpers).
+The retained names preserve the base-to-head comparison even where they mention
+retired executor shapes.
+
+| Test (`tests/` prefix, `.py` suffix omitted) | Removed in 3c | Replacement checked now | Base / repaired count |
+|---|---|---|---|
+| `test_billing_boundary::test_the_end_date_is_stored_and_cleared_with_the_tier` | Deleted metadata row after clearing the end date. | Owner-keyed SQL row retains paid tier with SQL NULL end date; another owner with no row raises PlanMissing. | 3 / 4 |
+| `test_connect_free_ai_screen::test_sign_in_source_card_is_one_tap_to_the_platforms_own_ask` | Visible failure detail after unavailable sign-in. | Shared-door sign-in failure displays sign_in_unavailable and keeps retry enabled. | 9 / 9 |
+| `test_conversation_failure_history::test_exception_to_code_and_fixed_notice_never_copy_diagnostics` | Native terminal-text classification and its notice. | HTTP attempt's typed rate-limit class is recognized; a diagnostic string masquerading as a class becomes unknown. Existing fixed-notice secrecy checks remain. | 9 / 9 |
+| `test_engine_mcp_server::test_sandboxed_config_engine_mcp_off_by_default` | CLI tool allow/deny entries. | Disabled engine configuration carries neither actor nor graph routing identity. | 3 / 3 |
+| `test_engine_mcp_server::test_sandboxed_config_on_when_all_conditions_met` | Seven CLI allow/deny and resource-reader checks. | Exactly four model tools; publish/remix remain outside backend authority; no resource-reader tool or CLI allow/deny fields; configured timeout survives. Owner/graph and backend capabilities remain checked. | 11 / 11 |
+| `test_engine_mcp_server::test_connect_compute_is_exposed_in_both_provider_allowlists` | Provider-specific prefixed bash allowlist. | A connect_compute-only grant exposes bash so ta can reach registration without exposing backend handles directly. | 5 / 5 |
+| `test_engine_mcp_server::test_served_allowlists_do_not_drift` | Identity of a second executor's tool tuple. | An explicit empty backend grant exposes no model tools. Existing canonical four-tool checks remain. | 4 / 4 |
+| `test_first_contact::test_newborn_without_a_credential_gets_onboarding_not_a_raw_error` | Legacy advertised-handle and pasted-key setup guidance. | Setup names the connections door and omits the retired byo_api_key path. | 8 / 8 |
+| `test_generic_oauth_connections::test_sign_in_round_trip_through_the_real_callback` | Immediate box answer/continuation and answer-delivery origin rows. | Broker grant created by the real callback binds the expected owner, center and connection; request_ref and token-free response remain checked. | 19 / 19 |
+| `test_http_connection_provisioning::test_unsupported_auth_scheme_rejected` | Response's old allowed-scheme list. | Unsupported scheme leaves neither custody nor a broker connection row. Keyless none is supported and is no longer a negative case. | 3 / 3 |
+| `test_inline_model_connect::test_popup_callback_and_once_only_server_held_exchange` | Box answer embedded in confirmation response. | Broker exchange receives the callback code and the verifier matching the stored flow challenge; once-only and secret-free response checks remain. | 11 / 12 |
+| `test_manifest_connection_inventory::test_readiness_and_inventory_check_independent_http_members` | Native fallback survival and removal. | After either HTTP definition loss or grant revocation, restoring that fixture member restores both readiness and scheduler inventory without executor probing. | 9 / 9 |
+| `test_model_options_composition::test_actual_owned_catalog_projects_without_enabling_serving` | Native-first ranking and zero native calls. | Advisory order contains only the owned HTTP source and leaves scheduler serving inventory empty. | 11 / 11 |
+| `test_oauth_discovery_cimd::test_unlisted_mcp_through_connect_card` | Box-discovered OAuth source/scopes. | Box ask makes zero discovery requests; the real door round trip still discovers and uses the unlisted endpoint and scopes. | 20 / 20 |
+| `test_one_agent_definition::test_the_guard_covers_every_registered_provider_kind` | Two native provider kinds in the registry. | Guard covers actual installed HTTP wire protocols; the native provider registry is absent and the retired process-launch module is not importable. | 3 / 3 |
+| `test_one_agent_definition::test_the_turn_gives_every_executor_the_same_instructions` | Equality with native executor prompt. | HTTP round retains the agent's original instructions as well as the conditional request-budget line. | 2 / 2 |
+| `test_open_serving_bind::test_open_provider_authorizes_and_reserves_a_served_turn` | Optional subscription snapshot field equals None. | The served authority has no snapshot-directory field at all; connection-grant and budget checks remain. | 5 / 5 |
+| `test_owner_broker_egress::test_vault_and_provider_cli_refuse` | CLI spawn confinement exception. | Retired process-launch module is not importable; box custody access still raises PermissionError. | 2 / 2 |
+| `test_refresh_session_seal::test_the_key_is_scrubbed_at_IMPORT_before_any_store_call` | Seal key absent from deleted CLI environment builder. | Real session file contains no plaintext refresh token; import-time environment scrubbing and configured-key readback remain checked. | 7 / 7 |
+| `test_replacing_a_rejected_credential::test_a_scheme_with_no_pasted_key_is_refused_in_both_places` | Old direct-rotation detail text. | Refused keyless rotation at door/request rail leaves the custody vault empty. | 4 / 4 |
+| `test_run_provider_session::test_foreground_run_launches_selected_open_provider_and_settles_once` | No calls to subscription snapshot helper. | Subscription snapshot API is absent altogether; real foreground HTTP launch, credential-free wire and settlement remain checked. | 8 / 8 |
+| `test_served_authority_shared_chain::test_execution_uses_live_connected_chain` | Native provider selected in subscription branch. | Ready HTTP execution has connection_grant authority in addition to the expected owner and connected-request budget. | 6 / 6 |
+| `test_vault_account_deletion_guard::test_deletion_waits_for_inflight_vault_persist_then_erases` | Timing of daemon tombstone relative to vault writer. | After broker erasure waits for the in-flight writer and removes custody, a later writer is rejected by the broker tombstone. | 5 / 5 |
+| `test_work_agent_allowance::test_actual_foreground_receipt_uses_parent_allocation_ceiling` | Native-only admitted source. | HTTP receipt is bound to the expected command center, alongside principal, source and parent allocation limits. | 11 / 11 |
+
+
+Validation for this repair:
+- Final full 20-file Linux oracle selection: **624 passed, zero failed, zero skipped**
+  in 147.78s, Python 3.11.17, bubblewrap 0.12.0, UID 1001. Command:
+  `python scripts/linux_oracle.py -- -q --no-header -p no:cacheprovider <all 20 files above>`.
+- Ruff on all 20 changed Python files and `git diff --check`: passed.
+- The first oracle run found two incorrect test assumptions: reusing a revoked grant
+  ID and requiring an agent codec for text-only HTTP dialects. Both were corrected;
+  the complete final run above covers the corrections. No product defect was found.
+- Full Linux receipt: `C:/Users/Jonathan/AppData/Local/Temp/3c-hygiene-linux-final.log`.
+  Gate verification runs after commit against committed HEAD; its receipt is
+  `C:/Users/Jonathan/AppData/Local/Temp/3c-hygiene-gate.log`.

@@ -422,6 +422,9 @@ def test_vault_and_provider_cli_refuse(box):
     from tinyassets.credential_vault import credential_vault_path
     with pytest.raises(PermissionError, match="raw credential custody"):
         credential_vault_path(box.root / "center")
+    import importlib.util
+
+    assert importlib.util.find_spec("tinyassets.providers.owned_process") is None
 
 
 def test_model_in_fresh_box_process_has_no_secret(box):

@@ -86,6 +86,7 @@ def test_execution_uses_live_connected_chain(tmp_path, monkeypatch, provider, co
             # and the serving binding row is not authority: its tampered digest
             # does not deny the live, accepted source.
             assert observed["provider"].startswith("api_key_http:")
+            assert observed["authority_kind"] == "connection_grant"
             assert observed["owner_user_id"] == "owner-1"
             assert observed["budget_owner"] == "connected_request"
     finally:

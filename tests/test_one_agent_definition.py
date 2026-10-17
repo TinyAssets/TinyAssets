@@ -255,7 +255,14 @@ def _render(kind, definition, tmp_path, monkeypatch):
 # --- the guard -------------------------------------------------------------------
 
 def test_the_guard_covers_every_registered_provider_kind():
-    assert set(_registered_kinds()) == {f"http:{p}" for p in _HTTP_PROTOCOLS}
+    import importlib.util
+
+    from tinyassets.providers import provider_resolver
+    from tinyassets.providers.protocol_encoders import PROTOCOLS
+
+    assert set(_registered_kinds()) == {f"http:{p}" for p in PROTOCOLS}
+    assert not hasattr(provider_resolver, "_CLI_PROVIDER_CLASSES")
+    assert importlib.util.find_spec("tinyassets.providers.owned_process") is None
 
 
 @pytest.mark.parametrize("kind", _registered_kinds())
@@ -311,12 +318,11 @@ def test_the_definition_is_the_route_s_four_tools():
 
 @pytest.mark.parametrize("budgeted", [False, True])
 def test_the_turn_gives_every_executor_the_same_instructions(tmp_path, monkeypatch, budgeted):
-    """The coordinator, not a renderer, decides the instructions a round
-    carries. HTTP and native rounds of the same turn get the same text,
-    the request-budget line included (it was HTTP-only until 2026-10-06)."""
+    """The coordinator preserves the agent instructions and adds its budget line."""
     http, _, _ = _coordinator_round("engine_inference", tmp_path / "http", monkeypatch,
                                     budgeted=budgeted)
     assert ("You have 3 requests left today." in http) is budgeted
+    assert INSTRUCTIONS in http
 
 
 # --- the guard fails the defects it exists for -----------------------------------

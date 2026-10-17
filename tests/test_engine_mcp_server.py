@@ -646,6 +646,8 @@ def test_sandboxed_config_engine_mcp_off_by_default(monkeypatch):
         _fake_ctx(), founder_principal="sub", universe_id="u", granted=True
     )
     assert cfg.engine_mcp_enabled is False
+    assert cfg.engine_mcp_actor_id == ""
+    assert cfg.engine_mcp_graph_id == ""
 
 
 def test_sandboxed_config_fails_closed_non_founder_or_no_principal(monkeypatch):
@@ -679,10 +681,18 @@ def test_sandboxed_config_on_when_all_conditions_met(monkeypatch):
     from tinyassets.served_tools import granted_tools
     for _h in ("browse_commons", "read_commons_shape", "read_brain", "write_brain"):
         assert _h in granted_tools(cfg), _h
-    # the wildcard deny is dropped so the tinyassets handles are admittable...
-    # ...but the resource readers stay denied (surface = exactly the handles)
     assert cfg.engine_mcp_actor_id == "sub-9"
     assert cfg.engine_mcp_graph_id == "u-9"
+    from tinyassets.served_tools import model_tools
+
+    # One model surface, with backend capabilities reachable only through ta.
+    assert model_tools(cfg) == ("read", "write", "edit", "bash")
+    assert "publish_shape" not in granted_tools(cfg)
+    assert "remix_shape" not in granted_tools(cfg)
+    assert "ReadMcpResourceTool" not in model_tools(cfg)
+    assert not hasattr(cfg, "allowed_tools")
+    assert not hasattr(cfg, "disallowed_tools")
+    assert cfg.timeout == 300
 
 
 def _seal_plainly(monkeypatch):
@@ -833,18 +843,17 @@ def test_connect_compute_api_key_http_grant_isolation_end_to_end(monkeypatch, tm
 
 
 def test_connect_compute_is_exposed_in_both_provider_allowlists():
-    """The server handler is dark unless the provider enabled-tools allowlists list
-    it (live 2026-08-23: served agent got tool_search "Found 0 tools" because it was
-    missing). Guard both served paths so it cannot silently drop out again."""
+    """Compute registration remains reachable through the common bash/ta surface."""
     from tinyassets.providers.base import ModelConfig
     from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES, model_tools
     from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS as _ENGINE_MCP_TOOLS
     assert "connect_compute" in BACKEND_ENGINE_CAPABILITIES
-    assert "bash" in model_tools(ModelConfig())  # Codex reaches it through ta.
-    assert "bash" in _ENGINE_MCP_TOOLS  # Claude reaches it through ta.
+    assert "bash" in model_tools(ModelConfig())  # The HTTP executor reaches it through ta.
+    assert "bash" in _ENGINE_MCP_TOOLS  # The engine route exposes the same surface.
     # And the server actually registers a handler by that name (exposure is real).
     from tinyassets import engine_mcp_server as s
     assert callable(getattr(s, "connect_compute", None))
+    assert model_tools(ModelConfig(engine_tool_grant=("connect_compute",))) == ("bash",)
 
 
 def test_read_graph_connections_target_lists_own_http_connections_end_to_end(
@@ -968,6 +977,7 @@ def test_served_allowlists_do_not_drift():
     from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
     assert SERVED_ENGINE_MCP_TOOLS == ("read", "write", "edit", "bash")
     assert "run_graph" in BACKEND_ENGINE_CAPABILITIES
+    assert model_tools(SimpleNamespace(engine_tool_grant=())) == ()
 
 
 def test_served_write_graph_refuses_unmounted_targets(monkeypatch):

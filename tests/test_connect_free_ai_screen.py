@@ -182,6 +182,7 @@ console.log(JSON.stringify({ok,refused:{calls,status:status.textContent,disabled
     # Each tap starts the shared door flow; no owner request is manufactured.
     assert out["refused"]["calls"] == [{"begin": "huggingface", "source": True}]
     assert out["refused"]["disabled"] is False
+    assert "sign_in_unavailable" in out["refused"]["status"]
 
 
 

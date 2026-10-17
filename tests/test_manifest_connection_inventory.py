@@ -25,6 +25,8 @@ def test_readiness_and_inventory_check_independent_http_members(configured, monk
     assert _serving_llm_bound(base, "u-models", "owner") is True
     assert list_serving_universes(base) == ["u-models"]
     # Fixture-owned records only; no real credentials, provider or network.
+    definition_path = _store_path("u-models")
+    definition_bytes = definition_path.read_bytes()
     if change == "remove_definition":
         _store_path("u-models").unlink()
     else:
@@ -34,3 +36,13 @@ def test_readiness_and_inventory_check_independent_http_members(configured, monk
     assert _serving_llm_bound(base, "u-models", "owner") is False
     assert list_serving_universes(base) == []
     assert _serving_llm_bound(base, "u-models", "another-owner") is False
+    # Repair only the unavailable member; readiness must follow live broker state.
+    if change == "remove_definition":
+        definition_path.write_bytes(definition_bytes)
+    else:
+        # Restore the fixture's original row; public regrant creates a new grant ID.
+        with configured.rig.ledger._connect() as db:
+            db.execute("UPDATE outbound_connection_grants SET revoked_at=NULL WHERE grant_id=?",
+                       ("grant-models",))
+    assert _serving_llm_bound(base, "u-models", "owner") is True
+    assert list_serving_universes(base) == ["u-models"]

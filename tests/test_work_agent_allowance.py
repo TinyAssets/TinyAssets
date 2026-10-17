@@ -107,6 +107,7 @@ def test_actual_foreground_receipt_uses_parent_allocation_ceiling(
     )
     assert receipt["max_tokens"] == allocation.max_tokens
     assert receipt["max_cost_microunits"] == allocation.max_cost_microunits
+    assert receipt["universe_id"] == "universe_alice"
 
 
 @pytest.mark.parametrize("state", list(ProviderInvocationReservationState))

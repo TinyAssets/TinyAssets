@@ -369,6 +369,9 @@ def test_foreground_run_launches_selected_open_provider_and_settles_once(
 
     assert response["terminal_status"] == "completed", response["terminal_error"]
     assert substituted_provider.calls == []
+    from tinyassets import credential_vault
+
+    assert not hasattr(credential_vault, "snapshot_llm_subscription_credential")
     assert len(proxy.calls) == 1
     verb, wire = proxy.calls[0]
     assert verb == "POST"

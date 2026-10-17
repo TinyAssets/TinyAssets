@@ -533,7 +533,7 @@ def test_empty_endpoints_rejected(base: Path) -> None:
 def test_unsupported_auth_scheme_rejected(base: Path) -> None:
     """A scheme the broker cannot sign is refused at the door, nothing written.
 
-    ``none`` has nothing to deposit. ``header`` used to be on this list, on the
+    Keyless ``none`` connections are supported. ``header`` used to be on this list, on the
     stated grounds that it "needs a per-connection header NAME the ledger does
     not persist yet" -- which was stale: the header name is a per-CALL field on
     the request packet, and the stored credential is a single token identical to
@@ -551,6 +551,7 @@ def test_unsupported_auth_scheme_rejected(base: Path) -> None:
         result = _connect("u-as", auth_scheme=bad)
         assert result["error"] == "unsupported_auth_scheme", bad
     assert _http_records(udir) == []
+    assert _ledger(base, "founder").list_connection_views(owner_user_id="founder") == []
 
 
 def test_header_scheme_deposits_generically(base: Path) -> None:
