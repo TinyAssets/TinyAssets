@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import os
 import select
 import signal
 import socket
+import stat
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from tinyassets.boxes.admission import OwnerRegistry
@@ -164,10 +167,55 @@ class HostService:
                 threading.Thread(target=run, daemon=True).start()
 
 
+@contextmanager
+def host_lock(state: Path):
+    """One persistent lifecycle controller may own the private runsc state."""
+    import fcntl
+
+    state.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = state.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+            or info.st_mode & 0o077):
+        raise BoxError("box host state requires a private service-owned directory")
+    descriptor = os.open(state / "service.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_nlink != 1 or info.st_mode & 0o077):
+            raise BoxError("box host service lock identity changed")
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def recover_daemons(runtime):
+    """Prove the previous controller's sandboxes stopped before admission."""
+    states = json.loads(runtime._command("list", "--format=json").stdout)
+    if not isinstance(states, list):
+        raise BoxError("invalid sandbox census")
+    owners = set()
+    for state in states:
+        name = state["id"]
+        uid = int(name.removeprefix("owner-"))
+        if runtime.box_id(uid) != name:
+            raise BoxError("unexpected sandbox in private runsc state")
+        owners.add(uid)
+    for path in runtime.bundle_root.iterdir():
+        uid = int(path.name.removeprefix("owner-"))
+        if runtime.box_id(uid) != path.name or path.is_symlink():
+            raise BoxError("unexpected sandbox bundle")
+        owners.add(uid)
+    for uid in sorted(owners):
+        runtime.stop(uid)
+
+
 def main(*, rootfs: Path, data_root: Path) -> None:
     from tinyassets.boxes.layout import hold
 
-    with hold(data_root):
+    if os.geteuid() != 0:
+        raise RuntimeError("box host requires its dedicated root service")
+    with hold(data_root), host_lock(Path("/var/lib/boxhostd/state")):
         _serve(rootfs=rootfs, data_root=data_root)
 
 
@@ -189,6 +237,7 @@ def _serve(*, rootfs: Path, data_root: Path) -> None:
         owner_store=Path("/var/lib/boxhostd/owners"), state_root=state / "runsc",
         bundle_root=state / "bundles",
         cgroup_parent=Path("/sys/fs/cgroup/system.slice/boxhostd.service"))
+    recover_daemons(runtime)
     quota = OwnerQuota(runtime.owner_store)
     daemons = OwnerDaemons(
         runtime, admission, quota, relays, RUNTIME,

@@ -6,8 +6,6 @@ import json
 import math
 from pathlib import Path
 
-from tinyassets.owner_runtime import require
-
 MAX_SOURCE_BYTES = 64 * 1024 * 1024
 MAX_FRAME_BYTES = 3 * 1024 * 1024
 MAX_FRAMES = 10
@@ -15,6 +13,7 @@ MAX_RESULT_BYTES = MAX_FRAME_BYTES * MAX_FRAMES + 16384
 
 
 def decode_image(data: bytes, mime: str, universe_dir: Path):
+    from tinyassets.owner_runtime import require
     from tinyassets.tool_images import (
         DECODE_CPU_SECONDS,
         DECODE_MEMORY_BYTES,
@@ -35,6 +34,8 @@ def decode_image(data: bytes, mime: str, universe_dir: Path):
 
 
 def frames(data: bytes, universe_dir: Path):
+    from tinyassets.owner_runtime import require
+
     runtime = require(universe_dir)
     if type(data) is not bytes or not 0 < len(data) <= MAX_SOURCE_BYTES:
         raise ValueError("video input exceeds its bound or is empty")

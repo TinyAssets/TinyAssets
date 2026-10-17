@@ -1795,12 +1795,13 @@ file-worker entry, guest forwarder or custom git handshake remains.
 | --- | --- |
 | `wake_conditions.run_probe` | Startup admission and bounded `OwnerBoxd.run`; no per-wake host binding. |
 | `workspace_provision_execution.execute_provision` | Admitted manifests and reservations remain; local bounded child, cancellation and measured charge remain. Each Python install has private temporary manifest storage. |
+| `box_process.run_bound` | Deleted with its per-call exec binding; surviving media/node/git/preview/workspace callers below use OwnerBoxd.run directly. |
 | `boxes.media` | Image and video decoders are local children of OwnerBoxd. |
 | `boxes.node` | Local bounded child with framed node RPC, cancellation and native owner workspace paths. |
 | top-level `git_bridge` | Local owner repository scope and OwnerBoxd child; opaque arguments stay opaque. |
 | `ui_preview` | OwnerBoxd child and local file write; owner identity and immutable public-preview checks remain. |
 | `workspace_worker` / `workspace_fs` / workspace effector | Native owner lease paths, local core file APIs and local child execution; broker git routes run in the owner daemon. |
-| `host_service` | Broker registration/bootstrap and persistent-daemon wake/status/retire control only. No file admission or dispatch; the host receipt-backend setup and idle coupling are gone. |
+| `host_service` | Broker registration/bootstrap and persistent-daemon wake/status/retire control only. The exclusive root host lock and restart census move here from the retired backend: validate every surviving sandbox/bundle before stopping any, then admit owners. No file admission or dispatch; the host receipt-backend setup and idle coupling are gone. |
 | `owner_files` | Deleted with handles, channels, execution receipts and destruction transport; persistent daemon retirement and local account erasure remain. |
 | `frontend` / `box_daemon_entry` | Frontend deleted; entry starts the admitted router directly after SQLite floor and broker adoption. Legacy launcher selection is deleted. |
 | `boxes.git_bridge.prepare` / guest forwarder | Deleted. Owner git uses the existing admitted broker client and invocation-scoped local routes. |
@@ -1841,6 +1842,10 @@ input and cancellation kill and reap the whole child group.
 | `tinyassets/boxes/owner_files.py` | 356 |
 | `tinyassets/boxes/production_files.py` | 211 |
 
+The 15 runtime/helper/script paths total 2,856 original lines. Git recognizes
+the old extension test as a rename/port; the table records its old path for
+the retirement inventory rather than counting it as a lost proof.
+
 ### Guards and surviving proofs
 
 D7 rejects imports of all 14 retired runtime modules, including direct,
@@ -1863,6 +1868,12 @@ PID, and checks filesystem, identity and environment isolation. Bash also
 uses the same OwnerBoxd supervisor: running children fence CAS/snapshot
 generations, and cancellation returns only after group cleanup. CI triggers
 and integrity guards name the surviving paths; no skip/xfail was added.
+
+Root control tests preserve cross-process host-lock exclusion and release,
+restart recovery of both runsc and bundle survivors, rejection of untrusted
+census/bundles before any stop, and refusal of the deleted file-admission
+operation. These preserve startup guarantees that previously lived in the
+retired backend; the persistent lifecycle modules themselves stay unchanged.
 
 ### Retired tests
 
@@ -1931,6 +1942,14 @@ class because protected `deploy/box-store-quotas.py` still consumes that
 historical authority; no runtime exec transport API remains. Slice 6 must
 reconcile that offline restore shape with the local owner journals.
 
+The retired guest forwarder was also the native command public-network
+proxy. This cleanup adds no owner-daemon replacement for general native HTTP
+proxying. Broker model/HTTP calls and the ported authenticated git routes keep
+their admitted channels; native package-manager public downloads remain an
+unported feature for the existing slice-7 founder report. Local provisioning
+runs with its original consent, manifest, cancellation and charge guards and
+fails loudly when a dependency cannot be obtained; it has no host fallback.
+
 The protected box-layout migration still calls the already-retired
 `account_type_of(..., db_reader=readonly_db)` API. Its five failures below are
 the same unchanged migration/API mismatch recorded by part 1d. This pass does
@@ -1941,4 +1960,25 @@ new worktree or agent dispatch. Independent review and live deployment remain
 with the lead.
 
 Validation receipts: `C:/Users/Jonathan/AppData/Local/Temp/s6a1e-validation-pli6tozs/`.
-Final validation totals are appended after the last runs.
+
+- Final regular Linux oracle: **2,038 passed**, one existing Windows-only
+  helper test skipped by its pre-existing platform condition, across 89 files:
+  all touched surviving tests, owner/box/gvisor/boxhost patterns and every
+  `GUARDS` key. The Windows helper was separately executed natively:
+  **1 passed**. No skip or xfail was introduced.
+- Final root venue: **48 passed, 5 failed, no skips**. The failures are the
+  unchanged protected migration/API mismatch above: the two WAL parametrizations,
+  unreadable-founder preflight/apply, and the owner-split census/move fixture.
+  Rsync was installed only in the disposable oracle container so backup tests
+  executed rather than taking their existing dependency skips.
+- Local supervisor, extension, process-boundary and import-order follow-ups:
+  **44 passed** and **54 passed**, respectively. Final regular oracle includes
+  the decoder import-order fix. Final host startup changes have the root
+  coverage above and a separate structural/host follow-up: **1,007 passed**
+  across 41 files, including every structural guard.
+- Ruff: all **71** changed/new Python files passed. Strict OpenSpec validation,
+  `check_shapes.py`, whitespace checks and pinned actionlint **1.7.7** passed.
+  No touched file is listed in `.github/heavy-test-files.txt`.
+- Post-commit hygiene against `conv/c6-owner-daemon-s5` passed for the backend
+  retirement commit with `Registry row(s): S8` and the documented test-retirement
+  reason. The same gate is repeated at the final commit.
