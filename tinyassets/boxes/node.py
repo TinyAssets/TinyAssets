@@ -20,8 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from tinyassets.box_process import BoxExecCancelled, run_bound
 from tinyassets.boxes.node_runner import _RUNNER_SCRIPT
+from tinyassets.owner_process import OwnerProcessCancelled
 from tinyassets.providers.base import SandboxUnavailableError
 
 RUNNER_SCRIPT = _RUNNER_SCRIPT
@@ -323,14 +323,12 @@ class NodeSandbox:
         ``invoke`` answers ``invoke_mcp_action`` under the run's authority;
         ``workspace`` is the leased checkout bound at ``/workspace``.
         """
-        from tinyassets.control_plane.binding import file_binding
+        from tinyassets.owner_runtime import require
 
         if self.universe_dir is None:
             raise SandboxUnavailableError("code node requires an admitted owner box")
-        binding = file_binding(Path(self.universe_dir))
-        if binding is None:
-            raise SandboxUnavailableError("code node requires an admitted owner box")
-        return run_in_box(self, binding, node_id=node_id, source_code=source_code,
+        runtime = require(Path(self.universe_dir))
+        return run_in_box(self, runtime, node_id=node_id, source_code=source_code,
                           input_state=input_state, input_keys=input_keys,
                           output_keys=output_keys,
                           timeout=timeout or self.default_timeout,
@@ -386,7 +384,7 @@ class NodeSandbox:
         )
 
 
-def run_in_box(instance, binding, *, invoke, workspace, **request):
+def run_in_box(instance, runtime, *, invoke, workspace, **request):
     timeout = request["timeout"]
     if (type(timeout) not in (int, float)
             or not 0 < timeout <= MAX_WORKSPACE_TIMEOUT_SECONDS):
@@ -394,9 +392,7 @@ def run_in_box(instance, binding, *, invoke, workspace, **request):
     guest_workspace = None
     profile = ""
     if workspace is not None:
-        from tinyassets.boxes.provider import BOX_ROOT
-
-        guest_root = BOX_ROOT + "/" + binding.handle.command_center_id
+        guest_root = str(Path(instance.universe_dir))
         source = workspace.bind_source
         if (not isinstance(source, str) or workspace.pass_fds
                 or not source.startswith(guest_root + "/")
@@ -443,21 +439,21 @@ def run_in_box(instance, binding, *, invoke, workspace, **request):
     #: Polled while the node runs; the owner's cancel stops it in its box.
     predicate = getattr(instance, "should_cancel", None)
     try:
-        done = run_bound(binding, "code-node", ["python", "-I", "-c", RUNNER_SCRIPT,
+        done = runtime.tools.run( ["python", "-I", "-c", RUNNER_SCRIPT,
                                                  str(timeout), "1", profile],
-                         stdin=message + b"\n", wall_seconds=timeout,
+                         cwd=instance.universe_dir, stdin=message + b"\n", wall_seconds=timeout,
                          output_bytes=instance.max_output_bytes,
                          line_handler=answer,
                          should_cancel=(None if predicate is None
                                         else lambda: _cancel_requested(predicate)))
-    except BoxExecCancelled:
+    except OwnerProcessCancelled:
         return SandboxResult(node_id=request["node_id"], success=False, cancelled=True,
                              error="cancelled by the owner while running",
                              duration_seconds=time.monotonic() - started)
     except BoxError as exc:
         # The node's declared timeout is its wall clock, as on the old path;
         # a kill at that bound is a timed-out node, recorded as failed.
-        if str(exc) != "owner box execution ended: timeout":
+        if str(exc) != "owner process ended: timeout":
             raise
         return SandboxResult(node_id=request["node_id"], success=False,
                              error=f"Execution timed out after {timeout}s",

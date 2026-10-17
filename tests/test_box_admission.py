@@ -1,16 +1,13 @@
 """Broker custody, tombstones, and startup layout locks fail closed."""
 
 import fcntl
-import hashlib
 import json
 import os
 import sqlite3
 
 import pytest
 
-from tinyassets.boxes.admission import OwnerRegistry
 from tinyassets.boxes.layout import hold
-from tinyassets.boxes.provider import BoxAuthError
 from tinyassets.broker.box_admission import resolve
 from tinyassets.broker.owner_identities import OwnerIdentities
 
@@ -41,22 +38,6 @@ def test_broker_admission_requires_permanent_mapping_live_center_and_migrated_qu
         resolve(identities, request)
 
 
-def test_tombstone_is_required_for_destroy_and_checked_again_after_binding(tmp_path, monkeypatch):
-    admission = OwnerRegistry(tmp_path, tmp_path / "broker.sock")
-    monkeypatch.setattr(admission, "record", lambda *args: {"uid": 300001})
-    with pytest.raises(sqlite3.Error):
-        admission.grant("alice", "a", "session")
-    with sqlite3.connect(tmp_path / ".tinyassets.db") as db:
-        db.execute("CREATE TABLE deleted_principals (founder_sub TEXT)")
-    grant = admission.grant("alice", "a", "session")
-    with pytest.raises(BoxAuthError):
-        admission.grant("alice", "a", "delete", destroying=True)
-    with sqlite3.connect(tmp_path / ".tinyassets.db") as db:
-        db.execute("INSERT INTO deleted_principals VALUES (?)",
-                   (hashlib.sha256(b"alice").hexdigest(),))
-    with pytest.raises(BoxAuthError):
-        admission.authorize(grant, "a")
-    assert admission.authorize(grant, "a", destroying=True)
 
 
 def test_box_layout_lock_excludes_migration_for_service_lifetime(tmp_path):

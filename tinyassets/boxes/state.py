@@ -1,18 +1,14 @@
 """The box host's own durable record: placement epochs, change generations, operation outcomes.
 
-This is the box HOST's state, not the platform's and not the box's. It answers
+OwnerBoxd owns this file journal inside the persistent owner box. It answers
 `committed_generation` while a box sleeps, refuses stale epochs, and makes every
 mutation idempotent by operation id.
 
-Three rules:
+Rules:
 
 * **One box host at a time.** The state directory is owned through an exclusive
   ``flock`` held for the host's whole life. A second host over the same state
   refuses to start while the first is alive. A crashed host's lock dies with it.
-* **A new host reaps what the old one left running.** Each exec records its
-  process group and that leader's start time. At startup, every exec still
-  ``running`` whose leader is the same process (same start time, so not a reused
-  pid) has its whole group killed. Only then is it marked unknown.
 * **Outcomes are fenced to the host incarnation that started them.** Every time
   the box host starts, it takes a new incarnation number and marks every
   operation still ``running`` as ``unknown_after_restore``. An operation records
@@ -24,7 +20,7 @@ Three rules:
   that record back instead of a second run. Only a refusal raised *before* any
   effect calls :meth:`abandon`.
 * **A generation is coherent only while nothing is pending.** Mutations and
-  running executions hold a pending count on their box. A snapshot reader
+  local child processes hold a pending count on their box. A snapshot reader
   accepts a generation only when that count was zero before and after its reads.
 """
 
@@ -34,7 +30,6 @@ import contextlib
 import hashlib
 import json
 import os
-import signal
 import sqlite3
 import threading
 from collections.abc import Iterator
@@ -60,6 +55,7 @@ _SCHEMA = (
     " incarnation INTEGER NOT NULL,"
     " outcome TEXT,"
     " PRIMARY KEY (command_center_id, op_id))",
+    # Historical tables remain for the protected slice-6 offline restore authority.
     "CREATE TABLE IF NOT EXISTS execs ("
     " exec_id TEXT PRIMARY KEY,"
     " command_center_id TEXT NOT NULL,"
@@ -116,12 +112,6 @@ class BoxHostState:
                 " ON CONFLICT(k) DO UPDATE SET v = excluded.v",
                 (self.incarnation,),
             )
-            # A restart: kill whatever the old host left running, then mark it unknown.
-            for (outcome,) in conn.execute(
-                "SELECT outcome FROM ops WHERE state = 'running' AND kind = 'exec'"
-            ):
-                data = json.loads(outcome) if outcome else {}
-                _reap_survivor(data.get("pgid"), data.get("start_time"))
             # Content may have changed under an operation whose outcome is now unknown:
             # advance those boxes' generations so no cache or cas trusts the old one.
             conn.execute(
@@ -292,14 +282,6 @@ class BoxHostState:
             return None
 
 
-    def update(self, cc: str, op_id: str, outcome: dict[str, Any]) -> None:
-        """Attach progress to an operation still running under this incarnation."""
-        with self._lock, self._conn() as conn:
-            conn.execute(
-                "UPDATE ops SET outcome = ? WHERE command_center_id = ? AND op_id = ?"
-                " AND state = 'running' AND incarnation = ?",
-                (json.dumps(outcome), cc, op_id, self.incarnation),
-            )
 
     def finish(self, cc: str, op_id: str, outcome: dict[str, Any]) -> bool:
         """Record the outcome, only if still running under this incarnation. True if written."""
@@ -321,11 +303,6 @@ class BoxHostState:
                 (cc, op_id, self.incarnation),
             )
 
-    def unknown(self, cc: str, op_id: str) -> None:
-        with self._lock, self._conn() as conn:
-            conn.execute("UPDATE ops SET state='unknown_after_restore' "
-                         "WHERE command_center_id=? AND op_id=? AND state='running' "
-                         "AND incarnation=?", (cc, op_id, self.incarnation))
 
     def lookup(self, cc: str, op_id: str) -> dict[str, Any] | None:
         with self._lock, self._conn() as conn:
@@ -337,52 +314,3 @@ class BoxHostState:
             return None
         return {"kind": row[0], "state": row[1],
                 "outcome": json.loads(row[2]) if row[2] else None}
-
-    def register_exec(self, cc: str, op_id: str, exec_id: str) -> None:
-        with self._lock, self._conn() as conn:
-            conn.execute(
-                "INSERT OR IGNORE INTO execs (exec_id, command_center_id, op_id) VALUES (?, ?, ?)",
-                (exec_id, cc, op_id),
-            )
-
-    def forget_exec(self, cc: str, exec_id: str) -> None:
-        with self._lock, self._conn() as conn:
-            conn.execute(
-                "DELETE FROM execs WHERE exec_id = ? AND command_center_id = ?", (exec_id, cc)
-            )
-
-    def find_exec(self, cc: str, exec_id: str) -> dict[str, Any] | None:
-        """The exec's operation record, only if it belongs to this command center."""
-        with self._lock, self._conn() as conn:
-            row = conn.execute(
-                "SELECT e.op_id, o.state, o.outcome FROM execs e"
-                " JOIN ops o ON o.command_center_id = e.command_center_id AND o.op_id = e.op_id"
-                " WHERE e.exec_id = ? AND e.command_center_id = ?",
-                (exec_id, cc),
-            ).fetchone()
-        if row is None:
-            return None
-        return {"op_id": row[0], "state": row[1],
-                "outcome": json.loads(row[2]) if row[2] else {}}
-
-
-def process_start_time(pid: int) -> int | None:
-    """The kernel's start time (clock ticks since boot) for ``pid``, or None if it is gone."""
-    try:
-        raw = Path(f"/proc/{pid}/stat").read_text()
-    except OSError:
-        return None
-    fields = raw[raw.rindex(")") + 2:].split()
-    return int(fields[19])  # field 22 overall: starttime
-
-
-def _reap_survivor(pgid: object, start_time: object) -> None:
-    """Kill a group the previous host left running, if its leader is still that same process."""
-    if not isinstance(pgid, int) or pgid <= 1 or not isinstance(start_time, int):
-        return
-    if process_start_time(pgid) != start_time:
-        return  # gone, or the pid now belongs to an unrelated process
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass

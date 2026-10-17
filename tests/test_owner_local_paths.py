@@ -41,7 +41,7 @@ def test_local_directory_creation_refuses_linked_parent(tmp_path, monkeypatch):
 
 def test_owner_sandbox_status_never_reads_per_call_provider(monkeypatch):
     monkeypatch.setattr(owner_runtime, "current", forbidden)
-    monkeypatch.setattr(served_chat, "configured_box_provider", forbidden)
+    assert not hasattr(served_chat, "configured_box_provider")
     assert get_sandbox_status() == {"box_available": True, "reason": ""}
 
 
@@ -90,7 +90,7 @@ def test_session_loads_local_agent_without_a_shared_binding(tmp_path, monkeypatc
     center = tmp_path / "center"
     center.mkdir()
     (center / "AGENTS.md").write_text("Local owner instructions.")
-    monkeypatch.setattr(served_chat, "configured_box_provider", forbidden)
+    assert not hasattr(served_chat, "configured_box_provider")
     monkeypatch.setattr(owner_runtime, "current", forbidden)
     monkeypatch.setattr(binding, "file_binding", lambda root: None)
     seen = []

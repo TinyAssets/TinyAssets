@@ -24,7 +24,7 @@ def test_control_socket_uses_kernel_router_identity_and_returns_bounded_errors()
         return 300001
 
     manager = SimpleNamespace(ensure_awake=wake)
-    service = HostService(None, None, None, None, manager)
+    service = HostService(None, None, None, manager)
     stop = threading.Event()
     with tempfile.TemporaryDirectory(prefix="hostctl-") as directory:
         path = Path(directory)

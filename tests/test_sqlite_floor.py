@@ -40,7 +40,7 @@ def test_the_floor_is_the_wal_reset_fix():
 def test_the_entry_point_checks_before_the_server_loads():
     """The marker selector execs the owner-box frontend. Its main() checks
     SQLite before universe_server's main runs and opens storage."""
-    tree = ast.parse((REPO / "tinyassets" / "boxes" / "frontend.py").read_text(encoding="utf-8"))
+    tree = ast.parse((REPO / "deploy" / "box_daemon_entry.py").read_text(encoding="utf-8"))
     main = next(node for node in tree.body
                 if isinstance(node, ast.FunctionDef) and node.name == "main")
     calls = sorted((node.lineno, ast.unparse(node)) for node in ast.walk(main)
@@ -52,7 +52,8 @@ def test_the_entry_point_checks_before_the_server_loads():
     command = '["/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-box-entry.py"]'
     assert f"CMD {command}" in DOCKERFILE
     selector = (REPO / "deploy" / "box_daemon_entry.py").read_text(encoding="utf-8")
-    assert '"-m", "tinyassets.boxes.frontend"' in selector
+    assert "broker_bootstrap()" in selector
+    assert "supervisor.start()" in selector
 
 
 def _arg(name: str) -> str:

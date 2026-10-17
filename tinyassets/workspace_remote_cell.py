@@ -573,19 +573,6 @@ def box_main() -> int:
     request = json.loads(raw)
     if not isinstance(request, dict):
         raise ValueError("workspace request must be an object")
-    count = int(os.environ.get("GIT_CONFIG_COUNT", "0"))
-    if not 0 <= count <= 32:
-        raise ValueError("git route count exceeds its bound")
-    options = []
-    if count:
-        options.extend(("-c", "http.proxy=http://127.0.0.1:3128"))
-    for index in range(count):
-        key = os.environ[f"GIT_CONFIG_KEY_{index}"]
-        value = os.environ[f"GIT_CONFIG_VALUE_{index}"]
-        if not key.startswith("url.http://ta-git.invalid/") or not key.endswith(".insteadOf"):
-            raise ValueError("unrecognized box git route")
-        options.extend(("-c", f"{key}={value}"))
-    request["options"] = options
     # The host pins this process's cwd to the admitted center before exec.
     root = os.getcwd()
     root_fd = open_dir_nofollow(root)

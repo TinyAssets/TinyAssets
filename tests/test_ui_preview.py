@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import struct
 import zlib
+from pathlib import Path
 
 import pytest
 
@@ -57,6 +58,7 @@ def _png(rgb=(32, 160, 64), size=8) -> bytes:
 def _add(base, ui_id, **fields):
     component = {"kind": "tinyassets.app-ui.v1", "version": 1, "ui_id": ui_id,
                  "name": ui_id, "markup": "", "style": "", "script": "", **fields}
+    (Path(base) / HOME).mkdir(exist_ok=True)
     ca.change_app_ui_entry(base, owner_user_id=OWNER, universe_id=HOME,
                            operation="add_ui", payload={"component": component})
 
@@ -133,9 +135,9 @@ def test_no_browser_is_a_loud_refusal_not_a_blank_image(tmp_path, monkeypatch,
                                                         _owner_box_double):
     import subprocess
 
-    from tinyassets import box_process
     from tinyassets.boxes.provider import ExecLimits
     from tinyassets.control_plane.binding import bind_session, use_binding
+    from tinyassets.owner_runtime import require
 
     assert _owner_box_double is not None, "the owner box double needs Linux"
     _add(tmp_path, "village")
@@ -143,12 +145,13 @@ def test_no_browser_is_a_loud_refusal_not_a_blank_image(tmp_path, monkeypatch,
     # The render runs in the owner's box; a box without a browser says so.
     ran = []
 
-    def no_browser(binding, purpose, argv, **kwargs):
-        ran.append((binding.handle.account_id, purpose))
+    def no_browser(argv, **kwargs):
+        ran.append((OWNER, "ui-preview"))
+        assert kwargs["cwd"] == tmp_path / HOME
         return subprocess.CompletedProcess(
             argv, 0, b'{"unavailable": "no chromium in this box"}\n', b"")
 
-    monkeypatch.setattr(box_process, "run_bound", no_browser)
+    monkeypatch.setattr(require(tmp_path / HOME, OWNER).tools, "run", no_browser)
     binding = bind_session(provider=_owner_box_double, limits=ExecLimits(),
                            universe_dir=tmp_path / HOME, owner=OWNER,
                            execution_id="preview-no-browser")
@@ -202,32 +205,30 @@ def test_the_screenshot_lands_in_previews_and_replaces_a_planted_hard_link(tmp_p
     assert sorted(p.name for p in (universe / "previews").iterdir()) == ["village.png"]
 
 
-def test_admitted_preview_write_uses_only_the_box_handle(tmp_path):
-    from tinyassets.boxes.provider import BoxHandle, ExecLimits
-    from tinyassets.control_plane.binding import SessionBinding, use_binding
+def test_admitted_preview_write_uses_only_the_box_handle(tmp_path, monkeypatch):
+    import os
 
-    class Provider:
-        def __init__(self):
-            self.calls = []
+    from tinyassets import owner_runtime
+    from tinyassets.boxes.boxd import OwnerBoxd
 
-        def write(self, *args, **kwargs):
-            self.calls.append((args, kwargs))
-
-    root = tmp_path / "u-alice"  # Deliberately absent on the frontend.
-    provider = Provider()
-    handle = BoxHandle("u-alice", OWNER, 1, "turn")
-    binding = SessionBinding(provider, handle, ExecLimits(), root)
-    with use_binding(binding):
+    root = tmp_path / "u-alice"
+    root.mkdir()
+    core = OwnerBoxd(owner_id=OWNER, owner_root=tmp_path, state_dir=tmp_path / ".owner-boxd")
+    runtime = owner_runtime.OwnerRuntime(OWNER, os.getuid(), tmp_path, os.getpid(), core)
+    monkeypatch.setattr(owner_runtime, "_runtime", runtime)
+    try:
         assert ui_preview.write_preview(root, "village", b"png") == "/u/previews/village.png"
+        assert (root / "previews/village.png").read_bytes() == b"png"
+        assert core.committed_generation(core.bind(OWNER)) == 1
         with pytest.raises(ui_preview.PreviewUnavailable):
-            ui_preview.write_preview(tmp_path / "u-bob", "village", b"png")
+            ui_preview.write_preview(tmp_path / "../u-bob", "village", b"png")
+        assert not (tmp_path.parent / "u-bob").exists()
+        assert not hasattr(core, "start_exec")
+        assert root.is_dir()
+        assert sorted(p.name for p in (root / "previews").iterdir()) == ["village.png"]
+    finally:
+        core.close()
 
-    assert len(provider.calls) == 1
-    args, kwargs = provider.calls[0]
-    assert args[:2] == (handle, "session:turn:1:preview:village")
-    assert args[2:] == ("/cc/previews/village.png", b"png")
-    assert kwargs["max_bytes"] == 4 * 1024 * 1024
-    assert not root.exists()
 
 
 @pytest.mark.parametrize("ui_id", ["../soul", "a/b", "", "UPPER", "x" * 65, "con", "lpt1"])

@@ -5,28 +5,9 @@ The coordinator keeps the journal; open_loop_tools supplies OwnerTools.
 
 from __future__ import annotations
 
-import threading
-from typing import Any
-
 from tinyassets.agent_loop.tool_session import open_loop_tools
 from tinyassets.interactive_http_agent import ServedChatAgentAdapter
 from tinyassets.served_tools import granted_tools, model_tools
-
-_box_lock = threading.Lock()
-_box_provider: Any = None
-_box_limits: Any = None
-
-
-def configure_box_provider(provider: Any, *, limits: Any) -> None:
-    """Install the process's ``BoxProvider`` (D2) and its default exec limits."""
-    global _box_provider, _box_limits
-    with _box_lock:
-        _box_provider, _box_limits = provider, limits
-
-
-def configured_box_provider() -> tuple[Any, Any]:
-    with _box_lock:
-        return _box_provider, _box_limits
 
 
 class ThinLoopChatAdapter(ServedChatAgentAdapter):

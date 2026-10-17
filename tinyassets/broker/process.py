@@ -161,7 +161,7 @@ async def serve(args: argparse.Namespace) -> None:
         loop.add_signal_handler(signum, stop.set)
     async with listener:
         if registration:
-            from tinyassets.boxes.file_channel import receive, send
+            from tinyassets.boxes.control_channel import receive, send
 
             channel, identity = registration
             send(channel, {"ready": True})

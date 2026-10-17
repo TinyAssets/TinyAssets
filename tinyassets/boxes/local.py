@@ -7,6 +7,5 @@ local entry point.
 
 from tinyassets.boxes.boxd import LocalBoxProvider as LocalBoxProvider
 from tinyassets.boxes.boxd import _remove_beneath as _remove_beneath
-from tinyassets.boxes.boxd import _Running as _Running
 
 __all__ = ["LocalBoxProvider"]

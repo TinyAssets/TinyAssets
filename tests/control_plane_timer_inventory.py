@@ -37,6 +37,7 @@ CLASSES = frozenset({CONTROL_PLANE, CALL_SCOPED, DELETE, CLIENT, BOX})
 #: ``"<path>::<qualname>"`` -> (class, note). ``[Timer]``/``[call_later]`` mark a
 #: callback-scheduling site; ``#n`` is the n-th clock-driven site in one function.
 CLASSIFICATION: dict[str, tuple[str, str]] = {
+
     "tinyassets/broker/waker.py::Waker.run": (
         CONTROL_PLANE, "broker clock wakes admitted, unsuspended owners from timestamp-only "
         "reports and the 24-hour floor; boxhostd queues scheduled wakes behind interactive",
@@ -52,9 +53,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     ),
     "tinyassets/owner_channel.py::UsageLease._heartbeat": (
         CALL_SCOPED, "keeps one broker-held accounting lease alive until the caller closes it",
-    ),
-    "tinyassets/boxes/gvisor_files.py::GvisorFileBackend._wake": (
-        CALL_SCOPED, "host capacity FIFO waits only until this admitted request's deadline",
     ),
     # -- always-on duties of the execution owner ------------------------------
     "tinyassets/mcp_events_http.py::delivery_lifespan.run": (
@@ -75,9 +73,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/api/runs.py::start_run_owner_watcher._watch": (
         CONTROL_PLANE, "dead-owner run recovery and terminal-event redelivery",
     ),
-    "tinyassets/box_process.py::run_bound.watch": (
-        CALL_SCOPED, "polls the run's cancel predicate while one bound box execution runs; "
-                     "ends when the execution finishes"),
     "tinyassets/turn_interrupt.py::LiveTurn.cancel_on_stop.watch": (
         CALL_SCOPED,
         "lives only while one stop-aware call is awaited; polls the turn's stop flag "
@@ -128,16 +123,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         "root box host drains idle daemons and restarts crashed boxes with bounded backoff; "
         "no owner task or inference scheduling",
     ),
-    "tinyassets/boxes/production_files.py::ProductionFileProvider.stream": (
-        CALL_SCOPED,
-        "caller consumes one bounded host execution; ends at terminal receipt, "
-        "unknown outcome or caller deadline",
-    ),
-    "tinyassets/boxes/boxd.py::BoxdCore._supervise": (
-        CALL_SCOPED,
-        "host-side thread for one exec; stops at leader exit, cancel, wall or "
-        "output bound, then kills/reaps the group; not an in-box scheduler",
-    ),
     "tinyassets/boxes/boxd.py::BoxdCore.destroy": (
         CALL_SCOPED,
         "one destroy waits on its finite victim set after cancellation, with "
@@ -148,11 +133,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     ),
     "tinyassets/boxes/boxd.py::BoxdCore.read_many": (
         CALL_SCOPED, "one coherent read waits for pending mutations up to busy_wait_s",
-    ),
-    "tinyassets/boxes/boxd.py::BoxdCore.stream.events": (
-        CALL_SCOPED,
-        "caller-consumed iterator for one bounded exec; ends on terminal or "
-        "restore state, optional caller timeout, or iterator close",
     ),
     "tinyassets/broker/fence.py::Fence.barrier": (
         CALL_SCOPED,
@@ -182,9 +162,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/engine_mcp_server.py::_read_run_settled": (CALL_SCOPED, "run settle wait"),
     "tinyassets/universe_tools.py::_bash": (
         CALL_SCOPED, "one box bash call polls its activity's stop check until the call ends",
-    ),
-    "tinyassets/workspace_provision_execution.py::_stage": (
-        CALL_SCOPED, "one box provisioning stage polls its run's cancel check until it ends",
     ),
     "tinyassets/execution_authority/blob_proof.py::_lock_fd": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/provider_admission.py::_acquire_waiting": (CALL_SCOPED, "slot wait"),

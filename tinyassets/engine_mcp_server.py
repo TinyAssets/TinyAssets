@@ -4636,7 +4636,7 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
 # ── the universe's four tools (universe-harness S1) ─────────────────────────
 # ``read`` / ``write`` / ``edit`` / ``bash`` over the agent's OWN command
 # center, executed inside the owner's box (``tinyassets.universe_tools`` over
-# ``agent_loop.box_tools``): public network only through the box relay, no
+# ``agent_loop.owner_tools``): public network only through the box relay, no
 # credential, resource-limited, the center at ``/u`` and nothing else. The
 # graph pin picks the center; no parameter names one, and a path outside
 # ``/u`` does not exist in the box. Every call first rechecks current

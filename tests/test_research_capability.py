@@ -76,15 +76,10 @@ async def test_served_refusals(research, tool, arguments):
 async def test_regular_write_unaffected(research, monkeypatch):
     monkeypatch.setattr(engine_steering, "_session_key", lambda: "thread:owner")
     monkeypatch.setattr(universe_tools, "write_file", lambda *a, **kw: "written")
-    from tinyassets.agent_loop.served_chat import configured_box_provider
-    from tinyassets.control_plane.binding import bind_session, use_binding
+    from tinyassets.control_plane.binding import file_binding, use_binding
     from tinyassets.storage import data_dir
 
-    # A regular turn holds its owner's admitted box session on the center.
-    provider, limits = configured_box_provider()
-    binding = bind_session(provider=provider, limits=limits,
-                           universe_dir=data_dir() / "u-test", owner="owner",
-                           execution_id="research-regular-write")
+    binding = file_binding(data_dir() / "u-test")
     with use_binding(binding):
         async with Client(server.mcp) as client:
             result = await client.call_tool("write", {"path": "x", "content": "y"})

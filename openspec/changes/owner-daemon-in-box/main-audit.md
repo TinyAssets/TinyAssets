@@ -1779,3 +1779,166 @@ because the explicitly deferred bridge/backend, launcher and protected
 migration/deploy cleanup still remain. The 21-site inventory in this section
 is complete; the executable allowlist contains only the 29 reviewed role
 boundaries. No work from the next backend pass was started.
+
+
+## 6a part 1e: retire the per-call backend (2026-10-17)
+
+The shared router no longer configures a file/exec provider. OwnerTools owns
+its four definitions directly; OwnerBoxd performs local file operations and
+supervises bounded local children inside the persistent owner box. No
+BoxExecutor, start_exec protocol, streamed exec status, per-call sandbox,
+file-worker entry, guest forwarder or custom git handshake remains.
+
+### Former callers
+
+| Caller | Clean path |
+| --- | --- |
+| `wake_conditions.run_probe` | Startup admission and bounded `OwnerBoxd.run`; no per-wake host binding. |
+| `workspace_provision_execution.execute_provision` | Admitted manifests and reservations remain; local bounded child, cancellation and measured charge remain. Each Python install has private temporary manifest storage. |
+| `boxes.media` | Image and video decoders are local children of OwnerBoxd. |
+| `boxes.node` | Local bounded child with framed node RPC, cancellation and native owner workspace paths. |
+| top-level `git_bridge` | Local owner repository scope and OwnerBoxd child; opaque arguments stay opaque. |
+| `ui_preview` | OwnerBoxd child and local file write; owner identity and immutable public-preview checks remain. |
+| `workspace_worker` / `workspace_fs` / workspace effector | Native owner lease paths, local core file APIs and local child execution; broker git routes run in the owner daemon. |
+| `host_service` | Broker registration/bootstrap and persistent-daemon wake/status/retire control only. No file admission or dispatch; the host receipt-backend setup and idle coupling are gone. |
+| `owner_files` | Deleted with handles, channels, execution receipts and destruction transport; persistent daemon retirement and local account erasure remain. |
+| `frontend` / `box_daemon_entry` | Frontend deleted; entry starts the admitted router directly after SQLite floor and broker adoption. Legacy launcher selection is deleted. |
+| `boxes.git_bridge.prepare` / guest forwarder | Deleted. Owner git uses the existing admitted broker client and invocation-scoped local routes. |
+| `scripts/box_acceptance.py` | Retired old provider probe. Integrity guards now cover the real entry, owner daemon, host service and live capability script; persistent-process OS proof replaces per-call jail proofs. |
+
+`owner_daemons.py` and `gvisor_runtime.py` are unchanged. The only sandbox
+lifecycle is their persistent per-owner lifecycle. OwnerBoxd accepts opaque
+validated principals as journal keys, never directory names. Its local child
+admission is serialized against shutdown; output/time bounds, interactive
+input and cancellation kill and reap the whole child group.
+
+### Removed paths (original lines at this pass's starting HEAD)
+
+| File | Deleted lines |
+| --- | ---: |
+| `scripts/box_acceptance.py` | 219 |
+| `tests/agent_loop_fakes.py` | 98 |
+| `tests/test_agent_loop_box_tools.py` | 476 |
+| `tests/test_box_host_handles.py` | 41 |
+| `tests/test_gvisor_file_transport.py` | 141 |
+| `tests/test_owner_box_destroy.py` | 153 |
+| `tests/test_owner_box_execution.py` | 337 |
+| `tests/test_owner_file_runtime.py` | 366 |
+| `tests/test_remote_box_extensions.py` | 308 |
+| `tests/test_remote_box_ta.py` | 495 |
+| `tinyassets/agent_loop/box_ta_worker.py` | 151 |
+| `tinyassets/agent_loop/box_tools.py` | 662 |
+| `tinyassets/box_process.py` | 104 |
+| `tinyassets/boxes/exec_worker.py` | 54 |
+| `tinyassets/boxes/executions.py` | 287 |
+| `tinyassets/boxes/file_channel.py` | 157 |
+| `tinyassets/boxes/file_wire.py` | 50 |
+| `tinyassets/boxes/file_worker.py` | 57 |
+| `tinyassets/boxes/frontend.py` | 50 |
+| `tinyassets/boxes/git_bridge.py` | 81 |
+| `tinyassets/boxes/gvisor_files.py` | 333 |
+| `tinyassets/boxes/handles.py` | 84 |
+| `tinyassets/boxes/owner_files.py` | 356 |
+| `tinyassets/boxes/production_files.py` | 211 |
+
+### Guards and surviving proofs
+
+D7 rejects imports of all 14 retired runtime modules, including direct,
+parent-package, relative, and constant dynamic imports; it also proves their
+module specs are absent. Mutation tests exercise those import forms. The
+29-entry ROLE_DISPATCH allowlist and router store/I/O checks are unchanged.
+S8 keeps every previous old-path probe and adds zero-ceiling probes for the
+retired modules/probe script, the guest FORWARDER definition, and any
+BoxExecutor/start_exec definition. A local history check also found three
+inherited zero-count probes missing from S3/S4; those are restored without
+raising either ceiling.
+
+`test_c6_owner_box_callers` and `test_owner_tools` exercise local process and
+file behavior, bounds, node RPC, native leases, wake scope, ta scope,
+unknown receipts, replay and cancellation. `test_owner_extensions` ports the
+real engine tool/command/hook, revocation, foreign revision and failed-delivery
+cases to OwnerTools. `test_owner_box_process_boundary` keeps one real Linux
+jail process alive across local commands and ta calls, checks the same daemon
+PID, and checks filesystem, identity and environment isolation. Bash also
+uses the same OwnerBoxd supervisor: running children fence CAS/snapshot
+generations, and cancellation returns only after group cleanup. CI triggers
+and integrity guards name the surviving paths; no skip/xfail was added.
+
+### Retired tests
+
+Whole modules of the deleted backend (test functions, before parametrization):
+- `tests/agent_loop_fakes.py`: 0.
+- `tests/test_agent_loop_box_tools.py`: 32.
+- `tests/test_box_host_handles.py`: 1.
+- `tests/test_gvisor_file_transport.py`: 8.
+- `tests/test_owner_box_destroy.py`: 4.
+- `tests/test_owner_box_execution.py`: 14.
+- `tests/test_owner_file_runtime.py`: 15.
+- `tests/test_remote_box_extensions.py`: 5.
+- `tests/test_remote_box_ta.py`: 12.
+
+The old remote extension file is ported to `test_owner_extensions.py`;
+local ta receipts and commands are ported to `test_owner_tools.py`, with real
+persistent-process isolation proved separately. The transport-specific late
+start/stream recovery and per-call host identity/exec/destruction tests retire
+with that transport. File, link, CAS, usage and bundle assertions in mixed
+contract suites are retained. Native Windows shared-daemon checkout is a
+retired path; the descriptor helper's Windows refusal test remains.
+
+Whole retired tests from mixed files (surviving behavior is covered on the
+local path above):
+- `tests/test_box_admission.py::test_tombstone_is_required_for_destroy_and_checked_again_after_binding`
+- `tests/test_box_daemon_entry.py::test_an_image_without_the_legacy_launcher_refuses_unmigrated_data`
+- `tests/test_box_daemon_entry.py::test_owner_split_uses_existing_launcher`
+- `tests/test_box_git_bridge.py::test_cli_forwarder_without_git_stays_stdlib_only`
+- `tests/test_box_local_driver.py::test_a_launch_refused_before_running_can_be_retried`
+- `tests/test_box_local_driver.py::test_a_missing_program_is_an_exec_result_not_a_refusal`
+- `tests/test_box_local_driver.py::test_a_restart_reaps_what_the_crashed_host_left_running`
+- `tests/test_box_local_driver.py::test_cas_refuses_while_an_exec_is_running`
+- `tests/test_box_local_driver.py::test_read_many_refuses_while_an_exec_may_be_changing_files`
+- `tests/test_box_local_driver.py::test_reply_captured_before_supervisor_close_fails_as_unavailable`
+- `tests/test_box_local_driver.py::test_supervisor_cannot_recycle_stdin_during_an_inflight_reply`
+- `tests/test_box_provider_contract.py::test_a_retried_exec_with_the_same_op_id_never_runs_twice`
+- `tests/test_box_provider_contract.py::test_box_disk_bound_contains_a_full_box`
+- `tests/test_box_provider_contract.py::test_cancel_kills_the_whole_process_tree`
+- `tests/test_box_provider_contract.py::test_destroy_stops_running_execs_before_it_returns`
+- `tests/test_box_provider_contract.py::test_exec_streams_output_and_exit_code`
+- `tests/test_box_provider_contract.py::test_stdin_a_child_never_reads_cannot_stall_the_wall_clock`
+- `tests/test_box_provider_contract.py::test_the_exec_ends_with_its_leader_and_takes_its_group_with_it`
+- `tests/test_box_provider_contract.py::test_wall_clock_and_output_limits_kill_the_exec`
+- `tests/test_box_public_egress.py::test_box_forwarder_child_does_not_hold_command_output_open`
+- `tests/test_c6_owner_box_callers.py::test_bound_process_uses_the_exact_session_handle`
+- `tests/test_c6_owner_box_callers.py::test_code_node_accepts_only_guest_workspace_path`
+- `tests/test_c6_owner_box_callers.py::test_code_node_public_runner_requires_admitted_box`
+- `tests/test_c6_owner_box_callers.py::test_code_node_uses_box_runner`
+- `tests/test_c6_owner_box_callers.py::test_guest_lease_uses_center_relative_box_file_api`
+- `tests/test_c6_owner_box_callers.py::test_image_and_video_callers_select_box_media_on_committed_layout`
+- `tests/test_c6_owner_box_callers.py::test_image_and_video_use_the_admitted_box`
+- `tests/test_c6_owner_box_callers.py::test_preview_renderer_uses_box_process`
+- `tests/test_c6_owner_box_callers.py::test_startup_workspace_reconciliation_binds_an_owner_box`
+- `tests/test_c6_owner_box_callers.py::test_workspace_git_projects_selected_grant_to_box`
+- `tests/test_c6_owner_box_callers.py::test_workspace_git_refuses_the_cell_on_committed_box_layout`
+- `tests/test_c6_owner_box_callers.py::test_workspace_pool_returns_guest_lease_paths`
+- `tests/test_c6_owner_box_callers.py::test_workspace_sweep_removes_only_admitted_guest_lease`
+- `tests/test_workspace_effector.py::test_a_checkout_without_the_posix_helpers_fails_as_a_workspace_refusal`
+
+### Protected slice 6 and delivery boundary
+
+No protected migration, census or deploy file was changed. None of the named
+protected files imports a deleted backend module. Historical `execs` and
+`owner_destroys` schema/restore authority remain in the shared file-journal
+class because protected `deploy/box-store-quotas.py` still consumes that
+historical authority; no runtime exec transport API remains. Slice 6 must
+reconcile that offline restore shape with the local owner journals.
+
+The protected box-layout migration still calls the already-retired
+`account_type_of(..., db_reader=readonly_db)` API. Its five failures below are
+the same unchanged migration/API mismatch recorded by part 1d. This pass does
+not restore that API. `.premigration` copying and one-shot migration/deploy
+branches remain for the protected slice-6 merge and part 2. This is local-only:
+no production/data access, push, merge, rebase, branch switch, Git config edit,
+new worktree or agent dispatch. Independent review and live deployment remain
+with the lead.
+
+Validation receipts: `C:/Users/Jonathan/AppData/Local/Temp/s6a1e-validation-pli6tozs/`.
+Final validation totals are appended after the last runs.

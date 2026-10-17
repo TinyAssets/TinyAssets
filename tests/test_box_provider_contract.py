@@ -16,7 +16,6 @@ import io
 import os
 import sys
 import tarfile
-import time
 from pathlib import Path
 
 import pytest
@@ -27,8 +26,6 @@ from tinyassets.boxes import (
     BoxError,
     BoxNotFound,
     BoxPathError,
-    ExecLimits,
-    ExecState,
     ExportProfile,
     OpIdReuse,
     StaleHandle,
@@ -101,14 +98,6 @@ def test_bind_refuses_an_account_that_does_not_own_the_command_center(provider):
         provider.bind("cc-a", account_id="acct-b")
 
 
-@needs_posix
-def test_a_valid_handle_presented_for_another_owner_fails_every_operation(provider):
-    good = provider.bind("cc-a", account_id="acct-a")
-    forged = type(good)("cc-a", "acct-b", good.epoch)
-    with pytest.raises(BoxAuthError):
-        provider.read(forged, "/cc/x", max_bytes=10)
-    with pytest.raises(BoxAuthError):
-        provider.start_exec(forged, "op1", ["true"])
 
 
 @needs_posix
@@ -209,164 +198,30 @@ def test_download_streams_a_regular_file(provider):
 # -- the planted-link class (#4244) ---------------------------------------------------------
 
 
-@needs_posix
-def test_a_planted_link_to_another_box_is_never_followed(provider, tmp_path):
-    victim = provider.bind("cc-b", account_id="acct-b")
-    provider.write(victim, "w1", "/cc/founder.md", b"VICTIM SECRET", max_bytes=100)
-    attacker = provider.bind("cc-a", account_id="acct-a")
-    provider.ensure_awake(attacker, reason="test")
-    # The agent plants links inside its own box: to an absolute host path, and upward.
-    victim_file = tmp_path / "boxes" / "cc-b" / "founder.md"
-    exec_id = provider.start_exec(attacker, "e1", [
-        "sh", "-c", f"ln -s {victim_file} founder.md && ln -s ../cc-b up && mkdir -p d"])
-    _out, done = _drain(provider, attacker, exec_id)
-    assert done.exit_code == 0
-    for path in ("/cc/founder.md", "/cc/up/founder.md"):
-        with pytest.raises(BoxPathError):
-            provider.read(attacker, path, max_bytes=100)
-        with pytest.raises(BoxPathError):
-            provider.read_many(attacker, [path], max_total=100)
-        with pytest.raises(BoxPathError):
-            provider.download(attacker, path)
-    with pytest.raises(BoxPathError):
-        provider.list(attacker, "/cc/up")
-    assert provider.stat(attacker, "/cc/founder.md").kind == "link"
-    kinds = {e.name: e.kind for e in provider.list(attacker, "/cc").entries}
-    assert kinds["founder.md"] == "link" and kinds["up"] == "link"
-    with pytest.raises(BoxPathError):
-        provider.write(attacker, "w2", "/cc/up/founder.md", b"overwrite", max_bytes=100)
-    # removing the link removes the link, never its target
-    provider.remove(attacker, "r1", "/cc/founder.md")
-    assert provider.read(victim, "/cc/founder.md", max_bytes=100).data == b"VICTIM SECRET"
 
 
 # -- execution lifecycle ----------------------------------------------------------------------
 
 
-@needs_posix
-def test_exec_streams_output_and_exit_code(provider):
-    handle = provider.bind("cc-a", account_id="acct-a")
-    exec_id = provider.start_exec(handle, "e1", ["sh", "-c", "echo out; echo err >&2; exit 3"])
-    out, done = _drain(provider, handle, exec_id)
-    assert b"out" in out and b"err" in out
-    assert done.exit_code == 3 and done.killed is None
-    status = provider.exec_status(handle, "e1")
-    assert status.state is ExecState.EXITED and status.exit_code == 3
 
 
-@needs_posix
-def test_a_retried_exec_with_the_same_op_id_never_runs_twice(provider):
-    handle = provider.bind("cc-a", account_id="acct-a")
-    argv = ["sh", "-c", "echo line >> log.txt"]
-    first = provider.start_exec(handle, "e1", argv)
-    _drain(provider, handle, first)
-    second = provider.start_exec(handle, "e1", argv)
-    assert second == first
-    assert provider.read(handle, "/cc/log.txt", max_bytes=100).data == b"line\n"
-    with pytest.raises(OpIdReuse):
-        provider.start_exec(handle, "e1", ["sh", "-c", "echo other"])
 
 
-@needs_posix
-def test_cancel_kills_the_whole_process_tree(provider):
-    handle = provider.bind("cc-a", account_id="acct-a")
-    exec_id = provider.start_exec(
-        handle, "e1", ["sh", "-c", "sleep 60 & echo $! > child.pid; wait"],
-        limits=ExecLimits(wall_seconds=60))
-    deadline = time.monotonic() + 10
-    while provider.stat(handle, "/cc/child.pid") is None or not provider.read(
-            handle, "/cc/child.pid", max_bytes=20).data.strip():
-        assert time.monotonic() < deadline, "child never started"
-        time.sleep(0.05)
-    child = int(provider.read(handle, "/cc/child.pid", max_bytes=20).data)
-    provider.cancel(handle, exec_id)
-    _out, done = _drain(provider, handle, exec_id)
-    assert done.killed == "cancelled"
-    time.sleep(0.2)
-    assert Path("/proc/self/stat").exists()
-    stat_file = Path(f"/proc/{child}/stat")
-    # gone, or a zombie awaiting a reaper (the container's pid 1 may not reap)
-    assert not stat_file.exists() or stat_file.read_text().split(") ")[1][0] == "Z"
 
 
-@needs_posix
-def test_wall_clock_and_output_limits_kill_the_exec(provider):
-    handle = provider.bind("cc-a", account_id="acct-a")
-    slow = provider.start_exec(handle, "e1", ["sleep", "30"],
-                               limits=ExecLimits(wall_seconds=0.5))
-    assert _drain(provider, handle, slow)[1].killed == "timeout"
-    loud = provider.start_exec(handle, "e2", ["head", "-c", "1000000", "/dev/zero"],
-                               limits=ExecLimits(wall_seconds=30, output_bytes=1000))
-    out, done = _drain(provider, handle, loud)
-    assert done.killed == "output_limit" and len(out) <= 1000
 
 
-@needs_posix
-def test_stdin_a_child_never_reads_cannot_stall_the_wall_clock(provider):
-    handle = provider.bind("cc-a", account_id="acct-a")
-    started = time.monotonic()
-    exec_id = provider.start_exec(handle, "e1", ["sleep", "30"], stdin=b"x" * (4 << 20),
-                                  limits=ExecLimits(wall_seconds=0.5))
-    _out, done = _drain(provider, handle, exec_id)
-    assert done.killed == "timeout" and time.monotonic() - started < 10
 
 
-@needs_posix
-def test_the_exec_ends_with_its_leader_and_takes_its_group_with_it(provider):
-    handle = provider.bind("cc-a", account_id="acct-a")
-    exec_id = provider.start_exec(handle, "e1", ["sh", "-c", "sleep 60 & echo $! > child.pid"])
-    _out, done = _drain(provider, handle, exec_id)
-    assert done.exit_code == 0
-    child = int(provider.read(handle, "/cc/child.pid", max_bytes=20).data)
-    time.sleep(0.2)
-    stat_file = Path(f"/proc/{child}/stat")
-    assert not stat_file.exists() or stat_file.read_text().split(") ")[1][0] == "Z"
 
 
-@needs_posix
-def test_destroy_stops_running_execs_before_it_returns(provider):
-    handle = provider.bind("cc-a", account_id="acct-a")
-    provider.start_exec(handle, "e1", ["sh", "-c", "echo $$ > leader.pid; sleep 60"],
-                        limits=ExecLimits(wall_seconds=60))
-    deadline = time.monotonic() + 10
-    while provider.stat(handle, "/cc/leader.pid") is None or not provider.read(
-            handle, "/cc/leader.pid", max_bytes=20).data.strip():
-        assert time.monotonic() < deadline, "exec never started"
-        time.sleep(0.05)
-    leader = int(provider.read(handle, "/cc/leader.pid", max_bytes=20).data)
-    receipt = provider.destroy(handle, "d1")
-    stat_file = Path(f"/proc/{leader}/stat")
-    assert not stat_file.exists() or stat_file.read_text().split(") ")[1][0] == "Z"
-    # replaying the same destroy through the original handle returns the same receipt
-    assert provider.destroy(handle, "d1") == receipt
 
 
 # -- whole box --------------------------------------------------------------------------------
 
 
-@needs_posix
-def test_usage_counts_logical_bytes_once_per_inode(provider):
-    handle = provider.bind("cc-a", account_id="acct-a")
-    provider.write(handle, "w1", "/cc/a.bin", b"x" * 100, max_bytes=200)
-    _drain(provider, handle, provider.start_exec(handle, "e1", ["ln", "a.bin", "b.bin"]))
-    usage = provider.usage(handle)
-    assert usage.logical_bytes == 100
-    if usage.bound_bytes is not None:
-        assert usage.bound_bytes >= usage.logical_bytes
 
 
-@needs_posix
-def test_export_import_round_trip_leaves_links_out(provider, tmp_path):
-    src = provider.bind("cc-a", account_id="acct-a")
-    provider.write(src, "w1", "/cc/notes/a.md", b"A", max_bytes=10)
-    _drain(provider, src, provider.start_exec(src, "e1", ["ln", "-s", "/etc/passwd", "link"]))
-    bundle = b"".join(provider.export(src, profile=ExportProfile.MIGRATION))
-    names = tarfile.open(fileobj=io.BytesIO(bundle)).getnames()
-    assert "notes/a.md" in names and "link" not in names
-    dst = provider.bind("cc-b", account_id="acct-b")
-    report = provider.import_bundle(dst, "i1", [bundle], profile=ExportProfile.MIGRATION)
-    assert report.files == 1
-    assert provider.read(dst, "/cc/notes/a.md", max_bytes=10).data == b"A"
 
 
 @needs_posix
@@ -391,17 +246,6 @@ def test_import_refuses_traversal_and_link_members(provider):
     assert provider.stat(handle, "/cc/evil") is None
 
 
-@needs_posix
-def test_box_disk_bound_contains_a_full_box(provider):
-    handle = provider.bind("cc-a", account_id="acct-a")
-    if provider.usage(handle).bound_bytes is None:
-        pytest.skip("this driver declares no disk bound (local dev driver) owner=Jonnyton runs-in=gvisor-driver")
-    bound = provider.usage(handle).bound_bytes
-    exec_id = provider.start_exec(handle, "e1", ["sh", "-c", f"head -c {bound + 4096} "
-                                                 "/dev/zero > fill.bin"])
-    assert _drain(provider, handle, exec_id)[1].exit_code != 0
-    neighbour = provider.bind("cc-b", account_id="acct-b")
-    provider.write(neighbour, "w1", "/cc/ok.txt", b"still fine", max_bytes=100)
 
 
 # -- the local driver's own guard ---------------------------------------------------------------
@@ -414,3 +258,70 @@ def test_local_driver_refuses_to_start_without_the_unisolated_acknowledgement(tm
     with pytest.raises(BoxError):
         LocalBoxProvider(boxes_root=tmp_path / "b", state_dir=tmp_path / "s",
                          owner_of=OWNERS.get)
+
+
+@needs_posix
+def test_a_valid_handle_presented_for_another_owner_fails_every_operation(provider):
+    good = provider.bind("cc-a", account_id="acct-a")
+    forged = type(good)("cc-a", "acct-b", good.epoch)
+    with pytest.raises(BoxAuthError):
+        provider.read(forged, "/cc/x", max_bytes=10)
+    with pytest.raises(BoxAuthError):
+        provider.write(forged, "op1", "/cc/x", b"x", max_bytes=10)
+
+
+@needs_posix
+def test_a_planted_link_to_another_box_is_never_followed(provider, tmp_path):
+    victim = provider.bind("cc-b", account_id="acct-b")
+    provider.write(victim, "w1", "/cc/founder.md", b"VICTIM SECRET", max_bytes=100)
+    attacker = provider.bind("cc-a", account_id="acct-a")
+    provider.ensure_awake(attacker, reason="test")
+    # The agent plants links inside its own box: to an absolute host path, and upward.
+    victim_file = tmp_path / "boxes" / "cc-b" / "founder.md"
+    attacker_root = tmp_path / "boxes/cc-a"
+    (attacker_root / "founder.md").symlink_to(victim_file)
+    (attacker_root / "up").symlink_to("../cc-b", target_is_directory=True)
+    (attacker_root / "d").mkdir()
+    assert victim_file.read_bytes() == b"VICTIM SECRET"
+    for path in ("/cc/founder.md", "/cc/up/founder.md"):
+        with pytest.raises(BoxPathError):
+            provider.read(attacker, path, max_bytes=100)
+        with pytest.raises(BoxPathError):
+            provider.read_many(attacker, [path], max_total=100)
+        with pytest.raises(BoxPathError):
+            provider.download(attacker, path)
+    with pytest.raises(BoxPathError):
+        provider.list(attacker, "/cc/up")
+    assert provider.stat(attacker, "/cc/founder.md").kind == "link"
+    kinds = {e.name: e.kind for e in provider.list(attacker, "/cc").entries}
+    assert kinds["founder.md"] == "link" and kinds["up"] == "link"
+    with pytest.raises(BoxPathError):
+        provider.write(attacker, "w2", "/cc/up/founder.md", b"overwrite", max_bytes=100)
+    # removing the link removes the link, never its target
+    provider.remove(attacker, "r1", "/cc/founder.md")
+    assert provider.read(victim, "/cc/founder.md", max_bytes=100).data == b"VICTIM SECRET"
+
+
+@needs_posix
+def test_usage_counts_logical_bytes_once_per_inode(provider):
+    handle = provider.bind("cc-a", account_id="acct-a")
+    provider.write(handle, "w1", "/cc/a.bin", b"x" * 100, max_bytes=200)
+    os.link(provider._root / "cc-a/a.bin", provider._root / "cc-a/b.bin")
+    usage = provider.usage(handle)
+    assert usage.logical_bytes == 100
+    if usage.bound_bytes is not None:
+        assert usage.bound_bytes >= usage.logical_bytes
+
+
+@needs_posix
+def test_export_import_round_trip_leaves_links_out(provider, tmp_path):
+    src = provider.bind("cc-a", account_id="acct-a")
+    provider.write(src, "w1", "/cc/notes/a.md", b"A", max_bytes=10)
+    (provider._root / "cc-a/link").symlink_to("/etc/passwd")
+    bundle = b"".join(provider.export(src, profile=ExportProfile.MIGRATION))
+    names = tarfile.open(fileobj=io.BytesIO(bundle)).getnames()
+    assert "notes/a.md" in names and "link" not in names
+    dst = provider.bind("cc-b", account_id="acct-b")
+    report = provider.import_bundle(dst, "i1", [bundle], profile=ExportProfile.MIGRATION)
+    assert report.files == 1
+    assert provider.read(dst, "/cc/notes/a.md", max_bytes=10).data == b"A"

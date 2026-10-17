@@ -75,6 +75,7 @@ SHAPES: dict[str, Shape] = {
     "S3": Shape(
         ("tinyassets/agent_loop/**",),
         (
+            ('tinyassets/providers/claude_provider.py', ''),
             ("tinyassets/providers/codex_provider.py", ""),
             ("tinyassets/providers/codex_app_server.py", ""),
         ),
@@ -83,6 +84,8 @@ SHAPES: dict[str, Shape] = {
     "S4": Shape(
         ("tinyassets/providers/**", "tinyassets/connections/**"),
         (
+            ('tinyassets/onboarding/openai_device.py', ''),
+            ('tinyassets/providers/claude_provider.py', ''),
             ("tinyassets/providers/codex_provider.py", ""),
             ("tinyassets/providers/codex_app_server.py", ""),
             ("tinyassets/providers/router.py", r"\bFALLBACK_CHAINS\b"),
@@ -110,7 +113,26 @@ SHAPES: dict[str, Shape] = {
          ("tinyassets/engine_mcp_server.py", r"\bFastMCP\(")),
         ceiling=1,
     ),
-    "S8": Shape(("tinyassets/boxes/**",), (("tinyassets/**/role_*.py", ""),), ceiling=0),
+    "S8": Shape(("tinyassets/boxes/**",), (
+        ("tinyassets/**/role_*.py", ""),
+        ("tinyassets/boxes/frontend.py", ""),
+        ("tinyassets/boxes/production_files.py", ""),
+        ("tinyassets/boxes/file_worker.py", ""),
+        ("tinyassets/boxes/exec_worker.py", ""),
+        ("tinyassets/boxes/executions.py", ""),
+        ("tinyassets/boxes/gvisor_files.py", ""),
+        ("tinyassets/boxes/owner_files.py", ""),
+        ("tinyassets/boxes/handles.py", ""),
+        ("tinyassets/boxes/file_channel.py", ""),
+        ("tinyassets/boxes/file_wire.py", ""),
+        ("tinyassets/boxes/git_bridge.py", ""),
+        ("tinyassets/agent_loop/box_tools.py", ""),
+        ("tinyassets/box_process.py", ""),
+        ("tinyassets/agent_loop/box_ta_worker.py", ""),
+        ("scripts/box_acceptance.py", ""),
+        ("tinyassets/boxes/network.py", r"\bFORWARDER\s*="),
+        ("tinyassets/**/*.py", r"\b(?:class\s+BoxExecutor|def\s+start_exec)\b"),
+    ), ceiling=0),
     "S9": Shape(
         ("tinyassets/control_plane/**",),
         (

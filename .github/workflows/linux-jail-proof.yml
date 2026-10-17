@@ -11,9 +11,9 @@ name: linux-jail-proof
 #
 #   * tests/test_delivery_node_rpc.py::test_real_linux_jail_transports_delivery_rpc
 #     runs the file-delivery RPC through a code node in the owner box;
-#   * tests/test_remote_box_ta.py and tests/test_remote_box_extensions.py run
-#     the production reverse-RPC ``ta`` transport and the extension mounts in
-#     real box processes (tinyassets/agent_loop/box_ta.py, box_tools.py).
+#   * tests/test_owner_box_process_boundary.py keeps one owner daemon inside a
+#     real Linux jail across local tool and ta calls; owner identity, filesystem
+#     and environment isolation survive both calls.
 #
 # This job supplies the jail on a disposable GitHub-hosted Ubuntu VM and FAILS
 # unless EVERY case marked `@pytest.mark.real_jail` is present in JUnit with no
@@ -63,7 +63,7 @@ on:
       - "scripts/linux_oracle.py"
       - "scripts/ci_assert_junit_case.py"
       - "tinyassets/boxes/**"
-      - "tinyassets/box_process.py"
+      - "tinyassets/owner_process.py"
       - "tinyassets/control_plane/binding.py"
       - "tests/support/**"
       # The jail and the runtime that drives delivery RPC through it.
@@ -89,7 +89,7 @@ on:
       - "tests/test_delivery_public.py"
       - "tests/test_receiver_links.py"
       - "tests/conftest.py"
-      # External-agent confinement is proved by scripts/box_acceptance.py.
+      # External-agent confinement is proved by tests/test_owner_box_process_boundary.py.
       # The box spawn point, the router that binds the owning universe and
       # the adapters.
       - "tinyassets/providers/router.py"
@@ -99,11 +99,12 @@ on:
       - "tests/test_agent_wakes.py"
       - "tinyassets/control_plane/agent_wakes.py"
       - "tinyassets/wake_conditions.py"
-      - "tests/test_remote_box_ta.py"
-      - "tests/test_remote_box_extensions.py"
+      - "tests/test_owner_box_process_boundary.py"
+      - "tests/test_owner_tools.py"
+      - "tests/test_owner_extensions.py"
       - "tinyassets/agent_loop/box_ta.py"
-      - "tinyassets/agent_loop/box_ta_worker.py"
-      - "tinyassets/agent_loop/box_tools.py"
+      - "tinyassets/agent_loop/extension_stage.py"
+      - "tinyassets/agent_loop/owner_tools.py"
       - "tinyassets/agent_loop/tool_session.py"
       - "tinyassets/extension_capabilities.py"
       - "tinyassets/extension_hooks.py"
@@ -130,7 +131,7 @@ on:
       - "scripts/linux_oracle.py"
       - "scripts/ci_assert_junit_case.py"
       - "tinyassets/boxes/**"
-      - "tinyassets/box_process.py"
+      - "tinyassets/owner_process.py"
       - "tinyassets/control_plane/binding.py"
       - "tests/support/**"
       # The jail and the runtime that drives delivery RPC through it.
@@ -156,7 +157,7 @@ on:
       - "tests/test_delivery_public.py"
       - "tests/test_receiver_links.py"
       - "tests/conftest.py"
-      # External-agent confinement is proved by scripts/box_acceptance.py.
+      # External-agent confinement is proved by tests/test_owner_box_process_boundary.py.
       # The box spawn point, the router that binds the owning universe and
       # the adapters.
       - "tinyassets/providers/router.py"
@@ -166,11 +167,12 @@ on:
       - "tests/test_agent_wakes.py"
       - "tinyassets/control_plane/agent_wakes.py"
       - "tinyassets/wake_conditions.py"
-      - "tests/test_remote_box_ta.py"
-      - "tests/test_remote_box_extensions.py"
+      - "tests/test_owner_box_process_boundary.py"
+      - "tests/test_owner_tools.py"
+      - "tests/test_owner_extensions.py"
       - "tinyassets/agent_loop/box_ta.py"
-      - "tinyassets/agent_loop/box_ta_worker.py"
-      - "tinyassets/agent_loop/box_tools.py"
+      - "tinyassets/agent_loop/extension_stage.py"
+      - "tinyassets/agent_loop/owner_tools.py"
       - "tinyassets/agent_loop/tool_session.py"
       - "tinyassets/extension_capabilities.py"
       - "tinyassets/extension_hooks.py"

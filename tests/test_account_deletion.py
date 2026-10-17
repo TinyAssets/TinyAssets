@@ -1110,7 +1110,8 @@ def test_owner_mode_deletes_local_data_without_retiring_or_opening_shared_stores
     def forbidden(*args, **kwargs):
         raise AssertionError("local deletion attempted shared lifecycle or identity work")
 
-    monkeypatch.setattr("tinyassets.agent_loop.served_chat.configured_box_provider", forbidden)
+    assert not hasattr(__import__("tinyassets.agent_loop.served_chat", fromlist=["x"]),
+                       "configured_box_provider")
     monkeypatch.setattr("tinyassets.broker.server._Connection._erase_account", forbidden)
     receipt = delete_account(two_users, founder_sub=A)
     assert receipt["home_removed"] and not receipt["unfinished_phases"]

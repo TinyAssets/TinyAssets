@@ -24,13 +24,13 @@ from typing import Any
 
 from mcp.types import CallToolResult, TextContent, Tool
 
-from tinyassets.agent_loop.box_tools import (
+from tinyassets.agent_loop.owner_tools import (
     BOX_ROOT,
     BOX_TOOLS,
-    BoxOperationRefused,
-    BoxTools,
+    OwnerTools,
     box_tool_definitions,
 )
+from tinyassets.boxes.provider import BoxOperationRefused
 from tinyassets.engine_tool_client import EngineToolError, open_engine_tools
 
 
@@ -49,7 +49,7 @@ class LoopToolSession:
 
     takes_op_id = True
 
-    def __init__(self, *, tools: tuple[Tool, ...], box: BoxTools | None,
+    def __init__(self, *, tools: tuple[Tool, ...], box: OwnerTools | None,
                  engine: Any | None,
                  steer: Callable[[], str | None] = lambda: None) -> None:
         self._tools = tools

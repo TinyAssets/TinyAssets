@@ -1,19 +1,13 @@
-"""Real local smart HTTP and broker frames; no gVisor isolation claim."""
-
-import os
-import select
+"""In-box git routes use real broker smart HTTP and never hold a credential."""
 import socket
-import sqlite3
-import threading
+from urllib.parse import urlsplit
 
 import pytest
 
 from tests.support.synthetic_git import synthetic
-from tinyassets import rpc_frames as rf
-from tinyassets.boxes import git_bridge, git_routes
+from tinyassets.boxes import git_routes
 from tinyassets.broker.client import BrokerClient
-from tinyassets.broker.owner_identities import OwnerIdentities
-from tinyassets.broker.server import BOX_HOST
+from tinyassets.owner_git import environment, routes
 
 
 @pytest.fixture
@@ -24,94 +18,36 @@ def git_server(tmp_path, monkeypatch):
 @pytest.mark.parametrize("claimed_owner", ["alice", "bob"])
 def test_git_frames_use_owner_bound_channel_without_guest_credential(git_server, claimed_owner):
     s = git_server
-    identities = OwnerIdentities(s.tmp_path / "identities.db", initialize=True)
-    uid = identities.resolve("alice", allocate=True).uid
-    identities.admission("admit", "alice", "center")
-    with sqlite3.connect(identities.path) as db:
-        db.execute("CREATE TABLE box_records (principal TEXT, machine INT, "
-                   "project_id INT, bhard_bytes INT)")
-        db.execute("INSERT INTO box_records VALUES (?,?,?,?)", ("alice", uid, uid, 1024**3))
-    s.server._owner_identities = identities
-    s.server._roles = {os.getuid(): BOX_HOST}
-    relay_path = s.tmp_path / "relay.sock"
-    errors = []
-    with socket.socket(socket.AF_UNIX) as listener:
-        listener.bind(str(relay_path))
-        listener.listen(1)
-        listener.settimeout(5)
-
-        def relay():
-            # hermetic-ok: disposable local AF_UNIX protocol fixture, not remote I/O.
-            try:
-                guest, _ = listener.accept()
-                with guest, socket.socket(socket.AF_UNIX) as broker:
-                    guest.settimeout(5)
-                    assert rf.read_frame_blocking(guest).control() == {
-                        "op": "BOX_CONNECT", "center": "center"}
-                    broker.connect(str(s.path))
-                    broker.sendall(rf.control(0, {
-                        "op": "BOX_CHANNEL", "principal": "alice", "center": "center"}))
-                    assert rf.read_frame_blocking(broker).control()["op"] == "BOX_ADMITTED"
-                    guest.sendall(rf.control(0, {"op": "BOX_CONNECTED"}))
-                    while True:
-                        ready, _, _ = select.select([guest, broker], [], [], 5)
-                        assert ready
-                        for source in ready:
-                            data = source.recv(65536)
-                            if not data:
-                                return
-                            (broker if source is guest else guest).sendall(data)
-            except BaseException as error:
-                errors.append(error)
-
-        thread = threading.Thread(target=relay)
-        thread.start()
-        s.monkeypatch.setattr(git_bridge, "broker_client", lambda path, **kwargs:
-                             BrokerClient(relay_path, **kwargs))
-        for key, value in git_bridge.environment([s.record], "developer").items():
-            assert s.secret not in value
-            s.monkeypatch.setenv(key, value)
-        s.monkeypatch.setenv("TINYASSETS_BOX_OWNER", claimed_owner)
-        s.monkeypatch.setenv("TINYASSETS_BOX_CENTER", "center")
-        # Isolate the guest's git config projection from this pytest process.
-        s.monkeypatch.setattr(git_bridge.os, "environ", dict(os.environ))
-        context, proxy = git_bridge.prepare()
-        try:
-            route = next(key[1] for key in git_routes._routes if key[0] == id(proxy))
-            raw = (f"GET http://ta-git.invalid/{route}/owner/repo.git/info/refs?"
-                   "service=git-upload-pack HTTP/1.1\r\nHost: ta-git.invalid\r\n\r\n").encode()
-            left, right = socket.socketpair()
-            with left, right:
-                assert git_routes.serve(proxy, left, raw)
-                response = right.recv(65536)
-            assert s.secret.encode() not in response
-            if claimed_owner == "alice":
-                assert response.startswith(b"HTTP/1.1 200")
-                assert s.state["seen"] == [
-                    ("/owner/repo.git/info/refs?service=git-upload-pack", True)]
-            else:
-                assert response.startswith(b"HTTP/1.1 403")
-                assert not s.state["seen"]
-        finally:
-            context.__exit__(None, None, None)
-            thread.join(6)
-        assert not thread.is_alive()
-        assert not errors
-        assert not any(key[0] == id(proxy) for key in git_routes._routes)
-
-
-def test_cli_forwarder_without_git_stays_stdlib_only(tmp_path):
-    import subprocess
-    import sys
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parents[1]
-    code = ("import sys; sys.path.insert(0, sys.argv[1]); "
-            "from tinyassets.boxes.git_bridge import prepare; "
-            "assert prepare() == (None, None); "
-            "assert 'tinyassets.broker.client' not in sys.modules")
-    result = subprocess.run([sys.executable, "-I", "-S", "-c", code, str(root)],
-                            capture_output=True, timeout=10,
-                            env={key: value for key, value in os.environ.items()
-                                 if key != git_bridge.ENV})
-    assert result.returncode == 0, result.stderr.decode()
+    client = BrokerClient(s.path, principal=claimed_owner, command_center="center",
+                          fence=lambda: s.generation)
+    projected = environment([s.record], "developer")
+    assert set(projected) == {"TINYASSETS_BOX_GIT"}
+    assert s.secret not in projected["TINYASSETS_BOX_GIT"]
+    assert "credential_ref" not in projected["TINYASSETS_BOX_GIT"]
+    assert "principal" not in projected["TINYASSETS_BOX_GIT"]
+    assert not git_routes._routes
+    with routes(client, [s.record], "developer") as env:
+        assert env["GIT_CONFIG_COUNT"] == "1"
+        assert env["GIT_TERMINAL_PROMPT"] == "0"
+        assert s.secret not in str(env)
+        key = env["GIT_CONFIG_KEY_0"]
+        assert key.startswith("url.http://ta-git.invalid/")
+        assert key.endswith(".insteadOf")
+        assert env["GIT_CONFIG_VALUE_0"] == "https://git.test/owner/repo.git"
+        target = key[len("url."):-len(".insteadOf")]
+        proxy = urlsplit(env["http_proxy"])
+        assert proxy.hostname == "127.0.0.1"
+        with socket.create_connection((proxy.hostname, proxy.port), timeout=5) as connection:
+            connection.sendall((f"GET {target}/info/refs?service=git-upload-pack HTTP/1.1\r\n"
+                                "Host: ta-git.invalid\r\nConnection: close\r\n\r\n").encode())
+            response = bytearray()
+            while block := connection.recv(65536):
+                response.extend(block)
+        assert s.secret.encode() not in response
+        if claimed_owner == "alice":
+            assert response.startswith(b"HTTP/1.1 200"), response
+            assert s.state["seen"] == [("/owner/repo.git/info/refs?service=git-upload-pack", True)]
+        else:
+            assert response.startswith(b"HTTP/1.1 403"), response
+            assert not s.state["seen"]
+    assert not git_routes._routes

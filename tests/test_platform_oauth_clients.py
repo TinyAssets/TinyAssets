@@ -361,8 +361,7 @@ def test_two_connections_of_one_owner_keep_distinct_tokens(configured, provider,
 
 
 def test_future_secret_names_are_filtered_without_a_python_patch(monkeypatch, tmp_path):
-    from tinyassets.box_process import run_bound
-    from tinyassets.control_plane.binding import file_binding
+    from tinyassets import owner_runtime
     from tinyassets.platform_secrets import child_env
 
     assert child_env({SECRET_NAME: SECRET, CLIENT_NAME: CLIENT,
@@ -372,12 +371,14 @@ def test_future_secret_names_are_filtered_without_a_python_patch(monkeypatch, tm
     # a secret in the platform process never reaches it.
     monkeypatch.setenv(SECRET_NAME, SECRET)
     monkeypatch.setenv(service.ENV, "owner capability")
-    binding = file_binding(tmp_path / "cc-env")
-    proc = run_bound(binding, "env-probe", ["env"], wall_seconds=10, output_bytes=1 << 16)
-    env = proc.stdout.decode()
-    assert proc.returncode == 0 and "PATH=" in env
-    assert SECRET_NAME not in env and service.ENV not in env
-    assert SECRET not in env
+    monkeypatch.setattr(owner_runtime, "_runtime", None)
+    monkeypatch.setattr(owner_runtime, "OWNER_MOUNT", tmp_path)
+    monkeypatch.setattr(owner_runtime, "_is_owner_mount", lambda path: True)
+    with pytest.raises(PermissionError, match="raw credential"):
+        owner_runtime.start(tmp_path / "absent-relay")
+    assert owner_runtime.current() is None
+    assert not (tmp_path / ".owner-boxd").exists()
+    assert not (tmp_path / ".auth.db").exists()
 
 
 def test_concurrent_broker_refresh_spends_once(configured, provider, app):

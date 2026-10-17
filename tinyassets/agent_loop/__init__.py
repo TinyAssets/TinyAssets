@@ -15,7 +15,7 @@ parses tool-call JSON and routes each call by NAME to exactly one place
 
 * the four box tools (``read``/``write``/``edit``/``bash``) go to the turn's
   command-center box over a :class:`BoxHandle` bound once at turn start, each
-  call carrying an ``op_id`` (:mod:`.box_tools`);
+  call carrying an ``op_id`` (:mod:`.owner_tools`);
 * the owner-door reads (``history``, ``activity``) are answered by the loop
   itself, read-only, and never reach the box (:mod:`.owner_reads`);
 * every other served tool keeps its existing engine route, where its own gates

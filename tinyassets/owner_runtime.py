@@ -45,6 +45,31 @@ def refuse_router_store(name: str) -> None:
         raise RuntimeError(f"router store {name} is never opened inside an owner box")
 
 
+def require(universe_dir: Path, principal: str | None = None) -> OwnerRuntime:
+    runtime = current()
+    home = Path(universe_dir).absolute()
+    if (runtime is None or home.parent != runtime.root.absolute()
+            or home.name.startswith(".")
+            or (principal is not None and principal != runtime.principal)):
+        raise PermissionError("operation requires the startup-admitted owner box")
+    return runtime
+
+
+def file_scope(path: Path):
+    """Resolve local owner storage through the startup-admitted OwnerBoxd."""
+    import uuid
+
+    runtime = current()
+    if runtime is None:
+        raise PermissionError("file operation requires the startup-admitted owner box")
+    relative = Path(path).absolute().relative_to(runtime.root.absolute())
+    if not relative.parts or ".." in relative.parts:
+        raise PermissionError("file operation leaves the owner root")
+    require(runtime.root / relative.parts[0])
+    handle = runtime.tools.bind(runtime.principal, session_id=uuid.uuid4().hex)
+    return runtime.tools, handle, "/cc/" + relative.as_posix()
+
+
 def start(relay: Path) -> OwnerRuntime:
     """Read identity once from the per-box socket, before constructing the app.
 

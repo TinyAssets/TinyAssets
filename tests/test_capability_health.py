@@ -133,10 +133,10 @@ def test_capability_image_keeps_real_execution_seams():
 
     from tests.test_role_production_acceptance_integrity import substitutions
 
-    scripts = Path(__file__).resolve().parents[1] / "scripts"
+    scripts = Path(__file__).resolve().parents[1]
     for name in (
-        "box_acceptance.py",
-        "core_capability_live.py",
+        "deploy/box_daemon_entry.py",
+        "scripts/core_capability_live.py",
     ):
         source = (scripts / name).read_text(encoding="utf-8")
         assert not substitutions(source), name

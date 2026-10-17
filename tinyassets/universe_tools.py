@@ -21,7 +21,7 @@ import stat
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
-from tinyassets.agent_loop import box_tools
+from tinyassets.agent_loop import owner_tools
 from tinyassets.boxes.layout import AGENT_WORKSPACE_DIR, PLATFORM_RUNTIME_DIR
 from tinyassets.tool_images import MAX_IMAGE_SOURCE_BYTES, ToolImage, bound_image, is_image_path
 
@@ -48,10 +48,10 @@ MASKED_DIRS: tuple[str, ...] = (PLATFORM_RUNTIME_DIR,)
 
 logger = logging.getLogger(__name__)
 
-MAX_WRITE_BYTES = box_tools.MAX_WRITE_BYTES
-MAX_EDIT_BYTES = box_tools.MAX_EDIT_BYTES
-DEFAULT_READ_LINES = box_tools.DEFAULT_READ_LINES
-MAX_BASH_SECONDS = box_tools.MAX_BASH_SECONDS
+MAX_WRITE_BYTES = owner_tools.MAX_WRITE_BYTES
+MAX_EDIT_BYTES = owner_tools.MAX_EDIT_BYTES
+DEFAULT_READ_LINES = owner_tools.DEFAULT_READ_LINES
+MAX_BASH_SECONDS = owner_tools.MAX_BASH_SECONDS
 
 
 class UniverseToolError(RuntimeError):
@@ -80,7 +80,7 @@ def _tool_path(path: str, root: str) -> str:
     return str(candidate)
 
 
-def _box(universe_dir: Path, agent_id: str) -> tuple[box_tools.BoxTools, str]:
+def _box(universe_dir: Path, agent_id: str) -> tuple[owner_tools.OwnerTools, str]:
     """Local tools inside the startup-admitted owner box."""
     from tinyassets.agent_loop.owner_tools import tools_for
 

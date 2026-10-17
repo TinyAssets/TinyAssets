@@ -259,18 +259,3 @@ class TurnBridge:
             with self._lock:
                 self._pending.discard(future)
                 self._executions[execution].discard(future)
-
-
-def worker_argv(command, *, root, execution, extensions=()):
-    """Only public source, command arguments and verified package bytes cross."""
-    from tinyassets.ta_capabilities import CLIENT_SOURCE
-    from tinyassets.universe_files import read_data_path
-
-    source = read_data_path(Path(__file__).with_name("box_ta_worker.py"))
-    client = read_data_path(CLIENT_SOURCE)
-    if source is None or client is None:
-        raise FileNotFoundError("remote ta worker or client source is missing")
-    bootstrap = json.dumps({"command": command,
-                            "client": client.decode("utf-8"),
-                            "extensions": list(extensions)}).encode() + b"\n"
-    return ["python3", "-c", source.decode("utf-8")], bootstrap

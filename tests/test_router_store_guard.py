@@ -409,3 +409,103 @@ def test_d7_allows_branchless_reads_and_other_current_functions(tmp_path):
         encoding="utf-8",
     )
     assert _unreviewed_modes(tmp_path) == []
+
+
+# D7: retired backend modules may neither return nor gain an import site.
+_RETIRED_BACKEND = frozenset({
+    "tinyassets.boxes.frontend",
+    "tinyassets.boxes.production_files",
+    "tinyassets.boxes.file_worker",
+    "tinyassets.boxes.exec_worker",
+    "tinyassets.boxes.executions",
+    "tinyassets.boxes.gvisor_files",
+    "tinyassets.boxes.owner_files",
+    "tinyassets.boxes.handles",
+    "tinyassets.boxes.file_channel",
+    "tinyassets.boxes.file_wire",
+    "tinyassets.boxes.git_bridge",
+    "tinyassets.agent_loop.box_tools",
+    "tinyassets.box_process",
+    "tinyassets.agent_loop.box_ta_worker",
+})
+
+
+def _retired_backend_imports(root):
+    findings = []
+    for path in sorted(root.rglob("*.py")):
+        if any(part in {".git", ".venv", "node_modules", "__pycache__"} for part in path.parts):
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        dynamic = {alias.asname or alias.name for node in ast.walk(tree)
+                   if isinstance(node, ast.ImportFrom) and node.module == "importlib"
+                   for alias in node.names if alias.name == "import_module"}
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                home = node.module or ""
+                if node.level:
+                    parts = path.relative_to(root).with_suffix("").parts
+                    if root.name in {"tinyassets", "deploy", "scripts"}:
+                        parts = (root.name, *parts)
+                    package = ".".join(parts[:-node.level])
+                    home = package + ("." + home if home else "")
+                names = [home, *(home + "." + alias.name for alias in node.names)]
+            elif isinstance(node, ast.Call) and node.args:
+                function = ast.unparse(node.func)
+                if (function.endswith("import_module") or function == "__import__"
+                        or function in dynamic):
+                    if isinstance(node.args[0], ast.Constant):
+                        imported = node.args[0].value
+                        if isinstance(imported, str) and imported.startswith("."):
+                            from importlib.util import resolve_name
+                            package = (node.args[1] if len(node.args) > 1 else
+                                       next((kw.value for kw in node.keywords
+                                             if kw.arg == "package"), None))
+                            if isinstance(package, ast.Constant) and isinstance(package.value, str):
+                                imported = resolve_name(imported, package.value)
+                        names = [imported]
+            for name in names:
+                if isinstance(name, str) and any(
+                        name == retired or name.startswith(retired + ".")
+                        for retired in _RETIRED_BACKEND):
+                    findings.append((path.relative_to(root).as_posix(), node.lineno, name))
+                    break
+    return findings
+
+
+def test_retired_per_call_backend_cannot_be_imported():
+    import importlib.util
+
+    root = Path(__file__).resolve().parents[1]
+    for name in _RETIRED_BACKEND:
+        assert importlib.util.find_spec(name) is None, name
+    for directory in ("tinyassets", "deploy", "scripts"):
+        assert _retired_backend_imports(root / directory) == []
+
+
+@pytest.mark.parametrize("statement", [
+    "import tinyassets.boxes.frontend as old",
+    "from tinyassets.boxes import production_files as old",
+    "from tinyassets.boxes.exec_worker import main",
+    "import importlib; importlib.import_module('tinyassets.boxes.gvisor_files')",
+    "__import__('tinyassets.boxes.executions')",
+    "from importlib import import_module as fetch; fetch('tinyassets.boxes.frontend')",
+    "import importlib; importlib.import_module('.frontend', 'tinyassets.boxes')",
+])
+def test_d7_rejects_retired_backend_imports_in_a_module_copy(tmp_path, statement):
+    (tmp_path / "caller.py").write_text(statement, encoding="utf-8")
+    assert len(_retired_backend_imports(tmp_path)) == 1
+
+
+@pytest.mark.parametrize("statement", [
+    "from . import frontend as old",
+    "from .production_files import ProductionFileProvider",
+    "from ..agent_loop import box_tools",
+])
+def test_d7_rejects_relative_backend_imports(tmp_path, statement):
+    path = tmp_path / "tinyassets/boxes/caller.py"
+    path.parent.mkdir(parents=True)
+    path.write_text(statement, encoding="utf-8")
+    assert len(_retired_backend_imports(tmp_path)) == 1

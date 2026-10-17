@@ -173,6 +173,15 @@ def test_foreign_authority_refused(home, operation):
 
 
 def test_blocked_turn_registers_through_ta_and_worker_resumes_after_restart(home, monkeypatch):
+    from tinyassets import owner_runtime
+
+    runtime = owner_runtime.require(home, OWNER)
+
+    def tick():
+        with monkeypatch.context() as owner_context:
+            owner_context.setattr(owner_runtime, "_runtime", runtime)
+            request_continuations.tick(home.parent)
+
     backend = Capabilities(home, ExecutionContext(home.name, OWNER, "main"), [],
                            None, lambda: None, capability_grant=BACKEND_ENGINE_CAPABILITIES)
     ready = False
@@ -191,16 +200,16 @@ def test_blocked_turn_registers_through_ta_and_worker_resumes_after_restart(home
     monkeypatch.setattr("tinyassets.wake_conditions.run_probe", lambda *_: ready)
     monkeypatch.setattr(wakes.time, "time", lambda: 1000)
     converse(message="Build the API", graph_id=home.name, agent_id="main")
-    request_continuations.tick(home.parent)
+    tick()
     assert len(turns) == 1
     importlib.reload(request_continuations)
     ready = True
     monkeypatch.setattr(wakes.time, "time", lambda: 1030)
-    request_continuations.tick(home.parent)
+    tick()
     assert len(turns) == 2 and turns[-1]["agent_id"] == "main"
     assert turns[-1]["input_method"] == "unknown"
     assert wakes.listing(home, OWNER)[0]["status"] == "done"
-    request_continuations.tick(home.parent)
+    tick()
     assert len(turns) == 2
 
 

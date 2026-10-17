@@ -55,7 +55,7 @@ def wired(tmp_path):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             exec(compile(code, "<fixture-owner-shell>", "exec"), {})
-        from tinyassets.agent_loop.box_tools import OUTPUT_BYTES
+        from tinyassets.agent_loop.owner_tools import OUTPUT_BYTES
 
         if len(stdout.getvalue().encode()) > OUTPUT_BYTES:
             return {"text": f"[killed: output passed {OUTPUT_BYTES} bytes]"}

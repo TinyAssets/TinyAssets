@@ -424,7 +424,6 @@ def test_the_module_call_exemption_is_exactly_one_pair():
 def test_owner_box_callers_never_open_host_paths():
     """Daemon-side node, media, preview and git box routes use their handle."""
     box_routes = {
-        "tinyassets/box_process.py": {"run_bound"},
         "tinyassets/boxes/node.py": {"run_in_box"},
         "tinyassets/boxes/media.py": {"decode_image", "frames"},
         "tinyassets/universe_tools.py": {"read_file", "write_file", "edit_file", "bash"},
@@ -444,5 +443,6 @@ def test_owner_box_callers_never_open_host_paths():
             assert "BoxExecutor(" not in source
             assert "current_binding" not in source
         else:
-            assert ("run_bound(" in source or "BoxExecutor(" in source
-                    or module.endswith("box_process.py") or module.endswith("workspace_git.py"))
+            assert (".tools.run(" in source or module.endswith("workspace_git.py"))
+            assert "BoxExecutor(" not in source
+            assert "run_bound(" not in source

@@ -49,6 +49,7 @@ import math
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -270,39 +271,40 @@ def preview_public_component(component: dict[str, Any], *,
 
 def _render_spec(spec: dict[str, Any], wall_seconds: float, *,
                  universe_dir: Path | None = None) -> dict[str, Any]:
-    from tinyassets.control_plane.binding import file_binding
+    from tinyassets.owner_runtime import require
 
     public = universe_dir is not None
     if universe_dir is None and spec["base_path"]:
         universe_dir = Path(spec["base_path"]) / spec["universe_id"]
-    binding = file_binding(universe_dir) if universe_dir is not None else None
     if _POISONED:
         raise PreviewUnavailable(_POISONED)
-    if binding is None:
+    if universe_dir is None:
         raise PreviewUnavailable(
             "ui_preview_unavailable: previews render only in an admitted owner box")
     if not _SLOT.acquire(blocking=False):
         raise PreviewUnavailable("ui_preview_busy: another preview is rendering; try again")
     try:
-        return _run_child(spec, wall_seconds, binding=binding, public=public)
+        runtime = require(universe_dir, spec["owner_user_id"] or None)
+        return _run_child(spec, wall_seconds, runtime=runtime,
+                          universe_dir=universe_dir, public=public)
     finally:
         if not _POISONED:
             _SLOT.release()
 
 
-def _run_child(spec: dict[str, Any], wall_seconds: float, *, binding,
+def _run_child(spec: dict[str, Any], wall_seconds: float, *, runtime, universe_dir,
                public: bool = False) -> dict[str, Any]:
     """The render happens in the owner's box and nowhere else."""
     from tinyassets.app_ui_store import read_app_ui_asset
-    from tinyassets.box_process import BoxExecCancelled, run_bound
     from tinyassets.boxes.provider import BoxError
+    from tinyassets.owner_process import OwnerProcessCancelled
 
     if public:
         # Only immutable public content: no owner, no private asset.
         if spec["owner_user_id"] or spec["hashes"]:
             raise PreviewUnavailable("public preview carries owner scope")
-    elif (spec["owner_user_id"] != binding.handle.account_id
-            or spec["universe_id"] != binding.handle.command_center_id):
+    elif (spec["owner_user_id"] != runtime.principal
+            or spec["universe_id"] != Path(universe_dir).name):
         raise PreviewUnavailable("preview owner scope differs from admitted box")
     assets = {}
     total = 0
@@ -316,10 +318,11 @@ def _run_child(spec: dict[str, Any], wall_seconds: float, *, binding,
             assets[path] = base64.b64encode(data).decode("ascii")
     prepared = dict(spec, base_path="/absent", asset_bytes=assets)
     try:
-        result = run_bound(binding, "ui-preview", ["python", "-m", "tinyassets.ui_preview"],
-                           stdin=json.dumps(prepared).encode(), wall_seconds=wall_seconds,
+        result = runtime.tools.run( ["python", "-m", "tinyassets.ui_preview"],
+                           cwd=universe_dir, stdin=json.dumps(prepared).encode(),
+                           wall_seconds=wall_seconds,
                            output_bytes=MAX_CHILD_OUTPUT)
-    except BoxExecCancelled:
+    except OwnerProcessCancelled:
         raise
     except BoxError as exc:
         if str(exc).endswith(": timeout"):
@@ -544,18 +547,16 @@ def write_preview(universe_dir: str | Path, ui_id: str, png: bytes) -> str:
     ui_id = _checked_ui_id(ui_id)
     name = f"{ui_id}.png"
     try:
-        from tinyassets.control_plane.binding import file_binding
+        from tinyassets.owner_runtime import require
 
-        binding = file_binding(Path(universe_dir))
-        if binding is not None:
-            from tinyassets.boxes.file_wire import MAX_DATA
-
-            binding.provider.write(
-                binding.handle, binding.operation_id(f"preview:{ui_id}"),
-                f"/cc/{PREVIEW_DIR}/{name}", png, max_bytes=MAX_DATA,
-            )
-            return f"/u/{PREVIEW_DIR}/{name}"
-        raise PermissionError("preview write requires the admitted owner box")
+        runtime = require(Path(universe_dir))
+        handle = runtime.tools.bind(runtime.principal, session_id=uuid.uuid4().hex)
+        runtime.tools.write(
+            handle, f"preview:{ui_id}:{uuid.uuid4().hex}",
+            f"/cc/{Path(universe_dir).name}/{PREVIEW_DIR}/{name}", png,
+            max_bytes=MAX_CHILD_OUTPUT,
+        )
+        return f"/u/{PREVIEW_DIR}/{name}"
     except Exception as exc:  # noqa: BLE001 - every filesystem refusal is a named failure
         # UniverseFileError (a link or a non-directory on the path), a directory
         # at the target, permissions: the screenshot is not written, and the

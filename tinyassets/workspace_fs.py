@@ -1040,30 +1040,16 @@ class BoxPoolFilesystem:
         self.data_root = Path(data_root)
 
     def _scope(self, path: Path):
-        from tinyassets.agent_loop.served_chat import configured_box_provider
-        from tinyassets.boxes.provider import BOX_ROOT, BoxPathError, box_relpath
-        from tinyassets.universe_owner import owner_of
+        from tinyassets.owner_runtime import file_scope, require
 
         try:
-            relative = box_relpath(str(path))
-        except BoxPathError:
-            raise UnsafePoolPath("workspace lease is outside an owner box") from None
-        parts = relative.split("/")
-        if (len(parts) < 3 or parts[0].startswith(".")
-                or str(path) != BOX_ROOT + "/" + relative):
-            raise UnsafePoolPath("workspace lease is outside an owner box")
-        center = parts[0]
-        owner = owner_of(self.data_root, center)
-        if not owner:
-            raise UnsafePoolPath("workspace lease has no owner")
-        provider, _ = configured_box_provider()
-        if provider is None:
-            raise UnsafePoolPath("owner box provider is unavailable")
-        import hashlib
-
-        turn_id = hashlib.sha256(("workspace-sweep:" + center).encode()).hexdigest()
-        handle = provider.bind(center, account_id=owner, turn_id=turn_id)
-        return provider, handle, BOX_ROOT + "/" + "/".join(parts[1:])
+            relative = Path(path).absolute().relative_to(self.data_root.absolute())
+            if len(relative.parts) < 3 or ".." in relative.parts:
+                raise ValueError("invalid workspace path")
+            require(self.data_root / relative.parts[0])
+            return file_scope(path)
+        except (ValueError, PermissionError):
+            raise UnsafePoolPath("workspace lease is outside the admitted owner box") from None
 
     def exists(self, path: Path) -> bool:
         provider, handle, file_path = self._scope(path)

@@ -26,7 +26,7 @@ def test_unadmitted_manifests_never_start_a_process(monkeypatch, tmp_path):
 def test_invalid_deadline_refuses_before_admission(monkeypatch, tmp_path, timeout):
     def forbidden(*args, **kwargs):
         pytest.fail('invalid deadline reached owner admission')
-    monkeypatch.setattr('tinyassets.control_plane.binding.current_binding', forbidden)
+    monkeypatch.setattr('tinyassets.owner_runtime.require', forbidden)
     with pytest.raises(ValueError, match='deadline'):
         execution.execute_provision(
             plans(), lease_path=tmp_path / 'lease', max_transfer_bytes=1, storage_bound=1,

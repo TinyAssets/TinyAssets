@@ -204,7 +204,7 @@ def test_broker_can_only_request_scheduled_wakes():
         calls.append((owner, kw))
         return 300001
 
-    service = HostService(None, None, None, None, SimpleNamespace(ensure_awake=wake))
+    service = HostService(None, None, None, SimpleNamespace(ensure_awake=wake))
     request = {"lifecycle": "ensure_awake", "owner": "a", "scheduled": True}
     assert service.lifecycle(request, 1002) == {"uid": 300001}
     for changes in ({"scheduled": False}, {"scheduled": 1}, {"uid": 300002}):

@@ -100,28 +100,3 @@ async def test_public_proxy_refuses_foreign_center_capacity_and_oversized_header
     proxy.active.clear()
     assert (await exchange(proxy, b"x" * 17000 + b"\r\n\r\n")).startswith(b"HTTP/1.1 403")
     assert not proxy.active
-
-
-def test_box_forwarder_child_does_not_hold_command_output_open():
-    import os
-    import signal
-    import subprocess
-    import sys
-
-    from tinyassets.boxes.network import FORWARDER
-
-    if os.name != "posix":
-        pytest.skip("guest forwarder uses POSIX fork")
-    proc = subprocess.Popen([
-        sys.executable, "-c", FORWARDER, "0=/run/boxhostd/relay.sock", "--",
-        sys.executable, "-c", "print('finished')"], stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, start_new_session=True)
-    try:
-        output, error = proc.communicate(timeout=5)
-        assert proc.returncode == 0 and output == b"finished\n" and error == b""
-    finally:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.wait(timeout=5)

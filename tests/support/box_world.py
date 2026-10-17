@@ -30,22 +30,22 @@ class World:
     data_root: Path
     universe_a: Path
     universe_b: Path
+    provider: object
     _stack: ExitStack = field(default_factory=ExitStack, repr=False)
     _admitted: dict = field(default_factory=dict, repr=False)
 
     def admit(self, owner: str, center: str):
         """Register ``owner``'s session on ``center`` for the rest of the test."""
-        from tinyassets.agent_loop.served_chat import configured_box_provider
+        from tinyassets.boxes.provider import ExecLimits
         from tinyassets.control_plane.binding import bind_session, use_binding
 
         key = (owner, center)
         if key in self._admitted:
             return self._admitted[key]
-        provider, limits = configured_box_provider()
-        assert provider is not None, "the owner box double is installed on Linux only"
-        binding = bind_session(provider=provider, limits=limits,
+        binding = bind_session(provider=self.provider, limits=ExecLimits(),
                                universe_dir=self.data_root / center, owner=owner,
                                execution_id=f"world:{owner}:{center}")
+        assert binding.handle.account_id == owner
         self._stack.enter_context(use_binding(binding))
         self._admitted[key] = binding
         return binding
@@ -70,7 +70,7 @@ def world(monkeypatch: pytest.MonkeyPatch, _owner_box_double):
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
         monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
         monkeypatch.setattr(helpers, "_base_path", lambda: data_root)
-        current = World(data_root, universe_a, universe_b)
+        current = World(data_root, universe_a, universe_b, _owner_box_double)
         with current._stack:
             yield current
     finally:

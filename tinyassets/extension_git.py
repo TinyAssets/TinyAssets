@@ -9,8 +9,8 @@ from tinyassets.extension_manifest import ExtensionError
 def for_launch(backend):
     """The ``TINYASSETS_BOX_GIT`` projection for the launch, or an empty mapping.
 
-    The box's forwarder opens the broker git routes from it before the command
-    forks (``boxes.git_bridge.prepare``); a binding, broker or grant refusal
+    The owner daemon opens broker git routes before starting its local child;
+    a startup admission, broker or grant refusal
     leaves the command with no authenticated git, never with the daemon's.
     """
     try:
@@ -40,7 +40,7 @@ def _environment_for_launch(backend):
                 contributions.append((state, row, pin, scopes))
     if not contributions:
         return {}
-    from tinyassets.boxes.git_bridge import environment
+    from tinyassets.owner_git import environment
 
     def check():
         service._authority()

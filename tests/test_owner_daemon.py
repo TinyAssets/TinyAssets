@@ -242,8 +242,8 @@ def test_owner_admission_and_local_tools(owner_mode, monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError("shared BoxProvider/exec must not be called")
 
-    monkeypatch.setattr(served_chat, "configured_box_provider", forbidden)
-    monkeypatch.setattr(owner_mode.runtime.tools, "start_exec", forbidden)
+    assert not hasattr(served_chat, "configured_box_provider")
+    assert not hasattr(owner_mode.runtime.tools, "start_exec")
     monkeypatch.setattr(provenance._PROCESS_OBSERVATION, "observe", forbidden)
     monkeypatch.setattr(provenance._PROCESS_OBSERVATION, "peek", forbidden)
     root = owner_mode.runtime.root / "center"
@@ -284,8 +284,8 @@ def test_app_mcp_and_chat_over_unix_socket(owner_mode, agent, monkeypatch, tool)
     def forbidden(*args, **kwargs):
         raise AssertionError("shared box binding/provider must not be called")
 
-    monkeypatch.setattr(served_chat, "configured_box_provider", forbidden)
-    monkeypatch.setattr(owner_mode.runtime.tools, "start_exec", forbidden)
+    assert not hasattr(served_chat, "configured_box_provider")
+    assert not hasattr(owner_mode.runtime.tools, "start_exec")
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     monkeypatch.setattr(call, "make_interactive_agent_turn", agent.factory)
     monkeypatch.setattr(model.engine_tool_client, "_make_client", _real_engine_client)

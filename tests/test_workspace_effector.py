@@ -219,13 +219,15 @@ def fs_spy(monkeypatch: pytest.MonkeyPatch, _owner_box_double):
     """
     assert _owner_box_double is not None, "the owner box double needs Linux"
     calls: dict[str, list] = {"stat": []}
-    real_stat = _owner_box_double.stat
+    from tinyassets.boxes.boxd import OwnerBoxd
 
-    def stat(handle, path, *args, **kwargs):
+    real_stat = OwnerBoxd.stat
+
+    def stat(core, handle, path, *args, **kwargs):
         calls["stat"].append(path)
-        return real_stat(handle, path, *args, **kwargs)
+        return real_stat(core, handle, path, *args, **kwargs)
 
-    monkeypatch.setattr(_owner_box_double, "stat", stat, raising=False)
+    monkeypatch.setattr(OwnerBoxd, "stat", stat)
     return calls
 
 
@@ -844,6 +846,9 @@ def test_opening_a_cell_made_lease_leaks_no_handle_when_its_content_is_missing(
     guest = wse._lease_center_root(universe_dir) / relative
 
     with binding.use_binding(binding.file_binding(universe_dir)):
+        from tinyassets.owner_runtime import require
+        runtime = require(universe_dir)
+        assert runtime.root == universe_dir.parent
         before = len(os.listdir("/proc/self/fd"))
         with pytest.raises(wse._Refused):
             wse._open_cell_lease(guest)
@@ -1503,16 +1508,15 @@ def test_the_universe_root_is_the_universe_not_its_workspaces_dir(
     """`universe_paths` appends `workspaces/` itself; passing it again made
     `workspaces/workspaces/...` (Codex round 2, P0 #1)."""
     from tinyassets import workspace_pool
-    from tinyassets.boxes.provider import BOX_ROOT
 
     _root, universe_dir = _setup(tmp_path)
     # The universe's guest root inside its owner box, never its workspaces dir.
-    assert wse.universe_workspace_root(universe_dir) == Path(BOX_ROOT) / universe_dir.name
+    assert wse.universe_workspace_root(universe_dir) == universe_dir
     result = _run(tmp_path, _packet(storage="universe"), universe_dir=universe_dir, chain=chain)
     assert result.get("error_kind") is None, result
     mount = chain.workspace_mount_or_none("n1")
     expected, _quarantine = workspace_pool.universe_paths(
-        Path(BOX_ROOT) / universe_dir.name, mount.repo_key, mount.generation
+        universe_dir, mount.repo_key, mount.generation
     )
     assert Path(mount.lease.path) == expected
     assert "workspaces/workspaces" not in Path(mount.lease.path).as_posix()
@@ -2623,17 +2627,6 @@ def test_the_real_helpers_refuse_loudly_on_windows_rather_than_imitating() -> No
         workspace_fs.open_dir_nofollow(".")
 
 
-def test_a_checkout_without_the_posix_helpers_fails_as_a_workspace_refusal(
-    tmp_path: Path, chain: EffectChain, no_real_git
-) -> None:
-    """No fs_spy here: on Windows the real helpers raise, and the adapter must
-    turn that into an actionable kind rather than an unhandled crash."""
-    if os.name == "posix":
-        pytest.skip("the real helpers work here; the Linux proof covers it")
-    _root, universe_dir = _setup(tmp_path)
-    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
-    assert result["error_kind"] in ("workspace_checkout_failed", "effector_crashed")
-    assert chain.workspace_mount_or_none("n1") is None
 
 
 def test_the_sink_is_registered_and_exported() -> None:

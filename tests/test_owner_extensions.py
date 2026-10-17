@@ -1,4 +1,4 @@
-"""Installed extensions run in a real remote box with local ta's fences.
+"""Installed extensions run through the local OwnerBoxd tool path.
 
 The box receives only host-verified revision bytes for one launch; the engine
 dispatcher still decides whether a revision is active for this owner. No skip
@@ -12,28 +12,16 @@ import contextlib
 import json
 import os
 import shlex
-import shutil
 from types import SimpleNamespace
 
 import pytest
 
 from tests.support.box_world import dynamic_data_root as dynamic_data_root
 from tests.support.box_world import world as world
-from tests.test_remote_box_ta import IsolatedBox, attach
-from tests.test_remote_box_ta import box as box  # noqa: F401 -- fixture
-from tinyassets.agent_loop.box_ta import TurnBridge, engine_deliver, engine_ta
-from tinyassets.agent_loop.box_tools import BoxExecutor, BoxTools
-from tinyassets.boxes import ExecLimits
+from tests.test_c6_owner_box_callers import owner as owner  # noqa: F401
+from tinyassets.agent_loop.box_ta import engine_deliver, engine_ta
 from tinyassets.engine_tool_client import EngineToolError
 from tinyassets.extension_state import ExtensionStore
-
-pytestmark = pytest.mark.real_jail
-
-
-@pytest.fixture(autouse=True)
-def _real_bwrap():
-    # No skip escape: a box without bubblewrap is a failed proof, not a pass.
-    assert shutil.which("bwrap"), "Linux oracle must provide bubblewrap"
 
 RUN = (b'#!/usr/bin/env python3\nimport json,os,sys\n'
        b'print(json.dumps({"entry":sys.argv[1],"value":"PINNED","cwd":os.getcwd()}))\n')
@@ -55,7 +43,7 @@ def _out(result, code=0):
 
 
 @contextlib.asynccontextmanager
-async def remote(server, world, tmp_path, *, turn="live"):
+async def owner_session(server, world, tmp_path, *, turn="live"):
     """Production chain: box worker -> TurnBridge -> signed engine resource."""
     from fastmcp import Client
 
@@ -66,25 +54,21 @@ async def remote(server, world, tmp_path, *, turn="live"):
         universe_id="u-alpha", owner="actor-a", port=8790, secret="s" * 43)])
     route = routes.read_engine_mcp_route(actor_id="actor-a", graph_id="u-alpha",
                                         root=world.data_root)
-    provider = IsolatedBox(boxes_root=tmp_path / "boxes", state_dir=tmp_path / "state",
-                           owner_of={"u-alpha": "actor-a"}.get, allow_unisolated=True)
     client = Client(server.mcp)
     await client.__aenter__()
     engine = EngineToolSession(client, route, world.data_root, ("bash",))
-    handle = provider.bind("u-alpha", account_id="actor-a", turn_id=turn)
-    bridge = TurnBridge(owner="actor-a", center="u-alpha", turn=turn, handle=handle,
-                        database=tmp_path / "receipts.db",
-                        dispatch=lambda message, **kw: engine_ta(engine, message, **kw),
-                        deliver=lambda: engine_deliver(engine))
-    executor = BoxExecutor(provider, handle,
-                           limits=ExecLimits(wall_seconds=60, output_bytes=2**20))
-    executor.enable_ta(bridge)
+    from tinyassets.agent_loop.owner_tools import tools_for
+
+    tools, _ = tools_for(world.universe_a)
+    bridge = tools.enable_ta(
+        turn=turn,
+        dispatch=lambda message, **kw: engine_ta(engine, message, **kw),
+        deliver=lambda: engine_deliver(engine))
     try:
-        yield BoxTools(executor), engine
+        yield tools, engine
     finally:
         bridge.close()
         await client.__aexit__(None, None, None)
-        provider.close()
 
 
 def _activate(server, store, content):
@@ -106,7 +90,7 @@ def _owner_store(server):
                                 universe=root.name, agent="main")
 
 
-def test_installed_tool_command_and_hook_run_in_remote_box(world, tmp_path, monkeypatch):
+def test_installed_tool_command_and_hook_run_in_owner_box(world, tmp_path, monkeypatch):
     from tests.support.box_world import bash
     from tests.support.box_world import engine as _engine
 
@@ -125,7 +109,7 @@ def test_installed_tool_command_and_hook_run_in_remote_box(world, tmp_path, monk
                'for p in sorted(r.rglob("*"))}))')
 
     async def run():
-        async with remote(server, world, tmp_path) as (tools, _):
+        async with owner_session(server, world, tmp_path) as (tools, _):
             # Before delivery this was extension_runtime_unavailable.
             result = json.loads(_out(await tools.bash(
                 "tool", f"ta {prefix}:tools:hello --json '{{}}'")))
@@ -167,7 +151,7 @@ def test_installed_tool_command_and_hook_run_in_remote_box(world, tmp_path, monk
     assert again["value"] == "PINNED"
 
 
-def test_revoked_extension_disappears_from_remote_box(world, tmp_path, monkeypatch):
+def test_revoked_extension_disappears_from_owner_box(world, tmp_path, monkeypatch):
     from tests.support.box_world import engine as _engine
 
     server = _engine(monkeypatch, world)
@@ -176,7 +160,7 @@ def test_revoked_extension_disappears_from_remote_box(world, tmp_path, monkeypat
     name = f"extension:sample:{revision}:1:tools:hello"
 
     async def run():
-        async with remote(server, world, tmp_path) as (tools, _):
+        async with owner_session(server, world, tmp_path) as (tools, _):
             assert "PINNED" in _out(await tools.bash("before", f"ta {name} --json '{{}}'"))
             pin["expected_generation"] = 1
             revoked = json.loads(_out(await tools.bash(
@@ -195,7 +179,7 @@ def test_revoked_extension_disappears_from_remote_box(world, tmp_path, monkeypat
     assert absent == "ABSENT"
 
 
-def test_cross_owner_extension_never_reaches_remote_box(world, tmp_path, monkeypatch):
+def test_cross_owner_extension_never_reaches_owner_box(world, tmp_path, monkeypatch):
     from tests.support.box_world import engine as _engine
     from tinyassets.agent_loop.box_ta import engine_resource
 
@@ -207,7 +191,7 @@ def test_cross_owner_extension_never_reaches_remote_box(world, tmp_path, monkeyp
     name = f"extension:sample:{installed['revision']}:1:tools:hello"
 
     async def run():
-        async with remote(server, world, tmp_path) as (tools, _):
+        async with owner_session(server, world, tmp_path) as (tools, _):
             search = json.loads(_out(await tools.bash("search", "ta search sample")))
             called = await tools.bash("call", f"ta {name} --json '{{}}'")
             absent = _out(await tools.bash(
@@ -234,7 +218,7 @@ def test_cross_owner_extension_never_reaches_remote_box(world, tmp_path, monkeyp
 
 
 @pytest.mark.parametrize("fault", ["digest", "transport", "lost_reply"])
-def test_failed_delivery_fails_closed_before_command_runs(box, tmp_path, fault):  # noqa: F811
+def test_failed_delivery_fails_closed_before_command_runs(owner, tmp_path, fault):  # noqa: F811
     from tests.test_one_extension_unit import files
     from tinyassets.extension_manifest import build_revision
 
@@ -255,20 +239,21 @@ def test_failed_delivery_fails_closed_before_command_runs(box, tmp_path, fault):
                 "undelivered": []}
 
     async def run():
-        bridge, tools = attach(box, tmp_path, dispatch)
-        bridge.deliver = deliver
+        from tinyassets.agent_loop.owner_tools import OwnerTools
+        tools = OwnerTools(owner.home)
+        bridge = tools.enable_ta(dispatch=dispatch, deliver=deliver, turn="delivery")
         try:
             with pytest.raises(EngineToolError, match="remote_extension_delivery_failed") as err:
-                await tools.bash("refused", "touch /cc/should-not-exist")
+                await tools.bash("refused", "touch should-not-exist")
             assert err.value.outcome == "not_sent"
-            assert box.stat(bridge.handle, "/cc/should-not-exist") is None
+            assert not (owner.home / "should-not-exist").exists()
         finally:
             bridge.close()
 
     asyncio.run(run())
 
 
-def test_turn_hooks_run_in_the_turns_remote_box(world, tmp_path, monkeypatch):
+def test_turn_hooks_run_in_the_turns_owner_box(world, tmp_path, monkeypatch):
     """Turn lifecycle hooks use the turn's own route: on the thin loop, its box."""
     from tests.support.box_world import engine as _engine
     from tinyassets.agent_loop import tool_session
@@ -284,7 +269,7 @@ def test_turn_hooks_run_in_the_turns_remote_box(world, tmp_path, monkeypatch):
     _activate(server, store, content)
 
     async def run():
-        async with remote(server, world, tmp_path, turn="turn-1") as (tools, engine):
+        async with owner_session(server, world, tmp_path, turn="turn-1") as (tools, engine):
             @contextlib.asynccontextmanager
             async def engine_route(**_):
                 yield engine

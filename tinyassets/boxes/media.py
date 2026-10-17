@@ -6,23 +6,12 @@ import json
 import math
 from pathlib import Path
 
-from tinyassets.box_process import run_bound
+from tinyassets.owner_runtime import require
 
 MAX_SOURCE_BYTES = 64 * 1024 * 1024
 MAX_FRAME_BYTES = 3 * 1024 * 1024
 MAX_FRAMES = 10
 MAX_RESULT_BYTES = MAX_FRAME_BYTES * MAX_FRAMES + 16384
-
-
-def _binding(universe_dir):
-    if universe_dir is None:
-        raise PermissionError("media decoding requires an admitted command center")
-    from tinyassets.control_plane.binding import file_binding
-
-    binding = file_binding(Path(universe_dir))
-    if binding is None:
-        raise PermissionError("media decoding requires an admitted owner box")
-    return binding
 
 
 def decode_image(data: bytes, mime: str, universe_dir: Path):
@@ -34,23 +23,23 @@ def decode_image(data: bytes, mime: str, universe_dir: Path):
         MAX_IMAGE_SOURCE_BYTES,
     )
 
-    binding = _binding(universe_dir)
+    runtime = require(universe_dir)
     if not isinstance(data, bytes) or len(data) > MAX_IMAGE_SOURCE_BYTES:
         raise PermissionError("decoder scope is not admitted")
-    return run_bound(
-        binding, "image-decode", ["python", "-m", "tinyassets.tool_images",
+    return runtime.tools.run(
+        ["python", "-m", "tinyassets.tool_images",
                                   mime, str(DECODE_MEMORY_BYTES), str(DECODE_CPU_SECONDS)],
-        stdin=data, wall_seconds=DECODE_WALL_SECONDS,
+        cwd=universe_dir, stdin=data, wall_seconds=DECODE_WALL_SECONDS,
         output_bytes=MAX_IMAGE_BYTES + 4096,
     )
 
 
 def frames(data: bytes, universe_dir: Path):
-    binding = _binding(universe_dir)
+    runtime = require(universe_dir)
     if type(data) is not bytes or not 0 < len(data) <= MAX_SOURCE_BYTES:
         raise ValueError("video input exceeds its bound or is empty")
-    done = run_bound(binding, "video-frames",
-                     ["python", "-m", "tinyassets.boxes.video_codec"], stdin=data,
+    done = runtime.tools.run(
+                     ["python", "-m", "tinyassets.boxes.video_codec"], cwd=universe_dir, stdin=data,
                      wall_seconds=160, output_bytes=MAX_RESULT_BYTES)
     if done.returncode:
         raise RuntimeError("video box execution did not complete")

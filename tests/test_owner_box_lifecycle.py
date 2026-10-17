@@ -199,7 +199,7 @@ def test_busy_boxes_are_never_evicted_and_wake_is_bounded(fleet):
 
 def test_retirement_stops_box_before_ack_and_control_roles_are_positive(fleet):
     manager = fleet.manager
-    service = HostService(None, fleet.admission, None, None, manager)
+    service = HostService(fleet.admission, None, None, manager)
     request = {"lifecycle": "ensure_awake", "owner": "a", "scheduled": False}
     assert "error" in service.lifecycle(request, 1002)
     assert "error" in service.lifecycle({**request, "uid": 300002}, 1001)

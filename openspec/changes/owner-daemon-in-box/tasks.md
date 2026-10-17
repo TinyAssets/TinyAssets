@@ -120,7 +120,7 @@ Nothing deploys until slice 7.
       - [x] Delete each owner-runtime shared-work fork in the audited
         LEGACY_SHARED / UNREACHABLE_ROLE inventory, including owner_policy;
         retain only the 29 justified ROLE_DISPATCH boundaries.
-      - [ ] Delete the `box_tools`/`start_exec` bridge and per-call box backend
+      - [x] Delete the `box_tools`/`start_exec` bridge and per-call box backend
         (`frontend`, `production_files`, `file_worker`, `exec_worker`,
         `executions`, `gvisor_files`).
       - [x] Delete the `PROGRAM.md` premise mirror and implicit legacy loop,
@@ -137,9 +137,10 @@ Nothing deploys until slice 7.
         mutation self-tests; retain router import/direct-file-access checks.
       Part 1d completes the remaining 21 classified forks and D7. All 29
       role-boundary exceptions and reasons are executable and documented in
-      `main-audit.md`. The exec bridge, per-call backend and legacy launcher
-      remain for the next pass. Part 2 removes one-shot migrations and deploy
-      old-layout branches after slice 6.
+      `main-audit.md`. Part 1e deletes the exec bridge, per-call backend and
+      legacy launcher and ports owner callers to local OwnerBoxd tools.
+      Part 2 removes protected `.premigration` copying, one-shot migrations
+      and deploy old-layout branches after slice 6.
 - [ ] 6b. Per-box deploy roll and the canary-box acceptance (D11).
 - [ ] 7. Report the list of unported, dropped features to the founder; then the cutover deploy (lead), with deployed sha asserted and one naive-user
       pass per surface: app, MCP and a scheduled run.

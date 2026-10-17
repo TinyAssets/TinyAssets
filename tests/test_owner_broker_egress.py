@@ -322,7 +322,7 @@ def test_center_creation_admits_through_bound_relay(box, monkeypatch):
     def forbidden():
         raise AssertionError("an existing owner box must not bind a host provider")
 
-    monkeypatch.setattr(served_chat, "configured_box_provider", forbidden)
+    assert not hasattr(served_chat, "configured_box_provider")
     generation = admit_center(box.root, principal="untrusted-field", center="new-center")
     assert generation > 0
     assert admit_center(box.root, principal="owner", center="new-center") == generation
