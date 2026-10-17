@@ -283,7 +283,10 @@ def test_box_shared_channel_rechecks_last_live_admission_on_every_read(box):
         sock.sendall(document)
         assert rf.read_frame_blocking(sock).control() == {
             "op": "BOX_RESULT", "result": {"tier": "paid", "ends_at": None}}
-        box.identities.admission("retire", "owner", "center")
+        # Retirement is a broker operation; run it outside the box runtime.
+        with pytest.MonkeyPatch.context() as broker_context:
+            broker_context.setattr(owner_runtime, "_runtime", None)
+            box.identities.admission("retire", "owner", "center")
         sock.sendall(document)
         assert rf.read_frame_blocking(sock).control() == {"op": "BOX_REFUSED"}
 
