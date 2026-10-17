@@ -1462,10 +1462,6 @@ proofs. Renamed ports are not counted as retirements.
 - `tests/test_box_lifecycle.py::test_committed_admission_refuses_missing_host_and_invalid_layout`
 - `tests/test_broker_model_grants.py::test_existing_grants_backfill_from_broker_state[platform-*] (two parametrizations: obsolete host definition input)`
 - `tests/test_account_deletion.py::test_failed_two_pass_owner_tree_keeps_the_binding_and_retry_resumes`
-- `tests/test_account_deletion.py::test_workos_deletion_failures_raise_without_the_key`
-- `tests/test_account_deletion.py::test_workos_deletion_sends_a_delete_and_treats_gone_as_done`
-- `tests/test_account_deletion.py::test_workos_deletion_skips_non_workos_principals`
-- `tests/test_account_deletion.py::test_workos_deletion_is_not_configured_without_a_key`
 - `tests/test_account_deletion.py::test_billing_and_identity_failures_are_reported_not_hidden`
 - `tests/test_account_deletion.py::test_an_unconfigured_identity_provider_is_unfinished_work`
 - `tests/test_account_deletion.py::test_an_unreachable_payment_processor_is_unfinished_work`
@@ -2104,3 +2100,117 @@ retirement, loosening, skip or xfail additions. Linux: 2,137 passed unprivileged
 migration API failures recorded above, with no skips in either final run.
 Ruff, shape checks and strict spec validation passed. Validation receipts:
 `C:/Users/Jonathan/AppData/Local/Temp/s6a1g-validation-8ad854f1/`.
+
+
+## 6a part 1h: reconcile shared-door deletion after the slice-5 merge (2026-10-17)
+
+Identity erasure now lives in `tinyassets/router_account_deletion.py`, called
+only by `owner_router._delete_owner_account`. The WorkOS helper, principal
+pattern, URL, timeout, idempotent 404 and secret-free errors are unchanged from
+slice 4. Its common `AccountDeletionError` also serves the box sweep without
+making the shared helper import box-local code. The four historical WorkOS
+unit tests are restored in `tests/test_router_account_deletion.py`, with only
+the module/error imports relocated; AST comparison proves their bodies and the
+helper unchanged. Their obsolete retirement entries above are removed.
+
+Billing already lives in shared
+`billing.stripe_adapter.cancel_account_billing(root, owner)`: read the owner's
+subscription mapping, confirm cancellation, then update the shared plan. The
+unused home-based `cancel_stripe_billing` stays deleted. The shared fenced RPC
+`broker.account_erasure.erase_account` is restored in its original module;
+6a had removed it when its former box caller disappeared, overlooking the
+parallel door change. Its body, response-count validation and broker receiver
+are AST-identical to slice 4. Two real-broker tests prove lost-acknowledgement
+failure without automatic replay, safe explicit retry, other-owner preservation
+and loud failure with retained rows when the broker is unavailable.
+
+The local sweep performs no identity, billing, custody or host lifecycle work.
+No `local_only` or runtime-mode branch returns. The door phases, atomic
+resolve/release wake leases, single confirmed boxhostd destroy and four-argument
+HostService are unchanged. D7 now permits the three actual shared owners used
+by the merged door: identity, billing and custody erasure. Its assertions still
+reject owner stores and filesystem access; a new mutation input explicitly
+rejects the box-local account-deletion import. Every check_shapes probe and
+runtime-mode exception remains intact.
+
+All eighteen reported failures passed with their original expectations:
+
+- **I:** the door imported WorkOS deletion from the box-local module after 6a
+  removed it. Moving the helper exposed the independently deleted shared broker
+  RPC wrapper. Fix both shared dependencies, without restoring box callers.
+- **P:** paid-deletion setup patched the deleted box-local WorkOS pattern/helper.
+  Change only import/monkeypatch targets to the shared identity module; also fix
+  I. The broker_egress injection additionally needed the restored RPC target.
+- **R:** the host-lock test explicitly requires UID 0; the failing venue used
+  UID 1001. Run the unchanged test with `--as-root`; no product fix needed.
+
+All table rows are in `tests/test_owner_router.py` except the last:
+
+| Test | Cause/fix |
+| --- | --- |
+| `test_door_deletion_removes_only_bound_owners_data_and_router_state` | I |
+| `test_a_failed_account_revoke_can_be_retried_to_completion[retire]` | I |
+| `test_a_failed_account_revoke_can_be_retried_to_completion[revoke]` | I |
+| `test_box_deletion_rejection_leaves_lifecycle_and_router_state_untouched[blocked]` | I |
+| `test_box_deletion_rejection_leaves_lifecycle_and_router_state_untouched[refused]` | I |
+| `test_paid_deletion_confirms_every_phase_and_retries_after_tombstone[None]` | P + I |
+| `test_paid_deletion_confirms_every_phase_and_retries_after_tombstone[stop]` | P + I |
+| `test_paid_deletion_confirms_every_phase_and_retries_after_tombstone[owner_tree]` | P + I |
+| `test_paid_deletion_confirms_every_phase_and_retries_after_tombstone[relay]` | P + I |
+| `test_paid_deletion_confirms_every_phase_and_retries_after_tombstone[socket]` | P + I |
+| `test_paid_deletion_confirms_every_phase_and_retries_after_tombstone[broker_egress]` | P + I |
+| `test_paid_deletion_confirms_every_phase_and_retries_after_tombstone[billing]` | P + I |
+| `test_paid_deletion_confirms_every_phase_and_retries_after_tombstone[plan]` | P + I |
+| `test_paid_deletion_confirms_every_phase_and_retries_after_tombstone[credentials]` | P + I |
+| `test_paid_deletion_confirms_every_phase_and_retries_after_tombstone[identity]` | P + I |
+| `test_deletion_drains_real_turn_before_sweep_and_destroys_late_writes[False]` | I |
+| `test_deletion_drains_real_turn_before_sweep_and_destroys_late_writes[True]` | I |
+| `tests/test_owner_box_control.py::test_host_restart_lock_precedes_recovery_and_excludes_a_second_controller` | R |
+
+The paid-deletion decorator collects ten cases, not eleven; these account for
+all eighteen reported failures. No expectation encoded the deleted dual path,
+so no expectation exception was needed. All original assertions in the three
+touched existing test files are AST-identical to merge `3efd51eaa74`. No test
+was retired, loosened, skipped, xfailed or quarantined in this pass.
+
+The missing broker import also prevented the stop-failure injection from being
+consumed by its deletion phase; it instead fired during fixture teardown in the
+intermediate run. The drain assertions failed because forwarding never began.
+Both secondary symptoms disappear with the shared wrapper restored; neither
+fixture cleanup nor drain expectations changed. The baseline separately hit a
+socket-refusal timing race in `test_router_credential_socket_refuses_a_non_broker_peer`:
+immediate rejection can precede its sendall and raise BrokenPipeError. Its
+implementation/expectations are unchanged and the 47-test run below passes it.
+
+Validation receipts: `C:/Users/Jonathan/AppData/Local/Temp/s6a1h-validation-jjglaj5w/`.
+
+- Final unprivileged Linux oracle: **1,744 passed, no skips**, across **87
+  files**, including every structural guard and the requested owner, box, egress,
+  deletion and center-admission suites. All eighteen originally reported cases
+  pass across this venue and the root venue.
+- Full owner-router and broker-erasure suites: **47 passed, no skips**. These
+  include all seventeen deletion cases and both new real-broker proofs.
+  `reported-failures-resolved.json` maps each of the eighteen reported cases
+  to its passing Linux test receipt, including the unchanged root host lock.
+- Final D7/identity follow-up after the extra mutation input: **61 passed,
+  no skips**. The requested broad selection includes every structural GUARDS
+  key, D7 and all requested owner/box/egress/deletion file patterns.
+- Root venue: **37 passed, 5 failed, no skips**. The five are the unchanged
+  protected slice-6 `account_type_of(..., db_reader=readonly_db)` API mismatch
+  already recorded in 1e/1f/1g:
+  `test_preflight_reads_wal_without_writing_data[False]`,
+  `test_preflight_reads_wal_without_writing_data[True]`,
+  `test_preflight_refuses_unreadable_founder_home`,
+  `test_apply_refuses_unreadable_founder_home_before_any_write`, and
+  `test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambiguous`.
+  Rsync was provisioned only inside the disposable root container so ownership
+  proofs executed.
+- Ruff on all eight changed/new Python files, strict OpenSpec validation,
+  check_shapes and whitespace checks pass. No changed file is heavy.
+- The post-commit hygiene gate uses `conv/c6-owner-daemon-s5` and the copied
+  body with `Registry row(s): S8` and the existing `Test-Removal: retired --`
+  line; its receipt is saved beside the test results after the local commit.
+
+Protected slice-6 files, production, host Git configuration and remote Git state
+are untouched. No dispatch, push, merge, rebase, switch or amend. Independent
+review and deployment remain with the lead under this local-only handoff.

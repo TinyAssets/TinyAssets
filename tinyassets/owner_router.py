@@ -209,10 +209,10 @@ async def delete_owner_account(identity):
 
 async def _delete_owner_account(identity):
     """The door records each shared phase; a tombstone never blocks cleanup."""
-    from tinyassets.account_deletion import delete_workos_user
     from tinyassets.billing.stripe_adapter import cancel_account_billing
     from tinyassets.broker.account_erasure import erase_account
     from tinyassets.broker.owner_identities import retire_owner
+    from tinyassets.router_account_deletion import delete_workos_user
     from tinyassets.router_credentials import DeletedOwners, revoke_account, tombstone
     from tinyassets.storage import data_dir
 

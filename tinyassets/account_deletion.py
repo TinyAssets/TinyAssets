@@ -55,6 +55,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable
 
+from tinyassets.router_account_deletion import AccountDeletionError
+
 logger = logging.getLogger(__name__)
 
 _STAGING_DIR = ".deleting"
@@ -239,10 +241,6 @@ _FOREIGN_ROWS_EXPECTED = frozenset({
 #: belongs to someone else — a daemon instance B started and stopped here is
 #: still B's, and no liveness check will notice it (Codex round 3, finding 1).
 FOREIGN_OWNERSHIP_KEYS = PRINCIPAL_KEYS + ("created_by",)
-
-
-class AccountDeletionError(RuntimeError):
-    """Deletion refused. The message never carries a secret."""
 
 
 class AccountDeletionBlocked(AccountDeletionError):

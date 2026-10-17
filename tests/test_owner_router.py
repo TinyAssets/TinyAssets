@@ -1000,7 +1000,7 @@ def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
     import re
     from contextlib import nullcontext
 
-    from tinyassets import account_deletion, router_credentials
+    from tinyassets import router_account_deletion, router_credentials
     from tinyassets.billing import stripe_adapter
     from tinyassets.billing.plan_store import BillingPlans
     from tinyassets.boxes import destroy
@@ -1027,8 +1027,8 @@ def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
         return nullcontext(SimpleNamespace(status=204))
 
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_deletion")
-    monkeypatch.setattr(account_deletion, "_WORKOS_USER_ID", re.compile("alice"))
-    monkeypatch.setattr(account_deletion.urllib.request, "urlopen", upstream)
+    monkeypatch.setattr(router_account_deletion, "_WORKOS_USER_ID", re.compile("alice"))
+    monkeypatch.setattr(router_account_deletion.urllib.request, "urlopen", upstream)
     targets = {
         "stop": (boxes.runtime, "stop"),
         "owner_tree": (boxes.manager.quota, "destroy"),
@@ -1038,7 +1038,7 @@ def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
         "billing": (stripe_adapter, "_get"),
         "plan": (BillingPlans, "apply_tier_event"),
         "credentials": (router_credentials, "revoke_account"),
-        "identity": (account_deletion, "delete_workos_user"),
+        "identity": (router_account_deletion, "delete_workos_user"),
     }
     attempts = []
     if failure:

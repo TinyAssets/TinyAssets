@@ -377,7 +377,10 @@ are described in the 3c-2 as-built contract above.
   The door serializes deletion attempts and stores a durable shared receipt after
   the local sweep. It records destruction, broker custody erasure, owner-keyed
   Stripe cancellation plus shared plan update through BILLING_PLAN, router
-  credential revocation, and existing WorkOS identity deletion. Billing runs even
+  credential revocation, and existing WorkOS identity deletion. The door imports identity
+  erasure from `router_account_deletion`; billing uses the owner-keyed
+  `billing.stripe_adapter.cancel_account_billing`. The box-local
+  `account_deletion` module performs neither shared phase. Billing runs even
   after destruction failure. Identity deletion waits until the other steps finish
   so sign-in remains available for retries. Only a fully confirmed receipt returns
   200; every other outcome names unfinished phases. A tombstone blocks new work,
