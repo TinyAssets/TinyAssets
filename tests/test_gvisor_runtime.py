@@ -65,11 +65,38 @@ def test_every_runsc_invocation_uses_memory_overlay_and_no_network(tmp_path, mon
 
     monkeypatch.setattr("tinyassets.boxes.gvisor_runtime.subprocess.run", record)
     runtime._command("state", "owner-300001")
-    assert calls[0][1:9] == [
+    assert calls[0][1:10] == [
         "--root", str(tmp_path / "state"), "--systemd-cgroup=false",
-        "--network=none", "--platform=systrap", f"--overlay2={OVERLAY}",
+        "--network=none", "--platform=systrap", "--host-uds=all", f"--overlay2={OVERLAY}",
         "state", "owner-300001",
     ]
+
+
+def test_persistent_daemon_launch_has_mount_secret_socket_static_env_and_memory_cap(tmp_path):
+    runtime = _runtime(tmp_path)
+    relay = tmp_path / "relay.sock"
+    secret = tmp_path / "secret"
+    secret.write_text("s" * 43)
+    secret.chmod(0o400)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(str(relay))
+        config = runtime._config(
+            {"process": {}, "mounts": [], "linux": {}}, uid=300001, gid=300001,
+            tree=tmp_path / "owners/300001", relay=relay, memory_bytes=1024**3,
+            app_dir=tmp_path / "300001", secret_file=secret)
+    assert config["process"]["args"] == [
+        "/opt/venv/bin/python", "-B", "-m", "tinyassets.owner_daemon",
+        "--socket", "/run/owner/app.sock", "--relay", "/run/boxhostd/relay.sock",
+        "--secret-file", "/run/boxhostd/secret"]
+    assert config["process"]["user"] == {"uid": 300001, "gid": 300001}
+    assert config["linux"]["resources"]["memory"]["limit"] == 1024**3
+    mounts = {item["destination"]: item for item in config["mounts"]}
+    assert "ro" in mounts["/run/boxhostd/secret"]["options"]
+    assert mounts["/run/owner"]["source"] == str(tmp_path / "300001")
+    assert mounts["/home/owner"]["source"] == str(tmp_path / "owners/300001")
+    assert config["process"]["env"] == [
+        "PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/owner",
+        "PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright"]
 
 
 @pytest.mark.skipif(os.name == "posix" and os.geteuid() != 0,

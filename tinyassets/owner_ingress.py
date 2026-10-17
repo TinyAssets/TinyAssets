@@ -24,6 +24,7 @@ class OwnerIngress:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
         from tinyassets.auth.provider import Identity
+        from tinyassets.owner_activity import activity
 
         headers = {}
         try:
@@ -33,8 +34,21 @@ class OwnerIngress:
                     if name in headers:
                         raise ValueError("duplicate router header")
                     headers[name] = value
-            if not hmac.compare_digest(headers.get(b"x-box-secret", b""), self.secret):
+            if activity.revoked or not hmac.compare_digest(
+                    headers.get(b"x-box-secret", b""), self.secret):
                 raise ValueError("router secret required")
+            if scope["path"] == "/_box/status" and scope["method"] == "GET":
+                return await JSONResponse(activity.status())(scope, receive, send)
+            if scope["path"] in {"/_box/drain", "/_box/revoke"} and scope["method"] == "POST":
+                from starlette.requests import Request
+
+                doc = await Request(scope, receive).json()
+                idle = doc.get("idle_seconds", 0)
+                if type(idle) not in (int, float) or not 0 <= idle <= 86400:
+                    raise ValueError("invalid idle interval")
+                result = activity.status(drain=True, idle=idle,
+                                         revoke=scope["path"] == "/_box/revoke")
+                return await JSONResponse(result)(scope, receive, send)
             identity = Identity(**json.loads(base64.b64decode(
                 headers[b"x-owner-identity"], altchars=b"-_", validate=True)))
             # The only source is the authenticated router, never a public bearer.
@@ -52,4 +66,21 @@ class OwnerIngress:
             return await JSONResponse({"error": "router_required"}, status_code=401)(
                 scope, receive, send)
         scope = dict(scope, tinyassets_router_identity=identity)
-        await self.app(scope, receive, send)
+        # Admission and drain share a lock: a successful drain cannot race a
+        # new request or background turn. No control request counts as activity.
+        gate = activity.enter()
+        try:
+            gate.__enter__()
+        except RuntimeError:
+            return await JSONResponse({"error": "box_draining"}, status_code=503)(
+                scope, receive, send)
+        # A passive MCP event subscription is not a running turn. Actual MCP
+        # calls and detached turns hold their own gate; an idle subscription
+        # may reconnect after its box sleeps.
+        if scope["method"] == "GET" and scope["path"] in {"/mcp", "/mcp/", "/mcp/events"}:
+            gate.__exit__(None, None, None)
+            return await self.app(scope, receive, send)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            gate.__exit__(None, None, None)

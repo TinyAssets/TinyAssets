@@ -126,11 +126,21 @@ def request(broker, **changes):  # noqa: F811 - fixture passed as a helper argum
         return rf.read_frame_blocking(channel).control()
 
 
-def test_owner_channel_admission_retry_and_refusals(broker, tmp_path):  # noqa: F811
+def test_owner_channel_admission_retry_and_refusals(broker, tmp_path, monkeypatch):  # noqa: F811
     refused = {"op": "CENTER_ADMISSION_REFUSED"}
     assert request(broker) == refused  # no map is never initialized at runtime
     identities = store(tmp_path, "alice")
     broker.server._owner_identities = identities
+    stops = []
+
+    def stopped(operation, owner, **fields):
+        assert operation == "retire" and owner == "alice" and fields == {"uid": 300001}
+        with pytest.raises(LookupError):
+            identities.box_route(owner)
+        stops.append(owner)
+        return {"stopped": True}
+
+    monkeypatch.setattr("tinyassets.boxes.daemon_control.request", stopped)
     for changes in ({"token": "stale"}, {"generation": True}, {"machine": 300001},
                     {"uid": 300001}, {"path": "/data/alice-home"},
                     {"principal": "bob"}, {"center": "../x"}, {"event": 1}):
@@ -143,6 +153,7 @@ def test_owner_channel_admission_retry_and_refusals(broker, tmp_path):  # noqa: 
     assert request(broker) == first
     assert request(broker) == first  # a lost acknowledgement is safe to retry
     assert request(broker, event="retire") == dict(first, generation=2)
+    assert stops == ["alice"]
     assert request(broker) == refused
 
 

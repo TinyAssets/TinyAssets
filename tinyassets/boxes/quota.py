@@ -21,7 +21,7 @@ class OwnerQuota:
     def _mounted(self) -> None:
         result = subprocess.run(
             ["findmnt", "--mountpoint", str(self.store), "-no", "FSTYPE,OPTIONS"],
-            check=True, capture_output=True, text=True,
+            check=True, capture_output=True, text=True, timeout=10,
         )
         fields = result.stdout.strip().split(None, 1)
         if len(fields) != 2 or fields[0] != "xfs":
@@ -54,7 +54,7 @@ class OwnerQuota:
         ):
             subprocess.run(
                 ["xfs_quota", "-x", "-c", operation, str(self.store)],
-                check=True, capture_output=True, text=True,
+                check=True, capture_output=True, text=True, timeout=10,
             )
         return tree
 
@@ -148,4 +148,4 @@ class OwnerQuota:
             os.close(fd)
         subprocess.run(["xfs_quota", "-x", "-c",
                         f"limit -p bhard={bhard_bytes // 1024}k {uid}", str(self.store)],
-                       check=True, capture_output=True, text=True)
+                       check=True, capture_output=True, text=True, timeout=10)

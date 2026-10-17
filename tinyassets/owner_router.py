@@ -1,7 +1,7 @@
 """The shared door: authenticated identity -> broker admission -> Unix HTTP stream.
 
 This module never interprets a request body or imports an owner store. Boxhostd
-will own ``resolve_box``'s wake step; socket naming has just this one home.
+owns the wake step; the router never manages a process.
 """
 from __future__ import annotations
 
@@ -55,10 +55,14 @@ class BoxRoute:
 
 
 def resolve_box(owner: str) -> BoxRoute:
+    from tinyassets.boxes.daemon_control import ensure_awake
     from tinyassets.broker.owner_identities import owner_box_route
     from tinyassets.storage import data_dir
 
+    awake_uid = ensure_awake(owner)
     uid, secret = owner_box_route(data_dir(), principal=owner)
+    if uid != awake_uid:
+        raise RuntimeError("owner box identity changed during wake")
     root = Path(os.environ.get("TINYASSETS_BOXES_RUN", "/run/tinyassets-boxhostd"))
     return BoxRoute(root / str(uid) / "app.sock", secret)
 

@@ -7,8 +7,6 @@ import hashlib
 import json
 import os
 import socket
-import subprocess
-import sys
 import tempfile
 import time
 from dataclasses import asdict
@@ -103,53 +101,67 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
                                                broker.loop).result(5)
     credential_service = router_credentials.serving(tmp_path)
     asyncio.run_coroutine_threadsafe(credential_service.__aenter__(), broker.loop).result(5)
-    processes = []
+    import sqlite3
+
+    from tests.support.owner_daemon_launcher import ProcessRuntime
+    from tinyassets.boxes import daemon_control
+    from tinyassets.boxes.owner_daemons import OwnerDaemons
+    from tinyassets.broker.box_admission import owner_record
+
+    with sqlite3.connect(admitted.path) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS box_records (principal TEXT PRIMARY KEY, "
+                   "machine INTEGER, project_id INTEGER, bhard_bytes INTEGER)")
+        for owner in ("alice", "bob"):
+            uid = admitted.owner_machine(owner)
+            db.execute("INSERT OR REPLACE INTO box_records VALUES (?,?,?,?)",
+                       (owner, uid, uid, 1024**3))
     with tempfile.TemporaryDirectory(prefix="ta-router-") as short:
         run = Path(short)
         monkeypatch.setenv("TINYASSETS_BOXES_RUN", str(run))
-        relays = []
-        roots, secrets = {}, {}
+        roots = {owner: tmp_path / owner for owner in ("alice", "bob")}
+        for root in roots.values():
+            root.mkdir()
+        runtime = ProcessRuntime({admitted.owner_machine(owner): root
+                                  for owner, root in roots.items()})
+        relays = OwnerRelays(run / "relay", SimpleNamespace(broker_socket=host_path))
+        admission = SimpleNamespace(owner=lambda owner, rotate=False:
+                                    owner_record(admitted, owner, rotate=rotate))
+        manager = OwnerDaemons(runtime, admission, SimpleNamespace(provision=lambda *args: None),
+                               relays, run)
+
+        def paths(uid, secret):
+            directory = run / str(uid)
+            directory.mkdir(exist_ok=True)
+            path = directory / "secret"
+            path.unlink(missing_ok=True)
+            path.write_text(secret)
+            path.chmod(0o400)
+            return directory, path
+
+        monkeypatch.setattr(manager, "_paths", paths)
+        monkeypatch.setattr(daemon_control, "ensure_awake", manager.ensure_awake)
+
+        def control(operation, owner, **fields):
+            assert operation == "retire"
+            manager.retire(owner, fields["uid"])
+            return {"stopped": True}
+
+        monkeypatch.setattr(daemon_control, "request", control)
         try:
-            for owner in ("alice", "bob"):
-                uid, secret = owner_box_route(tmp_path, principal=owner)
-                directory = run / str(uid)
-                directory.mkdir()
-                secret_path = directory / "secret"
-                secret_path.write_text(secret)
-                secret_path.chmod(0o400)
-                root = tmp_path / owner
-                root.mkdir()
-                roots[owner], secrets[owner] = root, secret
-                relay = OwnerRelays(directory / "relay", SimpleNamespace(broker_socket=host_path))
-                relays.append(relay)
-                log = tempfile.TemporaryFile()
-                process = subprocess.Popen([
-                    sys.executable, "-m", "tests.support.owner_router_process", str(root),
-                    str(relay.bind(owner, uid)), str(secret_path),
-                    str(directory / "app.sock"),
-                ], stdout=log, stderr=log)
-                processes.append((process, log))
-            for (process, log), owner in zip(processes, ("alice", "bob"), strict=True):
-                uid = admitted.owner_machine(owner)
-                deadline = time.monotonic() + 60
-                while time.monotonic() < deadline and process.poll() is None:
-                    if (run / str(uid) / "app.sock").exists():
-                        break
-                    time.sleep(.05)
-                else:
-                    log.seek(0)
-                    pytest.fail(log.read().decode())
+            for owner in roots:
+                manager.ensure_awake(owner)
+            secrets = {owner: manager.boxes[admitted.owner_machine(owner)].secret
+                       for owner in roots}
             keys = {owner: json.loads((root / "key.json").read_text())["key"]
                     for owner, root in roots.items()}
             assert all(not (root / ".api-keys.sqlite3").exists() for root in roots.values())
-            yield SimpleNamespace(run=run, roots=roots, secrets=secrets, keys=keys)
+            yield SimpleNamespace(run=run, roots=roots, secrets=secrets, keys=keys,
+                                  manager=manager, runtime=runtime, relays=relays,
+                                  host_path=host_path)
         finally:
-            for process, log in processes:
-                process.terminate()
-                process.wait(timeout=30)
-                log.close()
-            for relay in relays:
-                relay.close()
+            manager.close()
+            runtime.close()
+            relays.close()
             asyncio.run_coroutine_threadsafe(
                 credential_service.__aexit__(None, None, None), broker.loop).result(5)
             broker.loop.call_soon_threadsafe(listener.close)
@@ -487,9 +499,7 @@ def test_box_channel_cannot_supply_owner_or_revoke_another_owners_credentials(
     from tinyassets.router_credentials import HookOwners
 
     def request(owner, fields, **extra):
-        directory = next(path for path in boxes.run.iterdir()
-                         if (path / "secret").read_text() == boxes.secrets[owner])
-        relay = next((directory / "relay").glob("*.sock"))
+        relay = boxes.relays.directory / f"{admitted.owner_machine(owner)}.sock"
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
             channel.settimeout(5)
             channel.connect(str(relay))
@@ -530,6 +540,8 @@ def test_router_credential_socket_refuses_a_non_broker_peer(boxes, tmp_path, mon
 
 
 def test_default_socket_is_under_the_existing_compose_mount(admitted, monkeypatch):
+    monkeypatch.setattr("tinyassets.boxes.daemon_control.ensure_awake",
+                        lambda owner: admitted.owner_machine(owner))
     from tinyassets.owner_router import resolve_box
 
     monkeypatch.delenv("TINYASSETS_BOXES_RUN", raising=False)
@@ -606,8 +618,9 @@ def test_account_revoke_from_box_removes_only_bound_owners_router_state(
     dispatch = router_credentials.dispatch
 
     def recorded(root, owner, request):
+        result = dispatch(root, owner, request)
         requests.append((root, owner, request))
-        return dispatch(root, owner, request)
+        return result
 
     monkeypatch.setattr(router_credentials, "dispatch", recorded)
     for owner in ("alice", "bob"):
@@ -654,8 +667,10 @@ def test_account_revoke_from_box_removes_only_bound_owners_router_state(
             requests.clear()
             revoked = await client.post("/app/test-credentials", headers={
                 "authorization": "Bearer alice"}, json={"operation": "account_revoke"})
-            assert revoked.status_code == 200, revoked.text
-            assert revoked.json() == {"revoked": True}
+            assert revoked.status_code == 503, revoked.text
+            deadline = time.monotonic() + 5
+            while not requests and time.monotonic() < deadline:
+                await asyncio.sleep(.01)
             assert requests == [(tmp_path, "alice", {"operation": "account_revoke"})]
             for owner in ("alice", "bob"):
                 session = await client.post("/app/test-session", headers={
@@ -772,3 +787,89 @@ def test_a_failed_account_revoke_can_be_retried_to_completion(tmp_path, monkeypa
     live = [k for k in ApiKeyStore(tmp_path).list("alice", authority=None)["keys"]
             if k["revoked_at"] is None]
     assert live == [] and key["key_id"]
+
+
+def test_boxhostd_real_process_restart_rotates_secret_and_serves_again(boxes, admitted):
+    from tinyassets.owner_router import resolve_box
+
+    first = resolve_box("alice")
+    uid = admitted.owner_machine("alice")
+    process = boxes.runtime.processes[uid]
+    with boxes.manager.condition:
+        assert boxes.manager._sleep(boxes.manager.boxes[uid], idle=0)
+    assert process.poll() == 0  # SIGTERM completed the actual app lifespan.
+    second = resolve_box("alice")
+    assert first.socket == second.socket and first.secret != second.secret
+    with httpx.Client(transport=httpx.HTTPTransport(uds=str(first.socket)),
+                      base_url="http://owner") as client:
+        assert client.get("/_box/status", headers={"x-box-secret": first.secret}).status_code == 401
+        ready = client.get("/_box/status", headers={"x-box-secret": second.secret})
+        assert ready.status_code == 200
+
+
+def test_broker_retirement_stops_real_daemon_and_stale_forward_fails(boxes, admitted, tmp_path):
+    from tinyassets.broker.owner_identities import center_admission
+    from tinyassets.owner_router import BoxRoute, forward, resolve_box
+
+    stale = resolve_box("alice")
+    uid = admitted.owner_machine("alice")
+    center_admission(tmp_path, event="retire", principal="alice", center="cc-alice")
+    assert not boxes.runtime.alive(uid)
+    with pytest.raises(LookupError):
+        admitted.box_route("alice")
+    with pytest.raises(LookupError):
+        resolve_box("alice")
+
+    async def proxy(scope, receive, send):
+        await forward(scope, receive, send, Identity(user_id="alice", username="alice"),
+                      BoxRoute(stale.socket, stale.secret))
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(proxy),
+                                     base_url="http://router") as client:
+            assert (await client.get("/app/api/file")).status_code == 503
+    asyncio.run(exercise())
+
+
+def test_root_lifecycle_broker_operation_uses_admission_and_box_record(boxes, admitted):
+    from tinyassets import rpc_frames as rf
+
+    def call(document):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+            channel.settimeout(5)
+            channel.connect(str(boxes.host_path))
+            channel.sendall(rf.control(0, document))
+            return rf.read_frame_blocking(channel).control()
+
+    request = {"op": "BOX_LIFECYCLE", "principal": "alice", "rotate": False}
+    assert call(request) == {"op": "BOX_LIFECYCLE_IS", "uid": admitted.owner_machine("alice"),
+                             "quota": 1024**3, "centers": ["cc-alice"]}
+    for override in ({"uid": 300002}, {"rotate": 1}, {"quota": 1}):
+        assert call(request | override) == {"op": "BOX_REFUSED"}
+    assert call(request | {"principal": "reserved"}) == {"op": "BOX_UNADMITTED"}
+    old = admitted.box_route("alice")[1]
+    rotated = call(request | {"rotate": True})
+    assert rotated["secret"] != old
+    assert admitted.box_route("alice")[1] == rotated["secret"]
+
+
+def test_bound_center_retirement_uses_relay_owner_and_stops_its_daemon(boxes, admitted):
+    from tinyassets import rpc_frames as rf
+
+    uid = admitted.owner_machine("alice")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+        channel.settimeout(10)
+        channel.connect(str(boxes.relays.directory / f"{uid}.sock"))
+        channel.sendall(rf.control(0, {"op": "BOX_SHARED"}))
+        assert rf.read_frame_blocking(channel).control() == {"op": "BOX_CONNECTED"}
+        for doc in ({"op": "RETIRE_CENTER", "center": "cc-bob"},
+                    {"op": "RETIRE_CENTER", "center": "cc-bob", "principal": "bob"}):
+            channel.sendall(rf.control(0, doc))
+            assert rf.read_frame_blocking(channel).control() == {"op": "BOX_REFUSED"}
+            assert boxes.runtime.alive(uid)
+        channel.sendall(rf.control(0, {"op": "RETIRE_CENTER", "center": "cc-alice"}))
+        assert rf.read_frame_blocking(channel).control()["op"] == "BOX_RESULT"
+    assert not boxes.runtime.alive(uid)
+    assert boxes.runtime.alive(admitted.owner_machine("bob"))
+    with pytest.raises(LookupError):
+        admitted.box_route("alice")

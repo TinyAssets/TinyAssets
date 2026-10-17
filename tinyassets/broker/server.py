@@ -324,6 +324,18 @@ class _Connection:
 
     async def _connection_op(self, op: str, doc: dict[str, Any]) -> None:
         if self._role == BOX_HOST:
+            if op == "BOX_LIFECYCLE":
+                from tinyassets.broker.box_admission import lifecycle
+
+                try:
+                    result = await asyncio.to_thread(lifecycle, self._server._owner_identities, doc)
+                    answer = {"op": "BOX_LIFECYCLE_IS", **result}
+                except LookupError:
+                    answer = {"op": "BOX_UNADMITTED"}
+                except Exception:
+                    answer = {"op": "BOX_REFUSED"}
+                await self.send_async(rf.control(rf.CONNECTION, answer))
+                return
             if op == "BOX_CREDENTIAL":
                 answer = await asyncio.to_thread(self._box_credential, doc)
                 await self.send_async(rf.control(rf.CONNECTION, answer))
@@ -348,6 +360,10 @@ class _Connection:
             await self.send_async(rf.control(rf.CONNECTION, answer))
             return
         if self._role == BOX:
+            if op == "RETIRE_CENTER":
+                answer = await asyncio.to_thread(self._box_retire_center, doc)
+                await self.send_async(rf.control(rf.CONNECTION, answer))
+                return
             if op == "ADMIT_CENTER":
                 answer = await asyncio.to_thread(self._box_admit_center, doc)
                 await self.send_async(rf.control(rf.CONNECTION, answer))
@@ -503,6 +519,24 @@ class _Connection:
         except Exception:  # noqa: BLE001 - no identity or persisted state on refusal
             return {"op": "BOX_REFUSED"}
 
+    def _stop_owner_box(self, owner, uid):
+        from tinyassets.boxes.daemon_control import request
+
+        if request("retire", owner, uid=uid) != {"stopped": True}:
+            raise RuntimeError("boxhostd did not acknowledge retirement")
+
+    def _box_retire_center(self, doc):
+        try:
+            if set(doc) != {"op", "center"}:
+                raise ValueError("invalid retirement")
+            row = self._server._owner_identities.admission(
+                "retire", self._box_owner, doc["center"])
+            self._stop_owner_box(self._box_owner, row.machine)
+            return {"op": "BOX_RESULT", "result": {
+                "generation": row.generation, "machine": row.machine}}
+        except Exception:
+            return {"op": "BOX_REFUSED"}
+
     def _box_scope(self, doc):
         # The socket selected this scope. Guest identity fields grant nothing.
         if (not getattr(self, "_box_center", None)
@@ -548,9 +582,14 @@ class _Connection:
             identities = self._server._owner_identities
             if identities is None or self._server._data_root is None:
                 raise RuntimeError("router credential admission is unavailable")
+            revoke = doc["request"] == {"operation": "account_revoke"}
             if (type(doc["uid"]) is not int
-                    or identities.box_route(doc["principal"])[0] != doc["uid"]):
+                    or (identities.owner_machine(doc["principal"]) if revoke else
+                        identities.box_route(doc["principal"])[0]) != doc["uid"]):
                 raise PermissionError("owner channel is no longer admitted")
+            if revoke:
+                uid = identities.revoke_box(doc["principal"], deleted=True)
+                self._stop_owner_box(doc["principal"], uid)
             return broker_request(self._server._data_root, doc["principal"], doc["request"])
         except (OSError, ValueError, LookupError, PermissionError, RuntimeError, sqlite3.Error):
             return {"op": "ROUTER_CREDENTIAL_REFUSED"}
@@ -649,6 +688,8 @@ class _Connection:
                     raise RuntimeError("owner identities are not initialized")
                 row = self._server._owner_identities.admission(
                     doc["event"], doc["principal"], doc["center"])
+                if doc["event"] == "retire":
+                    self._stop_owner_box(doc["principal"], row.machine)
                 if doc["event"] == "admit" and self._server._policy_store is not None:
                     self._server._policy_store.bootstrap_owner(doc["principal"])
                 if doc["event"] == "admit" and self._server._provision_box is not None:

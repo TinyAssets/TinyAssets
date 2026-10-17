@@ -108,6 +108,8 @@ class OwnerIdentities:
                            "SELECT RAISE(ABORT, 'center admissions are append-only'); END")
             db.execute("CREATE TABLE IF NOT EXISTS owner_box_secrets ("
                        "principal TEXT PRIMARY KEY NOT NULL, secret TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS owner_box_revocations ("
+                       "principal TEXT PRIMARY KEY NOT NULL, deleted INTEGER NOT NULL)")
         directory = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             os.fsync(directory)
@@ -162,6 +164,9 @@ class OwnerIdentities:
             if admitted is not None and admitted[2] != principal:
                 raise PermissionError("center is admitted to another principal")
             if event == "admit":
+                if db.execute("SELECT 1 FROM owner_box_revocations WHERE principal=? "
+                              "AND deleted=1", (principal,)).fetchone():
+                    raise PermissionError("owner account is deleted")
                 if "retire" in rows:
                     raise PermissionError("a retired center is never admitted again")
                 if admitted is not None:
@@ -180,6 +185,9 @@ class OwnerIdentities:
             else:
                 if admitted is None:
                     raise CenterUnadmitted("retire requires a prior admit")
+                db.execute("INSERT OR IGNORE INTO owner_box_revocations VALUES (?, 0)",
+                           (principal,))
+                db.execute("DELETE FROM owner_box_secrets WHERE principal=?", (principal,))
                 if "retire" in rows:
                     return _row(rows["retire"])
                 machine = admitted[4]
@@ -206,6 +214,12 @@ class OwnerIdentities:
         with closing(self._connect(write=True)) as db, db:
             db.execute("PRAGMA synchronous=FULL")
             db.execute("BEGIN IMMEDIATE")
+            revoked = db.execute("SELECT deleted FROM owner_box_revocations WHERE principal=?",
+                                 (principal,)).fetchone()
+            if revoked is not None:
+                if revoked[0] or not rotate:
+                    raise LookupError("owner box is revoked")
+                db.execute("DELETE FROM owner_box_revocations WHERE principal=?", (principal,))
             row = db.execute(
                 "SELECT machine_id FROM owner_identities WHERE principal=? AND EXISTS ("
                 "SELECT 1 FROM center_admissions a WHERE a.principal=owner_identities.principal "
@@ -223,6 +237,21 @@ class OwnerIdentities:
             secret = db.execute("SELECT secret FROM owner_box_secrets WHERE principal=?",
                                 (principal,)).fetchone()[0]
             return row[0], secret
+
+    def revoke_box(self, principal: str, *, deleted: bool = False) -> int:
+        """Durable fence before boxhostd stops the process; retries stay revoked."""
+        uid = self.owner_machine(principal)
+        if uid is None:
+            raise LookupError("unknown owner")
+        with closing(self._connect(write=True)) as db, db:
+            db.execute("PRAGMA synchronous=FULL")
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("INSERT INTO owner_box_revocations VALUES (?, ?) "
+                       "ON CONFLICT(principal) DO UPDATE SET "
+                       "deleted=MAX(deleted, excluded.deleted)",
+                       (principal, int(deleted)))
+            db.execute("DELETE FROM owner_box_secrets WHERE principal=?", (principal,))
+        return uid
 
     def center_state(self, center: str) -> str:
         validate_center(center)
@@ -313,6 +342,14 @@ def center_admission(data_root: Path, *, event: str, principal: str,
         raise ValueError("invalid admission event")
     validate_principal(principal)
     validate_center(center)
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        from tinyassets.owner_channel import request
+
+        result = request("", {"op": "RETIRE_CENTER" if event == "retire" else "ADMIT_CENTER",
+                              "center": center})
+        return result["generation"], result["machine"]
     answer = _owner_request(data_root, {"op": "CENTER_ADMISSION", "event": event,
                                         "principal": principal, "center": center})
     if answer == {"op": "CENTER_ADMISSION_UNADMITTED"}:

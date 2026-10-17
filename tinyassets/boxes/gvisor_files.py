@@ -13,6 +13,7 @@ import subprocess
 import threading
 import time
 from collections import deque
+from contextlib import contextmanager
 
 from tinyassets.boxes.file_wire import MAX_MESSAGE, decode, encode
 from tinyassets.boxes.gvisor_runtime import GvisorRuntime
@@ -35,11 +36,22 @@ class GvisorFileBackend:
         self._busy: set[int] = set()
         self._capacity = threading.Condition(self._guard)
         self._waiting = deque()
+        self.lifecycle = None
 
     def _lock(self, uid: int) -> threading.RLock:
         self.runtime.box_id(uid)
         with self._guard:
             return self._locks.setdefault(uid, threading.RLock())
+
+    @contextmanager
+    def idle_guard(self, uid):
+        lock = self._lock(uid)
+        acquired = lock.acquire(blocking=False)
+        try:
+            yield acquired and uid not in self._busy
+        finally:
+            if acquired:
+                lock.release()
 
     def recover(self) -> None:
         import json
@@ -66,6 +78,9 @@ class GvisorFileBackend:
         self._awake.clear()
 
     def _wake(self, uid: int) -> None:
+        if self.lifecycle is not None:
+            self.lifecycle.ensure_awake(self.lifecycle.boxes[uid].owner)
+            return
         # Caller holds this owner's backend lock. Never wait for another
         # owner's lock while holding the capacity lock: eviction is try-only.
         with self._capacity:
@@ -281,6 +296,9 @@ class GvisorFileBackend:
                 pipe.close()
 
     def stop(self, uid: int) -> None:
+        if self.lifecycle is not None:
+            self.lifecycle.retire(self.lifecycle.boxes[uid].owner, uid)
+            return
         with self._lock(uid):
             self.runtime.stop(uid)
             with self._capacity:

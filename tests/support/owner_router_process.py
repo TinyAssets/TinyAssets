@@ -5,8 +5,6 @@ import os
 import sys
 from pathlib import Path
 
-import uvicorn
-
 from tinyassets.owner_daemon import create_app
 
 
@@ -103,7 +101,9 @@ def main():
     app.routes.insert(0, Route("/hooks/inbound/{token}", delivery, methods=["POST"]))
     app.routes.insert(0, Route("/app/test-session", protected_session, methods=["POST"]))
     # Use the real MCP transport lifespan; no model calls or host services needed.
-    uvicorn.run(app, uds=str(socket), log_level="warning")
+    from tinyassets.owner_daemon import serve
+
+    serve(app, socket)
 
 
 if __name__ == "__main__":

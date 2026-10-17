@@ -40,6 +40,7 @@ from tinyassets.control_plane.binding import (
     current_binding,
     use_binding,
 )
+from tinyassets.owner_activity import owner_work
 
 
 class AgentUnavailable(LookupError):
@@ -112,6 +113,7 @@ def _owner(parent: Parent) -> str:
     return parent.owner
 
 
+@owner_work
 def start(agent_ref: str, input: str, parent: Parent):
     """Start ``agent_ref`` on ``input`` under ``parent``'s admission.
 
