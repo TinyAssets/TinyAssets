@@ -115,8 +115,7 @@ def test_daily_cap_card_says_the_credit_extends_the_openrouter_daily_limit():
     assert "the money goes to OpenRouter, not TinyAssets." in body
     assert "It can be used again after the daily reset (they reset at about " in body
     assert "continues" not in body
-    assert body.endswith("Or connect another AI: Hugging Face, your ChatGPT subscription, "
-                         "or a key.")
+    assert body.endswith("Or connect another AI: Hugging Face, or a key.")
     assert [b["text"] for b in out["buttons"]] == [
         "Add credit on OpenRouter", "Connect another AI", "Wait until tomorrow"]
     credit = out["buttons"][0]
@@ -187,19 +186,6 @@ console.log(JSON.stringify({ok,refused:{calls,status:status.textContent,disabled
     assert out["refused"]["disabled"] is False
 
 
-def test_subscription_card_starts_its_own_device_sign_in():
-    out = _run("""
-SubscriptionCards.render(railCache[0].action.setup.subscriptions);
-const host=$('connect-subscriptions');
-find(host,n=>n.tag==='button').listeners.click();
-console.log(JSON.stringify({text:text(host),hidden:$('sub-signin').hidden,calls}));
-""")
-    assert out["text"].startswith("For more volume")
-    assert "Use your ChatGPT subscription" in out["text"]
-    assert out["hidden"] is False
-    # Its own elements, never the reconnect card's.
-    assert out["calls"] == [{"configure": "codex", "universe": ""},
-                            {"start": "sub-signin-result"}]
 
 
 def test_daily_quota_failure_notice_carries_the_card():
@@ -234,14 +220,13 @@ def test_connect_screen_markup_and_entry_points():
     html, _ = render_app_html()
     panel = html[html.index('id="connect-panel"'):html.index('<details id="connect-other"')]
     for piece in ('Connect free AI', 'id="connect-primary"', 'id="connect-sign-in-sources"',
-                  'id="connect-subscriptions"', '<details id="connect-paste"',
+                  '<details id="connect-paste"',
                   'id="free-source-cards"'):
         assert piece in panel
     # Lead 2026-10-02: by real usefulness -- guided sign-in, pasted keys (Groq,
     # Gemini first), the small monthly sign-in source, then a subscription.
     order = [panel.index(p) for p in ('id="connect-primary"', 'id="connect-paste"',
-                                      'id="connect-sign-in-sources"',
-                                      'id="connect-subscriptions"')]
+                                      'id="connect-sign-in-sources"')]
     assert order == sorted(order)
     # The pasted-key cards are folded away until asked for.
     paste = panel[panel.index('<details id="connect-paste"'):]
@@ -253,31 +238,3 @@ def test_connect_screen_markup_and_entry_points():
     assert "openrouter" not in html.lower() and "hugging face" not in html.lower()
 
 
-def test_subscription_completion_only_claims_ready_when_serving():
-    html, _ = render_app_html()
-    client = html[html.index("  const SignInConnect={"):html.index("  const ENDPOINT_CONTEXT=")]
-    client = client[:client.rfind("  // A declared model list")]
-    client = client.replace("const SignInConnect=", "const TestedSignInConnect=", 1)
-    extra = """
-function authHeaders(){return {};}
-function frameTitle(row){return row.title;}
-function refreshRail(){}
-let reply;
-async function fetch(){return {ok:true,status:200,json:async()=>reply};}
-""" + client
-    out = _run("""
-const messages=[];
-for(const doc of [
-  {status:'connected',serving:{status:'held'},confirmation:{title:'Use subscription'}},
-  {status:'connected',serving:{status:'held'}},
-  {status:'connected',serving:{status:'serving'}}]){
-  reply=doc;
-  const c=Object.assign({},TestedSignInConnect,{flow:'f',connectedText:'READY'});
-  await c.poll(1000,c.epoch);
-  messages.push($(c.ids.result).textContent);
-}
-console.log(JSON.stringify({messages}));
-""", extra_source=extra)
-    assert 'Confirm "Use subscription"' in out["messages"][0]
-    assert "model setup still needs review" in out["messages"][1]
-    assert out["messages"][2] == "READY"

@@ -285,6 +285,7 @@ def test_malformed_public_components_disable_only_their_own_card(home, field, va
 
 
 def test_copied_legacy_workflow_runs_with_recipients_own_provider(home):
+    from tests.support.http_model import provider_name
     from tests.test_automations import _real_providers
     from tests.test_background_budget_finalization_e2e import _CountingProvider
     from tinyassets.api.automations import automations
@@ -303,7 +304,7 @@ def test_copied_legacy_workflow_runs_with_recipients_own_provider(home):
                               automation_id=beat.automation_id, expected_revision=beat.revision)
     assert not resumed.get("error"), resumed
     provider = _CountingProvider()
-    with _real_providers(codex=provider):
+    with _real_providers(**{provider_name(BOB, BOB_UNIVERSE): provider}):
         outcome = run_due_automation(home, AutomationStore(home).get(beat.automation_id),
                                      "2026-10-01T12:05:00+00:00")
     run_id = str(outcome).rsplit(":", 1)[-1]

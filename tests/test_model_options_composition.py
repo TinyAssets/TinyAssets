@@ -2,8 +2,6 @@
 
 import json
 
-import pytest
-
 from tests import test_served_model_preferences as integration
 from tinyassets.commons_catalog import get_binding
 from tinyassets.providers.model_options import model_options_document
@@ -14,7 +12,6 @@ reader = integration.reader
 configured = integration.configured
 
 
-@pytest.mark.parametrize("configured", ["http", "mixed"], indirect=True)
 def test_actual_owned_catalog_projects_without_enabling_serving(configured, monkeypatch):
     # The native-first expectation below depends on a known finite HTTP cap.
     monkeypatch.setattr("tinyassets.request_budget.requests_today", lambda *a, **kw: (0, 0))
@@ -31,9 +28,6 @@ def test_actual_owned_catalog_projects_without_enabling_serving(configured, monk
     assert result["options"] and result["order"]
     assert get_binding(base, universe_id="u-models",
                        binding_id=before["agent_binding_id"]) == before
-    if configured.native is not None:
-        assert result["order"][0] == {"provider_ref": "codex", "model_id": ""}
-        assert configured.native.calls == 0
     encoded = json.dumps(result)
     assert "grant-models" not in encoded
     assert str(base) not in encoded

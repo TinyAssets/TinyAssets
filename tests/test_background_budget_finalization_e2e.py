@@ -20,6 +20,8 @@ from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderRespons
 
 
 class _CountingProvider(BaseProvider):
+    supports_text_only = True
+
     def __init__(self, on_call=None, *, name=HTTP_PROVIDER) -> None:
         self.name = name
         self.family = name

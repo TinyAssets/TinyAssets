@@ -65,6 +65,8 @@ def _module_local_cloud_admission(monkeypatch):
 
 
 class _CountingProvider(BaseProvider):
+    supports_text_only = True
+
     def __init__(self, name: str = HTTP_PROVIDER, after_call=None) -> None:
         self.name = name
         self.family = name
@@ -167,7 +169,7 @@ def _run_branch(
     branch: BranchDefinition,
     *,
     authority_case: str = "active",
-    open_provider: bool = True,
+    open_provider: bool = False,
     open_model: str = "synthetic-model",
     open_host: str = "api.example.com",
     open_router_resolution_refusal: bool = False,
@@ -273,6 +275,9 @@ def _run_branch(
     provider = providers[selected_provider]
     captured["providers"] = providers
     captured["router"] = provider_router
+    if not open_provider:
+        monkeypatch.setattr("tinyassets.providers.provider_resolver.provider_for_definition",
+                            lambda definition: providers["api_key_http:" + definition.id])
 
     def governed_provider_call(
         prompt,

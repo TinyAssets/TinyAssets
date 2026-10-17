@@ -51,15 +51,15 @@ def test_unadmitted_recovery_keeps_pending_work_and_existing_registration_inert(
         consumer.stop()
 
 
-def test_unadmitted_consumer_cannot_start_even_before_credential_scavenge(tmp_path, monkeypatch):
+def test_unadmitted_consumer_cannot_start_before_control_maintenance(tmp_path, monkeypatch):
     _bind(monkeypatch, UNADMITTED)
     monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
     consumer = AssignedQueueConsumer(tmp_path)
 
-    def forbidden_scavenge():
-        raise AssertionError("unapproved consumer reached credential maintenance")
+    def forbidden_maintenance():
+        raise AssertionError("unapproved consumer reached control maintenance")
 
-    monkeypatch.setattr(consumer, "_scavenge_orphaned_credentials", forbidden_scavenge)
+    monkeypatch.setattr(consumer, "_retire_fleet_controls", forbidden_maintenance)
     try:
         with pytest.raises(PermissionError, match="platform_not_cloud"):
             consumer.start()

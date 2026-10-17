@@ -35,7 +35,8 @@ def seed_http_assignment(
     seed_owner_admission(base_path, principal=owner_user_id, center=universe_id)
     universe_dir = base_path / universe_id
     universe_dir.mkdir(exist_ok=True)
-    connection_id = "http_" + hashlib.sha256(owner_user_id.encode()).hexdigest()[:32]
+    connection_id = "http_" + hashlib.sha256(
+        (owner_user_id + universe_id).encode()).hexdigest()[:32]
     grant_key = hashlib.sha256((owner_user_id + universe_id).encode()).hexdigest()[:32]
     grant_id = "http_grant_" + grant_key
     ledger = ConnectionLedger(

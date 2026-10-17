@@ -423,10 +423,6 @@ def current_connected_source_custody(conn, *, base: Path, universe: Path,
         ),
         _record_digest=record_digest,
     )
-    return _source_custody(
-        conn, source, base=base, universe=universe, owner=owner,
-        uid=universe.name, adopt=False,
-    )
 
 
 def _member(

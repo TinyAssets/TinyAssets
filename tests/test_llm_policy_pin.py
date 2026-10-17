@@ -18,7 +18,7 @@ def test_preferred_provider_is_rejected_with_the_shape_that_works():
     joined = " ".join(errors)
     assert "preferred_provider" in joined
     assert "provider_not_bound" in joined
-    assert "'preferred': {'provider': 'codex'}" in joined
+    assert "'preferred': {'provider': 'api_key_http:provdef_...'}" in joined
     assert "omit the policy entirely" in joined
 
 

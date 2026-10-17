@@ -529,6 +529,7 @@ def test_the_consumer_tick_runs_triggers_only_while_holding_the_lease(tmp_path, 
     from tinyassets.storage import db_path
     from tinyassets.storage.request_admissions import migrate_request_admission_schema
 
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     _seed_serving_assignment(tmp_path)
     with sqlite3.connect(db_path(tmp_path)) as conn:
         migrate_request_admission_schema(conn)

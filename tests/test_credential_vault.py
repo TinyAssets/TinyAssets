@@ -263,7 +263,7 @@ def test_single_record_write_collapses_all_matching_duplicates(tmp_path):
         [
             {
                 "credential_type": "http",
-                "service": "claude",
+                "service": "anthropic",
                 "api_key": "sk-old-first",
             },
             github_credential,
