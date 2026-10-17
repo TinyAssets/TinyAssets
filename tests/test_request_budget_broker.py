@@ -17,7 +17,7 @@ from tinyassets.broker.ops import OpStore, new_op_id
 from tinyassets.broker.server import OWNER, BrokerServer
 from tinyassets.connection_oauth.tokens import TokenBundle, encode
 from tinyassets.exceptions import ProviderAuthorityHeldError
-from tinyassets.providers.definition import ProviderDefinition, _definition_id
+from tinyassets.providers.definition import _definition_id, register_definition
 from tinyassets.request_budget import RequestBudgetExceeded, TurnRequestBudget
 from tinyassets.storage import outbound_connections as outbound
 from tinyassets.storage.agent_request_usage import InferenceUsageStopped
@@ -29,7 +29,8 @@ BUNDLE = TokenBundle(access_token="synthetic-access-v1", refresh_token="syntheti
 
 
 @pytest.fixture
-def rig(tmp_path):
+def rig(tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     (tmp_path / UNIVERSE).mkdir()
     # Where the broker opens it: the daemon side has no ledger of its own.
     ledger = outbound.ConnectionLedger(tmp_path / ".broker" / "outbound.db",
@@ -45,10 +46,12 @@ def rig(tmp_path):
                             owner_user_id=OWNER_ID, universe_id=UNIVERSE)
     fields = dict(universe_id=UNIVERSE, owner_user_id=OWNER_ID, access_method="api_key_http",
                   protocol="openai_chat", model="model", ref=GRANT)
-    definition = ProviderDefinition(**fields, id=_definition_id(**fields), visibility="private",
-                                    created_at="2026-10-04T00:00:00+00:00")
-    (tmp_path / UNIVERSE / "provider_definitions.json").write_text(
-        json.dumps([definition.as_dict()]))
+    # Registration publishes MODEL_SOURCE through the fenced broker operation;
+    # writing the definitions file alone does not mark a grant as metered.
+    assert not ledger.grant_requires_inference_usage(GRANT)
+    definition = register_definition(**fields, visibility="private",
+                                     now="2026-10-04T00:00:00+00:00")
+    assert ledger.grant_requires_inference_usage(GRANT)
     state = SimpleNamespace(base=tmp_path, ledger=ledger, definition=definition)
     state.budgets = []
     yield state
@@ -72,7 +75,8 @@ def reserve(rig, *, limit=6, budget=None, free=True, purpose="reply", wire=None,
 
 
 def build_dispatch(base, *, statuses=(200,), events=None, refresh_failure=False,
-                   refresh_same=False, on_send=None, before_connect=None, stream_factory=None):
+                   refresh_same=False, on_send=None, before_connect=None, stream_factory=None,
+                   grant_id=GRANT):
     """Production factory; only credentials/tokens and network are synthetic."""
     events = events if events is not None else []
     remaining = list(statuses)
@@ -111,7 +115,7 @@ def build_dispatch(base, *, statuses=(200,), events=None, refresh_failure=False,
 
     ledger = outbound.ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                                         verify_authenticated_principal=lambda: OWNER_ID)
-    config = ledger.broker_dispatch_config(grant_id=GRANT, universe_id=UNIVERSE,
+    config = ledger.broker_dispatch_config(grant_id=grant_id, universe_id=UNIVERSE,
                                            provider="http", destination="compute:synthetic",
                                            owner_user_id=OWNER_ID, connection_type="http")
     # The factory captures the resolver/driver objects. Token keeper is a fake
@@ -532,21 +536,53 @@ def test_real_unix_cancel_during_connect_has_no_send_or_refresh(uds_broker, rig)
     assert operation.state == "cancelled"
 
 
-@pytest.mark.parametrize("with_reference", [False, True])
-def test_symlinked_provider_definition_cannot_reach_credentials(rig, with_reference):
+@pytest.mark.parametrize("symlink", [False, True])
+@pytest.mark.parametrize("contents", ["empty", "retargeted", "malformed"])
+def test_provider_definition_file_cannot_latch_or_unlatch_metering(rig, symlink, contents):
+    from tinyassets.storage.agent_request_usage import InferenceUsageRequired
+
+    ordinary = "grant-ordinary"
+    rig.ledger.grant_connection(grant_id=ordinary, connection_id=CONNECTION,
+                                owner_user_id=OWNER_ID, universe_id=UNIVERSE)
+    assert not rig.ledger.grant_requires_inference_usage(ordinary)
+    budget, ordinal, reference = reserve(rig)
+    path = rig.base / UNIVERSE / "provider_definitions.json"
+    if symlink:
+        other = rig.base / "outside-definition.json"
+        path.rename(other)
+        path.symlink_to(other)
+    fields = dict(universe_id=UNIVERSE, owner_user_id=OWNER_ID, access_method="api_key_http",
+                  protocol="openai_chat", model="model", ref=ordinary)
+    replacement = replace(rig.definition, **fields, id=_definition_id(**fields))
+    path.write_text({"empty": "[]", "retargeted": json.dumps([replacement.as_dict()]),
+                     "malformed": "not json"}[contents])
+
+    # Reopening and dispatching cannot promote or clear a latch from these files.
+    events = []
+    dispatch = build_dispatch(rig.base, events=events)
+    with pytest.raises(InferenceUsageRequired):
+        invoke(dispatch)
+    assert events == []
+    assert budget.receipt()["dispatched"] == 0
+    ordinary_dispatch = build_dispatch(rig.base, events=events, grant_id=ordinary)
+    assert invoke(ordinary_dispatch, grant_id=ordinary)["status"] == 200
+    assert events == ["credential", "token_check", "send"]
+    reopened = outbound.ConnectionLedger(rig.base / ".broker" / "outbound.db", data_root=rig.base)
+    assert reopened.grant_requires_inference_usage(GRANT)
+    assert not reopened.grant_requires_inference_usage(ordinary)
+
+
+def test_symlinked_provider_definition_cannot_issue_usage_reference(rig):
     budget, ordinal, reference = reserve(rig)
     path = rig.base / UNIVERSE / "provider_definitions.json"
     other = rig.base / "outside-definition.json"
     path.rename(other)
     path.symlink_to(other)
     events = []
-    dispatch = build_dispatch(rig.base, events=events)
+    build_dispatch(rig.base, events=events)
     with pytest.raises(ProviderAuthorityHeldError):
-        if with_reference:
-            budget.issue_reference(ordinal, grant_id=GRANT, connection_id=CONNECTION,
-                                   verb="POST", request=WIRE, operation_id=new_op_id())
-        else:
-            invoke(dispatch)
+        budget.issue_reference(ordinal, grant_id=GRANT, connection_id=CONNECTION,
+                               verb="POST", request=WIRE, operation_id=new_op_id())
     assert events == []
     assert budget.receipt()["dispatched"] == 0
 
