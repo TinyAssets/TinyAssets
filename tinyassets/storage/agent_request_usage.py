@@ -177,30 +177,9 @@ def resolve_inference_usage(base, owner, universe, ledger, resource, grant_id, v
     if envelope is None:
         if resource.connection_type != "http" or str(verb).upper() != "POST":
             return None
-        # Both installed capabilities and registered compute descriptors identify
-        # inference sources; a request cannot evade this by omitting model/body.
-        is_model = any(ledger.get_connection_capability(resource.connection_id, kind) is not None
-                       for kind in ("model_use", "model_discovery"))
-        from tinyassets.broker.provider_metadata import read_definitions
-        from tinyassets.providers.definition import _verified_definition
-
-        try:
-            from tinyassets.broker.owner_sources import BOX_REQUEST, read
-
-            definitions = (read(ledger, universe) if BOX_REQUEST.get()
-                           else read_definitions(store.base, universe))
-        except FileNotFoundError:
-            definitions = ()
-        except (OSError, ValueError, TypeError) as exc:
-            raise ProviderAuthorityHeldError(
-                "inference source definitions are unavailable",
-            ) from exc
-        is_model = is_model or any(
-            (definition := _verified_definition(row, expect_universe=universe)).ref == grant_id
-            and definition.owner_user_id == owner and definition.access_method == "api_key_http"
-            for row in definitions
-        )
-        if is_model:
+        # Metering is broker-held grant state. Published source descriptors are
+        # executor metadata and can neither enable nor disable this requirement.
+        if ledger.grant_requires_inference_usage(grant_id):
             raise InferenceUsageRequired()
         return None
     ref = InferenceUsageReference.from_document(envelope)
