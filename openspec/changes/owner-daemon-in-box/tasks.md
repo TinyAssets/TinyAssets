@@ -62,8 +62,12 @@ Nothing deploys until slice 7.
         bound-channel op, with the owner taken from the bind. Policy rules,
         effectors, source display and `ta_capabilities` reach the broker
         only through the channel.
-      - [ ] 3c-2 lifecycle: door flows and center selection, sole broker custody,
-        secret-free box connect actions, broker-only refresh and RFC 7009 revoke;
+      - [x] 3c-2a: broker-only custody and refresh, secret-bearing HTTP_CONNECT
+        commit/rotation, broker DISCONNECT erasure, custody metadata and locks.
+        Linux process proof covers six schemes; box-call refresh covers public
+        and registered clients. Validation and deletions: `main-audit.md`.
+      - [ ] 3c-2 lifecycle: door flows and center selection,
+        secret-free box connect actions and RFC 7009 revoke;
         per-auth-type door-to-box lifecycle acceptance remains outstanding.
       3c-2 admission validation: 48 focused Linux tests passed; PR selection
       1,192 files in eight completed chunks, 23,506 passed and 99 existing skips.
@@ -84,6 +88,10 @@ Nothing deploys until slice 7.
 - [ ] 6. Migration and census, with the shared root DB split by owner, the
       synthetic rehearsal, and the `--archive` rehearsal on the production
       copy (run by the lead).
+      - The migration changes the owner of `.platform/credential-vaults/` to the broker uid.
+      - Copy credential ownership rows and deletion tombstones into
+        `.broker/credential-custody.db`; validate every carried-over HTTP slot
+        has its owner. No runtime reads of the old metadata remain.
       - Plans: copy each tier once from `.subscription_state.db` into
         `.broker/plans.db`. An unattributable paid tier stops the cutover.
         Never default to `free`. HTTP connections carry over in place

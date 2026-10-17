@@ -1,10 +1,4 @@
-"""Private daemon RPC for registered-client offers and vault-only refresh.
-
-A random capability is bound to a root, owner and universe at engine launch.
-The child never supplies an owner, path, token bundle, endpoint or secret name.
-Refresh replies contain no credentials: the broker re-reads its existing vault.
-This is not a public HTTP route and is not exposed to a jailed program.
-"""
+"""Private router RPC for credential-free registered-client offers."""
 from __future__ import annotations
 
 import http.client
@@ -41,8 +35,6 @@ def inherited_config() -> dict[str, Any] | None:
 def _dispatch(binding: tuple[Path, str], doc: dict[str, Any]) -> dict[str, Any]:
     from tinyassets.connection_oauth import directory
     from tinyassets.connection_oauth.discovery import validate_request
-    from tinyassets.connection_oauth.tokens import ConnectionTokens
-    from tinyassets.credential_vault import http_deposit_refusal
     from tinyassets.daemon_server import get_founder_home, universe_access_permission
     from tinyassets.principals import named_principal
 
@@ -67,16 +59,6 @@ def _dispatch(binding: tuple[Path, str], doc: dict[str, Any]) -> dict[str, Any]:
                 or any(not isinstance(h, str) or len(h) > 253 for h in hosts)):
             raise OAuthError("platform_client_unavailable")
         return {"offer": directory.resolve(validate_request(doc.get("requested")), hosts)}
-    if doc.get("op") == "refresh":
-        destination = doc.get("destination")
-        rejected = doc.get("rejected", "")
-        if (not isinstance(destination, str) or not 1 <= len(destination) <= 128
-                or not isinstance(rejected, str) or len(rejected) > 8192
-                or http_deposit_refusal(universe, destination=destination, owner_user_id=owner)):
-            raise OAuthError("platform_client_unavailable")
-        tokens = ConnectionTokens(universe_dir=universe, owner_user_id=owner)
-        tokens.current(destination, tokens._read(destination), rejected=rejected)
-        return {"ok": True}
     raise OAuthError("platform_client_unavailable")
 
 

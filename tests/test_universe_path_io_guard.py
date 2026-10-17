@@ -156,12 +156,16 @@ PINNED: dict[str, list[str]] = {
         "_snapshot_paths: .read_bytes()",
         "_write_yaml: .write_text()",
     ],
-    "tinyassets/credential_refresh.py": [
+    "tinyassets/broker/credential_refresh.py": [
         "file_lock: .open()",
     ],
-    "tinyassets/credential_vault.py": [
+    "tinyassets/broker/vault.py": [
         "_fsync_directory: os.open()",
         "_fsync_file: open()",
+        # Broker-owned custody, outside every owner mount.
+        "erase_owner: .unlink()",
+    ],
+    "tinyassets/credential_vault.py": [
         "load_credential_vault: .read_text()",
     ],
     "tinyassets/daemon_brain.py": [
@@ -208,7 +212,10 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/onboarding/hosted_model_auth.py": [
         "load_preset: .read_text()",
     ],
+    # Shared router session map; these paths never enter an owner mount.
     "tinyassets/onboarding/session_store.py": [
+        "revoke_owner: .read_text()",
+        "revoke_owner: .unlink()",
         "_discard_legacy_store: shutil.rmtree()",
         "_read_json: .read_text()",
         "_unlink: .unlink()",

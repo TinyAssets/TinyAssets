@@ -1,3 +1,4 @@
+
 """HTTP removal retains owner/incarnation fencing across real broker IPC."""
 # ruff: noqa: F811 -- imported pytest fixtures
 import socket
@@ -53,7 +54,7 @@ def operation(rig, **changes):
 
 
 def test_actual_remove_fences_then_erases_via_ipc(removal, monkeypatch):
-    from tinyassets import credential_vault
+    from tinyassets.broker import vault as credential_vault
     original = credential_vault.forget_credential
 
     def forget(*args, **kwargs):
@@ -86,14 +87,14 @@ def test_stale_incarnation_and_unfenced_erase_refuse(removal):
 
 
 def test_failed_vault_cleanup_remains_fenced_and_retryable(removal, monkeypatch):
-    from tinyassets import credential_vault
+    from tinyassets.broker import vault as credential_vault
     original = credential_vault.forget_credential
 
     def fail(*args, **kwargs):
         raise OSError("fixture custody failure")
 
     monkeypatch.setattr(credential_vault, "forget_credential", fail)
-    with pytest.raises(OSError, match="custody failure"):
+    with pytest.raises(PermissionError):
         removal.remove()
     assert removal.ledger._get_connection_resource(removal.connection).revoked_at is not None
     monkeypatch.setattr(credential_vault, "forget_credential", original)
@@ -101,8 +102,8 @@ def test_failed_vault_cleanup_remains_fenced_and_retryable(removal, monkeypatch)
 
 
 def test_broker_outage_does_not_remove_custody_or_open_ledger(removal, monkeypatch):
-    from tinyassets import credential_vault
     from tinyassets.broker import supervisor
+    from tinyassets.broker import vault as credential_vault
     from tinyassets.storage.outbound_connections import ProxyRequestError
 
     def forbidden(*args, **kwargs):

@@ -6,13 +6,19 @@ import json
 
 
 def validate(document):
-    from tinyassets.api.http_connection import _DESTINATION_RE, _MAX_ENDPOINTS
+    from tinyassets.api.http_connection import _DESTINATION_RE, _MAX_ENDPOINTS, _MAX_SECRET_CHARS
 
+    if isinstance(document, dict) and document.get("action") in {"inspect_custody", "rotate"}:
+        return _validate_custody(document)
     if isinstance(document, dict) and document.get("action") in {"extend", "full"}:
         return _validate_update(document)
     if not isinstance(document, dict) or set(document) != {
-            "action", "destination", "policy", "expected"}:
+            "action", "destination", "policy", "expected", "secret"}:
         raise ValueError("invalid HTTP connect fields")
+    if not isinstance(document["secret"], str) or len(document["secret"]) > _MAX_SECRET_CHARS:
+        raise ValueError("invalid HTTP credential")
+    if document["action"] == "prepare" and document["secret"]:
+        raise ValueError("preparation cannot contain a credential")
     policy = document["policy"]
     if (document["action"] not in {"prepare", "commit"}
             or not isinstance(document["destination"], str)
@@ -54,6 +60,9 @@ def _validate_update(document):
 
 
 def local_operation(ledger, *, principal, command_center, document):
+    if document.get("action") in {"inspect_custody", "rotate"}:
+        return _custody_local(ledger, principal=principal, command_center=command_center,
+                              document=document)
     if document.get("action") in {"extend", "full"}:
         return _update_local(ledger, principal=principal, command_center=command_center,
                              document=document)
@@ -107,6 +116,12 @@ def local_operation(ledger, *, principal, command_center, document):
             return plan
         if document["action"] == "prepare":
             return {"revision": revision}
+        secret = document["secret"]
+        from tinyassets.api.http_connection import _secret_shape_error
+        error = ((_secret_shape_error(scheme, secret) if secret.strip() else "secret is required")
+                 if scheme != "none" else "")
+        if error:
+            return {"error": "connection_setup_invalid", "detail": error}
         scopes = plan["http_scopes"]
         if resource is None:
             ledger.create_connection(
@@ -140,17 +155,23 @@ def local_operation(ledger, *, principal, command_center, document):
                     expected_incarnation=current["incarnation"], expected_grant_id=grant_id,
                     git_host=host, _transaction=conn):
                 raise RuntimeError("connection policy changed")
+        if scheme != "none":
+            failure = _deposit(ledger, command_center, principal, destination, secret)
+            if failure:
+                conn.rollback()
+                return failure
         resource = ledger._get_connection_resource(connection_id, _transaction=conn)
         return {"projection": _project(resource, grant)}
 
 
 def connect_operation(data_root, *, principal, command_center, destination, policy, action,
-                      expected=""):
+                      expected="", secret=""):
     from tinyassets.broker.client import BrokerClient
     from tinyassets.broker.supervisor import get_supervisor
     from tinyassets.storage.outbound_connections import ProxyRequestError
 
-    document = dict(action=action, destination=destination, policy=policy, expected=expected)
+    document = dict(action=action, destination=destination, policy=policy,
+                    expected=expected, secret=secret)
     validate(document)
     supervisor = get_supervisor(data_root)
     if supervisor is None:
@@ -160,8 +181,8 @@ def connect_operation(data_root, *, principal, command_center, destination, poli
                           verify_peer=supervisor.verify_broker, timeout=30)
     result = client.http_connect(document)
     if "error" in result:
-        if result not in ({"error": "connection_conflict", "resource": "connection"},
-                          {"error": "connection_conflict", "resource": "grant"}):
+        if result.get("error") not in {"connection_conflict", "deposit_failed",
+                "credential_ownership_transfer_unsupported", "connection_setup_invalid"}:
             raise ProxyRequestError("invalid broker connect refusal")
     elif action == "prepare":
         if (set(result) != {"revision"} or not isinstance(result["revision"], str)
@@ -242,3 +263,85 @@ def update_operation(data_root, *, principal, command_center, destination, expec
     if set(result) != {"updated"} or type(result["updated"]) is not bool:
         raise ProxyRequestError("invalid broker policy response")
     return result["updated"]
+
+
+def _deposit(ledger, center, principal, destination, secret):
+    from tinyassets.broker.vault import write_credential_vault
+    from tinyassets.credential_vault import http_credential_record
+
+    try:
+        write_credential_vault(ledger._data_root / center,
+            [http_credential_record(destination=destination, token=secret)],
+            owner_user_id=principal, universe_id=center)
+    except PermissionError:
+        return {"error": "credential_ownership_transfer_unsupported",
+                "detail": "this destination's credential is owned by another principal"}
+    except Exception:
+        return {"error": "deposit_failed", "resource": "connection"}
+    return None
+
+
+def _validate_custody(document):
+    from tinyassets.api.http_connection import _DESTINATION_RE, _MAX_SECRET_CHARS
+
+    if (set(document) != {"action", "destination", "incarnation", "secret"}
+            or not isinstance(document["destination"], str)
+            or not _DESTINATION_RE.fullmatch(document["destination"])
+            or not isinstance(document["incarnation"], str)
+            or not isinstance(document["secret"], str)
+            or len(document["secret"]) > _MAX_SECRET_CHARS
+            or (document["action"] == "inspect_custody" and document["secret"])
+            or (document["action"] == "rotate" and not document["secret"].strip())):
+        raise ValueError("invalid custody operation")
+
+
+def _custody_local(ledger, *, principal, command_center, document):
+    from tinyassets.api.http_connection import _ids, _secret_shape_error, _unpasteable_scheme
+    from tinyassets.credential_vault import http_deposit_refusal
+    from tinyassets.storage.outbound_connections import GrantResolutionError
+
+    validate(document)
+    connection, grant = _ids(universe_id=command_center, destination=document["destination"])
+    with ledger._connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT c.* FROM outbound_connections c "
+            "JOIN outbound_connection_grants g ON g.connection_id=c.connection_id "
+            "WHERE c.connection_id=? AND g.grant_id=? AND c.owner_user_id=? "
+            "AND g.owner_user_id=? AND g.universe_id=? AND c.revoked_at IS NULL "
+            "AND g.revoked_at IS NULL", (connection, grant, principal, principal,
+                                        command_center)).fetchone()
+        if (row is None or row["connection_type"] != "http"
+                or row["connection_class"] != "http" or row["provider"] != "http"
+                or row["destination"] != document["destination"]
+                or row["credential_ref"] != "vault://http/" + document["destination"]):
+            raise GrantResolutionError("connection unavailable")
+        refusal = http_deposit_refusal(ledger._data_root / command_center,
+            destination=document["destination"], owner_user_id=principal)
+        if document["action"] == "inspect_custody":
+            return {"refusal": refusal}
+        if row["incarnation"] != document["incarnation"]:
+            return {"error": "connection_changed", "resource": "connection"}
+        error = _unpasteable_scheme(row["auth_scheme"])
+        if error:
+            return error
+        error = _secret_shape_error(row["auth_scheme"], document["secret"])
+        if error:
+            return {"error": "connection_setup_invalid", "detail": error}
+        return _deposit(ledger, command_center, principal, document["destination"],
+                        document["secret"]) or {"rotated": True}
+
+
+def custody_operation(data_root, *, principal, command_center, destination,
+                      incarnation="", secret="", action="inspect_custody"):
+    from tinyassets.broker.client import BrokerClient
+    from tinyassets.broker.supervisor import get_supervisor
+    from tinyassets.storage.outbound_connections import ProxyRequestError
+
+    supervisor = get_supervisor(data_root)
+    if supervisor is None:
+        raise ProxyRequestError("the credential broker is not running")
+    document = dict(action=action, destination=destination, incarnation=incarnation, secret=secret)
+    validate(document)
+    return BrokerClient(supervisor.socket_path, principal=principal,
+        command_center=command_center, fence=supervisor.fence,
+        verify_peer=supervisor.verify_broker, timeout=30).http_connect(document)

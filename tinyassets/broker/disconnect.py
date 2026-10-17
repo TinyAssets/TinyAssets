@@ -1,4 +1,4 @@
-"""Named HTTP disconnect steps; custody and dependent authority stay in the daemon."""
+"""Named HTTP disconnect steps; custody is erased by the broker."""
 from __future__ import annotations
 
 import time
@@ -30,7 +30,13 @@ def local_operation(ledger, *, principal, command_center, document):
         row = conn.execute("SELECT * FROM outbound_connections WHERE connection_id=?",
                            (connection_id,)).fetchone()
         if row is None:
-            return {"resource": None, "incarnation": "", "removed": False}
+            from tinyassets.broker.vault import forget_credential
+
+            removed = (forget_credential(ledger._data_root / command_center,
+                credential_type="http", destination=document["destination"])
+                if document["action"] == "erase" else 0)
+            return {"resource": None, "incarnation": "", "removed": False,
+                    "secrets_removed": removed}
         # Deterministic center/destination identity also permits recovery of a
         # revoked connection or interrupted deposit with no surviving grant.
         if (row["owner_user_id"] != principal or row["connection_type"] != "http"
@@ -44,7 +50,7 @@ def local_operation(ledger, *, principal, command_center, document):
                   "connection_type", "auth_scheme", "allowed_endpoints_json", "access_mode",
                   "git_host")
         result = {"resource": {key: row[key] for key in fields},
-                  "incarnation": incarnation, "removed": False}
+                  "incarnation": incarnation, "removed": False, "secrets_removed": 0}
         if document["action"] == "inspect":
             return result
         if not document["incarnation"] or document["incarnation"] != incarnation:
@@ -55,6 +61,10 @@ def local_operation(ledger, *, principal, command_center, document):
         else:
             if row["revoked_at"] is None:
                 raise GrantResolutionError("outbound connection must be fenced before erase")
+            from tinyassets.broker.vault import forget_credential
+
+            result["secrets_removed"] = forget_credential(ledger._data_root / command_center,
+                credential_type="http", destination=document["destination"])
             for table in ("connection_capabilities", "outbound_connection_grants",
                           "outbound_connections"):
                 conn.execute(f"DELETE FROM {table} WHERE connection_id=?", (connection_id,))
@@ -77,7 +87,7 @@ def disconnect(data_root, *, principal, command_center, destination, action="ins
                           command_center=command_center, fence=supervisor.fence,
                           verify_peer=supervisor.verify_broker, timeout=30)
     result = client.disconnect(document)
-    if (set(result) != {"resource", "incarnation", "removed"}
+    if (set(result) != {"resource", "incarnation", "removed", "secrets_removed"}
             or not isinstance(result["incarnation"], str)
             or type(result["removed"]) is not bool
             or (result["resource"] is not None and not isinstance(result["resource"], dict))):

@@ -118,7 +118,7 @@ def build_dispatch(base, *, statuses=(200,), events=None, refresh_failure=False,
     # instance; no vault, real token endpoint or provider can be reached.
     with patch.object(outbound, "_TrustedCredentialResolver", lambda cfg: credential), \
             patch.object(outbound, "_TrustedNetworkDriver", lambda cfg, root: network), \
-            patch("tinyassets.connection_oauth.tokens.ConnectionTokens",
+            patch("tinyassets.broker.tokens.ConnectionTokens",
                   lambda **kwargs: SimpleNamespace(current=tokens)):
         return outbound._build_credential_broker_dispatch(config)
 

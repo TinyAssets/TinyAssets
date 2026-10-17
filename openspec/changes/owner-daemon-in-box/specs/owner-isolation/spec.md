@@ -62,3 +62,28 @@ reported next-wake time.
 #### Scenario: A scheduled run in a sleeping box
 - **WHEN** a sleeping box's next-wake time arrives
 - **THEN** the waker wakes it and the owner's tick runs the due work
+
+
+### Requirement: Credential custody and refresh have one broker writer
+
+Only the broker SHALL persist, rotate or erase connection credential material.
+The router SHALL hand deposits and OAuth token bundles to HTTP_CONNECT over
+its private broker channel. The broker SHALL own its custody locks, ownership
+metadata and deletion tombstones independently of daemon and owner stores.
+
+#### Scenario: The door deposits a credential
+- **WHEN** the router commits a prepared HTTP connection with a secret or OAuth bundle
+- **THEN** the broker rechecks the revision before writing custody and committing its grant
+- **AND** a refused deposit leaves no new grant
+- **AND** the router performs no vault write
+
+#### Scenario: An OAuth token expires during a box call
+- **WHEN** an admitted model or effector call needs a refreshed OAuth token
+- **THEN** the broker refreshes and durably saves the replacement before using it
+- **AND** registered-client credentials are resolved inside the broker
+- **AND** REFRESH and REFRESH_ACK are unknown box-channel operations
+
+#### Scenario: Disconnect erases custody
+- **WHEN** DISCONNECT erases a fenced connection with the expected incarnation
+- **THEN** the broker erases its custody before removing the ledger rows
+- **AND** a failed erase leaves the connection fenced and retryable

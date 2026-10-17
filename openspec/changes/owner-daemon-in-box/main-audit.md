@@ -479,3 +479,57 @@ No code on main binds as the requesting account outside a turn. The `#5168` help
 - **Per-center platform state out of `<data>/<center>/`.** `isolation-by-box` D2 moves it to the sidecar. In the clean shape most of it (history, pending requests, pause, automations rows, steering, activity) belongs **in the box**, not in a platform sidecar. Only the subscription/usage/billing rows, consents and the next-wake index stay shared. `isolation-by-box` D4 keeps `.pause` as a platform file, which contradicts the report's "put the flag where its reader lives" rule once the scheduler reads a wake index.
 - **App/MCP reads.** Either bind as the requester (`isolation-by-box` D3) or move the owner door into the box. The file browser (`api/universe_file_reads.py`) is the clearest host-path reader to delete.
 - **Shared root DBs** (`.tinyassets.db`, `.runs.db`, `.automations.db`) still hold per-owner rows. This is C6 P7/S10.
+
+
+## Task 3c-2a local validation (2026-10-16)
+
+Custody writers, erasers and refresh now live in the broker package. The
+HTTP_CONNECT commit carries the secret and prepared revision; broker-side
+policy/grant validation precedes custody publication. Rotation uses the stored
+scheme and expected incarnation. DISCONNECT erase returns `secrets_removed`
+and erases custody before deleting fenced ledger rows. Account erasure uses
+broker deletion tombstones, and the router no longer stages vault directories.
+
+The exact requested focused selection plus all changed test files was 88 files:
+1,482 passed initially, with 21 failures and 19 environment-dependent skips.
+All failures were repaired, then the affected 12-file rerun passed 219 tests
+without skips. That includes all 17 Compose parser cases, after copying the
+existing local validation image's Docker/Compose tools into the local oracle
+image (no repository dependency or CI configuration change). The two permanent
+UID erasure cases passed separately under `linux_oracle.py --as-root`.
+No unresolved failure or unexecuted skipped case remains in this selection.
+The full CI affected selection was not run.
+
+New acceptance: AST guard against external vault writers; six deposit schemes
+in a separate broker process with a writer-PID observation and committed grant;
+public and registered-client OAuth refresh on calls from a separate owner-box
+process; unknown REFRESH/REFRESH_ACK refusal; broker-only OAuth environment
+rendering. Existing refresh concurrency, storage failure, disconnect retry,
+rotation policy preservation and lifecycle tests were adapted to broker custody.
+
+Deleted protocol-only tests from `test_broker_refresh.py`:
+`test_foreign_stale_and_revoked_refresh_never_spends` (daemon callback admission),
+`test_lost_ack_keeps_rotation_and_does_not_replay`, and
+`test_broker_without_daemon_callback_cannot_refresh_locally`.
+The rejected-digest test now checks local rejected-token refresh. Existing grant
+and fence suites continue to cover denied dispatch. The old create-fault orphan
+test now requires no deposit on a failed ledger mutation. Vault deletion tests
+now check broker tombstones and locking, replacing daemon-lock staging,
+nonhome-admin and absent-owner-schema assumptions. The record-builder guard
+now names broker deposit/refresh modules. A pre-existing router-session I/O pin
+was brought up to date for its shared session files. The streaming thread check
+permits unrelated threads to exit while still forbidding new worker threads.
+
+Also deleted: daemon `_deposit_http`, the old `broker/refresh.py` callback
+preparation, the daemon OAuth service's refresh operation, refresh frames and
+client callback plumbing, and the standalone Slack vault-deposit script.
+Slack diagnostic scripts now use existing broker custody only.
+
+Task 6 must migrate credential ownership/deletion metadata into
+`.broker/credential-custody.db` and change credential-vault directory ownership
+to the broker uid. Existing HTTP secret files remain in place. The environment
+installer renders only OAuth configuration into `broker.env`; no provider code
+or host provisioning was added. RFC 7009 is 3c-2b. Remaining door flows, box
+secret-free actions, full CI, independent review and cutover remain with their
+respective lanes/lead. No sub-agents, external reviewers, push, merge, branch
+switch or deployment were used for this task.

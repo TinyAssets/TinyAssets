@@ -47,7 +47,7 @@ def test_fresh_repeat_additive_and_full_deposit(removal):
 
 @pytest.mark.parametrize("table", ["outbound_connections", "outbound_connection_grants"])
 def test_foreign_conflict_precedes_vault_write(removal, monkeypatch, table):
-    from tinyassets import credential_vault
+    from tinyassets.broker import vault as credential_vault
     with removal.ledger._connect() as conn:
         conn.execute(f"UPDATE {table} SET owner_user_id='bob'")
 
@@ -59,8 +59,8 @@ def test_foreign_conflict_precedes_vault_write(removal, monkeypatch, table):
 
 
 def test_failed_deposit_creates_no_connection_or_grant(removal, monkeypatch):
-    from tinyassets import credential_vault
     from tinyassets.api.http_connection import _ids
+    from tinyassets.broker import vault as credential_vault
 
     def fail(*args, **kwargs):
         raise OSError("fixture vault failure")
@@ -77,6 +77,9 @@ def test_failed_deposit_creates_no_connection_or_grant(removal, monkeypatch):
     ("outbound_connection_grants", "owner_user_id", "bob"),
 ])
 def test_commit_rechecks_both_rows(removal, monkeypatch, table, column, value):
+    from tinyassets.credential_vault import load_credential_vault
+
+    before = load_credential_vault(removal.root / "cc-alice")
     from tinyassets.broker.client import BrokerClient
     original = BrokerClient.http_connect
 
@@ -89,6 +92,7 @@ def test_commit_rechecks_both_rows(removal, monkeypatch, table, column, value):
     result = connect(destination="fixture", allowed_endpoints=[FIRST, EXTRA])
     assert result["error"] == "connection_conflict", result
     assert len(removal.ledger._get_connection_resource(removal.connection).allowed_endpoints) == 1
+    assert load_credential_vault(removal.root / "cc-alice") == before
 
 
 def test_legacy_upgrade_and_extension_share_transaction(removal):
@@ -125,8 +129,8 @@ def test_lost_commit_ack_is_not_replayed(removal, monkeypatch):
 
 
 def test_outage_precedes_vault_write_without_local_ledger(removal, monkeypatch):
-    from tinyassets import credential_vault
     from tinyassets.broker import supervisor
+    from tinyassets.broker import vault as credential_vault
     from tinyassets.storage.outbound_connections import ProxyRequestError
 
     def forbidden(*args, **kwargs):

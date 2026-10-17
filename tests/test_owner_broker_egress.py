@@ -410,3 +410,91 @@ def test_owner_startup_refuses_credential_environment(tmp_path, monkeypatch, nam
     with pytest.raises(PermissionError, match="environment contains a raw credential"):
         owner_runtime.start(tmp_path / "relay.sock")
     assert owner_runtime.current() is None
+
+
+@pytest.mark.parametrize("registered", [False, True])
+def test_box_call_refreshes_only_inside_broker(box, monkeypatch, registered):
+    from tinyassets.broker.process import _Dispatchers
+    from tinyassets.broker.tokens import ConnectionTokens
+    from tinyassets.connection_oauth import directory, tokens
+    from tinyassets.platform_secrets import child_env
+    from tinyassets.storage import outbound_connections as outbound
+
+    # The broker is served in this process; the owner below runs in its own process.
+    monkeypatch.setattr(owner_runtime, "_runtime", None)
+    bundle = tokens.TokenBundle(access_token="expired-access", refresh_token="single-use",
+        expires_at=time.time() - 10, token_url="https://auth.example.com/token",
+        client_id="registered-client", provider_id="fixture" if registered else "")
+    keeper = ConnectionTokens(universe_dir=box.shared / "center", owner_user_id="owner")
+    keeper._write("test", bundle)
+    with box.ledger._connect() as conn:
+        conn.execute("UPDATE outbound_connections SET auth_scheme='oauth2'")
+    if registered:
+        monkeypatch.setattr(directory, "entries", lambda: [{
+            "id": "fixture", "token_endpoint": bundle.token_url,
+            "client_id_env": "TINYASSETS_OAUTH_FIXTURE_CLIENT_ID",
+            "client_secret_env": "TINYASSETS_OAUTH_FIXTURE_SECRET",
+            "token_endpoint_auth_method": "client_secret_post"}])
+        monkeypatch.setenv("TINYASSETS_OAUTH_FIXTURE_CLIENT_ID", bundle.client_id)
+        monkeypatch.setenv("TINYASSETS_OAUTH_FIXTURE_SECRET", "platform-fixture-secret")
+    refreshed = []
+
+    def token_request(method, url, *, form, **kwargs):
+        assert (method, url) == ("POST", bundle.token_url)
+        assert form["grant_type"] == "refresh_token" and form["refresh_token"] == "single-use"
+        assert (form.get("client_secret") == "platform-fixture-secret") is registered
+        refreshed.append(os.getpid())
+        return 200, {"access_token": "fresh-access", "refresh_token": "rotated-refresh",
+                     "expires_in": 3600, "token_type": "Bearer"}
+
+    def network(**kwargs):
+        assert kwargs["credential"] == "fresh-access"
+        return UpstreamStream.complete({"status": 200, "reason": "OK", "headers": {},
+                                        "body": b"refreshed"}, ())
+
+    monkeypatch.setattr(tokens, "request_json", token_request)
+    monkeypatch.setattr(outbound, "_TrustedNetworkDriver", lambda *_: network)
+    dispatchers = _Dispatchers(box.shared, allow_test_fixtures=True)
+    box.broker.server._dispatch_for = dispatchers.dispatch_for
+    code = """
+import os, sys
+from pathlib import Path
+from tinyassets import owner_runtime
+from tinyassets.storage.outbound_connections import _broker_channel
+root, relay = Path(sys.argv[1]), Path(sys.argv[2])
+root.mkdir()
+owner_runtime.OWNER_MOUNT = root
+owner_runtime._is_owner_mount = lambda candidate: candidate == root
+runtime = owner_runtime.start(relay)
+assert not any(n.startswith('TINYASSETS_OAUTH_') and n.endswith('_SECRET') for n in os.environ)
+try:
+    channel = _broker_channel(root, principal='owner', command_center='center',
+        grant_id='grant-model', connection_id='conn-model')
+    for _ in range(2):
+        result = channel.request('GET', {'url': 'https://models.example.com/v1/chat'})
+        assert result['status'] == 200 and result['body'] == 'refreshed'
+    print(os.getpid())
+finally:
+    runtime.tools.close()
+"""
+    root = box.root / "refresh-process"
+    completed = subprocess.run([sys.executable, "-c", code, str(root), str(box.runtime.relay)],
+                               env=child_env(os.environ), capture_output=True,
+                               text=True, timeout=30)
+    assert completed.returncode == 0, completed.stderr
+    assert refreshed == [os.getpid()] and int(completed.stdout) != os.getpid()
+    assert tokens.decode(keeper._read("test")).refresh_token == "rotated-refresh"
+    assert not (root / ".broker").exists()
+    assert all(b"fresh-access" not in p.read_bytes() for p in root.rglob("*") if p.is_file())
+
+
+@pytest.mark.parametrize("operation", ["REFRESH", "REFRESH_ACK"])
+def test_box_channel_refuses_removed_refresh_operations(box, operation):
+    from tinyassets import rpc_frames as rf
+    from tinyassets.owner_channel import connect
+
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+        channel.settimeout(5)
+        connect(channel, "center")
+        channel.sendall(rf.control(rf.CONNECTION, {"op": operation}))
+        assert rf.read_frame_blocking(channel) is None

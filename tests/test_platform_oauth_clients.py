@@ -299,16 +299,12 @@ def test_scoped_daemon_refresh_works_without_secret_in_child(configured, provide
     script = """
 import json, os
 from tinyassets.connection_oauth.discovery import resolve_offer
-from tinyassets.connection_oauth.tokens import ConnectionTokens, decode
+from tinyassets.broker.tokens import ConnectionTokens, decode
 from tinyassets.connection_oauth import directory
 assert not directory._secrets
 assert not any(n.endswith('_SECRET') and n.startswith('TINYASSETS_OAUTH_') for n in os.environ)
 offer, reason = resolve_offer({}, ['api.tasklark.io'])
 assert not reason and offer['source'] == 'directory'
-t = ConnectionTokens(universe_dir=os.environ['TEST_UNIVERSE'], owner_user_id='owner-1')
-old = t._read('tasklark')
-new = t.current('tasklark', old, rejected=decode(old).access_token)
-assert new.access_token != decode(old).access_token
 print('ok')
 """
     env["TEST_UNIVERSE"] = str(app / UID)
@@ -317,7 +313,7 @@ print('ok')
     assert child.returncode == 0, child.stderr
     assert child.stdout.strip() == "ok"
     assert SECRET not in child.stdout + child.stderr
-    assert _vault_bundle(app).access_token != before.access_token
+    assert _vault_bundle(app).access_token == before.access_token
 
 
 def test_daemon_capability_cannot_refresh_another_owners_or_connections_tokens(
@@ -330,11 +326,9 @@ def test_daemon_capability_cannot_refresh_another_owners_or_connections_tokens(
     original = _vault_bundle(app)
     foreign = _vault_bundle(app, OTHER_UID)
     config = service.client_config(app / UID, OWNER)
-    result = service.call(config, {"op": "refresh", "destination": "tasklark",
-                                   "rejected": original.access_token,
-                                   "owner": OTHER, "universe": OTHER_UID})
-    assert result == {"ok": True}
-    assert _vault_bundle(app).access_token != original.access_token
+    with pytest.raises(OAuthError):
+        service.call(config, {"op": "refresh", "destination": "tasklark"})
+    assert _vault_bundle(app) == original
     assert _vault_bundle(app, OTHER_UID) == foreign
     with pytest.raises(OAuthError):
         service.call(config, {"op": "refresh", "destination": "different-connection"})
@@ -353,9 +347,11 @@ def test_two_connections_of_one_owner_keep_distinct_tokens(configured, provider,
             ask = _ask(action={**TASKS_ASK, "destination": destination})
         assert _sign_in(provider, ask["request_id"])[2].status_code == 200
     before = {r["destination"]: r["token"] for r in load_credential_vault(app / UID)}
-    config = service.client_config(app / UID, OWNER)
-    service.call(config, {"op": "refresh", "destination": "second",
-                          "rejected": tokens.decode(before["second"]).access_token})
+    from tinyassets.broker.tokens import ConnectionTokens
+
+    keeper = ConnectionTokens(universe_dir=app / UID, owner_user_id=OWNER)
+    keeper.current("second", before["second"],
+                   rejected=tokens.decode(before["second"]).access_token)
     after = {r["destination"]: r["token"] for r in load_credential_vault(app / UID)}
     assert before["tasklark"] == after["tasklark"]
     assert before["second"] != after["second"]
@@ -381,18 +377,19 @@ def test_future_secret_names_are_filtered_without_a_python_patch(monkeypatch, tm
     assert SECRET not in env
 
 
-def test_concurrent_daemon_refresh_spends_once(configured, provider, app):
+def test_concurrent_broker_refresh_spends_once(configured, provider, app):
     with _as(OWNER):
         ask = _ask()
     assert _sign_in(provider, ask["request_id"])[2].status_code == 200
     original = _vault_bundle(app)
     provider.refresh_delay = 0.1
+    from tinyassets.broker.tokens import ConnectionTokens
+
+    keeper = ConnectionTokens(universe_dir=app / UID, owner_user_id=OWNER)
     with ThreadPoolExecutor(max_workers=4) as pool:
-        configs = list(pool.map(lambda _: service.client_config(app / UID, OWNER), range(4)))
-        replies = list(pool.map(lambda config: service.call(config, {
-            "op": "refresh", "destination": "tasklark", "rejected": original.access_token,
-        }), configs))
-    assert all(reply == {"ok": True} for reply in replies)
+        replies = list(pool.map(lambda _: keeper.current("tasklark", keeper._read("tasklark"),
+                                rejected=original.access_token), range(4)))
+    assert len({reply.access_token for reply in replies}) == 1
     assert provider.refresh_calls == 1 and provider.reused == 0
 
 
@@ -523,7 +520,7 @@ def test_fork_guard_protects_inherited_memory(configured, monkeypatch):
         directory.secret(SECRET_NAME)
 
 
-def test_founder_home_without_acl_can_resolve_and_refresh(configured, provider, app):
+def test_founder_home_without_acl_can_resolve_but_not_refresh(configured, provider, app):
     from tinyassets import daemon_server
 
     with _as(OWNER):
@@ -536,15 +533,15 @@ def test_founder_home_without_acl_can_resolve_and_refresh(configured, provider, 
     assert daemon_server.list_universe_acl(app, universe_id=UID) == []
     config = service.client_config(app / UID, OWNER)
     assert service.call(config, {"op": "resolve", "hosts": [API]})["offer"]["source"] == "directory"
-    assert service.call(config, {"op": "refresh", "destination": "tasklark",
-                                 "rejected": before.access_token}) == {"ok": True}
-    assert _vault_bundle(app).access_token != before.access_token
+    with pytest.raises(OAuthError):
+        service.call(config, {"op": "refresh", "destination": "tasklark"})
+    assert _vault_bundle(app).access_token == before.access_token
     stranger = service.client_config(app / UID, OTHER)
     with pytest.raises(OAuthError):
         service.call(stranger, {"op": "refresh", "destination": "tasklark"})
 
 
-def test_released_capability_cannot_refresh_but_other_launch_can(configured, provider, app):
+def test_released_capability_cannot_resolve_but_other_launch_can(configured, provider, app):
     with _as(OWNER):
         ask = _ask()
     assert _sign_in(provider, ask["request_id"])[2].status_code == 200
@@ -552,8 +549,9 @@ def test_released_capability_cannot_refresh_but_other_launch_can(configured, pro
     second = service.client_config(app / UID, OWNER)
     service.release_client(first)
     with pytest.raises(OAuthError):
-        service.call(first, {"op": "refresh", "destination": "tasklark"})
-    assert service.call(second, {"op": "refresh", "destination": "tasklark"}) == {"ok": True}
+        service.call(first, {"op": "resolve", "hosts": [API]})
+    result = service.call(second, {"op": "resolve", "hosts": [API]})
+    assert result["offer"]["source"] == "directory"
 
 
 def test_invalid_directory_connect_ask_keeps_key_paste(configured, provider, universes):

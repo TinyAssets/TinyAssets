@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tinyassets.credential_vault import write_credential_vault
+from tinyassets.broker.vault import write_credential_vault
 from tinyassets.storage.outbound_connections import (
     AmbiguousProxyOutcome,
     ConnectionLedger,

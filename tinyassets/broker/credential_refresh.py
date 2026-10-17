@@ -56,7 +56,9 @@ def _thread_lock(key: str) -> threading.Lock:
 
 def lock_directory(universe_dir: Path) -> Path:
     """Where this universe's per-credential refresh locks live."""
-    return Path(universe_dir) / ".oauth-refresh"
+    from tinyassets.broker.vault import _prepare_credential_root
+
+    return _prepare_credential_root(Path(universe_dir)) / ".oauth-refresh"
 
 
 def lock_path(universe_dir: str | Path, lock_id: str) -> Path:
@@ -122,7 +124,7 @@ def _hold_vault(universe_dir: Path, deadline: float, subject: str) -> tuple[Exit
     Held BEFORE the refresh token is spent (see this module's docstring). A
     caller that cannot hold it has spent nothing and may retry.
     """
-    from tinyassets.credential_vault import exclusive_credential_vault
+    from tinyassets.broker.vault import exclusive_credential_vault
 
     while True:
         stack = ExitStack()

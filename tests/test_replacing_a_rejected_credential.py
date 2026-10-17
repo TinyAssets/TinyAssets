@@ -780,7 +780,7 @@ def test_a_connection_that_does_not_read_this_vault_slot_is_refused(base):
     against the deposit's before sending the review out.
     """
     from tinyassets.api.http_connection import rotate_http
-    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.broker.vault import write_credential_vault
 
     udir = _make_universe(base, "u-1", admin="alice")
     _login("alice")
@@ -830,7 +830,8 @@ def test_a_record_with_no_recorded_depositor_is_refused_before_the_card(base):
     check it (Codex refute-review, P2 #4) — and this module's own rule is that the
     owner never sees a tab that cannot be honoured."""
     from tinyassets.api.http_connection import rotate_http
-    from tinyassets.credential_vault import load_credential_vault, write_credential_vault
+    from tinyassets.broker.vault import write_credential_vault
+    from tinyassets.credential_vault import load_credential_vault
 
     udir = _make_universe(base, "u-1", admin="alice")
     _login("alice")
@@ -990,8 +991,8 @@ def test_a_storage_fault_carrying_the_key_leaks_it_nowhere(base, caplog):
     message` — so the fault is injected carrying it, and the refusal, the log and
     the traceback text are all checked afterwards.
     """
-    from tinyassets import credential_vault
     from tinyassets.api.http_connection import rotate_http
+    from tinyassets.broker import vault as credential_vault
 
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
@@ -1080,10 +1081,9 @@ def test_one_builder_writes_every_http_credential_record():
     drifted would be the one whose `deposited_at` lies."""
     import inspect
 
-    from tinyassets.api import http_connection
-    from tinyassets.connection_oauth import tokens
+    from tinyassets.broker import http_connect, tokens
 
-    for module in (http_connection, tokens):
+    for module in (http_connect, tokens):
         source = inspect.getsource(module)
         assert '"credential_type": "http"' not in source, module.__name__
         assert "http_credential_record(" in source, module.__name__

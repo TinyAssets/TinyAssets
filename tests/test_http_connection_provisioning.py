@@ -236,7 +236,7 @@ def _seed_legacy_http_connection(
     secret + a grant carrying the legacy ``http_requests`` cap (the shape a
     connection provisioned before the #2521 scope fix actually has)."""
     from tinyassets.api.http_connection import _ids
-    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.broker.vault import write_credential_vault
     from tinyassets.storage.outbound_connections import ActionCap
 
     udir = _make_universe(base, uid, admin="founder")
@@ -313,7 +313,7 @@ def test_legacy_upgrade_is_deferred_until_after_a_successful_deposit(
     # connect_http imports write_credential_vault fresh from the source module at
     # call time, so patch the SOURCE, not the api.http_connection namespace.
     monkeypatch.setattr(
-        "tinyassets.credential_vault.write_credential_vault", _boom
+        "tinyassets.broker.vault.write_credential_vault", _boom
     )
     result = _connect("u-legacy-dep", secret="new-secret")
     assert result["error"] == "deposit_failed"
@@ -865,25 +865,13 @@ def test_atomic_broker_commit_rolls_back_grant_fault_then_retries(
     assert len(_http_records(udir)) == 1
 
 
-def test_create_fault_orphan_is_owner_locked_then_original_owner_heals(
+def test_create_failure_does_not_deposit_and_retry_succeeds(
     base: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A create-stage fault (create_connection raises AFTER the vault deposit)
-    leaves an orphaned http vault record with no connection row. A SECOND admin
-    then finds no ledger conflict (resource is None), so the ONLY thing that can
-    stop them overwriting the orphaned secret and provisioning as themselves is
-    the vault's own depositor-ownership enforcement — which must now cover http
-    records (Codex CRITICAL finding). The original owner's retry still completes.
-    """
-    from tinyassets.daemon_server import grant_universe_access
+    """A failed ledger mutation leaves no secret or grant; a fresh retry succeeds."""
     from tinyassets.storage import outbound_connections as oc
 
     udir = _make_universe(base, "u-orphan", admin="founder")
-    grant_universe_access(
-        base, universe_id="u-orphan", actor_id="coadmin",
-        permission="admin", granted_by="founder",
-    )
-
     real_create = oc.ConnectionLedger.create_connection
     calls = {"n": 0}
 
@@ -895,8 +883,6 @@ def test_create_fault_orphan_is_owner_locked_then_original_owner_heals(
 
     monkeypatch.setattr(oc.ConnectionLedger, "create_connection", _flaky_create)
 
-    # 1. Founder's first call: the vault deposit lands (owner recorded), then
-    #    create_connection raises. The fault surfaces; no connection row exists.
     _login("founder")
     from tinyassets.broker.client import BrokerRefused
 
@@ -907,22 +893,10 @@ def test_create_fault_orphan_is_owner_locked_then_original_owner_heals(
 
     conn_id, grant_id = _ids(universe_id="u-orphan", destination="webhook:acme")
     ledger = _ledger(base, "founder")
-    assert ledger._get_connection_resource(conn_id) is None  # orphaned: no row
-    recs = _http_records(udir)
-    assert len(recs) == 1 and recs[0]["token"] == "founder-secret"  # orphaned cred
+    assert ledger._get_connection_resource(conn_id) is None
+    assert ledger.get_grant(grant_id) is None
+    assert _http_records(udir) == []
 
-    # 2. Second admin tries to seize the orphaned credential. No ledger conflict
-    #    (resource is None), so the vault ownership guard is the only defense: it
-    #    refuses, and the founder's secret is NOT overwritten.
-    _login("coadmin")
-    seized = _connect("u-orphan", secret="coadmin-secret")
-    assert seized["error"] == "credential_ownership_transfer_unsupported"
-    recs = _http_records(udir)
-    assert len(recs) == 1 and recs[0]["token"] == "founder-secret"  # untouched
-    assert ledger._get_connection_resource(conn_id) is None  # still no connection
-
-    # 3. Original owner retries (create now succeeds): the orphan heals into a
-    #    usable connection + grant, and the stored secret is the owner's.
     _login("founder")
     healed = _connect("u-orphan", secret="founder-secret-v2")
     assert healed["status"] == "provisioned"
@@ -939,7 +913,7 @@ def test_legacy_unowned_http_record_is_not_seizable(base: Path) -> None:
     an owned connect_http: the universe-wide guard cannot see an owner it never
     recorded, so the deposit fails closed and the legacy secret is preserved. A
     second admin cannot seize it; recovery needs a dedicated flow (Codex review)."""
-    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.broker.vault import write_credential_vault
     from tinyassets.daemon_server import grant_universe_access
 
     udir = _make_universe(base, "u-legacy", admin="founder")

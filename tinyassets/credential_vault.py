@@ -1,8 +1,7 @@
-"""Per-universe credential vault helpers.
+"""Read-only credential shapes and custody references.
 
-The vault stores credentials that are scoped to one universe directory. Public
-state and run evidence should reference only summaries; resolver helpers return
-secret values only to daemon-side effectors/providers that need them.
+Secrets live outside owner boxes. Only the broker package persists the vault;
+public state and run evidence use credential-free summaries and references.
 """
 
 from __future__ import annotations
@@ -15,16 +14,13 @@ import os
 import re
 import secrets
 import sqlite3
-import stat
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 VAULT_FILENAME = ".credential-vault.json"
-CREDENTIAL_ARTIFACT_DIR = ".credentials"
 VALID_CREDENTIAL_TYPES = frozenset(
     # "http" is the general outbound-connection credential (channel-agnostic
     # outbound): a single token/secret for a user-declared HTTP connection,
@@ -78,69 +74,9 @@ def _credential_root(universe: Path) -> Path:
     return universe.parent / ".platform" / "credential-vaults" / universe.name
 
 
-def _prepare_credential_root(universe: Path) -> Path:
-    root = _credential_root(universe)
-    from tinyassets.boxes.layout import BROKER_READ_GID
-
-    # The guest's XFS tree is never used as a parent for a credential write.
-    # All components here are daemon owned; the broker group can traverse.
-    platform = root.parent.parent
-    if not platform.exists():
-        platform.mkdir(mode=0o711)
-    if platform.is_symlink() or not platform.is_dir():
-        raise PermissionError("credential platform parent is invalid")
-    for directory in (root.parent, root):
-        if directory.is_symlink():
-            raise PermissionError("credential custody parent is a link")
-        if not directory.exists():
-            directory.mkdir(mode=0o710)
-            if os.name != "nt" and (BROKER_READ_GID in os.getgroups() or os.geteuid() == 0):
-                os.chown(directory, -1, BROKER_READ_GID)
-        info = directory.stat()
-        if (not stat.S_ISDIR(info.st_mode) or
-                (os.name != "nt" and info.st_uid != os.geteuid()) or
-                stat.S_IMODE(info.st_mode) & 0o007):
-            raise PermissionError("credential custody parent is not private")
-    return root
-
-
 def vault_exists(universe_dir: str | Path | None) -> bool:
     """Return True when a vault file exists for *universe_dir*."""
     return universe_dir is not None and credential_vault_path(universe_dir).is_file()
-
-
-def _chmod_best_effort(path: Path, mode: int) -> None:
-    try:
-        os.chmod(path, mode)
-    except OSError:
-        pass
-
-
-def _as_path(value: Any, universe_dir: Path) -> Path | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    candidate = Path(value.strip()).expanduser()
-    if not candidate.is_absolute():
-        candidate = universe_dir / candidate
-    root = _credential_root(universe_dir)
-    if root != universe_dir:
-        try:
-            candidate = root / candidate.relative_to(universe_dir)
-        except ValueError:
-            pass
-    return candidate
-
-
-def _secret_artifact_dir(universe_dir: Path, service: str) -> Path:
-    service_part = "".join(
-        ch if ch.isalnum() or ch in {"-", "_"} else "-"
-        for ch in service.strip().lower()
-    ) or "credential"
-    target = _prepare_credential_root(universe_dir) / CREDENTIAL_ARTIFACT_DIR / service_part
-    target.mkdir(parents=True, exist_ok=True)
-    _chmod_best_effort(target.parent, 0o700)
-    _chmod_best_effort(target, 0o700)
-    return target
 
 
 def _normalize_record(raw: Any) -> dict[str, Any]:
@@ -181,23 +117,22 @@ def http_deposit_refusal(
     admitting that card would put an unfulfillable tab in front of the owner
     (Codex refute-review, P2 #4).
     """
-    from tinyassets.storage import db_path
-
     universe = Path(universe_dir).resolve(strict=False)
     service = (destination or "").strip().lower()
     owner = (owner_user_id or "").strip()
     if not service or not owner:
         return "incomplete_request"
-    conn = sqlite3.connect(db_path(universe.parent), isolation_level=None)
-    try:
-        _ensure_credential_owner_schema(conn)
-        rows = conn.execute(
-            "SELECT service, owner_user_id FROM llm_credential_deposit_owners "
-            "WHERE universe_id = ?",
-            (universe.name,),
-        ).fetchall()
-    finally:
-        conn.close()
+    path = custody_metadata_path(universe.parent)
+    rows = []
+    if path.exists():
+        conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT service, owner_user_id FROM llm_credential_deposit_owners "
+                "WHERE universe_id = ?", (universe.name,),
+            ).fetchall()
+        finally:
+            conn.close()
     if any(str(row[1]) != owner for row in rows):
         return "foreign_owner"
     owned = {str(row[0]) for row in rows}
@@ -407,384 +342,6 @@ def _prepare_credential_write(
         "dropped_credential_slots": dropped_credential_slots,
     }
     return records, summary
-
-
-def _fsync_file(path: Path) -> None:
-    """fsync a file's contents to disk. May raise OSError.
-
-    Opened ``r+b`` (writable): Windows' ``os.fsync`` requires a handle open for
-    writing and raises ``EBADF`` on a read-only one. No bytes are written.
-    """
-    with open(path, "r+b") as handle:
-        os.fsync(handle.fileno())
-
-
-def _fsync_directory(path: Path) -> None:
-    """fsync a directory so a rename inside it is persisted. May raise OSError.
-
-    No-op on Windows, which has no portable directory-fsync via ``os.open`` here.
-    """
-    if os.name == "nt":
-        return
-    fd = os.open(str(path), os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
-def _post_commit_durability(vault_file: Path, universe: Path) -> None:
-    """Best-effort durability AFTER the commit point (fsync file + directory).
-
-    Kept as one seam so the caller can treat any failure here as non-fatal — the
-    deposit has already taken effect once the vault file is replaced.
-    """
-    _fsync_file(vault_file)
-    _fsync_directory(universe)
-
-
-def _persist_credential_vault_file(
-    universe_dir: str | Path,
-    records: list[dict[str, Any]],
-) -> None:
-    """Atomically replace the vault file with *records*.
-
-    This is the LAST mutation of a deposit — the owner-row DB commit has already
-    landed — so a concurrent unlocked reader never observes a credential before
-    its ownership row exists.
-
-    The publication inside :func:`_persist_role_vault` is the COMMIT POINT.
-    Everything before it may raise, and such a pre-commit failure leaves the
-    prior file intact so the caller compensates the owner rows.
-    """
-    universe = Path(universe_dir)
-    _prepare_credential_root(universe)
-    path = credential_vault_path(universe)
-    data = (
-        json.dumps({"schema_version": 1, "credentials": records}, indent=2, sort_keys=True)
-        + "\n"
-    )
-    _persist_role_vault(path, data)
-
-
-def _persist_role_vault(path: Path, data: str) -> None:
-    """Assign the read-only broker group before publishing a replacement inode."""
-    import tempfile
-
-    from tinyassets.boxes.layout import BROKER_READ_GID, VAULT_FILE_MODE
-
-    fd, name = tempfile.mkstemp(prefix=".vault-", suffix=".tmp", dir=path.parent)
-    temporary = Path(name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            os.fchown(handle.fileno(), -1, BROKER_READ_GID)
-            os.fchmod(handle.fileno(), VAULT_FILE_MODE)
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.replace(path)
-    except BaseException:
-        from tinyassets.universe_files import unlink_universe_file
-
-        try:
-            unlink_universe_file(
-                temporary.anchor, temporary.relative_to(temporary.anchor).as_posix())
-        except FileNotFoundError:
-            pass
-        raise
-    # Publication is the existing vault commit point. Never compensate owner
-    # rows after it, even if a subsequent durability flush reports a failure.
-    try:
-        _post_commit_durability(path, path.parent)
-    except Exception as exc:  # noqa: BLE001 - committed deposit must not be compensated
-        logger.warning("credential vault durability flush failed after commit (%s); "
-                       "deposit already took effect", type(exc).__name__)
-
-
-def _restore_owner_rows(
-    conn: sqlite3.Connection,
-    universe_id: str,
-    prior_rows: list[Any],
-) -> None:
-    """Compensating transaction: restore the owner rows for *universe_id* to
-    *prior_rows*.
-
-    Used only when the owner-row DB change already committed but the subsequent
-    vault-file replace failed, so no committed-but-ineffective ownership survives.
-    """
-    conn.execute("BEGIN IMMEDIATE")
-    conn.execute(
-        "DELETE FROM llm_credential_deposit_owners WHERE universe_id = ?",
-        (universe_id,),
-    )
-    for row in prior_rows:
-        conn.execute(
-            """
-            INSERT INTO llm_credential_deposit_owners (
-                universe_id, service, owner_user_id
-            ) VALUES (?, ?, ?)
-            """,
-            (universe_id, str(row[0]), str(row[1])),
-        )
-    conn.commit()
-
-
-def forget_credential(
-    universe_dir: str | Path,
-    *,
-    credential_type: str,
-    destination: str,
-) -> int:
-    """Remove every vault record matching ``(credential_type, destination)``.
-
-    Returns how many records went away; zero is not an error, because "remove
-    this" and "it was already gone" are the same outcome for the caller.
-
-    Why this exists at all: :func:`write_credential_vault` MERGES. It deposits
-    the records it is given and deliberately leaves untouched ones alone, so
-    there was no way to take a credential back — a user who pasted a key,
-    including one pasted against a host they did not intend, could not withdraw
-    it through any surface they could reach
-    (``docs/concerns/2026-08-27-no-reachable-remove-for-http-connections.md``).
-
-    Under the SAME exclusive admission lock a deposit takes, and reusing the
-    same atomic writer, so a remove racing a deposit cannot interleave and a
-    crash mid-remove leaves the previous vault intact rather than a truncated
-    one.
-
-    The ledger rows are the caller's business. This owns only the secret.
-    """
-    universe = Path(universe_dir).resolve(strict=False)
-    wanted_type = (credential_type or "").strip().lower()
-    wanted_destination = (destination or "").strip()
-    if not wanted_type or not wanted_destination:
-        raise ValueError("forget_credential needs a credential_type and destination")
-
-    from tinyassets.provider_assignment import provider_assignment_admission
-
-    with provider_assignment_admission().exclusive(universe):
-        records = load_credential_vault(universe)
-        kept = [
-            record
-            for record in records
-            if not (
-                str(record.get("credential_type") or "").strip().lower() == wanted_type
-                and str(record.get("destination") or "").strip() == wanted_destination
-            )
-        ]
-        removed = len(records) - len(kept)
-        if removed:
-            _persist_credential_vault_file(universe, kept)
-    return removed
-
-
-def write_credential_vault(
-    universe_dir: str | Path,
-    credentials: list[dict[str, Any]] | dict[str, Any],
-    *,
-    owner_user_id: str | None = None,
-    universe_id: str | None = None,
-) -> dict[str, Any]:
-    """Write while excluding launches and optionally record depositor ownership.
-
-    ``owner_user_id`` is trusted transport state, never a vault-record field.
-    """
-
-    from tinyassets.provider_assignment import provider_assignment_admission
-
-    universe = Path(universe_dir).resolve(strict=False)
-    owner, uid = _write_identity(universe, owner_user_id, universe_id)
-
-    # Validate the payload BEFORE acquiring the exclusive lock. Entering the lock
-    # creates the universe directory AND the admission lock file
-    # (provider_assignment.py), so validating first means a malformed deposit
-    # (e.g. bad Codex base64) mutates NOTHING — no directory, no lock, no schema,
-    # no vault file. Pure, side-effect-free; the merge below re-runs it.
-    _records_from_payload(credentials)
-
-    with provider_assignment_admission().exclusive(universe):
-        result = _write_credential_vault_locked(universe, credentials, owner, uid)
-    # AFTER the lock, never inside it: warming runs discovery on a background
-    # thread, and the boundary it crosses forbids a caller holding the
-    # admission lock or a SQL transaction across enumeration.
-    return result
-
-
-def _write_identity(
-    universe: Path, owner_user_id: str | None, universe_id: str | None,
-) -> tuple[str, str]:
-    owner = (owner_user_id or "").strip()
-    uid = (universe_id or universe.name).strip()
-    if owner_user_id is not None and not owner:
-        raise ValueError("credential owner must be a non-empty server principal")
-    if uid != universe.name:
-        raise ValueError("credential command center does not match its canonical directory")
-    return owner, uid
-
-
-@contextmanager
-def exclusive_credential_vault(universe_dir: str | Path) -> Iterator[Callable[..., dict]]:
-    """Hold the vault's exclusive admission and yield a writer usable inside it.
-
-    For a writer that must know it CAN persist before it acts: an oauth2
-    refresh spends a (possibly single-use) refresh token, so it takes this
-    first and writes the rotated token under the same hold. Acquiring can fail
-    (a bounded cross-process lock); then nothing has been spent.
-    """
-    from tinyassets.provider_assignment import provider_assignment_admission
-
-    universe = Path(universe_dir).resolve(strict=False)
-    with provider_assignment_admission().exclusive(universe):
-        def write(credentials, *, owner_user_id=None, universe_id=None) -> dict:
-            owner, uid = _write_identity(universe, owner_user_id, universe_id)
-            _records_from_payload(credentials)
-            return _write_credential_vault_locked(universe, credentials, owner, uid)
-
-        yield write
-
-
-def _write_credential_vault_locked(
-    universe: Path, credentials: list[dict[str, Any]] | dict[str, Any], owner: str, uid: str,
-) -> dict[str, Any]:
-    """The write itself; the caller holds the exclusive admission."""
-    from tinyassets.storage import db_path
-    from tinyassets.storage.current_home import check_principal_not_deleted
-
-    conn = sqlite3.connect(db_path(universe.parent), isolation_level=None)
-    try:
-        # The records THIS call is depositing (pre-merge). Ownership is claimed
-        # only for these — never for untouched records already in the vault.
-        incoming_records = _records_from_payload(credentials)
-        _ensure_credential_owner_schema(conn)
-        if owner:
-            existing = conn.execute(
-                """
-                SELECT service, owner_user_id
-                  FROM llm_credential_deposit_owners
-                 WHERE universe_id = ?
-                """,
-                (uid,),
-            ).fetchall()
-            if any(str(row[1]) != owner for row in existing):
-                raise PermissionError(
-                    "credential ownership transfer requires a dedicated flow"
-                )
-            # Fail-closed for LEGACY unowned http credentials. An http record
-            # deposited before http ownership was tracked (or via an owner-less
-            # path) has a vault record but NO owner row, so the universe-wide
-            # guard above cannot see an owner to compare — a caller could
-            # otherwise overwrite the orphan and provision as themselves (Codex
-            # review). Refuse to overwrite an existing unowned http slot: it is
-            # unprovable whether the caller is the original owner, so recovering
-            # such a record needs a dedicated flow, never a silent owned rewrite.
-            # Scoped to deposits that actually TOUCH an http slot, so a non-http
-            # multi-record replace that recovers a malformed vault still works
-            # (it never reads the existing file).
-            incoming_http_services = {
-                service
-                for record in incoming_records
-                if record.get("credential_type") == "http"
-                and (service := _service(record))
-            }
-            if incoming_http_services:
-                owned_keys = {str(row[0]) for row in existing}
-                on_disk_http = {
-                    service
-                    for record in load_credential_vault(universe)
-                    if record.get("credential_type") == "http"
-                    and (service := _service(record))
-                }
-                for service in incoming_http_services:
-                    if (
-                        service in on_disk_http
-                        and f"http:{service}" not in owned_keys
-                    ):
-                        raise PermissionError(
-                            "credential ownership transfer requires a dedicated flow"
-                        )
-
-        # Compute the final merged records + summary IN MEMORY. The vault file
-        # is the LAST mutation (below), never written before the owner-row
-        # commit, so a concurrent unlocked reader can never observe a
-        # credential before its ownership row exists.
-        final_records, summary = _prepare_credential_write(universe, credentials)
-        # Owner-row keys: PRUNE against every ownership-bearing record that
-        # SURVIVES the merge (so a row for a vanished record is dropped), but
-        # CLAIM ownership only for the records this call actually deposits.
-        # Claiming against the whole merged vault would let an unrelated owned
-        # deposit silently seize a pre-existing unowned http record (Codex
-        # review — the LLM-deposit-first seizure).
-        final_owner_keys = _ownership_service_keys(final_records)
-        incoming_owner_keys = _ownership_service_keys(incoming_records)
-
-        # Snapshot the prior owner rows so a (rare) file-replace failure AFTER
-        # the DB commit can be compensated below.
-        prior_owner_rows = conn.execute(
-            """
-            SELECT service, owner_user_id
-              FROM llm_credential_deposit_owners
-             WHERE universe_id = ?
-            """,
-            (uid,),
-        ).fetchall()
-
-        # 1. Owner-row DB transaction FIRST, and commit it.
-        conn.execute("BEGIN IMMEDIATE")
-        if owner:
-            # Deletion takes this same admission lock while tombstoning.
-            # Keep non-home administrators valid: this is not a home check.
-            check_principal_not_deleted(conn, owner)
-        placeholders = ",".join("?" for _ in final_owner_keys)
-        if final_owner_keys:
-            conn.execute(
-                f"""
-                DELETE FROM llm_credential_deposit_owners
-                 WHERE universe_id = ? AND service NOT IN ({placeholders})
-                """,
-                (uid, *sorted(final_owner_keys)),
-            )
-        else:
-            conn.execute(
-                "DELETE FROM llm_credential_deposit_owners WHERE universe_id = ?",
-                (uid,),
-            )
-        if owner:
-            for service_name in incoming_owner_keys:
-                conn.execute(
-                    """
-                    INSERT INTO llm_credential_deposit_owners (
-                        universe_id, service, owner_user_id
-                    ) VALUES (?, ?, ?)
-                    ON CONFLICT(universe_id, service) DO UPDATE SET
-                        owner_user_id = excluded.owner_user_id
-                    """,
-                    (uid, service_name, owner),
-                )
-        conn.commit()
-
-        # 2. ONLY after the DB commit, atomically replace the vault file.
-        #    _persist_credential_vault_file raises ONLY for a pre-commit failure
-        #    (the vault file was NOT replaced — Path.replace is atomic — so the
-        #    prior file is intact); it never raises once the file is visible.
-        try:
-            _persist_credential_vault_file(universe, final_records)
-        except BaseException as persist_error:
-            # 3. Pre-commit failure: the file did not change. Compensate by
-            #    restoring the prior owner rows so no committed-but-ineffective
-            #    ownership survives, then re-raise.
-            try:
-                _restore_owner_rows(conn, uid, prior_owner_rows)
-            except Exception as compensation_error:  # noqa: BLE001
-                # Double failure: the file write failed AND the owner-row
-                # commit could not be undone. Fail loud, chaining both — do
-                # not swallow. Residual: a committed owner row with no vault
-                # file is a benign phantom (the owner cannot act — there is no
-                # credential — and a re-deposit reconciles).
-                raise compensation_error from persist_error
-            raise
-        return summary
-    finally:
-        conn.close()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1143,3 +700,8 @@ def resolve_universe_from_env(env: dict[str, str] | None = None) -> Path | None:
     source = os.environ if env is None else env
     value = source.get("TINYASSETS_UNIVERSE", "").strip()
     return Path(value) if value else None
+
+
+def custody_metadata_path(data_root: str | Path) -> Path:
+    """Broker-owned ownership and deletion metadata, never the owner database."""
+    return Path(data_root).resolve() / ".broker" / "credential-custody.db"

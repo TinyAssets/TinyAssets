@@ -579,7 +579,7 @@ def _age(base, *, expires_at):
     """Move the stored access token's expiry (the vault's own atomic write)."""
     from dataclasses import replace
 
-    from tinyassets.connection_oauth.tokens import ConnectionTokens
+    from tinyassets.broker.tokens import ConnectionTokens
 
     keeper = ConnectionTokens(universe_dir=base / UID, owner_user_id=OWNER)
     keeper._write("tasklark", replace(_vault_bundle(base), expires_at=expires_at))
@@ -656,7 +656,8 @@ def test_a_failed_refresh_is_a_connection_auth_failure_record(provider, app, tmp
         _call(dispatch, grant_id)
     failure = caught.value.failure
     assert failure["stage"] == "connection" and failure["class"] == "auth"
-    assert failure["provider_detail"] == "daemon refresh failed"
+    assert ("invalid_grant" in failure["provider_detail"]
+            or "refresh token" in failure["provider_detail"])
     assert provider.api_calls == []  # nothing was sent on a dead authorization
 
 
@@ -929,24 +930,24 @@ def test_lock_contention_during_refresh_never_loses_the_rotated_token(
     take that lock would lose the rotated token; the lock is taken first."""
     from contextlib import contextmanager
 
-    from tinyassets.provider_assignment import ProviderAssignmentAdmission
+    from tinyassets.broker import vault
 
     _done, grant_id = _connected(provider, app, tmp_path)
     before = _vault_bundle(app)
     _age(app, expires_at=time.time() + 5)
 
-    real = ProviderAssignmentAdmission._file_lock
+    real = vault.vault_lock
     busy = {"left": 3}
 
     @contextmanager
-    def contended(universe_dir, *, exclusive):
-        if exclusive and busy["left"] > 0:
+    def contended(universe_dir):
+        if busy["left"] > 0:
             busy["left"] -= 1
             raise TimeoutError("provider assignment admission lock remained unavailable")
-        with real(universe_dir, exclusive=exclusive):
+        with real(universe_dir):
             yield
 
-    monkeypatch.setattr(ProviderAssignmentAdmission, "_file_lock", staticmethod(contended))
+    monkeypatch.setattr(vault, "vault_lock", contended)
     dispatch = _broker(app, UID, OWNER, grant_id, tmp_path / "rt")
     assert _call(dispatch, grant_id)["status"] == 200
     after = _vault_bundle(app)

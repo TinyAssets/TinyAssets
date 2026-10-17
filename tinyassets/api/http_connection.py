@@ -603,32 +603,6 @@ def connect_http(
                              allow_oauth2=allow_oauth2, allow_keyless=allow_keyless)
 
 
-def _deposit_http(*, uid, actor, destination, secret):
-    from tinyassets.credential_vault import http_credential_record, write_credential_vault
-
-    udir = _universe_dir(uid)
-    try:
-        write_credential_vault(
-            udir,
-            [http_credential_record(destination=destination, token=secret)],
-            owner_user_id=actor,
-            universe_id=uid,
-        )
-    except PermissionError:
-        return {
-            "error": "credential_ownership_transfer_unsupported",
-            "detail": (
-                "this destination's credential is owned by another principal"
-            ),
-        }
-    except ValueError as exc:
-        return {"error": "connection_setup_invalid", "detail": str(exc)}
-    except Exception:  # noqa: BLE001 - fail closed, never leak the secret
-        return {"error": "deposit_failed", "resource": "connection"}
-
-    return None
-
-
 def _connect_plan(*, resource, raw_policy, existing_grant, actor, uid, destination,
                   connection_id, grant_id, scheme, credential_ref, git_host,
                   requested_endpoints, http_scopes, access_mode=ACCESS_EXACT):
@@ -930,9 +904,8 @@ def _connect_http(
 
     from tinyassets.broker.http_connect import connect_operation
 
-    # The broker owns the ledger: it conflict-checks the connection and the
-    # grant, this deposits the secret into the owner's vault between prepare
-    # and commit, and the commit is CAS-guarded on the prepared revision.
+    # The broker rechecks the prepared revision, writes custody and commits
+    # the grant in one operation. The router never persists the secret.
     policy = {"auth_scheme": scheme, "scopes": list(http_scopes),
               "endpoints": requested_endpoints, "access_mode": asked_access,
               "git_host": git_host}
@@ -940,12 +913,9 @@ def _connect_http(
                                  destination=destination, policy=policy, action="prepare")
     if "error" in prepared:
         return prepared
-    deposit_error = _deposit_http(uid=uid, actor=actor, destination=destination, secret=secret)
-    if deposit_error is not None:
-        return deposit_error
     committed = connect_operation(base, principal=actor, command_center=uid,
                                   destination=destination, policy=policy, action="commit",
-                                  expected=prepared["revision"])
+                                  expected=prepared["revision"], secret=secret)
     return committed if "error" in committed else committed["projection"]
 
 
@@ -977,7 +947,6 @@ def _remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     away" are the same outcome to the caller.
     """
     from tinyassets.api import permissions
-    from tinyassets.credential_vault import forget_credential
     from tinyassets.daemon_server import list_universe_acl
 
     # Same gate as connect_http, deliberately: removing a credential is at
@@ -1074,12 +1043,9 @@ def _remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
         except Exception:  # noqa: BLE001 - never fail a removal over a readback
             removed_scopes = []
 
-    secrets_removed = forget_credential(
-        _universe_dir(uid), credential_type="http", destination=destination
-    )
-    rows_removed = disconnect(base, principal=actor, command_center=uid,
-                              destination=destination, action="erase",
-                              incarnation=incarnation)["removed"]
+    erased = disconnect(base, principal=actor, command_center=uid,
+                        destination=destination, action="erase", incarnation=incarnation)
+    secrets_removed, rows_removed = erased["secrets_removed"], erased["removed"]
     # Everything this key authorized goes with it. The connection id is
     # deterministic per (universe, destination), so a re-deposit under the same
     # name used to inherit the old repository consents -- a grant the owner
@@ -1233,7 +1199,7 @@ def preview_rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[s
     for a multi-value one. Reads only; writes nothing.
     """
     from tinyassets.api import permissions
-    from tinyassets.credential_vault import http_deposit_refusal
+    from tinyassets.broker.http_connect import custody_operation
     from tinyassets.daemon_server import list_universe_acl
 
     if not permissions.is_authenticated_request():
@@ -1274,9 +1240,8 @@ def preview_rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[s
     refusal = _unpasteable_scheme(scheme)
     if refusal:
         return refusal
-    legacy = http_deposit_refusal(
-        _universe_dir(uid), destination=destination, owner_user_id=actor,
-    )
+    legacy = custody_operation(_base_path(), principal=actor, command_center=uid,
+                               destination=destination)["refusal"]
     if legacy:
         return {
             "error": "credential_ownership_transfer_unsupported",
@@ -1342,11 +1307,7 @@ def _rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     (``_unpasteable_scheme``).
     """
     from tinyassets.api import permissions
-    from tinyassets.credential_vault import (
-        http_credential_record,
-        http_deposit_refusal,
-        write_credential_vault,
-    )
+    from tinyassets.broker.http_connect import custody_operation
     from tinyassets.daemon_server import list_universe_acl
 
     if not permissions.is_authenticated_request():
@@ -1396,9 +1357,8 @@ def _rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     refusal = _unpasteable_scheme(scheme)
     if refusal:
         return refusal
-    legacy = http_deposit_refusal(
-        _universe_dir(uid), destination=destination, owner_user_id=actor,
-    )
+    legacy = custody_operation(_base_path(), principal=actor, command_center=uid,
+                               destination=destination)["refusal"]
     if legacy:
         # The write would refuse this on its own; refusing HERE means the
         # preview refuses it too, so the owner is never shown a card that
@@ -1438,22 +1398,11 @@ def _rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     if observed is not None and observed != incarnation:
         return {"error": "connection_changed", "resource": "connection"}
 
-    try:
-        write_credential_vault(
-            _universe_dir(uid),
-            [http_credential_record(destination=destination, token=secret)],
-            owner_user_id=actor,
-            universe_id=uid,
-        )
-    except PermissionError:
-        return {
-            "error": "credential_ownership_transfer_unsupported",
-            "detail": "this destination's credential is owned by another principal",
-        }
-    except ValueError as exc:
-        return {"error": "connection_setup_invalid", "detail": str(exc)}
-    except Exception:  # noqa: BLE001 - fail closed, never leak the secret
-        return {"error": "deposit_failed", "resource": "connection"}
+    result = custody_operation(_base_path(), principal=actor, command_center=uid,
+                               destination=destination, incarnation=incarnation,
+                               secret=secret, action="rotate")
+    if "error" in result:
+        return result
 
     return {
         "status": "rotated",

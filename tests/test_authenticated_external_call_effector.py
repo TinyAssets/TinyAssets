@@ -38,7 +38,7 @@ from pathlib import Path
 
 import pytest
 
-from tinyassets.credential_vault import write_credential_vault
+from tinyassets.broker.vault import write_credential_vault
 from tinyassets.effectors import authenticated_external_call as aec
 from tinyassets.effectors.authenticated_external_call import (
     EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,

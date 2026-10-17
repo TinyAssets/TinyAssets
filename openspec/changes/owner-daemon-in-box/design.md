@@ -195,8 +195,35 @@ relay's owner. An existing box no longer calls host provisioning to create a
 center. Admission remains append-only and rejects retired or foreign centers.
 Policy rules, authenticated effectors, source display and `ta_capabilities`
 use the existing broker channel; relay tests cover these consumers and center
-creation from a separate owner process. Connection lifecycle placement and
-broker-only custody, refresh and revocation are still outstanding.
+creation from a separate owner process. Door lifecycle placement and provider
+revocation remain separate work.
+
+### 3c-2a custody and refresh
+
+- `HTTP_CONNECT` retains prepare/commit. Commit carries `secret` and the
+  prepared revision; the broker rechecks both ledger rows, writes custody and
+  commits the grant in the same operation. The prepare request has an empty
+  secret. `rotate` carries destination, incarnation and secret;
+  `inspect_custody` returns only a refusal code. Box channels refuse secret
+  deposits and rotations; keyless connects remain available.
+- Vault writers and erasers live in `broker/vault.py`. Their lock files live
+  under `.platform/credential-vaults/<center>/`, never in owner trees or
+  provider-assignment state. Ownership rows and deletion tombstones live in
+  `.broker/credential-custody.db`. Task 6 migrates that metadata and changes
+  directory ownership; there is no runtime compatibility reader.
+- `DISCONNECT` erase removes custody before deleting the fenced ledger rows.
+  Account erasure tombstones the principal in broker metadata and erases its
+  vaults under the same locks as deposits and refresh. The daemon no longer
+  stages credential directories during account deletion.
+- `broker/tokens.py` resolves and refreshes OAuth credentials locally, under
+  broker vault admission. The REFRESH/REFRESH_ACK protocol, daemon callback
+  preparation and daemon OAuth-service refresh operation are deleted.
+- Registered OAuth clients use the same trusted directory at exchange and
+  refresh. The existing environment installer renders only `TINYASSETS_OAUTH_*`
+  assignments into `/etc/tinyassets/broker.env`, loaded by the broker's Compose
+  service. Router exchange still needs its existing client configuration;
+  refresh never calls the router for a secret or token.
+- RFC 7009 provider revocation is task 3c-2b, not part of this slice.
 
 ## D3. Lifecycle (boxhostd)
 

@@ -8,11 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from tinyassets.credential_vault import (
-    VAULT_FILENAME,
-    load_credential_vault,
-    write_credential_vault,
-)
+from tinyassets.broker.vault import write_credential_vault
+from tinyassets.credential_vault import VAULT_FILENAME, load_credential_vault
 
 
 @pytest.fixture(autouse=True)

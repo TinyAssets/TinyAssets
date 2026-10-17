@@ -1,3 +1,4 @@
+
 """User-visible disconnect fences model authority, not merely the stored secret."""
 
 import json
@@ -286,7 +287,7 @@ def test_cross_origin_cannot_disconnect(rig, monkeypatch):
 
 
 def test_cleanup_failure_keeps_authority_fenced_and_retryable(rig, monkeypatch):
-    import tinyassets.credential_vault as vault
+    from tinyassets.broker import vault
     from tinyassets.provider_serving_binding import serving_connection_is_current
     from tinyassets.providers.served_model_plan import connected_sources
 
@@ -296,7 +297,7 @@ def test_cleanup_failure_keeps_authority_fenced_and_retryable(rig, monkeypatch):
     monkeypatch.setattr(
         vault, "forget_credential", lambda *a, **k: (_ for _ in ()).throw(OSError("disk"))
     )
-    with pytest.raises(OSError):
+    with pytest.raises(PermissionError):
         remove()
     assert connected_sources(rig[0], rig[1], "owner") == frozenset()
     assert not serving_connection_is_current(

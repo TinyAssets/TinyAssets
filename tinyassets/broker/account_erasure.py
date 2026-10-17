@@ -65,6 +65,9 @@ def local_erase(ledger, *, principal, command_center):
             count = conn.execute(f"DELETE FROM {table} WHERE {where}", params).rowcount
             if count:
                 counts[table] = count
+    from tinyassets.broker.vault import erase_owner
+
+    erase_owner(ledger._data_root, principal)
     from tinyassets.broker.browser_vault import key_path
 
     path = key_path(ledger, principal)
