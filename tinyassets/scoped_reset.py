@@ -832,17 +832,22 @@ def _validated_main_database(root: Path) -> Path:
         )
     for suffix in ("-journal", "-shm", "-wal"):
         sidecar = Path(f"{db_file}{suffix}")
-        if sidecar.exists():
-            sidecar_stat = sidecar.stat()
-            if (
-                _is_link_or_reparse(sidecar)
-                or sidecar_stat.st_nlink != 1
-                or sidecar_stat.st_dev != root.stat().st_dev
-            ):
-                raise ScopedResetBlocked(
-                    "main database sidecar is linked or crosses filesystems: "
-                    f"{sidecar.name}"
-                )
+        try:
+            sidecar_stat = sidecar.lstat()
+        except FileNotFoundError:
+            # SQLite removes WAL/SHM when its last connection closes. Shared
+            # service writers may finish during this check; absence is normal.
+            continue
+        if (
+            not stat.S_ISREG(sidecar_stat.st_mode)
+            or getattr(sidecar_stat, "st_file_attributes", 0) & 0x400
+            or sidecar_stat.st_nlink != 1
+            or sidecar_stat.st_dev != database_stat.st_dev
+        ):
+            raise ScopedResetBlocked(
+                "main database sidecar is linked or crosses filesystems: "
+                f"{sidecar.name}"
+            )
     return db_file
 
 

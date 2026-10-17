@@ -178,7 +178,7 @@ def resolve_inference_usage(base, owner, universe, ledger, resource, grant_id, v
         if resource.connection_type != "http" or str(verb).upper() != "POST":
             return None
         # Metering is broker-held grant state. Published source descriptors are
-        # executor metadata and can neither enable nor disable this requirement.
+        # latched when accepted; withdrawing them cannot disable this requirement.
         if ledger.grant_requires_inference_usage(grant_id):
             raise InferenceUsageRequired()
         return None

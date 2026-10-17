@@ -205,9 +205,11 @@ def test_bundled_dialects_resolve_by_structure_and_stored_alias():
 
 
 def test_a_stored_definition_and_a_structural_one_both_register_and_run(owner):
+    from tests.test_compute_connection import _seed_grant
     from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
     from tinyassets.providers.definition import register_definition
 
+    _seed_grant(owner, owner=OWNER, universe=UID)
     for protocol in ("openai_chat", "chat_messages", "anthropic_messages", "content_blocks"):
         definition = register_definition(
             universe_id=UID, owner_user_id=OWNER, access_method="api_key_http",
