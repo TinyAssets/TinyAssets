@@ -1280,3 +1280,77 @@ manifest. No assertion, old-path probe, skip or quarantine was weakened.
 The final audit-only commit repeats the same hygiene command against its own
 HEAD; `hygiene-final.log` is the final exit-code receipt. The body retains
 `Registry row(s): S8` and the existing P2b `Test-Removal: retired -- ...` line.
+
+
+## Slice 6 reason-coded census (2026-10-17)
+
+This pass uses only the lead's redacted round-3 counts and synthetic fixtures.
+No production data or archive was read. The prior priority notes describe
+the old refusal policy; this pass replaces it with the founder's explicit
+reason-based dispositions. The redacted 665 rows and 52 files are input counts,
+not a claim that a new real-data census has run.
+
+Every unresolved reviewed owner row now has exactly one per-table `reasons`
+count, with precedence `conflicting_owners`, `orphan_reference`,
+`unadmitted_principal`, `unknown_center`, `no_owner_key`. Only conflicting owners
+remain unattributed/refused; the other four are counted drops. Missing parents
+and parent failures propagate through budget bindings, definitions, stages,
+receipts and runs. Candidate owners survive failures in other keys so an orphan
+cannot hide conflict. Retired non-account actors may follow an actual parent;
+a named unknown actor is never reassigned to that parent's owner. A center in
+the registry without admission is `unadmitted_principal`; one absent from the
+registry and admission map is `unknown_center`. A permanent identity with no
+admission or binding does not by itself confer row ownership.
+
+The old table-specific drop flag is removed. Structural admission, unknown
+schema, plan and custody gates remain. A foreign-key violation in a dropped
+row follows its counted disposition; the same violation in a retained row
+still refuses. A conflicting run's transcript also refuses, rather than losing
+the conflict when converting row evidence into file ownership.
+
+`file_pattern_kinds` counts each masked pattern by placement and kind:
+`admitted_center`, `unadmitted_center`, `unknown_dir`, `account_hash`,
+`broker_account`, `platform_store`, `root_file`. Registered shared stores keep
+their creator-backed rules; other unknown and never-admitted directories drop.
+A hash alone does not select an owner. Root files and unknown account/broker/
+platform files refuse with their kind. Identity and plan DBs use the existing
+reviewed table extraction; policy deletion markers and fence JSON stay broker
+state, router release markers stay router state, and custody/refresh locks
+regenerate. These paths come from storage accounting, broker process/policy,
+credential-vault and credential-refresh code. Browser-vault keys are deliberately
+outside this data root; an arbitrary key file in it is unclassified and refuses.
+
+`loss_summary` adds pseudonymous per-account reason/description/class/count
+aggregates, including `CLI login state, N files` and `orphaned budget
+reservations, N rows`. Unknown-account losses have their own bucket. No path or
+identity lists are emitted. Existing masked-pattern and table totals remain.
+Synthetic cases assert all five reasons and seven file kinds, precedence,
+transitive conflict/missing-parent handling, actual database extraction,
+retained foreign-key refusal, unchanged input bytes and report redaction.
+
+D6 and the owner-isolation delta spec are updated. Task 6 remains unchecked;
+the lead's real-data census, real-mount rehearsal and CI acceptance remain.
+No agent dispatch, new worktree, host git configuration change, branch change,
+push, merge or deployment was performed. Validation receipts are outside the
+repository at `%TEMP%/ta-s6-reason-validation/`.
+
+
+Reason-pass validation:
+- Requested census/migration/layout/restore patterns, touched-module consumers
+  and every structural `GUARDS` key: 54 files, 1,369 selected cases.
+  The unprivileged oracle passed 1,342; its two broker-directory ownership
+  failures, 24 root-fixture errors and one existing special-bit root skip all
+  have passing root executions. Root receipts are **25 passed** and **60 passed**,
+  both with zero skips. XML reconciliation (`coverage.json`) confirms every
+  selected case passed in its required Linux venue; zero unresolved cases.
+- All 57 synthetic census cases passed on Linux, including all five row reasons,
+  all seven file kinds, foreign-key extraction and retained-conflict refusals.
+- Changed-file Ruff, strict OpenSpec validation and `git diff --check` pass.
+  Whole-repository Ruff still reports 33 findings in seven files byte-identical
+  to the starting head; `ruff-all.json` records them.
+- Post-commit hygiene runs against `conv/c6-owner-daemon-s5` with
+  `Registry row(s): S8` and the unchanged existing P2b retirement declaration.
+  The command's receipt is `hygiene-final.log` beside the XML receipts.
+No test skip, xfail, quarantine or assertion reduction was introduced. Tests
+whose expected disposition changed now assert the exact reason, counted drop
+and unchanged carried rows, in addition to source immutability/redaction.

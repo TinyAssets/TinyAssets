@@ -10,6 +10,21 @@ Center-local credential vaults SHALL be counted as dropped legacy custody and
 never copied to an owner tree. Carried credentials SHALL exist only in broker
 custody and its platform vault directory.
 
+#### Scenario: Every unresolved owner row has one reason
+- **WHEN** reviewed ownership keys cannot place a row
+- **THEN** the census counts exactly one reason per table: `conflicting_owners`, `orphan_reference`, `unadmitted_principal`, `unknown_center`, or `no_owner_key`, in that precedence order
+- **AND** conflicting owners refuse; the other four reasons explicitly drop the row
+- **AND** parent failures propagate, while retired non-account actor markers may still follow a real parent
+- **AND** per-account losses report reason, class and count without identities or path lists
+
+#### Scenario: File directory kinds explain placement
+- **WHEN** the census enumerates files
+- **THEN** each masked pattern reports counts by `admitted_center`, `unadmitted_center`, `unknown_dir`, `account_hash`, `broker_account`, `platform_store`, or `root_file`
+- **AND** unadmitted-center and unknown-directory contents drop, except registered stores retain their reviewed placement rules
+- **AND** account hashes alone never confer ownership; unclassified account, broker, platform and root files refuse with their kind
+- **AND** known identity, plan, key and lock files follow their creator-backed broker, router or regenerated placement
+- **AND** retired credential directories are summarized as CLI login state per account
+
 #### Scenario: Restore after owner serving writes
 - **WHEN** the operator explicitly accepts post-cutover write loss and restores the verified paired pre-cutover backup after stopping serving
 - **THEN** pre-cutover owner-split bytes are restored exactly, including history, requests and pause state

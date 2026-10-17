@@ -1,4 +1,4 @@
-"""The cutover audit refuses lost ownership without changing its input tree."""
+"""The cutover audit explains dispositions without changing its input tree."""
 
 import hashlib
 import json
@@ -108,7 +108,7 @@ def test_two_owner_census_preserves_totals_and_source_bytes(source):
 @pytest.mark.parametrize("mutation,reason", [
     ("unknown_table", "unknown_table"),
     ("unknown_database", "unknown_table"),
-    ("unknown_owner", "unattributed_owner_rows"),
+    ("unknown_owner", "unadmitted_principal"),
     ("conflicting_owner", "unattributed_owner_rows"),
     ("ambiguous_parent", "unattributed_owner_rows"),
     ("unknown_file", "unattributed_files"),
@@ -137,8 +137,15 @@ def test_census_refuses_without_guessing_or_mutating(source, mutation, reason):
         _sql(source / "outbound.db", "DELETE FROM outbound_connections")
     before = _fingerprint(source)
     report = census(source)
-    assert not report["ready"]
-    assert report["refusals"][reason] > 0
+    if mutation == "unknown_owner":
+        assert report["ready"], report["refusals"]
+        table = report["tables"][".tinyassets.db/agent_turns"]
+        assert table["reasons"] == {reason: 1}
+        assert table["dropped"] == 1
+        assert table["per_owner"] == {"account-0001": 2, "account-0002": 2}
+    else:
+        assert not report["ready"]
+        assert report["refusals"][reason] > 0
     assert _fingerprint(source) == before
 
 
@@ -207,7 +214,13 @@ def test_branch_versions_require_an_explicit_publication_mark(source):
     assert table["total"] == 3
     _sql(source / ".runs.db",
          "INSERT INTO branch_versions VALUES ('private-orphan','unowned-publisher',0)")
-    assert census(source)["refusals"]["unattributed_owner_rows"] == 1
+    report = census(source)
+    assert report["ready"], report["refusals"]
+    table = report["tables"][".runs.db/branch_versions"]
+    assert table["reasons"] == {"unadmitted_principal": 1}
+    assert table["dropped"] == 1
+    assert table["published"] == 1
+    assert table["per_owner"] == {"account-0001": 1, "account-0002": 1}
 
 
 def test_explicit_classes_cover_legacy_rows_and_never_admitted_tree(source):
@@ -299,11 +312,14 @@ def test_binding_never_substitutes_for_broker_admission(source):
     assert report['refusals']['ownership_not_live_admitted'] == 4
 
 
-def test_unclassified_orphan_is_not_dropped(source):
+def test_unclassified_orphan_is_explicitly_dropped_by_reason(source):
     _sql(source / '.tinyassets.db', "INSERT INTO agent_turns VALUES (NULL,NULL,'orphan')")
     report = census(source)
-    assert not report['ready']
-    assert report['refusals']['unattributed_owner_rows'] == 1
+    assert report['ready'], report['refusals']
+    table = report['tables']['.tinyassets.db/agent_turns']
+    assert table['reasons'] == {'no_owner_key': 1}
+    assert table['dropped'] == 1
+    assert table['per_owner'] == {'account-0001': 2, 'account-0002': 2}
 
 
 def test_null_owner_uses_center_and_an_unknown_paid_broker_plan_refuses(source):
@@ -449,8 +465,16 @@ def test_real_parent_never_repairs_conflicting_or_unknown_actor(source, actor):
         INSERT INTO branch_versions VALUES ('owned','{actor}',0);
     """)
     report = census(source)
-    assert report['refusals']['unattributed_owner_rows'] == 1
-    assert report['tables']['.runs.db/branch_versions']['dropped'] == 0
+    table = report['tables']['.runs.db/branch_versions']
+    if actor == 'bob':
+        assert report['refusals']['unattributed_owner_rows'] == 1
+        assert table['dropped'] == 0
+        assert table['reasons'] == {'conflicting_owners': 1}
+    else:
+        assert report['ready'], report['refusals']
+        assert table['dropped'] == 1
+        assert table['reasons'] == {'unadmitted_principal': 1}
+        assert table['per_owner'] == {}
 
 
 def test_files_have_masked_patterns_and_legacy_vaults_are_unopened_drops(source):
@@ -488,8 +512,12 @@ def test_files_have_masked_patterns_and_legacy_vaults_are_unopened_drops(source)
     (source / '.unknown-private-root').mkdir()
     (source / '.unknown-private-root/secret-filename').write_text('unknown')
     unknown = census(source)
-    assert unknown['refusals']['unattributed_files'] == 1
-    assert unknown['file_patterns']['unattributed'] == {'<id>/<file>': 1}
+    assert unknown['ready'], unknown['refusals']
+    assert unknown['files']['dropped'] == report['files']['dropped'] + 1
+    assert unknown['file_pattern_kinds']['dropped']['<id>/<file>'] == {'unknown_dir': 1}
+    assert unknown['loss_summary']['unattributed']['unknown_dir']['unknown directory files'] == {
+        'class': 'dropped', 'rows': 0, 'files': 1,
+    }
     assert 'secret-filename' not in json.dumps(unknown)
 
 
@@ -522,3 +550,187 @@ def test_checkpoint_thread_requires_all_runs_to_agree(source):
     report = census(source)
     assert report['refusals']['unattributed_owner_rows'] == 1
     assert report['tables']['.langgraph_runs.db/checkpoints']['dropped'] == 0
+
+
+@pytest.mark.parametrize('reason,values,target', [
+    ('no_owner_key', (None, None, None), 'dropped'),
+    ('orphan_reference', (None, None, 'deleted-definition'), 'dropped'),
+    ('unadmitted_principal', ('deleted-account', None, None), 'dropped'),
+    ('unknown_center', (None, 'missing-center', None), 'dropped'),
+    ('conflicting_owners', ('bob', 'a1', None), 'unattributed'),
+    # Conflict wins over another broken key; missing reference wins over actor.
+    ('conflicting_owners', ('bob', 'a1', 'deleted-definition'), 'unattributed'),
+    ('orphan_reference', ('deleted-account', 'missing-center', 'deleted'), 'dropped'),
+    ('unknown_center', ('alice', 'missing-center', None), 'dropped'),
+])
+def test_one_row_reason_drives_inventory_and_count(source, reason, values, target):
+    _sql(source / '.runs.db', '''
+        CREATE TABLE branch_versions (publisher TEXT, universe_id TEXT, branch_def_id TEXT);
+    ''')
+    with closing(sqlite3.connect(source / '.runs.db')) as db, db:
+        db.execute('INSERT INTO branch_versions VALUES (?,?,?)', values)
+    before = _fingerprint(source)
+    inventory = {}
+    report = census(source, _inventory=inventory)
+    table = report['tables']['.runs.db/branch_versions']
+    assert table['reasons'] == {reason: 1}
+    assert table['dropped'] == int(target == 'dropped')
+    assert inventory['assignments']['.runs.db', 'branch_versions'] == [target]
+    assert report['ready'] == (target == 'dropped')
+    assert report['refusals'].get('unattributed_owner_rows', 0) == int(target == 'unattributed')
+    assert sum(table['per_owner'].values()) + table['dropped'] == table['total'] == 1
+    assert _fingerprint(source) == before
+    assert 'deleted-account' not in json.dumps(report)
+    assert 'missing-center' not in json.dumps(report)
+
+
+@pytest.mark.parametrize('parent_values,reason', [
+    ("('binding','deleted-account',NULL)", 'unadmitted_principal'),
+    ("('binding',NULL,'unknown-center')", 'unknown_center'),
+    ("('binding',NULL,NULL)", 'no_owner_key'),
+    ("('binding','alice','b1')", 'conflicting_owners'),
+    ("('binding','alice','a1'),('binding','bob','b1')", 'conflicting_owners'),
+])
+def test_budget_parent_reason_propagates_without_losing_conflicts(source, parent_values, reason):
+    _sql(source / '.tinyassets.db', f'''
+        CREATE TABLE provider_work_bindings (binding_id TEXT, owner_user_id TEXT, universe_id TEXT);
+        INSERT INTO provider_work_bindings VALUES {parent_values};
+        CREATE TABLE served_provider_budget_reservations (binding_id TEXT);
+        INSERT INTO served_provider_budget_reservations VALUES ('binding'), ('deleted-binding');
+    ''')
+    inventory = {}
+    report = census(source, _inventory=inventory)
+    table = report['tables']['.tinyassets.db/served_provider_budget_reservations']
+    assert table['reasons'] == {reason: 1, 'orphan_reference': 1}
+    assert table['dropped'] == (1 if reason == 'conflicting_owners' else 2)
+    assert inventory['assignments']['.tinyassets.db', 'served_provider_budget_reservations'] == [
+        'unattributed' if reason == 'conflicting_owners' else 'dropped', 'dropped',
+    ]
+    assert report['ready'] == (reason != 'conflicting_owners')
+    assert report['loss_summary']['unattributed']['orphan_reference'][
+        'orphaned budget reservations'] == {'class': 'dropped', 'rows': 1, 'files': 0}
+
+
+@pytest.mark.parametrize('relative,kind,placement', [
+    ('a1/private-file', 'admitted_center', 'owner'),
+    ('never-admitted/private-file', 'unadmitted_center', 'dropped'),
+    ('unknown-directory/nested/private-file', 'unknown_dir', 'dropped'),
+    ('a' * 64 + '/private-file', 'account_hash', 'unattributed'),
+    ('.broker/accounts/private-account/private-file', 'broker_account', 'unattributed'),
+    ('.broker/state/private-file', 'platform_store', 'unattributed'),
+    ('.platform/private-file', 'platform_store', 'unattributed'),
+    ('private-file', 'root_file', 'unattributed'),
+    ('.broker/accounts/private-account/.deleted', 'broker_account', 'broker'),
+    ('.broker/state/fence.json', 'platform_store', 'broker'),
+    ('release-state.json', 'root_file', 'router'),
+    ('.run_recovery.lock', 'root_file', 'regenerated'),
+    ('.platform/credential-vaults/a1/.custody.lock', 'platform_store', 'regenerated'),
+    ('.platform/credential-vaults/a1/.oauth-refresh/' + 'a' * 32 + '.lock',
+     'platform_store', 'regenerated'),
+    # A key in an undocumented location is not assumed to be safe custody.
+    ('.platform/private-key.key', 'platform_store', 'unattributed'),
+])
+def test_file_kind_and_disposition_are_counted_without_names(source, relative, kind, placement):
+    _sql(source / '.tinyassets.db', '''
+        CREATE TABLE universes (id TEXT);
+        INSERT INTO universes VALUES ('a1'), ('never-admitted');
+    ''')
+    baseline = census(source)
+    path = source / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('synthetic content, never reported')
+    before = _fingerprint(source)
+    inventory = {}
+    report = census(source, _inventory=inventory)
+    assert inventory['file_targets'][relative] == (
+        ('owner', 'alice') if placement == 'owner' else placement)
+    kinds = report['file_pattern_kinds'].get(placement, {})
+    before_kinds = baseline['file_pattern_kinds'].get(placement, {})
+    assert sum(group.get(kind, 0) for group in kinds.values()) == 1 + sum(
+        group.get(kind, 0) for group in before_kinds.values())
+    assert report['ready'] == (placement != 'unattributed')
+    assert report['refusals'].get('unattributed_files', 0) == int(placement == 'unattributed')
+    for group, patterns in report['file_patterns'].items():
+        assert {pattern: sum(counts.values()) for pattern, counts in
+                report['file_pattern_kinds'][group].items()} == patterns
+    assert _fingerprint(source) == before
+    serialized = json.dumps(report)
+    for private in ('private-file', 'private-account', 'private-key', 'never-admitted/',
+                    'unknown-directory', 'a' * 64, 'synthetic content'):
+        assert private not in serialized
+
+
+def test_founder_loss_summary_counts_cli_files_per_account(source):
+    for relative in ('a1/.credentials/deep/login', 'a2/.credentials/session',
+                     'b1/.credentials/state', '.platform/owners/300001/agent-home/login'):
+        path = source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('synthetic private state')
+    report = census(source)
+    assert report['ready'], report['refusals']
+    for label, count in (('account-0001', 3), ('account-0002', 1)):
+        assert report['loss_summary'][label]['retired_cli_state']['CLI login state'] == {
+            'class': 'dropped', 'rows': 0, 'files': count,
+        }
+    assert report['files']['dropped'] == 4
+    summary = json.dumps(report['loss_summary'])
+    assert '/' not in summary
+    assert '300001' not in summary
+    assert 'alice' not in summary
+
+
+def test_conflicting_run_file_still_refuses(source):
+    _sql(source / '.runs.db', '''
+        CREATE TABLE runs (run_id TEXT, owner_user_id TEXT, queue_universe_id TEXT);
+        INSERT INTO runs VALUES ('private-run','alice','b1');
+    ''')
+    (source / 'runs').mkdir()
+    (source / 'runs/private-run.jsonl').write_text('synthetic transcript')
+    inventory = {}
+    report = census(source, _inventory=inventory)
+    assert report['refusals']['unattributed_owner_rows'] == 1
+    assert report['refusals']['unattributed_files'] == 1
+    assert report['tables']['.runs.db/runs']['reasons'] == {'conflicting_owners': 1}
+    assert inventory['file_targets']['runs/private-run.jsonl'] == 'unattributed'
+    assert report['file_pattern_kinds']['unattributed'] == {
+        'runs/<file>': {'platform_store': 1},
+    }
+    assert 'private-run' not in json.dumps(report)
+
+
+def test_orphan_foreign_key_drop_is_applied_but_retained_violation_refuses(source, tmp_path):
+    from tinyassets.box_layout_migration import _build_databases
+
+    _sql(source / '.tinyassets.db', '''
+        CREATE TABLE provider_work_bindings (binding_id TEXT PRIMARY KEY, owner_user_id TEXT);
+        INSERT INTO provider_work_bindings VALUES ('live','alice');
+        CREATE TABLE served_provider_budget_reservations (
+            binding_id TEXT REFERENCES provider_work_bindings(binding_id), payload TEXT);
+        INSERT INTO served_provider_budget_reservations VALUES ('deleted','lost'), ('live','kept');
+    ''')
+    before = _fingerprint(source)
+    inventory = {}
+    report = census(source, _inventory=inventory)
+    assert report['ready'], report['refusals']
+    assert report['tables']['.tinyassets.db/served_provider_budget_reservations'][
+        'reasons'] == {'orphan_reference': 1}
+    assert all('payload' not in row for row in inventory['tables'][
+        '.tinyassets.db', 'served_provider_budget_reservations'])
+    store, shared = tmp_path / 'boxes', tmp_path / 'shared'
+    _build_databases(source, store, shared, inventory)
+    for uid, expected in ((300001, [('live', 'kept')]), (300002, [])):
+        with closing(sqlite3.connect(store / str(uid) / '.tinyassets.db')) as db:
+            rows = db.execute('SELECT * FROM served_provider_budget_reservations').fetchall()
+            assert rows == expected
+            assert db.execute('PRAGMA foreign_key_check').fetchall() == []
+    assert _fingerprint(source) == before
+    # An unrelated FK in a retained table is still a structural refusal.
+    _sql(source / '.tinyassets.db', '''
+        CREATE TABLE owner_ui_prefs (owner_user_id TEXT,
+            preference TEXT REFERENCES provider_work_bindings(binding_id));
+        INSERT INTO owner_ui_prefs VALUES ('alice','missing');
+    ''')
+    report = census(source)
+    assert report['refusals']['database_foreign_keys'] == 1
+    assert report['tables']['.tinyassets.db/owner_ui_prefs']['per_owner'] == {'account-0001': 1}
+    assert report['tables']['.tinyassets.db/owner_ui_prefs']['dropped'] == 0

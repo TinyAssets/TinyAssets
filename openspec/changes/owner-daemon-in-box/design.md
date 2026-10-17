@@ -465,8 +465,19 @@ small owner-table sets, retired CLI records/homes and the stale database copy.
 The stale copy is never opened and remains only in the paired snapshot.
 Owner leases, fences, accounting counters and branch-version migration records
 are recreated empty in owner stores. Center-keyed event/delivery/lease records
-use the admitted center or are explicitly counted as dropped. Unknown explicit
-principals and contradictory bindings continue to refuse.
+use the admitted center or are explicitly counted as dropped. Each unresolved
+row gets exactly one reason, counted per table. Precedence is
+`conflicting_owners`, `orphan_reference`, `unadmitted_principal`,
+`unknown_center`, `no_owner_key`. Conflicts refuse; the other four explicitly
+drop. A known center without admission reports `unadmitted_principal`;
+an absent center reports `unknown_center`. Missing-parent and parent-owner
+failures propagate to dependents. Retired non-account actor markers may still
+follow real references; named unadmitted actors never inherit a nearby owner.
+Candidate owners survive other failures so a broken key cannot mask conflict.
+Permanent identities alone do not admit a principal. Binding/admission integrity
+checks and unknown-table/schema-review refusals remain. Foreign-key violations
+on explicitly dropped rows are accounted losses; violations on retained rows
+still refuse. No owner is invented.
 
 The transaction holds the exclusive layout lock and verifies a fresh paired
 snapshot before its first write. A root-private `.owner-cutover.json` records
@@ -535,13 +546,25 @@ Census emits an explicit all-accounts reconnect line when carried HTTP is zero,
 and points to door model-connect plus model-use confirmation.
 
 Every enumerated file has a placement (including refused/unattributed), a
-masked directory pattern and count. Per-account loss rows identify table
-classes; file losses identify masked patterns. Unowned losses have their own
-bucket, never an invented account. Sessions and consent/seed sidecars follow
+masked directory pattern and count. `file_pattern_kinds` pairs each pattern
+and placement with counts by `admitted_center`, `unadmitted_center`,
+`unknown_dir`, `account_hash`, `broker_account`, `platform_store`, or `root_file`.
+Registered shared roots keep their code-defined placement. Other unknown
+and never-admitted directory contents drop; an account hash is never an owner
+default. Unrecognized root, account, broker and platform files still refuse
+with their kind. Identity/plan databases are extracted by their reviewed table
+rules, policy deletion markers and the broker fence stay broker-owned, and
+custody/refresh locks regenerate. Browser-vault keys belong outside this data
+root; an arbitrary key file here refuses.
+`loss_summary` groups reason and description by pseudonymous account, with
+explicit dropped class and row/file counts: e.g. `CLI login state` and
+`orphaned budget reservations`. The separate unowned bucket never invents an
+account. Existing `losses` retains aggregate tables and masked patterns only.
+Sessions and consent/seed sidecars follow
 their center's admission. LanceDB indexes, provider runtime, process locks,
 PID/liveness files and checkout staging are regenerated; legacy scratch and
 root activity logs are dropped. Arbitrary owner filenames remain verbatim.
-Unknown root patterns refuse. Classification also drives output exclusion and
+Unclassified root files refuse. Classification also drives output exclusion and
 source cleanup, so regenerated/dropped files cannot silently survive the move.
 
 Task 6 remains unchecked pending the lead's real-data census, real-mount

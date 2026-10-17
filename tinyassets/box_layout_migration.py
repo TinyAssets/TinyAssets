@@ -37,6 +37,14 @@ _CREDENTIAL_ENTRIES = (".credential-vault.json", ".credentials", ".credentials.j
                        ".oauth-refresh")
 _EPHEMERAL_ENTRIES = (".runtime", ".subscription_state.db",
                       ".subscription_state.db-wal", ".subscription_state.db-shm")
+ROW_REASONS = ("conflicting_owners", "orphan_reference", "unadmitted_principal",
+               "unknown_center", "no_owner_key")
+
+
+def _count_loss(summary, label, reason, description, unit):
+    group = summary[label].setdefault(reason, {})
+    counts = group.setdefault(description, {"class": "dropped", "rows": 0, "files": 0})
+    counts[unit] += 1
 
 
 @dataclass(frozen=True)
@@ -52,19 +60,17 @@ class CensusRule:
     principals: tuple[str, ...] = ()
     centers: tuple[str, ...] = ()
     references: tuple[tuple[str, str, str, str], ...] = ()
-    drop_unowned: bool = False
 
 
 def _census_rules() -> dict[str, dict[str, CensusRule]]:
     rules: dict[str, dict[str, CensusRule]] = {}
 
-    def add(database, tables, placement, *, principals=(), centers=(), references=(),
-            drop_unowned=False):
+    def add(database, tables, placement, *, principals=(), centers=(), references=()):
         target = rules.setdefault(database, {})
         for table in tables.split():
             if table in target:
                 raise AssertionError(f"duplicate census rule: {database}/{table}")
-            target[table] = CensusRule(placement, principals, centers, references, drop_unowned)
+            target[table] = CensusRule(placement, principals, centers, references)
 
     main = ".tinyassets.db"
     add(main, "user_accounts user_sessions", "router")
@@ -119,14 +125,13 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
         ("background_branch_attempts", "binding_id", "background_branch_bindings", "binding_id"),
     ):
         add(main, table, "owner", references=((column, main, parent, key),))
-    # These historical tables need an attribution implementation before any
-    # nonempty instance can move. Classifying them does not authorize dropping
-    # or replicating their rows. The census therefore refuses populated rows.
+    # Tables with no reviewed attribution columns still require schema review.
+    # Report no_owner_key for their rows but retain attribution_rule_pending.
     add(main, "gate_claims canonical_bindings goal_canonicals unreconciled_writes "
         "branch_tasks_v2_maintenance_state scoped_reset_leases scoped_reset_operations "
         "background_branch_authority_owners action_result_receipts", "owner")
     add(main, "app_event_admissions webhook_deliveries", "owner",
-        centers=("universe_id", "center_id"), drop_unowned=True)
+        centers=("universe_id", "center_id"))
     add(main, "owner_fence", "regenerated")
     add(main, "external_agent_catalogue_receipts external_agent_cli_invocations "
         "external_agent_job_receipts", "dropped", principals=("owner_user_id", "owner"),
@@ -140,7 +145,7 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
         "owner_refresh_sessions owner_approval_handoffs canary_sign_in_attempts "
         "approval_handoffs inline_model_flows", "router")
     add(".outside-client-authority.sqlite3", "authenticated_connections", "owner",
-        principals=("owner",), drop_unowned=True)
+        principals=("owner",))
     add(".outside-client-authority.sqlite3", "outside_switch", "router")
     add(".outside-client-authority.sqlite3", "outside_audit "
         "outside_effects outside_families outside_grants outside_revocations",
@@ -171,8 +176,7 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
         centers=("universe_id",))
     add(".automations.db", "automation_attempts", "owner",
         references=(("automation_id", ".automations.db", "automations", "automation_id"),))
-    add(".automations.db", "universe_leases", "owner", centers=("universe_id",),
-        drop_unowned=True)
+    add(".automations.db", "universe_leases", "owner", centers=("universe_id",))
     add(".account_seats.db", "account_seats seat_waiters chat_turn_failures", "owner",
         principals=("account_id",), centers=("universe_id",))
     add(".effector_consents.db", "effector_consents", "owner", principals=("granted_by",))
@@ -231,13 +235,12 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
     add(".storage_accounting.db", "measurements counter commons_log_bytes", "regenerated")
     add(".storage_accounting.db", "pending commons_writers", "owner")
     add("wiki_trigger_attempts.db", "wiki_trigger_attempts", "owner",
-        centers=("universe_id", "center_id"), drop_unowned=True)
-    # Only these reviewed legacy sets can lack every attribution key. Unknown
-    # explicit principals and conflicting keys still refuse.
+        centers=("universe_id", "center_id"))
+    # Preserve the reviewed historical principal/center spellings and joins.
     from dataclasses import replace
 
     rules[main]["agent_definitions"] = replace(
-        rules[main]["agent_definitions"], principals=("author_id",), drop_unowned=True)
+        rules[main]["agent_definitions"], principals=("author_id",))
     # Historical interchange DDL/writers (removed with the file-based agents):
     # receipts -> stage, links -> stage/receipt, owners -> receipt. Import stages
     # also retain their created definition's author after publication.
@@ -272,7 +275,7 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
         for name in names.split():
             rule = rules[database][name]
             rules[database][name] = replace(
-                rule, drop_unowned=True,
+                rule,
                 principals=tuple(dict.fromkeys((*rule.principals, "owner_user_id", "owner_id"))),
                 centers=tuple(dict.fromkeys((*rule.centers, "universe_id", "center_id"))))
     return rules
@@ -342,6 +345,7 @@ def census(data: Path, *, _inventory: dict | None = None,
     refusals: Counter = Counter()
     tables: dict[tuple[str, str], list[dict]] = {}
     database_files: set[Path] = set()
+    foreign_key_rows: list[tuple[str, str, int | None]] = []
     known_centers: dict[str, set[str]] = {}
     bindings: dict[str, set[str]] = {}
     universe_centers: set[str] = set()
@@ -417,7 +421,7 @@ def census(data: Path, *, _inventory: dict | None = None,
                     refusals["admitted_center_tree_absent"] += 1
         else:
             refusals["broker_admission_database_absent"] += 1
-        dropped_centers = universe_centers - set(admitted) - set(bindings)
+        dropped_centers = universe_centers - set(admitted)
         if any(not _CENTER.fullmatch(center or "") for center in dropped_centers):
             refusals["invalid_unadmitted_center"] += 1
 
@@ -444,8 +448,11 @@ def census(data: Path, *, _inventory: dict | None = None,
                 with readonly_db(path) as db:
                     if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
                         refusals["database_integrity"] += 1
-                    if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
-                        refusals["database_foreign_keys"] += 1
+                    for child, rowid, _, _ in db.execute("PRAGMA foreign_key_check"):
+                        positions = ({value[0]: index for index, value in enumerate(db.execute(
+                            f"SELECT rowid FROM {_quoted(child)} NOT INDEXED"))}
+                                     if rowid is not None else {})
+                        foreign_key_rows.append((relative, child, positions.get(rowid)))
                     db.row_factory = sqlite3.Row
                     for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'"):
                         table = row[0]
@@ -462,78 +469,89 @@ def census(data: Path, *, _inventory: dict | None = None,
 
         labels = {owner: f"account-{index:04d}"
                   for index, owner in enumerate(sorted(owners), start=1)}
-        memo: dict[tuple[str, str, int], frozenset[str | None]] = {}
+        # Keep candidate owners even when a key fails, so a missing parent can
+        # never hide a conflict. One ordered reason is selected only at reporting.
+        memo: dict[tuple[str, str, int], tuple[frozenset[str], frozenset[str]]] = {}
         indexes: dict[tuple[str, str, str], dict[object, list[int]]] = {}
+        admitted_principals = set(admitted.values()) | set().union(*bindings.values())
 
-        def row_owners(database, table, index, active=frozenset()):
+        def evidence(database, table, index, active=frozenset()):
             key = (database, table, index)
             if key in memo:
                 return memo[key]
             if key in active:
-                return frozenset()
+                raise RuntimeError("cyclic census ownership reference")
             rule = _census_rule(database, table)
-            if rule is None:
-                return frozenset()
             row = tables[database, table][index]
-            claims: list[set[str | None]] = []
+            candidates, reasons = set(), set()
+            placeholder = False
+
+            def center_claim(value):
+                candidates.update(known_centers.get(value, set()))
+                candidates.update(bindings.get(value, set()))
+                if value not in known_centers:
+                    reasons.add("unadmitted_principal" if value in universe_centers
+                                else "unknown_center")
+
             for column in rule.principals:
-                if row.get(column):
-                    value = row[column]
-                    if value in owners:
-                        claims.append({value})
-                    elif value.startswith("universe:"):
-                        center = value.partition(":")[2]
-                        claims.append(known_centers.get(center, {None}
-                                      if rule.drop_unowned else set()))
-                    elif rule.drop_unowned and (
-                        not named_principal(value) or value in {"host", "system"}
-                    ):
-                        # Retired public-reader and platform actors are not
-                        # accounts. Still follow every real parent/center key.
-                        claims.append({None})
-                    else:
-                        claims.append(set())
+                value = row.get(column)
+                if not value:
+                    continue
+                if value in owners and value in admitted_principals:
+                    candidates.add(value)
+                elif value.startswith("universe:"):
+                    center_claim(value.partition(":")[2])
+                elif not named_principal(value) or value in {"host", "system"}:
+                    # A retired non-account actor is not a contradictory claim.
+                    placeholder = True
+                else:
+                    reasons.add("unadmitted_principal")
             for column in rule.centers:
                 if row.get(column):
-                    value = row[column]
-                    claims.append({None} if value in dropped_centers or (
-                        rule.drop_unowned and value not in known_centers)
-                                  else known_centers.get(value, set()))
+                    center_claim(row[column])
             for column, parent_db, parent, parent_column in rule.references:
+                if not row.get(column):
+                    continue
                 if table == "agent_interchange_idempotency":
                     expected_parent = {"stage_import": "agent_import_stages",
                                        "convert_export": "agent_conversion_receipts",
                                        "publish_stage": "agent_definitions"}.get(
                                            row.get("operation"))
+                    if expected_parent is None:
+                        reasons.add("orphan_reference")
                     if parent != expected_parent:
                         continue
-                if row.get(column):
-                    index_key = parent_db, parent, parent_column
-                    if index_key not in indexes:
-                        lookup: dict[object, list[int]] = {}
-                        for i, candidate in enumerate(tables.get((parent_db, parent), [])):
-                            lookup.setdefault(candidate.get(parent_column), []).append(i)
-                        indexes[index_key] = lookup
-                    matches = indexes[index_key].get(row[column], [])
-                    if parent == "runs" and parent_column == "thread_id" and matches:
-                        # A conversation can have many runs. Carry its checkpoint
-                        # only when every run resolves to the same account.
-                        resolved = [row_owners(parent_db, parent, match, active | {key})
-                                    for match in matches]
-                        claims.append(set().union(*resolved) if all(resolved) else set())
-                    elif len(matches) != 1:
-                        claims.append({None} if not matches and rule.drop_unowned else set())
-                    else:
-                        claims.append(set(row_owners(
-                            parent_db, parent, matches[0], active | {key})))
-            if not claims and rule.drop_unowned:
-                claims.append({None})
-            if any(c and c != {None} for c in claims):
-                claims = [c for c in claims if c != {None}]
-            resolved = (frozenset.union(*(frozenset(c) for c in claims))
-                        if claims and all(len(c) == 1 for c in claims) else frozenset())
-            memo[key] = resolved if len(resolved) == 1 else frozenset()
+                index_key = parent_db, parent, parent_column
+                if index_key not in indexes:
+                    lookup: dict[object, list[int]] = {}
+                    for i, candidate in enumerate(tables.get((parent_db, parent), [])):
+                        lookup.setdefault(candidate.get(parent_column), []).append(i)
+                    indexes[index_key] = lookup
+                matches = indexes[index_key].get(row[column], [])
+                if not matches:
+                    reasons.add("orphan_reference")
+                for match in matches:
+                    parent_owners, parent_reasons = evidence(
+                        parent_db, parent, match, active | {key})
+                    candidates.update(parent_owners)
+                    reasons.update(parent_reasons)
+            if len(candidates) > 1:
+                reasons.add("conflicting_owners")
+            if not candidates and not reasons:
+                reasons.add("unadmitted_principal" if placeholder else "no_owner_key")
+            memo[key] = frozenset(candidates), frozenset(reasons)
             return memo[key]
+
+        def row_reason(database, table, index):
+            _, reasons = evidence(database, table, index)
+            return next((reason for reason in ROW_REASONS if reason in reasons), None)
+
+        def row_owners(database, table, index):
+            candidates, _ = evidence(database, table, index)
+            reason = row_reason(database, table, index)
+            if reason == "conflicting_owners":
+                return frozenset()
+            return frozenset({None}) if reason else candidates
 
         policy_accounts = sorted({PurePosixPath(database).parts[2]
                                   for database, _ in tables
@@ -548,14 +566,14 @@ def census(data: Path, *, _inventory: dict | None = None,
             rule = _census_rule(database, table)
             placement = rule.placement if rule else "unknown"
             counts: Counter = Counter()
+            reasons: Counter = Counter()
             public = 0
             dropped = len(rows) if placement == "dropped" else 0
             targets = [placement] * len(rows)
             if rule is None:
                 refusals["unknown_table"] += 1
             elif placement == "owner":
-                if rows and not (rule.principals or rule.centers or rule.references
-                                 or rule.drop_unowned):
+                if rows and not (rule.principals or rule.centers or rule.references):
                     refusals["attribution_rule_pending"] += 1
                 for index, row in enumerate(rows):
                     if ((database == ".tinyassets.db" and table in {"branch_definitions", "goals"}
@@ -566,6 +584,9 @@ def census(data: Path, *, _inventory: dict | None = None,
                         public += 1
                         targets[index] = "published"
                         continue
+                    reason = row_reason(database, table, index)
+                    if reason:
+                        reasons[reason] += 1
                     candidates = row_owners(database, table, index)
                     if len(candidates) != 1:
                         counts["unattributed"] += 1
@@ -595,12 +616,17 @@ def census(data: Path, *, _inventory: dict | None = None,
                 report_database = f".broker/accounts/{policy_labels[parts[2]]}/policy.db"
             table_report[f"{report_database}/{table}"] = {
                 "class": placement, "total": len(rows), "per_owner": dict(counts),
-                "published": public, "dropped": dropped,
+                "published": public, "dropped": dropped, "reasons": dict(reasons),
                 "regenerated": len(rows) if placement == "regenerated" else 0,
                 "attribution": ("pending" if rule and placement == "owner"
                                 and not (rule.principals or rule.centers or rule.references)
                                 else "specified"),
             }
+
+        for database, table, index in foreign_key_rows:
+            targets = assignments.get((database, table), [])
+            if index is None or targets[index] != "dropped":
+                refusals["database_foreign_keys"] += 1
 
         plan_report, credential_report = _census_accounts(
             data, known_centers, labels, tables, refusals)
@@ -615,23 +641,36 @@ def census(data: Path, *, _inventory: dict | None = None,
         for index, row in enumerate(tables.get((".runs.db", "runs"), [])):
             run_id = row.get("run_id")
             if run_id:
-                run_owners.setdefault(run_id, set()).update(row_owners(".runs.db", "runs", index))
+                candidates = (evidence(".runs.db", "runs", index)[0]
+                              if row_reason(".runs.db", "runs", index) == "conflicting_owners"
+                              else row_owners(".runs.db", "runs", index))
+                run_owners.setdefault(run_id, set()).update(candidates)
         file_targets = {}
         patterns = {}
+        file_kinds = {}
+        loss_summary = {label: {} for label in (*labels.values(), "unattributed")}
         losses = {label: {"rows": {}, "files": {}} for label in labels.values()}
         losses["unattributed"] = {"rows": {}, "files": {}}
         for (database, table), targets in assignments.items():
             for index, target in enumerate(targets):
                 if target != "dropped":
                     continue
-                candidates = row_owners(database, table, index)
+                candidates, _ = evidence(database, table, index)
                 label = (labels[next(iter(candidates))] if len(candidates) == 1
                          and next(iter(candidates)) in labels else "unattributed")
                 key = f"{database}/{table}"
                 losses[label]["rows"][key] = losses[label]["rows"].get(key, 0) + 1
+                reason = row_reason(database, table, index) or "retired_cli_state"
+                description = ("orphaned budget reservations"
+                               if table == "served_provider_budget_reservations"
+                               and reason == "orphan_reference" else
+                               "CLI login state" if _census_rule(database, table).placement
+                               == "dropped" else table.replace("_", " "))
+                _count_loss(loss_summary, label, reason, description, "rows")
         file_report = _census_files(data, known_centers, labels, database_files, refusals,
                                     dropped_centers, run_owners, file_targets, patterns, losses,
-                                    {str(uid): owner for owner, uid in permanent.items()})
+                                    {str(uid): owner for owner, uid in permanent.items()},
+                                    file_kinds, loss_summary)
         if _inventory is not None:
             _inventory.update(tables=tables, assignments=assignments, owners=permanent,
                               centers=admitted, dropped_centers=dropped_centers, labels=labels,
@@ -641,7 +680,8 @@ def census(data: Path, *, _inventory: dict | None = None,
             "admitted_centers": len(admitted), "explicit_centers": len(known_centers),
             "databases": len(database_files), "tables": table_report, "row_totals": dict(totals),
             "plans": plan_report, "credentials": credential_report, "files": file_report,
-            "file_patterns": patterns, "losses": losses,
+            "file_patterns": patterns, "file_pattern_kinds": file_kinds,
+            "losses": losses, "loss_summary": loss_summary,
             "account_model_source_summary": ("every account reconnects a model source" if not any(
                 row["carried_http"] for row in credential_report.values())
                 else "accounts without a carried model source reconnect"),
@@ -755,7 +795,8 @@ def _census_accounts(data, centers, labels, tables, refusals):
 
 
 def _census_files(data, centers, labels, databases, refusals, dropped_centers=(),
-                  run_owners=None, file_targets=None, patterns=None, losses=None, uid_owners=None):
+                  run_owners=None, file_targets=None, patterns=None, losses=None, uid_owners=None,
+                  pattern_kinds=None, loss_summary=None):
     from collections import Counter
 
     counts: Counter = Counter()
@@ -777,6 +818,22 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
         ".deploy-pending.json",
     }
     dropped_roots = {"scratch", ".active_universe", "activity.log", "activity.log.1"}
+    from tinyassets.storage_accounting import ROOT_ENTRIES
+
+    def directory_kind(parts):
+        if len(parts) == 1:
+            return "root_file"
+        if parts[0] in centers:
+            return "admitted_center"
+        if parts[0] in dropped_centers:
+            return "unadmitted_center"
+        if parts[:2] == (".broker", "accounts") and len(parts) > 2:
+            return "broker_account"
+        if re.fullmatch(r"[a-f0-9]{64}", parts[0]):
+            return "account_hash"
+        if parts[0] in ROOT_ENTRIES or parts[0] in {"runs", ".published"}:
+            return "platform_store"
+        return "unknown_dir"
 
     def classify(path, relative):
         parts = relative.parts
@@ -822,7 +879,13 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
             return "published"
         if (len(parts) >= 4 and parts[:2] == (".platform", "credential-vaults")
                 and len(centers.get(parts[2], set())) == 1):
-            return "broker"
+            # credential_vault and credential_refresh are the only writers.
+            if len(parts) == 4 and parts[3] == ".credential-vault.json":
+                return "broker"
+            if ((len(parts) == 4 and parts[3] == ".custody.lock") or
+                    (len(parts) == 5 and parts[3] == ".oauth-refresh"
+                     and re.fullmatch(r"[a-f0-9]{32}\.lock", parts[4]))):
+                return "regenerated"
         if parts[0] in regenerated:
             return "regenerated"
         if parts[0] in dropped_roots:
@@ -835,6 +898,8 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
                 return "regenerated"
             candidates = centers.get(parts[1], set())
             return ("owner", next(iter(candidates))) if len(candidates) == 1 else "dropped"
+        if directory_kind(parts) in {"unadmitted_center", "unknown_dir"}:
+            return "dropped"
         return "unattributed"
 
     # Preserve only fixed vocabulary from code, at its known layout position.
@@ -879,9 +944,13 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
             if file_targets is not None:
                 file_targets[relative.as_posix()] = target
             pattern = masked(parts)
+            kind = directory_kind(parts)
             if patterns is not None:
                 group = patterns.setdefault(placement, {})
                 group[pattern] = group.get(pattern, 0) + 1
+            if pattern_kinds is not None:
+                group = pattern_kinds.setdefault(placement, {}).setdefault(pattern, {})
+                group[kind] = group.get(kind, 0) + 1
             if losses is not None and placement == "dropped":
                 candidates = centers.get(parts[0], set())
                 if parts[0] == ".agent-sessions" and len(parts) > 1:
@@ -892,6 +961,16 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
                 label = labels[next(iter(candidates))] if len(candidates) == 1 else "unattributed"
                 group = losses[label]["files"]
                 group[pattern] = group.get(pattern, 0) + 1
+                if loss_summary is not None:
+                    cli = (len(parts) > 1 and parts[1] in _CREDENTIAL_ENTRIES) or (
+                        len(parts) >= 5 and parts[:2] == (".platform", "owners")
+                        and parts[3] == "agent-home")
+                    reason = "retired_cli_state" if cli else kind
+                    description = "CLI login state" if cli else {
+                        "unadmitted_center": "never-admitted center files",
+                        "unknown_dir": "unknown directory files",
+                    }.get(kind, "retired files")
+                    _count_loss(loss_summary, label, reason, description, "files")
     refusals["unattributed_files"] += counts["unattributed"]
     return dict(counts)
 
