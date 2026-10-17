@@ -283,10 +283,10 @@ def _finished(tool_id) -> dict:
 
 
 class _RaisingProvider(BaseProvider):
-    """A claude-code fake whose complete() raises a chosen exception once,
+    """A api_key_http:fixture fake whose complete() raises a chosen exception once,
     then (optionally) succeeds — to prove next-turn eligibility."""
 
-    name = "claude-code"
+    name = "api_key_http:fixture"
     family = "anthropic"
 
     def __init__(self, exc, *, then_ok: bool = False):
@@ -318,7 +318,7 @@ def _model_root(tmp_path):
     _MODEL_ROOT.mkdir()
 
 
-def _bound(provider: str = "claude-code", role: str = "writer") -> dict:
+def _bound(provider: str = "api_key_http:fixture", role: str = "writer") -> dict:
     """Hard Rule 15: a routed call carries one universe owner's authority."""
     from unittest.mock import MagicMock
 
@@ -358,6 +358,8 @@ def _carrier_resolution(monkeypatch):
         return carrier
 
     monkeypatch.setattr(router_mod, "_provider_invocation_carrier", resolve)
+    monkeypatch.setattr("tinyassets.providers.served_model_plan.connected_sources",
+                        lambda *a, **k: frozenset({"api_key_http:fixture"}))
 
 
 class TestRouterCooldownMap:
@@ -369,7 +371,7 @@ class TestRouterCooldownMap:
         with pytest.raises(AllProvidersExhaustedError) as ei:
             await model_call(router, "writer", "prompt", "system", **_bound())
 
-        assert quota.available("claude-code", owner="owner") is True  # NOT cooled
+        assert quota.available("api_key_http:fixture", owner="owner") is True  # NOT cooled
         assert ei.value.failure_class == "provider_idle_timeout"
 
     @pytest.mark.asyncio
@@ -380,7 +382,7 @@ class TestRouterCooldownMap:
         with pytest.raises(AllProvidersExhaustedError) as ei:
             await model_call(router, "writer", "prompt", "system", **_bound())
 
-        assert quota.available("claude-code", owner="owner") is True
+        assert quota.available("api_key_http:fixture", owner="owner") is True
         assert ei.value.failure_class == "interactive_deadline"
 
     @pytest.mark.asyncio
@@ -405,8 +407,8 @@ class TestRouterCooldownMap:
         with pytest.raises(AllProvidersExhaustedError) as ei:
             await model_call(router, "writer", "prompt", "system", **_bound())
 
-        assert quota.available("claude-code", owner="owner") is False  # cooled
-        remaining = quota.cooldown_remaining("claude-code", owner="owner")
+        assert quota.available("api_key_http:fixture", owner="owner") is False  # cooled
+        remaining = quota.cooldown_remaining("api_key_http:fixture", owner="owner")
         assert 25 <= remaining <= 32  # honors retry_after (+1s margin)
         assert ei.value.failure_class == "provider_rate_limited"
 
@@ -420,8 +422,8 @@ class TestRouterCooldownMap:
         with pytest.raises(AllProvidersExhaustedError):
             await model_call(router, "writer", "prompt", "system", **_bound())
 
-        assert quota.available("claude-code", owner="owner") is False
-        assert 3 <= quota.cooldown_remaining("claude-code", owner="owner") <= 10
+        assert quota.available("api_key_http:fixture", owner="owner") is False
+        assert 3 <= quota.cooldown_remaining("api_key_http:fixture", owner="owner") <= 10
 
 
 # ---------------------------------------------------------------------------
@@ -446,7 +448,7 @@ class TestInteractiveNoSleep:
             raise AllProvidersExhaustedError(
                 "exhausted",
                 attempts=[ProviderAttemptDiagnostic(
-                    provider="claude-code", status="skipped",
+                    provider="api_key_http:fixture", status="skipped",
                     skip_class="quota_or_cooldown",
                 )],
             )

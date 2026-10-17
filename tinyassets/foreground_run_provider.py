@@ -815,9 +815,7 @@ class _ForegroundRunProviderSession:
 
         The decision is the platform's single capacity policy, not a second one:
         `free_sibling_retry` answers whether an unknown window buys a sibling,
-        the same call and the same bound the conversation path uses. Engine
-        inference only -- a native executor runs on ONE subscription, so a limit
-        there is a fact about that account rather than a model within it.
+        the same call and the same bound the conversation path uses for HTTP inference.
 
         Returns the exhaustion to record and whether it rests on a guess.
         """

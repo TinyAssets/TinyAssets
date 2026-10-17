@@ -174,7 +174,8 @@ class _FakeProc:
 
 
 def _run_main(
-    monkeypatch, tmp_path, proc, *, provider="claude", extra=(), out_file_text=None, seen=None
+    monkeypatch, tmp_path, proc, *, provider="claude", extra=(),
+    out_file_text=None, seen=None, output_arg=None,
 ):
     """Invoke peer_agent.main() with a scripted subprocess.
 
@@ -196,13 +197,13 @@ def _run_main(
             # even if `build_codex_cmd` pointed `-o` at the wrong path -- the
             # real CLI would then write elsewhere and peer_agent would read an
             # empty file. (Cross-family review of PR #2561, round 5.)
-            if provider == "codex":
+            if output_arg is not None:
                 # No silent fallback: codex's answer arrives ONLY via `-o`, so a
                 # command that lost the flag must produce no readable out-file --
                 # which is what the real CLI would do. Defaulting to `out` here
                 # kept the test green when `-o` was dropped entirely (round 6).
-                assert "-o" in argv, f"codex command has no -o: {argv}"
-                target = Path(argv[argv.index("-o") + 1])
+                assert output_arg in argv, f"missing output argument: {argv}"
+                target = Path(argv[argv.index(output_arg) + 1])
             else:
                 target = out
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -533,7 +534,7 @@ def test_codex_answer_is_read_from_the_out_file(monkeypatch, tmp_path):
         monkeypatch,
         tmp_path,
         _FakeProc(returncode=0, stdout=b""),
-        provider="codex",
+        provider="codex", output_arg="-o",
         out_file_text="VERDICT: ADAPT\n",
     )
     assert rc == 0
@@ -560,7 +561,7 @@ def test_codex_empty_out_file_is_a_failure(monkeypatch, tmp_path):
         monkeypatch,
         tmp_path,
         _FakeProc(returncode=0, stdout=b""),
-        provider="codex",
+        provider="codex", output_arg="-o",
         out_file_text="   \n",
     )
     assert rc == 2
@@ -573,9 +574,9 @@ def test_codex_empty_out_file_is_a_failure(monkeypatch, tmp_path):
 # reaches the child, only the child, and that the hook reads the same name.
 
 
-@pytest.mark.parametrize("provider", ["claude", "codex"])
+@pytest.mark.parametrize("provider,output_arg", [("claude", None), ("codex", "-o")])
 def test_peer_task_marker_reaches_only_the_child_environment(
-    monkeypatch, tmp_path, provider
+    monkeypatch, tmp_path, provider, output_arg
 ):
     monkeypatch.delenv(peer_agent.PEER_TASK_ENV, raising=False)
     monkeypatch.setattr(peer_agent, "resolve_codex", lambda: "codex.exe")
@@ -586,7 +587,7 @@ def test_peer_task_marker_reaches_only_the_child_environment(
         monkeypatch,
         tmp_path,
         _FakeProc(returncode=0, stdout=b"ok" + b"\n"),
-        provider=provider,
+        provider=provider, output_arg=output_arg,
         out_file_text="VERDICT: APPROVE" + chr(10),
         seen=seen,
     )

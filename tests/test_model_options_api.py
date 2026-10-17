@@ -280,5 +280,3 @@ def test_empty_owned_home_is_readable_without_provider_or_agent(tmp_path, monkey
     assert result["preferences"]["generation"] == 0
     assert result["binding_state"] == "no_serving_binding"
     assert result["choice_authority"] == "none"
-
-

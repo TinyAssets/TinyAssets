@@ -66,8 +66,7 @@ def connected_sources(base: str | Path, universe: str | Path, owner: str,
                 command_center=universe.name, grant_id=definition.ref,
             )
         except (GrantResolutionError, BrokerRefused, ProxyRequestError, ValueError, OSError):
-            # One unavailable HTTP grant cannot withhold an independent
-            # subscription source. An HTTP call still fails membership below.
+            # One unavailable grant cannot withhold another connected HTTP source.
             continue
         if facts.get("model_source") is True:
             sources.add("api_key_http:" + definition.id)

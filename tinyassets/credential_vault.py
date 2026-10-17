@@ -44,7 +44,7 @@ def http_credential_record(*, destination: str, token: str) -> dict[str, Any]:
     Three paths put a secret in an http slot: the owner's deposit
     (``api.http_connection.connect_http``), a rotation (``rotate_http``), and an
     oauth2 refresh (``connection_oauth.tokens``). ``_merge_single_record``
-    REPLACES the whole slot for every non-subscription type, so a field only one
+    REPLACES the whole credential slot, so a field only one
     of them wrote would silently disappear on the next write by another. One
     builder, so ``deposited_at`` means the same thing whichever path stored the
     secret that is there now.
@@ -588,8 +588,6 @@ def write_credential_vault(
     """Write while excluding launches and optionally record depositor ownership.
 
     ``owner_user_id`` is trusted transport state, never a vault-record field.
-    Omitting it leaves new LLM subscription material unowned and therefore
-    ineligible for serving authority.
     """
 
     from tinyassets.provider_assignment import provider_assignment_admission

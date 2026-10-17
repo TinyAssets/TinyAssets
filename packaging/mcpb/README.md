@@ -8,7 +8,7 @@ Use the build script to stage a minimal bundle that contains:
 - the official MCPB `manifest.json`
 - a small runtime project with only the FastMCP dependency
 - a stdio wrapper server
-- a staged copy of `tinyassets/` and the public `models/` lists
+- a staged copy of `tinyassets/`
 - the bundle icon asset
 
 ## Cloud-runtime caveat

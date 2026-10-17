@@ -140,5 +140,3 @@ def test_the_owner_threaded_into_the_catalog_is_the_same_identity_the_journal_us
     run = inspect.getsource(AgentTurnCoordinator._run)
     assert "self.owner = await off_loop(self._check_scope)" in run
     assert "owner_user_id" in PRINCIPAL_KEYS
-
-

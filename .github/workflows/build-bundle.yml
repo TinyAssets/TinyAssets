@@ -6,7 +6,6 @@ on:
       - main
     paths:
       - "tinyassets/**"
-      - "models/**"
       - "packaging/**"
       - ".github/workflows/build-bundle.yml"
   pull_request:
@@ -16,7 +15,6 @@ on:
     types: [opened, reopened, synchronize, ready_for_review]
     paths:
       - "tinyassets/**"
-      - "models/**"
       - "packaging/**"
       - ".github/workflows/build-bundle.yml"
   release:

@@ -287,12 +287,6 @@ RUN /opt/venv/bin/pip install --no-cache-dir --no-deps -e ".[mcp,browser]"
 # are runtime state and live in TINYASSETS_DATA_DIR, not here.
 COPY data/world_rules.lp /app/data/world_rules.lp
 
-# Public model lists, one file per source kind. REVIEWED DATA the runtime reads, not
-# state: `public_model_lists.lists_directory()` resolves `models/` beside the package,
-# so without this COPY every source kind reads as unlisted and the feature silently
-# does nothing in production (Codex on #4028 — it never reached the image).
-COPY models/ /app/models/
-
 # Stdlib-only MCP canary — reused across Layer-1 (local), tier-3 GHA,
 # docker-build CI, cloud canary, and the compose.yml container-health
 # healthcheck. Single definition of "healthy MCP" across every probe

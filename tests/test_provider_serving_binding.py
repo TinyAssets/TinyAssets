@@ -72,14 +72,18 @@ def test_write_graph_routes_first_class_serving_operations(
 
 
 @pytest.mark.parametrize("operation", ["bind", "enable"])
-def test_absent_binding_has_a_dedicated_exception(tmp_path, operation):
+def test_absent_binding_has_a_dedicated_exception(tmp_path, operation, monkeypatch):
+    from tests.support.http_model import seed_http_assignment
     from tinyassets import provider_serving_binding as serving
 
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    provider = seed_http_assignment(tmp_path, owner_user_id="owner-1",
+                                    universe_id="missing-home")
     args = dict(base_path=tmp_path, universe_dir=tmp_path / "missing-home",
                 universe_id="missing-home", owner_user_id="owner-1",
                 agent_binding_id="missing-binding", expected_revision=1)
     with pytest.raises(serving.AgentBindingNotFound, match="agent binding was not found"):
         if operation == "bind":
-            serving.bind_serving_provider(**args, provider="codex")
+            serving.bind_serving_provider(**args, provider=provider)
         else:
             serving.set_serving(**args, enabled=True)

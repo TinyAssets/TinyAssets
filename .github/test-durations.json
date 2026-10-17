@@ -760,7 +760,6 @@
 "tests/test_provider_tool_wait_evidence.py": 0.1,
 "tests/test_providers.py": 0.3,
 "tests/test_prune_units.py": 0.1,
-"tests/test_public_model_lists.py": 0.2,
 "tests/test_public_run_link.py": 0.1,
 "tests/test_publish_is_discoverable.py": 0.0,
 "tests/test_publish_version.py": 0.7,

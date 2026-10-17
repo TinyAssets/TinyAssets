@@ -115,7 +115,7 @@ def prepare_captured_choices(base, *, owner, universe, document, sources):
         try:
             access = accepted_connected_model_access(assignment, owner, provider)
         except PermissionError:
-            # Connected is not accepted: a deposited key or adopted subscription
+            # Connected is not accepted: a deposited credential
             # the owner never approved is admitted to the run's snapshot but is
             # never a candidate, the same as the served turn's plan.
             held.append(provider)
@@ -209,13 +209,6 @@ class WorkCandidateData:
 
     def _admitted_refs(self, pin):
         """Every admitted model of this owner matching ``pin``, catalogue order.
-
-        `self.order` is the ADVISORY order, and for a subscription/local source
-        that is only its advertised default -- `order_models` deliberately keeps
-        a subscription's other ids "visible in the catalogue for explicit
-        selection" rather than ranking them. So a node naming an accepted native
-        id is never in the order, and treating the order as the whole world
-        refused that node outright once every run started capturing one.
 
         The catalogue read here is the plan's ADMITTED catalogue: this owner's
         accepted sources with the candidate-only (learned, not-yet-granted) rows

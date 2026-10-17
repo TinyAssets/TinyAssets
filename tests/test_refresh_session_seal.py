@@ -317,10 +317,6 @@ def test_the_key_is_scrubbed_at_IMPORT_before_any_store_call(monkeypatch):
     child_env = provider_base.subprocess_env_without_api_keys()
     assert isinstance(child_env, dict), "api-key providers must be disabled here"
     assert session_store.SEAL_KEY_ENV not in child_env
-    assert (
-        session_store.SEAL_KEY_ENV
-        not in provider_base._safe_provider_child_base_env()
-    )
     # ...and it is the CONFIGURED key, not a fresh ephemeral that happens to work.
     handle = session_store.mint("RT-configured")
     session_store._key = None

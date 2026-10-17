@@ -1,26 +1,4 @@
-"""One owner's own record of the model ids that have worked for them.
-
-PERSONAL, and personal forever. A model id an owner typed and successfully used stays
-on that owner's list and is never shared with anyone (founder, 2026-09-26). That single
-rule is what makes this store safe, and it is why it is much smaller than it was:
-
-* An account-bearing selector -- a Bedrock ARN with an account number in it, a personal
-  deployment name -- can never leak, because nothing here is ever published.
-* There is no cross-user table, no attestation, no confirmers, no pending state and no
-  threshold. Three earlier designs tried to decide whether an id was safe to share:
-  a charset (admitted ARNs, rejected real selectors), a distinct-owner threshold (two
-  colleagues share one org's private id), and attestation plus peer confirmation
-  (worked, but over-built for the problem). Sharing now happens somewhere else
-  entirely, and by people: a reviewed file in the repo, see
-  ``tinyassets/providers/public_model_lists.py``.
-
-Why it exists at all: a source with no list-models endpoint offers only what its owner
-typed, so without this an id that demonstrably worked vanished from the owner's own
-picker the moment they stopped declaring it.
-
-A row here is evidence an id WORKED FOR THIS OWNER, never permission to use it.
-Serving still requires that universe's accepted model access.
-"""
+"""Private per-owner history of models successfully called through broker HTTP."""
 
 from __future__ import annotations
 

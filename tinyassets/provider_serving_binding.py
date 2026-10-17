@@ -332,7 +332,7 @@ def _open_connection_id(base: Path, universe_id: str, provider_name: str, *,
 @dataclass(frozen=True, slots=True)
 class _ServingSource:
     provider: str
-    open_grant: tuple[str, str, str] | None
+    open_grant: tuple[str, str, str]
     access: ModelAccess
 
 
@@ -344,11 +344,6 @@ def _resolve_serving_source(
     access: ModelAccess,
 ) -> _ServingSource:
     selected = provider.strip()
-    # open_grant carries (grant_id, connection_id, credential_ref) for an open
-    # api_key_http provider; None for a subscription-CLI provider. When set, the
-    # custody source below switches to the secret-free connection-grant custody and
-    # `selected` becomes the resolved executor name (api_key_http:<def-id>).
-    open_grant: tuple[str, str, str] | None = None
     provider_name, grant_id, connection_id, credential_ref = _open_serving_context(
         base, uid, owner, selected.removeprefix("api_key_http:")
     )

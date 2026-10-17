@@ -226,7 +226,6 @@ def export_daemon_rootfs(work: Path) -> Path:
     for binary in (
         "usr/bin/node",
         "opt/venv/bin/python",
-        "opt/codex-install/node_modules/.bin/codex",
     ):
         if not (rootfs / binary).exists():
             raise RuntimeError(f"harness rootfs missing {binary}")
@@ -514,10 +513,8 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
     try:
         cli = boxes.exec(
             "cap0",
-            "/opt/codex-install/node_modules/.bin/codex",
-            "debug",
-            "models",
-            "--bundled",
+            "/usr/bin/node",
+            "--version",
             timeout=90,
             check=False,
         )
@@ -525,7 +522,6 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
         raise WorkloadTrialError("cli_job") from error
     (owners[0] / "cli.js").write_text(
         "const fs=require('fs');const p='/home/owner/';"
-        "require('/opt/codex-install/node_modules/@openai/codex/package.json');"
         "fs.writeFileSync(p+'cli-ready','1');"
         "const t=setInterval(()=>{if(fs.existsSync(p+'cli-stop')){"
         "clearInterval(t);process.exit(0)}},100);\n"
@@ -552,7 +548,7 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
         deadline = time.monotonic() + 20
         while not (owners[0] / "cli-ready").exists():
             if cli_process.poll() is not None or time.monotonic() > deadline:
-                raise RuntimeError("Node CLI package process failed to start")
+                raise RuntimeError("Node tool process failed to start")
             time.sleep(0.1)
     except Exception as error:
         raise WorkloadTrialError("cli_job") from error
