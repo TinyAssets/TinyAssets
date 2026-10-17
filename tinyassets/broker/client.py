@@ -450,10 +450,6 @@ class BrokerClient:
 def owner_policy_operation(data_root: Path, owner: str, action: str,
                            **fields: Any) -> dict[str, Any]:
     """Daemon-side broker call; never falls back to a local policy file."""
-    from tinyassets.owner_runtime import current
-
-    if current() is not None:
-        raise NotImplementedError("owner policy broker channel is not installed (slice 3)")
     from tinyassets.broker.supervisor import get_supervisor
     from tinyassets.storage.outbound_connections import ProxyRequestError
 
