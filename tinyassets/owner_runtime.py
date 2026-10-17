@@ -109,7 +109,7 @@ def start(relay: Path) -> OwnerRuntime:
     from tinyassets.boxes.boxd import OwnerBoxd
 
     tools = OwnerBoxd(owner_id=doc["principal"], owner_root=root,
-                     state_dir=root / ".owner-boxd")
+                     state_dir=root / ".owner-boxd", relay=relay)
     os.environ["TINYASSETS_DATA_DIR"] = str(root)
     os.environ["TINYASSETS_ENGINE_MCP_TOOLS"] = "1"
     os.environ["TINYASSETS_ONBOARDING_APP"] = "1"

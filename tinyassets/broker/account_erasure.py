@@ -1,12 +1,23 @@
-"""Broker-local transactional erasure of one principal's ledger rows.
+"""Shared door-to-broker deletion phase and broker-local ledger erasure.
 
 Only a principal and the fixed account scope select this operation. A caller
 cannot provide a table, path, SQL statement or home to expand the deletion.
+The door owns orchestration; the broker owns custody and ledger writes.
 """
 from __future__ import annotations
 
-ACCOUNT_SCOPE = "account-deletion"
+import os
+import socket
 
+from tinyassets import rpc_frames as rf
+
+ACCOUNT_SCOPE = "account-deletion"
+TABLES = frozenset({
+    "outbound_connections", "outbound_connection_grants", "connection_capabilities",
+    "outbound_connector_artifacts", "outbound_connector_artifact_edges",
+    "agent_request_usage", "agent_request_attempts", "agent_request_usage_links",
+    "agent_request_dispatches", "browser_vault", "owner_policy",
+})
 
 
 def validate(principal, command_center):
@@ -62,4 +73,38 @@ def local_erase(ledger, *, principal, command_center):
     path = key_path(ledger, principal)
     path.unlink(missing_ok=True)
     (ledger._db_path.parent / 'browser-vault' / path.name).unlink(missing_ok=True)
+    return counts
+
+
+def erase_account(data_root, *, principal):
+    from tinyassets.broker.supervisor import get_supervisor
+    from tinyassets.storage.outbound_connections import ProxyRequestError
+
+    validate(principal, ACCOUNT_SCOPE)
+    supervisor = get_supervisor(data_root)
+    if supervisor is None:
+        raise ProxyRequestError("the credential broker is not running")
+    generation, token = supervisor.fence()
+    document = {"op": "ERASE_ACCOUNT", "principal": principal,
+                "command_center": ACCOUNT_SCOPE, "generation": generation, "token": token}
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+        channel.settimeout(30)
+        try:
+            channel.connect(os.fspath(supervisor.socket_path))
+            supervisor.verify_broker(channel)
+            channel.sendall(rf.control(rf.CONNECTION, document))
+            frame = rf.read_frame_blocking(channel)
+            if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
+                raise rf.FrameError("invalid account erasure reply")
+            answer = frame.control()
+        except (OSError, rf.FrameError):
+            # No automatic replay of an ambiguous mutation. A fresh explicit
+            # deletion retry may safely find zero remaining rows.
+            raise ProxyRequestError("broker account erasure outcome unavailable") from None
+    if set(answer) != {"op", "counts"} or answer["op"] != "ACCOUNT_ERASED":
+        raise ProxyRequestError("broker account erasure refused")
+    counts = answer["counts"]
+    if (not isinstance(counts, dict) or not counts.keys() <= TABLES
+            or any(type(n) is not int or n < 1 for n in counts.values())):
+        raise ProxyRequestError("invalid broker account erasure counts")
     return counts

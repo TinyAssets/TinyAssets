@@ -55,6 +55,14 @@ outbound connections at its socket seam.
 - **THEN** its policy decision, connection grant and HTTP dispatch use the admitted box channel
 - **AND** revoking the grant prevents dispatch
 
+#### Scenario: Native commands use the persistent public bridge
+- **WHEN** OwnerBoxd starts in the admitted owner daemon
+- **THEN** it owns one loopback HTTP/CONNECT listener for the box lifetime and supplies proxy defaults to every command, including provisioning and wake probes
+- **AND** each connection uses centerless BOX_PUBLIC on the owner-bound relay; the broker admits the owner's verified box record even with zero centers, refuses revoked, deleted or suspended owners, and retains its public-address floor and owner/host caps
+- **AND** a center or principal supplied to the relay's BOX_PUBLIC request is invalid
+- **AND** authenticated git's invocation-scoped local routes take precedence over the public proxy default
+- **AND** closing the daemon for shutdown or idle sleep closes the listener and active bridges without retaining command output pipes
+
 ### Requirement: Shared reads contain no box-local shared authority
 
 The daemon SHALL read its plan and published commons through named broker
@@ -102,7 +110,7 @@ reported next-wake time.
 - **WHEN** the authenticated router resolves an admitted owner
 - **THEN** it asks boxhostd to ensure that owner's broker-derived UID is awake
 - **AND** boxhostd starts one gVisor sandbox with the quota-bound owner mount, relay, read-only freshly rotated secret, static environment, null network and memory cap
-- **AND** it waits for the authenticated app socket to respond before acknowledging
+- **AND** it waits for the authenticated app socket to respond before acknowledging and atomically leases the box against eviction until forwarding is admitted or a ten-second bound expires
 - **AND** startup or capacity timeout returns a loud 503 at the router
 
 #### Scenario: Idle sleep cannot race a turn
@@ -129,8 +137,10 @@ reported next-wake time.
 - **WHEN** an authenticated owner submits same-origin JSON with `confirm == "DELETE"` to `/app/account/delete`
 - **THEN** the router forwards deletion to the owner's secret-authenticated internal route and the box deletes only local data
 - **AND** a blocked or refused deletion returns 409 without changing router state or admissions
-- **AND** after a complete receipt the router stores it with the owner tombstone, retires every owner admission through the broker, clears router credentials in-process, drops the device refresh session and returns 200
-- **AND** a failed step returns a loud error; a tombstoned retry skips the box and completes retirement and router cleanup with the saved receipt
+- **AND** ingress drains new work and waits at most twenty seconds for active turns before the local sweep; a timeout reports drain unfinished
+- **AND** the router persists a tombstone and receipt, retires every owner admission, requires confirmed volume/quota/socket/secret destruction, erases broker custody, cancels shared owner billing, clears router credentials and deletes the external identity before returning 200
+- **AND** every failed step is recorded as unfinished; a tombstoned retry completes destruction, custody, billing, credentials and identity from the saved receipt
+- **AND** billing cancellation runs despite destruction failure, and identity survives until earlier phases complete so authenticated retries remain possible
 - **AND** the box exposes no operation that revokes router account state
 
 #### Scenario: A scheduled run in a sleeping box
@@ -214,7 +224,7 @@ The broker SHALL own its custody locks, ownership metadata and deletion tombston
 - **AND** browser credential submissions go directly to the shared door
 
 #### Scenario: A grant completes the requesting box's pending connection
-- **WHEN** the box sees a live GRANTED_RESOURCE with the pending connection's request_ref and matching policy
+- **WHEN** the box sees a live GRANTED_RESOURCE committed through the door with the pending connection's request_ref and matching policy
 - **THEN** it applies the requested uses and resolves the pending request through the existing answer and continuation path
 - **AND** a different request_ref leaves it pending and repeated polling does not deliver a second answer
 - **AND** a completion-storage or model-acceptance failure leaves the request pending with an explicit failure
@@ -224,3 +234,19 @@ The broker SHALL own its custody locks, ownership metadata and deletion tombston
 - **WHEN** none, bearer, basic, header, oauth1a, url_secret, DCR, registered-client or preset authentication is connected
 - **THEN** a model or authenticated effector call from a separate box process succeeds through the broker
 - **AND** disconnect through the shared door or box DISCONNECT makes the next box call fail
+
+#### Scenario: Agent connections cannot approve requests
+- **WHEN** a box channel submits a request_ref in HTTP_CONNECT
+- **THEN** the broker refuses it; only the door can store a request reference
+- **AND** reconciliation ignores a box-committed grant even if its reference matches an ask
+
+#### Scenario: First model connection continues to owner confirmation
+- **WHEN** a door flow commits a model source
+- **THEN** the browser continues with its credential-free grant to the protected owner approval endpoint
+- **AND** the box prepares a candidate and raises the existing model-access ask
+- **AND** owner approval powers the default agent through the broker, using automatic selection across accepted sources
+
+#### Scenario: Provider revocation fails after local erasure
+- **WHEN** RFC 7009 revocation fails
+- **THEN** removal returns removed_locally_revoke_failed with a message naming the provider and its recovery URL
+- **AND** custody is erased and retrying removal retains the manual-revocation instruction

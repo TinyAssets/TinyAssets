@@ -149,11 +149,12 @@ def test_daemon_only_names_are_read_by_daemon_routes_only(name):
     no child serves them."""
     allowed = {
         "tinyassets/billing/stripe_adapter.py",
-        "tinyassets/account_deletion.py",
+        "tinyassets/router_account_deletion.py",
         # The WorkOS password check behind the canary-only sign-in.
         "tinyassets/onboarding/canary_sign_in.py",
     }
     assert _readers(name) <= allowed
+    assert "tinyassets/account_deletion.py" not in _readers(name)
 
 
 # ---------------------------------------------------------------------------
@@ -507,8 +508,12 @@ def test_broker_receives_only_registered_oauth_environment(tmp_path):
                       "UNRELATED='line one\nTINYASSETS_OAUTH_FAKE_SECRET=not-a-variable'\n")
     result = _helper(tmp_path, ["render-daemon-env"], source, daemon)
     assert result.returncode == 0, result.stderr
-    assert not any(name.startswith("TINYASSETS_OAUTH_")
-                   for name in _compose_environment(daemon, tmp_path))
+    # The rendered daemon copy assigns none of the registered OAuth names (the
+    # FAKE one only appears inside UNRELATED's quoted value). How compose fills
+    # bare declarations from the project env is covered by the compose tests.
+    oauth = {"TINYASSETS_OAUTH_EXAMPLE_CLIENT_ID", "TINYASSETS_OAUTH_EXAMPLE_SECRET",
+             "TINYASSETS_OAUTH_DIRECTORY"}
+    assert not oauth & _assigned(daemon) and "private-fixture" not in daemon.read_text()
     broker = tmp_path / "broker.env"
     assert _assigned(broker) == {"TINYASSETS_OAUTH_EXAMPLE_CLIENT_ID",
                                  "TINYASSETS_OAUTH_EXAMPLE_SECRET",

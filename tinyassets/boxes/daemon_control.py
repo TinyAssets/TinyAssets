@@ -33,22 +33,6 @@ def ensure_awake(owner: str, *, scheduled: bool = False) -> int:
     return uid
 
 
-def resolve(owner):
-    import re
-
-    result = request("resolve", owner)
-    if (set(result) != {"uid", "lease"} or type(result["uid"]) is not int
-            or not 300001 <= result["uid"] <= 399999
-            or not isinstance(result["lease"], str)
-            or not re.fullmatch(r"[0-9a-f]{48}", result["lease"])):
-        raise RuntimeError("invalid box wake lease")
-    return result
-
-
-def release(owner, lease):
-    return request("release", owner, lease=lease)
-
-
 def broker_bootstrap():
     """Adopt the registered broker before starting the persistent router."""
     from tinyassets.boxes.bootstrap import RUNTIME

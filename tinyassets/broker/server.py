@@ -694,7 +694,10 @@ class _Connection:
                 raise ValueError("invalid owner retirement")
             with self._server._fence.send(doc["generation"], doc["token"]):
                 uid = self._server._owner_identities.retire_owner(doc["principal"])
-                self._stop_owner_box(doc["principal"], uid)
+                from tinyassets.boxes.daemon_control import request
+
+                if request("destroy", doc["principal"], uid=uid) != {"destroyed": True}:
+                    raise RuntimeError("boxhostd did not confirm owner destruction")
             return {"op": "OWNER_RETIRED"}
         except Exception:
             return {"op": "OWNER_RETIRE_REFUSED"}
@@ -975,7 +978,8 @@ class _Connection:
                 raise ValueError("unsupported connect fields")
             _namespace(doc["principal"], doc["command_center"])
             validate(doc["document"])
-            if self._role == BOX and (doc["document"].get("secret")
+            if self._role == BOX and ("request_ref" in doc["document"]
+                    or doc["document"].get("secret")
                     or doc["document"]["action"] in {
                         "rotate", "oauth_offer", "oauth_exchange", "preset_exchange"}
                     or doc["document"].get("policy", {}).get("auth_scheme", "none") != "none"):
@@ -992,7 +996,8 @@ class _Connection:
                 result = local_operation(self._server._ledger_for(doc["principal"]),
                                     principal=doc["principal"],
                                     command_center=doc["command_center"],
-                                    document=doc["document"])
+                                    document=doc["document"],
+                                    committed_via="door" if self._role == OWNER else "box")
                 answer = {"op": "HTTP_CONNECT_RESULT", "result": result}
                 rf.control(rf.CONNECTION, answer)
                 return answer

@@ -2,31 +2,35 @@
 
 import asyncio
 import sqlite3
-from types import SimpleNamespace
 
 import pytest
 
 from tinyassets import rpc_frames as rf
+from tinyassets.broker.owner_identities import OwnerIdentities
 from tinyassets.broker.public_egress import PublicEgress
 
 
 @pytest.fixture
 def proxy(tmp_path):
+    tmp_path.chmod(0o700)
     path = tmp_path / "identities.db"
+    identities = OwnerIdentities(path, initialize=True)
+    uid = identities.resolve("alice", allocate=True).uid
+    identities.plans.apply("alice", tier="paid", event_created=1)
     with sqlite3.connect(path) as db:
         db.execute("CREATE TABLE box_records (principal TEXT, machine INT, "
                    "project_id INT, bhard_bytes INT)")
-        db.execute("INSERT INTO box_records VALUES ('alice',300001,300001,1048576)")
-    identities = SimpleNamespace(path=path, owner_machine=lambda owner: 300001,
-                                 admitted_owner=lambda center: "alice" if center == "a" else "bob")
+        db.execute("INSERT INTO box_records VALUES (?,?,?,?)", ("alice", uid, uid, 1048576))
     return PublicEgress(identities)
 
 
-async def exchange(proxy, request, *, center="a", port=None):
+async def exchange(proxy, request, *, center=None, principal="alice"):
     async def handler(reader, writer):
         try:
-            await proxy.serve(reader, writer, {"op": "BOX_PUBLIC", "principal": "alice",
-                                               "center": center})
+            document = {"op": "BOX_PUBLIC", "principal": principal}
+            if center is not None:
+                document["center"] = center
+            await proxy.serve(reader, writer, document)
         finally:
             writer.close()
             await writer.wait_closed()
@@ -99,4 +103,19 @@ async def test_public_proxy_refuses_foreign_center_capacity_and_oversized_header
     assert await exchange(proxy, b"") == b"REFUSED"
     proxy.active.clear()
     assert (await exchange(proxy, b"x" * 17000 + b"\r\n\r\n")).startswith(b"HTTP/1.1 403")
+    assert not proxy.active
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allocated", [False, True])
+async def test_public_proxy_refuses_unknown_or_unadmitted_owner(proxy, monkeypatch, allocated):
+    def no_upstream(*args):
+        pytest.fail("unadmitted owner reached destination resolution")
+
+    monkeypatch.setattr("tinyassets.broker.public_egress._checked_addresses", no_upstream)
+    if allocated:
+        proxy.identities.resolve("bob", allocate=True)
+        proxy.identities.plans.apply("bob", tier="paid", event_created=1)
+    assert await exchange(proxy, b"CONNECT example.test:443 HTTP/1.1\r\n\r\n",
+                          principal="bob") == b"REFUSED"
     assert not proxy.active

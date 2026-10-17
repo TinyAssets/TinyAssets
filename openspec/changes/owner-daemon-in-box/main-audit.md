@@ -1,5 +1,47 @@
 # Main vs the clean per-user-instance shape: read-only audit
 
+## Merge 6a into 6b (2026-10-17)
+
+Resolved the in-progress merge of `e0a9bef9daf` into `a80d01def37`.
+Slice 4 owns the atomic 10-second Box leases, cleanup resolution, router
+forwarding/release, 20-second deletion drain and single confirmed destroy.
+The roll retains its image records, per-box rollback, bounds, cutover refusal,
+provenance, driver, canary and held workflow. Initial roll and candidate rollback
+now reuse sleep's lease/idle/drain decision, including deletion and active-turn
+refusals. No lease map, token contract or callback path remains from 6b.
+
+All tests and outer assertions in both conflicted test files are retained;
+no duplicate tests were removed. Roll expiry coverage is ported to Box.leases,
+and the root control proof uses cleanup=False and the 43-character lease.
+A new regression proves roll cannot stop a deletion drain after its last turn.
+The additional touched-file run exposed one stale secret-reader inventory:
+its old account-deletion path is replaced by the router path, with an added
+assertion that the old module reads no daemon-only secret. The original subset
+assertion is unchanged and the allowed set is not widened.
+
+Validation receipts (including selections, JUnit, assertion/scope audits and
+hygiene body) are outside the repository at
+`C:/Users/Jonathan/AppData/Local/Temp/c6-s6b-merge-validation-pxgv0z0_/`.
+
+- Requested ordinary Linux selection plus every GUARDS file: **2,027 passed**
+  across 97 files. Remaining affected heavy files: **671 passed** across nine.
+- Other touched tests: **285 passed** across eleven files after the inventory
+  correction and a Compose-enabled rerun of all 50 secret-scope cases.
+  Both additional structural budget cases pass. Final root control: **six pass**.
+- Full root selection with rsync: **51 passed, five failed**. The five are the
+  unchanged protected slice-6 `account_type_of(..., db_reader=...)` mismatch
+  already recorded below. The final union is **3,036 passed, five failed, zero
+  skips**; initial missing-rsync/Compose skips are replaced by real venue runs.
+- Ruff passes all 63 changed Python files; check_shapes, actionlint 1.7.12 and
+  whitespace checks pass. No shape probe or test assertion was weakened.
+- Post-commit hygiene uses `conv/c6-owner-daemon-s5`, `Registry row(s): S8` and
+  the original `Test-Removal: retired --` line; its receipt is `hygiene.log`.
+
+Protected migration files are unchanged from 6b; incoming egress execution/proxy
+files are byte-identical to 6a. No production contact, workflow execution,
+remote Git mutation, branch switch or host Git configuration change occurred.
+
+
 ## Slice 6b: per-box deployment and canary acceptance (2026-10-17)
 
 Implemented locally on `conv/c6-owner-daemon-s6b`, based on `fd306784711`.
@@ -20,12 +62,16 @@ Both forward and rollback launches require a statically declared owner-box
 layout. Missing or older declarations refuse with the slice-6 backup/restore
 path; no override, migration code or restore implementation was added.
 
-This base had `ensure_awake` and turn/drain accounting but no resolve/release
-wake lease. Router resolution now pins that admission gap for at most 65
-seconds, releases at response admission or failure/cancellation, and leaves
-HTTP/turn accounting in charge thereafter. Passive SSE does not retain a
-lease for its lifetime. The same existing kernel-authenticated control
-socket carries resolve/release; no compatibility operation was retained.
+The roll uses slice 4's atomic 10-second resolve/release wake leases and
+its HTTP/turn drain accounting. Each Box owns its leases; sleep, roll and
+candidate rollback share the same expiry, idle guard and drain decision,
+including active-turn and deletion refusals. Router forwarding releases at
+response admission or failure/cancellation. Passive SSE does not retain a
+lease for its lifetime. The duplicate 6b lease map, 65-second token contract,
+router callbacks and daemon-control wrappers are deleted. Door-orchestrated
+20-second deletion drain, cleanup resolution and the single confirmed
+boxhostd destroy remain slice 4's implementation. All tests from both sides
+are retained and ported to that API; no duplicate test needed removal.
 
 `scripts/roll_owner_boxes.py` streams its root control helper over SSH stdin,
 avoiding a privileged executable in shared `/tmp`. It writes one allowlisted
@@ -1556,10 +1602,6 @@ proofs. Renamed ports are not counted as retirements.
 - `tests/test_box_lifecycle.py::test_committed_admission_refuses_missing_host_and_invalid_layout`
 - `tests/test_broker_model_grants.py::test_existing_grants_backfill_from_broker_state[platform-*] (two parametrizations: obsolete host definition input)`
 - `tests/test_account_deletion.py::test_failed_two_pass_owner_tree_keeps_the_binding_and_retry_resumes`
-- `tests/test_account_deletion.py::test_workos_deletion_failures_raise_without_the_key`
-- `tests/test_account_deletion.py::test_workos_deletion_sends_a_delete_and_treats_gone_as_done`
-- `tests/test_account_deletion.py::test_workos_deletion_skips_non_workos_principals`
-- `tests/test_account_deletion.py::test_workos_deletion_is_not_configured_without_a_key`
 - `tests/test_account_deletion.py::test_billing_and_identity_failures_are_reported_not_hidden`
 - `tests/test_account_deletion.py::test_an_unconfigured_identity_provider_is_unfinished_work`
 - `tests/test_account_deletion.py::test_an_unreachable_payment_processor_is_unfinished_work`
@@ -2011,7 +2053,7 @@ local path above):
 - `tests/test_box_provider_contract.py::test_stdin_a_child_never_reads_cannot_stall_the_wall_clock`
 - `tests/test_box_provider_contract.py::test_the_exec_ends_with_its_leader_and_takes_its_group_with_it`
 - `tests/test_box_provider_contract.py::test_wall_clock_and_output_limits_kill_the_exec`
-- `tests/test_box_public_egress.py::test_box_forwarder_child_does_not_hold_command_output_open`
+- `tests/test_box_public_egress.py::test_box_forwarder_child_does_not_hold_command_output_open` (the per-call implementation was retired here; part 1f ports this behavior to `tests/test_owner_public_egress.py`).
 - `tests/test_c6_owner_box_callers.py::test_bound_process_uses_the_exact_session_handle`
 - `tests/test_c6_owner_box_callers.py::test_code_node_accepts_only_guest_workspace_path`
 - `tests/test_c6_owner_box_callers.py::test_code_node_public_runner_requires_admitted_box`
@@ -2036,13 +2078,21 @@ class because protected `deploy/box-store-quotas.py` still consumes that
 historical authority; no runtime exec transport API remains. Slice 6 must
 reconcile that offline restore shape with the local owner journals.
 
-The retired guest forwarder was also the native command public-network
-proxy. This cleanup adds no owner-daemon replacement for general native HTTP
-proxying. Broker model/HTTP calls and the ported authenticated git routes keep
-their admitted channels; native package-manager public downloads remain an
-unported feature for the existing slice-7 founder report. Local provisioning
-runs with its original consent, manifest, cancellation and charge guards and
-fails loudly when a dependency cannot be obtained; it has no host fallback.
+The retired guest forwarder's native-command public-network capability is
+restored by 6a part 1f in `tinyassets/owner_public_egress.py`. Startup gives
+OwnerBoxd its admitted relay and starts one in-process loopback HTTP/CONNECT
+bridge on `127.0.0.1:3128` for the daemon lifetime. A centerless `BOX_PUBLIC`
+request lets the root relay use its existing owner lifecycle admission to
+select a live center; the broker still repeats `BOX_ADMISSION` and applies its
+unchanged public-address floor, destination pinning and per-owner/host caps
+before relaying bytes. OwnerBoxd's bounded process launcher supplies all six
+proxy variables and both NO_PROXY spellings to every child, including wake
+probes and provisioning; bash merges these defaults ahead of invocation
+overrides, preserving authenticated git's local routes. OwnerBoxd.close stops
+children and closes/joins the listener and active bridges on shutdown/idle
+sleep. No per-command fork, host listener, shared-router proxy or retired
+backend module is restored. Local provisioning retains its consent, manifest,
+cancellation and charge guards.
 
 The protected box-layout migration still calls the already-retired
 `account_type_of(..., db_reader=readonly_db)` API. Its five failures below are
@@ -2076,3 +2126,231 @@ Validation receipts: `C:/Users/Jonathan/AppData/Local/Temp/s6a1e-validation-pli6
 - Post-commit hygiene against `conv/c6-owner-daemon-s5` passed for the backend
   retirement commit with `Registry row(s): S8` and the documented test-retirement
   reason. The same gate is repeated at the final commit.
+
+
+## 6a part 1f: persistent in-box native public egress (2026-10-17)
+
+`owner_public_egress.OwnerPublicForwarder` is owned only by OwnerBoxd. Owner
+startup passes the admitted relay, binds the single loopback listener before
+serving, and fails startup if it cannot bind (releasing its journal lock).
+Commands share that listener without forking a forwarder. Shutdown interrupts
+active bridges, including a stalled relay admission, joins all workers and
+releases port 3128 for the next wake. The daemon's existing SIGTERM/idle-sleep
+finally calls OwnerBoxd.close. Process supervision retains close_fds and never
+hands command pipes to the listener.
+
+The root relay accepts centerless BOX_PUBLIC and obtains a live center via
+OwnerRegistry.owner's existing broker lifecycle admission. Its bind still
+supplies the principal; neither the request nor the in-box bridge supplies an
+owner. The broker receives its original center-bearing BOX_PUBLIC document,
+repeats BOX_ADMISSION and returns BOX_ADMITTED before raw HTTP/CONNECT. No
+broker parser, DNS/public-address floor, admission implementation or capacity
+limit is changed. No shared-daemon listener or retired backend is restored;
+D7 still bans all fourteen retired modules. The authenticated-git recheck
+also exposed two live remnants masked by direct-broker fixtures: relay calls
+to the deleted OwnerRegistry.grant/authorize APIs, and git_client.exchange
+writing OPEN directly to the relay without BOX_CONNECT. The relay now relies
+on its existing broker admission and per-stream scope/checkpoints; the git
+exchange uses BrokerClient._connect and the relay's broker peer verification.
+The existing lifecycle closes retired boxes/channels. No session-grant API or
+cross-owner application check is restored. S8 retains every existing probe
+and adds shared-daemon/router forwarder probes plus a mutation self-test.
+
+OwnerBoxd.run's single bounded launcher adds HTTP_PROXY, HTTPS_PROXY,
+ALL_PROXY and lowercase variants plus both NO_PROXY spellings. OwnerTools
+bash puts these defaults after the ambient environment and before invocation
+overrides. Authenticated git's invocation-local http_proxy therefore keeps
+its broker routes. Wake probes and provisioning reach the same launcher;
+the package manager inherits its stage process environment.
+
+Tests added/ported:
+
+- `test_owner_public_egress.py`: real OwnerBoxd children, owner-bound root
+  relay, OwnerRegistry lifecycle requests and BOX_HOST broker PublicEgress,
+  with only destination DNS policy substituted for a local HTTP origin.
+  Covers HTTP, CONNECT, repeated commands sharing the listener, request body
+  and response after half-close, all proxy spellings despite ambient values,
+  bash and wake probes, and execute_provision's real stage with a synthetic
+  package-manager executable that checks its env and downloads locally.
+- Refusals: no retained admission, absent verified box record, loopback and
+  metadata destinations under the unchanged floor, owner cap and host cap;
+  every refusal proves no upstream connection was opened.
+- The retired command-output-EOF regression is ported to OwnerBoxd; active
+  connection shutdown, stalled admission shutdown, listener restart after
+  sleep and bind-failure journal cleanup have explicit proofs.
+- `test_box_git_bridge.py`: a real git ls-remote child uses the authenticated
+  broker route with public proxy defaults present; existing refusal/credential
+  assertions remain intact. An additional native proof uses the real
+  OwnerRegistry, root relay and BOX_HOST broker for git, then proves a foreign
+  center still refuses on that relay. Existing broker parsing, body/half-close and
+  refusal tests in `test_box_public_egress.py` are unchanged. Inspection of
+  the retirement diff found no other deleted public-egress backend cases.
+- Router/waker process doubles and in-process parent daemon fixtures select
+  ephemeral loopback ports because they share the host netns with their child
+  process proofs; real boxes and the native egress proof bind 3128. Existing
+  fixture assertions stay intact and now also assert the listener is alive.
+
+Validation receipts: `C:/Users/Jonathan/AppData/Local/Temp/s6a1f-validation-x62rdlwe/`.
+No test was retired or loosened, and no skip or xfail was added. Protected
+slice-6 files remain unchanged. No production/data access, dispatch, worktree,
+push, merge, rebase, branch switch or host Git configuration edit occurred.
+Independent review and deployment remain with the lead as required by this
+local-only handoff.
+
+
+Final 1f validation:
+
+- Final unprivileged Linux oracle: **2,298 passed**, one existing Windows-only
+  transport-refusal test skipped by its platform condition, across **126
+  files**. Selection includes every touched test, the requested owner/egress/
+  broker/box patterns and every GUARDS key. The skipped case was separately
+  executed natively on Windows: **1 passed**. No skip or xfail was added.
+- Root venue (`--as-root`), with rsync provisioned only in the disposable
+  container before pytest: **44 passed, 5 failed, no skips** across five files.
+  All five failures are the unchanged protected `box_layout_migration` API
+  mismatch (`account_type_of(..., db_reader=...)`) already recorded in 1d/1e:
+  `test_preflight_reads_wal_without_writing_data[False]`,
+  `test_preflight_reads_wal_without_writing_data[True]`,
+  `test_preflight_refuses_unreadable_founder_home`,
+  `test_apply_refuses_unreadable_founder_home_before_any_write`, and
+  `test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambiguous`.
+- Ruff on all **15 changed/new Python files**, `check_shapes.py`, strict
+  OpenSpec validation and whitespace checks passed. No changed file is heavy.
+  D7's existing 29 role-dispatch exceptions and fourteen retired-module bans
+  remain unchanged; git uses the existing BrokerClient connection seam with
+  its original peer verifier, adding no runtime-mode branch.
+- The post-commit hygiene gate uses `conv/c6-owner-daemon-s5` and the copied
+  body with `Registry row(s): S8` and the existing `Test-Removal: retired --`
+  reason. Its output is saved alongside these receipts after the local commit.
+
+## 6a part 1g: owner-keyed public admission (2026-10-17)
+
+`box_admission.resolve_owner`, used by PublicEgress, admits the relay-bound
+owner's verified box record without a center and retains the existing
+box-route revocation/deletion fence and lifecycle plan-suspension refusals;
+`resolve` keeps center-scoped admission. The relay forwards exactly
+`{op: BOX_PUBLIC, principal: owner}` and rejects center-bearing public requests
+before broker contact. The deleted relay grant check stays deleted because
+the bound channel and broker recheck supply authority, while the OS enforces
+owner isolation per the Direction. Tests cover zero-center native HTTP/CONNECT,
+unknown/unadmitted owners, invalid records, tombstones, both suspensions and
+forged relay operations, retaining all existing egress assertions without
+retirement, loosening, skip or xfail additions. Linux: 2,137 passed unprivileged
+(including all structural guards); root: 44 passed and the same five protected
+migration API failures recorded above, with no skips in either final run.
+Ruff, shape checks and strict spec validation passed. Validation receipts:
+`C:/Users/Jonathan/AppData/Local/Temp/s6a1g-validation-8ad854f1/`.
+
+
+## 6a part 1h: reconcile shared-door deletion after the slice-5 merge (2026-10-17)
+
+Identity erasure now lives in `tinyassets/router_account_deletion.py`, called
+only by `owner_router._delete_owner_account`. The WorkOS helper, principal
+pattern, URL, timeout, idempotent 404 and secret-free errors are unchanged from
+slice 4. Its common `AccountDeletionError` also serves the box sweep without
+making the shared helper import box-local code. The four historical WorkOS
+unit tests are restored in `tests/test_router_account_deletion.py`, with only
+the module/error imports relocated; AST comparison proves their bodies and the
+helper unchanged. Their obsolete retirement entries above are removed.
+
+Billing already lives in shared
+`billing.stripe_adapter.cancel_account_billing(root, owner)`: read the owner's
+subscription mapping, confirm cancellation, then update the shared plan. The
+unused home-based `cancel_stripe_billing` stays deleted. The shared fenced RPC
+`broker.account_erasure.erase_account` is restored in its original module;
+6a had removed it when its former box caller disappeared, overlooking the
+parallel door change. Its body, response-count validation and broker receiver
+are AST-identical to slice 4. Two real-broker tests prove lost-acknowledgement
+failure without automatic replay, safe explicit retry, other-owner preservation
+and loud failure with retained rows when the broker is unavailable.
+
+The local sweep performs no identity, billing, custody or host lifecycle work.
+No `local_only` or runtime-mode branch returns. The door phases, atomic
+resolve/release wake leases, single confirmed boxhostd destroy and four-argument
+HostService are unchanged. D7 now permits the three actual shared owners used
+by the merged door: identity, billing and custody erasure. Its assertions still
+reject owner stores and filesystem access; a new mutation input explicitly
+rejects the box-local account-deletion import. Every check_shapes probe and
+runtime-mode exception remains intact.
+
+All eighteen reported failures passed with their original expectations:
+
+- **I:** the door imported WorkOS deletion from the box-local module after 6a
+  removed it. Moving the helper exposed the independently deleted shared broker
+  RPC wrapper. Fix both shared dependencies, without restoring box callers.
+- **P:** paid-deletion setup patched the deleted box-local WorkOS pattern/helper.
+  Change only import/monkeypatch targets to the shared identity module; also fix
+  I. The broker_egress injection additionally needed the restored RPC target.
+- **R:** the host-lock test explicitly requires UID 0; the failing venue used
+  UID 1001. Run the unchanged test with `--as-root`; no product fix needed.
+
+All table rows are in `tests/test_owner_router.py` except the last:
+
+| Test | Cause/fix |
+| --- | --- |
+| `test_door_deletion_removes_only_bound_owners_data_and_router_state` | I |
+| `test_a_failed_account_revoke_can_be_retried_to_completion[retire]` | I |
+| `test_a_failed_account_revoke_can_be_retried_to_completion[revoke]` | I |
+| `test_box_deletion_rejection_leaves_lifecycle_and_router_state_untouched[blocked]` | I |
+| `test_box_deletion_rejection_leaves_lifecycle_and_router_state_untouched[refused]` | I |
+| `test_paid_deletion_confirms_every_phase_and_retries_after_tombstone[None]` | P + I |
+| `test_paid_deletion_confirms_every_phase_and_retries_after_tombstone[stop]` | P + I |
+| `test_paid_deletion_confirms_every_phase_and_retries_after_tombstone[owner_tree]` | P + I |
+| `test_paid_deletion_confirms_every_phase_and_retries_after_tombstone[relay]` | P + I |
+| `test_paid_deletion_confirms_every_phase_and_retries_after_tombstone[socket]` | P + I |
+| `test_paid_deletion_confirms_every_phase_and_retries_after_tombstone[broker_egress]` | P + I |
+| `test_paid_deletion_confirms_every_phase_and_retries_after_tombstone[billing]` | P + I |
+| `test_paid_deletion_confirms_every_phase_and_retries_after_tombstone[plan]` | P + I |
+| `test_paid_deletion_confirms_every_phase_and_retries_after_tombstone[credentials]` | P + I |
+| `test_paid_deletion_confirms_every_phase_and_retries_after_tombstone[identity]` | P + I |
+| `test_deletion_drains_real_turn_before_sweep_and_destroys_late_writes[False]` | I |
+| `test_deletion_drains_real_turn_before_sweep_and_destroys_late_writes[True]` | I |
+| `tests/test_owner_box_control.py::test_host_restart_lock_precedes_recovery_and_excludes_a_second_controller` | R |
+
+The paid-deletion decorator collects ten cases, not eleven; these account for
+all eighteen reported failures. No expectation encoded the deleted dual path,
+so no expectation exception was needed. All original assertions in the three
+touched existing test files are AST-identical to merge `3efd51eaa74`. No test
+was retired, loosened, skipped, xfailed or quarantined in this pass.
+
+The missing broker import also prevented the stop-failure injection from being
+consumed by its deletion phase; it instead fired during fixture teardown in the
+intermediate run. The drain assertions failed because forwarding never began.
+Both secondary symptoms disappear with the shared wrapper restored; neither
+fixture cleanup nor drain expectations changed. The baseline separately hit a
+socket-refusal timing race in `test_router_credential_socket_refuses_a_non_broker_peer`:
+immediate rejection can precede its sendall and raise BrokenPipeError. Its
+implementation/expectations are unchanged and the 47-test run below passes it.
+
+Validation receipts: `C:/Users/Jonathan/AppData/Local/Temp/s6a1h-validation-jjglaj5w/`.
+
+- Final unprivileged Linux oracle: **1,744 passed, no skips**, across **87
+  files**, including every structural guard and the requested owner, box, egress,
+  deletion and center-admission suites. All eighteen originally reported cases
+  pass across this venue and the root venue.
+- Full owner-router and broker-erasure suites: **47 passed, no skips**. These
+  include all seventeen deletion cases and both new real-broker proofs.
+  `reported-failures-resolved.json` maps each of the eighteen reported cases
+  to its passing Linux test receipt, including the unchanged root host lock.
+- Final D7/identity follow-up after the extra mutation input: **61 passed,
+  no skips**. The requested broad selection includes every structural GUARDS
+  key, D7 and all requested owner/box/egress/deletion file patterns.
+- Root venue: **37 passed, 5 failed, no skips**. The five are the unchanged
+  protected slice-6 `account_type_of(..., db_reader=readonly_db)` API mismatch
+  already recorded in 1e/1f/1g:
+  `test_preflight_reads_wal_without_writing_data[False]`,
+  `test_preflight_reads_wal_without_writing_data[True]`,
+  `test_preflight_refuses_unreadable_founder_home`,
+  `test_apply_refuses_unreadable_founder_home_before_any_write`, and
+  `test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambiguous`.
+  Rsync was provisioned only inside the disposable root container so ownership
+  proofs executed.
+- Ruff on all eight changed/new Python files, strict OpenSpec validation,
+  check_shapes and whitespace checks pass. No changed file is heavy.
+- The post-commit hygiene gate uses `conv/c6-owner-daemon-s5` and the copied
+  body with `Registry row(s): S8` and the existing `Test-Removal: retired --`
+  line; its receipt is saved beside the test results after the local commit.
+
+Protected slice-6 files, production, host Git configuration and remote Git state
+are untouched. No dispatch, push, merge, rebase, switch or amend. Independent
+review and deployment remain with the lead under this local-only handoff.

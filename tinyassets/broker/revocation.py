@@ -37,3 +37,34 @@ def revoke(credential: str) -> str:
         return "" if status == 200 else "provider_revocation_failed"
     except Exception:  # noqa: BLE001 - even malformed custody must be erased
         return "provider_revocation_failed"
+
+
+def recovery_message(credential: str) -> str:
+    """Public provider navigation, captured before erasure; never a retry token."""
+    from urllib.parse import urlsplit
+
+    name, url = "your provider", ""
+    try:
+        bundle = tokens.decode(credential)
+        name = bundle.provider_id or urlsplit(bundle.token_url).hostname or name
+        # The token endpoint was obtained from provider directory/discovery data.
+        origin = urlsplit(bundle.token_url)
+        url = f"{origin.scheme}://{origin.netloc}"
+        row = next((entry for entry in directory.entries()
+                    if entry["token_endpoint"] == bundle.token_url), {})
+        name = row.get("display_name") or row.get("id") or name
+        url = row.get("manage_url") or url
+    except Exception:  # noqa: BLE001 - corrupt directory must not prevent erasure
+        pass
+    return ("Removed locally, but provider-side revocation failed. "
+            "The token was erased, so TinyAssets cannot retry; revoke it at "
+            + name + (" (" + url + ")" if url else "") + ".")
+
+
+def removal_result(result):
+    """One honest removal outcome for both the door and the box."""
+    message = result.get("revocation_message", "")
+    return {"status": "removed_locally_revoke_failed" if message else "removed",
+            "connection_removed": result["removed"],
+            "secrets_removed": result["secrets_removed"],
+            **({"message": message, "recovery": "revoke_at_provider"} if message else {})}

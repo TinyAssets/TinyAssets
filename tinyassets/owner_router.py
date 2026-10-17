@@ -8,7 +8,7 @@ from __future__ import annotations
 import base64
 import json
 import os
-from collections.abc import Callable
+import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -21,6 +21,7 @@ from starlette.responses import JSONResponse
 _HOP = {b"connection", b"keep-alive", b"proxy-authenticate", b"proxy-authorization",
         b"te", b"trailer", b"transfer-encoding", b"upgrade"}
 _TRUSTED = {b"x-owner", b"x-box-secret", b"x-owner-identity"}
+_DELETIONS = threading.Lock()
 _SHARED_APP = {
     "/app/account/delete",
     "/app", "/app/client-error", "/app/token", "/app/native-sign-in",
@@ -54,24 +55,38 @@ def forwarded_path(path: str) -> bool:
 class BoxRoute:
     socket: Path
     secret: str
-    release: Callable | None = None
+    owner: str = ""
+    lease: str = ""
 
 
-def resolve_box(owner: str) -> BoxRoute:
-    from tinyassets.boxes.daemon_control import release, resolve
+def resolve_box(owner: str, *, cleanup=False) -> BoxRoute:
+    from tinyassets.boxes.daemon_control import request
     from tinyassets.broker.owner_identities import owner_box_route
+    from tinyassets.router_credentials import DeletedOwners
     from tinyassets.storage import data_dir
 
-    lease = resolve(owner)
+    if not cleanup and DeletedOwners(data_dir()).contains(owner):
+        raise LookupError("owner account is deleted")
+    result = request("resolve", owner, cleanup=cleanup)
+    if (set(result) != {"uid", "lease"} or type(result["uid"]) is not int
+            or not isinstance(result["lease"], str) or len(result["lease"]) != 43):
+        raise RuntimeError("invalid box lease response")
     try:
         uid, secret = owner_box_route(data_dir(), principal=owner)
-        if uid != lease["uid"]:
+        if uid != result["uid"]:
             raise RuntimeError("owner box identity changed during wake")
     except BaseException:
-        release(owner, lease["lease"])
+        request("release", owner, lease=result["lease"])
         raise
     root = Path(os.environ.get("TINYASSETS_BOXES_RUN", "/run/tinyassets-boxhostd"))
-    return BoxRoute(root / str(uid) / "app.sock", secret, lambda: release(owner, lease["lease"]))
+    return BoxRoute(root / str(uid) / "app.sock", secret, owner, result["lease"])
+
+
+def release_route(route):
+    if route.lease:
+        from tinyassets.boxes.daemon_control import request
+
+        request("release", route.owner, lease=route.lease)
 
 
 def _headers(headers, *, private=False):
@@ -128,26 +143,7 @@ class OwnerRouter:
         except (OSError, RuntimeError):
             return await JSONResponse({"error": "box_unavailable"}, status_code=503)(
                 scope, receive, send)
-        released = False
-
-        async def release_route():
-            nonlocal released
-            if route.release and not released:
-                with anyio.CancelScope(shield=True):
-                    await run_in_threadpool(route.release)
-                released = True
-
-        async def admitted_send(message):
-            if message["type"] == "http.response.start":
-                # HTTP/turn accounting now owns work. Passive SSE subscriptions
-                # must not retain the wake-to-forward lease for their lifetime.
-                await release_route()
-            await send(message)
-
-        try:
-            await forward(scope, receive, admitted_send, identity, route)
-        finally:
-            await release_route()
+        await forward(scope, receive, send, identity, route)
 
 
 async def forward(scope, receive, send, identity, route: BoxRoute):
@@ -164,12 +160,15 @@ async def forward(scope, receive, send, identity, route: BoxRoute):
         target += b"?" + scope["query_string"]
     url = httpx.URL("http://owner").copy_with(raw_path=target)
     started = False
+    released = False
     try:
         transport = httpx.AsyncHTTPTransport(uds=str(route.socket))
         timeout = httpx.Timeout(connect=5, read=None, write=30, pool=5)
         async with httpx.AsyncClient(transport=transport, timeout=timeout) as client:
             async with client.stream(scope["method"], url, headers=headers,
                                      content=Request(scope, receive).stream()) as response:
+                await run_in_threadpool(release_route, route)
+                released = True
                 await send({"type": "http.response.start", "status": response.status_code,
                             "headers": _headers(response.headers.raw)})
                 started = True
@@ -191,41 +190,106 @@ async def forward(scope, receive, send, identity, route: BoxRoute):
         if started:
             raise  # A truncated stream must never look like a successful response.
         await JSONResponse({"error": "box_unavailable"}, status_code=503)(scope, receive, send)
+    finally:
+        if not released:
+            with anyio.CancelScope(shield=True):
+                await run_in_threadpool(release_route, route)
 
 
 async def delete_owner_account(identity):
-    """The door owns the deletion sequence, including retries after box shutdown."""
+    # One router writer serializes receipt updates and concurrent deletion
+    # retries. Never hold the credential dispatch lock across network calls.
+    with anyio.CancelScope(shield=True):
+        await run_in_threadpool(_DELETIONS.acquire)
+        try:
+            return await _delete_owner_account(identity)
+        finally:
+            _DELETIONS.release()
+
+
+async def _delete_owner_account(identity):
+    """The door records each shared phase; a tombstone never blocks cleanup."""
+    from tinyassets.billing.stripe_adapter import cancel_account_billing
+    from tinyassets.broker.account_erasure import erase_account
     from tinyassets.broker.owner_identities import retire_owner
+    from tinyassets.router_account_deletion import delete_workos_user
     from tinyassets.router_credentials import DeletedOwners, revoke_account, tombstone
     from tinyassets.storage import data_dir
 
-    root = data_dir()
+    root, owner = data_dir(), identity.user_id
     deleted = DeletedOwners(root)
+    receipt = None
     try:
-        if await run_in_threadpool(deleted.contains, identity.user_id):
-            receipt = await run_in_threadpool(deleted.receipt, identity.user_id)
+        if await run_in_threadpool(deleted.contains, owner):
+            receipt = await run_in_threadpool(deleted.receipt, owner)
         else:
-            route = await run_in_threadpool(resolve_box, identity.user_id)
-            try:
-                response = await delete_box_data(identity, route)
-            finally:
-                if route.release:
-                    await run_in_threadpool(route.release)
+            route = await run_in_threadpool(resolve_box, owner, cleanup=True)
+            response = await delete_box_data(identity, route)
             if response.status_code != 200:
                 return response
             receipt = json.loads(response.body)
-            if receipt.get("unfinished_phases"):
-                return JSONResponse({"error": "deletion_incomplete", "receipt": receipt},
-                                    status_code=503, headers={"cache-control": "no-store"})
-            await run_in_threadpool(tombstone, root, identity.user_id, receipt)
-        await run_in_threadpool(retire_owner, root, principal=identity.user_id)
-        await run_in_threadpool(revoke_account, root, identity.user_id)
+            receipt["completed_phases"] = []
+            receipt["local_unfinished"] = receipt.get("unfinished_phases", [])
+            receipt["billing"] = receipt["identity"] = "pending"
+            receipt["unfinished_phases"] = [
+                "owner_tree", "broker_egress", "billing", "credentials", "identity"]
+            await run_in_threadpool(tombstone, root, owner, receipt)
+
+        done = receipt.setdefault("completed_phases", [])
+        failures = []
+
+        async def phase(name, operation):
+            if name in done:
+                return
+            try:
+                result = await run_in_threadpool(operation)
+                if name in {"billing", "identity"}:
+                    receipt[name] = result
+                    accepted = {"cancelled", "none"} if name == "billing" else {
+                        "deleted", "not_applicable"}
+                    if result not in accepted:
+                        raise RuntimeError("external deletion remains unfinished")
+                done.append(name)
+            except Exception:
+                failures.append(name)
+                if name in {"billing", "identity"} and receipt[name] == "pending":
+                    receipt[name] = "error"
+            receipt["unfinished_phases"] = sorted(set(failures + [
+                step for step in ("owner_tree", "broker_egress", "billing",
+                                  "credentials", "identity")
+                if step not in done]))
+            await run_in_threadpool(deleted.save_receipt, owner, receipt)
+
+        # The sweep is best-effort; destruction after a proven stop removes
+        # every remaining local byte, including failed sweep phases and execs.
+        await phase("owner_tree", lambda: retire_owner(root, principal=owner))
+        if "owner_tree" in done:
+            receipt["home_removed"] = True
+            receipt["local_unfinished"] = []
+            receipt["box_destroy"] = {"destroyed": True}
+        await phase("broker_egress", lambda: erase_account(root, principal=owner))
+        # Money cleanup must run even when stopping or erasing the box failed.
+        await phase("billing", lambda: cancel_account_billing(root, owner))
+        if "owner_tree" in done:
+            await phase("credentials", lambda: revoke_account(root, owner))
+        # Keep sign-in available until every other phase is confirmed, so the
+        # authenticated owner can retry any unfinished cleanup.
+        if all(step in done for step in ("owner_tree", "broker_egress", "billing", "credentials")):
+            await phase("identity", lambda: delete_workos_user(owner))
+        receipt["unfinished_phases"] = [step for step in (
+            "owner_tree", "broker_egress", "billing", "credentials", "identity")
+            if step not in done]
+        await run_in_threadpool(deleted.save_receipt, owner, receipt)
+        if receipt["unfinished_phases"]:
+            return JSONResponse({"error": "deletion_incomplete", "receipt": receipt},
+                                status_code=503, headers={"cache-control": "no-store"})
         return JSONResponse(receipt, headers={"cache-control": "no-store"})
     except Exception:
         import logging
 
         logging.getLogger(__name__).exception("account deletion failed")
-        return JSONResponse({"error": "account_deletion_failed"}, status_code=503,
+        return JSONResponse({"error": "account_deletion_failed", "receipt": receipt},
+                            status_code=503,
                             headers={"cache-control": "no-store"})
 
 

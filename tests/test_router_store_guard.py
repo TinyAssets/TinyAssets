@@ -85,10 +85,13 @@ def test_policy_session_reader_refuses_in_box(tmp_path, monkeypatch):
 # credentials. These are shared control-plane stores, never owner data stores.
 _ROUTER_IMPORTS = {
     "tinyassets.auth.middleware",
+    "tinyassets.billing.stripe_adapter",  # Shared subscription cancellation.
+    "tinyassets.broker.account_erasure",  # Shared credential custody erasure.
     "tinyassets.boxes.daemon_control",
     "tinyassets.broker.owner_identities",
     "tinyassets.onboarding.owner_sessions",
     "tinyassets.router_credentials",
+    "tinyassets.router_account_deletion",  # Shared identity erasure.
     "tinyassets.storage",  # data_dir is passed only to the shared store APIs.
 }
 
@@ -129,6 +132,7 @@ def test_router_imports_only_shared_control_plane_and_never_opens_files():
 
 @pytest.mark.parametrize("source", [
     "from tinyassets.daemon_server import _connect",
+    "from tinyassets.account_deletion import delete_account",
     "import tinyassets.universe_files as files",
     "data_dir().joinpath('owner', 'soul.md').read_text()",
     "open(data_dir() / 'owner' / 'soul.md')",

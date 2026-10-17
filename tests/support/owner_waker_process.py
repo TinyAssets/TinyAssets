@@ -18,6 +18,10 @@ def main():
     os.environ["TINYASSETS_ASSIGNED_QUEUE_POLL_SECONDS"] = "0.05"
     owner_runtime.OWNER_MOUNT = root
     owner_runtime._is_owner_mount = lambda path: path == root
+    # Process doubles share a netns; production has one null netns per box.
+    from tinyassets import owner_public_egress
+
+    owner_public_egress.LISTEN_ADDRESS = ("127.0.0.1", 0)
 
     class Clock(datetime):
         @classmethod

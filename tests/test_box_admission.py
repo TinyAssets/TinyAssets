@@ -8,8 +8,73 @@ import sqlite3
 import pytest
 
 from tinyassets.boxes.layout import hold
-from tinyassets.broker.box_admission import resolve
+from tinyassets.broker.box_admission import resolve, resolve_owner
 from tinyassets.broker.owner_identities import OwnerIdentities
+
+
+@pytest.fixture
+def owner_box(tmp_path):
+    tmp_path.chmod(0o700)
+    identities = OwnerIdentities(tmp_path / "identities.db", initialize=True)
+    uid = identities.resolve("alice", allocate=True).uid
+    identities.plans.apply("alice", tier="paid", event_created=1)
+    with sqlite3.connect(identities.path) as db:
+        db.execute("CREATE TABLE box_records (principal TEXT, machine INT, "
+                   "project_id INT, bhard_bytes INT)")
+        db.execute("INSERT INTO box_records VALUES (?,?,?,?)", ("alice", uid, uid, 1024**3))
+    return identities, uid
+
+
+def test_owner_public_admission_needs_no_center_and_keeps_center_channels_scoped(owner_box):
+    identities, uid = owner_box
+    assert resolve_owner(identities, {"op": "BOX_PUBLIC", "principal": "alice"}) == {
+        "op": "BOX_ADMITTED", "uid": uid, "quota": 1024**3}
+    with sqlite3.connect(identities.path) as db:
+        assert db.execute("SELECT COUNT(*) FROM center_admissions").fetchone() == (0,)
+        assert db.execute("SELECT COUNT(*) FROM owner_box_secrets").fetchone() == (0,)
+    with pytest.raises(PermissionError):
+        resolve(identities, {"op": "BOX_ADMISSION", "principal": "alice", "center": "a"})
+
+
+@pytest.mark.parametrize("column,value", [
+    ("machine", 300002), ("project_id", 300002), ("machine", None),
+    ("bhard_bytes", 0), ("bhard_bytes", -1024), ("bhard_bytes", 1025),
+    ("bhard_bytes", 1024.5), ("bhard_bytes", "unverified"),
+])
+def test_owner_public_admission_refuses_unverified_box_record(owner_box, column, value):
+    identities, _ = owner_box
+    with sqlite3.connect(identities.path) as db:
+        db.execute(f"UPDATE box_records SET {column}=?", (value,))
+    with pytest.raises(PermissionError, match="verified box registry record"):
+        resolve_owner(identities, {"op": "BOX_PUBLIC", "principal": "alice"})
+
+
+@pytest.mark.parametrize("document", [
+    {"op": "BOX_PUBLIC", "principal": "alice", "center": "a"},
+    {"op": "BOX_PUBLIC", "principal": "alice", "uid": 300001},
+    {"op": "BOX_ADMISSION", "principal": "alice"},
+    {"op": "BOX_PUBLIC"},
+    {"op": "BOX_PUBLIC", "principal": ""},
+])
+def test_owner_public_admission_has_an_exact_owner_keyed_request(owner_box, document):
+    identities, _ = owner_box
+    with pytest.raises(ValueError):
+        resolve_owner(identities, document)
+
+
+def test_owner_public_admission_refuses_missing_identity_plan_or_schema(owner_box):
+    identities, _ = owner_box
+    request = {"op": "BOX_PUBLIC", "principal": "alice"}
+    with pytest.raises(PermissionError):
+        resolve_owner(None, request)
+    with sqlite3.connect(identities.plans.path) as db:
+        db.execute("DELETE FROM plans")
+    with pytest.raises(LookupError):
+        resolve_owner(identities, request)
+    with sqlite3.connect(identities.path) as db:
+        db.execute("DROP TABLE box_records")
+    with pytest.raises(sqlite3.OperationalError):
+        resolve_owner(identities, request)
 
 
 def test_broker_admission_requires_permanent_mapping_live_center_and_migrated_quota(tmp_path):

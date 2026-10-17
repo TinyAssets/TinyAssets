@@ -143,10 +143,11 @@ class OwnerTools:
             return "error: a command is required"
         wall = min(max(float(timeout or DEFAULT_WALL_SECONDS), 1), MAX_BASH_SECONDS)
         from tinyassets.owner_git import for_command
+        from tinyassets.owner_public_egress import PROXY_ENV
 
         with (tempfile.TemporaryDirectory(prefix="ta-owner-") as directory,
               for_command(env or {}, Path(self._root)) as command_env):
-            launch_env = {**os.environ, **command_env}
+            launch_env = {**os.environ, **PROXY_ENV, **command_env}
             server = None
             bridge = self.bridge
             if bridge is not None:

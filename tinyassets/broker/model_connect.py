@@ -41,7 +41,7 @@ def validate(document):
         raise ValueError("invalid OAuth offer")
 
 
-def local_operation(ledger, *, principal, command_center, document):
+def local_operation(ledger, *, principal, command_center, document, committed_via):
     from tinyassets.broker.http_connect import local_operation as connect
     from tinyassets.connection_oauth import directory, tokens
     from tinyassets.connection_oauth.transport import OAuthError
@@ -66,7 +66,7 @@ def local_operation(ledger, *, principal, command_center, document):
         destination, policy = document["destination"], document["policy"]
         if policy.get("auth_scheme") != "oauth2":
             raise ValueError("OAuth requires OAuth custody")
-    args = dict(principal=principal, command_center=command_center)
+    args = dict(principal=principal, command_center=command_center, committed_via=committed_via)
     operation = dict(action="prepare", destination=destination, policy=policy,
                      expected="", secret="", request_ref=document["request_ref"])
     prepared = connect(ledger, **args, document=operation)

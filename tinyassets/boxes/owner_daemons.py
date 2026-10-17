@@ -11,7 +11,7 @@ import socket
 import threading
 import time
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from tinyassets.boxes.provider import BoxBusy, BoxError
@@ -34,6 +34,7 @@ class Box:
     image: str = ""
     restarting: bool = False
     roll_failed: bool = False
+    leases: dict[str, float] = field(default_factory=dict)
 
 
 class OwnerDaemons:
@@ -54,7 +55,6 @@ class OwnerDaemons:
         self.waiting: list[tuple[bool, object]] = []
         self.images, self.roll_wait = images, roll_wait
         self.rolling = set()
-        self.leases = {}
         self.idle_guard = lambda uid: nullcontext(True)
 
     def _rpc(self, box, operation="status", **body):
@@ -74,11 +74,12 @@ class OwnerDaemons:
             except ValueError as exc:
                 raise OSError("invalid owner lifecycle status") from exc
             if (not isinstance(result, dict)
-                    or set(result) != {"active", "idle_seconds", "draining", "revoked"}
+                    or set(result) != {"active", "idle_seconds", "draining", "revoked", "deleting"}
                     or type(result["active"]) is not int or result["active"] < 0
                     or type(result["idle_seconds"]) not in (int, float)
                     or not math.isfinite(result["idle_seconds"]) or result["idle_seconds"] < 0
-                    or type(result["draining"]) is not bool or type(result["revoked"]) is not bool):
+                    or type(result["draining"]) is not bool or type(result["revoked"]) is not bool
+                    or type(result["deleting"]) is not bool):
                 raise OSError("invalid owner lifecycle status")
             return result
         finally:
@@ -174,11 +175,15 @@ class OwnerDaemons:
         with self.condition:
             self.condition.notify_all()
 
-    def _sleep(self, box, *, idle):
-        if box.restarting or self._leased(box.uid):
+    def _sleep(self, box, *, idle, stop=True):
+        if box.restarting:
+            return False
+        now = time.monotonic()
+        box.leases = {key: end for key, end in box.leases.items() if end > now}
+        if box.leases:
             return False
         with self.idle_guard(box.uid) as allowed:
-            return self._drain(box, idle=idle) if allowed else False
+            return self._drain(box, idle=idle, stop=stop) if allowed else False
 
     def _activity(self, box):
         try:
@@ -188,13 +193,15 @@ class OwnerDaemons:
         except (OSError, http.client.HTTPException):
             pass  # Unknown status is never permission to evict; drain must still succeed.
 
-    def _drain(self, box, *, idle):
+    def _drain(self, box, *, idle, stop=True):
         try:
             status = self._rpc(box, "drain", idle_seconds=idle)
         except (OSError, http.client.HTTPException):
             return False  # Unknown status never authorizes idle eviction.
-        if not status["draining"]:
+        if not status["draining"] or status["active"] or status["deleting"]:
             return False
+        if not stop:
+            return True
         try:
             self._stop(box)
         except Exception as exc:
@@ -202,7 +209,22 @@ class OwnerDaemons:
             return False  # Keep the uncertain sandbox's capacity reservation.
         return True
 
-    def ensure_awake(self, owner, *, scheduled=False):
+    def resolve(self, owner, *, cleanup=False):
+        # The same lock covers readiness and the lease: no eviction window.
+        with self.condition:
+            uid = self.ensure_awake(owner, cleanup=cleanup)
+            token = secrets.token_urlsafe(32)
+            self.boxes[uid].leases[token] = time.monotonic() + 10
+            return {"uid": uid, "lease": token}
+
+    def release(self, owner, token):
+        with self.condition:
+            for box in self.boxes.values():
+                if box.owner == owner:
+                    box.leases.pop(token, None)
+            self.condition.notify_all()
+
+    def ensure_awake(self, owner, *, scheduled=False, cleanup=False):
         if type(scheduled) is not bool:
             raise ValueError("scheduled must be boolean")
         deadline = time.monotonic() + self.wake_timeout
@@ -225,7 +247,7 @@ class OwnerDaemons:
                     if box.awake and self.runtime.alive(uid):
                         if box.error:
                             raise BoxError("owner sandbox has an unverified launch or stop")
-                        if self._rpc(box)["draining"]:
+                        if self._rpc(box)["draining"] and not cleanup:
                             raise BoxError("owner daemon is still draining")
                         box.last = time.monotonic()
                         return uid
@@ -283,36 +305,17 @@ class OwnerDaemons:
                 self._stop(box, retire=True)
             self.condition.notify_all()
 
-    def _leased(self, uid):
-        leases = self.leases.setdefault(uid, {})
-        now = time.monotonic()
-        for token, until in list(leases.items()):
-            if until <= now:
-                del leases[token]
-        return bool(leases)
+    def destroy(self, owner, uid):
+        """Account retirement, unlike center retirement, erases the entire volume."""
+        from tinyassets.boxes.destroy import socket_tree
 
-    def resolve(self, owner):
-        """Pin the wake-to-forward gap; the HTTP/turn gate then owns work."""
         with self.condition:
-            uid = self.ensure_awake(owner)
-            self._leased(uid)
-            if len(self.leases[uid]) >= 1024:
-                raise BoxBusy("owner wake lease capacity exceeded")
-            token = secrets.token_hex(24)
-            self.leases.setdefault(uid, {})[token] = time.monotonic() + 65
-            return {"uid": uid, "lease": token}
-
-    def release(self, owner, token):
-        with self.condition:
-            if not isinstance(token, str):
-                raise BoxError("invalid wake lease")
-            try:
-                uid = self.admission.owner(owner)["uid"]
-            except LookupError:
-                return {"released": True}  # Retirement already stopped this box.
-            self.leases.get(uid, {}).pop(token, None)
-            self.condition.notify_all()
-            return {"released": True}
+            self.retire(owner, uid)
+            self.quota.destroy(uid)
+            self.relays.retire(uid)
+            socket_tree(self.directory, uid)
+            (self.directory / "secrets" / str(uid)).unlink(missing_ok=True)
+            self.boxes.pop(uid, None)
 
     def status(self, owner):
         with self.condition:
@@ -355,14 +358,8 @@ class OwnerDaemons:
                         return {"uid": uid, "outcome": "rolled"}
                     # No admission gap: drain closes the same gate held by HTTP
                     # and detached turns. Unknown state never permits a stop.
-                    with self.idle_guard(uid) as allowed:
-                        if allowed and not self._leased(uid):
-                            try:
-                                status = self._rpc(box, "drain", idle_seconds=0)
-                            except (OSError, http.client.HTTPException):
-                                status = None
-                            if status and status["draining"]:
-                                break
+                    if self._sleep(box, idle=0, stop=False):
+                        break
                     left = deadline - time.monotonic()
                     if left <= 0:
                         return {"uid": uid, "outcome": "deferred_busy"}
@@ -386,11 +383,7 @@ class OwnerDaemons:
                         # health probe never authorizes killing that work.
                         drain_deadline = time.monotonic() + self.roll_wait
                         while self.runtime.alive(uid):
-                            try:
-                                status = self._rpc(box, "drain", idle_seconds=0)
-                            except (OSError, http.client.HTTPException):
-                                status = None
-                            if status and status["draining"]:
+                            if self._sleep(box, idle=0, stop=False):
                                 break
                             left = drain_deadline - time.monotonic()
                             if left <= 0:

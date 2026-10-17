@@ -113,11 +113,19 @@ class HostService:
                 return self.daemons.roll(document["image"], document.get("uid"))
             validate_principal(document.get("owner"))
             operation, owner = document["lifecycle"], document["owner"]
-            if uid == 1001 and operation == "resolve" and set(document) == {"lifecycle", "owner"}:
-                return self.daemons.resolve(owner)
+            if (uid == 1001 and operation == "resolve"
+                    and set(document) == {"lifecycle", "owner", "cleanup"}
+                    and type(document["cleanup"]) is bool):
+                return self.daemons.resolve(owner, cleanup=document["cleanup"])
             if (uid == 1001 and operation == "release"
-                    and set(document) == {"lifecycle", "owner", "lease"}):
-                return self.daemons.release(owner, document["lease"])
+                    and set(document) == {"lifecycle", "owner", "lease"}
+                    and isinstance(document["lease"], str)):
+                self.daemons.release(owner, document["lease"])
+                return {"released": True}
+            if (uid == 1002 and operation == "destroy"
+                    and set(document) == {"lifecycle", "owner", "uid"}):
+                self.daemons.destroy(owner, document["uid"])
+                return {"destroyed": True}
             if ((uid == 1001 or (uid == 1002 and document.get("scheduled") is True))
                     and operation == "ensure_awake"
                     and set(document) == {"lifecycle", "owner", "scheduled"}):

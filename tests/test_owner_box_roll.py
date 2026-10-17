@@ -86,9 +86,9 @@ def test_abandoned_router_lease_expires_without_pinning_the_box(rolling):
     lease = manager.resolve("a")
     uid = lease["uid"]
     manager.roll(rolling.new)
-    manager.leases[uid][lease["lease"]] = 0
+    manager.boxes[uid].leases[lease["lease"]] = 0
     assert manager.roll(rolling.new, uid) == {"uid": uid, "outcome": "rolled"}
-    assert not manager.leases[uid]
+    assert not manager.boxes[uid].leases
 
 
 def test_failed_health_rolls_back_only_that_box(rolling, monkeypatch):
@@ -215,3 +215,18 @@ def test_failed_candidate_running_turn_is_not_killed_even_when_rollback_cannot_d
             gate.__exit__(None, None, None)
     manager.maintain()
     assert not rolling.runtime.live
+
+
+def test_roll_cannot_stop_a_deletion_drain_after_the_last_turn(rolling):
+    manager = rolling.manager
+    lease = manager.resolve("a")
+    uid = lease["uid"]
+    state = rolling.states[uid]
+    with state.enter():
+        state.status(deleting=True)
+    manager.release("a", lease["lease"])
+    manager.roll(rolling.new)
+    assert manager.roll(rolling.new, uid) == {"uid": uid, "outcome": "deferred_busy"}
+    assert not rolling.runtime.stops
+    assert rolling.runtime.live == {uid}
+    assert manager.boxes[uid].image == rolling.old

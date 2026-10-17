@@ -20,6 +20,7 @@ class OwnerProcessCancelled(BoxError):
 def run(core, argv, *, cwd, stdin, env, wall_seconds, output_bytes,
         line_handler=None, should_cancel=None):
     from tinyassets.boxes.boxd import _Running
+    from tinyassets.owner_public_egress import PROXY_ENV
 
     if (not argv or any(not isinstance(arg, str) or "\0" in arg for arg in argv)
             or not math.isfinite(wall_seconds) or wall_seconds <= 0
@@ -49,7 +50,7 @@ def run(core, argv, *, cwd, stdin, env, wall_seconds, output_bytes,
                 proc = subprocess.Popen(
                     ["/bin/sh", "-c", 'cd -P -- "/proc/self/fd/$0" || exit 126; exec "$@"',
                      str(directory), *argv],
-                    cwd=core._root, env={**os.environ, **(env or {})},
+                    cwd=core._root, env={**os.environ, **PROXY_ENV, **(env or {})},
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     start_new_session=True, pass_fds=(directory,), close_fds=True,
                 )

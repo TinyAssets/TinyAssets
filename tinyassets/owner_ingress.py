@@ -80,6 +80,19 @@ class OwnerIngress:
                 ] + [(b"x-tinyassets-box-uid", str(runtime.uid).encode()),
                      (b"x-tinyassets-box-sha", sha.encode())]}
             await send(message)
+
+        if scope["path"] == "/_box/account/delete" and scope["method"] == "POST":
+            # Close admission before waiting. The deletion itself is a control
+            # call, so it can retry while draining and never waits on itself.
+            from starlette.concurrency import run_in_threadpool
+
+            if not await run_in_threadpool(activity.quiesce, 20):
+                return await JSONResponse({"error": "deletion_incomplete", "receipt": {
+                    "unfinished_phases": ["drain"]}}, status_code=503)(scope, receive, proven_send)
+            response = await delete_local_account(identity)
+            if response.status_code == 409:
+                activity.deletion_refused()
+            return await response(scope, receive, proven_send)
         # Admission and drain share a lock: a successful drain cannot race a
         # new request or background turn. No control request counts as activity.
         gate = activity.enter()
@@ -87,7 +100,7 @@ class OwnerIngress:
             gate.__enter__()
         except RuntimeError:
             return await JSONResponse({"error": "box_draining"}, status_code=503)(
-                scope, receive, send)
+                scope, receive, proven_send)
         # A passive MCP event subscription is not a running turn. Actual MCP
         # calls and detached turns hold their own gate; an idle subscription
         # may reconnect after its box sleeps.
@@ -95,11 +108,7 @@ class OwnerIngress:
             gate.__exit__(None, None, None)
             return await self.app(scope, receive, proven_send)
         try:
-            if scope["path"] == "/_box/account/delete" and scope["method"] == "POST":
-                response = await delete_local_account(identity)
-                await response(scope, receive, proven_send)
-            else:
-                await self.app(scope, receive, proven_send)
+            await self.app(scope, receive, proven_send)
         finally:
             gate.__exit__(None, None, None)
 

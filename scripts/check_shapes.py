@@ -75,7 +75,7 @@ SHAPES: dict[str, Shape] = {
     "S3": Shape(
         ("tinyassets/agent_loop/**",),
         (
-            ('tinyassets/providers/claude_provider.py', ''),
+            ("tinyassets/providers/claude_provider.py", ""),
             ("tinyassets/providers/codex_provider.py", ""),
             ("tinyassets/providers/codex_app_server.py", ""),
         ),
@@ -84,11 +84,11 @@ SHAPES: dict[str, Shape] = {
     "S4": Shape(
         ("tinyassets/providers/**", "tinyassets/connections/**"),
         (
-            ('tinyassets/onboarding/openai_device.py', ''),
-            ('tinyassets/providers/claude_provider.py', ''),
+            ("tinyassets/providers/claude_provider.py", ""),
             ("tinyassets/providers/codex_provider.py", ""),
             ("tinyassets/providers/codex_app_server.py", ""),
             ("tinyassets/providers/router.py", r"\bFALLBACK_CHAINS\b"),
+            ("tinyassets/onboarding/openai_device.py", ""),
         ),
         ceiling=3,
     ),
@@ -131,6 +131,9 @@ SHAPES: dict[str, Shape] = {
         ("tinyassets/agent_loop/box_ta_worker.py", ""),
         ("scripts/box_acceptance.py", ""),
         ("tinyassets/boxes/network.py", r"\bFORWARDER\s*="),
+        ("tinyassets/daemon*.py", r"\b(?:OwnerPublicForwarder|JAIL_PROXY_URL|PROXY_ENV)\b"),
+        ("tinyassets/router/**/*.py", r"\b(?:OwnerPublicForwarder|JAIL_PROXY_URL|PROXY_ENV)\b"),
+        ("tinyassets/owner_router.py", r"\b(?:OwnerPublicForwarder|JAIL_PROXY_URL|PROXY_ENV)\b"),
         ("tinyassets/**/*.py", r"\b(?:class\s+BoxExecutor|def\s+start_exec)\b"),
     ), ceiling=0),
     "S9": Shape(
