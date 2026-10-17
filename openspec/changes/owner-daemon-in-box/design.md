@@ -712,3 +712,15 @@ explicit classes refuse. Shared tables are not split.
 - Build what the research says to build.
 - A co-admin of a shared center is refused, as the research recommends by default. Sharing is by publishing.
 - Features not ported into the owner daemon at cutover are dropped. The list is reported to the founder before the cutover deploy.
+
+## Founder decisions (2026-10-17)
+
+- **Fresh backup for the final rehearsal: approved.** The lead pulls a fresh backup of today's production data read-only onto its own machine, never shown to an external model, runs the final rehearsal network-less, and reports only redacted pass/fail and counts.
+- **Unattributable legacy data is dropped**, and the cutover report lists it with counts. That covers pre-ownership runs (Aug 5–19), never-admitted centers, unknown-center runs, orphaned usage records and unknown-directory files. Nothing that has an attributable owner is dropped silently.
+- **The cutover's user costs are accepted.**
+  - Every account reconnects a model source; CLI connections are retired.
+  - Keys pasted into chat are no longer accepted (tap-to-connect).
+  - `/mcp/hooks/` integrations re-point to `/hooks/inbound/`.
+  - Local image descriptions are dropped.
+  - Billing status no longer shows usage figures.
+- **The cutover deploy goes ahead when every gate passes**: a clean census, the real-data rehearsal passing on a fresh backup, the lead's receipt on every slice, green CI, and the report delivered. The founder's condition: "Just make sure the architecture isn't sacrificed on review rounds or hard parts." No weakened shape, compatibility path or skipped gate gets a slice through.
