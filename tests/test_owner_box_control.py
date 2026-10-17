@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+from tests.test_owner_box_lifecycle import fleet  # noqa: F401
+from tests.test_owner_box_roll import rolling  # noqa: F401
 from tinyassets.boxes.host_service import HostService
 
 
@@ -137,3 +139,64 @@ def test_host_control_rejects_the_deleted_file_admission_operation():
     result = service.lifecycle({"admit": {"owner": "alice", "center": "home"}}, 1001)
     assert set(result) == {"error"}
     assert not hasattr(service, "host")
+
+
+def test_roll_socket_pins_broker_and_deploy_identity_and_refuses_router(rolling):  # noqa: F811
+    assert os.geteuid() == 0, "run this file with linux_oracle.py --as-root"
+    manager = rolling.manager
+    uid = manager.ensure_awake("a")
+    service = HostService(None, None, None, manager)
+    stop = threading.Event()
+    with tempfile.TemporaryDirectory(prefix="rollctl-") as directory:
+        path = Path(directory)
+        path.chmod(0o755)
+        listener = threading.Thread(target=service.serve,
+                                    args=(path / "daemon.sock", 1102, service.daemon, stop))
+        listener.start()
+        try:
+            deadline = time.monotonic() + 5
+            while not (path / "daemon.sock").exists() and time.monotonic() < deadline:
+                time.sleep(.01)
+            code = '''
+import os, sys
+from tinyassets.boxes.daemon_control import request
+role, image = int(sys.argv[1]), sys.argv[2]
+os.setgroups([1102])
+os.setgid(role)
+os.setuid(role)
+if role == 1001:
+    lease = request("resolve", "a")
+    assert lease["uid"] == 300001 and len(lease["lease"]) == 48
+    assert request("release", "a", lease=lease["lease"]) == {"released": True}
+    try:
+        request("roll", image=image)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("router gained deploy authority")
+else:
+    assert request("roll", image=image) == {"uids": [300001], "asleep": 0}
+    assert request("roll", image=image, uid=300001) == {"uid": 300001, "outcome": "rolled"}
+'''
+            for role in (1001, 1002):
+                result = subprocess.run([sys.executable, "-c", code, str(role), rolling.new],
+                                        capture_output=True, text=True, timeout=15,
+                                        env={**os.environ, "TINYASSETS_BOXES_RUN": directory})
+                assert result.returncode == 0, result.stderr
+            # The deploy caller uses the same kernel-authenticated root socket.
+            from tinyassets.boxes import daemon_control
+            previous = os.environ.get("TINYASSETS_BOXES_RUN")
+            os.environ["TINYASSETS_BOXES_RUN"] = directory
+            try:
+                assert daemon_control.request("roll", image=rolling.new) == {
+                    "uids": [uid], "asleep": 0}
+            finally:
+                if previous is None:
+                    os.environ.pop("TINYASSETS_BOXES_RUN")
+                else:
+                    os.environ["TINYASSETS_BOXES_RUN"] = previous
+            assert manager.boxes[uid].image == rolling.new
+        finally:
+            stop.set()
+            listener.join(5)
+            assert not listener.is_alive()

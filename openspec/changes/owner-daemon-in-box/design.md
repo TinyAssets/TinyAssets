@@ -505,6 +505,79 @@ cannot be attributed. Shared tables are not split.
   run on the split data. Rollback is restore-from-backup only, within the
   cutover's maintenance window.
 
+### D11 as built (slice 6b, 2026-10-17)
+
+- **One deployment image.** The shared deployment is unchanged. After its
+  health checks, `scripts/roll_owner_boxes.py` resolves that same immutable
+  OCI digest to its image ID and installs a static `harness-<image-id>` rootfs
+  without executing the image or mounting owner data. Existing extracted
+  images remain available for individual rollback. The current harness link
+  advances only after boxhostd accepts the target. No host service restart is
+  part of a roll.
+- **Authority and metadata.** Kernel-authenticated `daemon.sock` accepts
+  `roll(image[, uid])` only from root (the deploy caller) or broker UID 1002;
+  router UID 1001 cannot roll. The no-UID call durably publishes the next-wake
+  image and returns awake box UIDs plus the count of known sleeping boxes.
+  The driver makes no per-box call for those sleeping boxes. Per-UID calls return `rolled`,
+  `deferred_busy`, `asleep`, or `rolled_back` with reason `health_failed`.
+  Root-private `/var/lib/boxhostd/state/images.json` records the current image
+  and each UID's last launch image, using file and directory fsync plus atomic
+  replacement. The launch record is written before starting a process, because
+  a process can write before readiness. It survives service restart and sleep.
+  These are deployment records, never reads of owner trees or connections.
+- **Drain and bounds.** An awake box gets 60 seconds to drain; existing turns
+  and requests hold slice 4's Activity gate. A successful atomic drain closes
+  admission before SIGTERM. There is a 30-second graceful flush budget, the
+  existing 60-second authenticated readiness deadline, two-second lifecycle
+  HTTP calls and bounded runtime commands (spec/state five seconds, run 30,
+  liveness/kill/delete/census ten). Quota subprocesses have ten-second bounds.
+  A failed candidate gets a separate 60-second drain budget before rollback;
+  scheduled work that started during startup cannot be killed by rollback.
+  If drain/restore cannot complete safely, the control call fails loudly;
+  maintenance only drains that failed box safely, and never kills its work.
+  Retirement waits at most 600 seconds for an in-flight restart to settle.
+- **Wakes and concurrency.** This head had ensure-awake but no resolve/release
+  wake-lease operations. Router resolution now obtains a 65-second, bounded
+  (1,024 per box) wake lease under the lifecycle lock, releases it after
+  response admission or on failure/cancellation, and uses the normal broker route.
+  Both sleep and roll respect these leases. A dead router cannot pin a box
+  forever. Startup/shutdown release the fleet lock during a roll, retaining
+  capacity reservations; other interactive wakes still work and start on the
+  latest published image. The driver has at most two box operations in flight.
+  A busy box is deferred without interruption. Sleeping boxes are untouched.
+- **Failure containment and cutover.** Only the failed box is restored to its
+  own previous image. Static parsing of the image's layout declaration must
+  prove `ACTIVE_BOX_LAYOUT = "owner-box"` before any launch or rollback.
+  Missing or pre-cutover declarations refuse even before the first write;
+  there is no override. The refusal directs the cutover operator to
+  `deploy/backup-restore.sh`; this slice does not implement restore or edit
+  migration/deploy fail-safe logic. Failed cleanup never advertises readiness.
+- **Driver and receipt.** Root control calls have a 600-second socket bound;
+  SSH has a 610-second bound and a ten-second connect bound. Static extraction
+  bounds create/remove at 30 seconds each and export/tar at 180 seconds each.
+  The workflow step has a 50-minute bound. The driver writes one JSON receipt
+  with counts for the four outcomes plus `failed`, sorted failing UIDs only,
+  and `control`/`canary` pass/fail states. It never copies a control error,
+  owner identity, reply, connection record or credential into that receipt.
+  Rollback, control failure or failed canary makes the driver exit nonzero;
+  deferred busy and sleeping boxes are explicitly counted.
+- **Acceptance.** `scripts/owner_box_canary.py` uses the existing pinned
+  canary account's password and door-key environment from `load_secrets.sh`
+  using the opt-in `TINYASSETS_SECRETS_PROFILE=canary`, also supported by
+  PowerShell. CI injects the same secret names. It signs in at the public router door,
+  verifies the configured owner and home through `/app/me`, then initializes
+  public `/mcp` and invokes one `converse` nonce turn. It requires the exact
+  nonce reply. Every MCP response must carry the same owner-box UID and exact
+  deployed SHA as `/app/me`. OwnerIngress replaces handler provenance headers
+  with the startup-admitted UID and `/etc/tinyassets-build-sha`, baked into the
+  immutable image rather than inherited environment or shared release state.
+  Missing build evidence fails acceptance. This uses the ordinary router,
+  owner daemon and broker-backed model call, with no canary fixture endpoint.
+- **Workflow hold.** The new required step follows existing public/shared
+  health probes and uploads its one receipt. It does not invoke global image
+  rollback on a box failure. The founder's external `disabled_manually` hold
+  is unchanged; no workflow was enabled, dispatched or run in this slice.
+
 ## Founder decisions (2026-10-16)
 
 - Build what the research says to build.

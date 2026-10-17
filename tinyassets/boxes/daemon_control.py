@@ -8,12 +8,15 @@ from tinyassets.boxes.bootstrap import connect
 from tinyassets.boxes.control_channel import receive, send
 
 
-def request(operation: str, owner: str, **fields) -> dict:
+def request(operation: str, owner: str | None = None, **fields) -> dict:
     root = Path(os.environ.get("TINYASSETS_BOXES_RUN", "/run/tinyassets-boxhostd"))
     sock, identity = connect(root / "daemon.sock")
     with sock:
-        sock.settimeout(65)
-        send(sock, {"lifecycle": operation, "owner": owner, **fields})
+        sock.settimeout(600 if operation == "roll" else 65)
+        document = {"lifecycle": operation, **fields}
+        if owner is not None:
+            document["owner"] = owner
+        send(sock, document)
         result = receive(sock, identity)
     if result.get("error") == "unadmitted":
         raise LookupError("owner has no live admission")
@@ -28,6 +31,22 @@ def ensure_awake(owner: str, *, scheduled: bool = False) -> int:
     if set(result) != {"uid"} or type(uid) is not int or not 300001 <= uid <= 399999:
         raise RuntimeError("invalid box wake response")
     return uid
+
+
+def resolve(owner):
+    import re
+
+    result = request("resolve", owner)
+    if (set(result) != {"uid", "lease"} or type(result["uid"]) is not int
+            or not 300001 <= result["uid"] <= 399999
+            or not isinstance(result["lease"], str)
+            or not re.fullmatch(r"[0-9a-f]{48}", result["lease"])):
+        raise RuntimeError("invalid box wake lease")
+    return result
+
+
+def release(owner, lease):
+    return request("release", owner, lease=lease)
 
 
 def broker_bootstrap():

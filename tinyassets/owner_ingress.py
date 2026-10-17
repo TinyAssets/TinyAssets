@@ -9,6 +9,8 @@ from pathlib import Path
 
 from starlette.responses import JSONResponse
 
+BUILD_SHA_FILE = Path("/etc/tinyassets-build-sha")
+
 
 class OwnerIngress:
     def __init__(self, app, secret_file: Path):
@@ -66,6 +68,18 @@ class OwnerIngress:
             return await JSONResponse({"error": "router_required"}, status_code=401)(
                 scope, receive, send)
         scope = dict(scope, tinyassets_router_identity=identity)
+        async def proven_send(message):
+            if message["type"] == "http.response.start":
+                # Provenance comes from this running box and its immutable image,
+                # never from router input or the shared release-state receipt.
+                build = BUILD_SHA_FILE
+                sha = build.read_text().strip() if build.exists() else ""
+                names = {b"x-tinyassets-box-uid", b"x-tinyassets-box-sha"}
+                message = {**message, "headers": [
+                    (k, v) for k, v in message.get("headers", []) if k.lower() not in names
+                ] + [(b"x-tinyassets-box-uid", str(runtime.uid).encode()),
+                     (b"x-tinyassets-box-sha", sha.encode())]}
+            await send(message)
         # Admission and drain share a lock: a successful drain cannot race a
         # new request or background turn. No control request counts as activity.
         gate = activity.enter()
@@ -79,13 +93,13 @@ class OwnerIngress:
         # may reconnect after its box sleeps.
         if scope["method"] == "GET" and scope["path"] in {"/mcp", "/mcp/", "/mcp/events"}:
             gate.__exit__(None, None, None)
-            return await self.app(scope, receive, send)
+            return await self.app(scope, receive, proven_send)
         try:
             if scope["path"] == "/_box/account/delete" and scope["method"] == "POST":
                 response = await delete_local_account(identity)
-                await response(scope, receive, send)
+                await response(scope, receive, proven_send)
             else:
-                await self.app(scope, receive, send)
+                await self.app(scope, receive, proven_send)
         finally:
             gate.__exit__(None, None, None)
 

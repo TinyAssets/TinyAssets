@@ -139,7 +139,8 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
             return directory, path
 
         monkeypatch.setattr(manager, "_paths", paths)
-        monkeypatch.setattr(daemon_control, "ensure_awake", manager.ensure_awake)
+        monkeypatch.setattr(daemon_control, "resolve", manager.resolve)
+        monkeypatch.setattr(daemon_control, "release", manager.release)
 
         def control(operation, owner, **fields):
             assert operation == "retire"
@@ -544,8 +545,8 @@ def test_router_credential_socket_refuses_a_non_broker_peer(boxes, tmp_path, mon
 
 
 def test_default_socket_is_under_the_existing_compose_mount(admitted, monkeypatch):
-    monkeypatch.setattr("tinyassets.boxes.daemon_control.ensure_awake",
-                        lambda owner: admitted.owner_machine(owner))
+    monkeypatch.setattr("tinyassets.boxes.daemon_control.resolve",
+                        lambda owner: {"uid": admitted.owner_machine(owner), "lease": "test"})
     from tinyassets.owner_router import resolve_box
 
     monkeypatch.delenv("TINYASSETS_BOXES_RUN", raising=False)
@@ -837,6 +838,7 @@ def test_boxhostd_real_process_restart_rotates_secret_and_serves_again(boxes, ad
     from tinyassets.owner_router import resolve_box
 
     first = resolve_box("alice")
+    first.release()
     uid = admitted.owner_machine("alice")
     process = boxes.runtime.processes[uid]
     with boxes.manager.condition:

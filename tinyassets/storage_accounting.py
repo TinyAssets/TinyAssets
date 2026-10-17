@@ -698,6 +698,8 @@ UNIVERSE_ENTRIES: frozenset[str] = frozenset({
 #: is recognized by that shape in the completeness test, so no tool's home
 #: directory is named here.
 ELSEWHERE_ENTRIES: frozenset[str] = frozenset({
+    # Immutable extracted image identity under /opt/tinyassets/boxhostd, not owner storage.
+    ".box-image-id",
     # Ephemeral boxhostd socket exports and per-start secrets under /run, never owner data.
     "app.sock", "secret", "secrets", "daemon.sock",
     ".git", ".agents", ".author_server.db", ".workflow.db",

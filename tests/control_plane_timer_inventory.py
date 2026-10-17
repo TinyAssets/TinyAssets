@@ -48,6 +48,15 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/boxes/owner_daemons.py::OwnerDaemons.ensure_awake": (
         CALL_SCOPED, "one wake's bounded priority/capacity and crash-backoff wait",
     ),
+    "tinyassets/boxes/owner_daemons.py::OwnerDaemons.retire": (
+        CALL_SCOPED, "one retirement waits at most 600 seconds for an in-flight restart",
+    ),
+    "tinyassets/boxes/owner_daemons.py::OwnerDaemons.roll": (
+        CALL_SCOPED, "one deploy waits at most 60 seconds for existing work and wake leases",
+    ),
+    "tinyassets/boxes/owner_daemons.py::OwnerDaemons.roll#2": (
+        CALL_SCOPED, "one failed candidate gets at most 60 seconds to drain before rollback",
+    ),
     "tinyassets/boxes/gvisor_runtime.py::GvisorRuntime.shutdown": (
         CALL_SCOPED, "bounded SIGTERM flush wait for one stopped owner daemon",
     ),

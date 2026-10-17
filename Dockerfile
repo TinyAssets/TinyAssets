@@ -306,6 +306,7 @@ COPY scripts/check_privileged_chain.py /usr/local/libexec/ta-chain.py
 COPY deploy/broker_main.py /app/broker_main.py
 
 ARG TINYASSETS_BUILD_SHA=unknown
+RUN printf '%s\n' "$TINYASSETS_BUILD_SHA" > /etc/tinyassets-build-sha
 ENV PATH=/opt/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

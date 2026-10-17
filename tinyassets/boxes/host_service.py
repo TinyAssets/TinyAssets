@@ -80,7 +80,7 @@ class HostService:
         identity = peer(sock)
         pidfd = None
         try:
-            if identity[1:] not in {(1001, 1001), (1002, 1002)}:
+            if identity[1:] not in {(0, 0), (1001, 1001), (1002, 1002)}:
                 raise BoxError("daemon channel identity refused")
             pidfd = os.pidfd_open(identity[0])
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
@@ -108,8 +108,16 @@ class HostService:
         try:
             if self.daemons is None:
                 raise BoxError("owner lifecycle is unavailable")
+            if (uid in {0, 1002} and document.get("lifecycle") == "roll"
+                    and set(document) in ({"lifecycle", "image"}, {"lifecycle", "image", "uid"})):
+                return self.daemons.roll(document["image"], document.get("uid"))
             validate_principal(document.get("owner"))
             operation, owner = document["lifecycle"], document["owner"]
+            if uid == 1001 and operation == "resolve" and set(document) == {"lifecycle", "owner"}:
+                return self.daemons.resolve(owner)
+            if (uid == 1001 and operation == "release"
+                    and set(document) == {"lifecycle", "owner", "lease"}):
+                return self.daemons.release(owner, document["lease"])
             if ((uid == 1001 or (uid == 1002 and document.get("scheduled") is True))
                     and operation == "ensure_awake"
                     and set(document) == {"lifecycle", "owner", "scheduled"}):
@@ -220,6 +228,7 @@ def main(*, rootfs: Path, data_root: Path) -> None:
 
 
 def _serve(*, rootfs: Path, data_root: Path) -> None:
+    from tinyassets.boxes.images import Images
     if os.geteuid() != 0:
         raise RuntimeError("box host requires its dedicated root service")
     os.umask(0o077)
@@ -244,6 +253,7 @@ def _serve(*, rootfs: Path, data_root: Path) -> None:
         idle_seconds=float(os.environ.get("TINYASSETS_BOX_IDLE_SECONDS", "900")),
         awake_cap=int(os.environ.get("TINYASSETS_BOX_AWAKE_CAP", "6")),
         memory_bytes=int(os.environ.get("TINYASSETS_BOX_MEMORY_BYTES", str(1024**3))))
+    daemons.images = Images(rootfs.parent, state / "images.json", rootfs)
     service = HostService(admission, quota, relays, daemons)
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):

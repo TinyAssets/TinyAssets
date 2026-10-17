@@ -15,7 +15,7 @@ class ProcessRuntime:
         self.processes = {}
         self.logs = []
 
-    def start(self, uid, gid, *, relay, app_dir, secret_file, memory_bytes):
+    def start(self, uid, gid, *, relay, app_dir, secret_file, memory_bytes, rootfs=None):
         log = tempfile.TemporaryFile()
         self.logs.append(log)
         self.processes[uid] = subprocess.Popen([

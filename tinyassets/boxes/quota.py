@@ -91,7 +91,7 @@ class OwnerQuota:
                     subprocess.run(["xfs_quota", "-x", "-c",
                                     f"limit -p bhard={bhard_bytes // 1024}k {uid}",
                                     str(self.store)],
-                                   check=True, capture_output=True, text=True)
+                                   check=True, capture_output=True, text=True, timeout=10)
                     os.fsync(fd)
                     os.fchown(fd, uid, uid)
                     os.fsync(fd)

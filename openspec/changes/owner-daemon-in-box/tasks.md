@@ -141,6 +141,10 @@ Nothing deploys until slice 7.
       legacy launcher and ports owner callers to local OwnerBoxd tools.
       Part 2 removes protected `.premigration` copying, one-shot migrations
       and deploy old-layout branches after slice 6.
-- [ ] 6b. Per-box deploy roll and the canary-box acceptance (D11).
+- [x] 6b. Per-box deploy roll and the canary-box acceptance (D11).
+      Local implementation and synthetic Linux/root proof complete; bounds,
+      receipt and cutover rollback refusal: design.md D11 as built. Validation
+      and the protected migration baseline failures: main-audit.md. Workflow
+      remains held and unrun; independent review and live acceptance are lead work.
 - [ ] 7. Report the list of unported, dropped features to the founder; then the cutover deploy (lead), with deployed sha asserted and one naive-user
       pass per surface: app, MCP and a scheduled run.

@@ -1,5 +1,99 @@
 # Main vs the clean per-user-instance shape: read-only audit
 
+## Slice 6b: per-box deployment and canary acceptance (2026-10-17)
+
+Implemented locally on `conv/c6-owner-daemon-s6b`, based on `fd306784711`.
+`boxhostd` has one authenticated `roll` operation for broker UID 1002 and
+the root deploy caller. Prepare publishes the durable next-wake image and
+returns awake UIDs plus the sleeping count. The driver visits awake boxes
+with concurrency two; sleeping boxes receive no restart or individual SSH
+call. Restart drains the existing HTTP/turn gate, preserves capacity while
+releasing the fleet lock, checks readiness, and restores only the failed
+box's previous image. A failed candidate must also drain before rollback,
+including scheduled work started during startup. Unknown/busy candidates
+are never killed by deploy or its later maintenance cleanup.
+
+The host's root-private image registry records current and per-UID launch
+images with fsync and atomic replacement. The static harness extractor
+uses the same OCI image as the shared deploy and never mounts owner data.
+Both forward and rollback launches require a statically declared owner-box
+layout. Missing or older declarations refuse with the slice-6 backup/restore
+path; no override, migration code or restore implementation was added.
+
+This base had `ensure_awake` and turn/drain accounting but no resolve/release
+wake lease. Router resolution now pins that admission gap for at most 65
+seconds, releases at response admission or failure/cancellation, and leaves
+HTTP/turn accounting in charge thereafter. Passive SSE does not retain a
+lease for its lifetime. The same existing kernel-authenticated control
+socket carries resolve/release; no compatibility operation was retained.
+
+`scripts/roll_owner_boxes.py` streams its root control helper over SSH stdin,
+avoiding a privileged executable in shared `/tmp`. It writes one allowlisted
+receipt: outcome counts, failing UIDs, control/canary results. No owner row,
+error payload, model reply, connection path or credential enters it. A
+rollback, control failure or failed canary fails the step. The canary signs
+in through the existing public pinned-account door, verifies its owner/home,
+then runs one nonce turn through public MCP. Its response must have the same
+box UID and exact deployed SHA as its own `/app/me`. OwnerIngress replaces
+provenance headers using the admitted UID and image-baked build file. The
+secret loader has an opt-in canary profile in both shells; default operator
+secrets remain the default profile.
+
+Bounds: 60 seconds per initial/candidate drain, 30 for graceful flush, 60
+for readiness, two per lifecycle HTTP request, bounded runtime/quota commands,
+600 for a control reply and 610 for SSH. Image export/extraction are 180
+seconds each; create/remove are 30 each. Workflow step: 50 minutes, with its
+job budget extended by that amount. D11 as built contains the control and
+storage contract. The new required step follows shared/public health probes;
+its receipt upload uses the workflow's existing reviewed action pin. A box
+failure does not select the shared/global rollback path.
+
+Validation receipts, selections, JUnit and the hygiene body are outside the
+repository at `C:/Users/Jonathan/AppData/Local/Temp/c6-s6b-validation-7_cxur50/`.
+The requested broad selection is 114 ordinary files plus six root files;
+it includes every `GUARDS` key. Initial broad run: **2,719 passed, five failed,
+zero skips**. Those five findings were repaired without altering their
+assertions: classify the new bounded waits and image marker, preserve the
+reviewed upload-action pin, keep invalid image errors distinct from cutover
+refusal, and rename the extracted staging directory before making its root
+read-only. Corrected focused run: **164 passed, zero skips**. Final root
+control proof, including real kernel broker/router/deploy identities and
+resolve/release: **six passed, zero skips**.
+
+The root selection was repeated with rsync installed only inside the
+disposable oracle: **49 passed, five failed, zero skips**. All five failures
+are the unchanged protected `box_layout_migration.py` / removed
+`account_type_of(..., db_reader=...)` mismatch already recorded in 6a part 1e
+(both WAL parametrizations, unreadable founder preflight/apply, and the
+owner-split census/move fixture). Those protected files were not edited.
+The corrected complete structural/roll/workflow selection passed **1,061
+tests, zero skips**, including every `GUARDS` key. The last targeted roll/
+driver/canary rerun passed **31 tests, zero skips**, including an absent
+rollback image while the failed candidate still has running work. Ruff,
+`check_shapes.py`, pinned actionlint and strict OpenSpec validation passed.
+No touched test file is in the heavy-file inventory. The dependency selection
+identified 23 affected heavy files: three already executed in the requested
+broad/structural selection; the remaining 20 passed **718 tests, zero skips**
+in a separate Linux oracle run (`heavy.log`). Ruff passed all **19** changed
+Python files. Actionlint used **1.7.12** and the existing reviewed artifact
+action pin; no gate assertions or shape probes were removed or weakened.
+Post-commit hygiene uses the original 6a retirement line and `Registry row(s):
+S8`; its output is `hygiene.log` in the same receipt directory.
+
+Synthetic proof includes a real owner daemon process through the router,
+running-request drain, secret rotation and a separate unaffected owner;
+Linux root control sockets use actual dropped UID/GID clients. Runtime/XFS
+remain the slice-4 doubles. Canary success/failure tests use a loopback
+synthetic router/box and a synthetic model reply, never production. Native
+PowerShell canary-profile loading also passed.
+
+The founder's external `disabled_manually` hold is unchanged. No workflow
+was enabled, dispatched or run; no production host/data/backup was contacted.
+No agent, new worktree, push, merge, rebase, branch switch or host Git-config
+edit was used. The lead owns independent floor review, native gVisor/XFS/
+cgroup proof, the deployed SHA assertion and the live public canary after
+the slice-7 hold is lifted. Overall change/spec sync stays with that cutover.
+
 ## Slice 4 door-owned account deletion follow-up (2026-10-17)
 
 The public `/app/account/delete` route is shared-router-only. Its existing

@@ -73,12 +73,15 @@ class GvisorRuntime:
 
     def _config(self, config: dict, *, uid: int, gid: int, tree: Path,
                 relay: Path, memory_bytes: int, app_dir: Path | None = None,
-                secret_file: Path | None = None) -> dict:
+                secret_file: Path | None = None, rootfs: Path | None = None) -> dict:
         if memory_bytes not in (1024**3, 2 * 1024**3):
             raise BoxError("box memory must be one of the platform floor sizes")
         if not relay.is_socket():
             raise BoxError("owner relay socket is unavailable")
-        config["root"] = {"path": str(self.rootfs), "readonly": True}
+        rootfs = self.rootfs if rootfs is None else rootfs
+        if rootfs.is_symlink() or not rootfs.is_dir():
+            raise BoxError("the harness rootfs is unavailable or a link")
+        config["root"] = {"path": str(rootfs), "readonly": True}
         config["process"].update(
             args=["/bin/sleep", "infinity"], terminal=False, cwd="/home/owner",
             user={"uid": uid, "gid": gid},
@@ -143,7 +146,8 @@ class GvisorRuntime:
         return config
 
     def start(self, uid: int, gid: int, *, relay: Path, memory_bytes: int,
-              app_dir: Path | None = None, secret_file: Path | None = None) -> None:
+              app_dir: Path | None = None, secret_file: Path | None = None,
+              rootfs: Path | None = None) -> None:
         tree = self._owner_tree(uid, gid)
         box = self.box_id(uid)
         bundle = self.bundle_root / box
@@ -153,7 +157,7 @@ class GvisorRuntime:
         config = self._config(
             json.loads(config_path.read_text(encoding="utf-8")),
             uid=uid, gid=gid, tree=tree, relay=relay, memory_bytes=memory_bytes,
-            app_dir=app_dir, secret_file=secret_file,
+            app_dir=app_dir, secret_file=secret_file, rootfs=rootfs,
         )
         config_path.write_text(json.dumps(config), encoding="utf-8")
         self._command("run", "--detach", "--bundle", str(bundle), box, timeout=30)
@@ -169,7 +173,7 @@ class GvisorRuntime:
     def _assert_limited(self, uid: int, memory_bytes: int) -> None:
         box = self.box_id(uid)
         cgroup = self.cgroup_parent / box
-        state = json.loads(self._command("state", box).stdout)
+        state = json.loads(self._command("state", box, timeout=5).stdout)
         pid = state["pid"]
         if type(pid) is not int or pid <= 0:
             raise BoxError("runsc returned no sandbox PID")

@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -53,19 +54,24 @@ def forwarded_path(path: str) -> bool:
 class BoxRoute:
     socket: Path
     secret: str
+    release: Callable | None = None
 
 
 def resolve_box(owner: str) -> BoxRoute:
-    from tinyassets.boxes.daemon_control import ensure_awake
+    from tinyassets.boxes.daemon_control import release, resolve
     from tinyassets.broker.owner_identities import owner_box_route
     from tinyassets.storage import data_dir
 
-    awake_uid = ensure_awake(owner)
-    uid, secret = owner_box_route(data_dir(), principal=owner)
-    if uid != awake_uid:
-        raise RuntimeError("owner box identity changed during wake")
+    lease = resolve(owner)
+    try:
+        uid, secret = owner_box_route(data_dir(), principal=owner)
+        if uid != lease["uid"]:
+            raise RuntimeError("owner box identity changed during wake")
+    except BaseException:
+        release(owner, lease["lease"])
+        raise
     root = Path(os.environ.get("TINYASSETS_BOXES_RUN", "/run/tinyassets-boxhostd"))
-    return BoxRoute(root / str(uid) / "app.sock", secret)
+    return BoxRoute(root / str(uid) / "app.sock", secret, lambda: release(owner, lease["lease"]))
 
 
 def _headers(headers, *, private=False):
@@ -122,7 +128,26 @@ class OwnerRouter:
         except (OSError, RuntimeError):
             return await JSONResponse({"error": "box_unavailable"}, status_code=503)(
                 scope, receive, send)
-        await forward(scope, receive, send, identity, route)
+        released = False
+
+        async def release_route():
+            nonlocal released
+            if route.release and not released:
+                with anyio.CancelScope(shield=True):
+                    await run_in_threadpool(route.release)
+                released = True
+
+        async def admitted_send(message):
+            if message["type"] == "http.response.start":
+                # HTTP/turn accounting now owns work. Passive SSE subscriptions
+                # must not retain the wake-to-forward lease for their lifetime.
+                await release_route()
+            await send(message)
+
+        try:
+            await forward(scope, receive, admitted_send, identity, route)
+        finally:
+            await release_route()
 
 
 async def forward(scope, receive, send, identity, route: BoxRoute):
@@ -181,7 +206,11 @@ async def delete_owner_account(identity):
             receipt = await run_in_threadpool(deleted.receipt, identity.user_id)
         else:
             route = await run_in_threadpool(resolve_box, identity.user_id)
-            response = await delete_box_data(identity, route)
+            try:
+                response = await delete_box_data(identity, route)
+            finally:
+                if route.release:
+                    await run_in_threadpool(route.release)
             if response.status_code != 200:
                 return response
             receipt = json.loads(response.body)

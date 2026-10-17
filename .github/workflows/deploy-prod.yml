@@ -80,8 +80,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     # 15 min of deploy work, 15 for backup verification/repair, 10 for advisory
-    # capabilities, and up to 55 for in-flight turns.
-    timeout-minutes: 95
+    # capabilities, up to 55 for in-flight turns, and 50 for owner-box acceptance.
+    timeout-minutes: 145
     env:
       DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
       DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
@@ -722,6 +722,33 @@ jobs:
         run: |
           set -euo pipefail
           python scripts/probe_app_surface.py --verbose
+
+      - name: Roll owner boxes and accept the canary box
+        id: owner_boxes
+        timeout-minutes: 50
+        env:
+          IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
+          EXPECTED_SHA: ${{ steps.tag.outputs.revision }}
+          TINYASSETS_CANARY_EMAIL: ${{ secrets.TINYASSETS_CANARY_EMAIL }}
+          TINYASSETS_CANARY_PASSWORD: ${{ secrets.TINYASSETS_CANARY_PASSWORD }}
+          TINYASSETS_CANARY_DOOR_KEY: ${{ secrets.TINYASSETS_CANARY_DOOR_KEY }}
+          TINYASSETS_CANARY_USER_ID: ${{ vars.TINYASSETS_CANARY_USER_ID }}
+          TINYASSETS_CANARY_UNIVERSE_ID: ${{ vars.TINYASSETS_CANARY_UNIVERSE_ID }}
+        run: |
+          set -euo pipefail
+          python scripts/roll_owner_boxes.py --image-ref "${IMAGE_REF}" \
+            --ssh-target "${DO_SSH_USER}@${DO_DROPLET_HOST}" --ssh-key ~/.ssh/do_deploy \
+            --expected-sha "${EXPECTED_SHA}" --receipt "${RUNNER_TEMP}/owner-box-roll.json"
+
+      - name: Save owner-box roll receipt
+        if: ${{ always() && steps.owner_boxes.outcome != 'skipped' }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: owner-box-roll
+          path: ${{ runner.temp }}/owner-box-roll.json
+          if-no-files-found: error
+          retention-days: 7
 
       # Hard Rule 11: tinyassets.io/mcp is the ONLY public endpoint, and the
       # direct origin is an Access-gated internal one that must never answer an
