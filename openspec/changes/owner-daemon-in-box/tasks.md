@@ -97,6 +97,10 @@ Nothing deploys until slice 7.
 - [ ] 6. Migration and census, with the shared root DB split by owner, the
       synthetic rehearsal, and the `--archive` rehearsal on the production
       copy (run by the lead).
+      Priority follow-up: reviewed parent-key attribution, masked file/loss
+      reports, legacy-vault drops and opt-in paired restore after serving
+      writes are implemented. Lead census, real-mount rehearsal and CI remain;
+      task 6 stays unchecked until those acceptance steps pass.
       - The migration changes the owner of `.platform/credential-vaults/` to the broker uid.
       - Copy credential ownership rows and deletion tombstones into
         `.broker/credential-custody.db`; validate every carried-over HTTP slot

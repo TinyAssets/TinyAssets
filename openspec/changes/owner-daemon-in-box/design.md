@@ -451,6 +451,12 @@ pseudonymous. The broker admission map is authoritative; creation/home bindings
 only corroborate it. An unknown table, conflicting ownership, unclassified file,
 unattributable paid tier or HTTP slot without its owner's connection refuses.
 The census materializes attribution columns, never history/checkpoint payloads.
+Reviewed retired/platform actors remain unowned; `universe:<center>` actors
+resolve through live admission. Branch versions/schedules join their branch
+definition; interchange receipts/links join their stage and receipt, and
+published stages join their created definition's author. Idempotency uses its
+operation to select stage, receipt or definition. Checkpoints can join several
+runs only when every run resolves to the same owner.
 The apply streams payload rows and rechecks their census attribution.
 
 Dropped state includes the listed pre-ownership runs and dependent records,
@@ -494,23 +500,53 @@ class, legacy runs/checkpoints/transcripts, a never-admitted center, plans,
 custody, shared key/hook authentication, crash/resume and paired restoration.
 The restore uses the real shell/SQLite/tar implementation; only host service,
 mount/quota and absent sandbox-runtime queries are modeled. A completed cutover
-can restore to owner-split only while its shared and owner output manifests
-remain unchanged and the paired source matches exactly. Post-cutover writes
-still require forward recovery; the existing authority/receipt guards remain.
+restores only the exact paired source. By default shared and owner output
+manifests must remain unchanged. `CUTOVER_ACCEPT_OWNER_WRITE_LOSS=1` explicitly
+surrenders post-cutover chats, pending requests, pause and other owner writes.
+Only the derived next-wake index and ingress-secret contents may differ in
+shared state: every identity database schema/authority row is hashed in the
+cutover receipt, and all other shared files remain byte fenced. Changed
+identities, admissions, revocations, billing, deletion, custody, operation
+receipts or owner inventory still refuse. Services remain stopped on return.
 This is not real XFS quota, sandbox, deployment or production-data proof.
 
 The process rehearsal starts two real owner apps against the migrated roots
 using the existing process launcher. Production HTTP routes return each of four
 centers' conversation history and pending requests. An authenticated test probe
-calls the real pause/status/resume operation and reads each owner's migrated
+calls the real chat-history and pending-request writers and pause/status/resume
+operation, and reads each owner's migrated
 plan through the real relay and broker. Foreign-center history is absent. The
 rig substitutes the fixed mount and broker peer UID, not these application
 operations; it does not prove native sandbox isolation.
 
-Task 6 remains unchecked. The schema's populated `outside_switch(id, enabled)`
-has no owner/center key and currently refuses; its explicit disposition is
-pending. Restore after serving writes and the lead's real-data census,
-real-mount rehearsal and CI shards remain unproven.
+The platform-wide `outside_switch(id, enabled)` is router state:
+`OutsideClientAuthority.set_enabled` has no owner argument, and `admit` reads
+id 1 before checking any owner's grant. It is never replicated into boxes.
+Device registrations, authentication receipts and UI preferences have no
+session/connection-to-owner foreign key: only their recorded authenticated
+subject can carry them. Reviewed rows without any real ownership key are
+counted drops, including the retired public-reader marker; no default owner.
+
+Legacy center-local `.credential-vault.json` files are counted drops and never
+opened or copied by census. The old `credentials_outside_broker_custody` count
+was files, not slots. Retained HTTP slots stay in the platform vault, with
+broker UID ownership and custody metadata. CLI records/homes are counted drops.
+Census emits an explicit all-accounts reconnect line when carried HTTP is zero,
+and points to door model-connect plus model-use confirmation.
+
+Every enumerated file has a placement (including refused/unattributed), a
+masked directory pattern and count. Per-account loss rows identify table
+classes; file losses identify masked patterns. Unowned losses have their own
+bucket, never an invented account. Sessions and consent/seed sidecars follow
+their center's admission. LanceDB indexes, provider runtime, process locks,
+PID/liveness files and checkout staging are regenerated; legacy scratch and
+root activity logs are dropped. Arbitrary owner filenames remain verbatim.
+Unknown root patterns refuse. Classification also drives output exclusion and
+source cleanup, so regenerated/dropped files cannot silently survive the move.
+
+Task 6 remains unchecked pending the lead's real-data census, real-mount
+rehearsal and CI shards. Synthetic proof cannot assert the remaining real-data
+refusal counts without that rerun.
 
 ## D7. Guard and deletions
 

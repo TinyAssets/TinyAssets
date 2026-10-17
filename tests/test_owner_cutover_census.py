@@ -5,6 +5,7 @@ import json
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 
 import pytest
 
@@ -13,7 +14,7 @@ from tinyassets.box_layout_migration import census
 
 def _sql(path, statements):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.executescript(statements)
 
 
@@ -356,3 +357,168 @@ def test_transcript_key_preserves_dots_and_census_never_materializes_payloads(so
     assert report['ready'], report['refusals']
     assert inventory['file_targets']['runs/run.with.dot.jsonl'] == ('owner', 'alice')
     assert all('payload' not in row for row in inventory['tables']['.runs.db', 'runs'])
+
+
+def test_reviewed_legacy_keys_resolve_before_drop_without_default_owner(source):
+    # Use the retired principal spelling only as synthetic historical input.
+    _sql(source / '.tinyassets.db', """
+        CREATE TABLE branch_definitions (branch_def_id TEXT, author TEXT);
+        INSERT INTO branch_definitions VALUES ('owned','universe:a2'), ('old','anonymous');
+        CREATE TABLE goals (author TEXT, visibility TEXT);
+        INSERT INTO goals VALUES ('universe:b1','private'), ('anonymous','private');
+        CREATE TABLE provider_work_bindings (binding_id TEXT, owner_user_id TEXT, universe_id TEXT);
+        INSERT INTO provider_work_bindings VALUES ('a','anonymous','a1'), ('old','anonymous','');
+        CREATE TABLE served_provider_budget_reservations (binding_id TEXT);
+        INSERT INTO served_provider_budget_reservations VALUES ('a'), ('old'), ('missing');
+        CREATE TABLE agent_definitions (agent_definition_id TEXT, author_id TEXT);
+        INSERT INTO agent_definitions VALUES ('public-definition','bob');
+        CREATE TABLE agent_import_stages
+            (stage_id TEXT, actor_id TEXT, published_definition_id TEXT);
+        INSERT INTO agent_import_stages VALUES
+            ('stage','universe:b2',NULL), ('old','anonymous',NULL),
+            ('published-stage','anonymous','public-definition');
+        CREATE TABLE agent_conversion_receipts (receipt_digest TEXT, actor_id TEXT, stage_id TEXT);
+        INSERT INTO agent_conversion_receipts VALUES ('receipt','anonymous','stage'),
+                                                     ('old','anonymous','old');
+        CREATE TABLE agent_conversion_receipt_links
+            (stage_id TEXT, receipt_digest TEXT, actor_id TEXT);
+        INSERT INTO agent_conversion_receipt_links VALUES ('stage','receipt','anonymous'),
+                                                          ('old','old','anonymous');
+        CREATE TABLE agent_conversion_receipt_owners (receipt_digest TEXT, actor_id TEXT);
+        INSERT INTO agent_conversion_receipt_owners VALUES
+            ('receipt','anonymous'),('old','anonymous');
+        CREATE TABLE agent_interchange_idempotency
+            (actor_id TEXT, operation TEXT, resource_id TEXT);
+        INSERT INTO agent_interchange_idempotency VALUES
+            ('anonymous','stage_import','stage'), ('anonymous','convert_export','receipt'),
+            ('anonymous','publish_stage','public-definition'), ('anonymous','stage_import','old');
+        CREATE TABLE owner_ui_prefs (owner_user_id TEXT);
+        INSERT INTO owner_ui_prefs VALUES ('alice'), ('anonymous');
+    """)
+    _sql(source / '.runs.db', """
+        CREATE TABLE branch_versions (branch_def_id TEXT, publisher TEXT, public INT);
+        INSERT INTO branch_versions VALUES ('owned','anonymous',0), ('old','anonymous',0);
+        CREATE TABLE branch_schedules (branch_def_id TEXT, owner_actor TEXT, universe_id TEXT);
+        INSERT INTO branch_schedules VALUES ('owned','anonymous',''), ('old','anonymous','');
+    """)
+    _sql(source / '.owner_devices.db', """
+        CREATE TABLE owner_devices (device_id TEXT, owner_user_id TEXT);
+        INSERT INTO owner_devices VALUES ('device-a','alice'), ('device-old','anonymous');
+    """)
+    _sql(source / '.outside-client-authority.sqlite3', """
+        CREATE TABLE authenticated_connections (owner TEXT, connection_id TEXT);
+        INSERT INTO authenticated_connections VALUES ('bob','receipt'), ('anonymous','unlinked');
+        CREATE TABLE outside_switch (id INTEGER PRIMARY KEY, enabled INTEGER);
+        INSERT INTO outside_switch VALUES (1,1);
+    """)
+    before = _fingerprint(source)
+    report = census(source)
+    assert report['ready'], report['refusals']
+    expected = {
+        '.tinyassets.db/branch_definitions': ('account-0001', 1, 1),
+        '.tinyassets.db/goals': ('account-0002', 1, 1),
+        '.tinyassets.db/provider_work_bindings': ('account-0001', 1, 1),
+        '.tinyassets.db/served_provider_budget_reservations': ('account-0001', 1, 2),
+        '.tinyassets.db/agent_import_stages': ('account-0002', 2, 1),
+        '.tinyassets.db/agent_conversion_receipts': ('account-0002', 1, 1),
+        '.tinyassets.db/agent_conversion_receipt_links': ('account-0002', 1, 1),
+        '.tinyassets.db/agent_conversion_receipt_owners': ('account-0002', 1, 1),
+        '.tinyassets.db/agent_interchange_idempotency': ('account-0002', 3, 1),
+        '.tinyassets.db/owner_ui_prefs': ('account-0001', 1, 1),
+        '.runs.db/branch_versions': ('account-0001', 1, 1),
+        '.runs.db/branch_schedules': ('account-0001', 1, 1),
+        '.owner_devices.db/owner_devices': ('account-0001', 1, 1),
+        '.outside-client-authority.sqlite3/authenticated_connections': ('account-0002', 1, 1),
+    }
+    for table, (label, carried, dropped) in expected.items():
+        assert report['tables'][table]['per_owner'] == {label: carried}, table
+        assert report['tables'][table]['dropped'] == dropped, table
+        assert report['losses']['unattributed']['rows'][table] == dropped
+    assert report['tables']['.outside-client-authority.sqlite3/outside_switch']['class'] == 'router'
+    assert _fingerprint(source) == before
+
+
+@pytest.mark.parametrize('actor', ['bob', 'unknown-account'])
+def test_real_parent_never_repairs_conflicting_or_unknown_actor(source, actor):
+    _sql(source / '.tinyassets.db', """
+        CREATE TABLE branch_definitions (branch_def_id TEXT, author TEXT);
+        INSERT INTO branch_definitions VALUES ('owned','alice');
+    """)
+    _sql(source / '.runs.db', f"""
+        CREATE TABLE branch_versions (branch_def_id TEXT, publisher TEXT, public INT);
+        INSERT INTO branch_versions VALUES ('owned','{actor}',0);
+    """)
+    report = census(source)
+    assert report['refusals']['unattributed_owner_rows'] == 1
+    assert report['tables']['.runs.db/branch_versions']['dropped'] == 0
+
+
+def test_files_have_masked_patterns_and_legacy_vaults_are_unopened_drops(source):
+    paths = {
+        'a1/.credential-vault.json': 'not JSON; must not be opened',
+        '.agent-sessions/a2/private-session/history.db': 'synthetic session',
+        '.agent-sessions/unadmitted-private/private-id/history.db': 'old session',
+        '.runtime/private-process/private-name.log': 'runtime',
+        '.universe-sidecars/a1/.effector_consents.db': 'synthetic consent',
+        'lancedb/private-table.lance/private-index': 'index',
+        'a1/lancedb/private-table/private-index': 'index',
+        '.run-execution-locks/private-id': 'stale lock',
+        'scratch/private-name/cache': 'retired scratch',
+        'activity.log': 'log',
+    }
+    for name, content in paths.items():
+        path = source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    before = _fingerprint(source)
+    report = census(source)
+    assert report['ready'], report['refusals']
+    assert report['credential_custody']['outside_broker_files_dropped'] == 1
+    assert report['files']['regenerated'] == 4
+    assert report['files']['dropped'] == 4
+    assert sum(sum(group.values()) for group in report['file_patterns'].values()) == sum(
+        report['files'].values())
+    assert report['file_patterns']['regenerated']['lancedb/<id>/<file>'] == 1
+    assert report['file_patterns']['owner']['.universe-sidecars/<center>/<file>'] == 1
+    assert report['losses']['account-0001']['files']['<center>/.credential-vault.json'] == 1
+    serialized = json.dumps(report)
+    assert 'private-' not in serialized
+    assert 'unadmitted-private' not in serialized
+    assert _fingerprint(source) == before
+    (source / '.unknown-private-root').mkdir()
+    (source / '.unknown-private-root/secret-filename').write_text('unknown')
+    unknown = census(source)
+    assert unknown['refusals']['unattributed_files'] == 1
+    assert unknown['file_patterns']['unattributed'] == {'<id>/<file>': 1}
+    assert 'secret-filename' not in json.dumps(unknown)
+
+
+def test_zero_carried_sources_is_explicit_for_every_account(source):
+    for path in (source / '.platform/credential-vaults').glob('*/.credential-vault.json'):
+        path.write_text(json.dumps({'credentials': [{'credential_type': 'llm_subscription'}]}))
+    report = census(source)
+    assert report['ready'], report['refusals']
+    assert report['account_model_source_summary'] == 'every account reconnects a model source'
+    assert report['credentials'] == {
+        'account-0001': {'dropped_cli': 1, 'carried_http': 0},
+        'account-0002': {'dropped_cli': 1, 'carried_http': 0},
+    }
+    assert 'post-cutover owner writes' in report['restore_write_loss']
+
+
+def test_checkpoint_thread_requires_all_runs_to_agree(source):
+    _sql(source / '.runs.db', """
+        CREATE TABLE runs (run_id TEXT, thread_id TEXT, owner_user_id TEXT, queue_universe_id TEXT);
+        INSERT INTO runs VALUES ('r1','thread','alice','a1'), ('r2','thread','alice','a2');
+    """)
+    _sql(source / '.langgraph_runs.db', """
+        CREATE TABLE checkpoints (thread_id TEXT, payload TEXT);
+        INSERT INTO checkpoints VALUES ('thread','synthetic checkpoint');
+    """)
+    report = census(source)
+    assert report['ready'], report['refusals']
+    assert report['tables']['.langgraph_runs.db/checkpoints']['per_owner'] == {'account-0001': 1}
+    _sql(source / '.runs.db', "INSERT INTO runs VALUES ('r3','thread','bob','b1')")
+    report = census(source)
+    assert report['refusals']['unattributed_owner_rows'] == 1
+    assert report['tables']['.langgraph_runs.db/checkpoints']['dropped'] == 0

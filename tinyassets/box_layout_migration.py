@@ -139,8 +139,11 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
     add(".runtime/owner-sessions.db", "owner_sessions owner_login_flows owner_login_completions "
         "owner_refresh_sessions owner_approval_handoffs canary_sign_in_attempts "
         "approval_handoffs inline_model_flows", "router")
-    add(".outside-client-authority.sqlite3", "authenticated_connections outside_audit "
-        "outside_effects outside_families outside_grants outside_revocations outside_switch",
+    add(".outside-client-authority.sqlite3", "authenticated_connections", "owner",
+        principals=("owner",), drop_unowned=True)
+    add(".outside-client-authority.sqlite3", "outside_switch", "router")
+    add(".outside-client-authority.sqlite3", "outside_audit "
+        "outside_effects outside_families outside_grants outside_revocations",
         "owner", principals=("owner",))
     add(".owner_devices.db", "owner_devices owner_notify_settings request_notifications", "owner",
         principals=("owner_user_id",))
@@ -197,9 +200,11 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
     add(".runs.db", "branch_versions_migrations", "regenerated")
     add(".runs.db", "workspace_push_intents", "owner", centers=("universe_id",),
         references=(("run_id", ".runs.db", "runs", "run_id"),))
-    add(".runs.db", "branch_versions", "owner", principals=("publisher",))
+    add(".runs.db", "branch_versions", "owner", principals=("publisher",),
+        references=(("branch_def_id", main, "branch_definitions", "branch_def_id"),))
     add(".runs.db", "branch_schedules branch_subscriptions", "owner",
-        principals=("owner_actor", "owner_principal_id"), centers=("universe_id",))
+        principals=("owner_actor", "owner_principal_id"), centers=("universe_id",),
+        references=(("branch_def_id", main, "branch_definitions", "branch_def_id"),))
     add(".runs.db", "scheduler_delivered_events", "owner", references=(
         ("subscription_id", ".runs.db", "branch_subscriptions", "subscription_id"),))
     add(".runs.db", "contribution_events", "owner", principals=("owner_user_id",),
@@ -230,6 +235,27 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
     # Only these reviewed legacy sets can lack every attribution key. Unknown
     # explicit principals and conflicting keys still refuse.
     from dataclasses import replace
+
+    rules[main]["agent_definitions"] = replace(
+        rules[main]["agent_definitions"], principals=("author_id",), drop_unowned=True)
+    # Historical interchange DDL/writers (removed with the file-based agents):
+    # receipts -> stage, links -> stage/receipt, owners -> receipt. Import stages
+    # also retain their created definition's author after publication.
+    for table, references in {
+        "agent_import_stages": (
+            ("published_definition_id", main, "agent_definitions", "agent_definition_id"),),
+        "agent_conversion_receipts": (("stage_id", main, "agent_import_stages", "stage_id"),),
+        "agent_conversion_receipt_links": (
+            ("stage_id", main, "agent_import_stages", "stage_id"),
+            ("receipt_digest", main, "agent_conversion_receipts", "receipt_digest")),
+        "agent_conversion_receipt_owners": (
+            ("receipt_digest", main, "agent_conversion_receipts", "receipt_digest"),),
+        "agent_interchange_idempotency": (
+            ("resource_id", main, "agent_import_stages", "stage_id"),
+            ("resource_id", main, "agent_conversion_receipts", "receipt_digest"),
+            ("resource_id", main, "agent_definitions", "agent_definition_id")),
+    }.items():
+        rules[main][table] = replace(rules[main][table], references=references)
 
     for database, names in {
         main: "branches branch_heads universe_rules served_provider_budget_reservations "
@@ -290,6 +316,8 @@ def _census_columns(database: str, table: str) -> set[str]:
         columns.update(("owner", "tier"))
     if (database, table) == (".tinyassets.db", "webhook_hooks"):
         columns.update(("token_hash", "revoked_at"))
+    if (database, table) == (".tinyassets.db", "agent_interchange_idempotency"):
+        columns.add("operation")
     return columns
 
 
@@ -451,7 +479,20 @@ def census(data: Path, *, _inventory: dict | None = None,
             for column in rule.principals:
                 if row.get(column):
                     value = row[column]
-                    claims.append({value} if value in owners else set())
+                    if value in owners:
+                        claims.append({value})
+                    elif value.startswith("universe:"):
+                        center = value.partition(":")[2]
+                        claims.append(known_centers.get(center, {None}
+                                      if rule.drop_unowned else set()))
+                    elif rule.drop_unowned and (
+                        not named_principal(value) or value in {"host", "system"}
+                    ):
+                        # Retired public-reader and platform actors are not
+                        # accounts. Still follow every real parent/center key.
+                        claims.append({None})
+                    else:
+                        claims.append(set())
             for column in rule.centers:
                 if row.get(column):
                     value = row[column]
@@ -459,6 +500,13 @@ def census(data: Path, *, _inventory: dict | None = None,
                         rule.drop_unowned and value not in known_centers)
                                   else known_centers.get(value, set()))
             for column, parent_db, parent, parent_column in rule.references:
+                if table == "agent_interchange_idempotency":
+                    expected_parent = {"stage_import": "agent_import_stages",
+                                       "convert_export": "agent_conversion_receipts",
+                                       "publish_stage": "agent_definitions"}.get(
+                                           row.get("operation"))
+                    if parent != expected_parent:
+                        continue
                 if row.get(column):
                     index_key = parent_db, parent, parent_column
                     if index_key not in indexes:
@@ -467,7 +515,13 @@ def census(data: Path, *, _inventory: dict | None = None,
                             lookup.setdefault(candidate.get(parent_column), []).append(i)
                         indexes[index_key] = lookup
                     matches = indexes[index_key].get(row[column], [])
-                    if len(matches) != 1:
+                    if parent == "runs" and parent_column == "thread_id" and matches:
+                        # A conversation can have many runs. Carry its checkpoint
+                        # only when every run resolves to the same account.
+                        resolved = [row_owners(parent_db, parent, match, active | {key})
+                                    for match in matches]
+                        claims.append(set().union(*resolved) if all(resolved) else set())
+                    elif len(matches) != 1:
                         claims.append({None} if not matches and rule.drop_unowned else set())
                     else:
                         claims.append(set(row_owners(
@@ -563,8 +617,21 @@ def census(data: Path, *, _inventory: dict | None = None,
             if run_id:
                 run_owners.setdefault(run_id, set()).update(row_owners(".runs.db", "runs", index))
         file_targets = {}
+        patterns = {}
+        losses = {label: {"rows": {}, "files": {}} for label in labels.values()}
+        losses["unattributed"] = {"rows": {}, "files": {}}
+        for (database, table), targets in assignments.items():
+            for index, target in enumerate(targets):
+                if target != "dropped":
+                    continue
+                candidates = row_owners(database, table, index)
+                label = (labels[next(iter(candidates))] if len(candidates) == 1
+                         and next(iter(candidates)) in labels else "unattributed")
+                key = f"{database}/{table}"
+                losses[label]["rows"][key] = losses[label]["rows"].get(key, 0) + 1
         file_report = _census_files(data, known_centers, labels, database_files, refusals,
-                                    dropped_centers, run_owners, file_targets)
+                                    dropped_centers, run_owners, file_targets, patterns, losses,
+                                    {str(uid): owner for owner, uid in permanent.items()})
         if _inventory is not None:
             _inventory.update(tables=tables, assignments=assignments, owners=permanent,
                               centers=admitted, dropped_centers=dropped_centers, labels=labels,
@@ -574,6 +641,24 @@ def census(data: Path, *, _inventory: dict | None = None,
             "admitted_centers": len(admitted), "explicit_centers": len(known_centers),
             "databases": len(database_files), "tables": table_report, "row_totals": dict(totals),
             "plans": plan_report, "credentials": credential_report, "files": file_report,
+            "file_patterns": patterns, "losses": losses,
+            "account_model_source_summary": ("every account reconnects a model source" if not any(
+                row["carried_http"] for row in credential_report.values())
+                else "accounts without a carried model source reconnect"),
+            "restore_write_loss": "Restoring the paired pre-cutover backup loses all "
+                                  "post-cutover owner writes, including chats, requests and pause.",
+            "reconnect_path": "shared door model-connect, then model-use confirmation",
+            "credential_custody": {
+                "outside_broker_files_dropped": sum(
+                    1 for relative, target in file_targets.items()
+                    if target == "dropped" and len(PurePosixPath(relative).parts) == 2
+                    and PurePosixPath(relative).name == ".credential-vault.json"),
+                "explanation": "credentials_outside_broker_custody counted center-local "
+                    ".credential-vault.json files, not slots or accounts. These legacy files "
+                    "are dropped without opening or copying them. Only validated HTTP slots "
+                    "in .platform/credential-vaults carry, with .broker/credential-custody.db "
+                    "metadata and broker uid ownership.",
+            },
             "refusals": {key: value for key, value in sorted(refusals.items()) if value},
         }
 
@@ -618,8 +703,8 @@ def _census_accounts(data, centers, labels, tables, refusals):
                     plans[label] = {"tier": "paid", "paid_sources": paid[label]}
                     if paid[label] > 1:
                         refusals["multiple_paid_sources"] += 1
-        if (directory / ".credential-vault.json").exists():
-            refusals["credentials_outside_broker_custody"] += 1
+        # Historical center-local vaults are explicit file losses. Never read
+        # or copy them: only the existing platform custody can carry a slot.
         vaults = [data / ".platform/credential-vaults" / directory.name / ".credential-vault.json"]
         if any(path.is_symlink() or path.parent.is_symlink() for path in vaults):
             raise RuntimeError("census vault path is a symlink")
@@ -670,7 +755,7 @@ def _census_accounts(data, centers, labels, tables, refusals):
 
 
 def _census_files(data, centers, labels, databases, refusals, dropped_centers=(),
-                  run_owners=None, file_targets=None):
+                  run_owners=None, file_targets=None, patterns=None, losses=None, uid_owners=None):
     from collections import Counter
 
     counts: Counter = Counter()
@@ -681,6 +766,106 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
         ".billing_webhook_verified.json": "router",
     }
     published = {"wiki", ".wiki", ".published", ".command-center-packages"}
+    # Exact creator-backed roots: storage_accounting.ROOT_ENTRIES and the
+    # LanceDB index writers. No suffix-wide rule can drop arbitrary user files.
+    regenerated = {
+        ".runtime", "lancedb", ".workspace-staging", ".custody.lock",
+        ".agent-turn-runners", ".consumer_liveness", ".owner_tree",
+        ".universe-tool-slots", ".outbound-proxy", ".run-execution-locks",
+        ".run-file-operation-locks", ".delivery-locks", ".workspace-family-locks",
+        ".run_recovery.lock", ".run_recovery.lock.pid", ".ui-preview.lock",
+        ".deploy-pending.json",
+    }
+    dropped_roots = {"scratch", ".active_universe", "activity.log", "activity.log.1"}
+
+    def classify(path, relative):
+        parts = relative.parts
+        if relative.as_posix() == ".tinyassets.db.prebudgetrepair.bak":
+            return "dropped"
+        if parts[0] in dropped_centers:
+            return "dropped"
+        if len(parts) > 1 and parts[1] in _CREDENTIAL_ENTRIES:
+            return "dropped"
+        if parts[0] in centers and len(parts) > 1:
+            if parts[1] in {".runtime", "lancedb", ".consumer_liveness", ".workspace-staging"}:
+                return "regenerated"
+            if parts[1].startswith(".subscription_state.db"):
+                return "broker"
+            return ("owner", next(iter(centers[parts[0]])))
+        if (len(parts) >= 5 and parts[:2] == (".platform", "owners")
+                and parts[2].isdecimal() and parts[3] == "agent-home"):
+            return "dropped"
+        if parts[0] == "runs" and len(parts) > 1:
+            position = 2 if parts[1] == "archived" and len(parts) > 2 else 1
+            component = parts[position]
+            names = {component}
+            if position == len(parts) - 1:
+                while any(component.endswith(suffix)
+                          for suffix in (".jsonl", ".json", ".log", ".txt", ".gz")):
+                    component = component.rsplit(".", 1)[0]
+                    names.add(component)
+            candidates = set().union(*(run_owners[name] for name in names
+                                       if run_owners and name in run_owners))
+            if not candidates or candidates == {None}:
+                return "dropped"
+            if len(candidates) == 1 and next(iter(candidates)) in labels:
+                return ("owner", next(iter(candidates)))
+            return "unattributed"
+        if path in databases or any(
+            path == database.with_name(database.name + suffix)
+            for database in databases for suffix in ("-wal", "-shm", "-journal")
+        ):
+            return "database_files"
+        if len(parts) == 1 and path.name in shared:
+            return shared[path.name]
+        if parts[0] in published:
+            return "published"
+        if (len(parts) >= 4 and parts[:2] == (".platform", "credential-vaults")
+                and len(centers.get(parts[2], set())) == 1):
+            return "broker"
+        if parts[0] in regenerated:
+            return "regenerated"
+        if parts[0] in dropped_roots:
+            return "dropped"
+        if (len(parts) == 4 and parts[:2] == (".broker", "accounts")
+                and parts[3] == ".deleted") or relative.as_posix() == ".broker/state/fence.json":
+            return "broker"
+        if len(parts) >= 3 and parts[0] in {".agent-sessions", ".universe-sidecars"}:
+            if stat.S_ISSOCK(path.lstat().st_mode):
+                return "regenerated"
+            candidates = centers.get(parts[1], set())
+            return ("owner", next(iter(candidates))) if len(candidates) == 1 else "dropped"
+        return "unattributed"
+
+    # Preserve only fixed vocabulary from code, at its known layout position.
+    # Unknown names (even dotted ones and filename extensions) never escape.
+    fixed_roots = set(shared) | published | regenerated | dropped_roots | {
+        ".platform", ".broker", ".agent-sessions", ".universe-sidecars", "runs",
+        ".tinyassets.db.prebudgetrepair.bak",
+    } | {Path(database).name for database in CENSUS_RULES if "/" not in database}
+
+    def masked(parts):
+        result = []
+        for index, part in enumerate(parts):
+            value = "<file>" if index == len(parts) - 1 else "<id>"
+            if index == 0:
+                value = part if part in fixed_roots else (
+                    "<center>" if part in centers or part in dropped_centers else value)
+            elif index == 1 and parts[0] in set(centers) | set(dropped_centers):
+                if part in _CREDENTIAL_ENTRIES or part in regenerated or part == ".agent-sessions":
+                    value = part
+            elif index == 1 and parts[0] in {".agent-sessions", ".universe-sidecars"}:
+                value = "<center>"
+            elif parts[0] == ".platform":
+                if index == 1 and part in {"owners", "credential-vaults"}:
+                    value = part
+                elif index == 2:
+                    value = "<owner>" if parts[1] == "owners" else "<center>"
+                elif index == 3 and parts[1] == "owners" and part == "agent-home":
+                    value = part
+            result.append(value)
+        return "/".join(result)
+
     for directory, dirs, files in os.walk(data, followlinks=False):
         root = Path(directory)
         # os.walk lists directory symlinks in dirs but never descends them.
@@ -688,66 +873,25 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
             path = root / name
             relative = path.relative_to(data)
             parts = relative.parts
-            if (relative.as_posix() == ".tinyassets.db.prebudgetrepair.bak"
-                    or parts[0] in dropped_centers):
-                counts["dropped"] += 1
-            elif (parts[0] in centers and len(parts) > 1 and parts[1] in _CREDENTIAL_ENTRIES):
-                counts["dropped"] += 1
-            elif parts[0] in centers and len(parts) > 1 and parts[1] == ".runtime":
-                counts["regenerated"] += 1
-            elif (parts[0] in centers and len(parts) > 1
-                  and parts[1].startswith(".subscription_state.db")):
-                counts["broker"] += 1
-            elif parts[0] in centers and len(centers[parts[0]]) == 1:
-                label = labels[next(iter(centers[parts[0]]))]
-                counts[label] += 1
-            elif (len(parts) >= 5 and parts[:2] == (".platform", "owners")
-                  and parts[2].isdecimal() and parts[3] == "agent-home"):
-                counts["dropped"] += 1
-            elif parts[0] == "runs" and len(parts) > 1:
-                # Transcript files are runs/<id>.*, runs/<id>/..., or their
-                # archived equivalents. A key with conflicting claims refuses.
-                position = 2 if parts[1] == "archived" and len(parts) > 2 else 1
-                component = parts[position]
-                names = {component}
-                if position == len(parts) - 1:
-                    while any(component.endswith(suffix)
-                              for suffix in (".jsonl", ".json", ".log", ".txt", ".gz")):
-                        component = component.rsplit(".", 1)[0]
-                        names.add(component)
-                candidates = set().union(*(run_owners[name] for name in names
-                                           if run_owners and name in run_owners))
-                if not candidates or candidates == {None}:
-                    counts["dropped"] += 1
-                    if file_targets is not None:
-                        file_targets[relative.as_posix()] = "dropped"
-                elif len(candidates) == 1 and next(iter(candidates)) in labels:
-                    owner = next(iter(candidates))
-                    counts[labels[owner]] += 1
-                    if file_targets is not None:
-                        file_targets[relative.as_posix()] = ("owner", owner)
-                else:
-                    counts["unattributed"] += 1
-            elif path in databases or any(
-                path == database.with_name(database.name + suffix)
-                for database in databases for suffix in ("-wal", "-shm")
-            ):
-                counts["database_files"] += 1
-            elif len(parts) == 1 and name in shared:
-                counts[shared[name]] += 1
-            elif parts[0] in published:
-                counts["published"] += 1
-            elif (len(parts) >= 4 and parts[:2] == (".platform", "credential-vaults")
-                  and len(centers.get(parts[2], set())) == 1):
-                counts["broker"] += 1
-            elif (len(parts) >= 3 and parts[0] in {".agent-sessions", ".universe-sidecars"}
-                  and len(centers.get(parts[1], set())) == 1):
-                counts[labels[next(iter(centers[parts[1]]))]] += 1
-            elif (len(parts) >= 3 and parts[0] in {".agent-sessions", ".universe-sidecars"}
-                  and parts[1] in dropped_centers):
-                counts["dropped"] += 1
-            else:
-                counts["unattributed"] += 1
+            target = classify(path, relative)
+            placement = "owner" if isinstance(target, tuple) else target
+            counts[labels[target[1]] if placement == "owner" else placement] += 1
+            if file_targets is not None:
+                file_targets[relative.as_posix()] = target
+            pattern = masked(parts)
+            if patterns is not None:
+                group = patterns.setdefault(placement, {})
+                group[pattern] = group.get(pattern, 0) + 1
+            if losses is not None and placement == "dropped":
+                candidates = centers.get(parts[0], set())
+                if parts[0] == ".agent-sessions" and len(parts) > 1:
+                    candidates = centers.get(parts[1], set())
+                if len(parts) > 2 and parts[:2] == (".platform", "owners"):
+                    principal = (uid_owners or {}).get(parts[2])
+                    candidates = {principal} if principal else set()
+                label = labels[next(iter(candidates))] if len(candidates) == 1 else "unattributed"
+                group = losses[label]["files"]
+                group[pattern] = group.get(pattern, 0) + 1
     refusals["unattributed_files"] += counts["unattributed"]
     return dict(counts)
 
@@ -1263,6 +1407,14 @@ def _seed_shared(data: Path, shared: Path, inventory: dict, report: dict, plan) 
         if plans.read(owner.principal)["tier"] != tier:
             raise RuntimeError("seeded plan differs from census")
     identity = shared / ".broker/state/owner-identities.db"
+    from tinyassets.broker.owner_identities import OwnerIdentities
+
+    # Complete the final broker schema before recording restore authority.
+    # Startup must not be the first writer of secret/revocation tables or the
+    # permanent-identity triggers on an older owner-split source schema.
+    identity.parent.chmod(0o700)
+    identity.chmod(0o600)
+    OwnerIdentities(identity, plans=plans)
     with closing(sqlite3.connect(identity)) as db, db:
         db.execute("CREATE TABLE IF NOT EXISTS box_records (principal TEXT PRIMARY KEY, "
                    "machine INTEGER UNIQUE NOT NULL, project_id INTEGER UNIQUE NOT NULL, "
@@ -1334,6 +1486,25 @@ def _durable_tree(root: Path, *, exclude=()) -> dict[str, str]:
     return manifest
 
 
+def cutover_identity_manifest(root: Path) -> str:
+    """Bind all identity authority, permitting only ephemeral ingress secrets.
+
+    Hash schema and rows rather than SQLite pages: a secret rotation can change
+    page layout. No identities or secret material appear in the receipt.
+    """
+    evidence = []
+    with readonly_db(root / ".broker/state/owner-identities.db") as db:
+        for kind, name, ddl in db.execute(
+            "SELECT type,name,sql FROM sqlite_master ORDER BY type,name"
+        ):
+            evidence.append((kind, name, ddl))
+            if kind == "table" and name != "owner_box_secrets":
+                rows = [json.dumps(list(row), sort_keys=True) for row in db.execute(
+                    f"SELECT * FROM {_quoted(name)}")]
+                evidence.append((name, sorted(rows)))
+    return hashlib.sha256(json.dumps(evidence, sort_keys=True).encode()).hexdigest()
+
+
 def _remove_tree(path: Path, root: Path) -> None:
     # Never traverse a link or accept a computed path outside this transaction.
     if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()) or path == root:
@@ -1366,6 +1537,12 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
                     _copy(source, target, owner.uid)
     for relative, target in inventory["file_targets"].items():
         if isinstance(target, tuple):
+            parts = PurePosixPath(relative).parts
+            if (parts[0] in inventory["centers"] or (
+                len(parts) > 1 and parts[0] in {".agent-sessions", ".universe-sidecars"}
+                and parts[1] in inventory["centers"]
+            )):
+                continue  # Already copied and checksum-verified by the tree rsync.
             source = data / relative
             destination = store / str(inventory["owners"][target[1]]) / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1379,6 +1556,13 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
                     if hashlib.file_digest(original, "sha256").digest() != hashlib.file_digest(
                             copied, "sha256").digest():
                         raise RuntimeError("run transcript copy differs")
+        elif target in {"dropped", "regenerated"}:
+            # A center rsync can have included a classified cache/index. Match
+            # the census disposition in every output, not just in its report.
+            for owner in plan:
+                destination = store / str(owner.uid) / relative
+                if destination.is_file() or destination.is_symlink():
+                    destination.unlink()
     _build_databases(data, store, shared, inventory)
     _seed_shared(data, shared, inventory, report, plan)
     from tinyassets.boxes.layout import BROKER_READ_GID, BROKER_UID, DAEMON_UID
@@ -1403,8 +1587,11 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
                 uid = DAEMON_UID
             gid = BROKER_READ_GID if relative and relative[0] == ".published" else uid
             os.chown(path, uid, gid)
-            mode = 0o711 if relative == (".platform",) else 0o750
-            os.chmod(path, mode if path.is_dir() else 0o640)
+            private = relative and relative[0] in {".broker", ".platform"}
+            mode = 0o700 if private else 0o750
+            if relative == (".platform",):
+                mode = 0o711
+            os.chmod(path, mode if path.is_dir() else (0o600 if private else 0o640))
     for path in shared.rglob("*"):
         if path.is_file():
             with path.open("rb") as stream:
@@ -1417,7 +1604,10 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
                    owner_manifests=owner_manifests,
                    databases=sorted({database for database, _ in inventory["tables"]}),
                    centers=sorted(set(inventory["centers"]) | inventory["dropped_centers"]),
-                   legacy_runs=bool(inventory["file_targets"]),
+                   legacy_runs=any(PurePosixPath(path).parts[0] == "runs"
+                                   for path in inventory["file_targets"]),
+                   discarded_files=[path for path, target in inventory["file_targets"].items()
+                                    if target in {"dropped", "regenerated"}],
                    cli_homes=[p.relative_to(data).as_posix()
                               for p in (data / ".platform/owners").glob("*/agent-home")
                               if p.parent.name.isdecimal()])
@@ -1464,6 +1654,11 @@ def _publish_cutover(data: Path, store: Path, journal: dict) -> None:
         _remove_tree(data / "runs", data)
     for relative in journal["cli_homes"]:
         _remove_tree(data / relative, data)
+    for relative in journal["discarded_files"]:
+        path = data / relative
+        if not path.parent.resolve().is_relative_to(data.resolve()):
+            raise RuntimeError("unsafe discarded cutover path")
+        path.unlink(missing_ok=True)
     (data / ".tinyassets.db.prebudgetrepair.bak").unlink(missing_ok=True)
     from tinyassets.boxes.layout import BROKER_UID
     from tinyassets.boxes.state import BoxHostState
@@ -1488,6 +1683,7 @@ def _publish_cutover(data: Path, store: Path, journal: dict) -> None:
         "owner_daemon": 1,
     })
     journal["phase"] = "complete"
+    journal["identity_manifest"] = cutover_identity_manifest(data)
     journal["final_manifest"] = _durable_tree(data, exclude=(".owner-cutover.json",))
     _atomic_json(data / ".owner-cutover.json", journal)
     _remove_tree(shared, store)
@@ -1535,6 +1731,7 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
                         if _durable_tree(store / uid) != manifest:
                             raise RuntimeError("staged owner manifest changed")
                     journal["phase"] = "complete"
+                    journal["identity_manifest"] = cutover_identity_manifest(data)
                     journal["final_manifest"] = _durable_tree(
                         data, exclude=(".owner-cutover.json",))
                     _atomic_json(journal_path, journal)

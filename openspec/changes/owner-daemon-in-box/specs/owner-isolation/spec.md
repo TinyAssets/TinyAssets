@@ -1,5 +1,22 @@
 ## ADDED Requirements
 
+### Requirement: Cutover accounts for loss without guessing ownership
+
+The census SHALL resolve reviewed parent keys before dropping legacy state,
+retain conflicting ownership as a refusal, and report masked directory patterns
+and pseudonymous per-account carried sources and losses. A report with zero
+carried sources SHALL say "every account reconnects a model source".
+Center-local credential vaults SHALL be counted as dropped legacy custody and
+never copied to an owner tree. Carried credentials SHALL exist only in broker
+custody and its platform vault directory.
+
+#### Scenario: Restore after owner serving writes
+- **WHEN** the operator explicitly accepts post-cutover write loss and restores the verified paired pre-cutover backup after stopping serving
+- **THEN** pre-cutover owner-split bytes are restored exactly, including history, requests and pause state
+- **AND** post-cutover owner writes are lost as stated in the census and runbook
+- **AND** changed shared authority, deletion frontiers, source bytes or unsafe restore receipts still refuse
+
+
 ### Requirement: Owner work runs in the owner's box
 
 Everything that reads or writes an owner's data SHALL run in that owner's

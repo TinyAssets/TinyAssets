@@ -33,6 +33,21 @@ def main():
     # Like the existing router process rig, expose a test probe for a real
     # domain operation. History and request reads use production routes.
     app.routes.insert(0, Route('/app/test-cutover-control', control, methods=['POST']))
+
+    async def write(request):
+        from tinyassets.conversation_store import record_turn
+        from tinyassets.storage.pending_requests import create_request
+
+        document = await request.json()
+        folder = root / document['center']
+        owner = request.headers['x-owner']
+        record_turn(folder, f'principal:{owner}', 'founder', 'post-cutover chat')
+        pending = create_request(folder, kind='Question', title='Post-cutover request',
+                                 body='Synthetic served write', fields=[],
+                                 action={'type': 'answer'}, dedupe_key='post-cutover')
+        return JSONResponse({'request_id': pending['request_id']})
+
+    app.routes.insert(0, Route('/app/test-cutover-write', write, methods=['POST']))
     serve(app, socket)
 
 
