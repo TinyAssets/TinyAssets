@@ -74,10 +74,9 @@ class ApiKeyStore:
 
     @contextmanager
     def db(self, *, timeout: float = 10):
-        from tinyassets.owner_runtime import current
+        from tinyassets.owner_runtime import refuse_router_store
 
-        if current() is not None:
-            raise RuntimeError("API key storage belongs to the router")
+        refuse_router_store("api_keys")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.path, timeout=timeout)
         try:

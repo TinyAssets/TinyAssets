@@ -34,6 +34,9 @@ TUNNEL_PEERS = tuple(
 
 @contextmanager
 def flows():
+    from tinyassets.owner_runtime import refuse_router_store
+
+    refuse_router_store("native_sign_in")
     with store() as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS native_login_flows ("

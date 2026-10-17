@@ -24,6 +24,9 @@ MAX_HOOKS_PER_OWNER = 200
 
 class HookOwners:
     def __init__(self, root: Path):
+        from tinyassets.owner_runtime import refuse_router_store
+
+        refuse_router_store("hook_owners")
         self.path = root / ".hook-owners.sqlite3"
 
     def publish(self, token_hash: str, owner: str):
@@ -101,10 +104,17 @@ def dispatch(root: Path, owner: str, request: dict) -> dict:
     operation = request.get("operation")
     keys = ApiKeyStore(root)
     if operation == "account_revoke" and set(request) == {"operation"}:
-        from tinyassets.onboarding import approval_handoff, owner_sessions
+        from tinyassets.onboarding import (
+            approval_handoff,
+            canary_sign_in,
+            owner_sessions,
+            session_store,
+        )
 
         # This process's data_dir is the router root, never the requesting box.
         owner_sessions.revoke_owner(owner)
+        session_store.revoke_owner(owner)
+        canary_sign_in.revoke_owner(owner)
         with approval_handoff.flows() as db:
             db.execute("DELETE FROM approval_handoffs WHERE owner=?", (owner,))
         for key in keys.list(owner, authority=None)["keys"]:

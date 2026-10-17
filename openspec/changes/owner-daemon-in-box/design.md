@@ -74,7 +74,8 @@ adding a check in shared code.
 
 ### D2 decisions (slice 2)
 
-- **Account revocation.** `account_revoke` takes only the operation over the bound relay credential channel; the router revokes that owner's sessions, inline/hosted/OAuth flows, approval handoffs, live API keys and hook digests. Account deletion in a box must report a failed router revocation as an error.
+- **Router stores never open in a box.** Every router-store opener refuses inside an owner runtime (`refuse_router_store`); box code reaches router state only through router-forwarded identity metadata or the bound credential channel.
+- **Account revocation.** `account_revoke` takes only the operation over the bound relay credential channel; the router revokes that owner's sessions, inline/hosted/OAuth flows, approval handoffs, live API keys and hook digests. Refresh records carry the verified owner in authenticated public metadata, preserved through rotation so all devices and grace handles can be revoked; legacy unattributed records refuse renewal. Anonymous native login flows contain no owner and are consumed before identity is known; canary rate counters belong to the configured canary. Account deletion in a box must report a failed router revocation as an error.
 - **Handoff bound.** Each owner keeps at most 20 unexpired approval handoffs; insertion removes the oldest beyond the newest 19 in the same transaction.
 - **One hook door:** `/hooks/inbound/<token>`; `/mcp/hooks/` is deleted and integrations re-point at cutover (named in the slice 7 report).
 

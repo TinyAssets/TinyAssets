@@ -1367,12 +1367,13 @@ def test_owner_mode_account_delete_uses_router_revocation_and_surfaces_failure(
 
     monkeypatch.setattr(owner_runtime, "router_credential", revoke)
     monkeypatch.setattr("tinyassets.onboarding.owner_sessions.revoke_owner", local_revoke)
+    monkeypatch.setattr(onboarding, "_drop_refresh_session", local_revoke)
+    request = _Request({"confirm": "DELETE", "session_ref": "r" * 43})
     with _as(A):
         if fail:
             with pytest.raises(RuntimeError, match="router revocation failed"):
-                asyncio.run(onboarding._handle_account_delete(_Request({"confirm": "DELETE"})))
+                asyncio.run(onboarding._handle_account_delete(request))
         else:
-            response = asyncio.run(onboarding._handle_account_delete(
-                _Request({"confirm": "DELETE"})))
+            response = asyncio.run(onboarding._handle_account_delete(request))
             assert response.status_code == 200
     assert requests == [("account_revoke", {})]

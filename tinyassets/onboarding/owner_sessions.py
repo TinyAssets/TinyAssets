@@ -35,6 +35,9 @@ def hashed(value):
 
 @contextmanager
 def store():
+    from tinyassets.owner_runtime import refuse_router_store
+
+    refuse_router_store("owner_sessions")
     from tinyassets.api.helpers import _base_path
 
     path = _base_path() / ".runtime" / "owner-sessions.db"
@@ -87,6 +90,34 @@ def lookup(cookie):
         return dict(row) if row else None
 
 
+def router_owner_session():
+    """Protected-view proof admitted by the router for this request."""
+    from tinyassets.auth.middleware import current_identity_or_none
+
+    identity = current_identity_or_none()
+    session = identity.metadata.get("router_owner_session") if identity is not None else None
+    if session is not None and session["expires_at"] <= time.time():
+        return None
+    return session
+
+
+@contextmanager
+def decision_session(session):
+    """Use forwarded admission in a box, or serialize with router revocation."""
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        proof = router_owner_session()
+        yield proof is not None and proof == session
+        return
+    with store() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        yield bool(conn.execute(
+            "SELECT 1 FROM owner_sessions WHERE session_hash=? AND expires_at>?",
+            (session["session_hash"], time.time()),
+        ).fetchone())
+
+
 def require(request, *, owner=None, optional=False):
     from tinyassets.onboarding import _same_origin_json, app_config
 
@@ -95,14 +126,10 @@ def require(request, *, owner=None, optional=False):
     origin = urlsplit(app_config()["resource"])
     if request.headers.get("origin") != f"{origin.scheme}://{origin.netloc}":
         raise PermissionError("Exact protected origin required.")
-    from tinyassets.auth.middleware import current_identity_or_none
     from tinyassets.owner_runtime import current
 
-    identity = current_identity_or_none()
     if current() is not None:
-        session = identity.metadata.get("router_owner_session") if identity is not None else None
-        if session is not None and session["expires_at"] <= time.time():
-            session = None
+        session = router_owner_session()
     else:
         session = lookup(getattr(request, "cookies", {}).get(COOKIE, ""))
     if session is None and optional:

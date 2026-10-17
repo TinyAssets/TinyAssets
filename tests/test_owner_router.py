@@ -583,11 +583,22 @@ def test_account_revoke_from_box_removes_only_bound_owners_router_state(
     from tinyassets.onboarding import (
         app_config,
         approval_handoff,
+        canary_sign_in,
         inline_model_connect,
         owner_sessions,
+        session_store,
     )
 
     monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "1")
+    monkeypatch.setenv(canary_sign_in.USER_ENV, "alice")
+    with canary_sign_in._limits() as db:
+        db.execute("INSERT INTO canary_door_limits VALUES ('ip',1,?)", (time.time() + 600,))
+    refresh_handles = {}
+    for owner in ("alice", "bob"):
+        first = session_store.mint(owner + "-refresh", owner=owner)
+        second = session_store.rotate(first, owner + "-rotated")
+        third = session_store.mint(owner + "-other-device", owner=owner)
+        refresh_handles[owner] = (first, second, third)
     requests = []
     dispatch = router_credentials.dispatch
 
@@ -651,6 +662,19 @@ def test_account_revoke_from_box_removes_only_bound_owners_router_state(
                 "authorization": "Bearer " + extra["key"]})).status_code == 401
 
     asyncio.run(exercise())
+    for owner, handles in refresh_handles.items():
+        for handle in handles:
+            assert bool(session_store.read(handle)[0]) == (owner == "bob")
+    from tests.test_onboarding_session_refresh import _boom, _drive
+
+    for handle in refresh_handles["alice"]:
+        status, body, _, calls = _drive(
+            {"grant_type": "refresh_token", "session_ref": handle},
+            monkeypatch=monkeypatch, upstream=_boom, data_dir=str(tmp_path))
+        assert status == 401 and body["error"] == "no_refresh_token"
+        assert not calls
+    with canary_sign_in._limits() as db:
+        assert db.execute("SELECT COUNT(*) FROM canary_door_limits").fetchone()[0] == 0
     assert owner_sessions.lookup("alice-cookie") is None
     assert owner_sessions.lookup("bob-cookie") is not None
     assert approval_handoff.load("a" * 43) is None
