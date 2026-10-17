@@ -11,6 +11,7 @@ from contextlib import closing
 import pytest
 
 from tests.test_box_layout_migration import _archive
+from tests.test_broker_server import broker  # noqa: F401
 from tests.test_owner_cutover_census import _fingerprint, _sql
 from tests.test_owner_cutover_census import source as source
 from tinyassets import box_layout_migration as migration
@@ -104,7 +105,17 @@ def test_apply_splits_databases_seeds_stores_and_resumes(cutover, monkeypatch, c
             migration.apply(*cutover)
         assert fired
         monkeypatch.setattr(migration, name, original)
+        if crash == 'copy':
+            # Residue from a hard process death, beyond Python exception cleanup.
+            (store / '300001/a1/.interrupted-copy').write_text('partial output')
+            (store / '300001/.tinyassets.db-journal').write_bytes(b'incomplete journal')
+            for filename in ('.layout.json.99999.tmp', '.owner-cutover.json.99999.tmp'):
+                residue = data / filename
+                residue.write_text('{')
+                residue.chmod(0o600)
     migration.apply(*cutover)
+    assert not list(data.glob('*.99999.tmp'))
+    assert not (store / '300001/a1/.interrupted-copy').exists()
     marker = json.loads((data / '.layout.json').read_text())
     assert marker['owner_daemon'] == 1
     assert marker['state'] == 'stable'
@@ -317,3 +328,148 @@ def test_cutover_restore_guard_refuses_any_changed_generation(cutover, tmp_path,
         fence(data, staged, cutover_store=store)
     assert (store / '300001/a1').is_dir()
     assert not (data / 'a1').exists()
+
+
+def test_seeded_tombstones_block_broker_custody_without_old_metadata(cutover):
+    import hashlib
+
+    from tinyassets.broker.vault import check_not_deleted, metadata_connection
+
+    data = cutover[0]
+    digest = hashlib.sha256(b'retired-account').hexdigest()
+    _sql(data / '.tinyassets.db', f"""
+        CREATE TABLE deleted_principals (founder_sub TEXT PRIMARY KEY, deleted_at REAL);
+        INSERT INTO deleted_principals VALUES ('{digest}', 123);
+    """)
+    migration.apply(*cutover)
+    assert not (data / '.tinyassets.db').exists()
+    with closing(metadata_connection(data)) as db:
+        assert [row[1] for row in db.execute('PRAGMA table_info(deleted_principals)')] == ['digest']
+        assert db.execute('SELECT digest FROM deleted_principals').fetchall() == [(digest,)]
+        with pytest.raises(PermissionError, match='deleted'):
+            check_not_deleted(db, 'retired-account')
+        check_not_deleted(db, 'bob')
+
+
+def test_migrated_owner_processes_serve_history_requests_and_pause(
+    cutover, monkeypatch, broker,  # noqa: F811
+):
+    import base64
+    import tempfile
+    import time
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    import httpx
+
+    from tests.support.owner_daemon_launcher import ProcessRuntime
+    from tinyassets.boxes import relay as relay_module
+    from tinyassets.boxes.relay import OwnerRelays
+    from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.server import BOX_HOST
+    from tinyassets.conversation_store import record_turn
+    from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
+    from tinyassets.storage.pending_requests import create_request
+
+    data, store, *_ = cutover
+    identity_path = data / '.broker/state/owner-identities.db'
+    identity_path.parent.chmod(0o700)
+    identity_path.chmod(0o600)
+    identities = OwnerIdentities(identity_path)
+    # Replace only this synthetic fixture's abbreviated main schema with the
+    # application's actual schema before creating history and requests.
+    (data / '.tinyassets.db').unlink()
+    monkeypatch.setenv('TINYASSETS_DATA_DIR', str(data))
+    requests = {}
+    for owner, centers in [('alice', ('a1', 'a2')), ('bob', ('b1', 'b2'))]:
+        for center in centers:
+            grant_universe_ownership(data, universe_id=center, owner_id=owner)
+            folder = data / center
+            (folder / 'soul.md').write_text('# Synthetic owner home')
+            (folder / '.pause').write_text('paused before cutover')
+            record_turn(folder, f'principal:{owner}', 'founder', f'{owner} history in {center}')
+            request = create_request(folder, kind='Question', title=f'{owner} question in {center}',
+                                     body='Synthetic pending question', fields=[],
+                                     action={'type': 'answer'}, dedupe_key=f'ask-{center}')
+            assert request is not None
+            requests[center] = request['request_id']
+        set_founder_home(data, founder_sub=owner, universe_id=centers[0], platform_generated=True)
+    report = migration.census(data)
+    assert report['ready'], report['refusals']
+    migration.apply(*cutover)
+    # The real broker and relays run under the rig's UID; production pins the
+    # peer to broker UID 1002. The migrated identity and plan stores are real.
+    broker.server._roles = {os.getuid(): BOX_HOST}
+    broker.server._data_root = data
+    broker.server._owner_identities = identities
+    monkeypatch.setattr(relay_module, 'peer', lambda sock: (os.getpid(), 1002, 1002))
+    roots = {300001: store / '300001', 300002: store / '300002'}
+    with tempfile.TemporaryDirectory(prefix='ta-cutover-') as directory:
+        run = Path(directory)
+        relays = OwnerRelays(run / 'relay', SimpleNamespace(broker_socket=broker.path))
+        runtime = ProcessRuntime(roots, module='tests.support.owner_cutover_process')
+        try:
+            for owner, uid in [('alice', 300001), ('bob', 300002)]:
+                app = run / str(uid)
+                app.mkdir()
+                secret = app / 'secret'
+                secret.write_text('s' * 43)
+                secret.chmod(0o400)
+                runtime.start(uid, uid, relay=relays.bind(owner, uid), app_dir=app,
+                              secret_file=secret, memory_bytes=1024**3)
+            for owner, uid, centers in [('alice', 300001, ('a1', 'a2')),
+                                        ('bob', 300002, ('b1', 'b2'))]:
+                socket = run / str(uid) / 'app.sock'
+                deadline = time.monotonic() + 45
+                while not socket.exists() and runtime.alive(uid) and time.monotonic() < deadline:
+                    time.sleep(.05)
+                if not socket.exists():
+                    for log in runtime.logs:
+                        log.seek(0)
+                        print(log.read().decode())
+                    pytest.fail('migrated owner daemon did not start')
+                identity = base64.urlsafe_b64encode(json.dumps({
+                    'user_id': owner, 'username': owner,
+                    'capabilities': ['tinyassets.universe.write'],
+                }).encode()).decode()
+                with httpx.Client(transport=httpx.HTTPTransport(uds=str(socket)),
+                                  base_url='http://localhost', timeout=30,
+                                  headers={'x-owner': owner, 'x-box-secret': 's' * 43,
+                                           'x-owner-identity': identity}) as client:
+                    for center in centers:
+                        status = client.post('/app/api/status', json={
+                            'universe_id': center, 'include_conversation': True})
+                        assert status.status_code == 200, status.text
+                        document = status.json()
+                        turns = document['recent_conversation']['turns']
+                        assert [turn['text'] for turn in turns] == [
+                            f'{owner} history in {center}']
+                        pending = client.post('/app/api/read', json={
+                            'target': 'pending_requests', 'graph_id': center})
+                        assert pending.status_code == 200, pending.text
+                        asks = pending.json()['pending']
+                        assert requests[center] in [row['request_id'] for row in asks]
+                        pause = roots[uid] / center / '.pause'
+                        assert pause.read_text() == 'paused before cutover'
+                        actions = [('status', True), ('resume', False), ('pause', True)]
+                        for action, paused in actions:
+                            response = client.post('/app/test-cutover-control', json={
+                                'center': center, 'action': action})
+                            assert response.status_code == 200, response.text
+                            result = response.json()
+                            assert 'error' not in result['control'], result
+                            expected_tier = 'paid' if owner == 'alice' else 'free'
+                            assert result['plan']['tier'] == expected_tier
+                            if action == 'status':
+                                assert result['control']['is_paused'] is True
+                            assert pause.exists() is paused
+                    foreign = 'b1' if owner == 'alice' else 'a1'
+                    denied = client.post('/app/api/status', json={
+                        'universe_id': foreign, 'include_conversation': True})
+                    assert 'history in ' + foreign not in denied.text
+                    assert denied.json()['universe_exists'] is False
+                    assert 'recent_conversation' not in denied.json()
+            assert runtime.processes[300001].pid != runtime.processes[300002].pid
+        finally:
+            runtime.close()
+            relays.close()

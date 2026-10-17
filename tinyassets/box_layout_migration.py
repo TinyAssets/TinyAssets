@@ -1075,7 +1075,8 @@ def _atomic_json(path: Path, value: dict) -> None:
 
 def _copy(source: Path, target: Path, uid: int) -> None:
     command = [
-        "rsync", "-aH", "--xattrs", "--one-file-system", "--numeric-ids",
+        "rsync", "-aH", "--delete", "--delete-excluded", "--xattrs",
+        "--one-file-system", "--numeric-ids",
         "--chown", f"{uid}:{uid}", f"{source}/", f"{target}/",
     ]
     command[-2:-2] = [f"--exclude=/{name}" for name in
@@ -1174,7 +1175,10 @@ def _build_databases(data: Path, store: Path, shared: Path, inventory: dict) -> 
             raise RuntimeError("cutover row reconciliation failed")
     for path, tables in jobs.items():
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.unlink(missing_ok=True)  # Only build-phase outputs, never the source.
+        # A killed SQLite writer can leave a hot journal beside the output.
+        # Rebuild only our unpublished output generation, including sidecars.
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            path.with_name(path.name + suffix).unlink(missing_ok=True)
         with closing(sqlite3.connect(path)) as destination, destination:
             destination.execute("PRAGMA synchronous=FULL")
             destination.execute("BEGIN IMMEDIATE")
@@ -1183,6 +1187,10 @@ def _build_databases(data: Path, store: Path, shared: Path, inventory: dict) -> 
                 with readonly_db(data / database) as source:
                     ddl = source.execute("SELECT sql FROM sqlite_master WHERE type='table' "
                                          "AND name=?", (table,)).fetchone()[0]
+                    legacy_tombstones = (database, table) == (
+                        ".tinyassets.db", "deleted_principals")
+                    if legacy_tombstones:
+                        ddl = "CREATE TABLE deleted_principals (digest TEXT PRIMARY KEY)"
                     destination.execute(ddl)
                     columns = [row[1] for row in source.execute(
                         f"PRAGMA table_info({_quoted(table)})")]
@@ -1202,13 +1210,15 @@ def _build_databases(data: Path, store: Path, shared: Path, inventory: dict) -> 
                                     raise RuntimeError("source attribution changed after census")
                             seen += 1
                             if index in rows:
-                                yield tuple(record[column] for column in columns)
+                                yield ((record["founder_sub"],) if legacy_tombstones
+                                       else tuple(record[column] for column in columns))
                         if seen != len(metadata):
                             raise RuntimeError("source row count changed after census")
 
+                    output_columns = ["digest"] if legacy_tombstones else columns
                     destination.executemany(
-                        f"INSERT INTO {_quoted(table)} ({','.join(map(_quoted, columns))}) "
-                        f"VALUES ({','.join('?' for _ in columns)})", selected_rows())
+                        f"INSERT INTO {_quoted(table)} ({','.join(map(_quoted, output_columns))}) "
+                        f"VALUES ({','.join('?' for _ in output_columns)})", selected_rows())
                     deferred.extend(row[0] for row in source.execute(
                         "SELECT sql FROM sqlite_master WHERE tbl_name=? AND type IN "
                         "('index','trigger') AND sql IS NOT NULL", (table,)))
@@ -1226,7 +1236,11 @@ def _build_databases(data: Path, store: Path, shared: Path, inventory: dict) -> 
 
 def _seed_shared(data: Path, shared: Path, inventory: dict, report: dict, plan) -> None:
     from tinyassets.broker.owner_reads import Plans
+    from tinyassets.broker.vault import metadata_connection
+    from tinyassets.credential_vault import _ensure_custody_schema
 
+    with closing(metadata_connection(shared)) as custody, custody:
+        _ensure_custody_schema(custody)
     plans = Plans(shared)
     plans.initialize()
     for owner in plan:
@@ -1479,6 +1493,21 @@ def _publish_cutover(data: Path, store: Path, journal: dict) -> None:
     _remove_tree(shared, store)
 
 
+def _recover_atomic_files(data: Path) -> None:
+    """Remove only our interrupted atomic writes, under the exclusive lock."""
+    for path in data.iterdir():
+        match = re.fullmatch(r"(\.(?:layout|owner-cutover)\.json)\.[0-9]+\.tmp", path.name)
+        if not match:
+            continue
+        info = path.lstat()
+        original = data / match[1]
+        allowed_uid = original.stat().st_uid if original.is_file() else 0
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_uid not in {0, allowed_uid}):
+            raise RuntimeError("unsafe interrupted cutover atomic write")
+        path.unlink()
+
+
 def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
     """Copy/verify/publish with a durable boundary before source removal."""
     import fcntl
@@ -1489,7 +1518,10 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
     lock = _open_layout_lock(data, os.O_RDWR)
     try:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        _recover_atomic_files(data)
         marker = storage_layout.read_marker(data)
+        if not isinstance(marker, dict):
+            raise RuntimeError("cutover requires a readable layout marker")
         journal_path = data / ".owner-cutover.json"
         if marker.get("box_layout") == "owner-box" and marker.get("owner_daemon") == 1:
             if journal_path.exists():

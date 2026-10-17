@@ -138,8 +138,8 @@ def fence_restore(current: Path, staged: Path, *, cutover_store: Path | None = N
         relative = ".broker/state/owner-identities.db"
         if rows(current, relative, table) != rows(staged, relative, table):
             raise ValueError("identity/admission frontier differs; forward recovery needed")
-    if rows(current, ".tinyassets.db", "deleted_principals") != rows(
-        staged, ".tinyassets.db", "deleted_principals"
+    if rows(current, ".broker/credential-custody.db", "deleted_principals") != rows(
+        staged, ".broker/credential-custody.db", "deleted_principals"
     ):
         raise ValueError("deletion tombstones differ; C12 forward recovery needed")
     relative = ".boxhost/boxhost.db"

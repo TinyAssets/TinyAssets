@@ -28,8 +28,8 @@ def seed(root):
         db.execute("INSERT INTO center_admissions VALUES ('admit', 'alice', 'a')")
         db.execute("CREATE TABLE box_records (machine INT, project_id INT, bhard_bytes INT)")
         db.execute("INSERT INTO box_records VALUES (300001,300001,1048576)")
-    with sqlite3.connect(root / ".tinyassets.db") as db:
-        db.execute("CREATE TABLE deleted_principals (founder_sub TEXT, deleted_at REAL)")
+    with sqlite3.connect(root / ".broker/credential-custody.db") as db:
+        db.execute("CREATE TABLE deleted_principals (digest TEXT PRIMARY KEY)")
     state = BoxHostState(root / ".boxhost/boxhost.db")
     state.begin("alice", "before-snapshot", "write", "digest1")
     state.finish("alice", "before-snapshot", {"response": "before"})
@@ -71,13 +71,13 @@ def test_restore_refuses_authority_rollback_before_changing_staged_receipts(tmp_
         state.begin_owner_destroy("alice", "erase", 300001, "a")
         state.close()
     else:
-        database = (".tinyassets.db" if authority == "deletion"
+        database = (".broker/credential-custody.db" if authority == "deletion"
                     else ".broker/state/owner-identities.db")
         with sqlite3.connect(current / database) as db:
             db.execute({
                 "identity": "INSERT INTO owner_identities VALUES ('bob',300002)",
                 "admission": "INSERT INTO center_admissions VALUES ('retire','alice','a')",
-                "deletion": "INSERT INTO deleted_principals VALUES ('owner-digest',1234)",
+                "deletion": "INSERT INTO deleted_principals VALUES ('owner-digest')",
             }[authority])
     before = (staged / ".boxhost/boxhost.db").read_bytes()
     with pytest.raises(ValueError, match="forward recovery"):
