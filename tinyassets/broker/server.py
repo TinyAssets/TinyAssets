@@ -397,21 +397,8 @@ class _Connection:
             if op == "USAGE_LEASE":
                 await self._usage_lease(doc)
                 return
-            if op == "MODEL_SOURCE":
-                from tinyassets.broker.owner_sources import publish
-
-                try:
-                    doc = self._box_scope(doc)
-                    result = await asyncio.to_thread(
-                        publish, self._server._ledger_for(self._box_owner),
-                        self._box_owner, self._box_center, doc["definition"])
-                    answer = {"op": "BOX_RESULT", "result": result}
-                except Exception:
-                    answer = {"op": "BOX_REFUSED"}
-                await self.send_async(rf.control(rf.CONNECTION, answer))
-                return
             if op not in {"LEDGER_QUERY", "CONNECTION_CATALOG", "USAGE", "HTTP_CONNECT",
-                          "CAPABILITY", "DISCONNECT", "STATUS"}:
+                          "CAPABILITY", "DISCONNECT", "STATUS", "MODEL_SOURCE"}:
                 raise rf.FrameError("operation is not available on the box channel")
             doc = self._box_scope(doc)
         elif self._role != OWNER:
@@ -430,6 +417,9 @@ class _Connection:
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "LEDGER_QUERY":
             answer = await asyncio.to_thread(self._ledger_query, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "MODEL_SOURCE":
+            answer = await asyncio.to_thread(self._model_source, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "ERASE_ACCOUNT":
             answer = await asyncio.to_thread(self._erase_account, doc)
@@ -619,6 +609,21 @@ class _Connection:
                 return {"op": "ACCOUNT_ERASED", "counts": counts}
         except Exception:  # noqa: BLE001 - no persisted values on the wire
             return {"op": "ACCOUNT_ERASURE_REFUSED"}
+
+    def _model_source(self, doc):
+        from tinyassets.broker.owner_sources import publish
+
+        try:
+            if set(doc) != {"op", "principal", "command_center", "generation", "token",
+                            "definition"}:
+                raise ValueError("unsupported source fields")
+            _namespace(doc["principal"], doc["command_center"])
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                result = publish(self._server._ledger_for(doc["principal"]),
+                                 doc["principal"], doc["command_center"], doc["definition"])
+            return {"op": "BOX_RESULT", "result": result}
+        except Exception:
+            return {"op": "BOX_REFUSED"}
 
     def _ledger_query(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.ledger_queries import local_query, validate_query

@@ -332,7 +332,7 @@ def test_a_hand_made_connection_shows_the_owner_s_own_destination(agent, monkeyp
 
 def test_a_grant_bound_elsewhere_never_lends_its_name(agent, monkeypatch):
     """Never label one universe's source with another universe's connection."""
-    from tinyassets.providers import definition as definitions
+    from tests.support.broker_double import seed_unchecked_definition
     from tinyassets.providers.source_display import source_display_name
 
     monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner",
@@ -342,7 +342,7 @@ def test_a_grant_bound_elsewhere_never_lends_its_name(agent, monkeypatch):
         grant_id="grant-other", connection_id="conn-models",
         owner_user_id="owner", universe_id="u-other",
     )
-    borrowed = definitions.register_definition(
+    borrowed = seed_unchecked_definition(
         universe_id="u-models", owner_user_id="owner", access_method="api_key_http",
         protocol="openai_chat", model="legacy-fixed", ref=foreign.grant_id,
     )

@@ -51,6 +51,21 @@ def broker_ledger_path(data_root: str | Path) -> Path:
     return Path(data_root).resolve() / ".broker" / "outbound.db"
 
 
+def seed_unchecked_definition(**fields):
+    """Inject legacy/foreign metadata for runtime refusal tests, without registration.
+
+    Real registration now rejects these references before they enter the registry.
+    Keep the runtime guards exercised against already-stored untrusted rows too.
+    """
+    from tinyassets.providers.definition import ProviderDefinition, _definition_id, _load, _write
+
+    definition = ProviderDefinition(id=_definition_id(**fields), **fields,
+                                    visibility="private", created_at="now")
+    center = definition.universe_id
+    _write(center, [*_load(center), definition.as_dict()])
+    return definition
+
+
 def seed_owner_admission(data_root: Path, *, principal: str, center: str) -> None:
     """Seed real mapper records before a fixture's in-process broker starts."""
     if not SUPPORTED:

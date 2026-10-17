@@ -26,6 +26,9 @@ def base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root = tmp_path / "data"
     root.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
+    # These are descriptor serialization/identity tests with synthetic refs;
+    # real grant publication and its permanent latch are covered over broker IPC.
+    monkeypatch.setattr(pd, "_publish_source", lambda definition: None)
     return root
 
 
@@ -89,7 +92,7 @@ def test_different_owners_get_separate_definitions_no_squat(base: Path) -> None:
 
 
 def test_corrupt_store_raises_not_clobbers(base: Path) -> None:
-    d = _reg_http("u-corrupt")
+    _reg_http("u-corrupt")
     store = base / "u-corrupt" / "provider_definitions.json"
     store.write_text("{ not valid json", encoding="utf-8")
     # A PRESENT-but-corrupt store must fail loud — never silently [] then overwrite,

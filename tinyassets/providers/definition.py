@@ -264,6 +264,7 @@ def register_definition(
         # sharing this id whose fields no longer content-address it (e.g. a swapped
         # ref) must fail closed, never be returned or rewritten under a trusted id.
         verified = _verified_definition(row)
+        _publish_source(verified)
         if verified.visibility != visibility:
             row["visibility"] = visibility
             _write(universe_id, rows)
@@ -282,8 +283,24 @@ def register_definition(
         created_at=now or _now_iso(),
     )
     rows.append(definition.as_dict())
+    _publish_source(definition)
     _write(universe_id, rows)
     return definition
+
+
+def _publish_source(definition: ProviderDefinition) -> None:
+    if definition.access_method != "api_key_http":
+        return
+    from tinyassets.broker.client import BrokerClient
+    from tinyassets.broker.supervisor import get_supervisor
+
+    supervisor = get_supervisor(_store_path(definition.universe_id).parent.parent)
+    if supervisor is None:
+        raise ProviderDefinitionError("the credential broker is not running")
+    BrokerClient(supervisor.socket_path, principal=definition.owner_user_id,
+                 command_center=definition.universe_id, fence=supervisor.fence,
+                 verify_peer=supervisor.verify_broker, timeout=30).publish_model_source(
+                     definition.as_dict())
 
 
 def _verified_definition(

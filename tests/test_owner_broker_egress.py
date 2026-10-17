@@ -197,18 +197,33 @@ def test_authenticated_external_call_and_grant_revocation(box):
     assert len(box.calls) == 1
 
 
-@pytest.mark.parametrize("published", [False, True])
-def test_box_raw_model_post_requires_usage_with_or_without_descriptor(box, published):
+@pytest.mark.parametrize("source", ["capability", "descriptor"])
+def test_box_raw_model_post_requires_usage_after_metadata_removed(box, source):
     from tinyassets.broker.owner_sources import read
     from tinyassets.owner_channel import request
     from tinyassets.storage.agent_request_usage import InferenceUsageRequired
     from tinyassets.storage.outbound_connections import _broker_channel
 
     assert read(box.ledger, "center") == []
-    if published:
-        request("center", {"op": "MODEL_SOURCE", "definition": box.definition.as_dict()})
     channel = _broker_channel(box.root, principal="owner", command_center="center",
                               grant_id="grant-model", connection_id="conn-model")
+    assert not box.ledger.grant_requires_inference_usage("grant-model")
+    assert channel.request("POST", {"url": "https://models.example.com/v1/chat",
+                                    "body": {"model": "reply-model"}})["status"] == 200
+    box.calls.clear()
+    box.events.clear()
+    if source == "descriptor":
+        request("center", {"op": "MODEL_SOURCE", "definition": box.definition.as_dict()})
+        with box.ledger._connect() as conn:
+            conn.execute("DELETE FROM box_model_sources")
+        assert read(box.ledger, "center") == []
+    else:
+        box.ledger.configure_capability(
+            connection_id="conn-model", capability_kind="model_use", enabled=True,
+            descriptor={"wire": "openai_chat", "models": [
+                {"id": "reply-model", "tools": True, "context": 4096}], "billing": "flat"})
+        box.ledger.configure_capability(connection_id="conn-model", capability_kind="model_use",
+                                        enabled=False)
     with pytest.raises(InferenceUsageRequired):
         channel.request("POST", {"url": "https://models.example.com/v1/chat",
                                  "body": {"model": "reply-model"}})

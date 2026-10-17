@@ -32,6 +32,18 @@ outbound connections at its socket seam.
 - **AND** the broker injects credentials outside the box
 - **AND** loss of the allocation's channel closes its broker-held liveness lease
 
+#### Scenario: Model registration permanently latches metering
+- **WHEN** the broker accepts a source descriptor naming an HTTP grant, or installs a model capability on its connection
+- **THEN** it latches the grant's inference requirement in the same operation
+- **AND** later removal or disabling of metadata cannot permit a raw model POST
+- **AND** platform registration publishes to the broker before succeeding
+
+#### Scenario: Existing sources adopt metering without classifying ordinary HTTP
+- **WHEN** the broker upgrades existing grants
+- **THEN** capability rows, accepted descriptors and non-owner platform definitions latch their referenced grants
+- **AND** an unknown connection retains its existing fail-closed metering default
+- **AND** an unregistered grant without model capabilities remains ordinary regardless of its destination name
+
 #### Scenario: Missing channel and direct egress fail
 - **WHEN** a model call has no broker channel, or an SDK or raw HTTP call attempts direct outbound access
 - **THEN** it fails without a direct provider or credential-store fallback

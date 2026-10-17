@@ -78,8 +78,10 @@ def test_unknown_access_method_rejected() -> None:
 
 
 def test_register_universe_open_providers_makes_them_routable(base: Path) -> None:
+    from tests.test_compute_connection import _seed_grant
     from tinyassets.providers.router import ProviderRouter
 
+    _seed_grant(base, owner="founder", universe="u-x")
     register_definition(
         universe_id="u-x", owner_user_id="founder", access_method="api_key_http",
         protocol="openai_chat", model="moonshotai/kimi-k2", ref="http_grant_" + "a" * 32,

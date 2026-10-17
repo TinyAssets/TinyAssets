@@ -4802,18 +4802,18 @@ def _contains_secret(value: object, secret: str) -> bool:
     return False
 
 
-# Evaluated only against broker-owned connection rows, never source descriptors.
+# Capabilities classify new grants; accepted source descriptors latch them later.
 _MODEL_CONNECTION_SQL = """(
-    c.connection_type = 'http' AND (
-        c.destination LIKE 'compute:%' OR EXISTS (
+    c.connection_type = 'http' AND EXISTS (
             SELECT 1 FROM connection_capabilities k
             WHERE k.connection_id = c.connection_id
               AND k.capability_kind IN ('model_use', 'model_discovery')
-        )
     )
 )"""
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS broker_schema_migrations (name TEXT PRIMARY KEY);
+
 CREATE TABLE IF NOT EXISTS outbound_connections (
     connection_id   TEXT PRIMARY KEY,
     owner_user_id   TEXT NOT NULL,
@@ -5041,6 +5041,14 @@ class ConnectionLedger:
                     f"(SELECT {_MODEL_CONNECTION_SQL} FROM outbound_connections c "
                     "WHERE c.connection_id = outbound_connection_grants.connection_id), 1)"
                 )
+            if "inference_required" not in grant_columns or not connection.execute(
+                "SELECT 1 FROM broker_schema_migrations WHERE name='model_source_metering'"
+            ).fetchone():
+                from tinyassets.broker.owner_sources import backfill_metering
+
+                backfill_metering(self, connection)
+                connection.execute("INSERT OR IGNORE INTO broker_schema_migrations "
+                                   "VALUES ('model_source_metering')")
             # The column default also applies to rows inserted by older writers.
             # Adopt those rows without rotating any established deposit identity
             # or changing its policy. Ordinary opens must not take a write lock.
