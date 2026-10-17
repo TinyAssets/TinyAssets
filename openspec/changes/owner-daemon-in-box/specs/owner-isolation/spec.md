@@ -94,9 +94,15 @@ outbound connections at its socket seam.
 - **AND** later removal or disabling of metadata cannot permit a raw model POST
 - **AND** platform registration publishes to the broker before succeeding
 
+#### Scenario: Inference source validation uses only published descriptors
+- **WHEN** the owner daemon requests an inference dispatch reference through accounting IPC
+- **THEN** the broker validates the source against its accepted descriptor and live grant
+- **AND** every accounting liveness token uses that same descriptor path
+- **AND** an owner-private provider definition file cannot substitute for a missing publication or change validation
+
 #### Scenario: Existing sources adopt metering without classifying ordinary HTTP
 - **WHEN** the broker upgrades existing grants
-- **THEN** capability rows, accepted descriptors and non-owner platform definitions latch their referenced grants
+- **THEN** broker-held capability rows and accepted descriptors latch their referenced grants
 - **AND** an unknown connection retains its existing fail-closed metering default
 - **AND** an unregistered grant without model capabilities remains ordinary regardless of its destination name
 

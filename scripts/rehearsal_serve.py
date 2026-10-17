@@ -1,7 +1,7 @@
 """Network-less process smoke against migrated roots, with real kernel peers.
 
 This is a process venue, not the gVisor isolation acceptance. Owner processes
-use private mount namespaces, the fixed owner mount and their assigned UIDs.
+use private mount/network namespaces, the fixed owner mount and their assigned UIDs.
 """
 
 from __future__ import annotations
@@ -21,6 +21,17 @@ sys.path.insert(0, "/app")
 
 
 def owner(root, relay, secret, socket):
+    import fcntl
+    import socket as sockets
+    import struct
+
+    # Each owner binds the real fixed proxy port in its own null netns.
+    # Bring up only loopback before dropping privilege; no external interface
+    # or route is created. SIOCGIFFLAGS/SIOCSIFFLAGS preserve the other flags.
+    with sockets.socket(sockets.AF_INET, sockets.SOCK_DGRAM) as interface:
+        flags = bytearray(fcntl.ioctl(interface.fileno(), 0x8913, struct.pack("16sH", b"lo", 0)))
+        struct.pack_into("H", flags, 16, struct.unpack_from("H", flags, 16)[0] | 1)
+        fcntl.ioctl(interface.fileno(), 0x8914, flags)
     subprocess.run(["mount", "--bind", root, "/home/owner"], check=True)
     for original, mounted in ((relay, "/run/owner-relay"), (secret, "/run/owner-secret")):
         Path(mounted).touch()
@@ -209,6 +220,7 @@ def smoke(confirm=False):
                     [
                         "unshare",
                         "--mount",
+                        "--net",
                         "--propagation",
                         "private",
                         sys.executable,

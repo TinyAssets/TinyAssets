@@ -1,6 +1,5 @@
 """Synthetic cross-process accounting primitives; no credentials or network."""
 
-import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -21,12 +20,7 @@ WIRE = {"body": {"model": "model"}}
 @pytest.fixture(autouse=True)
 def installed_source(tmp_path):
     # Synthetic installed descriptor and grant; no credentials or real accounts.
-    root = tmp_path / "home"
-    root.mkdir(exist_ok=True)
-    (root / "provider_definitions.json").write_text(json.dumps([
-        dict(_FIELDS, id=SOURCE.removeprefix("api_key_http:"), visibility="private",
-             created_at="2026-10-04T00:00:00+00:00"),
-    ]))
+    from tinyassets.broker.owner_sources import publish
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
@@ -39,6 +33,9 @@ def installed_source(tmp_path):
                                 methods=["POST"])])
     ledger.grant_connection(grant_id="grant", connection_id="connection",
                             owner_user_id="owner", universe_id="home")
+    publish(ledger, "owner", "home", dict(
+        _FIELDS, id=SOURCE.removeprefix("api_key_http:"), visibility="private",
+        created_at="2026-10-04T00:00:00+00:00"))
 
 
 @pytest.fixture

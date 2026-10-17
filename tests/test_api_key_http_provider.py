@@ -30,7 +30,7 @@ from tinyassets.exceptions import (
     ProviderUnavailableError,
 )
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
-from tinyassets.providers.definition import ProviderDefinition
+from tinyassets.providers.definition import ProviderDefinition, _definition_id
 
 _CONN_ID = "http_" + "b" * 32
 _GRANT_ID = "http_grant_" + "a" * 32
@@ -84,14 +84,16 @@ def _seed(base: Path, *, owner: str = "founder", universe: str = "u-x") -> None:
 
 
 def _definition(protocol: str = "openai_chat", *, ref: str = _GRANT_ID) -> ProviderDefinition:
-    return ProviderDefinition(
-        id="provdef_" + "c" * 32,
+    fields = dict(
         universe_id="u-x",
         owner_user_id="founder",
         access_method="api_key_http",
         protocol=protocol,
         model="moonshotai/kimi-k2",
         ref=ref,
+    )
+    return ProviderDefinition(
+        id=_definition_id(**fields), **fields,
         visibility="private",
         created_at="2026-01-01T00:00:00+00:00",
     )
@@ -109,8 +111,9 @@ def _run(provider: ApiKeyHttpProvider, universe_dir: Path) -> Any:
 
 
 @pytest.fixture
-def base(tmp_path: Path) -> Path:
+def base(tmp_path: Path, monkeypatch) -> Path:
     root = tmp_path / "data"
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
     (root / "u-x").mkdir(parents=True)
     (root / "u-y").mkdir(parents=True)
     return root

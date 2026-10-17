@@ -17,6 +17,11 @@ def main():
     # The process rig substitutes only the fixed mount supplied by boxhostd.
     owner_runtime.OWNER_MOUNT = root
     owner_runtime._is_owner_mount = lambda path: path == root
+    # Like the router process rig, these apps share the oracle's network
+    # namespace. Native egress has a separate null-netns, fixed-port proof.
+    from tinyassets import owner_public_egress
+
+    owner_public_egress.LISTEN_ADDRESS = ("127.0.0.1", 0)
     app = create_app(relay=relay, secret_file=secret)
     from starlette.responses import JSONResponse
     from starlette.routing import Route

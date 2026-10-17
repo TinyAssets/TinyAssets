@@ -391,36 +391,27 @@ class UsageStore:
             )]
         return [self.receipt((owner, universe, uid)) for uid in ids]
 
-    def _validate_source(self, scope, attempt, grant_id, connection_id, verb, request,
-                         *, accounting_connection=None):
+    def _validate_source(self, scope, attempt, grant_id, connection_id, verb, request):
         """Bind server admission to its installed descriptor and current grant.
 
         A paid reservation cannot be relabelled as another HTTP source. Model
         discovery can select a model other than the descriptor's default; the
         wire model must be the model the router actually reserved.
         """
+        from tinyassets.broker.owner_identities import validate_center
+        from tinyassets.broker.owner_sources import read
         from tinyassets.providers.definition import _verified_definition
 
         try:
-            root = (self.base / scope[1]).resolve()
-            if (root.parent != self.base or not attempt.source_ref.startswith("api_key_http:")
+            validate_center(scope[1])
+            if (not attempt.source_ref.startswith("api_key_http:")
                     or verb != "POST" or not isinstance(request, dict)
                     or not isinstance(request.get("body"), dict)
                     or request["body"].get("model") != attempt.model):
                 raise ValueError("source or model mismatch")
-            from tinyassets.broker.provider_metadata import read_definitions
-
-            # Reuse the broker's admission transaction. Daemon-side source
-            # inspection has no local accounting database to open.
-            row = (accounting_connection.execute(
-                f"SELECT owner_token FROM agent_request_usage WHERE {_SCOPE}", scope).fetchone()
-                   if accounting_connection is not None else None)
-            if row is not None and row[0].startswith("box_"):
-                from tinyassets.broker.owner_sources import read
-
-                rows = read(self._ledger, scope[1])
-            else:
-                rows = read_definitions(self.base, scope[1])
+            # This runs in the broker; owner daemons request it through IPC.
+            # Liveness token spelling never selects an owner-file read.
+            rows = read(self._ledger, scope[1])
             definition = next(_verified_definition(row, expect_universe=scope[1])
                               for row in rows
                               if row.get("id") == attempt.source_ref.removeprefix("api_key_http:"))
@@ -473,8 +464,7 @@ class UsageStore:
                 if budget._attempts[ordinal - 1].state != "reserved":
                     raise ProviderAuthorityHeldError("inference usage reservation already consumed")
                 self._validate_source(scope, budget._attempts[ordinal - 1],
-                                      grant_id, connection_id, verb, request,
-                                      accounting_connection=conn)
+                                      grant_id, connection_id, verb, request)
                 conn.execute(
                     "INSERT INTO agent_request_dispatches "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)",

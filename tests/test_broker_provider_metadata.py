@@ -1,56 +1,70 @@
-"""Broker metadata stays readable without listing or following owner content."""
+"""Broker validation reads published descriptors, independent of owner inodes."""
 import json
 import os
 
 import pytest
 
-from tinyassets.broker.provider_metadata import read_definitions
+from tests.support.broker_ipc import discovery  # noqa: F401
+from tests.test_broker_server import broker  # noqa: F401
+from tests.test_broker_usage_source import source  # noqa: F401
+from tinyassets.broker.owner_sources import publish, read
+from tinyassets.storage.agent_request_usage import UsageStore
 
 pytestmark = pytest.mark.skipif(os.name != 'posix',
                                reason='runs-in=linux-oracle: POSIX descriptors')
 
 
-def test_traversal_only_center(tmp_path):
-    center = tmp_path / 'center'
+def test_published_source_needs_no_center_listing(source):  # noqa: F811
+    center = source.root / 'cc-alice'
     center.mkdir()
-    rows = [{'id': 'metadata'}]
+    rows = read(source.ledger, 'cc-alice')
     (center / 'provider_definitions.json').write_text(json.dumps(rows))
     center.chmod(0o111)
     try:
         with pytest.raises(PermissionError):
             os.listdir(center)
-        assert read_definitions(tmp_path, 'center') == rows
+        assert read(source.ledger, 'cc-alice') == rows
+        UsageStore(source.root, broker_ledger=source.ledger)._validate_source(**source.arguments)
     finally:
         center.chmod(0o700)
 
 
 @pytest.mark.parametrize('attack', ['center-link', 'leaf-link', 'hardlink', 'writable', 'fifo'])
-def test_metadata_refuses_aliases_and_untrusted_inodes(tmp_path, attack):
-    center = tmp_path / 'center'
-    center.mkdir()
-    leaf = center / 'provider_definitions.json'
-    original = tmp_path / 'original'
-    original.write_text('[]')
+def test_owner_inode_cannot_replace_published_source(source, attack):  # noqa: F811
+    rows = read(source.ledger, 'cc-alice')
+    center = source.root / 'cc-alice'
+    outside = source.root / 'outside'
+    outside.mkdir()
+    original = outside / 'original'
+    original.write_text('private owner content')
     if attack == 'center-link':
-        (center / 'provider_definitions.json').write_text('[]')
-        (tmp_path / 'alias').symlink_to(center)
-    elif attack == 'leaf-link':
+        center.symlink_to(outside, target_is_directory=True)
+    else:
+        center.mkdir()
+    leaf = center / 'provider_definitions.json'
+    if attack == 'leaf-link':
         leaf.symlink_to(original)
     elif attack == 'hardlink':
         os.link(original, leaf)
     elif attack == 'writable':
-        leaf.write_text('[]')
+        leaf.write_text('invalid private definition')
         leaf.chmod(0o666)
-    else:
+    elif attack == 'fifo':
         os.mkfifo(leaf)
-    with pytest.raises(OSError):
-        read_definitions(tmp_path, 'alias' if attack == 'center-link' else 'center')
+    else:
+        leaf.write_text('invalid private definition')
+    before = original.read_bytes(), original.stat()
+    UsageStore(source.root, broker_ledger=source.ledger)._validate_source(**source.arguments)
+    assert read(source.ledger, 'cc-alice') == rows
+    assert original.read_bytes() == before[0]
+    assert os.path.samestat(original.stat(), before[1])
+    assert original.stat().st_mode == before[1].st_mode
 
 
 @pytest.mark.parametrize('value', [{}, [None], ['not a definition']])
-def test_malformed_definition_container_fails_closed(tmp_path, value):
-    center = tmp_path / 'center'
-    center.mkdir()
-    (center / 'provider_definitions.json').write_text(json.dumps(value))
-    with pytest.raises(ValueError, match='list of definitions'):
-        read_definitions(tmp_path, 'center')
+def test_malformed_publication_preserves_admitted_descriptor(source, value):  # noqa: F811
+    rows = read(source.ledger, 'cc-alice')
+    with pytest.raises((ValueError, TypeError)):
+        publish(source.ledger, 'alice', 'cc-alice', value)
+    assert read(source.ledger, 'cc-alice') == rows
+    assert not (source.root / 'cc-alice').exists()

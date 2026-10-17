@@ -90,6 +90,43 @@ def test_runtime_roundtrip_private_tables_source_and_one_use_retry(source):
         budget.close()
 
 
+@pytest.mark.parametrize("prefix", ["box_", "proc_"])
+def test_source_validation_requires_publication_for_every_liveness_token(source, prefix):
+    import json
+
+    from tinyassets.broker.owner_sources import publish, read
+    from tinyassets.process_liveness import hold_liveness
+    from tinyassets.singleton_lock import release_singleton_lock
+
+    budget = make_budget(source)
+    held = hold_liveness(source.root, prefix + budget.usage_id)
+    try:
+        ordinal = reserve(source, budget)
+        rows = read(source.ledger, "cc-alice")
+        directory = source.root / "cc-alice"
+        directory.mkdir()
+        private = directory / "provider_definitions.json"
+        private.write_text(json.dumps(rows))
+        private.chmod(0o600)
+        with source.ledger._connect() as conn:
+            conn.execute("UPDATE agent_request_usage SET owner_token=? WHERE usage_id=?",
+                         (prefix + budget.usage_id, budget.usage_id))
+            conn.execute("DELETE FROM box_model_sources")
+        with pytest.raises(ProviderAuthorityHeldError):
+            reference(source, budget, ordinal)
+        assert budget.receipt()["dispatched"] == 0
+        assert budget.receipt()["attempts"][0]["state"] == "reserved"
+        publish(source.ledger, "alice", "cc-alice", rows[0])
+        private.unlink()
+        directory.rmdir()
+        reference(source, budget, ordinal)
+        assert not directory.exists()
+        assert not (source.root / ".tinyassets.db").exists()
+    finally:
+        budget.close()
+        release_singleton_lock(held)
+
+
 def test_concurrent_ipc_reservations_share_one_limit_and_committed_stop(source):
     budget = make_budget(source, max_requests=2)
     def attempt(_):

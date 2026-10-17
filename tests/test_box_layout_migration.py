@@ -219,11 +219,10 @@ def test_preflight_reads_wal_without_writing_data(tmp_path, monkeypatch, live_wr
 
 def test_preflight_refuses_unreadable_founder_home(tmp_path):
     data, _ = _cutover_root(tmp_path)
-    from tinyassets.sqlite_readonly import readonly_db
-    from tinyassets.universe_owner import account_type_of
 
-    with pytest.raises(FileNotFoundError):
-        account_type_of(data, "alice", db_reader=readonly_db)
+    with pytest.raises(FileNotFoundError, match=r"\.tinyassets\.db"):
+        migration._owner_plan(data)
+    assert not (data / ".tinyassets.db").exists()
 
 
 def test_apply_refuses_unreadable_founder_home_before_any_write(tmp_path, monkeypatch):

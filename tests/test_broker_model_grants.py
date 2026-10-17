@@ -191,11 +191,15 @@ def test_existing_grants_backfill_from_broker_state(tmp_path, source, old_column
 
 
 def test_backfill_never_reads_old_host_center_definitions(ordinary, monkeypatch):
-    from tinyassets.broker import provider_metadata
+    from pathlib import Path
 
-    def forbidden(*args):
-        raise AssertionError("broker backfill must not read a private host center")
-    monkeypatch.setattr(provider_metadata, "read_definitions", forbidden)
+    original = Path.open
+
+    def forbidden(path, *args, **kwargs):
+        if path.name == "provider_definitions.json":
+            raise AssertionError("broker backfill must not read a private host center")
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "open", forbidden)
     with ordinary._connect() as conn:
         conn.execute("DELETE FROM broker_schema_migrations")
     reopened = ConnectionLedger(ordinary._db_path, data_root=ordinary._data_root)

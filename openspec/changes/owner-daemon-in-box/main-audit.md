@@ -1,5 +1,83 @@
 # Main vs the clean per-user-instance shape: read-only audit
 
+## Final C6 migration and source-reader reconciliation (2026-10-17)
+
+This pass starts at `01331dd575f` on the single cutover branch. No production
+tree, data, backup or service was accessed; all fixtures are synthetic. No
+delegation, Git configuration edit, branch change, push, merge, rebase, amend
+or workflow execution occurred. The independent review remains one later round.
+
+### Migration account-type API
+
+The slice-6 merge already replaced the implementation's retired
+`account_type_of(..., db_reader=readonly_db)` call: `_owner_plan` reads `census`
+and converts its legacy tier using `usage_policy.account_type`. Census uses
+`readonly_db`, including its external scratch for WAL recovery. Calling the
+runtime account-type API here would instead require an admitted box and its
+broker plan. The one surviving obsolete test now calls the cutover planner and
+still requires missing-source refusal before any source database is created.
+The existing live/stale WAL tests retain paid-quota and verbatim source-byte
+checks; apply retains its before-any-write refusal checks. The earlier audit's
+five-failure account-type limitation is superseded by this combined branch.
+
+### Source-validation callers and process verdicts
+
+| Caller / process | Reachability and result |
+| --- | --- |
+| `providers/api_key_http_provider._completion` in the owner daemon, through `request_budget.issue_reference` and `UsageStore.issue_reference` | The store is remote; it sends accounting IPC. It never executes `_validate_source` against a local owner file. Model registration separately publishes its descriptor through the owner channel. |
+| `broker.server._usage` through `broker.usage.local_operation` | Injects the broker ledger and invokes the only production caller of `_validate_source`, local `UsageStore.issue_reference`. Both old token branches therefore executed in the shared broker. The host-file fallback was a dual path and is deleted. |
+| Broker outbound dispatch through `resolve_inference_usage` / `claim_reference` | Consumes the already-issued private reference; it does not call `_validate_source` or read owner definitions. Retries remain on that same broker record. |
+| Direct `_validate_source` calls in synthetic tests | Broker-local fixtures now inject their ledger and publish descriptors. Changed/outage/fence tests use actual accounting IPC. There is no production owner-local caller of this helper. |
+| Router | Forwards owner model work; no router handler invokes source validation. Router connection operations publish shared descriptors without opening owner definition files. |
+
+All accounting rows now validate against `broker.owner_sources.read` and the
+live grant, regardless of liveness-token prefix. The source check no longer
+resolves a center through the host filesystem. The broker owner-file reader
+`provider_metadata.read_definitions` and its unused metadata group-mode constant
+are deleted. Private definition publication remains 0600 with no group change.
+Tests prove missing publication refuses even when a matching private file
+exists, for both token prefixes; accepted publication works with no owner
+directory, and links, hardlinks, writable files and FIFOs cannot change it.
+Malformed publication preserves the accepted descriptor. Existing API-provider
+fixtures now use a real content-addressed descriptor and the correct synthetic
+data root; all their wire, response and refusal assertions remain intact.
+
+### Remaining broker-read group inventory
+
+The search covered symbolic `BROKER_READ_GID`, literal `1102`, metadata mode
+constants and their producers/consumers across runtime code, scripts, deployment
+and tests. These are the remaining families, each with its process verdict:
+
+| Family / reader | Verdict |
+| --- | --- |
+| `broker.owner_reads.publish/read`, `commons_catalog`, router commons reads | Legitimate published commons under `.published`; no owner-tree read. |
+| `box_layout_migration._shared_modes` | Legitimate one-shot cutover. Only `.published` receives this group; retained private shared files use their service UID. |
+| `onboarding.owner_sessions.store` -> `broker.policy._session` | Legitimate router identity/approval store `.runtime/owner-sessions.db`, read-only at the broker; never owner-box state. |
+| `router_credentials.serve` -> `router_credentials.broker_request` | Legitimate router runtime directory and credential RPC socket. Group traversal/connect is not owner-file access. |
+| `boxes.host_service` daemon control socket | Legitimate root-owned lifecycle control socket; kernel peer identity still selects permitted operations. No owner file is opened through the group. |
+| `universe_files.open_broker_liveness_lock`, `process_liveness` | Group-publishing helper has no production `broker_readable=True` caller; only synthetic fixtures use it. Production owner locks are private in the box. Broker `_usage_lease` creates/holds accounting locks in its own shared root and probes those same locks, never a host copy of box liveness. No active dual path. |
+| Broker custody/vault | Broker-owned `.platform/credential-vaults` and `.broker` stores, private after cutover. No live group grant for owner definitions or owner vault files; old group-related fixture wording does not grant runtime access. |
+| `broker.process`, `broker.supervisor`, Compose groups, `rehearsal_serve`, test group fixtures | Service identity/admission or synthetic venue setup, not owner-file readers. |
+
+No other active shared-process owner-file reader relying on this group was
+found. The old traversal-only provider-reader tests are ported to published
+descriptor isolation and malformed-publication refusal. No gate or shape probe
+was removed, and no test skip, quarantine, xfail or assertion was weakened.
+
+### Synthetic venue reconciliation
+
+The required root selection exposed a serving-fixture collision introduced by
+the persistent proxy: two owner processes shared a netns and both bound 3128.
+`owner_cutover_process` now uses the existing router process rig's ephemeral
+listener setting; its domain assertions and production startup stay intact.
+The full privileged archive rehearsal instead gives each owner a private null
+network namespace, raises only loopback before dropping UID, and retains the
+real fixed proxy port. Real XFS, all ten rehearsal steps, both interruption
+comparisons, serving, reconnect and both restores remain required.
+
+Validation receipts and selections are outside the repository at
+`C:/Users/Jonathan/AppData/Local/Temp/c6-final-items-validation/`.
+
 ## Merge 6a into 6b (2026-10-17)
 
 Resolved the in-progress merge of `e0a9bef9daf` into `a80d01def37`.

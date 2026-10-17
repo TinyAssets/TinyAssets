@@ -1379,6 +1379,8 @@ def _owner_plan(data: Path) -> list[OwnerMove]:
                     or info.st_gid != uid):
                 raise RuntimeError(f"noncanonical owner center {center}")
         label = f"account-{sorted(identities).index(principal) + 1:04d}"
+        # Runtime account_type_of reads the admitted box's broker plan. Cutover
+        # instead converts the legacy tier already read by the read-only census.
         account = account_type(report["plans"][label]["tier"])
         quota = int(limits_for(account).storage_bytes)
         quota = (quota // 1024) * 1024

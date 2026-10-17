@@ -14,9 +14,8 @@ from contextlib import contextmanager
 DAEMON_UID = 1001
 #: The credential broker's own identity.
 BROKER_UID = 1002
-#: Daemon-written files the broker may read (vault copies, definitions).
+#: Shared publication and router runtime group; never owner definitions.
 BROKER_READ_GID = 1102
-BROKER_METADATA_FILE_MODE = 0o640
 VAULT_FILE_MODE = 0o640
 LIVENESS_DIRECTORY_MODE = 0o2750
 LIVENESS_FILE_MODE = 0o640

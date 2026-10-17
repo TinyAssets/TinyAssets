@@ -535,6 +535,12 @@ credentials survive, so a source-free owner can reconnect after cutover.
 Provider definitions remain private owner files (0600); registration already
 publishes the credential-free descriptor through the broker channel. An owner
 process never changes a definition file to the retired broker-reader group.
+Inference source validation runs only in the broker's accounting operation and
+reads only that published descriptor plus the live grant, regardless of the
+accounting row's liveness-token prefix. No broker owner-file reader remains.
+Cutover quota planning converts the legacy tier from the read-only census with
+`usage_policy.account_type`; the runtime account-type API reads the admitted
+box's broker plan and is not a migration reader.
 
 The census reports six classes:
 owner, router, broker, published, dropped and regenerated, with per-table totals,
