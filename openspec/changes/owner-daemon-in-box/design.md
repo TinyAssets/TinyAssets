@@ -155,6 +155,26 @@ provider-specific code.
   admission writes an explicit `free` row. A missing row is an error, never
   read as `free`.
 - **Hooks** already publish through the router (slice 2).
+- **Plans at cutover.** The census copies each owner's tier once into
+  `.broker/plans.db` from the authoritative source: Stripe's customer and
+  subscription, as recorded today in the per-center `.subscription_state.db`
+  that the Stripe webhook writes. If a paid tier can't be attributed to
+  exactly one owner, the census refuses and the cutover stops. It never
+  defaults an account to `free`. Unpaid owners get the explicit `free` row.
+- **Existing connections at cutover.** HTTP connections (vault `http`
+  records under shared `.platform/credential-vaults/<center>/` plus the
+  broker's grant rows) are already outside every box, in the custody store
+  this section keeps. They carry over in place, with the broker as their
+  writer: no copy and no reconnect. CLI `llm_subscription` records are
+  deleted with the CLI stack, so those accounts reconnect through the door.
+  The census verifies the vault location on the production copy.
+- **One model path, so in-process local models go too.** The direct Ollama
+  vision call in image ingestion is deleted. Images keep their metadata,
+  and a description comes from the owner's model through the broker.
+- **The slice 7 report names, per account:** CLI connections lost, keys
+  pasted into chat no longer accepted, HTTP connections carried over,
+  `/mcp/hooks/` integrations to re-point to `/hooks/inbound/`, and the loss
+  of local image descriptions.
 
 | Research rule | 3c |
 |---|---|

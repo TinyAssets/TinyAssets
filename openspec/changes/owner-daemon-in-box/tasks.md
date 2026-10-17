@@ -56,6 +56,18 @@ Nothing deploys until slice 7.
       Build order: 3c-1 deletes the CLI stack and provider-specific code;
       3c-2 moves the flows to the door with broker custody, refresh and
       RFC 7009 revoke; 3c-3 adds the plan store. Decisions: design.md D3c.
+      - [x] 3c-1: CLI stack and provider-specific code deleted.
+      - 3c-2 also: creating a center inside a box (universe create →
+        `admit_center`) registers it in the broker's admission map through a
+        bound-channel op, with the owner taken from the bind. Policy rules,
+        effectors, source display and `ta_capabilities` reach the broker
+        only through the channel.
+      - 3c-3 also: `/app/billing/status|checkout|cancel|webhook` key plans
+        by owner in `.broker/plans.db`, never reading a home or
+        `.subscription_state.db` at the router. Seat and storage usage come
+        from the box through the channel. The commons publish writer
+        copies a definition from the box into shared `.published/` through
+        the channel.
 - [ ] 4. boxhostd persistent per-owner sandbox lifecycle: wake, idle sleep,
       crash restart, memory cap, awake cap.
 - [ ] 5. The waker and the next-wake index. Test: a scheduled automation in
@@ -63,6 +75,10 @@ Nothing deploys until slice 7.
 - [ ] 6. Migration and census, with the shared root DB split by owner, the
       synthetic rehearsal, and the `--archive` rehearsal on the production
       copy (run by the lead).
+      - Plans: copy each tier once from `.subscription_state.db` into
+        `.broker/plans.db`. An unattributable paid tier stops the cutover.
+        Never default to `free`. HTTP connections carry over in place
+        (D3c).
       - It is ONE migration, from production's actual layout (owner-split,
         `fa29c95`) straight to the final shape.
       - DELETE the P2b intermediate move code in `box_layout_migration`
