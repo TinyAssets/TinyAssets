@@ -72,6 +72,28 @@ def main():
         proof = require(request, owner=current_identity().user_id)
         return JSONResponse({"owner": json.loads(proof["identity_json"])["user_id"]})
 
+    async def writing_turn(request):
+        import threading
+        import time
+
+        from tinyassets.owner_activity import owner_work
+
+        started = threading.Event()
+
+        @owner_work
+        def work():
+            started.set()
+            deadline = time.monotonic() + 40
+            while not (root / "release-turn").exists():
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("test turn was not released")
+                time.sleep(.01)
+            (root / "late-write").write_text("written while deletion was draining")
+
+        threading.Thread(target=work, daemon=True).start()
+        assert await asyncio.to_thread(started.wait, 5)
+        return JSONResponse({"started": True})
+
     async def credentials(request):
         from tinyassets.storage import webhook_hooks
 
@@ -103,6 +125,7 @@ def main():
     app.routes.insert(0, Route("/app/api/test-stream", stream, methods=["GET"]))
     app.routes.insert(0, Route("/hooks/inbound/{token}", delivery, methods=["POST"]))
     app.routes.insert(0, Route("/app/test-session", protected_session, methods=["POST"]))
+    app.routes.insert(0, Route("/app/test-writing-turn", writing_turn, methods=["POST"]))
     # Use the real MCP transport lifespan; no model calls or host services needed.
     from tinyassets.owner_daemon import serve
 

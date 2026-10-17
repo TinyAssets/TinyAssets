@@ -66,6 +66,18 @@ class OwnerIngress:
             return await JSONResponse({"error": "router_required"}, status_code=401)(
                 scope, receive, send)
         scope = dict(scope, tinyassets_router_identity=identity)
+        if scope["path"] == "/_box/account/delete" and scope["method"] == "POST":
+            # Close admission before waiting. The deletion itself is a control
+            # call, so it can retry while draining and never waits on itself.
+            from starlette.concurrency import run_in_threadpool
+
+            if not await run_in_threadpool(activity.quiesce, 20):
+                return await JSONResponse({"error": "deletion_incomplete", "receipt": {
+                    "unfinished_phases": ["drain"]}}, status_code=503)(scope, receive, send)
+            response = await delete_local_account(identity)
+            if response.status_code == 409:
+                activity.deletion_refused()
+            return await response(scope, receive, send)
         # Admission and drain share a lock: a successful drain cannot race a
         # new request or background turn. No control request counts as activity.
         gate = activity.enter()
@@ -81,11 +93,7 @@ class OwnerIngress:
             gate.__exit__(None, None, None)
             return await self.app(scope, receive, send)
         try:
-            if scope["path"] == "/_box/account/delete" and scope["method"] == "POST":
-                response = await delete_local_account(identity)
-                await response(scope, receive, send)
-            else:
-                await self.app(scope, receive, send)
+            await self.app(scope, receive, send)
         finally:
             gate.__exit__(None, None, None)
 

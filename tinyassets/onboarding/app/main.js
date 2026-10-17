@@ -5321,9 +5321,8 @@
   // The guided sign-in the connect request offers first. Its preset (name,
   // button label, key page) comes from the SERVER's request, so this page
   // names no provider. Nothing here starts on its own: the owner taps.
-  // Finishing is part of that tap: the button says "free models only", the
-  // owner approves at the provider, and the page completes the free-model
-  // request it gets back, with no second screen to approve again.
+  // Provider sign-in saves a connection. The existing owner request then
+  // discloses model access and waits for the owner's confirmation.
   // Generic connection card. The server supplies the provider; the message is
   // replayable only after an explicit before-send setup refusal, never a timeout.
   const InlineConnection={
@@ -5355,6 +5354,10 @@
       appendMessage('platform','',box);
       other.onclick=()=>{if(this.current(record))openConnectRequest();};
       connect.onclick=()=>primary?this.begin(primary):openConnectRequest();
+      if(record.modelConfirmation){
+        note.textContent=record.modelConfirmation.grant_sentence||'Connection saved. Confirm model access to continue.';
+        connect.textContent='Confirm model access';
+      }
       cancel.onclick=async()=>{
         if(!this.current(record)||!record.connectionFlow)return;
         try{await HostedModelConnect.post('inline_cancel',{flow:record.connectionFlow});
@@ -5368,6 +5371,17 @@
     schedule(){clearTimeout(this.timer);this.timer=setTimeout(()=>this.check(),1500);},
     async begin(primary){
       const record=this.record;if(!this.current(record)||this.busy)return;
+      if(record.modelConfirmation){
+        this.busy=true;
+        try{
+          const answered=await MCP.answerRequest({request_id:record.modelConfirmation.request_id,values:{}});
+          if(!this.current(record))return;
+          if(!answered||answered.error||answered.status!=="answered")throw new Error("Model access was not confirmed.");
+          record.modelConfirmation=null;this.save();
+        }catch(_e){if(this.current(record))this.note.textContent="Model access is still pending. Try confirming again.";}
+        finally{this.busy=false;this.schedule();}
+        return;
+      }
       // Reserve the popup inside the gesture, before network or token renewal.
       const popup=NATIVE?null:window.open('about:blank','_blank');
       if(!NATIVE&&!popup){this.failed('Allow the sign-in popup to connect.');return;}
@@ -5403,14 +5417,12 @@
           const result=await HostedModelConnect.post('inline_poll',{flow:record.connectionFlow});
           if(!this.current(record))return;
           if(result.status==='confirmation_required'){
-            // This tap authorized only the server's existing free-only bootstrap.
             if(!result.request||result.request.request_id!==result.request_id||
                !result.request.action||result.request.action.type!=='bind_model_access')
               throw new Error('Connection confirmation did not match the requested setup.');
-            const answered=result.answer || await MCP.answerRequest({request_id:result.request_id,values:{}});
-            if(!this.current(record))return;
-            if(!answered||answered.error||answered.status!=='answered')throw new Error('Connection confirmation did not finish.');
-            record.connectionFlow=null;this.save();
+            record.modelConfirmation=result.request;record.connectionFlow=null;this.save();
+            this.note.textContent=result.request.grant_sentence||'Connection saved. Allow the default agent to use these free models?';
+            this.connect.textContent='Confirm model access';this.connect.disabled=false;this.cancel.hidden=true;
           }else if(result.status==='cancelled')this.failed('Sign-in was cancelled. Your message is kept.');
           else if(result.status==='consumed'){
             this.failed('Connection needs recovery. Use Other AI to finish the saved setup.');
@@ -5473,10 +5485,11 @@
       $("connect-primary").hidden=!(primary&&idle&&!this.request);
       $("btn-hosted-model").textContent=primary?primary.label:"";
       $("btn-hosted-model").disabled=this.busy||!idle;
-      const finish=!NATIVE&&this.setup!=="connected"&&
-        (!!this.request||(this.setup==="recovery"&&!!primary));
+      const finish=this.setup!=="connected"&&
+        (!!this.request||(!NATIVE&&this.setup==="recovery"&&!!primary));
       $("btn-hosted-resume").hidden=!finish;
       $("btn-hosted-resume").disabled=this.busy;
+      $("btn-hosted-resume").textContent=this.request?"Confirm model access":"Finish connecting";
       const grant=$("hosted-model-grant");
       grant.textContent=this.request&&this.request.grant_sentence||"";
       grant.hidden=!grant.textContent;
@@ -5550,7 +5563,7 @@
         key="";clearTimeout(timer);
         if(epoch===this.epoch){this.busy=false;this.paint();}
       }
-      if(req&&current()) await this.answer(true);
+      if(req&&current()) this.status("Connection saved. Review model access, then confirm.");
     },
     takeCallback(){
       const match=window.location.pathname.match(/^\/app\/model-callback\/([A-Za-z0-9_-]{43})$/);
@@ -5586,10 +5599,13 @@
         body:JSON.stringify(payload),
       });
       const result=await response.json();
+      if(epoch!==this.epoch)throw new Error("sign_in_required");
       if(!response.ok||result.error){
         const error=new Error(result.error||"model_connection_incomplete");
         error.signIn=result.error==='interactive_approval_required';throw error;
       }
+      if(result.model_confirmation)
+        return InlineApprovals.post("model_connection",result.model_confirmation);
       return result;
     },
     async begin(){
@@ -5664,7 +5680,7 @@
             :"Your saved connection is not ready yet. Tap Finish connecting again in a moment, or connect another way below.");
         }
       }finally{if(epoch===this.epoch){this.busy=false;this.paint();}}
-      if(req&&epoch===this.epoch) await this.answer(true);
+      if(req&&epoch===this.epoch) this.status("Connection saved. Review model access, then confirm.");
     },
     async finish(){
       if(this.busy) return;
@@ -6983,7 +6999,8 @@
           removedHere=true;armed=false;
           if(openConfirmation===putAway)openConfirmation=null;
           item.remove();
-          status.textContent="Disconnected from TinyAssets. Your provider account is unchanged. Back in chat, the connect request is waiting whenever you want to reconnect.";
+          status.textContent=removed.status==="removed_locally_revoke_failed" ? removed.message :
+            "Disconnected from TinyAssets. Your provider account is unchanged. Back in chat, the connect request is waiting whenever you want to reconnect.";
         }catch(_e){
           if(!live())return;
           // Nobody knows whether this connection is still there, so this row
@@ -7011,7 +7028,7 @@
           HostedModelConnect.setup=state.setup;HostedModelConnect.paint();
         }catch(_e){
           if(!live())return;
-          status.textContent="Disconnected from TinyAssets. Your provider account is unchanged. Your current connection state could not be re-read here - refresh this page to see it.";
+          status.textContent+=" Your current connection state could not be re-read here - refresh this page to see it.";
         }
       });
       return item;
@@ -7337,6 +7354,8 @@
         const error=new Error((result&&(result.detail||result.error))||"sign_in_incomplete");
         error.signIn=result.error==='interactive_approval_required';throw error;
       }
+      if(result.model_confirmation)
+        return InlineApprovals.post("model_connection",result.model_confirmation);
       return result;
     },
     async begin(req,note,button,opts){
@@ -7392,6 +7411,11 @@
         if(cb.iss) payload.iss=cb.iss;
         if(cb.center)payload.center=cb.center;
         const result=await this.post("oauth_exchange",payload);
+        if(result.status==="confirmation_required"){
+          HostedModelConnect.setup="recovery";HostedModelConnect.request=result.request;
+          HostedModelConnect.paint();openConnectRequest("Connection saved. Review model access, then confirm.");
+          return;
+        }
         if(result.status==="provisioned"){
           appendMessage("system","Connection saved.");
           await refreshRail();
@@ -8750,8 +8774,11 @@
             const pending=HostedModelConnect.post("deposit_key",{preset_id:source.id,key});key="";
             const result=await pending;
             if(epoch!==MCP._loginEpoch)return;
-            if(result.status!=="provisioned")throw new Error("invalid_connection_response");
-            status.textContent="Connection saved.";
+            if(result.status!=="confirmation_required"||!result.request)
+              throw new Error("invalid_connection_response");
+            HostedModelConnect.setup="recovery";HostedModelConnect.request=result.request;
+            HostedModelConnect.paint();
+            status.textContent="Connection saved. Review model access, then confirm.";
             refreshRail();
           }catch(error){
             if(epoch===MCP._loginEpoch)status.textContent="Not connected yet ("+(error.message||"unknown error")+"). Check your key and model access, then try again.";

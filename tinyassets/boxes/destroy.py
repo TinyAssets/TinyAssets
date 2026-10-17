@@ -78,3 +78,24 @@ def tree(store: Path, uid: int, *, erase: bool) -> int:
         return count
     finally:
         os.close(parent)
+
+
+def socket_tree(store: Path, uid: int) -> None:
+    """Remove the stopped box's writable socket directory without following links."""
+    GvisorRuntime.box_id(uid)
+    parent = os.open(store, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            root = os.open(str(uid), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        except FileNotFoundError:
+            return
+        try:
+            if _mount(root) != _mount(parent):
+                raise BoxError("socket tree root is a foreign mount")
+            _walk(root, os.fstat(root).st_dev, _mount(root), erase=True)
+        finally:
+            os.close(root)
+        os.rmdir(str(uid), dir_fd=parent)
+        os.fsync(parent)
+    finally:
+        os.close(parent)

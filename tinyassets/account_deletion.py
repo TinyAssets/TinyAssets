@@ -933,7 +933,7 @@ def delete_account(
 ) -> dict[str, Any]:
     """Delete everything the platform holds for ``founder_sub`` and return a
     content-free receipt. Inside an owner daemon this erases only local data;
-    the shared door owns retirement and router credential cleanup.
+    the shared door owns volume destruction, billing, identity and credential cleanup.
 
     Raises :class:`AccountDeletionError` before changing anything when the
     principal is empty or the bound home path is unsafe, and

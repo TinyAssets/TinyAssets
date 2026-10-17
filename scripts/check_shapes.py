@@ -75,7 +75,7 @@ SHAPES: dict[str, Shape] = {
     "S3": Shape(
         ("tinyassets/agent_loop/**",),
         (
-            ('tinyassets/providers/claude_provider.py', ''),
+            ("tinyassets/providers/claude_provider.py", ""),
             ("tinyassets/providers/codex_provider.py", ""),
             ("tinyassets/providers/codex_app_server.py", ""),
         ),
@@ -84,11 +84,11 @@ SHAPES: dict[str, Shape] = {
     "S4": Shape(
         ("tinyassets/providers/**", "tinyassets/connections/**"),
         (
-            ('tinyassets/onboarding/openai_device.py', ''),
-            ('tinyassets/providers/claude_provider.py', ''),
+            ("tinyassets/providers/claude_provider.py", ""),
             ("tinyassets/providers/codex_provider.py", ""),
             ("tinyassets/providers/codex_app_server.py", ""),
             ("tinyassets/providers/router.py", r"\bFALLBACK_CHAINS\b"),
+            ("tinyassets/onboarding/openai_device.py", ""),
         ),
         ceiling=3,
     ),

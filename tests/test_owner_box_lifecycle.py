@@ -237,3 +237,30 @@ def test_ingress_old_secret_and_revoked_forward_fail(monkeypatch, tmp_path):
             assert (await client.get("/_box/status", headers=headers)).status_code == 401
 
     asyncio.run(exercise())
+
+
+def test_abandoned_lease_expires_but_active_lease_blocks_sleep(fleet):
+    manager = fleet.manager
+    resolved = manager.resolve("a")
+    box = manager.boxes[resolved["uid"]]
+    with manager.condition:
+        assert not manager._sleep(box, idle=0)
+        box.leases[resolved["lease"]] = time.monotonic() - 1
+        assert manager._sleep(box, idle=0)
+    assert not fleet.runtime.live
+
+
+def test_deleting_box_is_not_idle_even_after_last_turn_and_lease_finish(fleet):
+    manager = fleet.manager
+    uid = manager.ensure_awake("a")
+    activity = fleet.states[uid]
+    with activity.enter():
+        activity.status(deleting=True)
+        with manager.condition:
+            assert not manager._sleep(manager.boxes[uid], idle=0)
+    with manager.condition:
+        assert not manager._sleep(manager.boxes[uid], idle=0)
+    assert fleet.runtime.live == {uid}
+    activity.deletion_refused()
+    with activity.enter():
+        assert activity.active == 1

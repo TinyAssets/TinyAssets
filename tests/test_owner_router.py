@@ -32,6 +32,12 @@ def admitted(in_process_broker, broker, tmp_path, monkeypatch):  # noqa: F811
     state.mkdir(mode=0o700)
     identities = OwnerIdentities(state / "owner-identities.db", initialize=True)
     broker.server._owner_identities = identities
+    broker.server._data_root = tmp_path
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    ledger = ConnectionLedger(state / "outbound.db", data_root=tmp_path)
+    broker.server._ledger_for = lambda owner: ledger
+    monkeypatch.setenv("WORKOS_API_KEY", "test-only-unused-for-non-workos-principals")
     for name in ("alice", "bob", "reserved"):
         identities.resolve(name, allocate=True)
     for name in ("alice", "bob"):
@@ -126,7 +132,15 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
         relays = OwnerRelays(run / "relay", SimpleNamespace(broker_socket=host_path))
         admission = SimpleNamespace(owner=lambda owner, rotate=False:
                                     owner_record(admitted, owner, rotate=rotate))
-        manager = OwnerDaemons(runtime, admission, SimpleNamespace(provision=lambda *args: None),
+        def destroy_volume(uid):
+            import shutil
+
+            assert not runtime.alive(uid)
+            if runtime.roots[uid].exists():
+                shutil.rmtree(runtime.roots[uid])
+
+        manager = OwnerDaemons(runtime, admission, SimpleNamespace(
+            provision=lambda *args: None, destroy=destroy_volume),
                                relays, run)
 
         def paths(uid, secret):
@@ -142,6 +156,14 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
         monkeypatch.setattr(daemon_control, "ensure_awake", manager.ensure_awake)
 
         def control(operation, owner, **fields):
+            if operation == "resolve":
+                return manager.resolve(owner, **fields)
+            if operation == "release":
+                manager.release(owner, fields["lease"])
+                return {"released": True}
+            if operation == "destroy":
+                manager.destroy(owner, fields["uid"])
+                return {"destroyed": True}
             assert operation == "retire"
             manager.retire(owner, fields["uid"])
             return {"stopped": True}
@@ -544,8 +566,9 @@ def test_router_credential_socket_refuses_a_non_broker_peer(boxes, tmp_path, mon
 
 
 def test_default_socket_is_under_the_existing_compose_mount(admitted, monkeypatch):
-    monkeypatch.setattr("tinyassets.boxes.daemon_control.ensure_awake",
-                        lambda owner: admitted.owner_machine(owner))
+    monkeypatch.setattr("tinyassets.boxes.daemon_control.request",
+                        lambda operation, owner, **fields: {
+                            "uid": admitted.owner_machine(owner), "lease": "l" * 43})
     from tinyassets.owner_router import resolve_box
 
     monkeypatch.delenv("TINYASSETS_BOXES_RUN", raising=False)
@@ -834,9 +857,10 @@ def test_a_failed_account_revoke_can_be_retried_to_completion(
 
 
 def test_boxhostd_real_process_restart_rotates_secret_and_serves_again(boxes, admitted):
-    from tinyassets.owner_router import resolve_box
+    from tinyassets.owner_router import release_route, resolve_box
 
     first = resolve_box("alice")
+    release_route(first)
     uid = admitted.owner_machine("alice")
     process = boxes.runtime.processes[uid]
     with boxes.manager.condition:
@@ -966,3 +990,208 @@ def test_box_deletion_rejection_leaves_lifecycle_and_router_state_untouched(
     assert HookOwners(tmp_path).resolve(token) == "alice"
     assert any(k["revoked_at"] is None for k in
                dispatch(tmp_path, "alice", {"operation": "key_list"})["keys"])
+
+
+@pytest.mark.parametrize("failure", [None, "stop", "owner_tree", "relay", "socket",
+                                     "broker_egress", "billing", "plan", "credentials", "identity"])
+def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
+    router, boxes, admitted, tmp_path, monkeypatch, failure,
+):
+    import re
+    from contextlib import nullcontext
+
+    from tinyassets import account_deletion, router_credentials
+    from tinyassets.billing import stripe_adapter
+    from tinyassets.billing.plan_store import BillingPlans
+    from tinyassets.boxes import destroy
+    from tinyassets.broker import account_erasure
+    from tinyassets.broker.owner_reads import Plans
+    from tinyassets.onboarding import app_config
+
+    plans = Plans(tmp_path)
+    plans.set_plan("alice", "paid", event_created=1, customer_id="cus_a", subscription_id="sub_a")
+    calls, subscription = [], {"id": "sub_a", "status": "active"}
+
+    def upstream(request, **kwargs):
+        if request.full_url == "https://api.stripe.com/v1/subscriptions/sub_a":
+            if request.get_method() == "DELETE":
+                calls.append("stripe")
+                subscription["status"] = "canceled"
+            else:
+                assert request.get_method() == "GET"
+            return nullcontext(SimpleNamespace(
+                status=200, read=lambda: json.dumps(subscription).encode()))
+        assert request.get_method() == "DELETE"
+        assert request.full_url.endswith("/user_management/users/alice")
+        calls.append("identity")
+        return nullcontext(SimpleNamespace(status=204))
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_deletion")
+    monkeypatch.setattr(account_deletion, "_WORKOS_USER_ID", re.compile("alice"))
+    monkeypatch.setattr(account_deletion.urllib.request, "urlopen", upstream)
+    targets = {
+        "stop": (boxes.runtime, "stop"),
+        "owner_tree": (boxes.manager.quota, "destroy"),
+        "relay": (boxes.relays, "retire"),
+        "socket": (destroy, "socket_tree"),
+        "broker_egress": (account_erasure, "erase_account"),
+        "billing": (stripe_adapter, "_get"),
+        "plan": (BillingPlans, "apply_tier_event"),
+        "credentials": (router_credentials, "revoke_account"),
+        "identity": (account_deletion, "delete_workos_user"),
+    }
+    attempts = []
+    if failure:
+        target, name = targets[failure]
+        original = getattr(target, name)
+
+        def fail_once(*args, **kwargs):
+            attempts.append(True)
+            if len(attempts) == 1:
+                raise OSError("injected phase failure")
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(target, name, fail_once)
+    artifact = boxes.roots["alice"] / ".owner-boxd" / "execs" / "private-output"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("must disappear with the volume")
+    uid = admitted.owner_machine("alice")
+    resource = urlsplit(app_config()["resource"])
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(router),
+                                     base_url="http://test") as client:
+            async def delete():
+                return await client.post("/app/account/delete", headers={
+                    "authorization": "Bearer alice",
+                    "origin": resource.scheme + "://" + resource.netloc},
+                    json={"confirm": "DELETE"})
+
+            first = await delete()
+            if failure:
+                assert first.status_code == 503, first.text
+                pending = first.json()["receipt"]["unfinished_phases"]
+                expected = {"stop": "owner_tree", "relay": "owner_tree", "socket": "owner_tree",
+                            "plan": "billing"}.get(failure, failure)
+                assert expected in pending
+                assert router_credentials.DeletedOwners(tmp_path).contains("alice")
+                assert "identity" not in calls
+                if failure not in {"billing", "plan"}:
+                    assert subscription["status"] == "canceled"
+                result = await delete()
+            else:
+                result = first
+            assert result.status_code == 200, result.text
+            assert result.json()["billing"] == "cancelled"
+            assert result.json()["identity"] == "deleted"
+            assert result.json()["unfinished"] == []
+            assert (await delete()).json() == result.json()
+
+    asyncio.run(exercise())
+    assert calls == ["stripe", "identity"]
+    assert plans.read("alice")["tier"] == "free"
+    assert not boxes.roots["alice"].exists()
+    assert boxes.roots["bob"].exists()
+    assert not boxes.runtime.alive(uid)
+    assert not (boxes.run / str(uid)).exists()
+    assert not (boxes.run / "relay" / f"{uid}.sock").exists()
+    assert not (boxes.run / "secrets" / str(uid)).exists()
+    receipt = router_credentials.DeletedOwners(tmp_path).receipt("alice")
+    assert receipt["box_destroy"] == {"destroyed": True}
+    assert receipt["unfinished_phases"] == []
+
+
+def test_resolve_lease_protects_real_request_against_concurrent_wake(boxes, admitted):
+    import threading
+
+    from tinyassets.owner_router import forward, resolve_box
+
+    manager = boxes.manager
+    a, b = (admitted.owner_machine(owner) for owner in ("alice", "bob"))
+    with manager.condition:
+        manager._stop(manager.boxes[b])
+    manager.awake_cap = 1
+    manager.wake_timeout = 10
+    route = resolve_box("alice")
+    result = []
+    waiter = threading.Thread(target=lambda: result.append(manager.ensure_awake("bob")))
+    waiter.start()
+    try:
+        deadline = time.monotonic() + 5
+        while not manager.waiting and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert manager.waiting and not result
+        assert boxes.runtime.alive(a)
+
+        async def proxy(scope, receive, send):
+            await forward(scope, receive, send,
+                          Identity(user_id="alice", username="alice", capabilities=["read"]), route)
+
+        async def exercise():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(proxy),
+                                         base_url="http://test") as client:
+                response = await client.post("/app/api/file",
+                                             json={"graph_id": "cc-alice", "path": "hello.txt"})
+                assert response.status_code == 200, response.text
+                assert response.text == "alice private data"
+        asyncio.run(exercise())
+    finally:
+        waiter.join(15)
+    assert not waiter.is_alive() and result == [b]
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+def test_deletion_drains_real_turn_before_sweep_and_destroys_late_writes(
+    router, boxes, admitted, timeout,
+):
+    from tinyassets.onboarding import app_config
+
+    root = boxes.roots["alice"]
+    uid = admitted.owner_machine("alice")
+    resource = urlsplit(app_config()["resource"])
+    headers = {"authorization": "Bearer alice", "origin": resource.scheme + "://" + resource.netloc}
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(router),
+                                     base_url="http://test") as client:
+            assert (await client.post("/app/test-writing-turn", headers=headers)).status_code == 200
+            deleting = asyncio.create_task(client.post("/app/account/delete", headers=headers,
+                                                        json={"confirm": "DELETE"}))
+            try:
+                async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(
+                        uds=str(boxes.run / str(uid) / "app.sock")),
+                        base_url="http://owner") as box:
+                    deadline = time.monotonic() + 5
+                    while time.monotonic() < deadline:
+                        status = await box.get("/_box/status", headers={
+                            "x-box-secret": boxes.secrets["alice"]})
+                        if status.json()["draining"]:
+                            break
+                        await asyncio.sleep(.01)
+                    assert status.json()["draining"] and status.json()["active"] == 1
+                refused = await client.post("/app/api/file", headers=headers,
+                                             json={"graph_id": "cc-alice", "path": "hello.txt"})
+                assert refused.status_code == 503
+                assert not deleting.done() and root.exists()
+                if timeout:
+                    result = await asyncio.wait_for(deleting, 25)
+                    assert result.status_code == 503
+                    assert result.json()["receipt"]["unfinished_phases"] == ["drain"]
+                    assert root.exists() and boxes.runtime.alive(uid)
+                (root / "release-turn").touch()
+                if timeout:
+                    result = await client.post("/app/account/delete", headers=headers,
+                                               json={"confirm": "DELETE"})
+                else:
+                    result = await asyncio.wait_for(deleting, 10)
+                assert result.status_code == 200, result.text
+                assert result.json()["unfinished"] == []
+            finally:
+                if root.exists():
+                    (root / "release-turn").touch()
+                if not deleting.done():
+                    await deleting
+    asyncio.run(exercise())
+    assert not root.exists()
+    assert not (root / "late-write").exists()
+    assert not boxes.runtime.alive(uid)

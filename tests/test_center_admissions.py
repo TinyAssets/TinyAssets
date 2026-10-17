@@ -166,15 +166,20 @@ def test_owner_retirement_is_fenced_complete_and_retryable(broker, tmp_path, mon
         identities.admission("admit", owner, center)
     stopped = []
 
+    destroyed = []
+
     def stop(operation, owner, **fields):
-        assert operation == "retire" and owner == "alice" and fields == {"uid": 300001}
+        # Retirement asks boxhostd to stop the box and destroy its volume in one
+        # confirmed step (account erasure); a lost acknowledgement is retried.
+        assert operation == "destroy" and owner == "alice" and fields == {"uid": 300001}
         assert identities.center_state("a") == identities.center_state("a2") == "retired"
         with pytest.raises(LookupError):
             identities.box_route("alice", rotate=True)
         stopped.append(owner)
         if len(stopped) == 1:
-            raise OSError("stop acknowledgement lost")
-        return {"stopped": True}
+            raise OSError("destroy acknowledgement lost")
+        destroyed.append(owner)
+        return {"destroyed": True}
 
     monkeypatch.setattr("tinyassets.boxes.daemon_control.request", stop)
 
@@ -195,6 +200,7 @@ def test_owner_retirement_is_fenced_complete_and_retryable(broker, tmp_path, mon
     assert retire() == {"op": "OWNER_RETIRE_REFUSED"}
     after = rows(identities)
     assert retire() == {"op": "OWNER_RETIRED"}
+    assert destroyed == ["alice"]
     assert rows(identities) == after
     assert identities.center_state("b") == "admitted"
     assert identities.box_route("bob")

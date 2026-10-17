@@ -116,3 +116,42 @@ def test_new_owner_provision_applies_project_and_limit_before_exposing_tree(tmp_
     with pytest.raises(OSError):
         quota.provision(uid, 1024**3, "foreign")
     assert not any("project -s" in " ".join(call) for call in calls)
+
+
+@pytest.mark.parametrize("fail_limit", [False, True])
+def test_retirement_erases_whole_tree_before_clearing_project_and_retries(
+    tmp_path, monkeypatch, fail_limit,
+):
+    if os.geteuid() != 0:
+        pytest.skip("requires root; owner=C6 runs-in=linux_oracle.py:--as-root")
+    uid = 300001
+    root = tmp_path / str(uid)
+    root.mkdir(mode=0o700)
+    os.chown(root, uid, uid)
+    artifacts = root / ".owner-boxd" / "execs"
+    artifacts.mkdir(parents=True)
+    (artifacts / "output").write_text("private exec output")
+    (root / "outside").symlink_to(tmp_path / "retained")
+    (tmp_path / "retained").write_text("other owner")
+    quota = OwnerQuota(tmp_path)
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if argv[0] == "findmnt":
+            return subprocess.CompletedProcess(argv, 0, "xfs rw,prjquota")
+        assert not root.exists()
+        if fail_limit and len([call for call in calls if call[0] == "xfs_quota"]) == 1:
+            raise subprocess.CalledProcessError(1, argv)
+        return subprocess.CompletedProcess(argv, 0, "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    if fail_limit:
+        with pytest.raises(subprocess.CalledProcessError):
+            quota.destroy(uid)
+    quota.destroy(uid)
+    quota.destroy(uid)
+    assert not root.exists()
+    assert (tmp_path / "retained").read_text() == "other owner"
+    assert calls[-1] == ["xfs_quota", "-x", "-c",
+                         "limit -p bsoft=0 bhard=0 isoft=0 ihard=0 300001", str(tmp_path)]

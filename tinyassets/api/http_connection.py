@@ -717,8 +717,7 @@ def _connect_http(
 
     from tinyassets.broker.http_connect import connect_operation
 
-    args = dict(principal=actor, command_center=uid, **definition,
-                request_ref=document.get("request_ref", ""))
+    args = dict(principal=actor, command_center=uid, **definition)
     prepared = connect_operation(base, **args, action="prepare")
     if "error" in prepared:
         return prepared
@@ -728,7 +727,7 @@ def _connect_http(
 
 CONNECT_FIELDS = frozenset({
     "destination", "auth_scheme", "allowed_endpoints", "access", "scopes",
-    "git_host", "request_ref",
+    "git_host",
 })
 
 
@@ -1014,8 +1013,10 @@ def _remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     )
     complete_disconnect(base, owner=actor, uid=uid, connection_id=connection_id)
 
+    from tinyassets.broker.revocation import removal_result
+
     return {
-        "status": "removed",
+        **removal_result(erased),
         "destination": destination,
         "connection_id": connection_id,
         "grant_id": grant_id,
@@ -1242,7 +1243,7 @@ def _rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
         document = _payload(payload)
     except ValueError as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
-    if set(document) - {"destination", "incarnation", "request_ref"}:
+    if set(document) - {"destination", "incarnation"}:
         return {"error": "connection_setup_invalid", "detail": "unsupported connection fields"}
     destination = str(document.get("destination") or "")
     found = _rotation_target(uid=uid, actor=permissions.current_actor_id(), destination=destination)
