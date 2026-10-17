@@ -63,8 +63,11 @@ def validate_principal(principal: str) -> None:
 
 
 class OwnerIdentities:
-    def __init__(self, path: Path, *, initialize: bool = False) -> None:
+    def __init__(self, path: Path, *, initialize: bool = False, plans=None) -> None:
+        from tinyassets.broker.owner_reads import Plans
+
         self.path = Path(path)
+        self.plans = plans if plans is not None else Plans(broker_dir=self.path.parent)
         parent = self.path.parent.lstat()
         if (not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.geteuid()
                 or stat.S_IMODE(parent.st_mode) & 0o077):
@@ -150,9 +153,7 @@ class OwnerIdentities:
             raise ValueError("invalid admission event")
         validate_principal(principal)
         validate_center(center)
-        from tinyassets.broker.owner_reads import Plans
-
-        plans = Plans(broker_dir=self.path.parent)
+        plans = self.plans
         with closing(self._connect(write=True)) as db, db:
             plans.attach_admission(db)
             db.execute("PRAGMA synchronous=FULL")

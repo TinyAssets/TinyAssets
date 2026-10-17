@@ -697,6 +697,25 @@ class AutomationStore:
             conn.close()
         return [_from_row(row) for row in rows]
 
+    def next_wake_at(self, now: datetime) -> float | None:
+        """Earliest local schedule, including one-shot retry backoff and pauses."""
+        conn = self._connect(create=False)
+        if conn is None:
+            return None
+        try:
+            rows = conn.execute(f"{_SELECT_ROWS} WHERE retired_at = ''").fetchall()
+        finally:
+            conn.close()
+        instants = []
+        for row in rows:
+            automation = _from_row(row)
+            if (self.base_path / automation.universe_id / ".pause").exists():
+                continue
+            due = next_due_at(automation, now)
+            if due:
+                instants.append(datetime.fromisoformat(due.replace("Z", "+00:00")).timestamp())
+        return min(instants, default=None)
+
     def list_for_branch(
         self,
         branch_def_id: str,

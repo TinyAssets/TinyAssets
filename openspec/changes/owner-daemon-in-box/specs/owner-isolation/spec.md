@@ -136,6 +136,27 @@ reported next-wake time.
 #### Scenario: A scheduled run in a sleeping box
 - **WHEN** a sleeping box's next-wake time arrives
 - **THEN** the waker wakes it and the owner's tick runs the due work
+- **AND** the tick reports its next local schedule time through bound NEXT_WAKE
+- **AND** duplicate wake delivery does not duplicate the same automation occurrence
+
+#### Scenario: Only the bound owner can report a wake
+- **WHEN** an admitted box sends NEXT_WAKE on BOX_SHARED
+- **THEN** the broker writes only that relay-bound owner's timestamp
+- **AND** owner, principal and UID request fields are refused
+- **AND** schedule definitions, pending work and retry rows stay inside the box
+
+#### Scenario: The daily floor survives absent or stale reports
+- **WHEN** an admitted owner has never been woken or its last successful wake is 24 hours old
+- **THEN** the shared waker offers a scheduled wake even if the owner never reported or reported null
+- **AND** reports remain stored until replaced, including after failed or duplicate delivery
+- **AND** the broker's 30-second scan remains responsive while bounded control calls wait for capacity
+
+#### Scenario: Suspension and retirement prevent scheduled wakes
+- **WHEN** an owner is billing-suspended, abuse-suspended or has no live admission
+- **THEN** neither a due report nor the daily floor wakes it
+- **AND** boxhostd rechecks broker plan suspension and admission after capacity waits
+- **AND** a missing plan is a loud error, never an unsuspended default
+- **AND** plan suspension is written only through the broker's fenced shared-door operation
 
 
 ### Requirement: Credential custody and refresh have one broker writer

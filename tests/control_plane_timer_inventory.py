@@ -37,6 +37,10 @@ CLASSES = frozenset({CONTROL_PLANE, CALL_SCOPED, DELETE, CLIENT, BOX})
 #: ``"<path>::<qualname>"`` -> (class, note). ``[Timer]``/``[call_later]`` mark a
 #: callback-scheduling site; ``#n`` is the n-th clock-driven site in one function.
 CLASSIFICATION: dict[str, tuple[str, str]] = {
+    "tinyassets/broker/waker.py::Waker.run": (
+        CONTROL_PLANE, "broker clock wakes admitted, unsuspended owners from timestamp-only "
+        "reports and the 24-hour floor; boxhostd queues scheduled wakes behind interactive",
+    ),
     "tinyassets/boxes/owner_daemons.py::OwnerDaemons._start": (
         CALL_SCOPED, "bounded wait for one daemon's authenticated app socket readiness",
     ),
@@ -59,9 +63,9 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     ),
     "tinyassets/control_plane/tick.py::AssignedQueueConsumer._run": (
         CONTROL_PLANE,
-        "the owner tick: pumps due automations and control-plane triggers, under "
-        "the owner lease; per-universe heartbeat/.pause still touch the universe "
-        "directory until the cutover (#4262) moves them to .platform/",
+        "the admitted owner daemon's tick pumps its local schedules under the owner "
+        "lease; the next-wake report is call-scoped at the end of this existing tick, "
+        "and the broker's shared waker starts sleeping daemons",
     ),
     "tinyassets/owner_runtime.py::_start_maintenance._served_budget_lease_loop": (
         CONTROL_PLANE,

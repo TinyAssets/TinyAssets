@@ -23,9 +23,27 @@ class Plans:
     def initialize(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
             db.execute("CREATE TABLE IF NOT EXISTS plans (owner TEXT PRIMARY KEY, "
                        "tier TEXT NOT NULL, event_created REAL NOT NULL, ends_at REAL, "
                        "customer_id TEXT UNIQUE, subscription_id TEXT UNIQUE, attempt TEXT)")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(plans)")}
+            for name in ("billing_suspended", "abuse_suspended"):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE plans ADD COLUMN {name} INTEGER NOT NULL "
+                               f"DEFAULT 0 CHECK ({name} IN (0, 1))")
+
+    def suspended(self, owner):
+        plan = self.read(owner)  # Missing plans and missing schema fail loudly.
+        return bool(plan["billing_suspended"] or plan["abuse_suspended"])
+
+    def set_suspension(self, owner, *, reason, suspended):
+        if reason not in {"billing", "abuse"} or type(suspended) is not bool:
+            raise ValueError("invalid account suspension")
+        self.read(owner)
+        with closing(self._connect()) as db, db:
+            db.execute(f"UPDATE plans SET {reason}_suspended=? WHERE owner=?",
+                       (int(suspended), owner))
 
     def attach_admission(self, db):
         """Attach before BEGIN so the identity and first plan commit together."""

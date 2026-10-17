@@ -20,6 +20,8 @@ def owner_record(identities, owner: str, *, rotate: bool) -> dict:
             "AND r.event='retire')", (owner,))]
     if not centers:
         raise LookupError("owner has no live admission")
+    if identities.plans.suspended(owner):
+        raise PermissionError("owner account is suspended")
     record = resolve(identities, {"op": "BOX_ADMISSION", "principal": owner,
                                   "center": centers[0]})
     result = {"uid": record["uid"], "quota": record["quota"], "centers": centers}

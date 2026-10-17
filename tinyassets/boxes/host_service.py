@@ -135,7 +135,8 @@ class HostService:
                 raise BoxError("owner lifecycle is unavailable")
             validate_principal(document.get("owner"))
             operation, owner = document["lifecycle"], document["owner"]
-            if (uid == 1001 and operation == "ensure_awake"
+            if ((uid == 1001 or (uid == 1002 and document.get("scheduled") is True))
+                    and operation == "ensure_awake"
                     and set(document) == {"lifecycle", "owner", "scheduled"}):
                 scheduled = document["scheduled"]
                 if type(scheduled) is not bool:

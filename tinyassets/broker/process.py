@@ -108,10 +108,13 @@ async def serve(args: argparse.Namespace) -> None:
     # Initialization belongs to the privileged, fenced volume migration. A
     # missing map must never silently restart allocation at the first UID.
     from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.owner_reads import Plans
     from tinyassets.broker.policy import PolicyStore
 
     identity_path = state / "owner-identities.db"
-    identities = OwnerIdentities(identity_path) if identity_path.exists() else None
+    plans = Plans(Path(args.data_root))
+    identities = (OwnerIdentities(identity_path, plans=plans)
+                  if identity_path.exists() else None)
     policy_store = PolicyStore(Path(args.data_root), identities)
     policy_store.bootstrap()
     registration = None
@@ -164,9 +167,19 @@ async def serve(args: argparse.Namespace) -> None:
             send(channel, {"ready": True})
             if receive(channel, identity) != {"ready": True}:
                 raise RuntimeError("host did not accept broker readiness")
+        waker_task = None
+        if registration:
+            from tinyassets.broker.waker import Waker
+
+            plans.initialize()
+            waker_task = asyncio.create_task(Waker(
+                server.next_wakes, plans, poll_seconds=args.wake_poll_seconds).run(stop))
         try:
             await stop.wait()
         finally:
+            stop.set()
+            if waker_task is not None:
+                await waker_task
             if registration:
                 registration[0].close()
 
@@ -179,6 +192,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--owner-uid", required=True, type=int)
     parser.add_argument("--proof-sha256")
     parser.add_argument("--box-host", action="store_true")
+    parser.add_argument("--wake-poll-seconds", type=float, default=30)
     parser.add_argument("--allow-test-fixtures", action="store_true")
     args = parser.parse_args(argv)
     if not args.box_host and not args.proof_sha256:

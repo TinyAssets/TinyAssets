@@ -648,6 +648,7 @@ STORES: dict[str, Store] = {
 ROOT_ENTRIES: dict[str, str] = {
     "credential-custody.db": "platform: broker credential ownership and deletion tombstones",
     "plans.db": "platform: broker billing plan state",
+    "next-wake.db": "platform: broker next-wake index and last successful wake timestamps",
     ".published": "platform: shared copies of explicitly published definitions",
     ".custody.lock": "platform: broker credential publication and erasure lock",
     ".hook-owners.sqlite3": "platform: router hook token digests and authenticated owners",

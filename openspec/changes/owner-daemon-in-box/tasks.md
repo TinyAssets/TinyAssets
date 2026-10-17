@@ -90,8 +90,10 @@ Nothing deploys until slice 7.
       - Stopping a box on retirement also closes that box's open broker channels.
       - Retiring a center or deleting an account revokes the per-box secret and
         stops the box first; a stale forward then fails at ingress (D2).
-- [ ] 5. The waker and the next-wake index. Test: a scheduled automation in
+- [x] 5. The waker and the next-wake index. Test: a scheduled automation in
       a sleeping box runs with no request.
+      Bound NEXT_WAKE, broker timestamp index and 30-second shared waker;
+      24-hour floor and broker plan suspension. As built: design.md D4.
 - [ ] 6. Migration and census, with the shared root DB split by owner, the
       synthetic rehearsal, and the `--archive` rehearsal on the production
       copy (run by the lead).

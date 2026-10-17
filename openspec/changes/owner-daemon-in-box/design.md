@@ -368,6 +368,57 @@ are described in the 3c-2 as-built contract above.
 - Suspended accounts (billing or abuse) are never woken.
 - Delivery is at least once, so the tick is idempotent, as today.
 
+### D4 as built (slice 5)
+
+- **Bound report.** Every owner `AssignedQueueConsumer.poll_once` finishes by
+  computing the local minimum and sending `NEXT_WAKE {"at": epoch_seconds|null}`
+  over `BOX_SHARED`. The relay's bind supplies the owner. The broker accepts
+  exactly `op` and `at`, rejects non-finite or non-numeric times, and rechecks
+  live admission on every report. No request can select an owner or UID.
+- **Rows remain inside.** The projection reuses automation due rules (including
+  cron zones, one-shot retries, retirement and pause), proactive trigger cadence
+  and active hours, pending agent wakes, bound-result continuations and answer
+  delivery retry timestamps. It reads only this box's stores. An empty or paused
+  schedule reports null. A report failure is a failed tick with a logged error;
+  it never clears the last broker value.
+- **Index.** The broker is the only writer of `next_wakes` in
+  `.broker/state/next-wake.db`, beside its identity database. Its columns are
+  `owner`, `next_wake_at`, `reported_at`, `last_woken_at`. Reports replace only
+  the reported time; successful wake acknowledgements replace only
+  `last_woken_at`. Due delivery never consumes the report, including across
+  broker restart or a report racing a wake acknowledgement.
+- **Host process and defaults.** The waker runs in `broker.process`'s existing
+  asyncio loop after boxhostd registration. That process already owns the
+  index and authenticated boxhostd control calls; it needs no polling RPC or
+  second index writer. It scans immediately, then every 30 seconds
+  (`--wake-poll-seconds`). It considers every live admitted owner whose report
+  is due or whose last successful wake is at least 86,400 seconds old. A never
+  reported/never woken owner is eligible immediately. Retired centers and
+  permanently deleted owners are excluded through the admission map.
+- **Capacity.** Every dispatch uses `ensure_awake(owner, scheduled=True)`.
+  The broker UID may request only scheduled wakes. At most two control calls
+  are in flight, leaving two of boxhostd's four broker workers for retirement;
+  the existing scheduled queue remains behind interactive requests. Slow
+  control calls do not block the scan clock. Failed calls remain due and are
+  logged, and attempt ordering prevents a failing owner starving later owners.
+- **Suspension source.** `.broker/plans.db` is the single source. The existing
+  free/paid schema had no suspension state; it now also holds independent
+  `billing_suspended` and `abuse_suspended` booleans, initially false on explicit
+  admission. The shared door can change them through fenced `BILLING_PLAN`
+  `set_suspension`; boxes cannot. Tier updates preserve both flags. Missing
+  plan rows raise `PlanMissing`, never imply unsuspended. Both the waker and
+  boxhostd's broker launch admission check suspension, including after a
+  capacity wait. Production passes the same plan store to identity admission,
+  billing and the waker, avoiding a second plan file under `.broker/state`.
+- **Linux proof.** The slice 4 launcher runs a real owner daemon process with
+  the runtime double, a file clock and the existing automation `_execute` seam.
+  The box reports a future time, boxhostd drains and stops it, the shared waker
+  starts it without an incoming request, and the real tick claims and settles
+  the automation and reports its next occurrence. A duplicate restart at the
+  same instant leaves one execution and one durable attempt. Fake-clock tests
+  cover the daily floor, null/future reports, missing plans, both suspension
+  reasons, retirement, retry after failed delivery and bounded concurrent wakes.
+
 ## D5. Billing
 
 - Stripe webhooks land at the router. Plan state is kept in the shared

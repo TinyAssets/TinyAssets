@@ -31,6 +31,7 @@ INFRASTRUCTURE: frozenset[str] = frozenset({
     "tinyassets/broker/vault.py",
     "tinyassets/broker/http_connect.py",
     "tinyassets/broker/owner_reads.py",
+    "tinyassets/broker/next_wake.py",
     "tinyassets/broker/owner_sources.py",
 })
 

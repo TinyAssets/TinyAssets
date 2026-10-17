@@ -9,8 +9,9 @@ from tinyassets.boxes.gvisor_runtime import GvisorRuntime
 class ProcessRuntime:
     box_id = staticmethod(GvisorRuntime.box_id)
 
-    def __init__(self, roots):
+    def __init__(self, roots, *, module="tests.support.owner_router_process"):
         self.roots = roots
+        self.module = module
         self.processes = {}
         self.logs = []
 
@@ -18,7 +19,7 @@ class ProcessRuntime:
         log = tempfile.TemporaryFile()
         self.logs.append(log)
         self.processes[uid] = subprocess.Popen([
-            sys.executable, "-m", "tests.support.owner_router_process", str(self.roots[uid]),
+            sys.executable, "-m", self.module, str(self.roots[uid]),
             str(relay), str(secret_file), str(app_dir / "app.sock"),
         ], stdout=log, stderr=log)
 

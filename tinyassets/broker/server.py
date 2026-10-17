@@ -171,6 +171,15 @@ class BrokerServer:
         self._streams: dict[tuple[int, int], _Stream] = {}
         self._streams_lock = threading.Lock()
         self._ops.recover()
+        self._next_wakes = None
+
+    @property
+    def next_wakes(self):
+        if self._next_wakes is None:
+            from tinyassets.broker.next_wake import NextWakeIndex
+
+            self._next_wakes = NextWakeIndex(self._owner_identities)
+        return self._next_wakes
 
     async def serve(self, path: Path) -> asyncio.AbstractServer:
         return await asyncio.start_unix_server(self._connection, path=str(path), limit=16384)
@@ -360,6 +369,18 @@ class _Connection:
             await self.send_async(rf.control(rf.CONNECTION, answer))
             return
         if self._role == BOX:
+            if op == "NEXT_WAKE":
+                try:
+                    if set(doc) != {"op", "at"}:
+                        raise ValueError("invalid next-wake report")
+                    await asyncio.to_thread(self._server.next_wakes.report,
+                                            self._box_owner, doc["at"], now=time.time())
+                    answer = {"op": "BOX_RESULT", "result": None}
+                except Exception:
+                    _LOG.exception("next-wake report refused")
+                    answer = {"op": "BOX_REFUSED"}
+                await self.send_async(rf.control(rf.CONNECTION, answer))
+                return
             if op == "RETIRE_CENTER":
                 answer = await asyncio.to_thread(self._box_retire_center, doc)
                 await self.send_async(rf.control(rf.CONNECTION, answer))
@@ -595,7 +616,7 @@ class _Connection:
                 plans = Plans(self._server._data_root)
                 operations = {name: getattr(plans, name) for name in (
                     "read", "owner_for", "owner_for_checkout",
-                    "apply_tier_event",
+                    "apply_tier_event", "set_suspension",
                     "current_checkout_attempt", "begin_checkout_attempt",
                     "record_checkout_session", "settle_checkout_attempt")}
                 result = operations[doc["action"]](**doc["args"])
