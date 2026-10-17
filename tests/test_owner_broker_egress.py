@@ -20,6 +20,7 @@ import pytest
 from tests.support.broker_double import seed_owner_admission
 from tests.support.broker_ipc import broker  # noqa: F401
 from tinyassets import owner_runtime
+from tinyassets.boxes.lifecycle import admit_center
 from tinyassets.broker.owner_identities import OwnerIdentities
 from tinyassets.broker.server import BOX_HOST
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
@@ -206,6 +207,78 @@ def test_missing_broker_never_uses_local_provider(box, monkeypatch):
     assert not box.calls
 
 
+def test_center_creation_admits_through_bound_relay(box, monkeypatch):
+    from tinyassets.agent_loop import served_chat
+    from tinyassets.broker.owner_identities import admitted_owner
+
+    def forbidden():
+        raise AssertionError("an existing owner box must not bind a host provider")
+
+    monkeypatch.setattr(served_chat, "configured_box_provider", forbidden)
+    generation = admit_center(box.root, principal="untrusted-field", center="new-center")
+    assert generation > 0
+    assert admit_center(box.root, principal="owner", center="new-center") == generation
+    assert admitted_owner(box.root, center="new-center") == "owner"
+    assert box.broker.server._owner_identities.admitted_owner("new-center") == "owner"
+    assert not (box.root / ".broker").exists()
+
+
+def test_center_admission_rejects_foreign_retired_and_identity_fields(box):
+    from tinyassets.owner_channel import request
+
+    identities = box.broker.server._owner_identities
+    identities.resolve("other", allocate=True)
+    identities.admission("admit", "other", "foreign")
+    identities.admission("admit", "owner", "retired")
+    identities.admission("retire", "owner", "retired")
+    for center in ("foreign", "retired", "../invalid"):
+        with pytest.raises(PermissionError):
+            admit_center(box.root, principal="owner", center=center)
+    with pytest.raises(PermissionError):
+        request("", {"op": "ADMIT_CENTER", "center": "spoofed", "principal": "other"})
+    assert identities.center_state("spoofed") == "unadmitted"
+    assert identities.admitted_owner("foreign") == "other"
+
+
+def test_retired_owner_cannot_admit_on_an_already_open_channel(box):
+    from tinyassets import rpc_frames as rf
+    from tinyassets.owner_channel import connect
+
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+        channel.settimeout(5)
+        connect(channel, "")
+        identities = box.broker.server._owner_identities
+        identities.admission("retire", "owner", "center")
+        channel.sendall(rf.control(rf.CONNECTION, {"op": "ADMIT_CENTER", "center": "late"}))
+        assert rf.read_frame_blocking(channel).control() == {"op": "BOX_REFUSED"}
+    assert identities.center_state("late") == "unadmitted"
+
+
+def test_policy_source_display_and_capabilities_use_bound_channel(box):
+    from tinyassets import policy_rules
+    from tinyassets.providers.definition import register_definition
+    from tinyassets.providers.source_display import source_display_name
+    from tinyassets.ta_capabilities import Capabilities, ExecutionContext
+
+    home = box.root / "center"
+    fields = box.definition.as_dict()
+    fields.pop("id")
+    fields["now"] = fields.pop("created_at")
+    registered = register_definition(**fields)
+    assert source_display_name(
+        base=box.root, universe_id="center", provider="api_key_http:" + registered.id,
+    ) == "compute:conn-model"
+    policy = policy_rules.projection(home)
+    assert policy["policy"]
+    capabilities = Capabilities(home, ExecutionContext("center", "owner", "main"), [],
+                                call_platform=None, check_authority=lambda: None)
+    assert capabilities._bound_policy_owner()
+    assert set(capabilities.connections()) == {
+        "connection:conn-model:GET", "connection:conn-model:POST"}
+    assert not (box.root / ".broker").exists()
+    assert not (box.root / "outbound.db").exists()
+
+
 @pytest.mark.parametrize("operation", ["connect", "connect_ex", "udp", "http", "sdk"])
 def test_outbound_seam_refuses_all_direct_network(box, operation):
     with pytest.raises((PermissionError, httpx.ConnectError, URLError)):
@@ -247,6 +320,10 @@ owner_runtime.OWNER_MOUNT = root
 owner_runtime._is_owner_mount = lambda candidate: candidate == root
 runtime = owner_runtime.start(relay)
 (root / 'center').mkdir()
+from tinyassets.boxes.lifecycle import admit_center
+from tinyassets.broker.owner_identities import admitted_owner
+admit_center(root, principal='ignored-request-identity', center='process-center')
+assert admitted_owner(root, center='process-center') == 'owner'
 provider = ApiKeyHttpProvider(ProviderDefinition(**definition))
 budget = TurnRequestBudget('owner', 'center')
 budget.persist(root)
@@ -267,6 +344,7 @@ finally:
          json.dumps(box.definition.as_dict())], capture_output=True, text=True, timeout=45)
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout)
+    assert box.broker.server._owner_identities.admitted_owner("process-center") == "owner"
     assert result["text"] == "hello through the broker"
     assert SECRET not in completed.stdout
     from tinyassets.platform_secrets import CHILD_FORBIDDEN_ENV, ENGINE_REQUIRED_SECRET_ENV

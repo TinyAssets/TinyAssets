@@ -188,6 +188,16 @@ provider-specific code.
 | One writer per state | Flow rows: router. Custody and grants: broker. Plans: billing at the broker |
 | Isolation is the box, not shared checks | No per-owner filter is added; the owner comes from authentication or the bound channel |
 
+### 3c-2 as built (partial)
+
+`ADMIT_CENTER` on the bound box channel registers a new center using only the
+relay's owner. An existing box no longer calls host provisioning to create a
+center. Admission remains append-only and rejects retired or foreign centers.
+Policy rules, authenticated effectors, source display and `ta_capabilities`
+use the existing broker channel; relay tests cover these consumers and center
+creation from a separate owner process. Connection lifecycle placement and
+broker-only custody, refresh and revocation are still outstanding.
+
 ## D3. Lifecycle (boxhostd)
 
 - boxhostd supports one persistent sandbox per owner, running the owner

@@ -57,11 +57,14 @@ Nothing deploys until slice 7.
       3c-2 moves the flows to the door with broker custody, refresh and
       RFC 7009 revoke; 3c-3 adds the plan store. Decisions: design.md D3c.
       - [x] 3c-1: CLI stack and provider-specific code deleted.
-      - 3c-2 also: creating a center inside a box (universe create →
+      - [x] 3c-2 admission: creating a center inside a box (universe create →
         `admit_center`) registers it in the broker's admission map through a
         bound-channel op, with the owner taken from the bind. Policy rules,
         effectors, source display and `ta_capabilities` reach the broker
         only through the channel.
+      - [ ] 3c-2 lifecycle: door flows and center selection, sole broker custody,
+        secret-free box connect actions, broker-only refresh and RFC 7009 revoke;
+        per-auth-type door-to-box lifecycle acceptance remains outstanding.
       - 3c-3 also: `/app/billing/status|checkout|cancel|webhook` key plans
         by owner in `.broker/plans.db`, never reading a home or
         `.subscription_state.db` at the router. Seat and storage usage come

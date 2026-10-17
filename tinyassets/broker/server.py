@@ -359,6 +359,10 @@ class _Connection:
             await self.send_async(rf.control(rf.CONNECTION, answer))
             return
         if self._role == BOX:
+            if op == "ADMIT_CENTER":
+                answer = await asyncio.to_thread(self._box_admit_center, doc)
+                await self.send_async(rf.control(rf.CONNECTION, answer))
+                return
             if op == "BOX_IDENTITY":
                 self._box_scope(doc)
                 await self.send_async(rf.control(rf.CONNECTION, {
@@ -472,6 +476,21 @@ class _Connection:
             await self.send_async(rf.control(rf.CONNECTION, {
                 "op": "STATUS_IS", "op_id": doc.get("op_id"), "state": state,
                 "side_effect_state": effect}))
+
+    def _box_admit_center(self, doc):
+        """A new center belongs to the relay's owner, never a supplied principal."""
+        try:
+            if set(doc) != {"op", "center"}:
+                raise ValueError("invalid center admission")
+            identities = self._server._owner_identities
+            with self._server._fence.send(
+                    self._server._fence.generation, self._server._fence.token):
+                identities.box_route(self._box_owner)
+                row = identities.admission("admit", self._box_owner, doc["center"])
+            return {"op": "BOX_RESULT", "result": {
+                "generation": row.generation, "machine": row.machine}}
+        except Exception:  # noqa: BLE001 - no identity or persisted state on refusal
+            return {"op": "BOX_REFUSED"}
 
     def _box_scope(self, doc):
         # The socket selected this scope. Guest identity fields grant nothing.
