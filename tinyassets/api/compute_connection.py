@@ -20,7 +20,7 @@ def _payload(value: Any) -> dict[str, Any]:
 
 def _project(definition: Any) -> dict[str, Any]:
     """Redacted projection — there is no secret in a definition; ``ref`` is a
-    grant_id / provider name, not credential material."""
+    grant_id, not credential material."""
     return {
         "status": "registered",
         "definition_id": definition.id,
@@ -34,8 +34,7 @@ def _project(definition: Any) -> dict[str, Any]:
             "needs no llm_policy at all and uses whatever the command center serves. To "
             "pin one node to a provider, use the NAME, not this definition_id: "
             "llm_policy={'preferred': {'provider': 'api_key_http:provdef_...'}}",
-            "interactive tool-using agents can use owned CLI subscriptions or "
-            "supported api_key_http models. HTTP agent selection requires "
+            "Interactive tool-using agents use owned api_key_http models. Selection requires "
             "accepted model_access, fresh tool-capable discovery, and enabled "
             "engine-tool execution; registration alone does not enable serving "
             "or grant spending",
@@ -158,7 +157,7 @@ def connect_compute(*, universe_id: str = "", payload: Any = None) -> dict[str, 
 
 def _project_read(definition: Any) -> dict[str, Any]:
     """Owner-facing view of one registered provider (no secret exists to redact —
-    ``ref`` is a grant_id / CLI name). Distinct from ``_project`` (the post-write
+    ``ref`` is a grant_id). Distinct from ``_project`` (the post-write
     receipt): a listing row carrying the durable descriptor fields."""
     return {
         "definition_id": definition.id,

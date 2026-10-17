@@ -55,9 +55,8 @@ _SCHEMA = """CREATE TABLE IF NOT EXISTS learned_model_source_evidence (
 COLUMNS = ("source_kind", "provider_ref", "model_id", "owner_user_id",
            "first_verified_at")
 
-#: The source KIND a native (subscription CLI) connection reports. One definition,
-#: read by the writer and the reader, so they cannot disagree about what a kind is.
-LEARNED_SOURCE_KIND = "subscription"
+#: Model inference uses the broker HTTP connection path.
+LEARNED_SOURCE_KIND = "http"
 
 #: An id THIS owner has made work here. Distinct from a publicly listed id, because
 #: "you have run this" and "this is on the public list" are different claims and the

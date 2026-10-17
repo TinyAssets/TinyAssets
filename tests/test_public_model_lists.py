@@ -64,8 +64,6 @@ def test_the_shipped_subscription_list_offers_the_newest_of_each_class():
 
 
 def test_public_ids_are_attached_only_to_the_source_that_lists_them():
-    from tinyassets.providers.served_model_plan import _listed_candidates
-
     claude = set(newest_listed("subscription", source_key="claude-code"))
     codex = set(newest_listed("subscription", source_key="codex"))
     assert claude == {
@@ -75,10 +73,6 @@ def test_public_ids_are_attached_only_to_the_source_that_lists_them():
     assert codex == {"gpt-5.6-sol", "gpt-6-astra"}
     assert not claude & codex
     assert read_list("subscription", source_key="unlisted-provider") == ()
-    assert {row.model_id for row in _listed_candidates(
-        "subscription", source_key="claude-code", already=())} == claude
-    assert {row.model_id for row in _listed_candidates(
-        "subscription", source_key="codex", already=())} == codex
 
 
 def test_the_shipped_list_passes_its_own_ci_check():

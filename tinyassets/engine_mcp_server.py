@@ -426,7 +426,7 @@ class RefusalsAreErrors(Middleware):
 
 
 class ModelInventory(Middleware):
-    """Native CLI discovery projection; backend capabilities remain registered."""
+    """Model tool inventory; backend capabilities remain registered."""
 
     async def on_list_tools(self, context, call_next):
         tools = await call_next(context)
@@ -437,7 +437,7 @@ class ModelInventory(Middleware):
         try:
             projected = get_http_request().query_params.get("model_inventory") == "four"
         except RuntimeError:
-            projected = os.environ.get("TINYASSETS_ENGINE_MODEL_INVENTORY") == "four"
+            return tools
         return [t for t in tools if t.name in FOUR_MODEL_TOOLS] if projected else tools
 
 
@@ -4893,82 +4893,3 @@ async def run_bash(command: str, timeout: int = 0) -> str:
 # Both public and owner-pinned endpoints use the control-plane registration.
 # Construct only after all implementations exist; no handler registers itself.
 mcp = _engine_server(_sys.modules[__name__])
-
-
-if __name__ == "__main__":
-    # An engine acts for the owner that spawned it: join its tree BEFORE serving
-    # anything, so even an effect-only run is covered by the owner's death proof,
-    # and refuse to start if that owner is already gone (execution-owner-lease D2).
-    from tinyassets.owner_lease import LeaseLost as _LeaseLost
-    from tinyassets.owner_lease import join_inherited_tree as _join_inherited_tree
-    from tinyassets.storage import data_dir as _engine_data_dir
-
-    try:
-        _join_inherited_tree(_engine_data_dir())
-    except _LeaseLost as _gone:
-        raise SystemExit(f"engine MCP refuses to start: {_gone}") from None
-    # Transport: HTTP when a port is pinned (the reliable path — claude CLI's
-    # stdio-MCP spawn is flaky in the headless served subprocess, HTTP is not),
-    # else stdio (spawned by claude -p via --mcp-config). Identity stays pinned
-    # to this ONE (actor, graph) via env, so the HTTP listener serves exactly one
-    # universe's own handles on loopback.
-    import os as _os2
-    _http_port = (_os2.environ.get("TINYASSETS_ENGINE_MCP_HTTP_PORT") or "").strip()
-    if _http_port:
-        # Per-request auth (Codex gate #6): the loopback listener is reachable by
-        # any in-container process, so every request must carry the shared bearer
-        # secret the launcher injected (and the provider puts in the turn's
-        # --mcp-config headers, invisible to the LLM). FAIL CLOSED: no secret ->
-        # do not serve unauthenticated.
-        import uvicorn as _uvicorn
-
-        _secret = (
-            _os2.environ.get("TINYASSETS_ENGINE_MCP_HTTP_SECRET") or ""
-        ).strip()
-        if not _secret:
-            raise SystemExit(
-                "engine MCP HTTP refuses to serve without "
-                "TINYASSETS_ENGINE_MCP_HTTP_SECRET"
-            )
-        _inner_app = mcp.http_app()
-
-        class _BearerAuth:
-            """Reject any HTTP request lacking the exact bearer secret (401).
-
-            Only ``http`` and ``lifespan`` scopes are handled; anything else
-            (e.g. a future ``websocket`` route) is refused (Codex 2026-08-19).
-            """
-
-            def __init__(self, app):
-                self.app = app
-
-            async def __call__(self, scope, receive, send):
-                stype = scope.get("type")
-                if stype == "http":
-                    headers = dict(scope.get("headers") or [])
-                    provided = headers.get(b"authorization", b"").decode(
-                        "latin-1"
-                    )
-                    if not _bearer_ok(provided, _secret):
-                        await send({
-                            "type": "http.response.start",
-                            "status": 401,
-                            "headers": [(b"content-type", b"text/plain")],
-                        })
-                        await send({
-                            "type": "http.response.body",
-                            "body": b"unauthorized",
-                        })
-                        return
-                elif stype != "lifespan":
-                    return  # refuse websocket / unknown transports
-                await self.app(scope, receive, send)
-
-        _uvicorn.run(
-            _BearerAuth(_inner_app),
-            host="127.0.0.1",
-            port=int(_http_port),
-            log_level="warning",
-        )
-    else:
-        mcp.run()  # stdio transport (default)

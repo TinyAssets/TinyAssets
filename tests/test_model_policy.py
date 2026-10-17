@@ -60,20 +60,6 @@ def refs(result):
     return [c.ref for c in result.candidates]
 
 
-def test_connected_local_and_subscription_defaults_precede_ranked_http():
-    hosted = connection(models=[model(score=Scores("comparable-v1", "fresh", 999))])
-    local = replace(connection("local"), source_kind="local", default_model_id="opaque-A")
-    subscription = replace(
-        connection("subscription", models=[model("native"), model("not-selected")]),
-        source_kind="subscription",
-        default_model_id="native",
-    )
-    assert refs(order([hosted, local, subscription])) == [
-        ModelRef("gateway", "opaque-A"),
-        ModelRef("local", "opaque-A"),
-        ModelRef("subscription", "native"),
-        ModelRef("subscription", "not-selected"),
-    ]
 
 
 def test_explicit_current_overrides_saved_default_not_fallback_consent():
@@ -112,7 +98,7 @@ def test_explicit_empty_primary_does_not_mean_auto():
     assert not order([connection()], replace(AUTO, mode="explicit")).candidates
 
 
-@pytest.mark.parametrize("source", ["local", "subscription", "http"])
+@pytest.mark.parametrize("source", ["http"])
 def test_stale_auto_capabilities_are_excluded_for_every_source(source):
     c = replace(connection(), source_kind=source, freshness="stale", default_model_id="opaque-A")
     result = order([c])
@@ -347,19 +333,6 @@ def test_automatic_without_primary_cannot_silently_discard_accepted_fallbacks():
         replace(AUTO, fallbacks=(ModelRef("gateway", "opaque-A"),))
 
 
-@pytest.mark.parametrize(
-    "default,reason",
-    [
-        (None, "default_unavailable"),
-        ("withdrawn", "absent_from_catalogue"),
-    ],
-)
-def test_automatic_missing_native_default_has_a_visible_reason(default, reason):
-    c = replace(connection(), source_kind="subscription", default_model_id=default)
-    result = order([c])
-    assert refs(result) == [ModelRef("gateway", "opaque-A")]
-    assert result.candidates[0].basis == "automatic"
-    assert not result.ineligible
 
 
 def test_unverified_model_limit_does_not_cycle_same_model_through_sibling_keys():

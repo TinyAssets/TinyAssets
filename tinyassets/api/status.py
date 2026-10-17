@@ -1230,14 +1230,6 @@ def get_status(
             "served_llm_type is unset — daemon accepts ANY LLM type. "
             "Not a local-only guarantee."
         )
-    if endpoint_hint == "unset":
-        caveats.append(
-            "No default LLM provider detected on this host (checked: "
-            "OLLAMA_HOST and Claude CLI). "
-            "That is expected: the platform has no LLM of its own. A command center "
-            "runs on the provider its owner connects -- see read_graph "
-            "target=model_options for that command center."
-        )
     if api_key_vars_present and not api_key_enabled:
         caveats.append(
             "API-key provider env vars are present on this host and ignored: "
@@ -1258,12 +1250,6 @@ def get_status(
         actionable_next_steps.append(
             "Set served_llm_type in the dispatcher config to constrain "
             "which LLM types this daemon will accept work for."
-        )
-    if endpoint_hint == "unset":
-        actionable_next_steps.append(
-            "To run a command center, its owner connects their own provider to it "
-            "(read_graph target=model_options shows what is connected). There "
-            "is no platform or host model to bind."
         )
     if last_completed_llm == "unknown" and activity_tail:
         actionable_next_steps.append(

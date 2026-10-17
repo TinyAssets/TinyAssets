@@ -5,7 +5,6 @@ result is advisory: every actual launch still validates its exact member anew.
 """
 
 import logging
-import sqlite3
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -28,32 +27,18 @@ from tinyassets.providers.model_policy import (
     Charge,
     Ineligible,
     Interaction,
-    Model,
     ModelPolicy,
     ModelRef,
-    Pricing,
     SourceModelPolicy,
     order_models,
 )
 from tinyassets.providers.model_preferences import ModelPreferences, capture_preference_policy
 from tinyassets.providers.wire_dialects import same_dialect
 from tinyassets.storage.current_home import check_plan_scope, current_home
-from tinyassets.storage.learned_models import (
-    OWN_VERIFIED_BASIS,
-)
 from tinyassets.storage.model_preferences import ModelPreferenceStore, PreferenceSnapshot
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
 _LOG = logging.getLogger("universe_server.served_model_plan")
-
-#: An id from the reviewed public list for this source kind. A public claim that the
-#: id EXISTS, never permission to use it.
-PUBLIC_LISTED_BASIS = "publicly_listed"
-
-#: Evidence alone cannot grant access. Subscription history is not provider-keyed;
-#: only this provider's catalogue or an explicit grant can make its ids selectable.
-_CANDIDATE_ONLY_BASES = frozenset({PUBLIC_LISTED_BASIS, OWN_VERIFIED_BASIS})
-
 
 def connected_sources(base: str | Path, universe: str | Path, owner: str,
                       *, conn=None) -> frozenset[str]:
@@ -195,59 +180,8 @@ class ModelSourceUnavailable(PermissionError):
         self.reason = reason
 
 
-def _own_verified_candidates(base, source_kind, provider_ref, owner, *, already,
-                             excluded=frozenset()):
-    """Ids THIS owner has already made work on this source.
-
-    Their own history, not anyone else's: read from the private evidence table
-    scoped to this owner, so nothing here depends on the promotion threshold. A
-    solo user keeps every id they have ever used even though none of it is public.
-
-    Carries its own basis so the list distinguishes owner history from reviewed
-    public ids. Like the published rows, these do not grant access: the owner may
-    have narrowed their scope since. Display
-    retention requires a non-hidden row in this provider's last catalogue under
-    current custody, while refresh is pending or failed. Such rows are already
-    included as executor_enumerated, so history-only rows remain offers. A fresh
-    catalogue is authoritative; execution always needs fresh discovery.
-    """
-    from tinyassets.storage.learned_models import OwnModelHistory
-
-    have = {model.model_id for model in already} | set(excluded)
-    try:
-        rows = OwnModelHistory(base).ids_for(source_kind, provider_ref, owner)
-    except (OSError, sqlite3.DatabaseError, ValueError) as exc:
-        _LOG.warning("own verified model evidence unreadable: %s", type(exc).__name__)
-        return ()
-    return tuple(
-        Model(row.model_id, True, frozenset({"text"}),
-              pricing=Pricing("fresh", unmetered=True),
-              availability_basis=OWN_VERIFIED_BASIS)
-        for row in rows if row.model_id and row.model_id not in have
-    )
 
 
-def _listed_candidates(source_kind, *, source_key, already, excluded=frozenset()):
-    """Newest-per-class ids from the reviewed public list for one source kind.
-
-    A UNION, never a filter: an id this universe already has keeps its own row and its
-    own basis, whatever the list says. A user happily running an older model does not
-    lose it because a newer one was listed.
-
-    A malformed list file RAISES rather than reading as empty -- a corrupted list must
-    not silently shrink every user's picker with no signal -- and the caller's own
-    except clause turns that into a source-level reason the repair screen can show.
-    """
-    from tinyassets.providers.public_model_lists import newest_listed_cached
-
-    have = {model.model_id for model in already} | set(excluded)
-    return tuple(
-        Model(model_id, True, frozenset({"text"}),
-              pricing=Pricing("fresh", unmetered=True),
-              availability_basis=PUBLIC_LISTED_BASIS)
-        for model_id in newest_listed_cached(source_kind, source_key=source_key)
-        if model_id and model_id not in have
-    )
 
 
 def _http_models(owner, uid, member, *, snapshot=None, needs_tools=True):

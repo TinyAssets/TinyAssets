@@ -1229,8 +1229,7 @@ def write_graph(
             owner builds an outbound channel (chat webhook, ticketing API, etc.)
             without any service-specific code (owner-only; see payload_json). Also
             with target=connection, connect_compute registers an open COMPUTE
-            provider (any Kimi/OpenRouter/OpenAI-compatible endpoint, or a CLI
-            subscription) the command center's automations can run on — registration
+            HTTP provider the command center's automations can run on — registration
             only, no secret (the credential is deposited out of band via the
             secure browser form / connect_http); owner-only, see payload_json.
             Also with target=connection, remove_http TAKES BACK a deposited http
@@ -1325,8 +1324,7 @@ def write_graph(
             privacy_url must also be HTTPS. The session URL must already be in the
             connection's exact POST allowlist. Pass enabled=false without a
             descriptor to revoke. Owner plus home command center admin authority is
-            required; subscription-only providers are refused rather than given a
-            second credential path.
+            required.
             For model-discovery metadata, instead pass {"capability_kind":
             "model_discovery", "definition_id": "<owned compute definition>",
             "enabled": true, "descriptor": {"protocol": "openrouter_user_models_v1",
@@ -1590,10 +1588,6 @@ def write_graph(
             )
         )
     if normalized == "connection":
-        # LLM subscription deposit is an owner-scoped operation under the pinned
-        # write_graph handle (byo-llm-deposit-surface). It routes to its own
-        # owner-scoped handler; cloud_connections only lists. Adds no
-        # advertised handle — the live tool catalog stays pinned.
         connection_operation = (operation or "").strip().lower()
         if connection_operation == "connect_http":
             # Owner-scoped provisioning of a generic outbound http connection so a
@@ -1687,7 +1681,7 @@ def write_graph(
             )
         if connection_operation == "connect_compute":
             # Owner-scoped registration of an open COMPUTE provider (any Kimi/
-            # OpenRouter/OpenAI-compatible endpoint or a CLI subscription). Its own
+            # HTTP endpoint). Its own
             # owner-scoped handler; registration ONLY (no secret — the credential is
             # deposited out of band per the custody boundary). Adds no advertised handle.
             from tinyassets.api.compute_connection import connect_compute

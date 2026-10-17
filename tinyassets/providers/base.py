@@ -461,8 +461,6 @@ API_KEY_PROVIDER_ENV_VARS: tuple[str, ...] = (
 )
 
 
-def _truthy_env(value: str | None) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def api_key_providers_enabled() -> bool:

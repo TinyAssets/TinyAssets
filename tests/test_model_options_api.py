@@ -282,24 +282,3 @@ def test_empty_owned_home_is_readable_without_provider_or_agent(tmp_path, monkey
     assert result["choice_authority"] == "none"
 
 
-@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
-def test_source_revocation_does_not_hide_independent_source(catalogue, reader, monkeypatch):
-    catalogue.binding = integration.enable(catalogue)
-
-    def revoked(**kwargs):
-        result = reader[1](**kwargs)
-        catalogue.rig.ledger.revoke_grant("grant-models")
-        return result
-
-    monkeypatch.setattr(discovery_snapshot, "read_http_discovery_document", revoked)
-    result = read()
-    assert result["order"] == [{"provider_ref": "codex", "model_id": ""}]
-    # The ADMITTED options are exactly the routing order. Not every option: a
-    # subscription source also offers the reviewed public list and the owner's own
-    # verified ids, which are candidates to GRANT and deliberately absent from the
-    # order -- an unusable id in the fallback chain is a turn that fails for no reason
-    # the user can see.
-    assert [row["reference"] for row in result["options"]
-            if row["in_candidate_catalog"]] == result["order"]
-    assert result["unavailable"] == []
-    assert any("source_revoked" in row["reasons"] for row in result["sources"])

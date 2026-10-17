@@ -116,17 +116,6 @@ def test_refused_connection_without_models_is_visible_once():
     }]
 
 
-def test_native_default_keeps_unknown_context_and_no_actual_receipt():
-    source = replace(connection(""), source_kind="subscription", default_model_id="",
-                     models=(Model("", True, frozenset({"text"}),
-                                   pricing=Pricing("fresh", unmetered=True)),))
-    catalog = Catalog("owner", "home", (source,))
-    row = model_options_document(catalog, plan(catalog))["options"][0]
-    assert row["reference"]["model_id"] == ""
-    assert row["provider_default"] is True
-    assert row["context_tokens"] is None
-    assert row["scores"] is None
-    assert "execution" not in row
 
 
 def test_opaque_new_model_and_stale_evidence_not_rewritten():
