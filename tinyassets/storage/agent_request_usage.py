@@ -1,9 +1,9 @@
-"""Owner-scoped inference usage, independent of chat delivery and effect receipts.
+"""Owner inference usage, independent of chat delivery and effect receipts.
 
-The daemon creates roots and dispatch references. Broker processes only consume
-references against the same database. A reservation is accounting permission,
-never provider authority: the existing grant, fence and cancellation checks
-still govern each send. Nothing here proves upstream receipt or billing.
+The daemon creates roots and dispatch references over its bound channel.
+The broker owns the accounting database and consumes those references.
+A reservation is accounting permission. Provider grants, fences and cancellation
+checks still govern each send. Nothing here proves upstream receipt or billing.
 """
 
 from __future__ import annotations

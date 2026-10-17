@@ -336,6 +336,10 @@ def owner_protocol_transport(request, monkeypatch, in_process_broker):
         from tinyassets.storage import data_dir
 
         live = get_supervisor(data_dir())
+        if live is None:
+            from tinyassets.storage.outbound_connections import ProxyRequestError
+
+            raise ProxyRequestError("source publication broker unavailable")
         definition = document["definition"]
         client = BrokerClient(live.socket_path, principal=definition["owner_user_id"],
                               command_center=center, fence=live.fence,

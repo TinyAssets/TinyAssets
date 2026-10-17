@@ -12,8 +12,8 @@ from tinyassets import command_center_update_policy as policy
 from tinyassets.app_ui_store import get_app_ui
 
 
-@pytest.fixture
-def published(tmp_path, monkeypatch):
+@pytest.fixture(name="published")
+def owner_release_fixture(tmp_path, monkeypatch):
     from tinyassets.commons_catalog import _agent_connect
     from tinyassets.universe_owner import record_creation
 

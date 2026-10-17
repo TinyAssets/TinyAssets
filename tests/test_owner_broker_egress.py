@@ -305,8 +305,10 @@ def test_plan_and_catalog_are_shared_reads_not_box_databases(box):
 
 
 def test_missing_broker_never_uses_local_provider(box, monkeypatch):
+    from tinyassets.exceptions import ProviderUnavailableError
+
     monkeypatch.setattr(owner_runtime, "_runtime", replace(box.runtime, relay=Path("/absent.sock")))
-    with pytest.raises((OSError, RuntimeError)):
+    with pytest.raises(ProviderUnavailableError, match="compute broker admission unavailable"):
         ApiKeyHttpProvider(box.definition)._complete_sync(
             "hello", "", ModelConfig(invocation_owner_user_id="owner"),
             universe_dir=box.root / "center")

@@ -2,7 +2,7 @@
 
 account-storage-quota D2 (founder decisions 2026-09-30): the owner is written by
 the creation transaction, backfilled ONLY from `founder_home`, never inferred from
-`universe_acl`, and the tier is the subscription on the account's home universe.
+`universe_acl`. The tier comes from the admitted owner's bound broker plan.
 """
 
 from __future__ import annotations
@@ -179,13 +179,6 @@ class TestBackfill:
         initialize_author_server(base)
 
         assert uo.owner_of(base, "u-later") is None
-
-
-# --------------------------------------------------------------------------- #
-# Tier: the home universe's subscription, free on anything else
-# --------------------------------------------------------------------------- #
-
-
 
 
 # --------------------------------------------------------------------------- #

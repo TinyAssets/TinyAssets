@@ -1,26 +1,9 @@
-"""Whose account a universe's bytes and seats are charged to.
+"""Attribute local center bytes and seats to their owning account.
 
-Founder decision 2026-09-30: usage limits are ONE storage pool and ONE seat count
-per PERSON, shared across all of their universes. That needs a fact the platform
-did not store: which single account owns a universe. `universe_acl` cannot answer
-it -- a shared universe has several admins, and "the admin who granted themselves"
-is a correlation, not a record (memory `never-infer-identity-from-adjacent-tables`).
-
-So ownership is written by exactly two things, and read by one resolver pair:
-
-* the transaction that CREATES a universe (`record_creation`), in the same commit
-  as the creator's admin grant -- so no universe is ever born granted but unowned;
-* a one-time backfill from `founder_home` (`backfill_from_founder_home`) for
-  universes that predate this table. `founder_home` is an explicit identity
-  binding. Nothing else is backfilled: every other pre-existing universe stays
-  UNATTRIBUTED -- counted on host-only surfaces, never refused -- until an owner
-  is known (founder decision 2026-09-30, account-storage-quota Q2).
-
-`owner_of` / `account_type_of` are the ONLY resolvers. Seats and storage both
-call them; a second pair would be a second definition of one fact. The account
-type is the only per-account input behaviour may depend on (`usage_policy.
-AccountType`), and this is the only module that reads it from billing storage
-(`tests/test_owner_door_import_boundary.py` pins that).
+Creation records ownership in the same transaction as its initial grant.
+The retained founder-home backfill reads explicit attribution only. Account
+type comes from the admitted owner's broker plan, independently of local
+homes or center billing files. Seats and storage use this resolver pair.
 """
 
 from __future__ import annotations

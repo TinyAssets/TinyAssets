@@ -117,10 +117,12 @@ Nothing deploys until slice 7.
 - [ ] 6a. Delete every dual path at cutover (founder rule, 2026-10-16: never
       weaken the architecture for migration; reconnecting, signing in again
       or re-creating are acceptable user costs).
-      - Delete each `owner_runtime.current() is None` shared branch listed in
-        the 2026-10-16 audit, the `box_tools`/`start_exec` bridge and the
-        per-call box backend (`frontend`, `production_files`,
-        `file_worker`, `exec_worker`, `executions`, `gvisor_files`).
+      - [x] Delete each owner-runtime shared-work fork in the audited
+        LEGACY_SHARED / UNREACHABLE_ROLE inventory, including owner_policy;
+        retain only the 29 justified ROLE_DISPATCH boundaries.
+      - [ ] Delete the `box_tools`/`start_exec` bridge and per-call box backend
+        (`frontend`, `production_files`, `file_worker`, `exec_worker`,
+        `executions`, `gvisor_files`).
       - [x] Delete the `PROGRAM.md` premise mirror and implicit legacy loop,
         first-contact's fail-open on old databases, the consent move on every
         start, unused `owner_layout`, and account deletion's legacy-bytes refusal.
@@ -130,14 +132,14 @@ Nothing deploys until slice 7.
         `box_layout_migration`, `activity_shape_migration`,
         `agent_file_migration` (and its deploy wiring), this change's
         migration, and the deploy script's old-layout branches.
-      - Add a guard test that fails if a shared-daemon fork reappears
-        outside the router entry. Router import/direct-file-access guard added;
-        the repository-wide mode-fork scan remains with the outstanding deletions.
-      Part 1 remains incomplete: part 1c removes 20 classified rows; 21
-      classified rows and the D7 mode scan remain (exact inventory and
-      role-boundary allowlist: `main-audit.md`). The exec bridge and per-call
-      backend remain. Part 2 removes
-      one-shot migrations and deploy old-layout branches after slice 6.
+      - [x] Add D7's repository-wide alias-aware runtime-mode scan with the
+        exact file/function/reason ROLE_DISPATCH allowlist and tmp_path module
+        mutation self-tests; retain router import/direct-file-access checks.
+      Part 1d completes the remaining 21 classified forks and D7. All 29
+      role-boundary exceptions and reasons are executable and documented in
+      `main-audit.md`. The exec bridge, per-call backend and legacy launcher
+      remain for the next pass. Part 2 removes one-shot migrations and deploy
+      old-layout branches after slice 6.
 - [ ] 6b. Per-box deploy roll and the canary-box acceptance (D11).
 - [ ] 7. Report the list of unported, dropped features to the founder; then the cutover deploy (lead), with deployed sha asserted and one naive-user
       pass per surface: app, MCP and a scheduled run.

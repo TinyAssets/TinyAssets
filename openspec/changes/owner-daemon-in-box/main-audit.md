@@ -1710,3 +1710,72 @@ new worktree or agent dispatch was performed. Independent review/deployment
 remain with the lead; these are local implementation and validation commits.
 
 Validation and final task state are appended after the Linux runs complete.
+
+
+Part 1d validation follow-up: source publication is mandatory after validating
+local owner/center scope and before grant reads. Publication failures use the
+provider's existing known-not-sent admission error. Compute fixtures now supply
+that publication operation at their broker seam, use verified source IDs and
+pin the data root used by the channel. The exact unavailable-provider error
+replaces the owner fixture's broad OSError/RuntimeError tuple; no local provider
+is called. Whole compute/real-owner-egress recheck: **55 passed**, no skips.
+The corrected broker/UI/owner-daemon/hook/update recheck passed **176**, the
+five heavy branch/canonical suites passed **186**, and latest D7/import-boundary
+proof passed **52**. Root-only control/destruction proof: **6 passed**.
+The first post-implementation hygiene gate passed with the S8/retirement body.
+Full broad-run accounting and final commit receipts follow below.
+
+
+Final part 1d validation accounting:
+
+- Implementation commit: `d151f78e4cd`; the fixture/task/validation follow-up
+  is the next local commit. Nothing was pushed or deployed.
+- Broad selection: **158 unprivileged files**, including every requested
+  owner/broker/policy/account-deletion pattern, all structural GUARDS-key files,
+  all touched tests at selection time, and all **34 heavy files**. It returned
+  **3,642 passed, 23 failed**, zero errors/skips. This snapshot is not claimed
+  as a successful single invocation.
+- Its 23 failures were the 19 compute fixture/publication cases, the async
+  reconnect peer, the UI fixture missing owner context, the subprocess import
+  probe missing its shared plan transport, and the structural scanner's
+  fixture/thread-target name collision. All 23 passed corrected whole-file
+  rechecks. The scanner itself was unchanged: the fixture function has a
+  distinct name with pytest's explicit name='published'; its two importing
+  suites were ported and executed too. Patch setup still occurs on the caller.
+- Passing rechecks: **176** broker/UI/owner-daemon/hook/update cases; **186**
+  heavy branch/canonical cases; **52** latest D7/import-boundary cases; **55**
+  compute/real-owner-egress cases; **60** unchanged thread-safety guard/update
+  cases; **16** companion deletion/maintenance cases. These overlap and are
+  not added together as a test total.
+- Root venue: the entire owner control/destruction files passed **6**, with
+  no skips. They were excluded from the unprivileged run so each case executes
+  in its required venue rather than being counted as a skip.
+- The JUnit union verifies **3,689 surviving case identities passed** across
+  **162 files**, **zero unresolved failures/errors**, **zero skips**. Every
+  requested pattern, GUARDS-key file, heavy file and touched test has passing
+  cases. The two additional D7 mutation variants and 16 companion cases are
+  included in this union. No baseline exception or retired failure is counted
+  as a pass. The abandoned initial snapshot and early diagnostic snapshots
+  are retained separately and excluded from this final union.
+- Ruff on every Python file changed since this pass's starting sha, strict
+  OpenSpec validation, whitespace checks and commit hooks pass. No surviving
+  test's assertion count decreased against `3cf3e086062`. The first
+  post-implementation hygiene invocation against conv/c6-owner-daemon-s5
+  exited 0 with the requested S8 and retirement body; the final-head command
+  is rerun after this validation commit and its exit status is retained with
+  the external receipts.
+
+Receipts: `C:/Users/Jonathan/AppData/Local/Temp/s6a1d-validation-884p0hcw/`.
+`final-selection.json` lists the broad snapshot; `root-selection.json` names
+its separate venue; `coverage-summary.json` maps every surviving case to its
+passing report and verifies required-file coverage. JUnit/log stems are
+`final`, `recheck`, `heavy-probe`, `guards-recheck`, `compute-final`, `root`,
+`thread-recheck`, and `companion-recheck` (the final import-name-only recheck is
+`companion-final`). `hygiene-body.txt`, final hygiene logs/exit receipt, Ruff
+output and `assertion-drops.json` are in that same external directory.
+
+The dual-path and D7 sub-bullets are checked. Overall 6a remains unchecked
+because the explicitly deferred bridge/backend, launcher and protected
+migration/deploy cleanup still remain. The 21-site inventory in this section
+is complete; the executable allowlist contains only the 29 reviewed role
+boundaries. No work from the next backend pass was started.

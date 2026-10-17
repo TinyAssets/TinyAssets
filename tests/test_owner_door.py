@@ -302,8 +302,7 @@ def test_free_and_subscription_accounts_read_the_same_data_identically(door):
 
 
 def test_a_subscribers_second_universe_is_a_subscription_universe(door):
-    """Per ACCOUNT (founder, 2026-09-30): billing writes the home, and a second
-    universe used to read its own empty record as free."""
+    """Each local center reads its admitted account's shared broker plan."""
     from tinyassets.broker.owner_reads import Plans
     from tinyassets.daemon_server import grant_universe_ownership
     from tinyassets.universe_owner import account_type_for_universe

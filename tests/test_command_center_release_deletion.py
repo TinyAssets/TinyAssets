@@ -12,7 +12,7 @@ import pytest
 from tests.test_command_center_packages import _as
 from tests.test_command_center_release_policy import enable
 from tests.test_command_center_update_executor import apply, release
-from tests.test_command_center_update_executor import published as published
+from tests.test_command_center_update_executor import owner_release_fixture as owner_release_fixture
 from tinyassets import account_deletion
 from tinyassets import command_center_packages as packages
 from tinyassets import command_center_release_series as releases

@@ -261,13 +261,13 @@ class ApiKeyHttpProvider(BaseProvider):
         universe_id, grant_id = universe_dir.name, self._definition.ref
         from tinyassets.owner_channel import request
 
-        request(universe_id, {"op": "MODEL_SOURCE", "definition": self._definition.as_dict()})
         principal = getattr(config, "invocation_owner_user_id", "")
         if (not isinstance(principal, str) or not principal
                 or self._definition.owner_user_id != principal
                 or self._definition.universe_id != universe_id):
             raise ProviderUnavailableError("compute source does not match admitted owner")
         try:
+            request(universe_id, {"op": "MODEL_SOURCE", "definition": self._definition.as_dict()})
             row = granted_resource_row(
                 universe_dir.parent, principal=principal, command_center=universe_id,
                 grant_id=grant_id)

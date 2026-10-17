@@ -45,6 +45,20 @@ def compute(case, monkeypatch):  # noqa: F811
         return Channel()
 
     monkeypatch.setattr("tinyassets.storage.outbound_connections._broker_channel", channel)
+    from tinyassets import owner_channel
+    from tinyassets.broker.owner_sources import publish
+
+    actual_request = owner_channel.request
+
+    def owner_request(center, document):
+        if document.get("op") != "MODEL_SOURCE":
+            return actual_request(center, document)
+        if supervisor.get_supervisor(case.root) is None:
+            raise ProxyRequestError("source publication broker unavailable")
+        definition = document["definition"]
+        return publish(case.ledger, definition["owner_user_id"], center, definition)
+
+    monkeypatch.setattr(owner_channel, "request", owner_request)
     case.provider = ApiKeyHttpProvider(case.definitions["alice"])
     case.sent, case.closed, case.scopes = calls, closed, scopes
     return case
@@ -245,11 +259,11 @@ def test_router_releases_served_reservation_for_broker_admission_outage(tmp_path
 
     budget = open_allocation("owner-1", context.universe_dir)
     try:
-        with pytest.raises(AllProvidersExhaustedError):
+        with pytest.raises(AllProvidersExhaustedError) as exhausted:
             asyncio.run(router.call("writer", "hello", "system",
                                    ModelConfig(request_budget=budget),
                                    universe_context=context, operation="converse"))
-        assert released == [True] and abandoned == []
+        assert released == [True] and abandoned == [], str(exhausted.value)
     finally:
         budget.close()
         revoke_provider_request(capability)

@@ -13,7 +13,7 @@ from tinyassets.broker.ledger_queries import AUTHORIZED_CONNECTION
 from tinyassets.exceptions import ProviderUnavailableError
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 from tinyassets.providers.base import ModelConfig
-from tinyassets.providers.definition import ProviderDefinition
+from tinyassets.providers.definition import ProviderDefinition, _definition_id
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32" or not hasattr(socket, "SO_PEERCRED"),
@@ -30,10 +30,11 @@ def inference(discovery):  # noqa: F811
                          "methods": ["POST"]}])))
     response = b'{"choices":[{"message":{"content":"scoped reply"}}]}'
     discovery.broker.upstreams["next"] = lambda: Script([response[:12], response[12:]])
-    definition = ProviderDefinition(
-        id="fixture", universe_id="cc-alice", owner_user_id="alice",
-        access_method="api_key_http", protocol="chat_messages", model="fixture",
-        ref="grant-a", visibility="private", created_at="2026-10-04T00:00:00Z")
+    fields = dict(universe_id="cc-alice", owner_user_id="alice",
+                  access_method="api_key_http", protocol="chat_messages", model="fixture",
+                  ref="grant-a")
+    definition = ProviderDefinition(id=_definition_id(**fields), **fields,
+                                    visibility="private", created_at="2026-10-04T00:00:00Z")
     discovery.provider = ApiKeyHttpProvider(definition)
     discovery.config = ModelConfig(invocation_owner_user_id="alice")
 

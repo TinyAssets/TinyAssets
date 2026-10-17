@@ -41,6 +41,7 @@ def discovery(in_process_broker, broker, tmp_path, monkeypatch):  # noqa: F811
 
     # Same-uid protocol fixture; production-image probes use real gid 1102.
     monkeypatch.setattr(role_modes, "BROKER_READ_GID", os.getgid())
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     path = broker_ledger_path(tmp_path)
     ledger = ConnectionLedger(path, data_root=tmp_path)
     ledger.create_connection(
