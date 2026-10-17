@@ -610,6 +610,9 @@ ROOT_ENTRIES: dict[str, str] = {
     ".agent-turn-runners": "platform: per-turn runner liveness claims, settled with the turn",
     ".consumer_liveness": "platform: process liveness locks",
     ".owner_leases.db": "platform: execution-owner leases and fences (owner_lease)",
+    ".owner-cutover.json": "platform: root-private cutover resume and restore receipt",
+    ".cutover-shared": "platform: verified shared-store publication stage on the box store",
+    ".tinyassets.db.prebudgetrepair.bak": "platform: explicitly dropped stale database copy",
     ".owner_tree": "platform: execution-owner tree member locks (owner_lease)",
     ".deploy-pending.json": "platform: a waiting deploy's expiring status marker",
     ".runtime": "platform: provider runtime",
@@ -681,6 +684,7 @@ ROOT_ENTRIES: dict[str, str] = {
 #: Names that live INSIDE a universe directory: every byte there is counted by
 #: `universe_files` (minus `_NOT_USER_BYTES`), so these need no store of their own.
 UNIVERSE_ENTRIES: frozenset[str] = frozenset({
+    ".credential-vault.json",  # Historical center custody, read only by the cutover census.
     ".conversation_memory.db", ".conversation_attention.db",
     ".credentials", ".credentials.json",
     ".engine_mcp_config.json", ".oauth-refresh", ".pause",

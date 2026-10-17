@@ -1,5 +1,61 @@
 ## ADDED Requirements
 
+### Requirement: Cutover accounts for loss without guessing ownership
+
+The census SHALL resolve reviewed parent keys before dropping legacy state,
+retain conflicting ownership as a refusal, and report masked directory patterns
+and pseudonymous per-account carried sources and losses. A report with zero
+carried sources SHALL say "every account reconnects a model source".
+Center-local credential vaults SHALL be counted as dropped legacy custody and
+never copied to an owner tree. Carried credentials SHALL exist only in broker
+custody and its platform vault directory.
+
+#### Scenario: Every unresolved owner row has one reason
+- **WHEN** reviewed ownership keys cannot place a row
+- **THEN** the census counts exactly one reason per table: `conflicting_owners`, `orphan_reference`, `unadmitted_principal`, `unknown_center`, or `no_owner_key`, in that precedence order
+- **AND** conflicting owners refuse; the other four reasons explicitly drop the row
+- **AND** parent failures propagate, while retired non-account actor markers may still follow a real parent
+- **AND** a row with an admitted center, directly or through a reviewed parent, belongs to that center's owner even if its principal is unadmitted; conflicting admitted owners still refuse and missing parents still drop
+- **AND** dropped branch versions and schedules report `workflow history` with version/schedule counts on the candidate owner's line; unresolved budget reservations and provider bindings retain their drops as `usage reservation history` and `provider bindings`
+- **AND** versions use their admitted definition author, otherwise admitted publisher, otherwise drop; a missing definition does not discard the version's own snapshot, schedules resolve through definition or version, and competing admitted owners still refuse
+- **AND** per-account losses report reason, class and count without identities or path lists
+
+#### Scenario: File directory kinds explain placement
+- **WHEN** the census enumerates files
+- **THEN** each masked pattern reports counts by `admitted_center`, `unadmitted_center`, `unknown_dir`, `account_hash`, `broker_account`, `platform_store`, or `root_file`
+- **AND** unadmitted-center and unknown-directory contents drop, except registered stores retain their reviewed placement rules
+- **AND** account hashes alone never confer ownership; unclassified account, broker, platform and root files refuse with their kind
+- **AND** known identity, plan, key and lock files follow their creator-backed broker, router or regenerated placement
+- **AND** unclassified filenames expose only `<file>.<ext>` or `<file>`; code-constant filenames may be printed verbatim, while unknown platform vault indexes and keys still refuse
+- **AND** retired credential directories are summarized as CLI login state per account
+
+#### Scenario: Round-6 files and owner histories publish atomically
+- **WHEN** the cutover classifies the identified platform files
+- **THEN** egress audit and architecture signing files remain broker state, door handshake secrets remain private router state with no report names or content, and neither enters a box
+- **AND** route tables, reset barriers and blob-root locks regenerate; stale backup sidecars drop unopened; retired executor configuration and refresh markers count as `CLI login state`
+- **AND** custody bodies follow their `run_file_objects` row via `storage_key + '.body'`, including counted drops
+- **AND** scheduled-run JSONL entries split by admitted center and activity-ledger list entries split by admitted actor, falling back to admitted target, at the original relative filename in each owner's box root
+- **AND** reports list per-account `scheduled-run history` and `activity ledger` entry counts, explicit unowned drops and all five accepted user costs
+- **AND** both splits read back content and per-owner counts and require retained plus dropped entries to equal the original total before publication
+- **AND** a hard exit after the scheduled history split resumes both splits without duplication or source loss
+
+#### Scenario: Restore after owner serving writes
+- **WHEN** the operator explicitly accepts post-cutover write loss and restores the verified paired pre-cutover backup after stopping serving
+- **THEN** pre-cutover owner-split bytes are restored exactly, including history, requests and pause state
+- **AND** post-cutover owner writes are lost as stated in the census and runbook
+- **AND** changed shared authority, deletion frontiers, source bytes or unsafe restore receipts still refuse
+
+#### Scenario: The archive rehearsal uses the deployment transaction
+- **WHEN** the operator runs the archive harness with a candidate image
+- **THEN** disposable network-less containers on a real XFS project-quota loop mount use the deployment container builder for read-only preflight, ready census, resumable apply and final manifest/quota/marker verification
+- **AND** kills between owner trees and after seeding resume to the uninterrupted generation's manifests
+- **AND** every migrated owner serves history, pending requests, pause/resume and broker plan reads through owner processes and router forwarding
+- **AND** an owner without a model source can complete shared-door connect and model-use confirmation on a disposable clone without changing the restore generation's shared authority
+- **AND** paired restores before and after a serving write compare against the original owner-split archive
+- **AND** reports contain fixed step names, counts and PASS/FAIL without identities, paths or content
+- **AND** a generated two-owner, four-center archive with rows in all six census classes and all non-conflicting drop reasons exercises the entire harness in the root Linux oracle venue
+
+
 ### Requirement: Owner work runs in the owner's box
 
 Everything that reads or writes an owner's data SHALL run in that owner's

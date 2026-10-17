@@ -109,6 +109,16 @@ def test_as_root_keeps_the_old_run():
     assert "git init -q ." in cmd[-1]
 
 
+def test_disposable_engine_venue_is_explicit_and_requires_root():
+    cmd = _command("--as-root", "--docker-engine", "-q")
+    assert "/var/run/docker.sock:/var/run/docker.sock" in cmd
+    assert "TA_REHEARSAL_BASE_IMAGE=img:tag" in cmd
+    assert "/var/run/docker.sock:/var/run/docker.sock" not in _command("--as-root", "-q")
+    import pytest
+    with pytest.raises(SystemExit, match='requires --as-root'):
+        _command("--docker-engine", "-q")
+
+
 def test_no_bwrap_drops_every_relaxation_in_both_modes():
     assert _opts(_command("--no-bwrap")) == []
     assert _opts(_command("--no-bwrap", "--as-root")) == []

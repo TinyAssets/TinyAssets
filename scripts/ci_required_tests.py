@@ -49,6 +49,7 @@ QUARANTINE = REPO_ROOT / ".github" / "known-failing-tests.txt"
 # These files still belong to their ordinary shard and selection receipt.
 ROOT_TEST_FILES = frozenset({
     "tests/test_backup_owner_box.py",
+    "tests/test_owner_cutover_apply.py",
 })
 
 # The gate must never pass vacuously. Without a floor, a PR that mass-skips,

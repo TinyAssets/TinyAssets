@@ -459,24 +459,258 @@ are described in the 3c-2 as-built contract above.
 
 ## D6. Migration (one cutover, after a verified full backup)
 
-For each admitted owner:
+The one migration builds each admitted owner's box root on the box store,
+copies center trees and per-center platform files, and extracts that owner's
+rows from shared root databases with their table/index/trigger schemas. It
+seeds the router, broker and published stores, regenerates platform-local state,
+verifies attribution totals and SQLite integrity, removes host owner trees,
+and publishes the final owner-daemon marker.
 
-1. Start from the owner's box tree. The C6 move already copies center trees
-   in.
-2. Move that owner's per-center platform files (conversation, pending, runs,
-   pause, ledger and so on) into the box root.
-3. Extract that owner's rows from each shared root database into the box
-   root's database of the same schema. The key is the owner principal or the
-   owner's center ids.
-4. Verify counts and integrity, then remove the host per-center directories.
-
-Any row or file the census cannot attribute to exactly one owner refuses the
-cutover. The `--archive` rehearsal on the private production copy must:
+Every row and file must be attributed to its destination, explicitly dropped,
+or explicitly regenerated. Anything else refuses the cutover. The `--archive` rehearsal on the private production copy must:
 
 - show the per-owner row counts summing to the original totals;
 - show each owner daemon serving that owner's history, pending requests and
   pause after the move;
 - prove a restore of the paired backup returns today's layout.
+
+### D6 as built (slice 6; synthetic harness accepted)
+
+The lead's archive command is:
+`python scripts/rehearse_box_move.py --archive <absolute-tinyassets-data-YYYY-MM-DDTHH-MM-SSZ.tar.gz> --image tinyassets-c6-rehearsal:s6-<head>`.
+The archive must retain the `tinyassets-data-YYYY-MM-DDTHH-MM-SSZ.tar.gz`
+filename. The image must already be built from the checked-out head. Every
+container runs without a network. Development uses generated archives only.
+The synthetic root end-to-end run passes every step, including both crash
+boundaries, reconnect confirmation, the post-write restore and report privacy.
+The harness creates disposable Docker volumes and a real XFS loop mount with
+project quotas. It calls deploy's `box_migration_container` directly through
+the script's explicit disposable runner, sharing caps, mounts, tmpfs and memory
+limits. Both paths invoke read-only preflight, refusing census, ordinary apply
+and final manifest/quota/marker verification. Apply verifies before sealing the
+final owner-daemon marker; the extra verify command reads that sealed output.
+
+An uninterrupted generation establishes manifests, then the real paired
+restore returns to owner-split and GNU tar compares against the original input.
+Two independent restored generations crash at `after_owner_tree:1` and
+`after_seeding`. Each resumes to the uninterrupted shared and owner manifests.
+The test-only `CUTOVER_CRASH_AT` hook calls `os._exit(137)` inside apply; the
+former self-SIGKILL was ignored because Python was namespace PID 1. Deploy
+and restore entry points refuse the variable before host actions and override
+image defaults with an empty value. Only the explicit disposable runner can
+forward it, after checking the generated volume family and mountpoints.
+Serving starts the real owner lifecycle manager, apps, router and broker with
+kernel UID peers. This process venue uses private mount namespaces and the
+fixed owner mount; gVisor isolation remains separate acceptance. Every admitted
+center reads history and pending requests, pauses/resumes, reads its broker plan
+and writes history. Reconnect confirmation uses the real shared model-connect
+door and model-use reconciliation on a disposable shared-store clone: a new
+connection changes shared custody authority, which the paired restore must continue to
+fence. Reconnect owner writes remain on the migrated XFS trees. The original
+serving generation is then paired-restored with explicit owner-write-loss
+acceptance and compared again. Reports expose only fixed step
+names, numeric counts and PASS/FAIL, one line per reached step:
+`<step> PASS [<counter>=<nonnegative integer> ...]` or `<step> FAIL`.
+The ten steps are setup, preflight, census, apply, verify,
+restore_before_write, crash_resume, serving, restore_after_write and cleanup.
+The synthetic run records 2 owners, 4 centers, 27 census rows, 3 manifests,
+2 interruptions and 2 resume comparisons; serving records 4 history reads,
+4 history turns, 4 pending reads, 4 saved requests, 8 controls, 8 plan reads,
+4 verified writes and 2 reconnect confirmations. Both restores record one
+byte comparison. Tests scan stdout and the report for identifiers, paths and
+content, enforce numeric counters, and check the redacted failure report.
+
+Synthetic proof venue:
+`python scripts/linux_oracle.py --as-root --docker-engine -- -q --no-header -p no:cacheprovider tests/test_box_move_rehearsal.py`.
+The Docker-engine opt-in is root-only and leaves ordinary oracle invocations
+without an engine socket. Task 6 remains open for the lead's archive run and
+the remaining acceptance, regardless of synthetic results.
+
+`box_layout_migration` is the sole cutover module.
+Host admission reads deletion tombstones from the canonical broker custody
+database (`deleted_principals.digest`); it must not reopen the retired shared
+owner table. Missing custody state still refuses admission and destruction.
+Seeding creates the broker-owned credential directory even when no HTTP
+credentials survive, so a source-free owner can reconnect after cutover.
+Provider definitions remain private owner files (0600); registration already
+publishes the credential-free descriptor through the broker channel. An owner
+process never changes a definition file to the retired broker-reader group.
+
+The census reports six classes:
+owner, router, broker, published, dropped and regenerated, with per-table totals,
+per-owner counts and report-local account labels. Policy account paths are also
+pseudonymous. The broker admission map is authoritative; creation/home bindings
+only corroborate it. An unknown table, conflicting ownership, unclassified file,
+unattributable paid tier or HTTP slot without its owner's connection refuses.
+The census materializes attribution columns, never history/checkpoint payloads.
+An admitted center attributes its rows to its owner even when their named
+principal is unadmitted, an earlier identity or a platform actor. This applies
+through reviewed parent joins as well as direct center keys; another admitted
+owner still conflicts and a missing parent still drops as `orphan_reference`.
+`universe:<center>` actors resolve through live admission. Branch versions use
+the admitted definition author, otherwise their admitted publisher, otherwise
+drop; their own snapshot survives an absent definition. Schedules resolve
+through their definition or version. Competing admitted owners still refuse.
+Interchange receipts/links join their stage and receipt, and
+published stages join their created definition's author. Idempotency uses its
+operation to select stage, receipt or definition. Checkpoints can join several
+runs only when every run resolves to the same owner.
+The apply streams payload rows and rechecks their census attribution.
+
+Dropped state includes the listed pre-ownership runs and dependent records,
+never-admitted centers without owner bindings, unowned rows in the reviewed
+small owner-table sets, retired CLI records/homes and the stale database copy.
+The stale copy is never opened and remains only in the paired snapshot.
+Owner leases, fences, accounting counters and branch-version migration records
+are recreated empty in owner stores. Center-keyed event/delivery/lease records
+use the admitted center or are explicitly counted as dropped. Each unresolved
+row gets exactly one reason, counted per table. Precedence is
+`conflicting_owners`, `orphan_reference`, `unadmitted_principal`,
+`unknown_center`, `no_owner_key`. Conflicts refuse; the other four explicitly
+drop. A known center without admission reports `unadmitted_principal`;
+an absent center reports `unknown_center`. Missing-parent and parent-owner
+failures propagate to dependents. An admitted center, including one reached
+through a parent, clears unadmitted-principal, unknown-center and
+ownerless-parent evidence. An unadmitted actor alone cannot invent an owner.
+Dropped versions and schedules
+appear under their candidate owner's `workflow history` with separate version
+and schedule counts. Unresolved usage rows retain their drops, described as
+`usage reservation history` and `provider bindings`.
+Candidate owners survive other failures so a broken key cannot mask conflict.
+Permanent identities alone do not admit a principal. Binding/admission integrity
+checks and unknown-table/schema-review refusals remain. Foreign-key violations
+on explicitly dropped rows are accounted losses; violations on retained rows
+still refuse. No owner is invented.
+
+File placement follows exact code-backed locations: broker identity, plan,
+policy, outbound, custody and operation databases; broker fence/deletion
+markers; legacy hashed browser keys beside either outbound ledger; router
+provenance/release markers; regenerated SQLite sidecars, custody/refresh locks,
+PID/liveness/heartbeat state and interrupted atomic-publication files. Real
+SQLite files retain table-by-table schema review. Unknown files still refuse
+where required and expose only `<file>.<ext>` (or `<file>` with no conventional
+extension), with code-constant filenames allowed verbatim. No unknown platform
+vault index or key is assumed safe merely from its extension. The round-6
+identifications classify all 16 supplied files in synthetic proof; only the
+lead's next authorized census establishes the real-data result.
+
+Broker egress audit JSONL files and architecture signing state remain broker
+files. The three door handshake files remain private router state; neither
+their names nor contents appear in reports, and they never enter boxes.
+The engine route table, reset barrier and blob-root lock regenerate. Stale
+backup WAL/SHM files drop without opening them. Executor configuration and
+external-agent refresh markers drop under `CLI login state`.
+Run-file bodies resolve through `run_file_objects.storage_key + '.body'`,
+matching the reader and cleanup code; they move or drop with that row and
+their losses are counted. Objects also resolve their operation parent.
+
+The transaction splits `.scheduler_fires.jsonl` by admitted `universe_id`
+and `ledger.json` by admitted actor, falling back to admitted target. Each
+owner gets the original relative filename at its box data root, preserving
+entry order and the JSONL/list shapes. `api.engine_helpers._append_ledger`
+and `api.branches._append_global_ledger` use this root ledger path. The retired
+scheduler has no current reader; its same-path file preserves owner history.
+Unknown/non-admitted entries drop with explicit counts. `history_splits`
+reports `scheduled-run history` and `activity ledger`, per-account entries,
+original totals and drops; `workflow_history` reports carried version/schedule
+counts. `loss_summary` separately lists dropped history entries.
+Both splits read back counts and content and require per-owner totals plus
+drops to equal the original count before publication. Unpublished files rebuild
+on resume; `after_scheduled_history_split` exercises a real exit between them.
+Only verified publication removes the source histories and custody bodies.
+Reports also list all five accepted user costs from the founder's decisions.
+
+The transaction holds the exclusive layout lock and verifies a fresh paired
+snapshot before its first write. A root-private `.owner-cutover.json` records
+build and publish phases, the snapshot digests, owner plan and file manifests.
+Build leaves the original stores intact. Each owner gets its centers,
+`.agent-sessions`, `.universe-sidecars`, attributed transcripts and extracted
+root databases. Shared staging contains router identity/keys/OAuth/sessions,
+hook digests, broker admissions/box records/policy/outbound/custody, explicit
+free or paid plans, published records and an empty next-wake index. Legacy
+principal tombstones become the broker's digest-only schema; restore authority
+checks read that final custody store. HTTP vault
+slots stay in their existing custody location, with broker ownership; CLI slots
+are filtered out. Regenerated rows are not copied.
+
+After row reconciliation, SQLite integrity checks, rsync checksums and durable
+file manifests, publication uses atomic replacement on the destination
+filesystem. A crash in either phase resumes against the same snapshot pair;
+a changed verified output or different pair refuses. Only verified publication
+removes the host trees and writes `owner_daemon=1`, `box_layout=owner-box` and
+`state=stable`. Completed application is idempotent. The deploy's step 3d keeps
+its canary, idle-turn, mount, preflight and fresh-paired-snapshot gates and uses
+this transaction once on a forward deploy. An intermediate owner-box marker
+without the final owner-daemon version now refuses.
+
+Deleted P2b paths: credential copying into host custody, CLI agent-home copying,
+and the second activity-conversion path and its helpers. Their whole obsolete
+tests were retired; the independent retired-workflow guard remains.
+
+Synthetic Linux proof covers two owners with two centers each, every census
+class, legacy runs/checkpoints/transcripts, a never-admitted center, plans,
+custody, shared key/hook authentication, crash/resume and paired restoration.
+The restore uses the real shell/SQLite/tar implementation; only host service,
+mount/quota and absent sandbox-runtime queries are modeled. A completed cutover
+restores only the exact paired source. By default shared and owner output
+manifests must remain unchanged. `CUTOVER_ACCEPT_OWNER_WRITE_LOSS=1` explicitly
+surrenders post-cutover chats, pending requests, pause and other owner writes.
+Only the derived next-wake index and ingress-secret contents may differ in
+shared state: every identity database schema/authority row is hashed in the
+cutover receipt, and all other shared files remain byte fenced. Changed
+identities, admissions, revocations, billing, deletion, custody, operation
+receipts or owner inventory still refuse. Services remain stopped on return.
+This is not real XFS quota, sandbox, deployment or production-data proof.
+
+The process rehearsal starts two real owner apps against the migrated roots
+using the existing process launcher. Production HTTP routes return each of four
+centers' conversation history and pending requests. An authenticated test probe
+calls the real chat-history and pending-request writers and pause/status/resume
+operation, and reads each owner's migrated
+plan through the real relay and broker. Foreign-center history is absent. The
+rig substitutes the fixed mount and broker peer UID, not these application
+operations; it does not prove native sandbox isolation.
+
+The platform-wide `outside_switch(id, enabled)` is router state:
+`OutsideClientAuthority.set_enabled` has no owner argument, and `admit` reads
+id 1 before checking any owner's grant. It is never replicated into boxes.
+Device registrations, authentication receipts and UI preferences have no
+session/connection-to-owner foreign key: only their recorded authenticated
+subject can carry them. Reviewed rows without any real ownership key are
+counted drops, including the retired public-reader marker; no default owner.
+
+Legacy center-local `.credential-vault.json` files are counted drops and never
+opened or copied by census. The old `credentials_outside_broker_custody` count
+was files, not slots. Retained HTTP slots stay in the platform vault, with
+broker UID ownership and custody metadata. CLI records/homes are counted drops.
+Census emits an explicit all-accounts reconnect line when carried HTTP is zero,
+and points to door model-connect plus model-use confirmation.
+
+Every enumerated file has a placement (including refused/unattributed), a
+masked directory pattern and count. `file_pattern_kinds` pairs each pattern
+and placement with counts by `admitted_center`, `unadmitted_center`,
+`unknown_dir`, `account_hash`, `broker_account`, `platform_store`, or `root_file`.
+Registered shared roots keep their code-defined placement. Other unknown
+and never-admitted directory contents drop; an account hash is never an owner
+default. Unrecognized root, account, broker and platform files still refuse
+with their kind. Identity/plan databases are extracted by their reviewed table
+rules, policy deletion markers and the broker fence stay broker-owned, and
+custody/refresh locks regenerate. Browser-vault keys belong outside this data
+root; an arbitrary key file here refuses.
+`loss_summary` groups reason and description by pseudonymous account, with
+explicit dropped class and row/file counts: e.g. `CLI login state` and
+`orphaned budget reservations`. The separate unowned bucket never invents an
+account. Existing `losses` retains aggregate tables and masked patterns only.
+Sessions and consent/seed sidecars follow
+their center's admission. LanceDB indexes, provider runtime, process locks,
+PID/liveness files and checkout staging are regenerated; legacy scratch and
+root activity logs are dropped. Arbitrary owner filenames remain verbatim.
+Unclassified root files refuse. Classification also drives output exclusion and
+source cleanup, so regenerated/dropped files cannot silently survive the move.
+
+Task 6 remains unchecked pending the lead's real-data census, real-mount
+rehearsal and CI shards. Synthetic proof cannot assert the remaining real-data
+refusal counts without that rerun.
 
 ## D7. Guard and deletions
 
@@ -504,8 +738,11 @@ The migration classifies every table of every shared root database:
 - **Owner box:** every table whose rows belong to one owner, split by owner
   principal or center id.
 
-The census refuses only on an unknown table, or an owner-table row that
-cannot be attributed. Shared tables are not split.
+The census reports router, broker, owner, published, dropped and regenerated
+classes with per-table counts. Dropped legacy state and never-admitted center
+state are excluded from the move; platform leases, fences and accounting are
+regenerated. Unknown tables, conflicting ownership and any item outside those
+explicit classes refuse. Shared tables are not split.
 
 ## D9. Router state, the per-box secret and the socket (review gaps 2, 3)
 
@@ -631,3 +868,15 @@ cannot be attributed. Shared tables are not split.
   `removed_locally_revoke_failed` and a durable provider recovery message.
   Since the token is erased, recovery is manual revocation at the provider,
   named from directory data; retrying removal retains that outcome.
+
+## Founder decisions (2026-10-17)
+
+- **Fresh backup for the final rehearsal: approved.** The lead pulls a fresh backup of today's production data read-only onto its own machine, never shown to an external model, runs the final rehearsal network-less, and reports only redacted pass/fail and counts.
+- **Unattributable legacy data is dropped**, and the cutover report lists it with counts. That covers pre-ownership runs (Aug 5–19), never-admitted centers, unknown-center runs, orphaned usage records and unknown-directory files. Nothing that has an attributable owner is dropped silently.
+- **The cutover's user costs are accepted.**
+  - Every account reconnects a model source; CLI connections are retired.
+  - Keys pasted into chat are no longer accepted (tap-to-connect).
+  - `/mcp/hooks/` integrations re-point to `/hooks/inbound/`.
+  - Local image descriptions are dropped.
+  - Billing status no longer shows usage figures.
+- **The cutover deploy goes ahead when every gate passes**: a clean census, the real-data rehearsal passing on a fresh backup, the lead's receipt on every slice, green CI, and the report delivered. The founder's condition: "Just make sure the architecture isn't sacrificed on review rounds or hard parts." No weakened shape, compatibility path or skipped gate gets a slice through.

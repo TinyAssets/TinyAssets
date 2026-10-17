@@ -2354,3 +2354,518 @@ Validation receipts: `C:/Users/Jonathan/AppData/Local/Temp/s6a1h-validation-jjgl
 Protected slice-6 files, production, host Git configuration and remote Git state
 are untouched. No dispatch, push, merge, rebase, switch or amend. Independent
 review and deployment remain with the lead under this local-only handoff.
+
+## Slice 6 census and transaction follow-up (2026-10-17)
+
+Local census commit: `f6b6e3b8f1a`; transaction commit: `69d53399b4e`;
+recovery and process-serving proof: `986e7bca0f4`.
+The final transaction replaces P2b inside the
+same module; D6 records the six classes and the journaled build/publish protocol.
+Shared stores, explicit plans, broker custody, box records, hook digests and the
+empty wake index are seeded before publication. The final correction translates
+legacy principal tombstones into the broker's digest-only schema and changes
+restore's deletion-frontier read to the final custody store; it does not retain
+an old-metadata fallback. Owner database rows are streamed
+with census-key verification; extracted/seeded SQLite databases and file copies
+are verified before host-tree removal. Interrupted runs resume against the same
+paired snapshot. Completed markers are idempotent; intermediate markers refuse.
+
+The old credential copy, CLI-home copy and second activity-conversion pass are
+deleted. Nine whole tests exclusively exercising those paths were retired;
+retained copy, inode, snapshot, workflow-retirement and restore guards remain.
+At that head restore required an unchanged cutover: exact source, shared
+output and owner-output manifests had to match before returning to owner-split.
+The priority follow-up below adds explicit owner-write loss while preserving
+identity, billing, source and receipt guards.
+
+Validation receipts are outside the repository under `%TEMP%/ta-s6-validation/`.
+The requested migration/layout/census/backup/restore/deploy/owner/broker patterns
+and every structural GUARDS key ran through Linux oracle. The initial selection
+had 2,604 passes, 123 failures and nine root-only skips: 121 shell tests saw CRLF
+in the edited deploy script, one case required root, and one storage inventory
+needed the three new migration filenames. The shell is restored to LF and the
+inventory is registered. The complete deploy/structural rerun passed 1,465 with
+no skips. Root validation passed 117 with one opposite-venue skip; the original
+unprivileged run covers that case. Root-only skips are not credited as passes.
+The final cutover and CI venue selection passed 171 without skips, including
+custody tombstone compatibility and recovery of interrupted JSON writes,
+SQLite sidecars and partial rsync output. Two real owner apps read all four
+migrated centers' history and pending requests through production routes; a
+test probe exercises real pause/resume and plan reads over the broker relay.
+The rig substitutes the mount and broker peer UID, not application behavior.
+The new root-required
+cutover file is registered with the existing coordinator, preserving selection
+and receipt requirements. The nonroot backup-refusal case skipped in the root
+run passed in the original unprivileged run.
+
+The hygiene gate against `conv/c6-owner-daemon-s5` exited 0 at `986e7bca0f4`:
+23 tests added, nine whole tests retired, no retained assertion reductions.
+Its body declares `Registry row(s): S8` and the retired P2b paths. The nine
+reported findings are those declared whole-test removals. One nonblocking note
+identifies the process launcher's 50 ms bounded socket-readiness wait.
+Receipts: `complete-final.log`, `complete-final.xml` and `hygiene-code.log`.
+
+Ruff passes on every changed Python file. Whole-repository Ruff reports 33
+findings in seven files whose contents are identical to the initial head;
+none is in this change. No skip, xfail, quarantine or old-path guard was added,
+removed or relaxed. No production backup/data was accessed; the remaining
+production-archive reference was removed from an older design note. No agent,
+host git configuration change, new worktree, push, merge or deployment was used.
+
+Task 6 stayed unchecked at that head. The priority follow-up below records
+the switch disposition and restore-after-serving proof; the lead's real-data
+census, real-mount rehearsal and CI shards remain outstanding.
+
+
+## Slice 6 priority pass (2026-10-17)
+
+Only the supplied redacted counts and synthetic fixtures were used. No data
+archive or production tree was accessed. The census now distinguishes retired
+public-reader/platform actors from unknown named principals: the former have
+no account and still follow real keys; the latter continue to refuse, as do
+contradictory keys. No owner is supplied by default.
+
+| Table / class | Attribution and disposition, derived from schemas/writers |
+| --- | --- |
+| `served_provider_budget_reservations` | `binding_id` to `provider_work_bindings`; that schema has no run key. Missing/unowned binding is a counted drop. |
+| `provider_work_bindings` | `owner_user_id` and `universe_id` admission; no owner-bearing secondary key in its writer. |
+| `authenticated_connections` | Authenticated `owner`; `connection_id` is a one-way correlation hash, not an owner-session foreign key (`connected_agents._schema`, `observe_mcp`). |
+| `owner_devices` | Authenticated `owner_user_id`; `device_id` is a registration UUID, with no session link. Tokens may move between owners, so a token hash cannot infer ownership (`storage/owner_devices.py`). |
+| `branch_versions`, `branch_schedules` | Publisher/owner actor and center, plus `branch_def_id` to `branch_definitions`. |
+| `branch_definitions`, `goals` | `author`; `universe:<center>` resolves through broker admission. Public rows retain their explicit publication rule; unowned private rows drop. A fork's parent is not its owner's identity. |
+| `agent_conversion_receipts` | `actor_id`, then `stage_id` to `agent_import_stages`. |
+| `agent_conversion_receipt_links` (`receipt_links`) | `actor_id`, `stage_id`, `receipt_digest` to the stage/receipt. |
+| `agent_conversion_receipt_owners` (`receipt_owners`) | `actor_id`, `receipt_digest` to the receipt. |
+| `agent_import_stages` | `actor_id`, or `published_definition_id` to the created definition's `author_id`; no run/center column in historical DDL. |
+| `agent_interchange_idempotency` | `actor_id`; operation-qualified `resource_id`: `stage_import` -> stage, `convert_export` -> receipt, `publish_stage` -> definition author. |
+| `owner_ui_prefs` | Authenticated `owner_user_id`; viewport, agent and preference names are not ownership keys. |
+| Checkpoints / writes | `thread_id` to runs; multiple runs must all agree on the same owner. A mixed-owner thread refuses. |
+| `outside_switch` | Router singleton: `set_enabled` accepts no owner and `admit` reads `id=1` before any owner's grant. Never copied to each box. |
+
+The historical interchange DDL and writers were read from the parent of the
+file-based-agent deletion commit in git; no data was used to infer joins.
+All reviewed owner classes drop only when the documented keys resolve to no
+account; unknown named principals and conflicting bindings still refuse.
+The lead's next census, not these synthetic inputs, establishes the remaining
+real-data refusal count.
+
+File classification is creator-backed (`storage_accounting`, center layout,
+LanceDB writers and sidecar consumers):
+
+| File class | Treatment |
+| --- | --- |
+| Admitted center contents, `.agent-sessions/<center>/`, consent/seed sidecars | Owner by admitted center; content copied verbatim. Socket files classify as regenerated (the existing inode preflight still refuses live special inodes); consent databases remain owner data. |
+| `runs/<run>.*`, archived and per-run directories | Owner through the run; legacy/unowned runs drop; conflicting ownership refuses. |
+| Root/per-center `lancedb`, provider `.runtime`, known process locks/PIDs/liveness, transient checkout staging | Regenerated; excluded from owner outputs and removed from the source after verified publication. Router `owner-sessions.db` is still extracted as a database before runtime classification. |
+| Legacy scratch, root activity logs, never-admitted center/session trees, retired CLI homes, stale database copy | Counted drops. CLI homes use permanent UID -> account for loss reporting. |
+| Center-local vault/credential entries | Dropped; census never opens the local vault document and migration never copies it into an owner output. |
+| Platform custody, broker policy-deletion markers/fence, shared router markers and published stores | Stay in the named shared class; broker custody is UID 1002, directories 0700/files 0600. |
+| Unknown entries | Refuse, with fully masked patterns; no catch-all deletion or assumed owner. |
+
+`file_patterns` groups counts by class with variable names replaced by
+`<center>`, `<owner>`, `<id>` and `<file>`. `losses` groups dropped row-table
+classes and masked file classes by pseudonymous account, with a separate
+unattributed bucket. `credentials` retains each account's carried HTTP and
+dropped CLI counts. The first sorted JSON field, `account_model_source_summary`,
+says **every account reconnects a model source** when the carry count is zero.
+The supplied redacted input had zero carried sources for all six accounts and
+322 dropped CLI records on one; it is not presented as a new census result.
+The reconnect destination is the shared-door model-connect and model-use
+confirmation path.
+
+`credentials_outside_broker_custody` previously counted one file for each
+center-local `.credential-vault.json`, not slots or accounts. The reported
+three are now the explicit `credential_custody.outside_broker_files_dropped`
+class. The synthetic malformed-local-vault fixture proves no JSON parsing is
+needed. Existing validated HTTP slots remain under
+`.platform/credential-vaults/` with `.broker/credential-custody.db` metadata.
+The final broker identity schema (including secret/revocation tables and
+permanent-identity triggers) is initialized before the restore receipt is sealed.
+
+Restore proof uses two separate owner-daemon processes over their real HTTP
+sockets. Each of four centers reads its migrated history/request, then writes
+new chat history and a pending request through authenticated test probes calling
+the production storage operations, reads them through production app routes,
+and exercises real pause/resume and broker plan reads. After processes stop,
+the real tar/SQLite/restore shell returns every pre-cutover file byte-for-byte
+and removes both active owner-box trees. This proves storage/serving/restore;
+it does not claim model inference, real quota mounts or native sandbox isolation.
+
+`CUTOVER_ACCEPT_OWNER_WRITE_LOSS=1` explicitly accepts losing post-cutover owner
+writes. Default restore refusals are retained. The opt-in permits only owner
+output changes, ingress-secret contents and the derived next-wake index;
+logical identity schema/rows and every other shared file remain fenced. Eight
+mutation cases retain refusal for identity, admission, deletion, billing,
+destruction, receipt permissions, source bytes and unexpected owner trees.
+The census, D6 and cutover runbook state that restored owner-split data loses
+post-cutover chats, pending requests, pause and other owner changes.
+
+Implementation commit: `04918da8a6a`. Validation receipts are outside the
+repository at `%TEMP%/ta-s6-priority-validation/`. Task 6 stays unchecked:
+the lead owns the real-data census, real-mount rehearsal, CI shards and independent
+review. No agent dispatch, new worktree, git configuration change, branch change,
+push, merge or deployment was performed.
+
+
+Priority validation:
+- Final touched/root/census/restore and root control/destruction selection:
+  **66 passed, zero skipped**, `root-verified.log` / `root-verified.xml`.
+- Requested migration/layout/census/backup/restore/deploy/owner/broker patterns
+  plus every structural guard: **2,732 passed, one root-venue failure and four
+  root-venue skips**, `focused-user.log` / `focused-user.xml`. The failed kernel
+  control case and both skipped owner-destruction cases passed in the 66-test
+  root run. The remaining backup-root and special-bit copy cases passed **2/2** under
+  root (`root-remaining.log` / `.xml`); every original failure/skip now has a
+  passing execution in its required venue. No skip is credited as a pass.
+- Structural/census/restore-authority recheck at committed implementation
+  HEAD: **992 passed, zero skipped**, `guards-head.log` / `guards-head.xml`.
+  This includes every `GUARDS` key after the final broker schema/mode fix.
+- Hygiene against `conv/c6-owner-daemon-s5` at `04918da8a6a`: **exit 0**, 29 tests
+  added, nine declared P2b whole-test removals, no retained assertion reductions.
+  The only nonblocking note remains the existing 50 ms socket-readiness wait.
+- Changed-file Ruff, strict OpenSpec validation and `git diff --check` pass.
+
+Intermediate restore runs caught two actual serving changes (wake reporting and
+first-lookup ingress secret creation), followed by a fixture SQLite-handle race
+between snapshot and source-manifest creation. The final implementation fences
+all non-ephemeral shared state. Synthetic seed connections close explicitly;
+cyclic initializer handles are collected before the stopped-writer snapshot,
+and the proof additionally asserts that snapshot bytes match the journal source
+manifest. No assertion, old-path probe, skip or quarantine was weakened.
+
+The final audit-only commit repeats the same hygiene command against its own
+HEAD; `hygiene-final.log` is the final exit-code receipt. The body retains
+`Registry row(s): S8` and the existing P2b `Test-Removal: retired -- ...` line.
+
+
+## Slice 6 reason-coded census (2026-10-17)
+
+This pass uses only the lead's redacted round-3 counts and synthetic fixtures.
+No production data or archive was read. The prior priority notes describe
+the old refusal policy; this pass replaces it with the founder's explicit
+reason-based dispositions. The redacted 665 rows and 52 files are input counts,
+not a claim that a new real-data census has run.
+
+Every unresolved reviewed owner row now has exactly one per-table `reasons`
+count, with precedence `conflicting_owners`, `orphan_reference`,
+`unadmitted_principal`, `unknown_center`, `no_owner_key`. Only conflicting owners
+remain unattributed/refused; the other four are counted drops. Missing parents
+and parent failures propagate through budget bindings, definitions, stages,
+receipts and runs. Candidate owners survive failures in other keys so an orphan
+cannot hide conflict. Retired non-account actors may follow an actual parent;
+a named unknown actor is never reassigned to that parent's owner. A center in
+the registry without admission is `unadmitted_principal`; one absent from the
+registry and admission map is `unknown_center`. A permanent identity with no
+admission or binding does not by itself confer row ownership.
+
+The old table-specific drop flag is removed. Structural admission, unknown
+schema, plan and custody gates remain. A foreign-key violation in a dropped
+row follows its counted disposition; the same violation in a retained row
+still refuses. A conflicting run's transcript also refuses, rather than losing
+the conflict when converting row evidence into file ownership.
+
+`file_pattern_kinds` counts each masked pattern by placement and kind:
+`admitted_center`, `unadmitted_center`, `unknown_dir`, `account_hash`,
+`broker_account`, `platform_store`, `root_file`. Registered shared stores keep
+their creator-backed rules; other unknown and never-admitted directories drop.
+A hash alone does not select an owner. Root files and unknown account/broker/
+platform files refuse with their kind. Identity and plan DBs use the existing
+reviewed table extraction; policy deletion markers and fence JSON stay broker
+state, router release markers stay router state, and custody/refresh locks
+regenerate. These paths come from storage accounting, broker process/policy,
+credential-vault and credential-refresh code. Browser-vault keys are deliberately
+outside this data root; an arbitrary key file in it is unclassified and refuses.
+
+`loss_summary` adds pseudonymous per-account reason/description/class/count
+aggregates, including `CLI login state, N files` and `orphaned budget
+reservations, N rows`. Unknown-account losses have their own bucket. No path or
+identity lists are emitted. Existing masked-pattern and table totals remain.
+Synthetic cases assert all five reasons and seven file kinds, precedence,
+transitive conflict/missing-parent handling, actual database extraction,
+retained foreign-key refusal, unchanged input bytes and report redaction.
+
+D6 and the owner-isolation delta spec are updated. Task 6 remains unchecked;
+the lead's real-data census, real-mount rehearsal and CI acceptance remain.
+No agent dispatch, new worktree, host git configuration change, branch change,
+push, merge or deployment was performed. Validation receipts are outside the
+repository at `%TEMP%/ta-s6-reason-validation/`.
+
+
+Reason-pass validation:
+- Requested census/migration/layout/restore patterns, touched-module consumers
+  and every structural `GUARDS` key: 54 files, 1,369 selected cases.
+  The unprivileged oracle passed 1,342; its two broker-directory ownership
+  failures, 24 root-fixture errors and one existing special-bit root skip all
+  have passing root executions. Root receipts are **25 passed** and **60 passed**,
+  both with zero skips. XML reconciliation (`coverage.json`) confirms every
+  selected case passed in its required Linux venue; zero unresolved cases.
+- All 57 synthetic census cases passed on Linux, including all five row reasons,
+  all seven file kinds, foreign-key extraction and retained-conflict refusals.
+- Changed-file Ruff, strict OpenSpec validation and `git diff --check` pass.
+  Whole-repository Ruff still reports 33 findings in seven files byte-identical
+  to the starting head; `ruff-all.json` records them.
+- Post-commit hygiene runs against `conv/c6-owner-daemon-s5` with
+  `Registry row(s): S8` and the unchanged existing P2b retirement declaration.
+  The command's receipt is `hygiene-final.log` beside the XML receipts.
+No test skip, xfail, quarantine or assertion reduction was introduced. Tests
+whose expected disposition changed now assert the exact reason, counted drop
+and unchanged carried rows, in addition to source immutability/redaction.
+
+
+## Slice 6 archive-harness escalation (2026-10-17; synthetic acceptance passed)
+
+The synthetic root venue passes every rehearsal step. The combined harness,
+admission, migration and census run completed **120 passed, zero skips**:
+
+`python scripts/linux_oracle.py --as-root --docker-engine -- -q --no-header -p no:cacheprovider tests/test_box_move_rehearsal.py tests/test_box_admission.py tests/test_box_layout_migration.py tests/test_owner_cutover_census.py`
+
+For the harness alone:
+`python scripts/linux_oracle.py --as-root --docker-engine -- -q --no-header -p no:cacheprovider tests/test_box_move_rehearsal.py`.
+Unprivileged CI retains the documented root-only skip for the full XFS test.
+Receipts live outside the repository in
+`%TEMP%/ta-s6-escalation-validation/` (`rehearsal.log`, `rehearsal.xml`).
+
+Final validation selected 74 files: touched tests, the requested rehearsal,
+census, migration and deploy patterns, all 35 structural guard files, ten
+affected heavy files, and provider/reconnect/owner-egress consumers. The
+unprivileged oracle recorded **2,412 passed, two failed, two skipped**
+(`final-selection.log` / `.xml`; exact selection in `final-selection.json`).
+The two migration failures simulate effective root while the process still
+owns its temporary directories as the unprivileged user; the broker ownership
+guard correctly refuses that mismatch. Both pass under actual root. The
+special-bit copy and XFS harness cases use their existing root-only skips and
+also pass under actual root. Node-by-node XML reconciliation in
+`coverage-final.json` confirms **2,416 distinct cases passed**, with no
+unresolved cases. No failure or skip is credited as a pass. All **35 structural
+guard files passed, 960 cases**, without skips.
+
+Changed-file Ruff and `git diff --check` pass. Repository-wide Ruff records
+33 pre-existing findings in seven files verified unchanged from the starting
+head (`ruff-all.json`). Post-commit hygiene passes against
+`conv/c6-owner-daemon-s5` with `Registry row(s): S8` and the unchanged existing
+`Test-Removal: retired --` declaration in `hygiene-body.txt`. The product and
+harness commit is `b96419aba6c`; this validation receipt changes prose only.
+
+The previous interruption failed because the migration Python process is PID 1
+in its container namespace: a self-sent SIGKILL is ignored there. A minimal
+network-less container reproduced PID 1 surviving that signal while its child
+returned -9. The profiler has been deleted. The shared apply implementation
+now calls `os._exit(137)` at the exact boundary named by `CUTOVER_CRASH_AT`,
+otherwise remaining inert. The harness separately restores, crashes and resumes
+at `after_owner_tree:1` and `after_seeding`, comparing each result against the
+uninterrupted shared and owner manifests. Both comparisons pass.
+
+Ordinary deploy and restore entry points reject the fault input before host
+actions. Every migration container overrides even an image-baked fault with an
+empty value; only the explicit disposable runner may forward a nonempty one.
+That runner checks the generated `ta-s6-<nonce>` volume family and the actual
+store/backup mountpoints. Execution tests cover deploy/restore refusal,
+arbitrary-path refusal and the empty container override. The harness still
+calls deploy's exact container builder, preserving capabilities, device mapping,
+read-only preflight/census/verify, writable apply, tmpfs, network denial and
+2 GiB memory/swap. Apply owns the final verified marker.
+
+Serving now uses the real broker admission client, lifecycle manager, router,
+owner apps and kernel UID peers. The fixture uses full runtime schemas and the
+production image's module path. Reconnect uncovered and fixed three actual
+cutover gaps: host admission now reads the canonical broker custody tombstone;
+seeding creates the broker-writable custody directory even without retained
+credentials; local provider definitions stay private to their owner instead of
+attempting the retired broker-reader group assignment. Descriptor publication
+already uses the broker channel. Deletion refusal tests retain missing-state,
+normal/destruction and post-binding checks, plus a stale old-table discriminator.
+
+Reconnect confirms model use through the shared model-connect door on a
+shared-store clone, preserving the original shared-authority restore fence.
+Its owner writes remain on the migrated XFS trees. Both paired restores use the
+actual restore script and GNU tar byte comparison against the synthetic source;
+the second explicitly accepts owner-write loss after serving write readback.
+The process smoke does not replace separate native-sandbox isolation acceptance.
+
+The report is one fixed step name and PASS/FAIL per line, followed only by
+nonnegative integer counters. The successful synthetic report is:
+
+```text
+setup PASS mounts=1
+preflight PASS
+census PASS owners=2 centers=4 rows=27
+apply PASS
+verify PASS manifests=3
+restore_before_write PASS comparisons=1
+crash_resume PASS interruptions=2 comparisons=2
+serving PASS owners=2 centers=4 history=4 history_turns=4 pending=4 pending_saved=4 controls=8 plans=8 writes=4 reconnect=2
+restore_after_write PASS comparisons=1
+cleanup PASS
+```
+
+Tests assert every step and count, scan for identifiers, paths and content,
+and verify that failure diagnostics never enter the report. Cleanup is reported
+on failure as well as success. The archive has two owners with two centers each,
+all six census classes and all four non-conflicting dropped reasons.
+
+Lead command, from the same head with its image already built:
+`python scripts/rehearse_box_move.py --archive <absolute-tinyassets-data-YYYY-MM-DDTHH-MM-SSZ.tar.gz> --image tinyassets-c6-rehearsal:s6-<head>`.
+The harness does not build or pull. Development accessed generated synthetic
+archives only. Task 6 remains open for the lead's separate acceptance; this pass
+has no deployment, push, merge, branch change, new worktree or delegated work.
+
+## Slice 6 round-5 census corrections (2026-10-17)
+
+Input is the lead's redacted counts-only result at `edfaab53576`: 16 file
+refusals (six root files, five platform-store files, two broker four-component
+paths, one broker three-component path, one platform two-component path and
+one other four-component path). This pass reads code and generated synthetic
+fixtures only. It does not rerun a census against real data or claim these
+16 refusals are cleared. The rehearsal harness and its outstanding acceptance
+are unchanged.
+
+Center wins in the shared row-evidence resolver. It tracks admitted center
+owners separately from principal-only candidates and carries that evidence
+through reviewed parent joins. An admitted center clears unadmitted-principal,
+unknown-center and ownerless-parent evidence. A competing admitted owner still
+refuses, and a missing parent still drops with `orphan_reference`. A named
+unknown principal cannot select an owner without an admitted center. Versions
+and schedules whose definition is gone are counted on the candidate owner's
+`workflow history` line, with separate `versions` and `schedules` counts.
+Unresolved usage rows still drop as `usage reservation history` and
+`provider bindings`; usage rows with an admitted center follow the same
+center-wins rule.
+
+| Code-backed file family | Census disposition |
+| --- | --- |
+| Broker identity, plans, policy, outbound, custody, operations and next-wake SQLite names | Existing real databases retain table-by-table review; exact shared names also classify empty files as broker. |
+| SQLite WAL/SHM/journal files at reviewed store locations, including detached sidecars and hashed policy-account directories | Regenerated; the read-only SQLite snapshot still resolves committed rows before classification. |
+| Legacy `<owner-sha256>.key` under the outbound ledger's `browser-vault` directory, at root or under `.broker` | Broker, matching `browser_vault._owner_key`; arbitrary key locations/names still refuse. |
+| Broker `fence.json`, policy `.deleted`, layout and cutover markers | Broker. |
+| `platform-expected-instance.json`, `release-state.json`, billing verification marker | Router. |
+| Custody/refresh locks, recovery PID, liveness/tree locks, runtime status and per-consumer heartbeat files | Regenerated. |
+| Interrupted layout/cutover, broker fence and vault atomic-publication files at their writer's locations | Regenerated. |
+| Existing retired CLI homes/local vaults, stale database copy, unknown directories and never-admitted centers | Existing counted drops retained. |
+| Any remaining unidentified platform/root/account file, including a purported platform vault index without a code-backed filename/location | Refused with its masked filename pattern; no extension-wide custody assumption. |
+
+Evidence comes from `CENSUS_RULES`, `broker/process.py`, `broker/owner_reads.py`,
+`broker/owner_identities.py`, `broker/policy.py`, `broker/browser_vault.py`,
+`broker/fence.py`, `broker/vault.py`, `broker/credential_refresh.py`,
+`storage_layout.py`, `platform_runtime_provenance.py`, `process_liveness.py`,
+`owner_lease.py`, `singleton_lock.py`, and the heartbeat writer in
+`control_plane/tick.py`. Unknown basenames print only `<file>.<ext>` (or
+`<file>` without a conventional extension), while known code-constant filenames
+may print verbatim. Directory identifiers remain masked. The next authorized
+counts-only census can therefore identify a remaining file family without
+exposing a basename or opening file contents for diagnosis.
+
+Synthetic coverage proves center wins directly, through a definition and into
+run dependents; a present ownerless/unknown-center definition cannot drop a
+version in an admitted center; missing definitions still drop and report
+workflow history. Unresolved usage drops and their descriptions remain exact.
+Each newly classified file family has a synthetic case, and unknown root,
+broker and platform files prove exact masked patterns and refusal. Existing
+cross-owner, missing-parent, source-immutability and redaction assertions remain.
+D6 and the owner-isolation delta spec describe the corrected rule.
+
+Validation receipts are outside the repository at
+`%TEMP%/ta-s6-round5-validation/`. Changed-file Ruff and `git diff --check`
+pass. Whole-repository Ruff has 33 existing findings in seven files verified
+unchanged from the starting head. No sub-agent, new worktree, branch change,
+host git configuration change, push, merge or deployment was used.
+
+Round-5 validation:
+- Requested census/migration patterns, touched-module cutover consumers and
+  every `GUARDS` key selected **46 files**. The unprivileged oracle recorded
+  **1,153 passed**, two broker-directory ownership failures, 27 root-fixture
+  errors and one existing root-only special-bit skip. Every nonpassing case
+  passed in the root run; none is waived or credited from a skip.
+- Final root census/layout/cutover selection: **137 passed, zero skips**,
+  `root-final.log` / `root-final.xml`. This includes all **84 census cases**
+  after the last fixture correction. XML reconciliation in `coverage.json`
+  confirms **1,184 distinct cases passed** across their required Linux venues,
+  with zero unresolved cases. The earlier root receipt is 136 passes before
+  adding the root-ledger legacy-key case.
+- All **35 structural guard files passed, 900 cases** in `user.xml`.
+- Changed-file Ruff, strict OpenSpec validation and `git diff --check` pass.
+  `ruff-all.json` records the 33 pre-existing repository-wide findings.
+- Post-commit hygiene uses `conv/c6-owner-daemon-s5` through `HEAD`, with
+  `Registry row(s): S8` and the unchanged existing `Test-Removal: retired --`
+  declaration in `hygiene-body.txt`; its receipt is `hygiene-final.log`.
+
+## Slice 6 round-6 census corrections (2026-10-17)
+
+Only the supplied redacted counts/platform names and synthetic fixtures were
+used. The synthetic census with all 16 identified files is `ready=True`.
+The lead must establish the real-data result separately; no production tree
+or backup was read, extracted or opened in this pass.
+
+Versions use the admitted definition author, otherwise their admitted
+publisher, otherwise drop. An admitted publisher keeps the version's own
+snapshot even without the definition. Schedules follow the definition or a
+version, including the actual schema's `branch_def_id` join to version rows.
+Competing admitted owners still refuse. Synthetic extraction asserts each
+owner's retained workflow-history counts, both author and publisher paths,
+verbatim snapshots, and the single unowned version drop. Dropped workflow
+records retain `workflow history` version/schedule counts on their candidate
+account line or the explicit unowned bucket.
+
+| Identified files | Disposition |
+| --- | --- |
+| Two broker outbound-proxy account audit JSONL files; architecture-signing JSON | Broker custody, private ownership/modes, no box copies. |
+| Three door handshake files | Private router custody, no box copies; names and contents absent from census reports. |
+| Engine MCP route table; reset barrier; run-file blob-root lock | Regenerated. |
+| Stale backup SHM and WAL | Counted drops with the stale backup; not opened for database inspection. |
+| Retired executor configuration; external-agent refresh marker | Two counted `CLI login state` file drops. |
+| Run-file custody body | Follows its `run_file_objects` row via `storage_key + '.body'`; moved verbatim or counted as a dropped upload. Object attribution also resolves the operation parent. |
+| Scheduled-fire JSONL | Split by admitted center into each owner's root `.scheduler_fires.jsonl`; unknown/non-admitted centers count as dropped entries. |
+| Root activity ledger | Split by admitted actor, falling back to admitted target, into each owner's root `ledger.json`; unresolved entries count as drops. |
+
+The root ledger path matches `api.branches._append_global_ledger` and
+`api.engine_helpers._append_ledger`. The scheduler is retired with no current
+reader; its original relative path is retained in each owner's box root.
+Reports describe these as `scheduled-run history, N entries` and
+`activity ledger, N entries`, with pseudonymous per-owner counts and explicit
+unowned drops. They also list the five accepted user costs: model reconnect
+and retired CLI connections, tap-to-connect keys, hook URL changes, removed
+local image descriptions and billing usage figures.
+
+Apply rebuilds both unpublished splits on resume, reads back every owner's
+entry count and content, and checks retained plus dropped equals the source
+total. Synthetic mutation probes refuse changed source, owner counts, drop
+counts or output. A real fork exits 137 via `CUTOVER_CRASH_AT` at
+`after_scheduled_history_split`, proving source preservation between splits,
+resume without duplication, output ownership, broker/router custody, cleanup
+after verification and completed-apply idempotence. Both retained and dropped
+custody-body cases use that crash proof. The original source files are removed
+only during verified publication. D6 and the owner-isolation delta spec match.
+
+Validation receipts are outside the repository at
+`%TEMP%/ta-s6-round6-validation/`. No sub-agent, new worktree, branch/configuration
+change, push, merge or deployment was used. The user's local-only scope leaves
+the lead's production census, independent review and live acceptance outstanding.
+
+Round-6 validation:
+- Requested census/migration/restore patterns, touched tests, all 35 structural
+  guard files, the three affected heavy files and the deploy transaction
+  consumer ran through the Linux oracle. The unprivileged selection recorded
+  **1,690 passed, two failed, 29 root-fixture errors and one existing root-only
+  skip**. All 32 nonpassing cases passed under actual root; none is waived or
+  credited from a skip. `user.log` / `user.xml` preserve the original evidence.
+- Final root census/layout/cutover selection: **146 passed, zero skips**,
+  `root-verified.log` / `.xml`. The final history fixture explicitly distinguishes
+  a registered never-admitted center from an unknown center; its focused
+  crash/classification/reconciliation rerun passed **8/8**, `history-final.*`.
+- Final 35 structural guard files plus census: **1,051 passed, zero skips**,
+  comprising **960 guard cases and 91 census cases**, `guards-verified.*`.
+- The exact root Docker-engine harness command passed **6/6**, zero skips,
+  `harness-verified.*`. Every one of its ten rehearsal steps passed, including
+  both manifest comparisons after crashes, serving, reconnect confirmation,
+  both real paired restores and report privacy.
+- `coverage.json` reconciles **1,728 distinct passing cases**, zero unresolved
+  cases, across the required Linux venues. No test was skipped, quarantined or
+  weakened to obtain those passes. The two old publisher-disposition probes
+  now assert the founder's exact admitted-author/publisher behavior and retain
+  their conflict and reason/count checks.
+- Changed-file Ruff, strict OpenSpec validation and `git diff --check` pass.
+  Whole-repository Ruff retains **33 findings in seven files** verified unchanged
+  from the starting head; `ruff-all.json` records them.
+- Post-commit hygiene uses `conv/c6-owner-daemon-s5` through `HEAD`, with
+  `Registry row(s): S8` and the unchanged existing `Test-Removal: retired --`
+  line copied into the external `hygiene-body.txt`; `hygiene-final.log` retains
+  the command's final result.

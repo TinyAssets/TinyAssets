@@ -181,11 +181,10 @@ def _write(universe_id: str, rows: list[dict[str, Any]]) -> None:
     tmp = Path(tmp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            from tinyassets.boxes.layout import BROKER_METADATA_FILE_MODE, BROKER_READ_GID
-
-            # The broker (gid 1102 reader) resolves definitions; nobody else reads them.
-            os.fchown(handle.fileno(), -1, BROKER_READ_GID)
-            os.fchmod(handle.fileno(), BROKER_METADATA_FILE_MODE)
+            # The broker receives its descriptor through _publish_source.
+            # This local copy belongs only to the owner, whose process has no
+            # authority to assign the retired shared broker-reader group.
+            os.fchmod(handle.fileno(), 0o600)
             handle.write(json.dumps(rows, indent=2, sort_keys=True))
             handle.flush()
             os.fsync(handle.fileno())
