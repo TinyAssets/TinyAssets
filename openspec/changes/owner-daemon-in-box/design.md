@@ -449,7 +449,13 @@ cutover. The `--archive` rehearsal on the private production copy must:
 ## D7. Guard and deletions
 
 - Guard test: the router package imports no owner store module and opens no
-  path under `data_dir()` other than its own shared stores.
+  path under `data_dir()` other than its own shared stores. The D7 AST scan in
+  `tests/test_router_store_guard.py` permits runtime-mode predicates only at
+  the 29 reviewed file/function role boundaries, each with its reason. It
+  resolves import aliases, captured runtime/mode variables and delegated
+  broker predicates/store refusals. Branchless owner identity/tool reads and
+  the runtime module's own lifecycle are not alternative execution paths.
+  Temporary module-copy mutation tests prove new forks are detected.
 - Deleted: per-center host dirs; `box_tools` exec bridge; `file_binding`
   owner routing; daemon-side `_call_writer` placement; cross-owner listing
   filters; multi-owner tick loop.

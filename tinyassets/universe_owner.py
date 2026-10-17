@@ -28,7 +28,6 @@ from __future__ import annotations
 import logging
 import sqlite3
 from pathlib import Path
-from typing import Callable, ContextManager
 
 from tinyassets.principals import named_principal
 from tinyassets.usage_policy import AccountType, account_type
@@ -182,81 +181,18 @@ def unattributed_universes(base_path: str | Path) -> list[str]:
 
 def account_type_of(
     base_path: str | Path, owner_id: str,
-    *, db_reader: Callable[[Path], ContextManager[sqlite3.Connection]] | None = None,
 ) -> AccountType:
-    """The account's type: the subscription recorded on its HOME universe.
+    """Read the admitted owner's account type from the broker plan."""
+    from tinyassets.broker.owner_reads import remote
 
-    That is where Stripe checkout already writes it. Normal callers resolve no
-    home, no account, or an unreadable record to FREE. A preflight db_reader
-    preserves missing bindings as FREE but raises on unreadable records.
-    """
-    from tinyassets.owner_runtime import current
-
-    if current() is not None:
-        from tinyassets.broker.owner_reads import remote
-
-        return account_type(remote("plan")["tier"])
-    # read_tier, not get_tier: get_tier creates the database and leaves its
-    # connection to the GC, which on Windows held a handle in the universe dir
-    # and blocked account deletion's rename (#4158).
-    from tinyassets.daemon_server import get_founder_home
-    from tinyassets.storage.subscription_state import read_tier
-
-    owner = named_principal(owner_id)
-    if not owner:
-        return AccountType.FREE
-    if db_reader is not None:
-        from tinyassets.storage import DB_FILENAME
-        from tinyassets.storage.subscription_state import state_db_path
-
-        # Preflight cannot initialize the author server on its read-only mount.
-        # Its reader propagates unreadable records instead of granting a free quota.
-        with db_reader(Path(base_path) / DB_FILENAME) as conn:
-            row = conn.execute(
-                "SELECT universe_id FROM founder_home WHERE founder_sub = ?", (owner,)
-            ).fetchone()
-        home = str(row[0]) if row and row[0] else ""
-        if not home or Path(home).name != home or home.startswith("."):
-            return AccountType.FREE
-        tier_path = state_db_path(Path(base_path) / home)
-        if not tier_path.is_file():
-            return AccountType.FREE
-        with db_reader(tier_path) as conn:
-            row = conn.execute(
-                "SELECT value FROM subscription_meta WHERE key = 'tier'"
-            ).fetchone()
-        return account_type(str(row[0]) if row else "free")
-    try:
-        home = get_founder_home(base_path, owner)
-    except Exception:  # noqa: BLE001 -- an unreadable binding is free, never paid
-        _log.warning("account_type_of: founder_home unreadable; using free", exc_info=True)
-        return AccountType.FREE
-    if not home or Path(home).name != home or home.startswith("."):
-        return AccountType.FREE
-    return account_type(read_tier(Path(base_path) / home))
+    return account_type(remote("plan")["tier"])
 
 
 def account_type_for_universe(universe_dir: str | Path) -> AccountType:
-    """The type of the ACCOUNT that owns this universe; FREE when unattributed.
+    """Read the account type of this process's admitted owner."""
+    from tinyassets.broker.owner_reads import remote
 
-    Never raises: seat admission and the upgrade line call it, and an unreadable
-    owner record must cost the least, not break the run.
-    """
-    from tinyassets.owner_runtime import current
-
-    if current() is not None:
-        from tinyassets.broker.owner_reads import remote
-
-        return account_type(remote("plan")["tier"])
-    path = Path(universe_dir)
-    try:
-        owner = owner_of(path.parent, path.name)
-    except Exception:  # noqa: BLE001 -- unresolvable ownership is free, never paid
-        _log.warning("account_type_for_universe: owner unreadable; using free", exc_info=True)
-        return AccountType.FREE
-    if not owner:
-        return AccountType.FREE
-    return account_type_of(path.parent, owner)
+    return account_type(remote("plan")["tier"])
 
 
 __all__ = [

@@ -395,8 +395,11 @@ class _Connection:
                     "op": "BOX_RESULT", "result": {"principal": self._box_owner}}))
                 return
             if op == "OWNER_POLICY":
-                if doc.get("action") not in {"read", "receipts", "classify", "decide", "proposal"}:
-                    raise rf.FrameError("protected policy changes require the shared door")
+                if doc.get("action") not in {"read", "receipts", "classify", "decide", "proposal",
+                                           "write", "issue_once"}:
+                    raise rf.FrameError("unsupported box policy operation")
+                if doc["action"] in {"write", "issue_once"} and "session_proof" not in doc:
+                    raise rf.FrameError("protected policy changes require shared door proof")
                 doc = {**doc, "principal": self._box_owner}
                 if doc["action"] in {"classify", "decide", "proposal"}:
                     self._box_scope({})

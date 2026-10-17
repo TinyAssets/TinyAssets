@@ -146,7 +146,8 @@ def box(broker, tmp_path, monkeypatch):  # noqa: F811
     box_thread = threading.get_ident()
     actual_refuse = owner_runtime.refuse_router_store
     monkeypatch.setattr(owner_runtime, "refuse_router_store", lambda name: (
-        None if name == "plans" and threading.get_ident() != box_thread else actual_refuse(name)))
+        None if name in {"plans", "owner_sessions"} and threading.get_ident() != box_thread
+        else actual_refuse(name)))
     from tinyassets.broker import supervisor
 
     monkeypatch.setattr(supervisor, "get_supervisor", lambda root: owner_runtime.broker_egress())
@@ -620,3 +621,53 @@ def test_box_channel_refuses_removed_refresh_operations(box, operation):
         connect(channel, "center")
         channel.sendall(rf.control(rf.CONNECTION, {"op": operation}))
         assert rf.read_frame_blocking(channel) is None
+
+
+@pytest.mark.parametrize("proof_kind", ["valid", "foreign", "expired", "missing"])
+def test_protected_policy_write_uses_bound_owner_and_live_door_proof(box, proof_kind):
+    import hashlib
+
+    from tinyassets.broker.client import BrokerClient, BrokerRefused
+
+    root = box.shared / ".runtime"
+    root.mkdir(exist_ok=True)
+    proof = "a" * 64
+    with sqlite3.connect(root / "owner-sessions.db") as db:
+        db.execute("CREATE TABLE owner_sessions (session_hash TEXT PRIMARY KEY, "
+                   "identity_json TEXT, expires_at REAL)")
+        db.execute("INSERT INTO owner_sessions VALUES (?, ?, ?)", (
+            hashlib.sha256(proof.encode()).hexdigest(),
+            json.dumps({"user_id": "other" if proof_kind == "foreign" else "owner"}),
+            0 if proof_kind == "expired" else time.time() + 1000,
+        ))
+    client = BrokerClient(box.runtime.relay, principal="forged", command_center="center",
+                          fence=lambda: (0, ""))
+    before = client.owner_policy("read")
+    fields = {"expected_generation": before["generation"], "policy": before["policy"]}
+    if proof_kind != "missing":
+        fields["session_proof"] = {"session_hash": hashlib.sha256(proof.encode()).hexdigest()}
+    else:
+        fields["cookie"] = proof
+    if proof_kind == "valid":
+        result = client.owner_policy("write", **fields)
+        assert result["generation"] == before["generation"] + 1
+        assert client.owner_policy("read")["generation"] == result["generation"]
+    else:
+        from tinyassets.storage.outbound_connections import ProxyRequestError
+
+        with pytest.raises((BrokerRefused, ProxyRequestError)):
+            client.owner_policy("write", **fields)
+        assert client.owner_policy("read")["generation"] == before["generation"]
+    assert not list(box.root.rglob("owner-sessions.db"))
+
+
+@pytest.mark.role_split
+def test_owner_operation_has_no_host_socket_fallback(tmp_path, monkeypatch):
+    from tinyassets.broker.client import BrokerClient
+
+    monkeypatch.setattr(owner_runtime, "_runtime", None)
+    client = BrokerClient(tmp_path / "host.sock", principal="owner", command_center="center",
+                          fence=lambda: (0, ""))
+    with pytest.raises(RuntimeError, match="owner broker channel is unavailable"):
+        client.owner_policy("read")
+    assert not (tmp_path / "host.sock").exists()

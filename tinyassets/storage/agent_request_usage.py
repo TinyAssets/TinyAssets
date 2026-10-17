@@ -10,10 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import secrets
 import sqlite3
-import threading
 import time
 from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass
@@ -54,44 +52,6 @@ _SCHEMA = (
       agent_binding_id TEXT NOT NULL, binding_revision INTEGER,
       active INTEGER NOT NULL DEFAULT 1)""",
 )
-
-
-# Each parent owns a kernel lock independently of the daemon process. Releasing
-# it fences future work even if SQLite cannot commit the close. Fork children
-# close inherited descriptors without unlocking the parent's open-file lock.
-_PARENT_LEASES = {}
-_PARENT_LEASES_LOCK = threading.RLock()
-
-
-def _after_fork():
-    global _PARENT_LEASES_LOCK
-    for held in _PARENT_LEASES.values():
-        if held.fd is not None:
-            os.close(held.fd)
-    _PARENT_LEASES.clear()
-    _PARENT_LEASES_LOCK = threading.RLock()
-
-
-if hasattr(os, "register_at_fork"):
-    os.register_at_fork(after_in_child=_after_fork)
-
-
-class ParentUsageLease:
-    def __init__(self, base, token, *, broker_readable=False):
-        from tinyassets.process_liveness import hold_liveness
-
-        self.token = token
-        with _PARENT_LEASES_LOCK:
-            _PARENT_LEASES[token] = (hold_liveness(base, token, broker_readable=True)
-                                     if broker_readable else hold_liveness(base, token))
-
-    def close(self):
-        from tinyassets.singleton_lock import release_singleton_lock
-
-        with _PARENT_LEASES_LOCK:
-            held = _PARENT_LEASES.pop(self.token, None)
-            if held is not None:
-                release_singleton_lock(held)
 
 
 def request_digest(grant_id, connection_id, verb, request):
@@ -227,9 +187,12 @@ class UsageStore:
                 if conn.in_transaction:
                     conn.commit()
 
+    def _lease(self, center, usage_id):
+        from tinyassets.owner_channel import UsageLease
+
+        return UsageLease(center, usage_id)
+
     def create(self, budget):
-        from tinyassets.owner_runtime import current
-        from tinyassets.process_liveness import owner_token
 
         usage_id = secrets.token_hex(16)
         policy = {name: getattr(budget, name) for name in (
@@ -237,22 +200,12 @@ class UsageStore:
             "deadline", "max_tokens", "max_cost_microunits",
         )}
         scope = (budget.owner, budget.universe, usage_id)
-        if current() is not None and self._remote:
-            from tinyassets.owner_channel import UsageLease
-
-            lease = UsageLease(budget.universe, usage_id)
-            token, parent_token = lease.owner_token, lease.token
-        else:
-            token = owner_token(self.base, broker_readable=self._remote)
-            parent_token = "request_" + usage_id
-            lease = ParentUsageLease(self.base, parent_token, broker_readable=self._remote)
+        lease = self._lease(budget.universe, usage_id)
+        token, parent_token = lease.owner_token, lease.token
         try:
-            if self._remote:
-                self._rpc(scope, "create", policy=policy, failures=budget._failures,
-                          attempts=[asdict(a) for a in budget._attempts], closed=budget._closed,
-                          owner_token=token, parent_token=parent_token)
-            else:
-                self._insert(scope, budget, token, parent_token)
+            self._rpc(scope, "create", policy=policy, failures=budget._failures,
+                      attempts=[asdict(a) for a in budget._attempts], closed=budget._closed,
+                      owner_token=token, parent_token=parent_token)
         except BaseException:
             lease.close()
             raise

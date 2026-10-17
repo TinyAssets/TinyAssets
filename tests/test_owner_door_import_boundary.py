@@ -168,6 +168,12 @@ set_founder_home(base, founder_sub="probe_owner", universe_id=home, platform_gen
 from tinyassets.api.graph_reads import read_graph
 from tinyassets.api.status import get_status
 from tinyassets.owner_door import routes  # noqa: F401
+from tinyassets.broker import owner_reads
+# This import-only probe injects the admitted owner's shared plan transport.
+def shared_plan(operation, **args):
+    assert operation == "plan", operation
+    return {"tier": "free", "ends_at": None}
+owner_reads.remote = shared_plan
 with identity_context(Identity(user_id="probe_owner", username="probe_owner",
                                capabilities=["tinyassets.universe.write"])):
     for target, extra in (("pending_requests", {}), ("model_options", {}),

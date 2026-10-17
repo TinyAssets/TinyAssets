@@ -58,13 +58,13 @@ def test_a_signup_with_no_home_gets_one(monkeypatch):
 
 def test_a_free_subject_may_create_a_second_universe(monkeypatch, tmp_path):
     """The removed limit, asserted gone: free tier, one home already, still yes."""
-    from tinyassets.storage.subscription_state import apply_tier_event
+    from tinyassets.broker.owner_reads import Plans
 
     _actor(monkeypatch, "user_01ALREADY")
     _home(monkeypatch, "u-existing")
     udir = tmp_path / "u-existing"
     udir.mkdir(parents=True, exist_ok=True)
-    apply_tier_event(udir, tier="free", event_created=1000.0)
+    Plans(tmp_path).apply("user_01ALREADY", tier="free", event_created=1000.0)
     assert us._universe_birth_refusal() is None
 
 

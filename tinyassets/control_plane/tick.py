@@ -410,15 +410,12 @@ class AssignedQueueConsumer:
 
     def poll_once(self) -> int:
         """Beat for serving universes, automations, and owner continuations."""
-        from tinyassets.owner_runtime import current
-
         try:
             return self._poll_once()
         finally:
-            if current() is not None:
-                from tinyassets.control_plane.next_wake import report
+            from tinyassets.control_plane.next_wake import report
 
-                report(self.base_path)
+            report(self.base_path)
 
     def _poll_once(self) -> int:
 

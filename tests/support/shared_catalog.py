@@ -8,6 +8,8 @@ from tinyassets import commons_catalog as catalog
 
 def install(monkeypatch, published):
     def remote(operation, **args):
+        if operation == "plan":
+            return {"tier": "free", "ends_at": None}
         if operation == "catalog":
             return catalog._list_definitions(published, **args)
         if operation == "definition":

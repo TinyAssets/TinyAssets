@@ -31,6 +31,21 @@ def test_preview_exposes_only_content_and_preserves_split_unicode():
                             b'"tool_calls":[{"arguments":"private"}]}}]}\n\n')) == []
 
 
+@pytest.fixture(autouse=True)
+def admitted_stream_endpoint(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr("tinyassets.owner_runtime.broker_egress",
+                        lambda: SimpleNamespace(socket_path=tmp_path / "broker.sock"))
+
+
+async def _admit(reader, writer):
+    frame = await rf.read_frame(reader)
+    assert frame.control() == {"op": "BOX_CONNECT", "center": "cc"}
+    writer.write(rf.control(rf.CONNECTION, {"op": "BOX_CONNECTED"}))
+    await writer.drain()
+
+
 def test_stream_previews_before_terminal_and_preserves_usage_reference(tmp_path):
     async def scenario():
         release, got_preview = asyncio.Event(), asyncio.Event()
@@ -38,6 +53,7 @@ def test_stream_previews_before_terminal_and_preserves_usage_reference(tmp_path)
         path = tmp_path / 'broker.sock'
 
         async def peer(reader, writer):
+            await _admit(reader, writer)
             try:
                 opened = await rf.read_frame(reader)
                 requests.append(opened.control())
@@ -105,6 +121,7 @@ def test_cancellation_reaches_broker_and_never_reopens(tmp_path):
         path = tmp_path / 'broker.sock'
 
         async def peer(reader, writer):
+            await _admit(reader, writer)
             try:
                 while (frame := await rf.read_frame(reader)) is not None:
                     document = frame.control()
@@ -153,6 +170,7 @@ def test_500_waiting_streams_share_one_socket_without_worker_threads(tmp_path):
         before = {thread.ident for thread in threading.enumerate()}
 
         async def peer(reader, writer):
+            await _admit(reader, writer)
             connections.append(writer)
             try:
                 while len(opened) < 500:

@@ -20,6 +20,13 @@ def published(tmp_path, monkeypatch):
     data = _published.__wrapped__(tmp_path, monkeypatch)
     with _agent_connect(tmp_path) as conn:
         record_creation(conn, universe_id=data["uid"], owner_id=data["owner"])
+    from tinyassets.broker import owner_reads
+
+    plans = owner_reads.Plans(tmp_path)
+    plans.apply(data["owner"], tier="free", event_created=0)
+    remote = owner_reads.remote
+    monkeypatch.setattr(owner_reads, "remote", lambda operation, **args: (
+        plans.read(data["owner"]) if operation == "plan" else remote(operation, **args)))
     return data
 
 
@@ -431,12 +438,9 @@ def test_actual_reservation_or_tier_change_prevents_write(published, monkeypatch
     def reserve(*args, **kwargs):
         value = actual(*args, **kwargs)
         if mutation == "tier":
-            path = published["base"] / published["uid"] / ".subscription_state.db"
-            with sqlite3.connect(path) as conn:
-                conn.execute(
-                    "CREATE TABLE subscription_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL)"
-                )
-                conn.execute("INSERT INTO subscription_meta VALUES ('tier','paid')")
+            from tinyassets.broker.owner_reads import Plans
+
+            Plans(published["base"]).apply(published["owner"], tier="paid", event_created=1)
         else:
             sql = {
                 "expire": "UPDATE pending SET created_at=0 WHERE id=?",
@@ -498,15 +502,12 @@ def test_held_workflow_validation_keeps_nested_dependency_refusal(published):
     assert result["status"] == "requires_decision" and "Nested" in result["reason"], result
 
 
-def test_held_existing_quota_resolvers_never_initialize_and_tier_writer_is_fenced(
+def test_held_existing_quota_resolvers_never_initialize_and_storage_writer_is_fenced(
     published, monkeypatch
 ):
     from tinyassets import daemon_server
 
-    path = published["base"] / published["uid"] / ".subscription_state.db"
-    with sqlite3.connect(path) as conn:
-        conn.execute("CREATE TABLE subscription_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL)")
-        conn.execute("INSERT INTO subscription_meta VALUES ('tier','paid')")
+    path = published["base"] / ".storage_accounting.db"
     enable(published)
     release(published, name="new")
 
@@ -521,7 +522,7 @@ def test_held_existing_quota_resolvers_never_initialize_and_tier_writer_is_fence
         other = sqlite3.connect(path, timeout=0)
         try:
             with pytest.raises(sqlite3.OperationalError, match="locked"):
-                other.execute("UPDATE subscription_meta SET value='free' WHERE key='tier'")
+                other.execute("UPDATE measurements SET dirty=1")
             probes.append(True)
         finally:
             other.close()
@@ -532,7 +533,7 @@ def test_held_existing_quota_resolvers_never_initialize_and_tier_writer_is_fence
     assert result["applied"], result
     assert probes == [True, True]
     with sqlite3.connect(path, timeout=0) as conn:
-        conn.execute("UPDATE subscription_meta SET value='free' WHERE key='tier'")
+        conn.execute("UPDATE measurements SET dirty=1")
 
 
 def test_quota_resolver_aba_result_cannot_overauthorize(published, monkeypatch):

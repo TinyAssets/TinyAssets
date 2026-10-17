@@ -111,6 +111,11 @@ class BrokerClient:
         else:
             sock.connect(os.fspath(self._path))
 
+    def _connect_owner(self, sock):
+        from tinyassets.owner_channel import connect
+
+        connect(sock, self._command_center)
+
     def publish_model_source(self, definition: dict[str, Any]) -> dict[str, Any]:
         """Accept a source and latch its grant in the broker before registration succeeds."""
         from tinyassets.storage.outbound_connections import ProxyRequestError
@@ -122,9 +127,7 @@ class BrokerClient:
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
             try:
-                self._connect(sock)
-                if self._verify_peer is not None and not self._owner_mode():
-                    self._verify_peer(sock)
+                self._connect_owner(sock)
                 sock.sendall(rf.control(rf.CONNECTION, wire))
                 frame = rf.read_frame_blocking(sock)
                 if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
@@ -210,9 +213,7 @@ class BrokerClient:
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
             try:
-                self._connect(sock)
-                if self._verify_peer is not None and not self._owner_mode():
-                    self._verify_peer(sock)
+                self._connect_owner(sock)
                 sock.sendall(rf.control(rf.CONNECTION, wire))
                 frame = rf.read_frame_blocking(sock)
                 if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
@@ -274,9 +275,7 @@ class BrokerClient:
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
             try:
-                self._connect(sock)
-                if self._verify_peer is not None and not self._owner_mode():
-                    self._verify_peer(sock)
+                self._connect_owner(sock)
                 sock.sendall(rf.control(rf.CONNECTION, wire))
                 frame = rf.read_frame_blocking(sock)
                 if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
@@ -345,9 +344,7 @@ class BrokerClient:
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
             try:
-                self._connect(sock)
-                if self._verify_peer is not None and not self._owner_mode():
-                    self._verify_peer(sock)
+                self._connect_owner(sock)
                 sock.sendall(rf.control(rf.CONNECTION, wire))
                 frame = rf.read_frame_blocking(sock)
                 if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
@@ -405,12 +402,10 @@ class BrokerClient:
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
             try:
-                self._connect(sock)
+                self._connect_owner(sock)
             except OSError:
                 # Nothing was sent: the broker never saw this request.
                 raise ProxyRequestError("the credential broker is unavailable") from None
-            if self._verify_peer is not None and not self._owner_mode():
-                self._verify_peer(sock)  # before sending any owner-channel factor
             try:
                 head, body, end = self._exchange(sock, open_doc)
             except (OSError, rf.FrameError):

@@ -146,7 +146,6 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/storage/request_migration.py",
     "tinyassets/storage/run_files.py",
     "tinyassets/storage/run_input_admissions.py",
-    "tinyassets/storage/subscription_state.py",
     "tinyassets/storage/webhook_hooks.py",
     "tinyassets/storage_accounting.py",
     "tinyassets/universe_owner.py",

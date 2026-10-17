@@ -362,45 +362,8 @@ def test_closed_parent_allows_inflight_success_to_settle(budget):
     assert budget.receipt()["attempts"][0]["state"] == "succeeded"
 
 
-def _gc_during_lease_registration(base):
-    import gc
-    from unittest.mock import patch
-
-    from tinyassets.process_liveness import hold_liveness
-    from tinyassets.storage.agent_request_usage import ParentUsageLease
-
-    gc.disable()
-    abandoned = TurnRequestBudget("owner", "home")
-    with patch("tinyassets.storage.agent_request_usage.UsageStore",
-               return_value=_broker_store(base)):
-        abandoned.persist(base)
-    abandoned.cycle = abandoned
-    del abandoned
-
-    def collecting_hold(*args):
-        gc.collect()
-        return hold_liveness(*args)
-
-    with patch("tinyassets.process_liveness.hold_liveness", collecting_hold):
-        lease = ParentUsageLease(base, "gc-registration-test")
-        lease.close()
 
 
-def test_gc_finalizer_cannot_deadlock_lease_registration(tmp_path):
-    import multiprocessing
-
-    process = multiprocessing.get_context("spawn").Process(
-        target=_gc_during_lease_registration, args=(tmp_path,),
-    )
-    process.start()
-    process.join(timeout=10)
-    try:
-        assert not process.is_alive(), "lease registration deadlocked its finalizer"
-        assert process.exitcode == 0
-    finally:
-        if process.is_alive():
-            process.kill()
-            process.join(timeout=5)
 
 
 def _reserve_in_process(arguments):

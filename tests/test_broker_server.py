@@ -99,7 +99,7 @@ def _no_revocations():
 
 
 @pytest.fixture
-def broker(tmp_path):
+def broker(tmp_path, monkeypatch):
     lease = Lease()
     fence = Fence(tmp_path / "fence.json", verify_lease_proof=lease.verify)
     ops = OpStore(tmp_path / "ops.db")
@@ -128,22 +128,69 @@ def broker(tmp_path):
     loop = asyncio.new_event_loop()
     started = threading.Event()
 
+    listener = None
+
     def run():
+        nonlocal listener
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(server.serve(path))
+        listener = loop.run_until_complete(server.serve(path))
         started.set()
         loop.run_forever()
 
-    threading.Thread(target=run, daemon=True).start()
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
     assert started.wait(5)
     generation, token = fence.barrier(1, "proof-1")
     state = {"generation": generation, "token": token}
     client = BrokerClient(path, principal="alice", command_center="cc-alice",
                           fence=lambda: (state["generation"], state["token"]), timeout=10)
+    async def relay_peer(reader, writer):
+        upstream = None
+        try:
+            first = await rf.read_frame(reader)
+            assert first.control() == {"op": "BOX_CONNECT", "center": "cc-alice"}
+            upstream_reader, upstream = await asyncio.open_unix_connection(path)
+            writer.write(rf.control(rf.CONNECTION, {"op": "BOX_CONNECTED"}))
+            await writer.drain()
+
+            async def copy(source, destination):
+                while data := await source.read(65536):
+                    destination.write(data)
+                    await destination.drain()
+                destination.write_eof()
+
+            await asyncio.gather(copy(reader, upstream), copy(upstream_reader, writer))
+        finally:
+            writer.close()
+            if upstream is not None:
+                upstream.close()
+
+    async_path = tmp_path / "r.sock"
+    relay_listener = asyncio.run_coroutine_threadsafe(
+        asyncio.start_unix_server(relay_peer, path=str(async_path)), loop).result(5)
+    from tinyassets import owner_runtime
+    from tinyassets.owner_channel import OwnerChannel
+
+    egress = owner_runtime.broker_egress
+    monkeypatch.setattr(owner_runtime, "broker_egress", lambda: (
+        egress() if owner_runtime.current() is not None else OwnerChannel(async_path)))
     yield type("B", (), dict(server=server, path=path, client=client, sent=sent, lease=lease,
                              fence=fence, ops=ops, state=state, upstreams=upstreams,
                              loop=loop))
+    async def shutdown():
+        for opened in (relay_listener, listener):
+            opened.close()
+            await opened.wait_closed()
+        pending = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    asyncio.run_coroutine_threadsafe(shutdown(), loop).result(5)
     loop.call_soon_threadsafe(loop.stop)
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    loop.close()
 
 
 def _call(broker, op_id=None, **overrides):
@@ -607,7 +654,7 @@ def test_idle_bound_cannot_be_widened_by_the_caller(broker):
     asyncio.run(scenario())
 
 
-def test_async_client_reconnects_after_broker_eof(tmp_path):
+def test_async_client_reconnects_after_broker_eof(tmp_path, monkeypatch):
     from tinyassets.broker.aclient import AsyncBrokerClient
     from tinyassets.storage.outbound_connections import AmbiguousProxyOutcome, ProxyRequestError
 
@@ -616,6 +663,10 @@ def test_async_client_reconnects_after_broker_eof(tmp_path):
 
         async def serve(reader, writer):
             connections.append(writer)
+            admitted = await rf.read_frame(reader)
+            assert admitted.control() == {"op": "BOX_CONNECT", "center": "cc-alice"}
+            writer.write(rf.control(rf.CONNECTION, {"op": "BOX_CONNECTED"}))
+            await writer.drain()
             frame = await rf.read_frame(reader)
             if len(connections) > 1:
                 writer.write(rf.control(frame.stream, {"op": "HEAD", "status": 200}))
@@ -625,6 +676,9 @@ def test_async_client_reconnects_after_broker_eof(tmp_path):
             await writer.wait_closed()
 
         path = tmp_path / "reconnect.sock"
+        from tinyassets.owner_channel import OwnerChannel
+
+        monkeypatch.setattr("tinyassets.owner_runtime.broker_egress", lambda: OwnerChannel(path))
         listener = await asyncio.start_unix_server(serve, path=str(path))
         client = AsyncBrokerClient(path, principal="alice", command_center="cc-alice",
                                    fence=lambda: (1, "token"))

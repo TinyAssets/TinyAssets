@@ -198,10 +198,8 @@ def mint(
     from tinyassets.owner_runtime import current, router_credential
 
     runtime = current()
-    token = (router_credential("hook_mint")["token"] if runtime is not None
-             else secrets.token_urlsafe(32))
-    if runtime is not None:
-        owner_principal_id = runtime.principal
+    token = router_credential("hook_mint")["token"]
+    owner_principal_id = runtime.principal
     ts = time.time() if now is None else now
     conn = None
     try:
@@ -219,8 +217,7 @@ def mint(
         conn.commit()
         return token
     except Exception:
-        if runtime is not None:
-            router_credential("hook_revoke", token_hash=_hash_token(token))
+        router_credential("hook_revoke", token_hash=_hash_token(token))
         raise
     finally:
         if conn is not None:
@@ -437,11 +434,10 @@ def list_active_for_branch(base_path: str | Path, *, branch_def_id: str) -> list
 
 
 def _revoke_routes(conn, where: str, values: tuple):
-    from tinyassets.owner_runtime import current, router_credential
+    from tinyassets.owner_runtime import router_credential
 
-    if current() is not None:
-        for row in conn.execute(f"SELECT token_hash FROM webhook_hooks WHERE {where}", values):
-            router_credential("hook_revoke", token_hash=row["token_hash"])
+    for row in conn.execute(f"SELECT token_hash FROM webhook_hooks WHERE {where}", values):
+        router_credential("hook_revoke", token_hash=row["token_hash"])
 
 
 def revoke(base_path: str | Path, *, token: str, now: float | None = None) -> bool:

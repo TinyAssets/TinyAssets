@@ -22,7 +22,7 @@ from tinyassets.daemon_server import (
     initialize_author_server,
     set_founder_home,
 )
-from tinyassets.storage.subscription_state import TIER_FREE, TIER_PAID
+from tinyassets.storage.subscription_state import TIER_FREE
 
 A = "workos|alice"
 B = "workos|bob"
@@ -44,18 +44,6 @@ def _owner_rows(base: Path) -> list[tuple[str, str, str]]:
         ).fetchall()
 
 
-def _set_paid(universe_dir: Path) -> None:
-    from tinyassets.storage import subscription_state as ss
-
-    conn = ss._connect(universe_dir)
-    try:
-        conn.executescript(ss._SCHEMA)
-        conn.execute(
-            "INSERT OR REPLACE INTO subscription_meta (key, value) VALUES ('tier', ?)",
-            (TIER_PAID,),
-        )
-    finally:
-        conn.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -198,38 +186,6 @@ class TestBackfill:
 # --------------------------------------------------------------------------- #
 
 
-class TestTierOf:
-    def test_no_home_is_free(self, base):
-        assert uo.account_type_of(base, A) == TIER_FREE
-
-    def test_the_home_subscription_is_the_account_tier(self, base):
-        initialize_author_server(base)
-        home = base / "u-home"
-        home.mkdir()
-        set_founder_home(base, founder_sub=A, universe_id="u-home")
-        _set_paid(home)
-
-        assert uo.account_type_of(base, A) == TIER_PAID
-        assert uo.account_type_of(base, B) == TIER_FREE
-
-    def test_a_paid_non_home_universe_does_not_make_the_account_paid(self, base):
-        initialize_author_server(base)
-        (base / "u-home").mkdir()
-        other = base / "u-other"
-        other.mkdir()
-        set_founder_home(base, founder_sub=A, universe_id="u-home")
-        _set_paid(other)
-
-        assert uo.account_type_of(base, A) == TIER_FREE
-
-    def test_a_traversal_home_is_free_not_read(self, base):
-        initialize_author_server(base)
-        set_founder_home(base, founder_sub=A, universe_id="../outside")
-
-        assert uo.account_type_of(base, A) == TIER_FREE
-
-    def test_an_unnamed_principal_is_free(self, base):
-        assert uo.account_type_of(base, "") == TIER_FREE
 
 
 # --------------------------------------------------------------------------- #
@@ -363,3 +319,35 @@ def test_an_interrupted_migration_leaves_nothing_and_retries(base, monkeypatch):
     initialize_author_server(base)
 
     assert uo.owner_of(base, "u-home-a") == A
+
+
+@pytest.mark.parametrize("resolver", [uo.account_type_of, uo.account_type_for_universe])
+@pytest.mark.parametrize("tier", ["free", "paid"])
+def test_account_type_reads_only_the_bound_plan(base, monkeypatch, resolver, tier):
+    from tinyassets.usage_policy import account_type
+
+    calls = []
+
+    def remote(operation):
+        calls.append(operation)
+        return {"tier": tier}
+
+    monkeypatch.setattr("tinyassets.broker.owner_reads.remote", remote)
+    args = (base, A) if resolver is uo.account_type_of else (base / "any-center",)
+    assert resolver(*args) == account_type(tier)
+    assert calls == ["plan"]
+    assert not list(base.rglob(".subscription_state.db"))
+
+
+@pytest.mark.parametrize("resolver", [uo.account_type_of, uo.account_type_for_universe])
+def test_missing_bound_plan_is_never_a_free_entitlement(base, monkeypatch, resolver):
+    from tinyassets.broker.owner_reads import PlanMissing
+
+    def missing(operation):
+        assert operation == "plan"
+        raise PlanMissing("missing bound account")
+
+    monkeypatch.setattr("tinyassets.broker.owner_reads.remote", missing)
+    args = (base, A) if resolver is uo.account_type_of else (base / "any-center",)
+    with pytest.raises(PlanMissing, match="missing bound account"):
+        resolver(*args)

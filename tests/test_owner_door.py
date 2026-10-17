@@ -58,8 +58,21 @@ def _headers(owner=A):
 
 @pytest.fixture
 def door(tmp_path, monkeypatch):
+    from tinyassets.broker import owner_reads
+    from tinyassets.broker.owner_reads import Plans
     from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
 
+    plans = Plans(tmp_path)
+    remote = owner_reads.remote
+
+    def shared(operation, **args):
+        if operation == "plan":
+            return plans.read(mw.current_identity().user_id)
+        return remote(operation, **args)
+
+    monkeypatch.setattr(owner_reads, "remote", shared)
+    for owner in (A, B):
+        plans.apply(owner, tier="free", event_created=0)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     monkeypatch.setattr(onboarding, "app_config",
@@ -261,16 +274,18 @@ def _normalized(document):
 
 
 def test_free_and_subscription_accounts_read_the_same_data_identically(door):
-    from tinyassets.storage.subscription_state import apply_tier_event
+    from tinyassets.broker.owner_reads import Plans
     from tinyassets.universe_owner import account_type_of
     from tinyassets.usage_policy import AccountType
 
     client, base = door
     _ask_many(A, HOME_A, 5)
     _ask_many(B, HOME_B, 5)
-    apply_tier_event(base / HOME_B, tier="paid", event_created=1_000.0)
-    assert account_type_of(base, A) is AccountType.FREE
-    assert account_type_of(base, B) is AccountType.SUBSCRIPTION
+    Plans(base).apply(B, tier="paid", event_created=1_000.0)
+    with _as(A):
+        assert account_type_of(base, A) is AccountType.FREE
+    with _as(B):
+        assert account_type_of(base, B) is AccountType.SUBSCRIPTION
 
     for body in ({"target": "pending_requests"},
                  {"target": "agent_bindings", "limit": 50},
@@ -289,8 +304,8 @@ def test_free_and_subscription_accounts_read_the_same_data_identically(door):
 def test_a_subscribers_second_universe_is_a_subscription_universe(door):
     """Per ACCOUNT (founder, 2026-09-30): billing writes the home, and a second
     universe used to read its own empty record as free."""
+    from tinyassets.broker.owner_reads import Plans
     from tinyassets.daemon_server import grant_universe_ownership
-    from tinyassets.storage.subscription_state import apply_tier_event
     from tinyassets.universe_owner import account_type_for_universe
     from tinyassets.usage_policy import AccountType, limits_for, limits_for_universe
 
@@ -298,11 +313,13 @@ def test_a_subscribers_second_universe_is_a_subscription_universe(door):
     second = base / "u-second-of-b000"
     second.mkdir()
     grant_universe_ownership(base, universe_id=second.name, owner_id=B)
-    apply_tier_event(base / HOME_B, tier="paid", event_created=1_000.0)
+    Plans(base).apply(B, tier="paid", event_created=1_000.0)
 
-    assert account_type_for_universe(second) is AccountType.SUBSCRIPTION
-    assert limits_for_universe(second) == limits_for(AccountType.SUBSCRIPTION)
-    assert account_type_for_universe(base / "u-nobody-owns-it") is AccountType.FREE
+    with _as(B):
+        assert account_type_for_universe(second) is AccountType.SUBSCRIPTION
+        assert limits_for_universe(second) == limits_for(AccountType.SUBSCRIPTION)
+    with _as(A):
+        assert account_type_for_universe(base / HOME_A) is AccountType.FREE
 
 
 # --------------------------------------------------------------------------- #
@@ -356,8 +373,9 @@ def test_a_heavy_ui_library_reaches_the_app_whole(door):
     library = [{"ui_id": f"ui-{i}", "name": f"Screen {i}",
                 "bundle": {"html": "<main>" + ("x" * 3_000) + "</main>"}}
                for i in range(12)]
-    save_app_ui(base, owner_user_id=A, universe_id=HOME_A, expected_revision=0,
-                changes={"ui_library": library})
+    with _as(A):
+        save_app_ui(base, owner_user_id=A, universe_id=HOME_A, expected_revision=0,
+                    changes={"ui_library": library})
 
     reply = client.post(READ, headers=_headers(A), json={"target": "app_ui", "graph_id": HOME_A})
     assert reply.status_code == 200 and len(reply.content) > 30_000

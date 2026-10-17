@@ -78,11 +78,9 @@ class _Stream:
 class AsyncBrokerClient:
     def __init__(self, path: Path, *, principal: str, command_center: str,
                  fence: Callable[[], tuple[int, str]], verify_peer=None) -> None:
-        self._path = Path(path)
         self._principal = principal
         self._command_center = command_center
         self._fence = fence
-        self._verify_peer = verify_peer
         self._ids = itertools.count(1)
         self._streams: dict[int, _Stream] = {}
         self._reader: asyncio.StreamReader | None = None
@@ -99,28 +97,19 @@ class AsyncBrokerClient:
             from tinyassets.storage.outbound_connections import ProxyRequestError
 
             try:
-                from tinyassets.owner_runtime import broker_egress, current
+                from tinyassets.owner_runtime import broker_egress
 
-                owner_mode = current() is not None
                 self._reader, self._writer = await asyncio.open_unix_connection(
-                    os.fspath(broker_egress().socket_path if owner_mode else self._path))
-                if owner_mode:
-                    self._writer.write(rf.control(rf.CONNECTION, {
-                        "op": "BOX_CONNECT", "center": self._command_center}))
-                    await self._writer.drain()
-                    answer = await rf.read_frame(self._reader)
-                    if (answer is None or answer.stream != rf.CONNECTION
-                            or answer.control() != {"op": "BOX_CONNECTED"}):
-                        self._writer.close()
-                        self._reader = self._writer = None
-                        raise PermissionError("owner broker channel refused")
-                elif self._verify_peer is not None:
-                    try:
-                        self._verify_peer(self._writer.get_extra_info("socket"))
-                    except BaseException:
-                        self._writer.close()
-                        self._reader = self._writer = None
-                        raise
+                    os.fspath(broker_egress().socket_path))
+                self._writer.write(rf.control(rf.CONNECTION, {
+                    "op": "BOX_CONNECT", "center": self._command_center}))
+                await self._writer.drain()
+                answer = await rf.read_frame(self._reader)
+                if (answer is None or answer.stream != rf.CONNECTION
+                        or answer.control() != {"op": "BOX_CONNECTED"}):
+                    self._writer.close()
+                    self._reader = self._writer = None
+                    raise PermissionError("owner broker channel refused")
             except OSError:
                 raise ProxyRequestError("the credential broker is unavailable") from None
             self._demux = asyncio.ensure_future(self._demultiplex())

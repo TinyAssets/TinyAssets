@@ -1601,3 +1601,112 @@ The task remains partial: the exact 21 classified rows above, the repository
 D7 mode-fork scan, its remaining test ports and the final dual-path tick are
 still required. The reviewed 29 role-boundary entries are documented, not an
 executable exemption for the unfinished legacy paths.
+
+
+## 6a part 1d: remaining classified forks and executable D7 (2026-10-17)
+
+This follow-up supersedes part 1c's unfinished-site inventory. Rechecked all
+21 sites against their current implementation and production callers; no
+legacy site was reclassified. The 29 ROLE_DISPATCH rows and reasons in part
+1c are now the executable `_ROLE_DISPATCH` dictionary in
+`tests/test_router_store_guard.py`. The guard requires exact agreement with
+observed boundaries, so a stale exception fails too. The existing router
+import/direct-filesystem checks remain intact. The owner_runtime module owns
+its lifecycle; branchless principal/root/tools reads do not select modes.
+
+| File:function (under tinyassets/) | Deleted path; retained behavior |
+| --- | --- |
+| `broker/aclient.py:AsyncBrokerClient._connect` | Host socket/peer alternative; always relay socket plus BOX_CONNECT acknowledgement. |
+| `broker/client.py:BrokerClient.publish_model_source` | Host verification/transport; always bound owner connection. |
+| `broker/client.py:BrokerClient.usage` | Host accounting connection; always bound owner connection. |
+| `broker/client.py:BrokerClient.capability` | Host capability connection; always bound owner connection. |
+| `broker/client.py:BrokerClient.request` | Host OPEN and per-exec custom-handshake alternative; always bound owner connection. |
+| `broker/client.py:BrokerClient.owner_policy` | Legacy host policy arm; always bound owner connection (part 1c's UNSURE resolution confirmed). |
+| `command_center_update_executor.py:_connect` | Per-center account_tier attachment; keep only owner source/dependency/accounting stores. |
+| `command_center_update_executor.py:_quota_inputs` | Per-center subscription_meta reads; keep remote plan in preparation snapshot. |
+| `control_plane/continuations.py:tick` | Runtime-None skip; always reconcile as admitted principal, then recover. |
+| `control_plane/tick.py:AssignedQueueConsumer.poll_once` | Non-owner next-wake skip; always report in finally. |
+| `providers/api_key_http_provider.py:ApiKeyHttpProvider._connection_context` | Host source-publication skip; always publish MODEL_SOURCE. |
+| `providers/model_call.py:_dispatch_args` | Non-owner bypass; acquire mandatory broker egress before provider preparation. |
+| `storage/agent_request_usage.py:UsageStore.create` | Host owner-token/ParentUsageLease branch and local-create alternative; always channel UsageLease and broker create RPC. Broker _insert/local operations remain. |
+| `storage/subscription_state.py:state_db_path` | Remove per-center path helper and its unused writers/connections/schema. Router checkout timing constants remain. |
+| `storage/subscription_state.py:get_tier` | Local DB/default-free arm; read bound plan. |
+| `storage/subscription_state.py:read_tier` | Local DB/default-free arm; read bound plan. |
+| `storage/subscription_state.py:get_plan` | Local DB assembly; always BOX_SHARED plan. |
+| `storage/webhook_hooks.py:mint` | Local token generation, supplied-principal fallback and non-box compensation skips; use router RPC, admitted principal and unconditional compensation. |
+| `storage/webhook_hooks.py:_revoke_routes` | Non-box no-op; revoke router digests before local changes. |
+| `universe_owner.py:account_type_of` | Home/per-center and db_reader compatibility paths; read bound plan. |
+| `universe_owner.py:account_type_for_universe` | Owner-table/home fallback; read bound plan. |
+
+The `_connect_owner` helper has no mode predicate. Shared `_connect` remains
+only for genuinely shared management methods. Async client host-path and peer
+fields, the deleted parent lease's lock registry/fork hook, and the dead
+subscription writer inventory entry are removed.
+
+Policy caller evidence remains the part 1c trace: the router forwards
+`/app/api/policy`; its private owner handler executes in the box. The new real
+relay test exposed the broker rejecting protected writes before checking the
+forwarded session proof. BOX now accepts write/issue_once only with
+session_proof, derives principal from its admission, and still verifies the
+live router session and existing generation/ledger/admission checks in
+_owner_policy. Raw box cookies are rejected. Real relay tests cover valid,
+foreign, expired and missing door proof plus a forged client principal.
+No owner session database is created in the box.
+
+D7 self-tests copy a real module under tmp_path, prove the clean copy passes,
+inject a new fork and require the scanner to report that exact file/function.
+Variants cover direct and aliased imports, module aliases, relative imports,
+truthiness, captured modes, function/module assignment aliases, returned
+boolean predicates, delegated broker predicates and store refusals. A negative probe preserves branchless reads and unrelated
+turn-interrupt current() calls. All 29 exemptions have explicit reasons.
+
+Protocol unit fixtures now inject startup/transport at the owner connection
+and lease seams. Their same-UID broker/socket/liveness checks remain real;
+real owner-process fixtures use the real relay, BOX protocol and UsageLease.
+Hook units inject only startup identity and RPC transport into a separate
+router temp root, retaining the real router writer and local hook store.
+Package/unit fixtures explicitly supply a free plan at their shared-read seam;
+paid-plan and mutation tests use the real broker Plans store. No production
+fallback, test skip/xfail or assertion reduction was introduced.
+
+New retirements (whole tests of deleted behavior; earlier inventories remain):
+- `tests/test_universe_owner.py::TestTierOf::test_no_home_is_free`
+- `tests/test_universe_owner.py::TestTierOf::test_the_home_subscription_is_the_account_tier`
+- `tests/test_universe_owner.py::TestTierOf::test_a_paid_non_home_universe_does_not_make_the_account_paid`
+- `tests/test_universe_owner.py::TestTierOf::test_a_traversal_home_is_free_not_read`
+- `tests/test_universe_owner.py::TestTierOf::test_an_unnamed_principal_is_free`
+- `tests/test_tier_lookup_fail_safe.py::test_an_unusable_universe_dir_reads_as_free_rather_than_raising` (two parametrizations)
+- `tests/test_tier_lookup_fail_safe.py::test_an_unusable_universe_dir_never_grants_the_paid_tier`
+- `tests/test_request_usage_store.py::test_gc_finalizer_cannot_deadlock_lease_registration`
+
+Bound-plan resolver/read tests replace obsolete home/default-free cases and
+prove missing plans fail loudly. The surviving outbound-effect assertions
+remain. The update fence test now uses the still-owned storage ledger;
+the tier-mutation test changes the actual broker plan after reservation and
+retains refusal/no-write assertions. Subscription ordering and checkout tests
+already use the broker Plans store. No path probe in scripts/check_shapes.py
+was removed or raised.
+
+Per-call backend is deferred and untouched. It still has callers:
+- `wake_conditions.run_probe` and `workspace_provision_execution.execute_provision`
+  construct BoxExecutor.
+- `box_process.run_bound` calls provider.start_exec; users include boxes.media,
+  boxes.node, top-level git_bridge, ui_preview and workspace_worker.
+- workspace_fs and workspace_worker still select configured_box_provider.
+- host_service imports GvisorFileBackend; owner_files constructs Executions;
+  frontend imports ProductionFileProvider; gvisor_files launches exec_worker
+  and file_worker. boxd/provider expose start_exec and box_tools calls it.
+- `boxes/git_bridge.prepare` still constructs the old guest client with a
+  custom verify_peer handshake. That invocation no longer supplies an owner
+  runtime to the now owner-only OPEN client; retire it with its per-exec guest
+  forwarder in the next backend pass. It is not a surviving daemon caller.
+
+Protected slice-6 code is unchanged. Its old box_layout_migration call to
+account_type_of(..., db_reader=...) still references the retired runtime API;
+the slice-6 lane must finish its independent read-only census path. This pass
+neither restores that compatibility path nor edits the protected migration.
+No production, deployment, push, merge, branch switch, Git configuration,
+new worktree or agent dispatch was performed. Independent review/deployment
+remain with the lead; these are local implementation and validation commits.
+
+Validation and final task state are appended after the Linux runs complete.
