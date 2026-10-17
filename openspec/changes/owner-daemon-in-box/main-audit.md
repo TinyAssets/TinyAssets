@@ -1097,3 +1097,23 @@ Validation for this repair:
 - Full Linux receipt: `C:/Users/Jonathan/AppData/Local/Temp/3c-hygiene-linux-final.log`.
   Gate verification runs after commit against committed HEAD; its receipt is
   `C:/Users/Jonathan/AppData/Local/Temp/3c-hygiene-gate.log`.
+
+
+## Slice 6 census classes (2026-10-17, implementation in progress)
+
+The census now reports dropped and regenerated rows alongside owner, router,
+broker and published rows, with per-table counts. Broker admissions are the
+sole owner/center authority; creation/home bindings only corroborate them.
+Never-admitted centers with no owner binding and the explicitly listed legacy
+sets are dropped. Explicit unknown principals and conflicting ownership still
+refuse. The stale database copy is counted as a dropped file without opening it.
+Policy databases, additional outbound/session tables, outside authority and
+workspace push intents have explicit placements. Per-account pseudonymous
+reports include attributed dropped CLI records and carried HTTP slots.
+
+Synthetic Linux census proof: 17 passed, no skips. No production data or backup
+was accessed. Prior diagnostic archive findings were removed from D6, and the
+pre-admission fallback was removed from the census. The global outside_switch
+schema has no ownership key; populated ownerless settings currently refuse
+pending the founder's explicit disposition. Task 6 remains unchecked; the final
+apply transaction, P2b removal, deploy wiring and serving rehearsal are pending.

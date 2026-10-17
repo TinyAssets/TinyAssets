@@ -50,17 +50,19 @@ class CensusRule:
     principals: tuple[str, ...] = ()
     centers: tuple[str, ...] = ()
     references: tuple[tuple[str, str, str, str], ...] = ()
+    drop_unowned: bool = False
 
 
 def _census_rules() -> dict[str, dict[str, CensusRule]]:
     rules: dict[str, dict[str, CensusRule]] = {}
 
-    def add(database, tables, placement, *, principals=(), centers=(), references=()):
+    def add(database, tables, placement, *, principals=(), centers=(), references=(),
+            drop_unowned=False):
         target = rules.setdefault(database, {})
         for table in tables.split():
             if table in target:
                 raise AssertionError(f"duplicate census rule: {database}/{table}")
-            target[table] = CensusRule(placement, principals, centers, references)
+            target[table] = CensusRule(placement, principals, centers, references, drop_unowned)
 
     main = ".tinyassets.db"
     add(main, "user_accounts user_sessions", "router")
@@ -85,6 +87,7 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
         "agent_bindings action_result_outbox webhook_admissions webhook_inflight "
         "assigned_queue_refusals provider_work_receipts provider_assignment_candidates "
         "universe_owner request_storage_migration", "owner", centers=("universe_id",))
+    rules[main]["universes"] = CensusRule("owner", centers=("id", "universe_id"))
     add(main, "provider_work_bindings provider_assignments universe_model_preferences "
         "agent_turns agent_turn_rounds agent_turn_tools connection_disconnections "
         "universe_app_ui universe_app_ui_asset native_shortlist_cache owner_view_receipts",
@@ -119,15 +122,24 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
     # or replicating their rows. The census therefore refuses populated rows.
     add(main, "gate_claims canonical_bindings goal_canonicals unreconciled_writes "
         "branch_tasks_v2_maintenance_state scoped_reset_leases scoped_reset_operations "
-        "background_branch_authority_owners app_event_admissions action_result_receipts "
-        "webhook_deliveries owner_fence", "owner")
+        "background_branch_authority_owners action_result_receipts", "owner")
+    add(main, "app_event_admissions webhook_deliveries", "owner",
+        centers=("universe_id", "center_id"), drop_unowned=True)
+    add(main, "owner_fence", "regenerated")
+    add(main, "external_agent_catalogue_receipts external_agent_cli_invocations "
+        "external_agent_job_receipts", "dropped", principals=("owner_user_id", "owner"),
+        centers=("universe_id",))
     add(".auth.db", "oauth_clients authorization_codes access_tokens refresh_tokens", "router")
     add(".hosted-model-auth.db", "hosted_model_flows connection_oauth_flows", "router")
     add(".api-keys.sqlite3", "api_keys api_key_request_counts", "router")
     add(".hook-owners.sqlite3", "hook_owners", "router")
     add(".router-deleted-owners.sqlite3", "deleted_owners", "router")
     add(".runtime/owner-sessions.db", "owner_sessions owner_login_flows owner_login_completions "
-        "owner_refresh_sessions owner_approval_handoffs canary_sign_in_attempts", "router")
+        "owner_refresh_sessions owner_approval_handoffs canary_sign_in_attempts "
+        "approval_handoffs inline_model_flows", "router")
+    add(".outside-client-authority.sqlite3", "authenticated_connections outside_audit "
+        "outside_effects outside_families outside_grants outside_revocations outside_switch",
+        "owner", principals=("owner",))
     add(".owner_devices.db", "owner_devices owner_notify_settings request_notifications", "owner",
         principals=("owner_user_id",))
     add(".source_channel_policy.db", "source_channel_policy", "owner", centers=("universe_id",))
@@ -141,6 +153,10 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
         "outbound_connector_artifacts outbound_connector_artifact_edges connection_capabilities "
         "broker_schema_migrations box_model_sources", "broker")
     rules[".broker/outbound.db"] = dict(rules["outbound.db"])
+    add(".broker/outbound.db", "agent_model_launches agent_request_attempts "
+        "agent_request_dispatches agent_request_usage agent_request_usage_links", "broker")
+    add(".broker/accounts/*/policy.db", "once_approvals policy receipts spend_reservations",
+        "broker")
     add(".broker/state/ops.db", "ops meta", "broker")
     add(".control_plane.db", "triggers", "owner", principals=("owner_principal_id",),
         centers=("command_center_id",))
@@ -150,7 +166,8 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
         centers=("universe_id",))
     add(".automations.db", "automation_attempts", "owner",
         references=(("automation_id", ".automations.db", "automations", "automation_id"),))
-    add(".automations.db", "universe_leases", "owner")
+    add(".automations.db", "universe_leases", "owner", centers=("universe_id",),
+        drop_unowned=True)
     add(".account_seats.db", "account_seats seat_waiters chat_turn_failures", "owner",
         principals=("account_id",), centers=("universe_id",))
     add(".effector_consents.db", "effector_consents", "owner", principals=("granted_by",))
@@ -174,7 +191,10 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
         references=(("from_run_id", ".runs.db", "runs", "run_id"),))
     add(".runs.db", "run_child_attachments", "owner",
         references=(("parent_run_id", ".runs.db", "runs", "run_id"),))
-    add(".runs.db", "node_edit_audit branch_versions_migrations", "owner")
+    add(".runs.db", "node_edit_audit", "owner")
+    add(".runs.db", "branch_versions_migrations", "regenerated")
+    add(".runs.db", "workspace_push_intents", "owner", centers=("universe_id",),
+        references=(("run_id", ".runs.db", "runs", "run_id"),))
     add(".runs.db", "branch_versions", "owner", principals=("publisher",))
     add(".runs.db", "branch_schedules branch_subscriptions", "owner",
         principals=("owner_actor", "owner_principal_id"), centers=("universe_id",))
@@ -199,20 +219,46 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
         references=(("run_id", ".runs.db", "runs", "run_id"),))
     add(".langgraph_runs.db", "checkpoints writes", "owner",
         references=(("thread_id", ".runs.db", "runs", "thread_id"),))
-    add(".owner_leases.db", "owner_lease restore_state owner_store_catalog fence_high_water",
-        "owner")
-    add(".storage_accounting.db", "measurements pending counter commons_writers commons_log_bytes",
-        "owner")
-    add("wiki_trigger_attempts.db", "wiki_trigger_attempts", "owner")
+    add(".owner_leases.db", "owner_lease owner_store_catalog fence_high_water", "regenerated")
+    add(".owner_leases.db", "restore_state", "owner")
+    add(".storage_accounting.db", "measurements counter commons_log_bytes", "regenerated")
+    add(".storage_accounting.db", "pending commons_writers", "owner")
+    add("wiki_trigger_attempts.db", "wiki_trigger_attempts", "owner",
+        centers=("universe_id", "center_id"), drop_unowned=True)
+    # Only these reviewed legacy sets can lack every attribution key. Unknown
+    # explicit principals and conflicting keys still refuse.
+    from dataclasses import replace
+
+    for database, names in {
+        main: "branches branch_heads universe_rules served_provider_budget_reservations "
+              "owner_ui_prefs provider_work_bindings goals agent_conversion_receipts "
+              "agent_conversion_receipt_links agent_conversion_receipt_owners "
+              "agent_import_stages agent_interchange_idempotency assigned_queue_refusals "
+              "branch_definitions",
+        ".owner_devices.db": "owner_devices",
+        ".runs.db": "runs run_events run_lineage contribution_events run_file_operations "
+                    "run_file_allocations run_file_objects run_file_bindings run_file_cleanup "
+                    "branch_versions branch_schedules",
+        ".langgraph_runs.db": "checkpoints writes",
+    }.items():
+        for name in names.split():
+            rules[database][name] = replace(rules[database][name], drop_unowned=True)
     return rules
 
 
 CENSUS_RULES = _census_rules()
 
 
+def _census_rule(database: str, table: str) -> CensusRule | None:
+    parts = PurePosixPath(database).parts
+    if len(parts) == 4 and parts[:2] == (".broker", "accounts") and parts[3] == "policy.db":
+        database = ".broker/accounts/*/policy.db"
+    return CENSUS_RULES.get(database, {}).get(table)
+
+
 def _census_columns(database: str, table: str) -> set[str]:
     """Read attribution metadata only; never materialize history or token blobs."""
-    rule = CENSUS_RULES.get(database, {}).get(table)
+    rule = _census_rule(database, table)
     columns = set()
     if rule:
         columns.update(rule.principals + rule.centers)
@@ -224,6 +270,8 @@ def _census_columns(database: str, table: str) -> set[str]:
                     columns.add(parent_column)
     if database == ".tinyassets.db" and table in {"branch_definitions", "goals"}:
         columns.update(("published", "visibility"))
+    if (database, table) == (".tinyassets.db", "universes"):
+        columns.add("id")
     if (database, table) == (".runs.db", "branch_versions"):
         columns.add("public")
     if database in {"outbound.db", ".broker/outbound.db"} and table == "outbound_connections":
@@ -239,7 +287,7 @@ def _quoted(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
-def census(data: Path) -> dict:
+def census(data: Path, *, _inventory: dict | None = None) -> dict:
     """Read-only, count-only cutover audit, including all refusal evidence.
 
     No store initializers, live runtime readers, or default-plan readers run
@@ -256,7 +304,10 @@ def census(data: Path) -> dict:
     tables: dict[tuple[str, str], list[dict]] = {}
     database_files: set[Path] = set()
     known_centers: dict[str, set[str]] = {}
+    bindings: dict[str, set[str]] = {}
+    universe_centers: set[str] = set()
     owners: set[str] = set()
+    permanent: dict[str, int] = {}
     identities = data / ".broker/state/owner-identities.db"
     for relative in (".tinyassets.db", ".broker", ".broker/state",
                      ".broker/state/owner-identities.db", ".layout.json"):
@@ -269,13 +320,18 @@ def census(data: Path) -> dict:
                 or marker.get("state") != "stable" or marker.get("split") != "owner-split"
                 or marker.get("box_layout") not in (None, "owner-split")):
             refusals["not_production_owner_split_layout"] += 1
-        # Read explicit creation/home bindings for an old archive's diagnostic
-        # census. Only the broker can authorize an actual box UID/admission.
+        # Bindings corroborate admissions; they never create an owner or admit
+        # a center. The broker is the sole authority for the cutover.
         main = data / ".tinyassets.db"
         if main.is_file():
             with readonly_db(main) as db:
                 names = {row[0] for row in db.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'")}
+                if "universes" in names:
+                    columns = {row[1] for row in db.execute("PRAGMA table_info(universes)")}
+                    column = "id" if "id" in columns else "universe_id"
+                    universe_centers = {row[0] for row in db.execute(
+                        f"SELECT {_quoted(column)} FROM universes")}
                 for table, principal in (("universe_owner", "owner_id"),
                                          ("founder_home", "founder_sub")):
                     if table in names:
@@ -283,8 +339,7 @@ def census(data: Path) -> dict:
                             f"SELECT universe_id,{principal} FROM {table}"
                         ):
                             if named_principal(owner) and _CENTER.fullmatch(center or ""):
-                                known_centers.setdefault(center, set()).add(owner)
-                                owners.add(owner)
+                                bindings.setdefault(center, set()).add(owner)
                             else:
                                 refusals["invalid_explicit_ownership"] += 1
         admitted: dict[str, str] = {}
@@ -308,13 +363,13 @@ def census(data: Path) -> dict:
                         refusals["invalid_admission"] += 1
                     elif event == "admit" and center not in admitted and center not in retired:
                         admitted[center] = owner
-                        known_centers.setdefault(center, set()).add(owner)
                     elif event == "retire" and admitted.get(center) == owner:
                         del admitted[center]
                         retired.add(center)
                     else:
                         refusals["invalid_admission_history"] += 1
-            for center, candidates in known_centers.items():
+            known_centers = {center: {owner} for center, owner in admitted.items()}
+            for center, candidates in bindings.items():
                 if admitted.get(center) not in candidates or len(candidates) != 1:
                     refusals["ownership_not_live_admitted"] += 1
             for center in admitted:
@@ -322,6 +377,9 @@ def census(data: Path) -> dict:
                     refusals["admitted_center_tree_absent"] += 1
         else:
             refusals["broker_admission_database_absent"] += 1
+        dropped_centers = universe_centers - set(admitted) - set(bindings)
+        if any(not _CENTER.fullmatch(center or "") for center in dropped_centers):
+            refusals["invalid_unadmitted_center"] += 1
 
         # Enumerate actual shared files, including SQLite with an unfamiliar
         # filename. A suffix-only scan would silently miss a renamed store.
@@ -335,6 +393,8 @@ def census(data: Path) -> dict:
             for path in sorted(root.iterdir()):
                 if path.is_symlink() or not path.is_file():
                     continue
+                if path == data / ".tinyassets.db.prebudgetrepair.bak":
+                    continue  # Explicitly out of scope; do not open the stale copy.
                 with path.open("rb") as stream:
                     is_database = stream.read(16) == b"SQLite format 3\x00"
                 if not is_database:
@@ -357,6 +417,8 @@ def census(data: Path) -> dict:
                             f"PRAGMA table_info({_quoted(table)})")}
                         selected = sorted(_census_columns(relative, table) & available)
                         projection = ",".join(map(_quoted, selected)) if selected else "1"
+                        if _inventory is not None:
+                            projection = "*"
                         tables[relative, table] = [dict(item) for item in db.execute(
                             f"SELECT {projection} FROM {_quoted(table)}")]
 
@@ -371,7 +433,7 @@ def census(data: Path) -> dict:
                 return memo[key]
             if key in active:
                 return frozenset()
-            rule = CENSUS_RULES.get(database, {}).get(table)
+            rule = _census_rule(database, table)
             if rule is None:
                 return frozenset()
             row = tables[database, table][index]
@@ -382,7 +444,10 @@ def census(data: Path) -> dict:
                     claims.append({value} if value in owners else set())
             for column in rule.centers:
                 if row.get(column):
-                    claims.append(known_centers.get(row[column], set()))
+                    value = row[column]
+                    claims.append({"dropped"} if value in dropped_centers or (
+                        rule.drop_unowned and value not in known_centers)
+                                  else known_centers.get(value, set()))
             for column, parent_db, parent, parent_column in rule.references:
                 if row.get(column):
                     index_key = parent_db, parent, parent_column
@@ -393,26 +458,35 @@ def census(data: Path) -> dict:
                         indexes[index_key] = lookup
                     matches = indexes[index_key].get(row[column], [])
                     if len(matches) != 1:
-                        claims.append(set())
+                        claims.append({"dropped"} if not matches and rule.drop_unowned else set())
                     else:
                         claims.append(set(row_owners(
                             parent_db, parent, matches[0], active | {key})))
+            if not claims and rule.drop_unowned:
+                claims.append({"dropped"})
+            if any(c and c != {"dropped"} for c in claims):
+                claims = [c for c in claims if c != {"dropped"}]
             resolved = (frozenset.union(*(frozenset(c) for c in claims))
                         if claims and all(len(c) == 1 for c in claims) else frozenset())
             memo[key] = resolved if len(resolved) == 1 else frozenset()
             return memo[key]
 
         table_report = {}
-        totals: Counter = Counter()
+        totals: Counter = Counter(dict.fromkeys(
+            ("owner", "router", "broker", "published", "dropped", "regenerated"), 0))
+        assignments = {}
         for (database, table), rows in sorted(tables.items()):
-            rule = CENSUS_RULES.get(database, {}).get(table)
+            rule = _census_rule(database, table)
             placement = rule.placement if rule else "unknown"
             counts: Counter = Counter()
             public = 0
+            dropped = len(rows) if placement == "dropped" else 0
+            targets = [placement] * len(rows)
             if rule is None:
                 refusals["unknown_table"] += 1
             elif placement == "owner":
-                if rows and not (rule.principals or rule.centers or rule.references):
+                if rows and not (rule.principals or rule.centers or rule.references
+                                 or rule.drop_unowned):
                     refusals["attribution_rule_pending"] += 1
                 for index, row in enumerate(rows):
                     if ((database == ".tinyassets.db" and table in {"branch_definitions", "goals"}
@@ -421,12 +495,19 @@ def census(data: Path) -> dict:
                             or ((database, table) == (".runs.db", "branch_versions")
                                 and row.get("public") == 1)):
                         public += 1
+                        targets[index] = "published"
                         continue
                     candidates = row_owners(database, table, index)
                     if len(candidates) != 1:
                         counts["unattributed"] += 1
+                        targets[index] = "unattributed"
                     else:
-                        counts[labels[next(iter(candidates))]] += 1
+                        owner = next(iter(candidates))
+                        targets[index] = owner
+                        if owner == "dropped":
+                            dropped += 1
+                        else:
+                            counts[labels[owner]] += 1
                 refusals["unattributed_owner_rows"] += counts.get("unattributed", 0)
             elif (database, table) in {
                 (".api-keys.sqlite3", "api_keys"), (".hook-owners.sqlite3", "hook_owners"),
@@ -434,11 +515,15 @@ def census(data: Path) -> dict:
                 for row in rows:
                     if row.get("revoked_at") is None and row.get("owner") not in owners:
                         refusals["router_credential_without_owner"] += 1
-            totals[placement] += len(rows) - public
+            totals[placement] += len(rows) - public - (dropped if placement != "dropped" else 0)
+            if placement != "dropped":
+                totals["dropped"] += dropped
             totals["published"] += public
+            assignments[database, table] = targets
             table_report[f"{database}/{table}"] = {
                 "class": placement, "total": len(rows), "per_owner": dict(counts),
-                "published": public,
+                "published": public, "dropped": dropped,
+                "regenerated": len(rows) if placement == "regenerated" else 0,
                 "attribution": ("pending" if rule and placement == "owner"
                                 and not (rule.principals or rule.centers or rule.references)
                                 else "specified"),
@@ -446,7 +531,18 @@ def census(data: Path) -> dict:
 
         plan_report, credential_report = _census_accounts(
             data, known_centers, labels, tables, refusals)
-        file_report = _census_files(data, known_centers, labels, database_files, refusals)
+        for (database, table), rows in tables.items():
+            rule = _census_rule(database, table)
+            if rule and rule.placement == "dropped":
+                for index in range(len(rows)):
+                    candidates = row_owners(database, table, index)
+                    if len(candidates) == 1 and next(iter(candidates)) in labels:
+                        credential_report[labels[next(iter(candidates))]]["dropped_cli"] += 1
+        file_report = _census_files(data, known_centers, labels, database_files, refusals,
+                                    dropped_centers)
+        if _inventory is not None:
+            _inventory.update(tables=tables, assignments=assignments, owners=permanent,
+                              centers=admitted, dropped_centers=dropped_centers, labels=labels)
         return {
             "version": 1, "ready": not any(refusals.values()), "owners": len(owners),
             "admitted_centers": len(admitted), "explicit_centers": len(known_centers),
@@ -533,7 +629,7 @@ def _census_accounts(data, centers, labels, tables, refusals):
     return plans, credentials
 
 
-def _census_files(data, centers, labels, databases, refusals):
+def _census_files(data, centers, labels, databases, refusals, dropped_centers=()):
     from collections import Counter
 
     counts: Counter = Counter()
@@ -550,7 +646,10 @@ def _census_files(data, centers, labels, databases, refusals):
             path = root / name
             relative = path.relative_to(data)
             parts = relative.parts
-            if parts[0] in centers and len(centers[parts[0]]) == 1:
+            if (relative.as_posix() == ".tinyassets.db.prebudgetrepair.bak"
+                    or parts[0] in dropped_centers):
+                counts["dropped"] += 1
+            elif parts[0] in centers and len(centers[parts[0]]) == 1:
                 label = labels[next(iter(centers[parts[0]]))]
                 counts[label] += 1
             elif path in databases or any(
@@ -568,6 +667,9 @@ def _census_files(data, centers, labels, databases, refusals):
             elif (len(parts) >= 3 and parts[0] in {".agent-sessions", ".universe-sidecars"}
                   and len(centers.get(parts[1], set())) == 1):
                 counts[labels[next(iter(centers[parts[1]]))]] += 1
+            elif (len(parts) >= 3 and parts[0] in {".agent-sessions", ".universe-sidecars"}
+                  and parts[1] in dropped_centers):
+                counts["dropped"] += 1
             else:
                 counts["unattributed"] += 1
     refusals["unattributed_files"] += counts["unattributed"]

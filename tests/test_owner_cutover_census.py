@@ -205,3 +205,96 @@ def test_branch_versions_require_an_explicit_publication_mark(source):
     _sql(source / ".runs.db",
          "INSERT INTO branch_versions VALUES ('private-orphan','unowned-publisher',0)")
     assert census(source)["refusals"]["unattributed_owner_rows"] == 1
+
+
+def test_explicit_classes_cover_legacy_rows_and_never_admitted_tree(source):
+    _sql(source / ".tinyassets.db", """
+        CREATE TABLE universes (id TEXT PRIMARY KEY);
+        INSERT INTO universes VALUES ('a1'), ('never-admitted');
+        INSERT INTO branches VALUES ('legacy-branch','never-admitted');
+        INSERT INTO branch_heads VALUES ('legacy-branch','old');
+        CREATE TABLE external_agent_cli_invocations (owner_user_id TEXT);
+        INSERT INTO external_agent_cli_invocations VALUES ('alice'), (NULL);
+        CREATE TABLE owner_fence (fence INT);
+        INSERT INTO owner_fence VALUES (90);
+        CREATE TABLE app_event_admissions (universe_id TEXT);
+        INSERT INTO app_event_admissions VALUES ('a1'), (NULL);
+        CREATE TABLE webhook_deliveries (dedupe_key TEXT);
+        INSERT INTO webhook_deliveries VALUES ('old');
+    """)
+    _sql(source / ".runs.db", """
+        CREATE TABLE runs (run_id TEXT, thread_id TEXT, owner_user_id TEXT, queue_universe_id TEXT);
+        INSERT INTO runs VALUES ('legacy','thread-old',NULL,NULL),
+                                ('center-owned','thread-a',NULL,'a2');
+        CREATE TABLE run_events (run_id TEXT);
+        INSERT INTO run_events VALUES ('legacy'), ('center-owned');
+        CREATE TABLE run_lineage (run_id TEXT);
+        INSERT INTO run_lineage VALUES ('legacy');
+        CREATE TABLE contribution_events (source_run_id TEXT, owner_user_id TEXT);
+        INSERT INTO contribution_events VALUES ('legacy',NULL);
+        CREATE TABLE branch_versions_migrations (version INT);
+        INSERT INTO branch_versions_migrations VALUES (1);
+        CREATE TABLE workspace_push_intents (run_id TEXT, universe_id TEXT);
+        INSERT INTO workspace_push_intents VALUES ('center-owned','a2');
+    """)
+    _sql(source / ".langgraph_runs.db", """
+        CREATE TABLE checkpoints (thread_id TEXT);
+        INSERT INTO checkpoints VALUES ('thread-old'), ('thread-a');
+        CREATE TABLE writes (thread_id TEXT);
+        INSERT INTO writes VALUES ('thread-old');
+    """)
+    for database, names in {
+        '.owner_leases.db': ('fence_high_water', 'owner_lease', 'owner_store_catalog'),
+        '.storage_accounting.db': ('commons_log_bytes', 'counter', 'measurements'),
+        '.broker/accounts/synthetic-account/policy.db':
+            ('once_approvals', 'policy', 'receipts', 'spend_reservations'),
+        '.broker/outbound.db': ('agent_model_launches', 'agent_request_attempts',
+            'agent_request_dispatches', 'agent_request_usage', 'agent_request_usage_links'),
+        '.runtime/owner-sessions.db': ('approval_handoffs', 'inline_model_flows'),
+    }.items():
+        _sql(source / database, ''.join(
+            f'CREATE TABLE {name} (value INT); INSERT INTO {name} VALUES (1);'
+            for name in names))
+    _sql(source / '.outside-client-authority.sqlite3', """
+        CREATE TABLE authenticated_connections (owner TEXT);
+        INSERT INTO authenticated_connections VALUES ('alice'), ('bob');
+    """)
+    (source / 'never-admitted').mkdir()
+    (source / 'never-admitted/history').write_text('synthetic dropped history')
+    (source / '.tinyassets.db.prebudgetrepair.bak').write_bytes(b'not opened as a database')
+    before = _fingerprint(source)
+    report = census(source)
+    assert report['ready'], report['refusals']
+    assert report['files']['dropped'] == 2
+    assert report['row_totals']['regenerated'] == 8
+    assert report['tables']['.runs.db/runs']['dropped'] == 1
+    assert report['tables']['.runs.db/runs']['per_owner'] == {'account-0001': 1}
+    assert report['tables']['.langgraph_runs.db/checkpoints']['dropped'] == 1
+    assert report['tables']['.tinyassets.db/universes']['dropped'] == 1
+    assert report['tables']['.tinyassets.db/branch_heads']['dropped'] == 1
+    assert report['tables']['.tinyassets.db/app_event_admissions']['dropped'] == 1
+    assert report['tables']['.tinyassets.db/webhook_deliveries']['dropped'] == 1
+    assert report['tables']['.outside-client-authority.sqlite3/authenticated_connections'][
+        'per_owner'] == {'account-0001': 1, 'account-0002': 1}
+    assert report['credentials']['account-0001']['dropped_cli'] == 2
+    assert sum(report['row_totals'].values()) == sum(t['total'] for t in report['tables'].values())
+    for table in report['tables'].values():
+        if table['class'] == 'owner':
+            assert (sum(table['per_owner'].values()) + table['published'] + table['dropped']
+                    == table['total'])
+    assert _fingerprint(source) == before
+
+
+def test_binding_never_substitutes_for_broker_admission(source):
+    _sql(source / '.broker/state/owner-identities.db', 'DELETE FROM center_admissions')
+    report = census(source)
+    assert not report['ready']
+    assert report['admitted_centers'] == 0
+    assert report['refusals']['ownership_not_live_admitted'] == 4
+
+
+def test_unclassified_orphan_is_not_dropped(source):
+    _sql(source / '.tinyassets.db', "INSERT INTO agent_turns VALUES (NULL,NULL,'orphan')")
+    report = census(source)
+    assert not report['ready']
+    assert report['refusals']['unattributed_owner_rows'] == 1

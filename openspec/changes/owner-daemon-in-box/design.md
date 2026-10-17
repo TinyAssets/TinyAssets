@@ -438,8 +438,8 @@ For each admitted owner:
    owner's center ids.
 4. Verify counts and integrity, then remove the host per-center directories.
 
-Any row or file the census cannot attribute to exactly one owner refuses the
-cutover. The `--archive` rehearsal on the private production copy must:
+Every row and file must be attributed to its destination, explicitly dropped,
+or explicitly regenerated. Anything else refuses the cutover. The `--archive` rehearsal on the private production copy must:
 
 - show the per-owner row counts summing to the original totals;
 - show each owner daemon serving that owner's history, pending requests and
@@ -471,19 +471,6 @@ copy/verify/remove transaction, seed shared custody/plans/keys/hooks/published
 stores, remove intermediate CLI/activity copying, and prove serving through
 the owner daemon/router/broker after migration. Task 6 stays unchecked.
 
-The October 10 archive census (read-only mount) refuses: 18 databases, 254
-tables; 156 owner, 10 router, 10 broker, 12 published, and 66 unknown tables
-in a retained pre-repair database copy. It finds 21,124 unattributed owner rows,
-859 unattributed files, and 13 populated tables with attribution rules pending.
-There are six explicitly mapped owners, all free, ten HTTP slots and two CLI
-subscription records. The archive predates owner-split admission: no broker
-identity database and no owner-split marker. These findings are not waived.
-Linux verification: 81 root tests and 45 unprivileged follow-up tests passed
-without skips; the broad focused run's root-venue and registry failures were
-resolved by those follow-ups. The source tree's existing S3/S4 probe-removal
-findings from `check_shapes.py` remain outside this diff. No independent review
-or final-shape serving/migration acceptance is claimed.
-
 ## D7. Guard and deletions
 
 - Guard test: the router package imports no owner store module and opens no
@@ -504,8 +491,11 @@ The migration classifies every table of every shared root database:
 - **Owner box:** every table whose rows belong to one owner, split by owner
   principal or center id.
 
-The census refuses only on an unknown table, or an owner-table row that
-cannot be attributed. Shared tables are not split.
+The census reports router, broker, owner, published, dropped and regenerated
+classes with per-table counts. Dropped legacy state and never-admitted center
+state are excluded from the move; platform leases, fences and accounting are
+regenerated. Unknown tables, conflicting ownership and any item outside those
+explicit classes refuse. Shared tables are not split.
 
 ## D9. Router state, the per-box secret and the socket (review gaps 2, 3)
 
