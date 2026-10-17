@@ -58,7 +58,8 @@ outbound connections at its socket seam.
 #### Scenario: Native commands use the persistent public bridge
 - **WHEN** OwnerBoxd starts in the admitted owner daemon
 - **THEN** it owns one loopback HTTP/CONNECT listener for the box lifetime and supplies proxy defaults to every command, including provisioning and wake probes
-- **AND** each connection uses the owner-bound relay and the broker's existing admission, public-address floor and owner/host caps
+- **AND** each connection uses centerless BOX_PUBLIC on the owner-bound relay; the broker admits the owner's verified box record even with zero centers, refuses revoked, deleted or suspended owners, and retains its public-address floor and owner/host caps
+- **AND** a center or principal supplied to the relay's BOX_PUBLIC request is invalid
 - **AND** authenticated git's invocation-scoped local routes take precedence over the public proxy default
 - **AND** closing the daemon for shutdown or idle sleep closes the listener and active bridges without retaining command output pipes
 

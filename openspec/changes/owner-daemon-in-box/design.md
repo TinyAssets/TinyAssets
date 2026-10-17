@@ -115,8 +115,8 @@ adding a check in shared code.
 - **CLIs (founder, 2026-10-16).** There is one model path: the broker's. Provider CLIs (Claude Code, Codex) as a model source are retired in owner mode, with no placeholder-credential proxy and no broker endpoint built for them. The in-box CLI provider route is deleted, not left refusing. Users whose subscription was connected through a CLI reconnect it through the broker's connection flow at cutover, and the cutover report names those accounts.
 - **Shared reads.** `BOX_SHARED` uses the relay-bound owner without a center and exposes only named plan and published-definition/catalog reads; plan rows live in `.broker/plans.db`, published data in `.published/`, and slice 6 seeds these shared stores at cutover.
 - **Enforcement.** Install one Python socket audit hook at owner startup for direct connects, datagrams and DNS; only loopback IPs/localhost and Unix channels are allowed, while the existing null netns remains the native-process boundary.
-- **Native public egress (6a part 1f).** Startup gives OwnerBoxd the admitted relay and starts one in-process HTTP/CONNECT byte forwarder on `127.0.0.1:3128` for the box lifetime. Every bounded child receives upper/lowercase HTTP, HTTPS and ALL proxy defaults and `NO_PROXY=localhost,127.0.0.1`; invocation-scoped authenticated git's local `http_proxy` still overrides that default. The listener sends centerless `BOX_PUBLIC`; the root relay obtains a live center through its existing owner lifecycle admission, sends the existing owner-bound `BOX_PUBLIC` broker frame, waits for `BOX_ADMITTED`, then acknowledges `BOX_CONNECTED` and copies raw bytes. The broker repeats `BOX_ADMISSION`, destination pinning/private-address refusal and owner/host caps unchanged. The shared router starts no listener. OwnerBoxd.close (including daemon SIGTERM for idle sleep) cancels children and closes/joins listener and active bridges; no per-command fork or output descriptor is retained.
-- **Relay admission as built (6a part 1f).** Center-bearing public and connector channels use the broker's existing admission, never the deleted per-call OwnerRegistry session-grant APIs. The relay bind supplies identity; broker BOX_ADMISSION, per-stream scope/checkpoints and lifecycle retirement remain the authority. Git's binary exchange uses BrokerClient's existing connect seam so it performs BOX_CONNECT/BOX_CONNECTED before sending OPEN in owner mode, rather than writing OPEN directly to the relay socket. This keeps authenticated git on the real owner relay after backend retirement.
+- **Native public egress (6a parts 1f/1g).** Startup gives OwnerBoxd the admitted relay and starts one in-process HTTP/CONNECT byte forwarder on `127.0.0.1:3128` for the box lifetime. Every bounded child receives upper/lowercase HTTP, HTTPS and ALL proxy defaults and `NO_PROXY=localhost,127.0.0.1`; invocation-scoped authenticated git's local `http_proxy` still overrides that default. The listener sends centerless `BOX_PUBLIC`; the root relay supplies only its bound principal to the broker, waits for `BOX_ADMITTED`, then acknowledges `BOX_CONNECTED` and copies raw bytes. The broker admits the owner's verified box record, retaining revocation, deletion and suspension refusals, destination pinning/private-address refusal and owner/host caps. The shared router starts no listener. OwnerBoxd.close (including daemon SIGTERM for idle sleep) cancels children and closes/joins listener and active bridges; no per-command fork or output descriptor is retained.
+- **Relay admission as built (6a parts 1f/1g).** Public channels use owner-keyed broker admission; connector channels keep center-keyed BOX_ADMISSION, never the deleted per-call OwnerRegistry session-grant APIs. The relay bind supplies identity; broker admission, per-stream scope/checkpoints and lifecycle retirement remain the authority. Git's binary exchange uses BrokerClient's existing connect seam so it performs BOX_CONNECT/BOX_CONNECTED before sending OPEN in owner mode, rather than writing OPEN directly to the relay socket. This keeps authenticated git on the real owner relay after backend retirement.
 - **Custody.** Startup rejects the existing platform-secret inventory and provider/OAuth credential environment names; owner-mode credential-vault access and local billing-store access refuse rather than create or read a box-local secret store.
 
 ### D3c decisions (connection lifecycle at the door and the broker)
@@ -298,12 +298,17 @@ are described in the 3c-2 as-built contract above.
   router uses its control socket for wake/stop and the in-box activity status
   supplies idle truth; the per-call file/exec backend is deleted.
   Startup's existing private runsc census stops survivors before accepting work.
-- **Native public bridge (6a part 1f).** The admitted owner startup constructs
+- **Native public bridge (6a parts 1f/1g).** The admitted owner startup constructs
   OwnerBoxd with its relay and one `owner_public_egress` listener at
   `127.0.0.1:3128`. Its bounded launcher supplies proxy defaults to bash,
   provisioning and probes; authenticated git uses its invocation route and
-  the standard relay handshake. Egress admission, destination pinning and
-  caps remain broker-owned. SIGTERM for shutdown/idle sleep reaches
+  the standard relay handshake. Public admission is owner-keyed through
+  `box_admission.resolve_owner`: only `{op: BOX_PUBLIC, principal: owner}`
+  reaches the broker, which verifies the permanent mapping and box record,
+  refuses revoked/deleted or suspended owners, and admits boxes with zero
+  centers. Center-bearing BOX_PUBLIC is invalid at the relay; center-scoped
+  BOX_CONNECT still uses `resolve`. Destination pinning and caps remain
+  broker-owned. SIGTERM for shutdown/idle sleep reaches
   OwnerBoxd.close, which cancels children and closes/joins all proxy streams
   and threads before exit; the next wake can immediately bind the fixed port.
 - **Control socket.** The existing `daemon.sock` accepts `ensure_awake(owner,

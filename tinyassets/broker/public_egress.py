@@ -7,7 +7,7 @@ import sqlite3
 
 from tinyassets import rpc_frames as rf
 from tinyassets.boxes.network import EgressRefused, _checked_addresses, _destination
-from tinyassets.broker.box_admission import resolve
+from tinyassets.broker.box_admission import resolve_owner
 
 #: Kept in step with ``engine_mcp_http``; the broker imports no daemon module.
 BOX_ENGINE_HOST = "engine.tinyassets.box"
@@ -28,8 +28,7 @@ class PublicEgress:
         upstream = None
         pumps = []
         try:
-            await asyncio.to_thread(resolve, self.identities,
-                                    {**document, "op": "BOX_ADMISSION"})
+            await asyncio.to_thread(resolve_owner, self.identities, document)
             if sum(self.active.values()) >= 64 or self.active.get(owner, 0) >= 32:
                 raise EgressRefused("owner or host egress capacity reached")
             self.active[owner] = self.active.get(owner, 0) + 1

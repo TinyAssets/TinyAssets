@@ -47,11 +47,33 @@ def resolve(identities, request: dict) -> dict:
     validate_center(center)
     if identities is None or identities.admitted_owner(center) != owner:
         raise PermissionError("owner has no retained center admission")
+    return _box_record(identities, owner)
+
+
+def resolve_owner(identities, request: dict) -> dict:
+    """Public egress belongs to the owner's box, independently of its centers."""
+    if set(request) != {"op", "principal"} or request["op"] != "BOX_PUBLIC":
+        raise ValueError("invalid owner public admission request")
+    owner = request["principal"]
+    validate_principal(owner)
+    if identities is None:
+        raise PermissionError("owner box admission unavailable")
+    with identities._connect(write=False) as db:
+        if db.execute("SELECT 1 FROM owner_box_revocations WHERE principal=?",
+                      (owner,)).fetchone():
+            raise LookupError("owner box is revoked")
+    record = _box_record(identities, owner)
+    if identities.plans.suspended(owner):
+        raise PermissionError("owner account is suspended")
+    return record
+
+
+def _box_record(identities, owner: str) -> dict:
     machine = identities.owner_machine(owner)
     with sqlite3.connect(identities.path.as_uri() + "?mode=ro", uri=True) as db:
         row = db.execute("SELECT machine, project_id, bhard_bytes FROM box_records "
                          "WHERE principal=?", (owner,)).fetchone()
-    if (row is None or row[:2] != (machine, machine) or type(row[2]) is not int
+    if (machine is None or row is None or row[:2] != (machine, machine) or type(row[2]) is not int
             or row[2] <= 0 or row[2] % 1024):
         raise PermissionError("owner has no verified box registry record")
     return {"op": "BOX_ADMITTED", "uid": machine, "quota": row[2]}

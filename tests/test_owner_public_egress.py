@@ -29,14 +29,15 @@ from tinyassets.owner_public_egress import JAIL_PROXY_URL, PROXY_ENV
 
 
 @pytest.fixture
-def native(broker, tmp_path, monkeypatch):  # noqa: F811
+def native(broker, tmp_path, monkeypatch, request):  # noqa: F811
     from tinyassets.boxes import bootstrap, relay
 
     shared = tmp_path / "shared"
     (shared / ".broker").mkdir(parents=True, mode=0o700)
     identities = OwnerIdentities(shared / ".broker/owner-identities.db", initialize=True)
     uid = identities.resolve("alice", allocate=True).uid
-    identities.admission("admit", "alice", "center")
+    if getattr(request, "param", True):
+        identities.admission("admit", "alice", "center")
     Plans(shared).apply("alice", tier="paid", event_created=1)
     with sqlite3.connect(identities.path) as db:
         db.execute("CREATE TABLE box_records (principal TEXT, machine INT, "
@@ -108,11 +109,20 @@ def http_origin():
 
 
 @pytest.mark.parametrize("tunnel", [False, True])
+@pytest.mark.parametrize("native", [True, False], indirect=True, ids=["center", "zero-centers"])
 def test_owner_command_http_and_connect_reach_local_origin(
     native, http_origin, monkeypatch, tunnel,
 ):
     port, seen = http_origin
     checked = []
+    documents = []
+    serve = native.proxy.serve
+
+    async def public(reader, writer, document):
+        documents.append(document)
+        await serve(reader, writer, document)
+
+    monkeypatch.setattr(native.proxy, "serve", public)
 
     def addresses(host, actual_port):
         assert (host, actual_port) == ("example.test", port)
@@ -137,6 +147,7 @@ def test_owner_command_http_and_connect_reach_local_origin(
         assert native.core._public_forwarder is forwarder
     assert seen == ["/download", "/download"]
     assert checked == [("example.test", port)] * 2
+    assert documents == [{"op": "BOX_PUBLIC", "principal": "alice"}] * 2
     assert not native.core._running
 
 
@@ -178,8 +189,8 @@ def test_every_owner_command_gets_proxy_defaults_without_ambient_proxy(native, m
     assert asyncio.run(OwnerTools(native.home).bash("proxy", command)) == "[exit code 0]"
 
 
-@pytest.mark.parametrize("refusal", ["admission", "registry", "private", "metadata",
-                                   "owner_cap", "host_cap"])
+@pytest.mark.parametrize("refusal", ["admission", "registry", "tombstone", "billing", "abuse",
+                                   "private", "metadata", "owner_cap", "host_cap"])
 def test_native_proxy_refuses_without_opening_any_upstream(native, monkeypatch, refusal):
     opened = []
     real_open = asyncio.open_connection
@@ -195,6 +206,10 @@ def test_native_proxy_refuses_without_opening_any_upstream(native, monkeypatch, 
     elif refusal == "registry":
         with sqlite3.connect(native.identities.path) as db:
             db.execute("DELETE FROM box_records")
+    elif refusal == "tombstone":
+        native.identities.revoke_box("alice", deleted=True)
+    elif refusal in {"billing", "abuse"}:
+        native.identities.plans.set_suspension("alice", reason=refusal, suspended=True)
     elif refusal == "owner_cap":
         native.proxy.active["alice"] = 32
     elif refusal == "host_cap":
@@ -213,6 +228,35 @@ def test_native_proxy_refuses_without_opening_any_upstream(native, monkeypatch, 
         assert done.stdout in {b"b''\n", b"refused\n"}, done.stdout
     assert not opened
     assert native.proxy.active == before
+
+
+@pytest.mark.parametrize("document", [
+    {"op": "BOX_PUBLIC", "center": "center"},
+    {"op": "BOX_PUBLIC", "center": "foreign"},
+    {"op": "BOX_PUBLIC", "principal": "alice"},
+    {"op": "BOX_PUBLIC", "principal": "bob"},
+    {"op": "BOX_CONNECT"},
+    {"op": "BOX_SHARED", "center": "center"},
+    {"op": "BOX_CHANNEL", "center": "center"},
+    {"op": "UNKNOWN"},
+])
+def test_invalid_relay_operations_refuse_before_broker_contact(native, monkeypatch, document):
+    from tinyassets.boxes import relay
+
+    contacts = []
+
+    def broker_peer(sock):
+        contacts.append(sock)
+        return os.getpid(), 1002, 1002
+
+    monkeypatch.setattr(relay, "peer", broker_peer)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+        channel.settimeout(3)
+        channel.connect(str(native.relay))
+        channel.sendall(rf.control(rf.CONNECTION, document))
+        assert rf.read_frame_blocking(channel) is None
+    assert contacts == []
+    assert not native.proxy.active
 
 
 def test_box_forwarder_child_does_not_hold_command_output_open(native):

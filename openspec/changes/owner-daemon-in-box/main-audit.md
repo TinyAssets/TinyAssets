@@ -2086,3 +2086,21 @@ Final 1f validation:
 - The post-commit hygiene gate uses `conv/c6-owner-daemon-s5` and the copied
   body with `Registry row(s): S8` and the existing `Test-Removal: retired --`
   reason. Its output is saved alongside these receipts after the local commit.
+
+## 6a part 1g: owner-keyed public admission (2026-10-17)
+
+`box_admission.resolve_owner`, used by PublicEgress, admits the relay-bound
+owner's verified box record without a center and retains the existing
+box-route revocation/deletion fence and lifecycle plan-suspension refusals;
+`resolve` keeps center-scoped admission. The relay forwards exactly
+`{op: BOX_PUBLIC, principal: owner}` and rejects center-bearing public requests
+before broker contact. The deleted relay grant check stays deleted because
+the bound channel and broker recheck supply authority, while the OS enforces
+owner isolation per the Direction. Tests cover zero-center native HTTP/CONNECT,
+unknown/unadmitted owners, invalid records, tombstones, both suspensions and
+forged relay operations, retaining all existing egress assertions without
+retirement, loosening, skip or xfail additions. Linux: 2,137 passed unprivileged
+(including all structural guards); root: 44 passed and the same five protected
+migration API failures recorded above, with no skips in either final run.
+Ruff, shape checks and strict spec validation passed. Validation receipts:
+`C:/Users/Jonathan/AppData/Local/Temp/s6a1g-validation-8ad854f1/`.

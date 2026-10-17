@@ -61,7 +61,7 @@ class OwnerRelays:
                 guest.settimeout(30)
                 first = rf.read_frame_blocking(guest)
                 if first is None or first.kind != rf.CONTROL or first.stream != rf.CONNECTION:
-                    raise BoxAuthError("relay requires a bounded center selection")
+                    raise BoxAuthError("relay requires a bounded operation")
                 doc = first.control()
                 if doc == {"op": "WHOAMI"}:
                     guest.sendall(rf.control(rf.CONNECTION, {
@@ -86,23 +86,21 @@ class OwnerRelays:
                 shared = doc == {"op": "BOX_SHARED"}
                 owner_public = doc == {"op": "BOX_PUBLIC"}
                 if not shared and not owner_public and (set(doc) != {"op", "center"}
-                                   or doc["op"] not in {"BOX_CONNECT", "BOX_PUBLIC"}):
+                                                       or doc["op"] != "BOX_CONNECT"):
                     raise BoxAuthError("invalid relay operation")
                 if self.admission is None:
                     raise BoxAuthError("relay broker admission unavailable")
-                # The persistent public listener has no invocation center.
-                # Lifecycle admission selects a live center for this bound
-                # owner; PublicEgress repeats BOX_ADMISSION before any bytes.
-                center = (self.admission.owner(owner)["centers"][0] if owner_public
-                          else doc.get("center", ""))
                 broker.settimeout(30)
                 broker.connect(str(self.admission.broker_socket))
                 if peer(broker)[1:] != (1002, 1002):
                     raise BoxAuthError("relay peer is not the broker")
-                broker.sendall(rf.control(rf.CONNECTION, {
+                request = {
                     "op": ("BOX_SHARED" if shared else
-                           "BOX_PUBLIC" if doc["op"] == "BOX_PUBLIC" else "BOX_CHANNEL"),
-                    "principal": owner, "center": center}))
+                           "BOX_PUBLIC" if owner_public else "BOX_CHANNEL"),
+                    "principal": owner}
+                if not owner_public:
+                    request["center"] = doc.get("center", "")
+                broker.sendall(rf.control(rf.CONNECTION, request))
                 answer = rf.read_frame_blocking(broker)
                 if answer is None or answer.control().get("op") != "BOX_ADMITTED":
                     raise BoxAuthError("broker refused box channel")
