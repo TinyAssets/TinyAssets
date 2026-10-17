@@ -133,7 +133,9 @@ def dispatch(root: Path, owner: str, request: dict) -> dict:
         raise ValueError("invalid credential operation")
     with _DISPATCH:
         deleted = DeletedOwners(root)
-        if deleted.contains(owner):
+        # Revocation is idempotent and must stay retryable after a partial
+        # failure; everything else is refused once the tombstone exists.
+        if deleted.contains(owner) and request.get("operation") != "account_revoke":
             raise PermissionError("owner account is deleted")
         return _dispatch(root, owner, request, deleted)
 
