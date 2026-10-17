@@ -390,14 +390,16 @@ def test_policy_source_display_and_capabilities_use_bound_channel(box):
 
 @pytest.mark.parametrize("operation", ["connect", "connect_ex", "udp", "http", "sdk"])
 def test_outbound_seam_refuses_all_direct_network(box, operation):
-    with pytest.raises((PermissionError, httpx.ConnectError, URLError)):
+    # HTTP clients wrap the audit hook's PermissionError; require it in the chain
+    # so a real connection attempt can never satisfy this test.
+    with pytest.raises((PermissionError, httpx.ConnectError, URLError)) as refused:
         if operation == "http":
-            httpx.get("https://203.0.113.1", trust_env=False)
+            httpx.get("https://203.0.113.1", trust_env=False)  # hermetic-ok: hook refuses
         elif operation == "sdk":
             # urllib is also the transport used by provider adapters.
             import urllib.request
 
-            urllib.request.urlopen("https://203.0.113.1", timeout=1)
+            urllib.request.urlopen("https://203.0.113.1", timeout=1)  # hermetic-ok: hook refuses
         else:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM if operation == "udp"
                                else socket.SOCK_STREAM) as sock:
@@ -406,6 +408,14 @@ def test_outbound_seam_refuses_all_direct_network(box, operation):
                 else:
                     getattr(sock, operation)(("203.0.113.1", 443))
     assert not box.calls
+    error, chain = refused.value, []
+    while error is not None:
+        chain.append(error)
+        error = error.__cause__ or error.__context__ or getattr(error, "reason", None)
+        if error in chain:
+            break
+    assert any(isinstance(e, PermissionError) and "broker egress" in str(e)
+               for e in chain), chain
 
 
 def test_vault_and_provider_cli_refuse(box):
