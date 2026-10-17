@@ -427,16 +427,12 @@ are described in the 3c-2 as-built contract above.
 
 ## D6. Migration (one cutover, after a verified full backup)
 
-For each admitted owner:
-
-1. Start from the owner's box tree. The C6 move already copies center trees
-   in.
-2. Move that owner's per-center platform files (conversation, pending, runs,
-   pause, ledger and so on) into the box root.
-3. Extract that owner's rows from each shared root database into the box
-   root's database of the same schema. The key is the owner principal or the
-   owner's center ids.
-4. Verify counts and integrity, then remove the host per-center directories.
+The one migration builds each admitted owner's box root on the box store,
+copies center trees and per-center platform files, and extracts that owner's
+rows from shared root databases with their table/index/trigger schemas. It
+seeds the router, broker and published stores, regenerates platform-local state,
+verifies attribution totals and SQLite integrity, removes host owner trees,
+and publishes the final owner-daemon marker.
 
 Every row and file must be attributed to its destination, explicitly dropped,
 or explicitly regenerated. Anything else refuses the cutover. The `--archive` rehearsal on the private production copy must:
@@ -446,30 +442,75 @@ or explicitly regenerated. Anything else refuses the cutover. The `--archive` re
   pause after the move;
 - prove a restore of the paired backup returns today's layout.
 
-### D6 census and restore groundwork (slice 6, incomplete)
+### D6 as built (slice 6; final acceptance incomplete)
 
-`python -m tinyassets.box_layout_migration census <data> --dry-run` reads
-SQLite through `readonly_db`, inventories shared tables, and emits counts with
-report-local account labels. Unknown tables, missing/contradictory ownership,
-unattributed files, paid orphans and HTTP slots without an owned connection
-refuse. Tables whose attribution rule is still pending are separately marked;
-classifying their destination does not authorize copying or dropping their rows.
-The census reads attribution columns, not conversation/checkpoint payloads.
+`box_layout_migration` is the sole cutover module. Census reports six classes:
+owner, router, broker, published, dropped and regenerated, with per-table totals,
+per-owner counts and report-local account labels. Policy account paths are also
+pseudonymous. The broker admission map is authoritative; creation/home bindings
+only corroborate it. An unknown table, conflicting ownership, unclassified file,
+unattributable paid tier or HTTP slot without its owner's connection refuses.
+The census materializes attribution columns, never history/checkpoint payloads.
+The apply streams payload rows and rechecks their census attribution.
 
-The synthetic source has two owners and two centers each. The Linux restore
-rehearsal runs the existing `backup-restore.sh` against real SQLite and tar
-archives after tree copy, box-record creation, and host-tree/row deletion. All
-three restore the original owner-split file bytes, including the marker and
-databases, with the partial box trees retained outside the active store.
-Host service discovery and mount checks use disposable shims; this does not
-claim real XFS quota or gVisor proof.
+Dropped state includes the listed pre-ownership runs and dependent records,
+never-admitted centers without owner bindings, unowned rows in the reviewed
+small owner-table sets, retired CLI records/homes and the stale database copy.
+The stale copy is never opened and remains only in the paired snapshot.
+Owner leases, fences, accounting counters and branch-version migration records
+are recreated empty in owner stores. Center-keyed event/delivery/lease records
+use the admitted center or are explicitly counted as dropped. Unknown explicit
+principals and contradictory bindings continue to refuse.
 
-This is diagnostic groundwork, **not the completed cutover**. The old apply
-path and deploy wiring are still unchanged. Remaining: finish every table and
-file attribution, replace the intermediate apply with the single final-shape
-copy/verify/remove transaction, seed shared custody/plans/keys/hooks/published
-stores, remove intermediate CLI/activity copying, and prove serving through
-the owner daemon/router/broker after migration. Task 6 stays unchecked.
+The transaction holds the exclusive layout lock and verifies a fresh paired
+snapshot before its first write. A root-private `.owner-cutover.json` records
+build and publish phases, the snapshot digests, owner plan and file manifests.
+Build leaves the original stores intact. Each owner gets its centers,
+`.agent-sessions`, `.universe-sidecars`, attributed transcripts and extracted
+root databases. Shared staging contains router identity/keys/OAuth/sessions,
+hook digests, broker admissions/box records/policy/outbound/custody, explicit
+free or paid plans, published records and an empty next-wake index. Legacy
+principal tombstones become the broker's digest-only schema; restore authority
+checks read that final custody store. HTTP vault
+slots stay in their existing custody location, with broker ownership; CLI slots
+are filtered out. Regenerated rows are not copied.
+
+After row reconciliation, SQLite integrity checks, rsync checksums and durable
+file manifests, publication uses atomic replacement on the destination
+filesystem. A crash in either phase resumes against the same snapshot pair;
+a changed verified output or different pair refuses. Only verified publication
+removes the host trees and writes `owner_daemon=1`, `box_layout=owner-box` and
+`state=stable`. Completed application is idempotent. The deploy's step 3d keeps
+its canary, idle-turn, mount, preflight and fresh-paired-snapshot gates and uses
+this transaction once on a forward deploy. An intermediate owner-box marker
+without the final owner-daemon version now refuses.
+
+Deleted P2b paths: credential copying into host custody, CLI agent-home copying,
+and the second activity-conversion path and its helpers. Their whole obsolete
+tests were retired; the independent retired-workflow guard remains.
+
+Synthetic Linux proof covers two owners with two centers each, every census
+class, legacy runs/checkpoints/transcripts, a never-admitted center, plans,
+custody, shared key/hook authentication, crash/resume and paired restoration.
+The restore uses the real shell/SQLite/tar implementation; only host service,
+mount/quota and absent sandbox-runtime queries are modeled. A completed cutover
+can restore to owner-split only while its shared and owner output manifests
+remain unchanged and the paired source matches exactly. Post-cutover writes
+still require forward recovery; the existing authority/receipt guards remain.
+This is not real XFS quota, sandbox, deployment or production-data proof.
+
+The process rehearsal starts two real owner apps against the migrated roots
+using the existing process launcher. Production HTTP routes return each of four
+centers' conversation history and pending requests. An authenticated test probe
+calls the real pause/status/resume operation and reads each owner's migrated
+plan through the real relay and broker. Foreign-center history is absent. The
+rig substitutes the fixed mount and broker peer UID, not these application
+operations; it does not prove native sandbox isolation.
+
+Task 6 remains unchecked. The schema's populated `outside_switch(id, enabled)`
+has no owner/center key and currently refuses; its explicit disposition is
+pending. Restore after serving writes and the lead's real-data census,
+real-mount rehearsal and CI shards remain unproven.
 
 ## D7. Guard and deletions
 

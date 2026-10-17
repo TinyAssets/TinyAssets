@@ -1099,21 +1099,65 @@ Validation for this repair:
   `C:/Users/Jonathan/AppData/Local/Temp/3c-hygiene-gate.log`.
 
 
-## Slice 6 census classes (2026-10-17, implementation in progress)
+## Slice 6 census and transaction follow-up (2026-10-17)
 
-The census now reports dropped and regenerated rows alongside owner, router,
-broker and published rows, with per-table counts. Broker admissions are the
-sole owner/center authority; creation/home bindings only corroborate them.
-Never-admitted centers with no owner binding and the explicitly listed legacy
-sets are dropped. Explicit unknown principals and conflicting ownership still
-refuse. The stale database copy is counted as a dropped file without opening it.
-Policy databases, additional outbound/session tables, outside authority and
-workspace push intents have explicit placements. Per-account pseudonymous
-reports include attributed dropped CLI records and carried HTTP slots.
+Local census commit: `f6b6e3b8f1a`; transaction commit: `69d53399b4e`;
+recovery and process-serving proof: `986e7bca0f4`.
+The final transaction replaces P2b inside the
+same module; D6 records the six classes and the journaled build/publish protocol.
+Shared stores, explicit plans, broker custody, box records, hook digests and the
+empty wake index are seeded before publication. The final correction translates
+legacy principal tombstones into the broker's digest-only schema and changes
+restore's deletion-frontier read to the final custody store; it does not retain
+an old-metadata fallback. Owner database rows are streamed
+with census-key verification; extracted/seeded SQLite databases and file copies
+are verified before host-tree removal. Interrupted runs resume against the same
+paired snapshot. Completed markers are idempotent; intermediate markers refuse.
 
-Synthetic Linux census proof: 17 passed, no skips. No production data or backup
-was accessed. Prior diagnostic archive findings were removed from D6, and the
-pre-admission fallback was removed from the census. The global outside_switch
-schema has no ownership key; populated ownerless settings currently refuse
-pending the founder's explicit disposition. Task 6 remains unchecked; the final
-apply transaction, P2b removal, deploy wiring and serving rehearsal are pending.
+The old credential copy, CLI-home copy and second activity-conversion pass are
+deleted. Nine whole tests exclusively exercising those paths were retired;
+retained copy, inode, snapshot, workflow-retirement and restore guards remain.
+The final restore adds a narrow unchanged-cutover proof: exact source, shared
+output and owner-output manifests must match before returning to owner-split.
+Changed identities, billing, owner trees, source bytes or receipt permissions
+refuse. This does not permit rollback after serving writes.
+
+Validation receipts are outside the repository under `%TEMP%/ta-s6-validation/`.
+The requested migration/layout/census/backup/restore/deploy/owner/broker patterns
+and every structural GUARDS key ran through Linux oracle. The initial selection
+had 2,604 passes, 123 failures and nine root-only skips: 121 shell tests saw CRLF
+in the edited deploy script, one case required root, and one storage inventory
+needed the three new migration filenames. The shell is restored to LF and the
+inventory is registered. The complete deploy/structural rerun passed 1,465 with
+no skips. Root validation passed 117 with one opposite-venue skip; the original
+unprivileged run covers that case. Root-only skips are not credited as passes.
+The final cutover and CI venue selection passed 171 without skips, including
+custody tombstone compatibility and recovery of interrupted JSON writes,
+SQLite sidecars and partial rsync output. Two real owner apps read all four
+migrated centers' history and pending requests through production routes; a
+test probe exercises real pause/resume and plan reads over the broker relay.
+The rig substitutes the mount and broker peer UID, not application behavior.
+The new root-required
+cutover file is registered with the existing coordinator, preserving selection
+and receipt requirements. The nonroot backup-refusal case skipped in the root
+run passed in the original unprivileged run.
+
+The hygiene gate against `conv/c6-owner-daemon-s5` exited 0 at `986e7bca0f4`:
+23 tests added, nine whole tests retired, no retained assertion reductions.
+Its body declares `Registry row(s): S8` and the retired P2b paths. The nine
+reported findings are those declared whole-test removals. One nonblocking note
+identifies the process launcher's 50 ms bounded socket-readiness wait.
+Receipts: `complete-final.log`, `complete-final.xml` and `hygiene-code.log`.
+
+Ruff passes on every changed Python file. Whole-repository Ruff reports 33
+findings in seven files whose contents are identical to the initial head;
+none is in this change. No skip, xfail, quarantine or old-path guard was added,
+removed or relaxed. No production backup/data was accessed; the remaining
+production-archive reference was removed from an older design note. No agent,
+host git configuration change, new worktree, push, merge or deployment was used.
+
+Task 6 stays unchecked. Remaining: an explicit disposition for the ownerless
+outside_switch singleton; restore proof after the serving stage writes; and
+the lead's real-data census, real-mount rehearsal and CI shards. The synthetic
+filesystem/SQLite cutover, process serving and pristine paired restore do not
+claim those missing acceptance steps.

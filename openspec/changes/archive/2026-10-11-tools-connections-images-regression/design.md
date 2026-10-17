@@ -21,7 +21,6 @@ Restore tools, images and granted HTTP requests while preserving owner UIDs, mou
 ## Acceptance inputs
 
 - Production revision: `b5631fdb05f800fa98117fbff7bf79a15a7c0f40`; immutable image `ghcr.io/tinyassets/tinyassets-daemon@sha256:70dc8ba65bfb6bbd08a9f0b6d051776d81b28d85f0582244e0fbff129c4da778`.
-- Local backup: `C:/Users/Jonathan/AppData/Local/Temp/celle2e-round4/production.tar.gz`; command center `u-01kxm1vszd8hwp7em418asq8h9`.
 - Production was inspected read-only. All mutations and HTTP fixture calls ran on disposable local copies with no network uplink.
 
 ## Confirmed findings and implementation (2026-10-10 resumed)
