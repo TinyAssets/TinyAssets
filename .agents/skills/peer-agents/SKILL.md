@@ -17,7 +17,7 @@ python scripts/peer_agent.py claude --out output/peer-review.md \
     --prompt-file brief.md
 
 # Have Codex fix something in a worktree (write mode):
-python scripts/peer_agent.py codex --model gpt-6-sol --out output/codex-fix.md \
+python scripts/peer_agent.py codex --model sol --out output/codex-fix.md \
     --prompt "Fix the failing test in tests/test_universe_nodes.py and run it" \
     --cwd ../wf-bug126 --write
 
@@ -73,7 +73,7 @@ Two more habits that fell out of the same incident:
 
 Useful flags: `--timeout SEC` (default 1800), `--effort low|medium|high|xhigh` (codex only; `low` for trivial tasks). **Never `--effort minimal` — the GPT-6 models reject it with a 400.** Also `--system TEXT` (codex: prepended to prompt), `--cwd DIR`.
 
-**Models are pinned, not inherited.** claude: `--model fable`. codex: `gpt-6-sol`/`medium` is the wrapper default (escalate hard lanes to `--model gpt-6-astra`) (`DEFAULT_CODEX_MODEL`); the CLI's own default is rejected by a ChatGPT account. Override only with a stated reason (`--model`, `WORKFLOW_CODEX_MODEL`). A failed run writes `[peer_agent] ERROR` + full stderr to `--out`.
+**Models are classes, never versions; each resolves to its newest.** claude: `--model fable`. codex: `luna` mechanical, `sol` (default) build/verify, `astra` hard/escalation; resolved from `~/.codex/models_cache.json`, one retry on the next-newest, model printed. Pin a slug only with a stated reason. A failed run writes `[peer_agent] ERROR` + stderr to `--out`.
 
 ## When to use which peer
 

@@ -262,15 +262,59 @@ def resolve_git_common_dir(
     return str(path.resolve())
 
 
-#: The model every codex peer runs on unless --model / WORKFLOW_CODEX_MODEL says
-#: otherwise. Never the CLI's own default: on a ChatGPT account `codex exec`
-#: defaults to a model the account rejects in seconds (gpt-6.1-sol, 2026-10-02),
-#: and ~/.codex/config.toml is whatever it last said, named nowhere in a result.
-#: GPT-6 Sol is OpenAI's coding/agentic model and its Codex guidance for everyday
-#: and complex coding (2026-10-11 research); Astra stays the escalation model.
-DEFAULT_CODEX_MODEL = "gpt-6-sol"
+# Dispatch by model class so the newest listed version follows catalogue updates.
+DEFAULT_CODEX_MODEL = "sol"
 #: Reasoning effort when --effort / WORKFLOW_CODEX_EFFORT is not given.
 DEFAULT_CODEX_EFFORT = "medium"
+
+
+def resolve_codex_model(name: str, catalogue_path: Path | None = None) -> list[str]:
+    """Resolve a class newest-first from the CLI catalogue, or retain an exact pin."""
+    if re.search(r"[\d-]", name):
+        return [name]
+    if not re.fullmatch(r"[a-z]+", name):
+        raise ValueError(f"invalid Codex model class: {name!r}")
+    path = (
+        catalogue_path if catalogue_path is not None else Path.home() / ".codex/models_cache.json"
+    )
+    unavailable = (
+        "Codex model catalogue unavailable: run `codex` once to refresh "
+        "~/.codex/models_cache.json"
+    )
+    try:
+        catalogue = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise ValueError(unavailable) from None
+    if not isinstance(catalogue, dict) or not isinstance(catalogue.get("models"), list):
+        raise ValueError(unavailable)
+    pattern = re.compile(rf"^gpt-(\d+(?:\.\d+)*)-{name}$")
+    candidates = []
+    for entry in catalogue["models"]:
+        if not isinstance(entry, dict) or entry.get("visibility") != "list":
+            continue
+        slug = entry.get("slug")
+        match = pattern.fullmatch(slug) if isinstance(slug, str) else None
+        if match:
+            candidates.append((tuple(int(part) for part in match[1].split(".")), slug))
+    if not candidates:
+        raise ValueError(f"no listed Codex model in class {name}")
+    return [slug for _, slug in sorted(candidates, reverse=True)]
+
+
+def codex_model_request(args: argparse.Namespace) -> str:
+    return args.model or os.environ.get("WORKFLOW_CODEX_MODEL", "").strip() or DEFAULT_CODEX_MODEL
+
+
+def codex_model_rejected(stderr: str, model: str) -> bool:
+    """Recognize provider rejection of this model, never transcript stdout."""
+    return bool(re.search(
+        rf"(?:the\s+)?['`\"]?{re.escape(model)}['`\"]?\s+model\s+is\s+"
+        r"(?:not supported|not available|unavailable)\b|"
+        rf"model\s+['`\"]?{re.escape(model)}['`\"]?\s+is\s+"
+        r"(?:not supported|not available|unavailable)\b",
+        stderr,
+        re.IGNORECASE,
+    ))
 
 
 def build_codex_cmd(
@@ -278,6 +322,7 @@ def build_codex_cmd(
     out_path: str,
     *,
     git_common_dir: str | None = None,
+    model: str | None = None,
 ) -> list[str]:
     cmd = [
         resolve_codex(),
@@ -291,9 +336,7 @@ def build_codex_cmd(
         "-o",
         out_path,
     ]
-    model = (
-        args.model or os.environ.get("WORKFLOW_CODEX_MODEL", "").strip() or DEFAULT_CODEX_MODEL
-    )
+    model = model or resolve_codex_model(codex_model_request(args))[0]
     effort = (
         args.effort or os.environ.get("WORKFLOW_CODEX_EFFORT", "").strip() or DEFAULT_CODEX_EFFORT
     )
@@ -363,7 +406,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--write", action="store_true", help="Grant write/exec autonomy (see docstring)."
     )
-    p.add_argument("--model", default=None, help="Model override passed through to the CLI.")
+    p.add_argument(
+        "--model", default=None,
+        help="Codex model class (luna/sol/astra) resolved to the newest listed model, "
+        "or an exact slug to pin one.",
+    )
     p.add_argument(
         "--effort", default=None, help="Codex reasoning effort (minimal/low/medium/high/xhigh)."
     )
@@ -391,10 +438,13 @@ def _main() -> int:
 
     owned_temp: str | None = None
     out_path = args.out
+    resolved_model: str | None = None
 
     def fail(msg: str, code: int) -> int:
         """Every non-argparse failure leaves an ERROR block in --out when set."""
         full = f"[peer_agent] ERROR: {msg}"
+        if resolved_model:
+            full += f"\n[peer_agent] codex model: {resolved_model}"
         if out_path:
             try:
                 Path(out_path).write_text(full + "\n", encoding="utf-8")
@@ -417,6 +467,14 @@ def _main() -> int:
         env = subprocess_env_for_provider("claude-code")
         cmd = build_claude_cmd(args)
     else:
+        request = codex_model_request(args)
+        try:
+            candidates = resolve_codex_model(request)
+        except ValueError as exc:
+            return fail(str(exc), 2)
+        resolved_model = candidates[0]
+        label = f"model class {request}" if request != resolved_model else "model pin"
+        print(f"[peer_agent] {label} -> {resolved_model}", file=sys.stderr)
         env = subprocess_env_for_provider("codex")
         if args.system:
             prompt = f"{args.system}\n\n{prompt}"
@@ -432,6 +490,7 @@ def _main() -> int:
             args,
             out_path,
             git_common_dir=git_common_dir,
+            model=resolved_model,
         )
 
     # The child is a bounded peer task; only its own process tree sees this.
@@ -454,26 +513,41 @@ def _main() -> int:
     )
     start = time.monotonic()
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            cwd=args.cwd,
-            creationflags=creation_flags(),
-        )
-        try:
-            stdout_b, stderr_b = proc.communicate(
-                input=prompt.encode("utf-8"), timeout=args.timeout
+        for attempt in range(2):
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                cwd=args.cwd,
+                creationflags=creation_flags(),
             )
-        except subprocess.TimeoutExpired:
-            kill_tree(proc)  # .cmd -> node grandchildren must die too
-            proc.communicate()  # reap once pipe handles are gone
-            return fail(
-                f"{args.provider} exceeded {args.timeout}s timeout — process tree killed.",
-                124,
+            try:
+                stdout_b, stderr_b = proc.communicate(
+                    input=prompt.encode("utf-8"),
+                    timeout=max(0, args.timeout - (time.monotonic() - start)),
+                )
+            except subprocess.TimeoutExpired:
+                kill_tree(proc)  # .cmd -> node grandchildren must die too
+                proc.communicate()  # reap once pipe handles are gone
+                return fail(
+                    f"{args.provider} exceeded {args.timeout}s timeout — process tree killed.",
+                    124,
+                )
+            if not (
+                args.provider == "codex" and attempt == 0 and len(candidates) > 1
+                and proc.returncode != 0
+                and codex_model_rejected(stderr_b.decode("utf-8", errors="replace"), resolved_model)
+            ):
+                break
+            print(
+                f"[peer_agent] model class {request} -> {resolved_model} rejected, "
+                f"using {candidates[1]}", file=sys.stderr,
             )
+            resolved_model = candidates[1]
+            cmd[cmd.index("-m") + 1] = resolved_model
+            Path(out_path).unlink(missing_ok=True)
     except OSError as exc:
         # Covers missing binary AND WinError 193 (extensionless bash shim).
         return fail(
@@ -528,6 +602,8 @@ def _main() -> int:
 
         if args.provider == "claude" and out_path:
             Path(out_path).write_text(text + "\n", encoding="utf-8")
+        if resolved_model:
+            print(f"[peer_agent] codex model: {resolved_model}")
         print(text)
         print(
             f"[peer_agent] {args.provider} done in {elapsed:.0f}s -> {args.out or 'stdout'}",
