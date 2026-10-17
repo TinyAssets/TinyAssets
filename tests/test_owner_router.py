@@ -757,10 +757,13 @@ def test_a_deleted_owner_can_never_mint_again(tmp_path, monkeypatch):
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     mint = {"operation": "key_mint", "name": "k", "request_ref": "ref-1"}
-    assert dispatch(tmp_path, "alice", {"operation": "hook_mint"})["token"]
+    token = dispatch(tmp_path, "alice", {"operation": "hook_mint"})["token"]
+    assert token
     router_credentials.tombstone(tmp_path, "alice", {})
     router_credentials.revoke_account(tmp_path, "alice")
     assert router_credentials.DeletedOwners(tmp_path).contains("alice")
+    # The door's revocation removed the hook the owner minted before deletion.
+    assert router_credentials.HookOwners(tmp_path).resolve(token) is None
     # The tombstone is durable and checked under the dispatch lock, so a box
     # request racing the revocation lands either before it (and is revoked)
     # or after it (and is refused).
