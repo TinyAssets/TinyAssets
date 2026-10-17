@@ -37,6 +37,15 @@ CLASSES = frozenset({CONTROL_PLANE, CALL_SCOPED, DELETE, CLIENT, BOX})
 #: ``"<path>::<qualname>"`` -> (class, note). ``[Timer]``/``[call_later]`` mark a
 #: callback-scheduling site; ``#n`` is the n-th clock-driven site in one function.
 CLASSIFICATION: dict[str, tuple[str, str]] = {
+    "tinyassets/boxes/owner_daemons.py::OwnerDaemons._start": (
+        CALL_SCOPED, "bounded wait for one daemon's authenticated app socket readiness",
+    ),
+    "tinyassets/boxes/owner_daemons.py::OwnerDaemons.ensure_awake": (
+        CALL_SCOPED, "one wake's bounded priority/capacity and crash-backoff wait",
+    ),
+    "tinyassets/boxes/gvisor_runtime.py::GvisorRuntime.shutdown": (
+        CALL_SCOPED, "bounded SIGTERM flush wait for one stopped owner daemon",
+    ),
     "tinyassets/owner_channel.py::UsageLease._heartbeat": (
         CALL_SCOPED, "keeps one broker-held accounting lease alive until the caller closes it",
     ),
@@ -112,7 +121,8 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/auto_ship_ledger.py::_file_lock": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/boxes/host_service.py::_serve": (
         CONTROL_PLANE,
-        "root box host reaps idle sandboxes; no owner task or inference scheduling",
+        "root box host drains idle daemons and restarts crashed boxes with bounded backoff; "
+        "no owner task or inference scheduling",
     ),
     "tinyassets/boxes/production_files.py::ProductionFileProvider.stream": (
         CALL_SCOPED,

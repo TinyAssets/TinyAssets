@@ -16,6 +16,7 @@ from tinyassets.boxes.bootstrap import RUNTIME, peer
 from tinyassets.boxes.file_channel import receive, send, serve_channel
 from tinyassets.boxes.gvisor_files import GvisorFileBackend
 from tinyassets.boxes.gvisor_runtime import GvisorRuntime
+from tinyassets.boxes.owner_daemons import Box, OwnerDaemons
 from tinyassets.boxes.owner_files import OwnerFileHost
 from tinyassets.boxes.provider import BoxError
 from tinyassets.boxes.quota import OwnerQuota
@@ -24,11 +25,16 @@ from tinyassets.boxes.relay import OwnerRelays
 
 class HostService:
     def __init__(self, host: OwnerFileHost, admission: OwnerRegistry, quota: OwnerQuota,
-                 relays: OwnerRelays) -> None:
+                 relays: OwnerRelays, daemons: OwnerDaemons | None = None) -> None:
         self.host, self.admission, self.quota, self.relays = host, admission, quota, relays
         self._broker_lock = threading.Lock()
         self._broker = None
         self._slots = threading.BoundedSemaphore(32)
+        self._broker_slots = threading.BoundedSemaphore(4)
+        # Waiting scheduled wakes cannot consume every listener worker and
+        # prevent an interactive request from entering the priority queue.
+        self._scheduled_slots = threading.BoundedSemaphore(8)
+        self.daemons = daemons
 
     def register(self, sock):
         identity = peer(sock)
@@ -75,12 +81,17 @@ class HostService:
         identity = peer(sock)
         pidfd = None
         try:
-            if identity[1:] != (1001, 1001):
+            if identity[1:] not in {(1001, 1001), (1002, 1002)}:
                 raise BoxError("daemon channel identity refused")
             pidfd = os.pidfd_open(identity[0])
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
             sock.settimeout(30)
             document = receive(sock, identity, pidfd)
+            if "lifecycle" in document:
+                send(sock, self.lifecycle(document, identity[1]))
+                return
+            if identity[1] != 1001:
+                raise BoxError("only the router may bootstrap or admit")
             if document == {"bootstrap": True}:
                 with self._broker_lock:
                     broker = self._broker
@@ -104,6 +115,9 @@ class HostService:
                     row = self.admission.record(grant.owner_id, request["center"])
                     self.quota.provision(grant.uid, row["quota"], request["center"])
                     self.relays.bind(grant.owner_id, grant.uid)
+                    if self.daemons is not None:
+                        with self.daemons.condition:
+                            self.daemons.boxes.setdefault(grant.uid, Box(grant.owner_id, grant.uid))
             send(sock, {"admitted": True})
             serve_channel(sock, peer=identity, grant=grant, host=self.host)
         except (EOFError, OSError, ValueError):
@@ -112,6 +126,42 @@ class HostService:
             if pidfd is not None:
                 os.close(pidfd)
             sock.close()
+
+    def lifecycle(self, document, uid):
+        from tinyassets.broker.owner_identities import validate_principal
+
+        try:
+            if self.daemons is None:
+                raise BoxError("owner lifecycle is unavailable")
+            validate_principal(document.get("owner"))
+            operation, owner = document["lifecycle"], document["owner"]
+            if (uid == 1001 and operation == "ensure_awake"
+                    and set(document) == {"lifecycle", "owner", "scheduled"}):
+                scheduled = document["scheduled"]
+                if type(scheduled) is not bool:
+                    raise ValueError("scheduled must be boolean")
+                if scheduled and not self._scheduled_slots.acquire(blocking=False):
+                    raise BoxError("scheduled wake queue is full")
+                try:
+                    return {"uid": self.daemons.ensure_awake(owner, scheduled=scheduled)}
+                finally:
+                    if scheduled:
+                        self._scheduled_slots.release()
+            if (uid == 1001 and operation == "status"
+                    and set(document) == {"lifecycle", "owner"}):
+                return self.daemons.status(owner)
+            if (uid == 1002 and operation == "retire"
+                    and set(document) == {"lifecycle", "owner", "uid"}):
+                self.daemons.retire(owner, document["uid"])
+                return {"stopped": True}
+            raise BoxError("lifecycle operation refused for this peer")
+        except LookupError:
+            return {"error": "unadmitted"}
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).exception("owner lifecycle failed")
+            return {"error": str(exc)}
 
     def serve(self, path: Path, gid: int, handler, stop: threading.Event):
         path.unlink(missing_ok=True)
@@ -127,15 +177,16 @@ class HostService:
                     sock, _ = listener.accept()
                 except TimeoutError:
                     continue
-                if not self._slots.acquire(blocking=False):
+                slots = self._broker_slots if peer(sock)[1] == 1002 else self._slots
+                if not slots.acquire(blocking=False):
                     sock.close()
                     continue
 
-                def run(connection=sock):
+                def run(connection=sock, capacity=slots):
                     try:
                         handler(connection)
                     finally:
-                        self._slots.release()
+                        capacity.release()
 
                 threading.Thread(target=run, daemon=True).start()
 
@@ -188,24 +239,33 @@ def _serve(*, rootfs: Path, data_root: Path) -> None:
                          admission.authorize(grant, center, destroying=True),
                          bound_for=lambda grant, center:
                          admission.record(grant.owner_id, center)["quota"])
-    service = HostService(host, admission, OwnerQuota(runtime.owner_store), relays)
+    quota = OwnerQuota(runtime.owner_store)
+    daemons = OwnerDaemons(
+        runtime, admission, quota, relays, RUNTIME,
+        idle_seconds=float(os.environ.get("TINYASSETS_BOX_IDLE_SECONDS", "900")),
+        awake_cap=int(os.environ.get("TINYASSETS_BOX_AWAKE_CAP", "6")),
+        memory_bytes=int(os.environ.get("TINYASSETS_BOX_MEMORY_BYTES", str(1024**3))))
+    backend.lifecycle = daemons
+    daemons.idle_guard = backend.idle_guard
+    service = HostService(host, admission, quota, relays, daemons)
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())
     listeners = [threading.Thread(target=service.serve, args=(
         RUNTIME / name, uid, handler, stop), daemon=True)
         for name, uid, handler in (("broker-registration.sock", 1002, service.register),
-                                  ("daemon.sock", 1001, service.daemon))]
+                                  ("daemon.sock", 1102, service.daemon))]
     try:
         for listener in listeners:
             listener.start()
         while not stop.wait(1):
             if not all(listener.is_alive() for listener in listeners):
                 raise RuntimeError("box host admission listener failed")
-            backend.reap_idle()
+            daemons.maintain()
     finally:
         stop.set()
         for listener in listeners:
             listener.join(2)
+        daemons.close()
         host.close()
         relays.close()

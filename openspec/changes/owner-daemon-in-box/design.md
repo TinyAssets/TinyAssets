@@ -19,8 +19,8 @@ adding a check in shared code.
 ## D1. The owner daemon
 
 - **Process:** the same image and code, with entrypoint `python -m tinyassets.owner_daemon
-  --data /home/owner/data --socket /run/owner/app.sock
-  --secret-file /run/owner/secret`. It runs
+  --socket /run/owner/app.sock --relay /run/boxhostd/relay.sock
+  --secret-file /run/boxhostd/secret`. It runs
   inside the owner's gVisor box under the owner's uid. `data_dir()` is the
   owner's root. It serves the existing ASGI app (`/app/api/*`,
   `universe_server` MCP routes, `/api` handlers) on the unix socket, not TCP.
@@ -75,7 +75,7 @@ adding a check in shared code.
 ### D2 decisions (slice 2)
 
 - **Router stores never open in a box.** Every router-store opener refuses inside an owner runtime (`refuse_router_store`); box code reaches router state only through router-forwarded identity metadata or the bound credential channel.
-- **Account revocation.** `account_revoke` takes only the operation over the bound relay credential channel; the router revokes that owner's sessions, inline/hosted/OAuth flows, approval handoffs, live API keys and hook digests. Refresh records carry the verified owner in authenticated public metadata, preserved through rotation so all devices and grace handles can be revoked; legacy unattributed records refuse renewal. Anonymous native login flows contain no owner and are consumed before identity is known; canary rate counters belong to the configured canary. Account deletion in a box must report a failed router revocation as an error.
+- **Account revocation.** The shared door clears router sessions, inline/hosted/OAuth flows, approval handoffs, live API keys and hook digests in-process after box-local deletion, the durable tombstone and broker retirement. No box credential operation can revoke router account state. Refresh records carry the verified owner in authenticated public metadata, preserved through rotation so all devices and grace handles can be revoked; legacy unattributed records refuse renewal. Anonymous native login flows contain no owner and are consumed before identity is known; canary rate counters belong to the configured canary.
 - **Handoff bound.** Each owner keeps at most 20 unexpired approval handoffs; insertion removes the oldest beyond the newest 19 in the same transaction.
 - **One hook door:** `/hooks/inbound/<token>`; `/mcp/hooks/` is deleted and integrations re-point at cutover (named in the slice 7 report).
 
@@ -84,8 +84,8 @@ adding a check in shared code.
 - **Credential channel.** The existing per-box relay adds `ROUTER_CREDENTIAL`; only its `bind()` supplies owner/uid, the broker checks live admission and forwards to a broker-uid-only router socket under `.runtime`; the router is the only key/hook-map writer, using the existing runtime group without host provisioning.
 - **API key authority.** Owner-mode mint/list/revoke use the channel, with no box key database; grants remain local, a failed grant invalidates the newly minted router key, and a request reference never replays its secret.
 - **Hook ordering.** The router mints hook tokens; the box stores only the digest and delivery configuration; all three revocation paths invalidate the router map before the local row, and failed local creation revokes the router token.
-- **Deleted accounts never mint again.** `account_revoke` first writes a durable owner tombstone (`.router-deleted-owners.sqlite3`). Every router credential request runs under one dispatch lock and refuses a tombstoned owner, so a box request racing the revocation is either revoked or refused.
-- **Retirement ends the box's secret** (slice 4): retiring a center or deleting an account makes boxhostd revoke the per-box secret and stop the box before the router state is cleared, so a forward resolved just before retirement fails at ingress. The router adds no recheck.
+- **Deleted accounts never mint again.** The shared door owns `/app/account/delete`: authenticated identity, same-origin JSON and `confirm == "DELETE"`. It forwards to the secret-authenticated `/_box/account/delete` route, which deletes only box-local data and returns its receipt (blocked/refused outcomes stop the orchestration). The door then stores the receipt with `DeletedOwners.add` under the credential dispatch lock, fencing all new mints. A retry with a tombstone skips box deletion and resumes from the durable receipt.
+- **Retirement ends the box's secret** (slice 4): after the tombstone, the door retires all owner center admissions through the fenced broker. The broker permanently revokes the box admission and makes boxhostd revoke the ingress secret, stop the box and close its channels. Only then does the door clear router sessions, refresh sessions, canary state, handoffs, keys and hooks in-process, drop this device's refresh session and return the receipt. Every failed step is loud and retryable. There is no box-to-router account-revoke operation; a stale forward fails at ingress.
 - **Single identity.** A valid protected session and bearer must name the same owner or the router returns 401 before resolving any box.
 - **Approval handoff.** `/app/approval-handoff[/<ref>]` is sign-in navigation whose rows live in the router's owner-sessions store, so it stays at the door. It is never forwarded.
 - **Bounded router rows.** Hook digests are capped per owner with an atomic count-and-insert. Revoked key rows beyond the newest 100 per owner are pruned, with their rate counters. Live keys keep the existing cap of 25.
@@ -291,6 +291,77 @@ are described in the 3c-2 as-built contract above.
 - It restarts on a crash, with backoff.
 - Memory: each box gets a cgroup cap. A cap on concurrently awake boxes
   queues wakes (8 GB host).
+
+### D3 as built (slice 4)
+
+- **One lifecycle writer.** `boxes/owner_daemons.py` runs in boxhostd. The
+  existing file backend delegates wake/stop to it and lends its execution lock
+  when testing idleness; it no longer runs a competing lifecycle in the service.
+  Startup's existing private runsc census stops survivors before accepting work.
+- **Control socket.** The existing `daemon.sock` accepts `ensure_awake(owner,
+  scheduled: bool)` and `status(owner)` from kernel uid/gid 1001; only the
+  broker's 1002 peer can send `retire(owner, uid)`. Its group is the existing
+  shared 1102 group. Root replies are credential-checked. Status includes awake,
+  failure count and the last error, never a secret. Broker retirement has four
+  reserved listener workers. Eight scheduled waiters may occupy workers; the remaining listener capacity stays available for interactive
+  requests. Queue overflow refuses loudly.
+- **Admission.** Root-only broker `BOX_LIFECYCLE(principal, rotate)` reads the
+  live admissions and box record. The UID, XFS quota and centers come from the
+  broker. `rotate=true` mints the next secret. Router resolution first waits for
+  boxhostd, then obtains the current secret through `OWNER_BOX_ROUTE`; it opens
+  no owner data and starts no process. Control waits expire at 65 seconds and
+  become `box_unavailable` (503); unknown/deleted owners remain 404.
+- **Launch.** runsc starts `/opt/venv/bin/python -B -m tinyassets.owner_daemon`
+  with `--socket /run/owner/app.sock --relay /run/boxhostd/relay.sock
+  --secret-file /run/boxhostd/secret`. The only data root is `/home/owner`.
+  The app socket is exported in `/run/tinyassets-boxhostd/<uid>/app.sock`;
+  ephemeral secret files live in the root-private `secrets/` directory and are
+  owner-readable mode 0400, mounted read-only. The owner UID/GID, empty capability
+  sets, static PATH/HOME/browser environment, null network and cgroup limits are
+  explicit. `--host-uds=all` allows opening the bound relay and creating the
+  exported socket. No host credential environment is inherited.
+- **Defaults.** Idle threshold 900 seconds (`TINYASSETS_BOX_IDLE_SECONDS`),
+  awake cap 6 (`TINYASSETS_BOX_AWAKE_CAP`), memory 1 GiB per box
+  (`TINYASSETS_BOX_MEMORY_BYTES`, existing supported sizes 1 or 2 GiB).
+  The service's aggregate MemoryMax is 7G. Interactive wakes evict the least
+  recently used idle box; scheduled wakes wait without eviction and behind
+  interactive tickets. Wakes have a 60-second capacity/readiness deadline.
+- **Idle and turn truth.** `owner_activity` counts HTTP requests and all turns
+  through `control_plane.session.start`. Secret-authenticated local
+  `GET /_box/status` reports active count, idle seconds and drain/revoke state.
+  `POST /_box/drain` atomically closes admission only when no work runs and the
+  requested idle threshold has passed. New requests and turns then refuse.
+  Boxhostd uses this handshake before idle/LRU shutdown; unknown status never
+  authorizes eviction. SIGTERM uses uvicorn's existing lifespan shutdown and
+  closes the local tools. Passive MCP subscriptions do not hold the work gate;
+  graceful shutdown cancels remaining subscriptions after ten seconds. A
+  30-second flush timeout is loud, never treated as a successful sleep.
+- **Crash clock.** The existing one-second host loop checks runtime liveness,
+  sleeps idle boxes and restarts crashes. Backoff is 1, 2, 4, 8... seconds,
+  capped at 60; after five consecutive failures, wakes fail immediately with
+  a loud status while the host continues retrying without human intervention.
+  A box surviving an idle interval resets its failure count. A failed launch
+  whose cleanup cannot prove absence keeps its capacity reservation and is
+  never advertised as ready.
+- **Retirement.** Broker retirement atomically removes the secret and records a
+  revocation in its existing identity DB. A bound `RETIRE_CENTER` channel op
+  uses the relay owner; fenced `CENTER_ADMISSION(retire)` uses the same path.
+  The door's fenced `RETIRE_OWNER` operation permanently revokes the owner and
+  retires every center admission, then requires boxhostd's stop acknowledgment.
+  The host revokes live ingress, stops the box and closes its broker channels.
+  Account deletion's public response remains at the router, which clears its
+  credential state in-process and answers 200 with the saved receipt. Failed
+  steps return errors; a tombstoned retry skips the box and completes retirement
+  and cleanup. A stale forward fails at revoked ingress or the stopped socket.
+  A center-only retirement permits another retained center to wake the owner
+  with a new secret; deleted accounts cannot.
+
+- **Linux proof.** The oracle has no runsc. Lifecycle/OCI tests use the existing
+  runtime-double pattern; the router process fixture now launches actual owner
+  daemons through boxhostd, including wake, HTTP serving, SIGTERM flush, secret
+  rotation and retirement. The real control-socket proof runs as root with an
+  unprivileged router client. Native gVisor/XFS/cgroup integration still needs
+  the deployment venue; unit/protocol results are not that proof.
 
 ## D4. Waker
 

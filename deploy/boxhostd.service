@@ -14,7 +14,7 @@ RestartSec=5
 Delegate=yes
 RuntimeDirectory=tinyassets-boxhostd
 RuntimeDirectoryMode=0755
-MemoryMax=3G
+MemoryMax=7G
 CPUQuota=300%
 TasksMax=5120
 

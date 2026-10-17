@@ -7,6 +7,36 @@ import sqlite3
 from tinyassets.broker.owner_identities import validate_center, validate_principal
 
 
+def owner_record(identities, owner: str, *, rotate: bool) -> dict:
+    """Root boxhostd's launch inputs; no center or UID is selected by a caller."""
+    validate_principal(owner)
+    with identities._connect(write=False) as db:
+        if db.execute("SELECT 1 FROM owner_box_revocations WHERE principal=? AND deleted=1",
+                      (owner,)).fetchone():
+            raise LookupError("owner account is deleted")
+        centers = [row[0] for row in db.execute(
+            "SELECT a.center FROM center_admissions a WHERE a.principal=? AND a.event='admit' "
+            "AND NOT EXISTS (SELECT 1 FROM center_admissions r WHERE r.center=a.center "
+            "AND r.event='retire')", (owner,))]
+    if not centers:
+        raise LookupError("owner has no live admission")
+    record = resolve(identities, {"op": "BOX_ADMISSION", "principal": owner,
+                                  "center": centers[0]})
+    result = {"uid": record["uid"], "quota": record["quota"], "centers": centers}
+    if rotate:
+        uid, result["secret"] = identities.box_route(owner, rotate=True)
+        if uid != result["uid"]:
+            raise RuntimeError("owner reservation changed")
+    return result
+
+
+def lifecycle(identities, doc):
+    if (set(doc) != {"op", "principal", "rotate"}
+            or doc["op"] != "BOX_LIFECYCLE" or type(doc["rotate"]) is not bool):
+        raise ValueError("invalid lifecycle request")
+    return owner_record(identities, doc["principal"], rotate=doc["rotate"])
+
+
 def resolve(identities, request: dict) -> dict:
     if set(request) != {"op", "principal", "center"} or request["op"] != "BOX_ADMISSION":
         raise ValueError("invalid box admission request")

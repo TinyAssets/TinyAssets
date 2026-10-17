@@ -4327,7 +4327,9 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
     from tinyassets.owner_router import OwnerRouter, forwarded_path
 
     app_routes = onboarding_routes()
-    if not owner_mode:
+    if owner_mode:
+        app_routes = [route for route in app_routes if route.path != "/app/account/delete"]
+    else:
         app_routes = [route for route in app_routes if not forwarded_path(route.path)]
 
     app = Starlette(

@@ -85,7 +85,7 @@ Nothing deploys until slice 7.
         Admission writes explicit free; `BOX_SHARED` raises `PlanMissing`
         for missing rows. `BOX_PUBLISH` copies definitions into `.published/`
         with authorship from the relay bind. Proof and deletions: `main-audit.md`.
-- [ ] 4. boxhostd persistent per-owner sandbox lifecycle: wake, idle sleep,
+- [x] 4. boxhostd persistent per-owner sandbox lifecycle: wake, idle sleep,
       crash restart, memory cap, awake cap.
       - Stopping a box on retirement also closes that box's open broker channels.
       - Retiring a center or deleting an account revokes the per-box secret and

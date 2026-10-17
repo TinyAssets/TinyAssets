@@ -1045,7 +1045,8 @@ def delete_account(
     delete_identity: Callable[[str], str] | None = None,
 ) -> dict[str, Any]:
     """Delete everything the platform holds for ``founder_sub`` and return a
-    content-free receipt.
+    content-free receipt. Inside an owner daemon this erases only local data;
+    the shared door owns retirement and router credential cleanup.
 
     Raises :class:`AccountDeletionError` before changing anything when the
     principal is empty or the bound home path is unsafe, and
@@ -1055,8 +1056,10 @@ def delete_account(
     the home binding solely so a retry can finish moving the remaining source.
     """
     from tinyassets.daemon_server import _connect, get_founder_home, initialize_author_server
+    from tinyassets.owner_runtime import current
     from tinyassets.principals import named_principal
 
+    local_only = current() is not None
     principal = named_principal(founder_sub)
     if not principal:
         raise AccountDeletionError("no authenticated principal to delete")
@@ -1119,7 +1122,7 @@ def delete_account(
     def _owner_tree():
         return _destroy_owner_box(root, home, principal=principal)
 
-    destroyed = _phase("owner_tree", _owner_tree) if home else None
+    destroyed = _phase("owner_tree", _owner_tree) if home and not local_only else None
     owner_tree_failed = "owner_tree" in failures
 
     def _broker_rows() -> None:
@@ -1128,7 +1131,8 @@ def delete_account(
         removed = erase_account(root, principal=principal)
         counts.update({f"outbound:{table}": n for table, n in removed.items()})
 
-    _phase("broker_egress", _broker_rows)
+    if not local_only:
+        _phase("broker_egress", _broker_rows)
 
     # After the two-pass deletion only the sidecar remains to stage.
     staged = _phase(
@@ -1208,15 +1212,18 @@ def delete_account(
         _phase("agent_session_records", _session_records)
 
     billing = "not_configured"
-    if home:
+    if home and not local_only:
         billing = _phase(
             "billing", lambda: (cancel_billing or cancel_stripe_billing)(home)
         ) or "error"
     # A failed two-pass deletion resumes only under this principal's own
     # authenticated identity, so the sign-in identity outlives it.
-    identity = "deferred:owner_tree" if owner_tree_failed else _phase(
-        "identity", lambda: (delete_identity or delete_workos_user)(principal)
-    ) or "error"
+    if local_only:
+        identity = "not_applicable"
+    else:
+        identity = "deferred:owner_tree" if owner_tree_failed else _phase(
+            "identity", lambda: (delete_identity or delete_workos_user)(principal)
+        ) or "error"
     # An outcome that is neither "done" nor "nothing to do" is UNFINISHED, even
     # though nothing raised: `unavailable` means we could not reach Stripe, so a
     # subscription may still be charging, and silence there is exactly the harm

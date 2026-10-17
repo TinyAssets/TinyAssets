@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import signal
 from pathlib import Path
 
 
@@ -23,14 +24,32 @@ def main():
     parser.add_argument("--relay", type=Path, default=Path("/run/boxhostd/relay.sock"))
     args = parser.parse_args()
     app = create_app(relay=args.relay, secret_file=args.secret_file)
+    serve(app, args.socket)
+
+
+def serve(app, socket_path: Path):
+    """Finish the ASGI lifespan and tool flush before acknowledging SIGTERM."""
     import uvicorn
 
+    server = uvicorn.Server(uvicorn.Config(app, uds=str(socket_path),
+                                         timeout_graceful_shutdown=10))
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+
+    def stop(*_):
+        server.should_exit = True
+
+    # Uvicorn re-raises captured signals after its lifespan. Keep that re-raise
+    # from terminating Python before the local tool journal's finally runs.
+    for sig in previous:
+        signal.signal(sig, stop)
     try:
-        uvicorn.run(app, uds=str(args.socket))
+        server.run()
     finally:
         from tinyassets.owner_runtime import current
 
         current().tools.close()
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 if __name__ == "__main__":
