@@ -18,7 +18,7 @@ def test_chat_tool_fence_rejects_work_carrier(tmp_path):
         ))
 
 
-@pytest.mark.parametrize("kind", ["engine_inference", "native_agent"])
+@pytest.mark.parametrize("kind", ["engine_inference"])
 def test_agent_kind_cannot_turn_a_work_carrier_into_chat(tmp_path, kind):
     with pytest.raises(PermissionError, match="agent step requires the selected served writer"):
         asyncio.run(ProviderRouter({}).call(
@@ -47,7 +47,7 @@ def test_selected_http_tools_require_the_coordinator(tmp_path, monkeypatch):
 
     authority = SimpleNamespace(
         provider="owned-http", selected_model=SimpleNamespace(provider="owned-http"),
-        native_selection=None, settlement_owner=None,
+        settlement_owner=None,
         _receipt=SimpleNamespace(principal_id="owner"),
     )
     monkeypatch.setattr(module, "_provider_invocation_carrier", lambda *a, **k: authority)

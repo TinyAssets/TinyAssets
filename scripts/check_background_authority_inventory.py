@@ -103,7 +103,7 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     # and hosted key exchange reads an httpx response with `client.stream()`.
     # Neither touches a compiled graph stream or grants execution authority.
     CallSite("tinyassets/onboarding/__init__.py", "_handle_billing_webhook", "request.stream"),
-    CallSite("tinyassets/onboarding/hosted_model_auth.py", "exchange_key", "client.stream"),
+    CallSite("tinyassets/broker/acquisition.py", "exchange_key", "client.stream"),
     # The router relays opaque HTTP bytes to an admitted Unix socket; neither
     # stream invokes a model or executes an owner's work in the shared process.
     CallSite("tinyassets/owner_router.py", "forward", "Request().stream"),
@@ -146,7 +146,6 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     CallSite("tinyassets/agent_loop/box_tools.py", "BoxExecutor._collect", "self.stream"),
     # Reviewed 2026-10-14 (C6): one admitted CLI process drains the provider
     # stream already started for that handle. It starts no branch.
-    CallSite("tinyassets/boxes/cli_launcher.py", "Process._output", "self.stream"),
     # Reviewed C9: the owner-bound model proxy streams broker data after the
     # grant and usage reference are resolved; these calls create no turn root.
     CallSite("tinyassets/agent_loop/model_stream.py", "collect_stream", "proxy.stream"),

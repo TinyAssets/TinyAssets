@@ -14,7 +14,7 @@ FROM mirror.gcr.io/library/python:3.11-slim
 
 # git: the workspace sink shells to it, and several suites need a real repo.
 # bubblewrap: the node sandbox jail - the two proofs that skip everywhere else.
-# nodejs/npm: the provisioning grammar's fixtures, and the codex CLI below.
+# nodejs/npm: the provisioning grammar and browser fixtures.
 # build-essential: source-only wheels in the dependency tree.
 # libtk8.6: python:3.11-slim builds _tkinter but does not ship the Tk/Tcl
 # runtime, so `import tkinter` fails and the desktop launcher's tk is None
@@ -25,28 +25,6 @@ RUN apt-get update -qq \
         git bubblewrap nodejs npm build-essential ca-certificates curl libtk8.6 \
     && rm -rf /var/lib/apt/lists/* \
     && python -c "import tkinter; from tkinter import filedialog, ttk"
-
-# The codex CLI, at production's version and production's path.
-#
-# tests/test_provider_jail_codex_nested.py resolves `codex` on
-# /opt/codex-install/node_modules/.bin -- exactly where the daemon image puts
-# it -- and its `_codex_binary()` reaches past the npm shim for the vendored
-# NATIVE binary, because the proof runs codex's own filesystem sandbox helper.
-# Without both, those cases skip, and linux-jail-proof fails on any skip.
-#
-# No login and no model call: the proofs drive `codex sandbox`, which stands in
-# for what `codex exec` does per tool call. The image holds no model
-# credential (AGENTS.md Hard Rule 15).
-#
-# Keep CODEX_CLI_VERSION equal to the daemon image's ARG of the same name --
-# the jail's behaviour is the thing under proof, so a different codex here
-# would prove it for a version we do not ship.
-# tests/test_linux_oracle.py::test_the_oracle_pins_the_image_s_codex asserts it.
-ARG CODEX_CLI_VERSION=0.160.0
-RUN mkdir -p /opt/codex-install \
-    && npm install --prefix /opt/codex-install "@openai/codex@${CODEX_CLI_VERSION}" \
-    && /opt/codex-install/node_modules/.bin/codex --version \
-    && test -n "$(find /opt/codex-install -path '*/vendor/*/bin/codex' -type f -print -quit)"
 
 # Dependencies are baked into a layer keyed on pyproject.toml. The package
 # itself is NOT installed here: the run mounts the working tree (uncommitted

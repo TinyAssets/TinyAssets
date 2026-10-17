@@ -283,6 +283,7 @@ def test_serving_warmup_runs_after_binding_commit(tmp_path, monkeypatch):
             ).fetchall()
         calls.append((kwargs, rows))
 
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(routes, "notify_engine_serving_changed", notify)
     _seed_serving_assignment(tmp_path)
     assert len(calls) == 1

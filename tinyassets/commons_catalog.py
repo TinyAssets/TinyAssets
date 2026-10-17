@@ -519,7 +519,8 @@ def _ensure_schema(base_path: str | Path) -> Path:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA busy_timeout = 30000")
             conn.execute("PRAGMA foreign_keys = ON")
-            conn.execute("PRAGMA journal_mode = WAL")
+            journal = "DELETE" if Path(base_path).name == ".published" else "WAL"
+            conn.execute(f"PRAGMA journal_mode = {journal}")
             with conn:
                 conn.executescript(_SCHEMA)
                 _migrate_serving_status(conn)
@@ -913,6 +914,13 @@ def publish_definition(
 ) -> dict[str, Any]:
     """Publish one immutable public definition and verified lineage."""
 
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        from tinyassets.owner_channel import request
+
+        return request("", {"op": "BOX_PUBLISH", "payload": payload,
+                            "idempotency_key": idempotency_key})
     actor, key = _author_and_key(author_id, idempotency_key)
     normalized = _normalize_definition_payload(payload)
     with _agent_connect(base_path) as conn:
@@ -940,8 +948,31 @@ def get_definition(
     return _get_definition(base_path, definition_id, include_catalogue=include_catalogue)
 
 
+@contextmanager
+def _definition_connect(base_path):
+    """Published reads never initialize schemas or inspect private store paths."""
+    if Path(base_path).name != ".published":
+        with _agent_connect(base_path) as conn:
+            yield conn
+        return
+    from tinyassets.storage import DB_FILENAME
+
+    path = Path(base_path) / DB_FILENAME
+    if not path.exists():
+        yield None
+        return
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
+    try:
+        conn.row_factory = sqlite3.Row
+        yield conn
+    finally:
+        conn.close()
+
+
 def _get_definition(base_path, definition_id, *, include_catalogue=False):
-    with _agent_connect(base_path) as conn:
+    with _definition_connect(base_path) as conn:
+        if conn is None:
+            return None
         row = _read_definition_row(conn, (definition_id or "").strip())
         if row is None:
             return None
@@ -985,7 +1016,9 @@ def _list_definitions(base_path, *, query="", tags=(), exclude_tags=(), author_i
     excluded_tags = {str(tag).strip() for tag in exclude_tags if str(tag).strip()}
     wanted_author = (author_id or "").strip()
 
-    with _agent_connect(base_path) as conn:
+    with _definition_connect(base_path) as conn:
+        if conn is None:
+            return []
         rows = conn.execute(
             """
             SELECT *
@@ -1061,8 +1094,30 @@ def _require_definition(
     conn: sqlite3.Connection,
     definition_id: str,
 ) -> None:
-    if _read_definition_row(conn, definition_id) is None:
-        raise AgentNotFoundError(f"agent definition {definition_id!r} was not found")
+    if _read_definition_row(conn, definition_id) is not None:
+        return
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        from tinyassets.broker.owner_reads import remote
+
+        definition = remote("definition", definition_id=definition_id, include_catalogue=False)
+        if definition is not None:
+            # A private binding keeps an immutable public copy for its foreign key.
+            # This copy never participates in the published catalog or authorship.
+            conn.execute(
+                "INSERT OR IGNORE INTO agent_definitions (agent_definition_id, author_id, "
+                "name, description, schema_version, tags_json, components_json, "
+                "external_origins_json, portable_json, content_fingerprint, "
+                "idempotency_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?)",
+                (definition_id, definition["author_id"], definition["name"],
+                 definition["description"], definition["schema_version"],
+                 _canonical_json(definition["tags"]), _canonical_json(definition["components"]),
+                 _canonical_json(definition["external_origins"]),
+                 _canonical_json(definition["portable_definition"]),
+                 definition["content_fingerprint"], definition["created_at"]))
+            return
+    raise AgentNotFoundError(f"agent definition {definition_id!r} was not found")
 
 
 #: Roles of which an actor holds at most one binding per universe. The

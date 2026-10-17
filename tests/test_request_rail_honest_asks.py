@@ -257,7 +257,8 @@ def test_the_reprovision_path_carries_scopes_from_its_cas_snapshot(base, monkeyp
     """An intervening scope grant survives; the stale reprovision cannot overwrite it."""
     import json
 
-    from tinyassets.api.http_connection import _ids, connect_http
+    from tests.support.connection_door import connect_http
+    from tinyassets.api.http_connection import _ids
     from tinyassets.broker.client import BrokerClient
 
     _make_universe(base, "u-1", admin="alice")
@@ -284,7 +285,7 @@ def test_the_reprovision_path_carries_scopes_from_its_cas_snapshot(base, monkeyp
         "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
         "git_host": resource.git_host,
     })
-    assert result == {"error": "connection_conflict", "resource": "connection"}
+    assert result == {"error": "connection_conflict"}
     assert stages == ["prepare", "commit"]
     assert ledger.get_connection(connection_id).scopes == ("POST", "git_read:o/r")
 

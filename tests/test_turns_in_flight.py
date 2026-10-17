@@ -198,21 +198,21 @@ def test_relative_paths_work_after_entering_the_data_root(tmp_path, monkeypatch)
 
 
 def test_a_working_journal_row_is_reported_but_does_not_hold_the_deploy(tmp_path):
-    """A cancelled task leaves ``native_started`` behind until the next boot.
+    """A cancelled task leaves ``inference_started`` behind until the next boot.
     Gating on it would hold every deploy to the cap behind a phantom."""
     conn = sqlite3.connect(tmp_path / DB_FILENAME, isolation_level=None)
     ensure_schema(conn)
     conn.execute(
         "INSERT INTO agent_turns (owner_user_id, universe_id, turn_id, version, generation, "
         "state, round_ordinal, input_json, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
-        ("owner", "u-village", "652a2f31e82546a1", 1, 1, "native_started", 1, "{}",
+        ("owner", "u-village", "652a2f31e82546a1", 1, 1, "inference_started", 1, "{}",
          "2026-10-02T01:00:00Z"),
     )
     conn.close()
     status, report = tif.observe(tmp_path)
     assert status == tif.IDLE
     assert report["journal_working"] == [{
-        "universe_id": "u-village", "turn": "652a2f31", "state": "native_started",
+        "universe_id": "u-village", "turn": "652a2f31", "state": "inference_started",
         "age_s": report["journal_working"][0]["age_s"],
     }]
 
@@ -289,8 +289,6 @@ def test_a_garbled_marker_never_reads_as_pending(tmp_path, monkeypatch):
     assert status_mod._load_deploy_pending()["pending"] is False
     (tmp_path / tif.MARKER).write_text('{"pending": true}', encoding="utf-8")
     assert status_mod._load_deploy_pending()["pending"] is False  # no expires_at
-
-
 
 
 # --- the workflow step and deploy/wait_for_turns.sh ---------------------------

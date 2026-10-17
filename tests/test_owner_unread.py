@@ -7,8 +7,8 @@ from contextlib import closing
 import pytest
 from starlette.requests import Request
 
+from tests.support.onboarding import _user
 from tests.test_automations import OWNER, UNIVERSE, _seed_owner
-from tests.test_onboarding_openai_device import _user
 from tinyassets.conversation_store import record_exchange
 from tinyassets.storage.owner_unread import attention
 from tinyassets.storage.pending_requests import create_request, get_request

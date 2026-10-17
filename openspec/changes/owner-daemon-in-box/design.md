@@ -10,7 +10,7 @@
 | The clock is outside, the rows are inside | The box keeps its schedule rows; the shared index keeps only `next_wake_at` |
 | A flag lives with its reader and has one writer | Pause, heartbeats and the ledger are box state; account suspension is router state |
 | Durable truth survives the instance | The box tree on an XFS volume, plus off-host snapshots (C6 P6/S27) |
-| Cross-tenant views are published data, not reads of private stores | Commons publishing copies out at publish time; the listing reads only the caller's own box |
+| Cross-tenant views are published data, not reads of private stores | Commons publishing copies out at publish time; public listing reads only `.published/` |
 
 Any finding in review that can't be expressed as a defect in the router, the
 broker proxy or the waker belongs inside one box. It is fixed there, never by
@@ -117,6 +117,171 @@ adding a check in shared code.
 - **Enforcement.** Install one Python socket audit hook at owner startup for direct connects, datagrams and DNS; only loopback IPs/localhost and Unix channels are allowed, while the existing null netns remains the native-process boundary.
 - **Custody.** Startup rejects the existing platform-secret inventory and provider/OAuth credential environment names; owner-mode credential-vault access and local billing-store access refuse rather than create or read a box-local secret store.
 
+### D3c decisions (connection lifecycle at the door and the broker)
+
+Research rules applied: secrets stay outside the instance; the shared layer
+keeps identity and the credential proxy; one writer per state. The founder
+rule (2026-10-16): every auth type a provider allows, any provider, with no
+provider-specific code.
+
+- **Secrets enter only at the door.** The router serves the whole connection
+  flow: `/app/model-connect/*` (begin, exchange, resume, deposit, inline
+  begin/poll/cancel, generic OAuth begin/exchange, source sign-in),
+  `/app/model-callback/*`, `/app/oauth/client-metadata.json` and
+  `/app/connections`. Flow rows (preset PKCE, generic OAuth, DCR client
+  cache, inline popup) live only in router stores. A secret, code or token
+  never passes through a box, not even in transit.
+- **One custody writer: the broker.** The router hands a secret to the
+  broker over its private socket and never persists it. The broker writes
+  custody in shared `.platform` storage, which no box mounts, and commits the
+  grant. The box sees grants and credential-free source descriptors only.
+- **Which center.** The door accepts a center only if the broker's admission
+  map names the authenticated owner for it (`admitted_owner(center) ==
+  owner`). This is an identity read, not a tenant-data read.
+- **Connects started in a box.** A keyless (`none`) connect goes to the
+  broker's `HTTP_CONNECT` on the box channel. Any connect that needs a secret
+  returns a door link, the existing tap-to-connect, and the box's MCP and
+  approval actions take no secret value. A key pasted into chat is not
+  accepted; the slice 7 report names this change.
+- **Completion.** The box learns of a finished connect from the broker ledger
+  (`HAS_MODEL_SOURCE`, `GRANTED_RESOURCE`), with no push and no shared flow
+  row in the box.
+- **Refresh** runs only inside the broker (`ConnectionTokens`). The box's
+  `REFRESH` frame and every daemon-side vault writer are deleted.
+- **Disconnect and revoke.** Disconnect at the door, or from the box as the
+  credential-free `DISCONNECT` op. The broker calls the provider's RFC 7009
+  `revocation_endpoint` when its directory data names one, then erases
+  custody.
+- **Provider-agnostic.** Auth stays data: schemes `none`, `bearer`, `basic`,
+  `header`, `oauth1a`, `oauth2` and `url_secret`. OAuth uses discovery,
+  RFC 7591 DCR, the client metadata document and registered-client JSON.
+  Provider-specific code is deleted with the CLI stack: the OpenAI device
+  flow and its four routes, `llm_deposit` (Claude/Codex), `sk-ant-` checks,
+  and the CLI branches of `provider_resolver`, `credential_vault`,
+  `providers/base` and `api/universe` `set_engine`. A generic RFC 8628
+  device flow is not built; no remaining HTTP provider needs it, and it can
+  be added later as data.
+- **Plans.** Stripe webhook and checkout write `.broker/plans.db`. Account
+  admission writes an explicit `free` row. A missing row is an error, never
+  read as `free`.
+- **Hooks** already publish through the router (slice 2).
+- **Plans at cutover.** The census copies each owner's tier once into
+  `.broker/plans.db` from the authoritative source: Stripe's customer and
+  subscription, as recorded today in the per-center `.subscription_state.db`
+  that the Stripe webhook writes. If a paid tier can't be attributed to
+  exactly one owner, the census refuses and the cutover stops. It never
+  defaults an account to `free`. Unpaid owners get the explicit `free` row.
+- **Existing connections at cutover.** HTTP connections (vault `http`
+  records under shared `.platform/credential-vaults/<center>/` plus the
+  broker's grant rows) are already outside every box, in the custody store
+  this section keeps. They carry over in place, with the broker as their
+  writer: no copy and no reconnect. CLI `llm_subscription` records are
+  deleted with the CLI stack, so those accounts reconnect through the door.
+  The census verifies the vault location on the production copy.
+- **One model path, so in-process local models go too.** The direct Ollama
+  vision call in image ingestion is deleted. Images keep their metadata,
+  and a description comes from the owner's model through the broker.
+- **The slice 7 report names, per account:** CLI connections lost, keys
+  pasted into chat no longer accepted, HTTP connections carried over,
+  `/mcp/hooks/` integrations to re-point to `/hooks/inbound/`, and the loss
+  of local image descriptions, and billing status no longer showing seat
+  and storage usage (plan limits remain).
+
+| Research rule | 3c |
+|---|---|
+| Secrets stay outside the instance | Entered at the door, held by the broker; the box holds descriptors |
+| The door never reads tenant data | The door reads only identity (admission map) and its own flow rows |
+| One writer per state | Flow rows: router. Custody and grants: broker. Plans: billing at the broker |
+| Isolation is the box, not shared checks | No per-owner filter is added; the owner comes from authentication or the bound channel |
+
+### 3c-2 as built
+
+`ADMIT_CENTER` registers new centers on the bound box channel. `/app/connections`
+and `/app/model-connect/*` run at the shared door using broker admission and catalog
+state, without owner-store reads. `HTTP_CONNECT` prepares, commits and rotates
+custody; `oauth_offer`, `oauth_exchange` and `preset_exchange` keep discovery and
+exchanges in the broker. Box connect and rotate actions take no credential:
+keyless connects use the box channel; other schemes return the existing `/app`
+link with `request`, `center` and connection ID. The browser posts credentials
+only to the door. Commit and rotation record `request_ref` only at the door, with broker-stamped
+`committed_via` derived from transport; the box channel rejects request references.
+Only door-committed grants can complete asks. Box ledger polling
+through `GRANTED_RESOURCE` matches the pending request, applies its uses, resolves
+it and wakes the existing continuation. There is no push or router request read.
+The lifecycle tests exercise all nine auth variants from a separate box process,
+then disconnect at the door or on the box channel and prove the next call fails.
+
+### 3c-2a custody and refresh
+
+- `HTTP_CONNECT` retains prepare/commit. Commit carries `secret` and the
+  prepared revision; the broker rechecks both ledger rows, writes custody and
+  commits the grant in the same operation. The prepare request has an empty
+  secret. `rotate` carries destination, incarnation and secret;
+  `inspect_custody` returns only a refusal code. Box channels refuse secret
+  deposits and rotations; keyless connects remain available.
+- Vault writers and erasers live in `broker/vault.py`. Their lock files live
+  under `.platform/credential-vaults/<center>/`, never in owner trees or
+  provider-assignment state. Ownership rows and deletion tombstones live in
+  `.broker/credential-custody.db`. Task 6 migrates that metadata and changes
+  directory ownership; there is no runtime compatibility reader.
+- `DISCONNECT` erase removes custody before deleting the fenced ledger rows.
+  Account erasure tombstones the principal in broker metadata and erases its
+  vaults under the same locks as deposits and refresh. The daemon no longer
+  stages credential directories during account deletion.
+- `broker/tokens.py` resolves and refreshes OAuth credentials locally, under
+  broker vault admission. The REFRESH/REFRESH_ACK protocol, daemon callback
+  preparation and daemon OAuth-service refresh operation are deleted.
+- Registered OAuth clients use the same trusted directory at exchange and
+  refresh. The existing environment installer renders only `TINYASSETS_OAUTH_*`
+  assignments into `/etc/tinyassets/broker.env`, loaded by the broker's Compose
+  service. Router exchange still needs its existing client configuration;
+  refresh never calls the router for a secret or token.
+- RFC 7009 provider revocation is task 3c-2b, not part of this slice.
+
+### 3c-2b connection controls and revoke
+
+`/app/connections` is standalone at the shared door. Explicit centers use
+`ADMITTED_OWNER`; omitted centers use the fenced `SOLE_CENTER` identity read
+and require exactly one live admission. `CONNECTION_CATALOG` includes fenced
+rows on request so interrupted cleanup stays reachable without an owner store.
+`DISCONNECT` revokes the current OAuth token through the trusted directory's
+RFC 7009 endpoint under the custody lock, then erases locally even on provider
+failure. A failure leaves a revoked, credential-free connection receipt with
+`revocation_error` and `custody_erased`; `HTTP_CONNECT` can replace it with a
+fresh incarnation. Model-connect placement, box actions and ledger completion
+are described in the 3c-2 as-built contract above.
+
+### 3c-3 as built
+
+- `broker.owner_reads.Plans` is the sole shared plan writer. Its `set_plan`
+  (`apply_tier_event`) keeps ordered tiers, end dates, customer/subscription
+  mappings and the owner's checkout attempt in `.broker/plans.db`.
+  First center admission attaches that database and writes the explicit free
+  row in the identity transaction. Further admissions never repair a missing
+  account plan. Missing rows raise `PlanMissing`, including over `BOX_SHARED`.
+- Router billing uses fenced `BILLING_PLAN` IPC because `.broker` belongs to
+  the broker UID. Status, checkout and cancel use authenticated owner IDs;
+  verified subscription events use the stored customer/subscription mapping,
+  and first service-signed owner claims establish that mapping. Old signed
+  center references require the mapping seeded by task 6. Checkout settlement
+  resolves the stored session/attempt identity, ignoring client reference hints.
+  Checkout retries retain their exact creation parameters and lease identity.
+- Seat/storage usage is omitted from the billing response. Plan limits remain;
+  billing does not need a private usage read to sell or cancel a subscription.
+  Box quota reads and update preparation use `BOX_SHARED` plan reads, and broker
+  provisioning reads the shared plan directly.
+- `BOX_PUBLISH` copies a validated immutable definition into `.published/`,
+  taking authorship only from the relay bind. Bundle ownership and idempotency
+  stay enforced by the existing commons writer. `bundle_version` is a named
+  shared read for later package publications. Private bindings may retain a
+  public definition copy for their local foreign key.
+- Public-run and broker catalog reads open only `.published/` and do not
+  initialize schemas. Published SQLite data uses rollback journaling and is
+  broker-written/router-readable. The box no longer writes a shared preview;
+  uncached public previews render from published content without router writes.
+- Task 6's census/copy and task 6a's remaining non-owner compatibility branches
+  are not part of this slice. No deployment or independent review is claimed.
+
 ## D3. Lifecycle (boxhostd)
 
 - boxhostd supports one persistent sandbox per owner, running the owner
@@ -219,3 +384,18 @@ cannot be attributed. Shared tables are not split.
 - Build what the research says to build.
 - A co-admin of a shared center is refused, as the research recommends by default. Sharing is by publishing.
 - Features not ported into the owner daemon at cutover are dropped. The list is reported to the founder before the cutover deploy.
+
+### 3c review corrections
+
+- A credential-free grant records its commit transport (`door` or `box`), chosen
+  by the broker. Only `door` plus the matching request reference completes an
+  existing connection ask; a keyless agent connection cannot approve model use.
+- Model receipts continue in the browser to the protected owner approval endpoint
+  in the box. It verifies the live door grant, prepares only credential-free
+  model metadata and raises the existing `bind_model_access` ask. The owner then
+  approves that ask. Existing automatic selection ranks all accepted sources;
+  the first source powers the default agent. No secret or flow enters the box.
+- Failed provider revocation still erases custody, but returns
+  `removed_locally_revoke_failed` and a durable provider recovery message.
+  Since the token is erased, recovery is manual revocation at the provider,
+  named from directory data; retrying removal retains that outcome.

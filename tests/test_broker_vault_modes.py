@@ -1,12 +1,13 @@
-"""Broker-readable vault publication never publishes a writable secret inode."""
+"""Broker-owned vault publication never grants access to another uid."""
 import os
 import stat
 from pathlib import Path
 
 import pytest
 
-from tinyassets import credential_vault as vault
 from tinyassets.boxes import layout as role_modes
+from tinyassets.broker import vault
+from tinyassets.credential_vault import http_credential_record
 
 # These pin the real role_modes numbers and owner labels; no double is installed.
 pytestmark = [
@@ -23,7 +24,7 @@ def universe(tmp_path, monkeypatch):
 
 def persist(universe, token):
     vault._persist_credential_vault_file(universe, [
-        vault.http_credential_record(destination="fixture", token=token)])
+        http_credential_record(destination="fixture", token=token)])
 
 
 def test_modes_are_set_before_every_replacement(universe, monkeypatch):
@@ -32,7 +33,7 @@ def test_modes_are_set_before_every_replacement(universe, monkeypatch):
 
     def replace(source, destination):
         info = source.stat()
-        assert (info.st_gid, stat.S_IMODE(info.st_mode)) == (os.getgid(), 0o640)
+        assert (info.st_gid, stat.S_IMODE(info.st_mode)) == (os.getgid(), 0o600)
         publications.append(info.st_ino)
         return original(source, destination)
 
@@ -41,10 +42,10 @@ def test_modes_are_set_before_every_replacement(universe, monkeypatch):
     persist(universe, "rotated")
     assert len(publications) == 2 and publications[0] != publications[1]
     assert vault.load_credential_vault(universe)[0]["token"] == "rotated"
-    assert stat.S_IMODE(vault.credential_vault_path(universe).stat().st_mode) == 0o640
+    assert stat.S_IMODE(vault.credential_vault_path(universe).stat().st_mode) == 0o600
 
 
-@pytest.mark.parametrize("failure", ["fchown", "fchmod", "fsync", "replace"])
+@pytest.mark.parametrize("failure", ["chmod", "fsync", "replace"])
 def test_prepublication_failure_preserves_vault_and_cleans_temp(universe, monkeypatch, failure):
     persist(universe, "retained")
     path = vault.credential_vault_path(universe)
@@ -73,7 +74,7 @@ def test_postpublication_flush_failure_does_not_undo_commit(universe, monkeypatc
 
 
 def test_publication_has_no_unsplit_mode(universe):
-    """There is one publication path. 0o600 was the pre-split one; it is gone."""
+    """There is one publication path with broker-only read/write permissions."""
     persist(universe, "only")
-    assert stat.S_IMODE(vault.credential_vault_path(universe).stat().st_mode) == 0o640
+    assert stat.S_IMODE(vault.credential_vault_path(universe).stat().st_mode) == 0o600
     assert not hasattr(vault, "_persist_unsplit_vault_file")

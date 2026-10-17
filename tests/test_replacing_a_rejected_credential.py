@@ -396,7 +396,7 @@ def test_a_real_404_is_still_the_universes_own_to_fix(tmp_path, monkeypatch):
 # The card
 # --------------------------------------------------------------------------- #
 def _deposit(uid, *, secret=SECRET, scopes=(), destination="acme"):
-    from tinyassets.api.http_connection import connect_http
+    from tests.support.connection_door import connect_http
 
     return connect_http(universe_id=uid, payload=json.dumps({
         "destination": destination, "secret": secret, "auth_scheme": "bearer",
@@ -566,17 +566,15 @@ def test_a_secret_field_is_still_refused_on_an_ask_that_is_not_a_credential(base
         assert "only allowed on" in refused["detail"], action
 
 
-def test_a_rotation_needs_a_box_to_paste_into(base):
-    """A fieldless rotation would render as a plain confirm with nothing to
-    type, which is what `remove_http` correctly looks like and this must not."""
+def test_a_fieldless_rotation_returns_the_door(base):
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
     _deposit("u-1")
-
-    refused = _ask("u-1", kind="API", title="rotate", fields=[],
-                   action={"type": "rotate_http", "destination": "acme"})
-    assert refused.get("error") == "request_invalid", refused
-    assert "one field per value" in refused["detail"]
+    asked = _ask("u-1", kind="API", title="rotate", fields=[],
+                 action={"type": "rotate_http", "destination": "acme"})
+    linked = _owner_answer("u-1", request_id=asked["request_id"], values={})
+    assert linked["status"] == "connect_required"
+    assert "request=" + asked["request_id"] in linked["connect_url"]
 
 
 def test_the_boxes_come_from_the_stored_scheme_not_from_the_ask(base):
@@ -584,7 +582,7 @@ def test_the_boxes_come_from_the_stored_scheme_not_from_the_ask(base):
     the deposit reads them. The scheme is read off the CONNECTION when the ask
     is raised, so a one-box card for it is caught before the owner pastes —
     not after, by a write refusing the assembled value."""
-    from tinyassets.api.http_connection import connect_http
+    from tests.support.connection_door import connect_http
 
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
@@ -617,7 +615,7 @@ def test_the_boxes_come_from_the_stored_scheme_not_from_the_ask(base):
 def test_a_sign_in_connection_is_not_rotated_by_pasting(base):
     """Its secret is a token bundle naming where every refresh token is sent, so
     only the owner's own sign-in may write it."""
-    from tinyassets.api.http_connection import rotate_http
+    from tests.support.connection_door import rotate_http
     from tinyassets.credential_vault import load_credential_vault
 
     udir = _make_universe(base, "u-1", admin="alice")
@@ -657,7 +655,7 @@ def test_another_admin_cannot_replace_the_depositors_key(base):
     """An admin may act on the universe, but not on another principal's
     deposited credential — and the refusal is the uniform absent envelope, so
     this surface cannot say which destinations exist or who deposited them."""
-    from tinyassets.api.http_connection import rotate_http
+    from tests.support.connection_door import rotate_http
     from tinyassets.daemon_server import grant_universe_access
 
     _make_universe(base, "u-1", admin="alice")
@@ -669,7 +667,7 @@ def test_another_admin_cannot_replace_the_depositors_key(base):
     _login("mallory")
     refused = rotate_http(universe_id="u-1", payload=json.dumps({
         "destination": "acme", "secret": REPLACEMENT}))
-    assert refused == {"error": "not_found", "resource": "connection"}, refused
+    assert refused == {"error": "not_found"}, refused
     # And through the rail, where they would actually try it.
     railed = _ask("u-1", kind="API", title="rotate", fields=[
         {"name": "token", "type": "secret", "label": "API token"}],
@@ -685,7 +683,7 @@ def test_another_universe_cannot_replace_this_universes_key(base):
     is derived from (universe, destination), so a rotation in one can never
     reach the other's row — and the grant's universe is compared anyway,
     because a derivation is not a check."""
-    from tinyassets.api.http_connection import rotate_http
+    from tests.support.connection_door import rotate_http
 
     _make_universe(base, "u-1", admin="alice")
     _make_universe(base, "u-2", admin="alice")
@@ -704,7 +702,7 @@ def test_another_universe_cannot_replace_this_universes_key(base):
     _make_universe(base, "u-3", admin="alice")
     assert rotate_http(universe_id="u-3", payload=json.dumps({
         "destination": "acme", "secret": REPLACEMENT})) == {
-        "error": "not_found", "resource": "connection"}
+        "error": "not_found"}
     assert _stored_secret(base, "u-1") == SECRET
 
 
@@ -717,7 +715,8 @@ def test_a_grant_bound_to_another_universe_is_refused(base):
     grant, so the derivation resolves the connection and only the explicit
     comparison can refuse it.
     """
-    from tinyassets.api.http_connection import _ids, rotate_http
+    from tests.support.connection_door import rotate_http
+    from tinyassets.api.http_connection import _ids
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     _make_universe(base, "u-1", admin="alice")
@@ -735,7 +734,7 @@ def test_a_grant_bound_to_another_universe_is_refused(base):
 
     refused = rotate_http(universe_id="u-1", payload=json.dumps({
         "destination": "acme", "secret": REPLACEMENT}))
-    assert refused == {"error": "not_found", "resource": "connection"}, refused
+    assert refused == {"error": "not_found"}, refused
     assert _stored_secret(base, "u-1") == SECRET
 
 
@@ -779,8 +778,8 @@ def test_a_connection_that_does_not_read_this_vault_slot_is_refused(base):
     it here would have been the inconsistency. Found by re-reading my own gate
     against the deposit's before sending the review out.
     """
-    from tinyassets.api.http_connection import rotate_http
-    from tinyassets.credential_vault import write_credential_vault
+    from tests.support.connection_door import rotate_http
+    from tinyassets.broker.vault import write_credential_vault
 
     udir = _make_universe(base, "u-1", admin="alice")
     _login("alice")
@@ -793,20 +792,13 @@ def test_a_connection_that_does_not_read_this_vault_slot_is_refused(base):
 
     refused = rotate_http(universe_id="u-1", payload=json.dumps({
         "destination": "acme", "secret": REPLACEMENT}))
-    assert refused == {"error": "not_found", "resource": "connection"}, refused
+    assert refused == {"error": "model_connection_incomplete"}, refused
     assert _stored_secret(base, "u-1", destination="elsewhere") == SECRET
 
 
 def test_a_scheme_with_no_pasted_key_is_refused_in_both_places(base):
-    """Fail closed on the SET the deposit door accepts, not on a list of known
-    exceptions (Codex refute-review, P2 #5).
-
-    `none` sends no credential at all, so storing a pasted value would report a
-    repair that cannot have repaired anything. `connect_http` cannot create such a
-    connection; a lower-level path can, and hard rule 8 says the answer is a
-    refusal, not a receipt.
-    """
-    from tinyassets.api.http_connection import rotate_http
+    """A keyless connection refuses pasted rotation at both door and request rail."""
+    from tests.support.connection_door import rotate_http
 
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
@@ -815,13 +807,15 @@ def test_a_scheme_with_no_pasted_key_is_refused_in_both_places(base):
     direct = rotate_http(universe_id="u-1", payload=json.dumps({
         "destination": "acme", "secret": REPLACEMENT}))
     assert direct["error"] == "rotation_not_supported", direct
-    assert "no pasted key" in direct["detail"]
 
     railed = _ask("u-1", kind="API", title="rotate", fields=[
         {"name": "token", "type": "secret", "label": "API token"}],
         action={"type": "rotate_http", "destination": "acme"})
     assert railed["error"] == "ask_cannot_be_granted", railed
     assert "no pasted key" in railed["detail"]
+    from tinyassets.credential_vault import load_credential_vault
+
+    assert load_credential_vault(base / "u-1") == []
 
 
 def test_a_record_with_no_recorded_depositor_is_refused_before_the_card(base):
@@ -829,8 +823,9 @@ def test_a_record_with_no_recorded_depositor_is_refused_before_the_card(base):
     refusal used to arrive AFTER the owner had pasted, because the preview did not
     check it (Codex refute-review, P2 #4) — and this module's own rule is that the
     owner never sees a tab that cannot be honoured."""
-    from tinyassets.api.http_connection import rotate_http
-    from tinyassets.credential_vault import load_credential_vault, write_credential_vault
+    from tests.support.connection_door import rotate_http
+    from tinyassets.broker.vault import write_credential_vault
+    from tinyassets.credential_vault import load_credential_vault
 
     udir = _make_universe(base, "u-1", admin="alice")
     _login("alice")
@@ -885,7 +880,7 @@ def test_a_rotation_that_cannot_close_its_card_says_so(base):
     finally:
         store.resolve_request = rail_resolve
 
-    assert out["error"] == "request_resolution_unconfirmed", out
+    assert out["error"] == "request_storage_unavailable", out
     assert out["request_pending"] is True
     assert out["destination"] == "acme"
     assert REPLACEMENT not in json.dumps(out)
@@ -901,7 +896,8 @@ def test_a_connection_with_no_live_grant_is_not_rotatable(base):
     derivation is not a check. A connection whose grant is gone authorizes
     nothing, so putting a fresh key into it would be putting one somewhere
     inert."""
-    from tinyassets.api.http_connection import _ids, rotate_http
+    from tests.support.connection_door import rotate_http
+    from tinyassets.api.http_connection import _ids
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     _make_universe(base, "u-1", admin="alice")
@@ -915,7 +911,7 @@ def test_a_connection_with_no_live_grant_is_not_rotatable(base):
 
     refused = rotate_http(universe_id="u-1", payload=json.dumps({
         "destination": "acme", "secret": REPLACEMENT}))
-    assert refused == {"error": "not_found", "resource": "connection"}, refused
+    assert refused == {"error": "not_found"}, refused
     assert _stored_secret(base, "u-1") == SECRET
 
 
@@ -949,7 +945,7 @@ def test_a_card_raised_for_one_deposit_cannot_rotate_a_different_one(base):
 def test_the_new_key_is_in_no_result_and_no_log(base, caplog):
     """Every channel at once on the SUCCESS path: the returned envelopes, the
     request row the rail stores, and the log."""
-    from tinyassets.api.http_connection import rotate_http
+    from tests.support.connection_door import rotate_http
     from tinyassets.api.pending_requests import list_requests
 
     _make_universe(base, "u-1", admin="alice")
@@ -990,8 +986,8 @@ def test_a_storage_fault_carrying_the_key_leaks_it_nowhere(base, caplog):
     message` — so the fault is injected carrying it, and the refusal, the log and
     the traceback text are all checked afterwards.
     """
-    from tinyassets import credential_vault
-    from tinyassets.api.http_connection import rotate_http
+    from tests.support.connection_door import rotate_http
+    from tinyassets.broker import vault as credential_vault
 
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
@@ -1010,7 +1006,7 @@ def test_a_storage_fault_carrying_the_key_leaks_it_nowhere(base, caplog):
     finally:
         credential_vault.write_credential_vault = real
 
-    assert out == {"error": "deposit_failed", "resource": "connection"}, out
+    assert out == {"error": "deposit_failed"}, out
     assert REPLACEMENT not in json.dumps(out)
     messages = [record.getMessage() for record in caplog.records]
     assert any("capture-sentinel" in message for message in messages)
@@ -1030,7 +1026,7 @@ def test_a_storage_fault_carrying_the_key_leaks_it_nowhere(base, caplog):
 def test_a_malformed_replacement_is_refused_before_the_old_one_is_touched(base):
     """Every refusal happens before the single write, so a refused rotation
     leaves the working key exactly as it was."""
-    from tinyassets.api.http_connection import connect_http, rotate_http
+    from tests.support.connection_door import connect_http, rotate_http
 
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
@@ -1080,10 +1076,9 @@ def test_one_builder_writes_every_http_credential_record():
     drifted would be the one whose `deposited_at` lies."""
     import inspect
 
-    from tinyassets.api import http_connection
-    from tinyassets.connection_oauth import tokens
+    from tinyassets.broker import http_connect, tokens
 
-    for module in (http_connection, tokens):
+    for module in (http_connect, tokens):
         source = inspect.getsource(module)
         assert '"credential_type": "http"' not in source, module.__name__
         assert "http_credential_record(" in source, module.__name__

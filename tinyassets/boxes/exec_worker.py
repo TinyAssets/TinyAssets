@@ -23,10 +23,6 @@ def main():
     if size > MAX_MESSAGE:
         raise ValueError("exec entry exceeds bound")
     request = decode(_read(size))
-    if "cli" in request:
-        from tinyassets.boxes.cli_wire import run
-
-        return run(request)
     # No buffered stdin reader: bytes after this control record belong to the
     # command, including the bounded interactive ta replies.
     path = box_relpath(request["cwd"])

@@ -6,7 +6,6 @@ import hashlib
 import math
 import sqlite3
 import threading
-import time
 import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -21,13 +20,11 @@ def validate(operation, args):
         "start_exec": {"argv", "stdin", "env", "cwd", "wall_seconds", "output_bytes",
                        "interactive_stdin"},
         "exec_status": {"op_id"}, "stream": {"exec_id", "offset"},
-        "cancel": {"exec_id"}, "cli_result": {"exec_id"},
-        "ack_cli": {"exec_id"}, "close_stdin": {"exec_id"},
+        "cancel": {"exec_id"}, "close_stdin": {"exec_id"},
         "send_stdin": {"exec_id", "request_id", "data"}}
-    fields["start_cli"] = fields["start_exec"] | {"cli"}
     if not isinstance(args, dict) or set(args) != fields.get(operation):
         raise BoxOperationRefused("invalid execution fields")
-    if operation in {"start_exec", "start_cli"}:
+    if operation == "start_exec":
         from tinyassets.boxes.provider import box_relpath
 
         box_relpath(args["cwd"])
@@ -57,10 +54,6 @@ def validate(operation, args):
         or not isinstance(args["data"], bytes) or len(args["data"]) > MAX_DATA
     ):
         raise BoxOperationRefused("invalid input reply")
-    if operation == "start_cli":
-        from tinyassets.boxes.cli_wire import validate_config
-
-        validate_config(args["cli"])
     encode(args)
 
 
@@ -93,7 +86,6 @@ class Executions:
         self.futures = set()
         self.scheduled = set()
         self.closing = False
-        self.private = {}
 
     def _submit(self, owner):
         self.scheduled.add(owner)
@@ -119,10 +111,8 @@ class Executions:
             return
         self.host.state.finish(grant.owner_id, op_id, {
             "exec_id": exec_id, "center": center, "session": grant.session_id,
-            "exit_code": None, "killed": "cancelled", "output": encode({"data": b""}).decode(),
-            **({"cli_lease": args["cli"]["custody"], "cli_ack": True} if "cli" in args else {})})
+            "exit_code": None, "killed": "cancelled", "output": encode({"data": b""}).decode()})
         self.host.state.release(grant.owner_id)
-        self.private.pop(exec_id, None)
         self._remove(grant.owner_id, job)
 
     def cancel_session(self, grant):
@@ -138,20 +128,9 @@ class Executions:
         for job in jobs:
             if session is None or job[0].session_id == session:
                 self._cancel_queued(job)
-        # Terminal session cancellation may discard completed private results,
-        # but never acknowledges a custody CAS that did not happen.
-        with self.guard:
-            for exec_id in tuple(self.private):
-                record = self.host.state.find_exec(grant.owner_id, exec_id)
-                if record and (session is None or
-                               (record["outcome"] or {}).get("session") == session):
-                    self.private.pop(exec_id, None)
-
     def request(self, grant, center, operation, args, op_id):
         host, owner = self.host, grant.owner_id
-        if operation in {"start_exec", "start_cli"}:
-            for stale_exec in host.state.sweep_cli():
-                self.private.pop(stale_exec, None)
+        if operation == "start_exec":
             digest = op_digest(operation, [center, grant.session_id, args])
             with self.guard:
                 previous = host.state.lookup(owner, op_id)
@@ -159,10 +138,7 @@ class Executions:
                 if previous is None and (self.closing or len(self.running) >= 16
                                          or host.state.pending(owner) > len(queue)):
                     raise BoxBusy("execution capacity or unquiesced owner writers")
-                if previous is None and operation == "start_cli" and len(self.private) >= 16:
-                    raise BoxBusy("private CLI writeback capacity requires acknowledgement")
-                lease = args["cli"]["custody"] if operation == "start_cli" else None
-                previous = host.state.begin(owner, op_id, "exec", digest, cli_lease=lease)
+                previous = host.state.begin(owner, op_id, "exec", digest)
                 if previous is not None:
                     outcome = previous["outcome"] or {}
                     if previous["state"] == "unknown_after_restore" or not outcome.get("exec_id"):
@@ -170,16 +146,12 @@ class Executions:
                     return outcome["exec_id"]
                 exec_id = uuid.uuid4().hex
                 running = Running(args)
-                if operation == "start_cli":
-                    self.private[exec_id] = None
                 running.active = False
                 running.start_lock = host.lock(owner)
                 running.authorize = lambda: host._authorized(grant, center)
                 host.state.register_exec(owner, op_id, exec_id)
                 host.state.update(owner, op_id, {"exec_id": exec_id, "center": center,
-                                               "session": grant.session_id,
-                                               **({"cli_lease": lease, "cli_ack": False}
-                                                  if lease else {})})
+                                               "session": grant.session_id})
                 host.begin_work(grant, center)
                 self.running[exec_id] = running
                 first = owner not in self.scheduled
@@ -202,19 +174,6 @@ class Executions:
                     "state": "unknown_after_restore" if unknown else
                     ("exited" if record["state"] == "done" else "running"),
                     "exit_code": outcome.get("exit_code"), "killed": outcome.get("killed")}
-        if operation in {"cli_result", "ack_cli"}:
-            if operation == "ack_cli" and record["state"] == "done" and outcome.get("cli_ack"):
-                return None
-            if unknown or record["state"] != "done" or exec_id not in self.private:
-                raise BoxError("private CLI result unavailable; never replay refresh")
-            result = self.private[exec_id]
-            if result is None:
-                raise BoxError("private CLI writeback was not received")
-            if operation == "ack_cli":
-                host.state.acknowledge_cli(owner, record["op_id"])
-                del self.private[exec_id]
-                return None
-            return result
         running = self.running.get(exec_id)
         if operation == "stream":
             if unknown or (record["state"] != "done" and running is None):
@@ -294,21 +253,12 @@ class Executions:
                     result, quiescent = None, False
                 try:
                     if result is not None:
-                        private = result.pop("private", None)
-                        if exec_id in self.private:
-                            self.private[exec_id] = private
                         host.state.finish(owner, op_id, {
                             "exec_id": exec_id, "center": center, "session": grant.session_id,
-                            **({"cli_lease": args["cli"]["custody"], "cli_ack": False}
-                               if "cli" in args else {}),
-                            **({"cli_deadline": time.time() + 3600}
-                               if "cli" in args else {}),
                             **result, "output": encode({"data": bytes(running.output)}).decode()})
                     else:
-                        self.private.pop(exec_id, None)
                         host.state.unknown(owner, op_id)
                 except (BoxError, sqlite3.Error):
-                    self.private.pop(exec_id, None)
                     try:
                         host.state.unknown(owner, op_id)
                     except (BoxError, sqlite3.Error):
@@ -333,6 +283,5 @@ class Executions:
             futures = list(self.futures)
         _, pending = wait(futures, timeout=45)
         self.pool.shutdown(wait=False)
-        self.private.clear()
         if pending or self.running:
             raise BoxError("execution supervisor did not quiesce")

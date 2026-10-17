@@ -1,7 +1,7 @@
 """No-LLM sign-in routing uses owner setup, not host/native credential presence."""
 
-from tests.test_onboarding_openai_device import _drive_get, _user
-from tests.test_onboarding_serving import _grant_admin, _seed
+from tests.support.onboarding import _drive_get, _user
+from tests.test_onboarding_serving import _grant_admin
 from tests.test_open_serving_bind import _bound_and_serving, _setup
 
 
@@ -34,13 +34,6 @@ def test_actual_empty_universe_is_empty(tmp_path, monkeypatch):
     (tmp_path / "u-owner").mkdir()
     _, doc = _me(tmp_path, monkeypatch)
     assert doc["setup"] == "empty"
-    assert doc["engine_connected"] is False
-
-
-def test_native_deposit_without_serving_is_recovery(tmp_path, monkeypatch):
-    _seed(tmp_path)
-    _, doc = _me(tmp_path, monkeypatch)
-    assert doc["setup"] == "recovery"
     assert doc["engine_connected"] is False
 
 

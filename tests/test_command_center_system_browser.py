@@ -249,6 +249,7 @@ def _open_switcher(page):
 
 
 def _assert_copy_and_run(home, definition_id, source, alice_ui, alice_automations, before):
+    from tests.support.http_model import provider_name
     from tests.test_background_budget_finalization_e2e import _CountingProvider
     from tinyassets.api.automations import automations
     from tinyassets.automations import run_due_automation
@@ -278,7 +279,7 @@ def _assert_copy_and_run(home, definition_id, source, alice_ui, alice_automation
     assert not resumed.get("error"), resumed
     beat = AutomationStore(home).get(beat.automation_id)
     fake = _CountingProvider()
-    with _real_providers(codex=fake):
+    with _real_providers(**{provider_name(BOB, BOB_UNIVERSE): fake}):
         outcome = run_due_automation(home, beat, "2026-10-01T12:05:00+00:00")
         run_id = str(outcome).rsplit(":", 1)[-1]
         wait_for(run_id, timeout=30)
@@ -808,6 +809,7 @@ def test_release_history_and_policy_consent_are_exact_owner_choices_without_infe
 
     from playwright.sync_api import expect
 
+    from tests.support.http_model import provider_name
     from tests.test_background_budget_finalization_e2e import _CountingProvider
     from tinyassets.api.command_center_update_surface import write_update
     from tinyassets.command_center_update_policy import inspect_policy
@@ -817,14 +819,14 @@ def test_release_history_and_policy_consent_are_exact_owner_choices_without_infe
     with sqlite3.connect(db_path(home)) as db:
         db.execute("DELETE FROM provider_assignments WHERE universe_id=?", (BOB_UNIVERSE,))
     provider = _CountingProvider()
-    with _real_providers(codex=provider):
+    with _real_providers(**{provider_name(BOB, BOB_UNIVERSE): provider}):
         first, second, adoption = _release_copy(home)
     assert load_provider_assignment(home, universe_id=BOB_UNIVERSE) is None
     before = get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)
     origin, calls, failures = system_server
     page = browser.new_page(viewport={"width": 1280, "height": 900})
     try:
-        with _real_providers(codex=provider):
+        with _real_providers(**{provider_name(BOB, BOB_UNIVERSE): provider}):
             _enter(page, origin)
             _open_switcher(page)
             page.get_by_role("button", name="Manage shared copies", exact=True).click()
@@ -1042,6 +1044,7 @@ def test_opted_in_service_update_survives_browser_reload_without_inference(
 ):
     from playwright.sync_api import expect
 
+    from tests.support.http_model import provider_name
     from tests.test_background_budget_finalization_e2e import _CountingProvider
     from tinyassets import command_center_update_maintenance as maintenance
     from tinyassets.command_center_update_policy import inspect_policy
@@ -1049,7 +1052,7 @@ def test_opted_in_service_update_survives_browser_reload_without_inference(
     from tinyassets.universe_owner import record_creation
 
     provider = _CountingProvider()
-    with _real_providers(codex=provider):
+    with _real_providers(**{provider_name(BOB, BOB_UNIVERSE): provider}):
         _first, second, adoption = _release_copy(home)
     with _agent_connect(home) as conn:
         record_creation(conn, universe_id=BOB_UNIVERSE, owner_id=BOB)
@@ -1057,7 +1060,7 @@ def test_opted_in_service_update_survives_browser_reload_without_inference(
     origin, calls, failures = system_server
     page = browser.new_page(viewport={"width": 1280, "height": 900})
     try:
-        with _real_providers(codex=provider):
+        with _real_providers(**{provider_name(BOB, BOB_UNIVERSE): provider}):
             _enter(page, origin)
             _open_switcher(page)
             page.get_by_role("button", name="Manage shared copies", exact=True).click()

@@ -1,16 +1,17 @@
+
 """User-visible disconnect fences model authority, not merely the stored secret."""
 
 import json
 
 import pytest
 
+from tests.support.onboarding import _drive_get, _home, _user
 from tests.test_http_connection_provisioning import (  # noqa: F401
     _connect,
     _login,
     _make_universe,
     _reset_auth,
 )
-from tests.test_onboarding_openai_device import _drive_get, _home, _user
 from tinyassets.api.http_connection import remove_http
 from tinyassets.commons_catalog import create_binding, get_binding, publish_definition
 from tinyassets.provider_assignment import load_provider_assignment
@@ -25,6 +26,9 @@ def rig(tmp_path, monkeypatch):
     from tinyassets.daemon_server import set_founder_home
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    from tests.support.broker_double import seed_owner_admission
+
+    seed_owner_admission(tmp_path, principal="owner", center="u-owner")
     universe = _make_universe(tmp_path, "u-owner", admin="owner")
     set_founder_home(tmp_path, founder_sub="owner", universe_id="u-owner", platform_generated=True)
     _login("owner")
@@ -262,7 +266,7 @@ def test_app_foreign_owner_cannot_inspect_or_remove(rig, monkeypatch):
     status, doc = _drive_get(
         "/app/connections", identity=_user("foreign"), monkeypatch=monkeypatch
     )
-    assert status == 403, doc
+    assert status == 404, doc
     ledger = ConnectionLedger(rig[0] / ".broker" / "outbound.db", data_root=rig[0])
     assert ledger.get_connection(conn["connection_id"]) is not None
 
@@ -286,7 +290,7 @@ def test_cross_origin_cannot_disconnect(rig, monkeypatch):
 
 
 def test_cleanup_failure_keeps_authority_fenced_and_retryable(rig, monkeypatch):
-    import tinyassets.credential_vault as vault
+    from tinyassets.broker import vault
     from tinyassets.provider_serving_binding import serving_connection_is_current
     from tinyassets.providers.served_model_plan import connected_sources
 
@@ -296,7 +300,7 @@ def test_cleanup_failure_keeps_authority_fenced_and_retryable(rig, monkeypatch):
     monkeypatch.setattr(
         vault, "forget_credential", lambda *a, **k: (_ for _ in ()).throw(OSError("disk"))
     )
-    with pytest.raises(OSError):
+    with pytest.raises(PermissionError):
         remove()
     assert connected_sources(rig[0], rig[1], "owner") == frozenset()
     assert not serving_connection_is_current(

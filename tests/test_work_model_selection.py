@@ -149,6 +149,7 @@ def test_http_work_refuses_changed_or_unavailable_selection(
     from datetime import timedelta
 
     from tinyassets.providers import work_model_selection
+    from tinyassets.providers.definition import list_definitions
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     original_prepare = work_model_selection.prepare_work_model_snapshot
@@ -159,7 +160,7 @@ def test_http_work_refuses_changed_or_unavailable_selection(
             snapshot = replace(snapshot, observed_at=snapshot.observed_at - timedelta(minutes=6))
         elif failure == "revoked_source":
             ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
-            ledger.revoke_grant("http_grant_" + "a" * 32)
+            ledger.revoke_grant(list_definitions("universe_alice")[0].ref)
         return snapshot
 
     monkeypatch.setattr(work_model_selection, "prepare_work_model_snapshot", prepare)

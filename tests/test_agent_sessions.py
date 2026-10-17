@@ -7,6 +7,7 @@ prompt and never resumes a record left by the previous launch architecture.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -31,63 +32,7 @@ def _ref(udir: Path, *, prompt="fresh prompt", resume="new message", key="thread
     )
 
 
-
-
-def _sent(server) -> str:
-    return server.requests("turn/start")[0]["params"]["input"][0]["text"]
-
-
 # --- the record ---------------------------------------------------------------
-
-
-def test_a_record_resumes_only_on_its_own_adapter_model_and_prompt(tmp_path):
-    ref = _ref(tmp_path)
-    agent_sessions.save(ref, adapter="codex", model="m1", handle="h-1", system="s")
-    assert agent_sessions.resumable(ref, adapter="codex", model="m1", prompt="fresh prompt")
-    assert agent_sessions.resumable(ref, adapter="other", model="m1", prompt="fresh prompt") is None
-    assert agent_sessions.resumable(ref, adapter="codex", model="m2", prompt="fresh prompt") is None
-    # A caller that rewrote the input is never silently replaced by resume_prompt.
-    assert agent_sessions.resumable(ref, adapter="codex", model="m1", prompt="rewritten") is None
-    assert agent_sessions.consumed_at(tmp_path, ref.key) == 100.0
-
-
-def test_records_live_outside_every_universe_folder(tmp_path):
-    """No jail binds the data root's record store, so nothing a universe runs
-    can plant a link the daemon writes through (gpt-6-astra refute of S1)."""
-    universe = tmp_path / "u-one"
-    universe.mkdir()
-    ref = _ref(universe)
-    agent_sessions.save(ref, adapter="codex", model="", handle="h", system="")
-    assert not list(universe.rglob("*"))
-    records = list((tmp_path / agent_sessions.RECORDS_DIR / "u-one").glob("*.json"))
-    assert len(records) == 1
-
-
-@posix_only
-def test_a_planted_runtime_link_never_redirects_the_native_store(tmp_path):
-    """A workflow provider jail binds the universe read-write, .runtime included."""
-    universe = tmp_path / "u-one"
-    (universe / ".runtime").mkdir(parents=True)
-    victim = tmp_path / "u-other"
-    victim.mkdir()
-    (universe / ".runtime" / "agent-sessions").symlink_to(victim)
-    with pytest.raises(OSError):
-        agent_sessions.native_store(universe, "codex")
-    assert not list(victim.iterdir())
-
-
-@posix_only
-def test_the_native_file_check_never_follows_a_link(tmp_path):
-    universe = tmp_path / "u-one"
-    universe.mkdir()
-    store = agent_sessions.native_store(universe, "codex")
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    (elsewhere / "rollout-x-abc.jsonl").write_text("{}")
-    (store / "linked").symlink_to(elsewhere)
-    assert not agent_sessions.native_file_exists(store, "abc.jsonl")
-    (store / "rollout-y-abc.jsonl").write_text("{}")
-    assert agent_sessions.native_file_exists(store, "abc.jsonl")
 
 
 def test_unseen_keeps_only_later_messages_of_the_named_speakers():
@@ -104,20 +49,13 @@ def test_unseen_keeps_only_later_messages_of_the_named_speakers():
 # --- the codex adapter (app-server threads) -----------------------------------
 
 
-
-
-
-
-
-
-
-
 # --- converse builds the reference ----------------------------------------------
 
 
 def test_a_chat_thread_is_sent_only_notices_it_has_not_seen(tmp_path):
     key = "thread:principal:o"
-    agent_sessions.save(_ref(tmp_path, key=key), adapter="codex", model="", handle="h", system="")
+    path = agent_sessions._record_path(tmp_path, key)
+    path.write_text(json.dumps({"key": key, "consumed_at": 100.0}))
     history = [
         Msg(speaker="founder", text="already in the session", ts=150.0),
         Msg(speaker="platform", text="your run failed", ts=160.0),
@@ -132,7 +70,8 @@ def test_a_chat_thread_is_sent_only_notices_it_has_not_seen(tmp_path):
 
 def test_an_agent_node_is_sent_the_conversation_since_its_last_wake(tmp_path):
     key = "node:abc"
-    agent_sessions.save(_ref(tmp_path, key=key), adapter="codex", model="", handle="h", system="")
+    path = agent_sessions._record_path(tmp_path, key)
+    path.write_text(json.dumps({"key": key, "consumed_at": 100.0}))
     history = [
         Msg(speaker="founder", text="before", ts=50.0),
         Msg(speaker="founder", text="stop the village work", ts=150.0),

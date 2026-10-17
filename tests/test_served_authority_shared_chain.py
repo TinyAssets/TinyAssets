@@ -7,8 +7,7 @@ from dataclasses import fields
 import pytest
 
 from tests.test_open_serving_bind import _CONN_ID, _GRANT_ID, _bound_and_serving
-from tests.test_pending_requests_power import _install_native_executor
-from tests.test_provider_served_router import _fresh_served_request, _served_context
+from tests.test_provider_served_router import _fresh_served_request
 from tinyassets.auth.middleware import revoke_provider_request
 from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.provider_assignment import authorize_served_provider_call
@@ -19,15 +18,11 @@ from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthori
 
 
 def _observe(authorize, root, universe, context, *, role="writer", body_error=False):
-    snapshot = None
     try:
         with authorize(
             root, universe_dir=universe, request_carrier=context.provider_request,
             role=role, operation="converse",
         ) as authority:
-            snapshot = authority.credential_snapshot_dir
-            if snapshot is not None:
-                assert snapshot.exists()
             if body_error:
                 raise LookupError("provider-body-error")
             return {
@@ -39,24 +34,17 @@ def _observe(authorize, root, universe, context, *, role="writer", body_error=Fa
     except LookupError as exc:
         assert str(exc) == "provider-body-error"
         return "body-error"
-    finally:
-        if snapshot is not None:
-            assert not snapshot.exists(), "credential snapshot leaked after authorization"
 
 
-@pytest.mark.parametrize("provider", ["subscription", "http"])
+@pytest.mark.parametrize("provider", ["http"])
 @pytest.mark.parametrize("condition", [
     "ready", "wrong-role", "revoked-carrier", "disabled-agent", "body-error",
     "pending", "failed", "unassigned", "digest-tamper", "binding-tamper",
 ])
 def test_execution_uses_live_connected_chain(tmp_path, monkeypatch, provider, condition):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    if provider == "subscription":
-        _install_native_executor(monkeypatch)
-        universe, serving, capability, context = _served_context(tmp_path)
-    else:
-        universe, serving, _ = _bound_and_serving(tmp_path, monkeypatch)
-        capability, context = _fresh_served_request(universe, serving, request_id="diff")
+    universe, serving, _ = _bound_and_serving(tmp_path, monkeypatch)
+    capability, context = _fresh_served_request(universe, serving, request_id="diff")
     try:
         if condition == "revoked-carrier":
             revoke_provider_request(capability)
@@ -97,10 +85,8 @@ def test_execution_uses_live_connected_chain(tmp_path, monkeypatch, provider, co
             # A legacy single-provider row carries no manifest to cross-check,
             # and the serving binding row is not authority: its tampered digest
             # does not deny the live, accepted source.
-            if provider == "subscription":
-                assert observed["provider"] == "codex"
-            else:
-                assert observed["provider"].startswith("api_key_http:")
+            assert observed["provider"].startswith("api_key_http:")
+            assert observed["authority_kind"] == "connection_grant"
             assert observed["owner_user_id"] == "owner-1"
             assert observed["budget_owner"] == "connected_request"
     finally:
@@ -148,19 +134,6 @@ def test_http_rotation_after_admission_is_fenced_before_launch(tmp_path, monkeyp
                 )
             with pytest.raises((PermissionError, ModelDiscoveryUnavailable)):
                 authority.before_provider_launch()
-    finally:
-        revoke_provider_request(capability)
-
-
-def test_foreign_request_owner_cannot_use_subscription(tmp_path, monkeypatch):
-    _install_native_executor(monkeypatch)
-    universe, _, capability, context = _served_context(
-        tmp_path, capability_owner="other-owner",
-    )
-    try:
-        assert _observe(
-            authorize_served_provider_call, tmp_path, universe, context,
-        ) == "held"
     finally:
         revoke_provider_request(capability)
 

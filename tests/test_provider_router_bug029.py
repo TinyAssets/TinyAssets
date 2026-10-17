@@ -20,35 +20,10 @@ from tinyassets.providers.quota import QuotaTracker
 
 
 class TestAllApiProvidersInCooldown:
-    def test_returns_true_when_all_api_in_cooldown(self):
-        qt = QuotaTracker()
-        chain = ["claude-code", "codex", "ollama-local"]
-        qt.cooldown("claude-code", 120)
-        qt.cooldown("codex", 120)
-        assert qt.all_api_providers_in_cooldown(chain) is True
 
-    def test_returns_false_when_one_api_available(self):
-        qt = QuotaTracker()
-        chain = ["claude-code", "codex", "ollama-local"]
-        qt.cooldown("claude-code", 120)
-        # codex not in cooldown
-        assert qt.all_api_providers_in_cooldown(chain) is False
 
-    def test_returns_false_when_chain_is_local_only(self):
-        qt = QuotaTracker()
-        chain = ["ollama-local"]
-        # No API providers in chain — returns False (nothing to drain).
-        assert qt.all_api_providers_in_cooldown(chain) is False
 
-    def test_custom_local_providers_respected(self):
-        qt = QuotaTracker()
-        chain = ["api-provider", "my-local"]
-        qt.cooldown("api-provider", 120)
-        assert qt.all_api_providers_in_cooldown(chain, local_providers={"my-local"}) is True
 
-    def test_returns_false_when_no_providers(self):
-        qt = QuotaTracker()
-        assert qt.all_api_providers_in_cooldown([]) is False
 
     def test_cooldown_remaining_dict_includes_all_providers(self):
         qt = QuotaTracker()

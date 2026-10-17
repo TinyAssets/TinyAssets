@@ -98,7 +98,6 @@ def _bound_call(router, *, provider: str, allowed_providers):
     carrier.max_tokens = 10
     carrier.max_cost_microunits = 5
     carrier.selected_model = None
-    carrier.native_selection = None
     carrier.settlement_owner = None
     carrier.validate_for_call.return_value = provider
 

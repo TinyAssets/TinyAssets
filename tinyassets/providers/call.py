@@ -5,13 +5,10 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from tinyassets.providers.base import subscription_auth_health
-from tinyassets.providers.provider_resolver import register_subscription_adapters
 from tinyassets.providers.router import ProviderRouter
 
 logger = logging.getLogger(__name__)
-_router: ProviderRouter | None = ProviderRouter(auth_health=subscription_auth_health)
-register_subscription_adapters(_router)
+_router: ProviderRouter | None = ProviderRouter()
 
 
 def set_provider_router(router: ProviderRouter | None) -> None:

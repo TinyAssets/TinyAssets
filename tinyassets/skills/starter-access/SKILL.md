@@ -6,8 +6,8 @@ description: Discover capabilities and request missing credentials or job-sized 
 Discover before claiming a capability is absent: `ta search connections` and
 `ta search pending_request`, then describe the returned capability. Inspect
 existing connections before requesting a credential. For named websites, use
-the connect skill's browser sign-in by default. Use connect_http for an API
-destination and extend_http for wider reach on an existing one; never ask for a
+the connect skill's browser sign-in by default. Use credential-free connect_http
+to open the secure door for an API destination and extend_http for wider reach on an existing one; never ask for a
 key already held in the vault.
 
 Raise a real pending request through the discovered governed ask path, rather

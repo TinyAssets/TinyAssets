@@ -462,23 +462,6 @@ def _stop_workspace_sweepers_between_tests():
         assert runs._stop_all_workspace_sweepers(timeout_s=2)
 
 
-@pytest.fixture(autouse=True)
-def _clear_shortlist_cache_between_tests():
-    """No test may leave a warm catalogue or a refresh thread for the next one.
-
-    ``SHORTLIST_CACHE`` is a process-global, and its refreshes run on a thread
-    pool. Both leak: a warm entry would let a later test read a catalogue it
-    never discovered, and an in-flight refresh scheduled here would run while
-    the NEXT test has ``discover_native_models_sync`` monkeypatched -- calling
-    that test's double from outside its own assertions. Same class as the
-    workspace sweepers above.
-    """
-    import sys
-
-    yield
-    module = sys.modules.get("tinyassets.providers.shortlist_refresh")
-    if module is not None:
-        module.SHORTLIST_CACHE.shutdown(wait=True)
 
 
 @pytest.fixture(autouse=True)

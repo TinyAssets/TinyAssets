@@ -1,8 +1,6 @@
-"""Refresh uses the authenticated stream while the daemon keeps vault admission."""
+"""Refresh runs entirely inside the broker with durable single-flight rotation."""
 # ruff: noqa: F811 -- imported pytest fixtures
-import hashlib
 import os
-import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -12,13 +10,11 @@ import pytest
 
 from tests.support.broker_ipc import discovery  # noqa: F401
 from tests.test_broker_server import Script, broker  # noqa: F401
-from tinyassets import credential_refresh
-from tinyassets import credential_vault as vault
-from tinyassets import rpc_frames as rf
+from tinyassets.broker import credential_refresh, vault
 from tinyassets.broker.client import BrokerClient
 from tinyassets.broker.ops import new_op_id
-from tinyassets.broker.refresh import prepare
 from tinyassets.connection_oauth import tokens
+from tinyassets.credential_vault import http_credential_record
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="Unix broker transport")
 
@@ -31,7 +27,7 @@ def refresh_case(discovery, monkeypatch):
     universe.mkdir()
     initial = tokens.TokenBundle("old-access", "https://issuer.example/token", "client",
                                  refresh_token="single-use", expires_at=1)
-    vault.write_credential_vault(universe, [vault.http_credential_record(
+    vault.write_credential_vault(universe, [http_credential_record(
         destination="synthetic", token=tokens.encode(initial))], owner_user_id="alice")
     spent = []
     def spend(current):
@@ -40,23 +36,20 @@ def refresh_case(discovery, monkeypatch):
         return replace(current, access_token="new-access", refresh_token="rotated",
                        expires_at=time.time() + 3600)
     monkeypatch.setattr(tokens, "refresh", spend)
-    store = tokens.ConnectionTokens(universe_dir=universe, owner_user_id="alice",
-                                    allow_local_refresh=False)
+    from tinyassets.broker.tokens import ConnectionTokens
+
+    store = ConnectionTokens(universe_dir=universe, owner_user_id="alice")
     def dispatch_for(*args):
-        def dispatch(grant, verb, request, *, guard, refresh_request=None, **kwargs):
+        def dispatch(grant, verb, request, *, guard, **kwargs):
             with guard():
-                result = store.current("synthetic", store._read("synthetic"),
-                                       refresh_request=refresh_request)
+                result = store.current("synthetic", store._read("synthetic"))
             assert result.access_token == "new-access"
             return Script([b"refreshed stream"])
         return dispatch
     discovery.broker.server._dispatch_for = dispatch_for
     def client():
         return BrokerClient(discovery.broker.path, principal="alice", command_center="cc-alice",
-            fence=lambda: (discovery.broker.state["generation"], discovery.broker.state["token"]),
-            refresh_factory=lambda grant, connection: prepare(
-                discovery.root, principal="alice", command_center="cc-alice",
-                grant_id=grant, connection_id=connection))
+            fence=lambda: (discovery.broker.state["generation"], discovery.broker.state["token"]))
     discovery.client = client
     discovery.spent = spent
     discovery.store = store
@@ -91,7 +84,7 @@ def test_vault_admission_failure_spends_nothing(refresh_case, monkeypatch):
     assert tokens.decode(refresh_case.store._read("synthetic")).refresh_token == "single-use"
 
 
-def test_rotation_holds_admission_and_retries_write_before_ack(refresh_case, monkeypatch):
+def test_rotation_holds_admission_and_retries_write_before_use(refresh_case, monkeypatch):
     original = credential_refresh._hold_vault
     active = []
     attempts = []
@@ -122,64 +115,11 @@ def test_rotation_holds_admission_and_retries_write_before_ack(refresh_case, mon
     assert len(attempts) == 2 and len(refresh_case.spent) == 1 and not active
 
 
-@pytest.mark.parametrize("change", ["principal", "center", "destination", "fence", "revoked"])
-def test_foreign_stale_and_revoked_refresh_never_spends(refresh_case, change):
-    from tinyassets.storage.outbound_connections import GrantResolutionError
-    args = dict(principal="alice", command_center="cc-alice", grant_id="grant-a",
-                connection_id="conn-a")
-    if change == "principal":
-        args["principal"] = "bob"
-    elif change == "center":
-        args["command_center"] = "cc-bob"
-    elif change == "fence":
-        refresh_case.broker.state["token"] = "stale"
-    elif change == "revoked":
-        refresh_case.ledger.revoke_grant("grant-a")
-    expected = (GrantResolutionError if change in {"principal", "center", "revoked"}
-                else PermissionError)
-    with pytest.raises(expected):
-        callback = prepare(refresh_case.root, **args)
-        callback({"op": "REFRESH", "sequence": 1, "destination": "foreign",
-                  "rejected_digest": ""})
-    assert not refresh_case.spent
-
-
-def test_lost_ack_keeps_rotation_and_does_not_replay(refresh_case):
-    callback = prepare(refresh_case.root, principal="alice", command_center="cc-alice",
-                       grant_id="grant-a", connection_id="conn-a")
-    generation, token = (refresh_case.broker.state[k] for k in ("generation", "token"))
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.connect(str(refresh_case.broker.path))
-        sock.sendall(rf.control(1, {"op": "OPEN", "op_id": new_op_id(),
-            "generation": generation, "token": token, "principal": "alice",
-            "command_center": "cc-alice", "grant_id": "grant-a", "connection_id": "conn-a",
-            "verb": "GET", "request": {}, "refresh": True, "credit": 1024}))
-        assert rf.read_frame_blocking(sock).control()["op"] == "ADMITTED"
-        document = rf.read_frame_blocking(sock).control()
-        assert document["op"] == "REFRESH"
-        callback(document)
-        # Intentionally discard ACK after publication, exactly as a transport
-        # failure can. Fresh OPEN must use the saved rotation without spending.
-    assert request(refresh_case.client())["status"] == 200
+def test_rejected_token_refreshes_only_that_stored_access_token(refresh_case):
+    store = refresh_case.store
+    store.current("synthetic", store._read("synthetic"), rejected="old-access")
+    store.current("synthetic", store._read("synthetic"), rejected="old-access")
     assert len(refresh_case.spent) == 1
-
-
-def test_rejected_digest_refreshes_only_that_stored_access_token(refresh_case):
-    callback = prepare(refresh_case.root, principal="alice", command_center="cc-alice",
-                       grant_id="grant-a", connection_id="conn-a")
-    document = {"op": "REFRESH", "sequence": 1, "destination": "synthetic",
-                "rejected_digest": hashlib.sha256(b"old-access").hexdigest()}
-    callback(document)
-    callback(document)
-    assert len(refresh_case.spent) == 1
-
-
-def test_broker_without_daemon_callback_cannot_refresh_locally(refresh_case):
-    from tinyassets.storage.outbound_connections import ConnectionAuthorizationError
-    with pytest.raises(ConnectionAuthorizationError) as caught:
-        refresh_case.store.current("synthetic", refresh_case.store._read("synthetic"))
-    assert caught.value.failure["provider_detail"] == "daemon refresh admission is unavailable"
-    assert not refresh_case.spent
 
 
 def test_async_client_rotates_without_blocking_demultiplexer(refresh_case):
@@ -190,10 +130,7 @@ def test_async_client_rotates_without_blocking_demultiplexer(refresh_case):
     async def run():
         client = AsyncBrokerClient(refresh_case.broker.path, principal="alice",
             command_center="cc-alice", fence=lambda: (
-                refresh_case.broker.state["generation"], refresh_case.broker.state["token"]),
-            refresh_factory=lambda grant, connection: prepare(
-                refresh_case.root, principal="alice", command_center="cc-alice",
-                grant_id=grant, connection_id=connection))
+                refresh_case.broker.state["generation"], refresh_case.broker.state["token"]))
         try:
             async with client.stream(grant_id="grant-a", connection_id="conn-a", verb="GET",
                                      request={}, op_id=new_op_id()) as stream:

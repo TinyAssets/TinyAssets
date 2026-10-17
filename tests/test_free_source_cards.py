@@ -8,8 +8,8 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from tests import test_model_bootstrap as bootstrap
-from tinyassets.onboarding.source_connect import connect_source
+from tests.support import model_connect as bootstrap
+from tests.support.connection_door import post
 from tinyassets.providers.free_sources import discovered_agent_models, source_cards, source_preset
 
 rig = bootstrap.rig
@@ -63,35 +63,33 @@ def test_cards_do_not_promise_cerebras_is_permanently_free():
 
 
 @pytest.mark.parametrize("source", [card["id"] for card in source_cards()])
-def test_card_connects_with_one_key_and_returns_unanswered_consent(rig, monkeypatch, source):
+def test_card_connects_with_one_key_at_door(rig, monkeypatch, source):
     from tinyassets.provider_assignment import load_provider_assignment
     from tinyassets.providers.definition import list_definitions
 
-    card = source_preset(source)
-    reads = []
-    def read(**kwargs):
-        reads.append(kwargs)
-        return {"data": [{"id": card["models"][0]}]}
-    monkeypatch.setattr("tinyassets.providers.discovery_http.read_granted_discovery_document", read)
-    result = connect_source(base=rig, uid="u-owner", owner="owner", preset=card, key="own-test-key")
-    assert result["status"] == "confirmation_required"
-    assert "own-test-key" not in json.dumps(result)
-    assert load_provider_assignment(rig, universe_id="u-owner") is None
-    definition, = list_definitions("u-owner")
-    assert definition.access_method == "api_key_http" and definition.protocol == "openai_chat"
-    assert reads[0]["url"] == card["base_url"] + "/models"
-    assert reads[0]["owner_user_id"] == "owner" and reads[0]["universe_id"] == "u-owner"
-    access = result["request"]["action"]["model_access"]
-    assert next(iter(access.values()))["cost_caps"] is None
-
-
-def test_foreign_owner_cannot_deposit_or_read_models(rig, monkeypatch):
     reads = []
     monkeypatch.setattr("tinyassets.providers.discovery_http.read_granted_discovery_document",
                         lambda **kw: reads.append(kw))
-    with pytest.raises(PermissionError):
-        connect_source(base=rig, uid="u-owner", owner="other", preset=source_preset("groq"),
-                       key="foreign-key")
+    result = post("deposit_key", {"center": "u-owner", "preset_id": source,
+                                  "key": "own-test-key"})
+    assert result["status"] == "provisioned", result
+    assert "own-test-key" not in json.dumps(result)
+    assert load_provider_assignment(rig, universe_id="u-owner") is None
+    assert list_definitions("u-owner") == []
+    assert reads == []  # Discovery and model consent belong to the box.
+
+
+def test_foreign_owner_cannot_deposit_or_read_models(rig, monkeypatch):
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+
+    reads = []
+    monkeypatch.setattr("tinyassets.providers.discovery_http.read_granted_discovery_document",
+                        lambda **kw: reads.append(kw))
+    with identity_context(Identity(user_id="other", username="other", capabilities=["write"])):
+        result = post("deposit_key", {"center": "u-owner", "preset_id": "groq",
+                                      "key": "foreign-key"})
+    assert result == {"error": "not_found"}
     assert reads == []
 
 
@@ -109,11 +107,13 @@ class Element {
   addEventListener(k,v){this.listeners[k]=v;}
 }
 const host=new Element('div'), $=()=>host, document={createElement:t=>new Element(t)};
-const MCP={_loginEpoch:1};let refreshed=0,sent=null,cleared=false;
+const answers=[],MCP={_loginEpoch:1,answerRequest:async p=>{answers.push(p);}};
+let refreshed=0,sent=null,cleared=false,painted=0;
 const refreshRail=()=>{refreshed++;};
-const HostedModelConnect={post:async(op,p)=>{
+const confirmation={request_id:'model-use-request',action:{type:'bind_model_access'}};
+const HostedModelConnect={paint:()=>{painted++;},post:async(op,p)=>{
   sent={op,p};cleared=input.value==='';
-  return {status:'confirmation_required'};
+  return {status:'confirmation_required',request_id:confirmation.request_id,request:confirmation};
 }};
 __SOURCE__
 const cards=__CARDS__;
@@ -128,6 +128,8 @@ FreeSourceCards.render(cards);
   await button.listeners.click();
   console.log(JSON.stringify({count:host.children.length,preserved,cleared,refreshed,sent,
     type:input.type,value:input.value,
+    setup:HostedModelConnect.setup,request:HostedModelConnect.request,painted,answers,
+    busy:FreeSourceCards.busy,disabled:button.disabled,
     status:initial.children[initial.children.length-1].textContent}));
 })().catch(e=>{console.error(e);process.exitCode=1;});
 """
@@ -142,13 +144,21 @@ FreeSourceCards.render(cards);
     assert observed["type"] == "password" and observed["value"] == ""
     assert observed["sent"] == {"op": "deposit_key", "p": {
         "preset_id": "groq", "key": "private-own-key"}}
-    assert observed["refreshed"] == 1 and "Confirm model access" in observed["status"]
+    assert observed["refreshed"] == 1 and observed["status"] == (
+        "Connection saved. Review model access, then confirm.")
+    assert observed["setup"] == "recovery" and observed["painted"] == 1
+    assert observed["request"] == {
+        "request_id": "model-use-request", "action": {"type": "bind_model_access"}}
+    assert observed["answers"] == []
+    assert observed["busy"] is False and observed["disabled"] is False
 
 
 def test_authenticated_card_ingress_reuses_same_origin_gate(rig, monkeypatch):
+    from tests.support.broker_double import seed_owner_admission
     from tests.test_onboarding_model_connect import post
     from tinyassets import onboarding
 
+    seed_owner_admission(rig, principal="owner", center="u-owner")
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     monkeypatch.setattr(onboarding, "app_config", lambda: {"resource": "https://tinyassets.io/mcp"})
     monkeypatch.setattr(onboarding, "_read_home", lambda *a, **kw: "u-owner")
@@ -160,7 +170,7 @@ def test_authenticated_card_ingress_reuses_same_origin_gate(rig, monkeypatch):
     assert denied.status_code == 403
     response = post("deposit_key", document)
     assert response.status_code == 200, response.text
-    assert response.json()["status"] == "confirmation_required"
+    assert response.json()["status"] == "provisioned"
     assert "my-private-key" not in response.text
 
 

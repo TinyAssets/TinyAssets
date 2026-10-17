@@ -143,7 +143,7 @@ def _drive(method, query="", body=None, *, identity, monkeypatch, base: Path, or
 
 
 def _as(sub):
-    from tests.test_onboarding_openai_device import _user
+    from tests.support.onboarding import _user
 
     return _user(sub)
 

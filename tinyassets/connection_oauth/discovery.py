@@ -282,7 +282,6 @@ def resolve_offer(requested: dict[str, Any], hosts: list[str]) -> tuple[dict[str
     The offer is recorded on the ask, so what the owner is
     shown (every endpoint host) is exactly what the sign-in uses.
     """
-    scopes = list(requested.get("scopes") or [])
     directory_hosts = [urlsplit(h).hostname if h.startswith("https://") else h for h in hosts]
     from tinyassets.connection_oauth import directory, service
 
@@ -303,6 +302,13 @@ def resolve_offer(requested: dict[str, Any], hosts: list[str]) -> tuple[dict[str
         # the host supports the existing public-client flow. No raw RPC/config
         # exception contents belong in logs.
         logger.warning("Optional OAuth directory unavailable: %s", exc.code)
+    return discover_offer(requested, hosts)
+
+
+def discover_offer(requested: dict[str, Any], hosts: list[str], *,
+                   callback: str = "") -> tuple[dict[str, Any] | None, str]:
+    """Public-client discovery. Registered-client lookup belongs to the broker."""
+    scopes = list(requested.get("scopes") or [])
     if not DISCOVERY_ENABLED:
         return None, "discovery_unavailable"
     try:
@@ -317,7 +323,7 @@ def resolve_offer(requested: dict[str, Any], hosts: list[str]) -> tuple[dict[str
     from tinyassets.connection_oauth.flow import callback_origin, configured_redirect_uri
     from tinyassets.connection_oauth.pkce import cached_client
 
-    callback = configured_redirect_uri()
+    callback = callback or configured_redirect_uri()
     method = "existing"
     if not client_id:
         try:

@@ -217,8 +217,9 @@ def test_agent_connection_answer_uses_server_continuation_without_chat_relay(
         server_continuation:true,fields:[{name:'secret',label:'API key',type:'secret'}],
         action:{type:'connect',destination:'service:work'}}];
       Owner.listRequests=async()=>({pending:asks,recently_answered:[]});
-      MCP.answerRequest=async payload=>{
-        answers.push(payload);asks=[];return {status:'answered',server_continuation:true};
+      MCP.answerRequest=async()=>{throw new Error('credential sent to box');};
+      ConnectOAuth.post=async(op,payload)=>{
+        answers.push({op,payload});asks=[];return {status:'provisioned'};
       };
       sendTurn=(...args)=>relays.push(args);
       renderRail(asks,{foregroundAgent:'main'});
@@ -229,7 +230,7 @@ def test_agent_connection_answer_uses_server_continuation_without_chat_relay(
     page.wait_for_function(
         "() => answers.length===1 && !document.getElementById('request-rail').open"
     )
-    assert page.evaluate("answers[0].values.secret") == "secret-for-vault-only"
+    assert page.evaluate("answers[0].payload.secret") == "secret-for-vault-only"
     assert page.evaluate("relays.length") == 0
     assert page.locator("#f_service-ask_secret").count() == 0
     assert "secret-for-vault-only" not in page.locator("#thread").inner_text()

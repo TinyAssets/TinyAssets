@@ -1,30 +1,4 @@
-"""Owner-scoped registration of an open COMPUTE provider for a universe.
-
-``write_graph target=connection operation=connect_compute`` — the user-facing keystone
-of the compute-agnostic provider system, the sibling of ``connect_llm`` /
-``connect_http``. It lets a universe owner register ANY compute provider (Kimi,
-OpenRouter, any OpenAI-compatible endpoint, or a CLI subscription) as a
-:class:`~tinyassets.providers.definition.ProviderDefinition` — no per-provider code,
-no allowlist.
-
-**Registration only — never a secret (custody boundary).** Unlike ``connect_llm`` /
-``connect_http``, this handler accepts NO credential material. Per
-``retire-mcp-provider-secret-deposit``, an LLM API key must never cross the
-chatbot/MCP/control-plane boundary. So for ``api_key_http`` the credential is
-deposited OUT OF BAND — the owner first creates an http connection (endpoint +
-credential) and grants it to the universe (via the secure WorkOS browser deposit
-form / ``connect_http``), then passes that grant's id here as ``ref``. This handler
-only validates the grant is real, bound to THIS universe, and owned by the caller,
-then records the compute descriptor on top of it. For ``subscription_cli`` the ``ref``
-is the vendor CLI provider name (``codex`` / ``claude-code``); the subscription is
-deposited via ``connect_llm``.
-
-Registration creates a CANDIDATE only (design §1): it does not enroll, select, or make
-the provider routable — the owner selects it for automations via per-node
-``llm_policy`` and the router bridge. Owner-gated exactly like ``connect_http`` (an
-explicit ``admin`` ACL row; unbound/non-admin/unknown-universe get the uniform
-``not_found`` envelope). Never echoes a secret (there is none to echo).
-"""
+"""Register an owned HTTP connection as a credential-free model candidate."""
 
 from __future__ import annotations
 
@@ -37,11 +11,6 @@ from tinyassets.api.helpers import _base_path, _request_universe
 # Uniform absent-resource envelope (existence-probe safe) — mirrors connect_http.
 _NOT_FOUND: dict[str, Any] = {"error": "not_found", "resource": "connection"}
 
-# subscription_cli refs we can run in-daemon (CLI subprocess). Everything else is
-# api_key_http (open). Kept in lockstep with provider_resolver._CLI_PROVIDER_CLASSES.
-_CLI_REFS = ("claude-code",)
-
-
 def _payload(value: Any) -> dict[str, Any]:
     document = json.loads(value) if isinstance(value, str) else value
     if not isinstance(document, dict):
@@ -51,7 +20,7 @@ def _payload(value: Any) -> dict[str, Any]:
 
 def _project(definition: Any) -> dict[str, Any]:
     """Redacted projection — there is no secret in a definition; ``ref`` is a
-    grant_id / provider name, not credential material."""
+    grant_id, not credential material."""
     return {
         "status": "registered",
         "definition_id": definition.id,
@@ -64,9 +33,8 @@ def _project(definition: Any) -> dict[str, Any]:
             "provider, select it as the serving provider; a workflow node normally "
             "needs no llm_policy at all and uses whatever the command center serves. To "
             "pin one node to a provider, use the NAME, not this definition_id: "
-            "llm_policy={'preferred': {'provider': 'codex'}}",
-            "interactive tool-using agents can use owned CLI subscriptions or "
-            "supported api_key_http models. HTTP agent selection requires "
+            "llm_policy={'preferred': {'provider': 'api_key_http:provdef_...'}}",
+            "Interactive tool-using agents use owned api_key_http models. Selection requires "
             "accepted model_access, fresh tool-capable discovery, and enabled "
             "engine-tool execution; registration alone does not enable serving "
             "or grant spending",
@@ -169,14 +137,6 @@ def connect_compute(*, universe_id: str = "", payload: Any = None) -> dict[str, 
         )
         if gate is not None:
             return gate
-    elif access_method == "subscription_cli":
-        from tinyassets.external_agents.registry import PACKAGES
-
-        if ref not in (*_CLI_REFS, *PACKAGES):
-            return {
-                "error": "connection_setup_invalid",
-                "detail": f"subscription_cli ref must be one of {list((*_CLI_REFS, *PACKAGES))}",
-            }
     # An unknown access_method falls through to register_definition, which rejects it.
 
     # 5. Register the descriptor (candidate only; no secret, no authority side-effect).
@@ -197,7 +157,7 @@ def connect_compute(*, universe_id: str = "", payload: Any = None) -> dict[str, 
 
 def _project_read(definition: Any) -> dict[str, Any]:
     """Owner-facing view of one registered provider (no secret exists to redact —
-    ``ref`` is a grant_id / CLI name). Distinct from ``_project`` (the post-write
+    ``ref`` is a grant_id). Distinct from ``_project`` (the post-write
     receipt): a listing row carrying the durable descriptor fields."""
     return {
         "definition_id": definition.id,

@@ -1,28 +1,4 @@
-"""Make a deposited subscription actually SERVE the founder's own command center.
-
-``connect_llm`` is deliberately write-only (the chatbot path re-points serving
-with explicit ``bind_serving_provider`` / ``set_serving`` calls). The phone
-app's "Connect" must be the whole gesture: live test 2026-08-21 showed an
-OpenAI credential landing in the vault while every turn still failed with
-"exactly one founder serving binding is required", because nothing created
-the agent binding the serving authority hangs off.
-
-This provisions the minimal chain for the founder's OWN command center, exactly as
-the served-router tests do:
-
-    platform definition (published once, idempotent)
-      -> one agent binding created by the founder ("Your agent", writer)
-        -> bind_serving_provider(provider of the deposited service)
-          -> set_serving(enabled=True)
-
-The founder's DEDICATED platform binding is used (created once; reset to
-canonical content at an exact revision if a collaborator edited it — never an
-arbitrary rediscovered binding), re-pointed to the newly deposited provider
-(users switch Claude <-> OpenAI at will); any other serving binding the
-founder created is disabled so exactly one serves. A CURRENT admin ACL is
-re-checked before any mutation. All authority checks inside the serving module
-still run — this composes the public primitives, it does not bypass them.
-"""
+"""Make an owner-registered HTTP connection serve their command center."""
 
 from __future__ import annotations
 
@@ -41,7 +17,7 @@ _PLATFORM_DEFINITION = {
     "name": "Your agent",
     "description": (
         "The default agent in a founder's own command center: it speaks on the "
-        "subscription the founder connected. Published once by the platform; "
+        "HTTP model the founder connected. Published once by the platform; "
         "every founder's home binds to it."
     ),
     "tags": ["platform", "default"],
@@ -53,15 +29,6 @@ _BINDING_PAYLOAD = {"schema_version": 1, "name": "Your agent", "role": "writer"}
 #: re-points every one in place (design D10). Read-only: never re-published.
 RETIRED_PLATFORM_DEFINITION_AUTHOR = "platform:universe-default"
 RETIRED_BINDING_PAYLOAD = {"schema_version": 1, "name": "Your universe", "role": "writer"}
-#: Friendly ALIASES for the two subscription CLIs, not an allowlist. Anything
-#: else is passed straight through as a compute-connection id, because
-#: `bind_serving_provider` already resolves one and `_open_serving_context`
-#: already refuses a grant the caller does not own. Gating here as well only
-#: refused legitimate users: a universe could not be pointed at any LLM its
-#: owner had registered (founder, 2026-09-03: "we shouldnt have a chatgpt
-#: spacific path").
-_SERVICE_TO_PROVIDER = {"codex": "codex", "claude": "claude-code"}
-
 #: One gesture at a time per universe. `_platform_binding` is check-then-create
 #: and `agent_bindings` has no uniqueness constraint, so two first-time calls
 #: (two open tabs healing, a paste and a phone connect) both see no binding,
@@ -107,7 +74,7 @@ def _require_current_admin(base: Path, *, universe_id: str, owner: str) -> None:
 
     Re-checked immediately before any mutation (Codex 2026-08-21 #1): a bearer
     whose founder-home mapping survived an ACL revocation must not be able to
-    create or re-point serving. Same row ``connect_llm`` requires."""
+    create or re-point serving."""
     from tinyassets.daemon_server import list_universe_acl
 
     rows = [
@@ -231,7 +198,7 @@ def ensure_founder_serving(
         return {"status": "held", "reason": "no_service_named"}
     # An alias resolves to its CLI provider; anything else is a compute
     # connection the owner registered, and the binding layer authorizes it.
-    provider = _SERVICE_TO_PROVIDER.get(asked.lower(), asked)
+    provider = asked
     base = Path(base_path)
     from tinyassets.principals import named_principal
 
@@ -255,7 +222,6 @@ def _reconnect_manifest(
 ) -> dict[str, Any]:
     """Renew an accepted source without interpreting renewal as new model consent."""
     from tinyassets.commons_catalog import reconnect_binding_candidates_in_transaction
-    from tinyassets.credential_vault import validate_llm_subscription_deposit
     from tinyassets.provider_assignment import (
         load_provider_assignment,
         load_provider_assignment_in_transaction,
@@ -263,7 +229,6 @@ def _reconnect_manifest(
     )
     from tinyassets.provider_assignment_manifest import ModelAccess
     from tinyassets.provider_serving_binding import (
-        _PROVIDER_SERVICE,
         _canonical_universe,
         _current_bound_member_authority,
         _resolve_serving_source,
@@ -331,16 +296,10 @@ def _reconnect_manifest(
                             operation="converse", role="writer",
                         ):
                             raise PermissionError("Accepted provider binding is no longer valid.")
-                        if member_source.open_grant is None:
-                            validate_llm_subscription_deposit(
-                                conn, universe_dir=universe, owner=owner, uid=uid,
-                                service=_PROVIDER_SERVICE[member.provider],
-                            )
-                        else:
-                            _source_custody(
-                                conn, member_source, base=base, universe=universe,
-                                owner=owner, uid=uid, adopt=False,
-                            )
+                        _source_custody(
+                            conn, member_source, base=base, universe=universe,
+                            owner=owner, uid=uid, adopt=False,
+                        )
                 model_access = {
                     m.provider.removeprefix("api_key_http:"): m.access
                     for m in assignment.candidates

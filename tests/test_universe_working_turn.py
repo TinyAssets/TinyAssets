@@ -251,6 +251,6 @@ def test_the_reset_blocker_set_still_covers_the_ambiguous_holds(journal):
 
     assert WORKING_STATES.isdisjoint(_AMBIGUOUS_STATES)
     assert (WORKING_STATES | _AMBIGUOUS_STATES) == {
-        "ready", "inference_started", "native_started", "tools_pending",
-        "held_native_unknown", "held_tool_unknown"}
+        "ready", "inference_started", "tools_pending",
+        "held_tool_unknown"}
     assert (WORKING_STATES | _AMBIGUOUS_STATES) <= records.STATES

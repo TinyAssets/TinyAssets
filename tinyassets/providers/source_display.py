@@ -50,12 +50,12 @@ def source_display_name(*, base: Path | str, universe_id: str, provider: str) ->
     """The display label for *provider* in *universe_id*, or "" when unresolved.
 
     Defensive by construction: this decorates a reply that has already been
-    earned, so every miss (a CLI provider name, a retired definition, a revoked
+    earned, so every miss (an invalid routing identity, a retired definition, a revoked
     grant, an uninstalled preset, an unreadable ledger) returns "" rather than
     raising into the response path.
     """
     if not isinstance(provider, str) or not provider.startswith(_PREFIX):
-        return ""  # a subscription CLI name is already the owner-facing word
+        return ""
     definition_id = provider[len(_PREFIX):]
     if not definition_id or not universe_id:
         return ""

@@ -15,47 +15,6 @@ import json
 import pytest
 
 
-class TestAllApiProvidersInCooldown:
-    def _tracker(self):
-        from tinyassets.providers.quota import QuotaTracker
-        return QuotaTracker()
-
-    def test_returns_false_when_no_providers_cooled(self):
-        qt = self._tracker()
-        chain = ["claude-code", "codex", "ollama-local"]
-        assert qt.all_api_providers_in_cooldown(chain) is False
-
-    def test_returns_true_when_all_api_providers_cooled(self):
-        qt = self._tracker()
-        qt.cooldown("claude-code", 120)
-        qt.cooldown("codex", 120)
-        chain = ["claude-code", "codex", "ollama-local"]
-        assert qt.all_api_providers_in_cooldown(chain) is True
-
-    def test_returns_false_when_one_api_provider_available(self):
-        qt = self._tracker()
-        qt.cooldown("claude-code", 120)
-        chain = ["claude-code", "codex", "ollama-local"]
-        assert qt.all_api_providers_in_cooldown(chain) is False
-
-    def test_returns_false_when_chain_is_only_local(self):
-        qt = self._tracker()
-        chain = ["ollama-local"]
-        assert qt.all_api_providers_in_cooldown(chain) is False
-
-    def test_custom_local_providers_set(self):
-        qt = self._tracker()
-        qt.cooldown("claude-code", 120)
-        qt.cooldown("codex", 120)
-        chain = ["claude-code", "codex", "my-local"]
-        # When my-local is declared local, all API providers (claude-code, codex) are cooled.
-        assert qt.all_api_providers_in_cooldown(chain, local_providers={"my-local"}) is True
-
-    def test_returns_false_when_chain_is_empty(self):
-        qt = self._tracker()
-        assert qt.all_api_providers_in_cooldown([]) is False
-
-
 class TestCooldownRemainingDict:
     def _tracker(self):
         from tinyassets.providers.quota import QuotaTracker
@@ -212,7 +171,6 @@ _OUTCOME_ERROR_FIXTURES: tuple[tuple[str, str], ...] = (
     ("Auth expired: token refresh required", "permission_denied:auth_expired"),
     ("Approval required for source_code node", "node_not_approved"),
     ("Permission denied", "permission_denied:approval_required"),
-    ("Subprocess failure: exit code 127", "provider_subprocess_failed"),
     ("Concurrent modification conflict", "state_mutation_conflict"),
     ("Provider unavailable: no API key", "provider_unavailable"),
     ("Groq call failed: HTTP 502", "provider_error"),

@@ -40,7 +40,6 @@ on:
       # A list-only PR is a real behaviour change for every user on that source
       # kind, so it has to build and deploy like any other. Without this a merged
       # model addition sat in the repo and never reached anyone.
-      - 'models/**'
       - 'scripts/mcp_public_canary.py'
       - 'scripts/core_capability_live.py'
       - 'scripts/core_canary_provision.py'
@@ -60,7 +59,6 @@ on:
       - 'deploy/**'
       # Other Dockerfile COPY sources.
       - 'scripts/_canary_common.py'
-      - 'scripts/codex_cli_smoke.py'
       - 'scripts/check_privileged_chain.py'
       # Host inputs: installed by install-host-services.yml (the RUNTIME_FILES
       # of deploy/install-host-uptime-services.sh, the deploy fence) or, for

@@ -386,35 +386,6 @@ def test_manifest_to_legacy_cannot_replay_stale_members(scene):
     assert _check_member(scene, after, None)[0] == after
 
 
-def test_subscription_and_http_share_one_manifest_without_ambient_credentials(scene):
-    from tinyassets.credential_vault import write_credential_vault
-
-    write_credential_vault(
-        scene[1],
-        [
-            {
-                "credential_type": "llm_subscription",
-                "service": "codex",
-                "auth_json_b64": "e30=",
-            }
-        ],
-        owner_user_id="owner-1",
-        universe_id="u-owner",
-    )
-    _publish(
-        scene,
-        provider="codex",
-        model_access={
-            "codex": ModelAccess("explicit", ("",)),
-            scene[3].id: ModelAccess("discovered"),
-        },
-    )
-    root = _root(scene)
-    assert root.provider == "codex" and len(root.candidates) == 2
-    for member in root.candidates:
-        _check_member(scene, root, member)
-
-
 def test_stale_failure_recovery_cannot_overwrite_another_transition(scene, monkeypatch):
     import tinyassets.provider_serving_binding as module
     from tinyassets.provider_assignment import store_provider_assignment_in_transaction
@@ -448,9 +419,12 @@ def test_prepublication_invalid_connection_preserves_existing_assignment(scene):
 
 
 def test_new_connection_is_not_accepted_without_its_own_custody(scene):
+    scene[2].revoke_grant("http_grant_" + "d" * 32)
     with pytest.raises(PermissionError):
         _publish(
-            scene, model_access={scene[3].id: ModelAccess("discovered"), "codex": ModelAccess()}
+            scene, model_access={
+                scene[3].id: ModelAccess("discovered"), scene[4].id: ModelAccess("discovered"),
+            }
         )
     assert _root(scene) is None
 

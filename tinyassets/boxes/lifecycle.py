@@ -18,6 +18,15 @@ def owner_layout(data_root: str | Path) -> str:
 
 def admit_center(data_root: str | Path, *, principal: str, center: str) -> int:
     """Broker admission reserves the owner; host binding provisions its box."""
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        from tinyassets.owner_channel import request
+
+        # This process already occupies its owner's box. Only register the new
+        # center; the relay bind supplies authority and no host bind is needed.
+        return request("", {"op": "ADMIT_CENTER", "center": center})["generation"]
+
     from tinyassets.agent_loop.served_chat import configured_box_provider
     from tinyassets.broker.owner_identities import center_admission
 

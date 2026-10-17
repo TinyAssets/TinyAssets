@@ -76,7 +76,7 @@ def test_pending_request_waits_on_the_owner(profile):
     assert _get()[1]["status"] == "waiting_on_you"
 
 
-@pytest.mark.parametrize("state", ["ready", "inference_started", "native_started", "tools_pending"])
+@pytest.mark.parametrize("state", ["ready", "inference_started", "tools_pending"])
 def test_live_turn_takes_precedence_over_a_pending_request(profile, monkeypatch, state):
     universe, _identity = profile
     _pending(universe)

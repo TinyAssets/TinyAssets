@@ -33,6 +33,9 @@ services:
     command: [--socket, /run/tinyassets-boxhostd/broker/broker.sock,
               --state, /data/.broker/state, --data-root, /data,
               --owner-uid, "1001", --box-host]
+    env_file:
+      - path: /etc/tinyassets/broker.env
+        required: false
     volumes:
       - tinyassets-data:/data
       - tinyassets-browser-keys:/var/lib/ta-broker

@@ -813,6 +813,7 @@ def test_a_full_channel_carries_every_verb_not_just_the_synthesized_get(tmp_path
 
 
 def test_a_full_deposit_moves_an_existing_connection(base):  # noqa: F811
+    from tests.support.connection_door import connect_http
     from tests.test_workspace_authority import (
         GIT_HOST,
         _deposit,
@@ -822,7 +823,6 @@ def test_a_full_deposit_moves_an_existing_connection(base):  # noqa: F811
     from tests.test_workspace_authority import (
         GITHUB_ENDPOINT as endpoint,
     )
-    from tinyassets.api.http_connection import connect_http
 
     _make_universe(base, "u-rotate", admin="alice")
     _login("alice")

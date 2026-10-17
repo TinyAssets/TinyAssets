@@ -491,11 +491,13 @@ def test_revoked_primary_does_not_prevent_independent_connected_source(served, m
 
 def test_without_selected_authority_router_discards_configuration_override(tmp_path, monkeypatch):
     from tests.support.model_call import call as model_call
-    from tests.test_pending_requests_power import _install_native_executor
-    from tests.test_provider_served_router import _RecordingProvider, _served_context
+    from tests.test_provider_served_router import (
+        _RecordingProvider,
+        _served_context,
+        recording_router,
+    )
 
-    _install_native_executor(monkeypatch)
-    _, _, capability, context = _served_context(tmp_path)
+    _, _, capability, context = _served_context(tmp_path, monkeypatch)
     seen = []
 
     class Recording(_RecordingProvider):
@@ -505,7 +507,7 @@ def test_without_selected_authority_router_discards_configuration_override(tmp_p
 
     try:
         asyncio.run(
-            model_call(ProviderRouter({"codex": Recording("codex")}),
+            model_call(recording_router(monkeypatch, Recording("synthetic")),
                 "writer",
                 "hello",
                 "system",
@@ -516,7 +518,9 @@ def test_without_selected_authority_router_discards_configuration_override(tmp_p
         )
     finally:
         auth.revoke_provider_request(capability)
-    assert seen == [None]
+    assert len(seen) == 1
+    assert seen[0].provider.startswith("api_key_http:")
+    assert seen[0].model_id == "synthetic-model"
 
 
 def test_request_revocation_refuses_before_discovery(served, reader):

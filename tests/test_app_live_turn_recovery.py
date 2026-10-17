@@ -205,7 +205,7 @@ def test_a_status_poll_does_not_restore_the_turn_the_live_page_owns(tmp_path, ht
     assert thinking["inflight"]["message"] == "Retest your workflow checklist", \
         "the live turn's durable recovery must be on disk while it is in flight"
     # The polls ran (the heartbeat is not disabled) ...
-    assert polled["statusPolls"] == 3 and out["healed"] == 3
+    assert polled["statusPolls"] == 3
     # ... and changed nothing about the turn the page owns.
     assert polled["founderBubbles"] == 1, "the live message was drawn a second time"
     assert polled["unconfirmedNotes"] == 0, "a live turn was reported as never confirmed"

@@ -143,7 +143,7 @@ def test_backend_only_grant_keeps_ta_reads_without_shell_or_file_authority(
 
 
 @pytest.mark.usefixtures("cloud_runtime")
-def test_connect_my_google_calendar_offers_owner_sign_in_through_ta(engine, monkeypatch):
+def test_connect_my_google_calendar_returns_owner_door_through_ta(engine, monkeypatch):
     from tests.test_generic_oauth_connections import TASKS_ASK
     from tinyassets.connection_oauth import directory, discovery
 
@@ -159,8 +159,12 @@ def test_connect_my_google_calendar_offers_owner_sign_in_through_ta(engine, monk
                  payload_json=json.dumps({"kind": "Credential", "title": "Connect my calendar",
                                           "body": "Read my events", "fields": [],
                                           "action": action}))
-    assert asked["primary"] == "sign_in", asked
-    assert asked["action"]["oauth"]["provider_id"] == "google"
+    assert asked["primary"] == "connect", asked
+    assert "provider_id" not in asked["action"]["oauth"]
     assert asked["action"]["oauth"]["scopes"] == scopes
     assert asked["fields"] == []
     assert "synthetic-private-secret" not in json.dumps(asked)
+
+    linked = _answer(OWNER, UNIVERSE, asked["request_id"])
+    assert linked.get("status") == "connect_required", linked
+    assert "request=" + asked["request_id"] in linked["connect_url"]

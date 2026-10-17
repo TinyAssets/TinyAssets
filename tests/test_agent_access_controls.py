@@ -262,7 +262,7 @@ def test_the_asker_cannot_choose_its_origin(monkeypatch, base):
 
 def test_the_model_connection_entry_is_not_withdrawable(monkeypatch, base):
     s = _served(monkeypatch)
-    out = _withdraw(s, "sys_connect_llm")
+    out = _withdraw(s, "sys_connect_model")
     assert out.get("error") == "not_withdrawable", out
 
 

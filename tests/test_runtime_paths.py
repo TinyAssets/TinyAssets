@@ -60,9 +60,7 @@ def test_real_dockerfile_context_copies_are_all_runtime():
         "domains",
         "data/world_rules.lp",
         "deploy/native/ta_op.c",
-        "deploy/codex-flock-wrapper.sh",
         "deploy/docker-entrypoint.sh",
-        "scripts/codex_cli_smoke.py",
         "scripts/mcp_public_canary.py",
         "scripts/_canary_common.py",
     } <= set(sources)

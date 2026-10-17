@@ -144,9 +144,6 @@ class _Stream:
     upload: Any = None
     authority: Any = None
     wake: threading.Condition = field(default_factory=threading.Condition)
-    refresh_sequence: int = 0
-    refresh_result: bool | None = None
-    refresh_pending: bool = False
 
 
 class BrokerServer:
@@ -322,16 +319,8 @@ class _Connection:
                     stream.wake.notify_all()
         elif op == "CANCEL" and stream is not None:
             await asyncio.to_thread(self._server.cancel, stream)
-        elif op == "REFRESH_ACK" and stream is not None:
-            with stream.wake:
-                if (set(doc) != {"op", "sequence", "ok"}
-                        or type(doc["sequence"]) is not int or type(doc["ok"]) is not bool
-                        or not stream.refresh_pending
-                        or doc["sequence"] != stream.refresh_sequence
-                        or stream.refresh_result is not None):
-                    raise rf.FrameError("invalid refresh acknowledgement")
-                stream.refresh_result = doc["ok"]
-                stream.wake.notify_all()
+        elif op not in {"CANCEL", "CREDIT", "UPLOAD_END"}:
+            raise rf.FrameError("unknown stream operation")
 
     async def _connection_op(self, op: str, doc: dict[str, Any]) -> None:
         if self._role == BOX_HOST:
@@ -359,6 +348,10 @@ class _Connection:
             await self.send_async(rf.control(rf.CONNECTION, answer))
             return
         if self._role == BOX:
+            if op == "ADMIT_CENTER":
+                answer = await asyncio.to_thread(self._box_admit_center, doc)
+                await self.send_async(rf.control(rf.CONNECTION, answer))
+                return
             if op == "BOX_IDENTITY":
                 self._box_scope(doc)
                 await self.send_async(rf.control(rf.CONNECTION, {
@@ -380,8 +373,20 @@ class _Connection:
             if op == "BOX_PING" and self._usage_leases:
                 await self.send_async(rf.control(rf.CONNECTION, {"op": "BOX_PONG"}))
                 return
+            if op == "BOX_PUBLISH":
+                from tinyassets.broker.owner_reads import publish
+
+                try:
+                    result = await asyncio.to_thread(
+                        publish, self._server._data_root, self._box_owner, doc)
+                    answer = {"op": "BOX_RESULT", "result": result}
+                    rf.control(rf.CONNECTION, answer)
+                except Exception:
+                    answer = {"op": "BOX_REFUSED"}
+                await self.send_async(rf.control(rf.CONNECTION, answer))
+                return
             if op == "BOX_READ":
-                from tinyassets.broker.owner_reads import read
+                from tinyassets.broker.owner_reads import PlanMissing, read
 
                 try:
                     await asyncio.to_thread(self._server._owner_identities.box_route,
@@ -390,6 +395,8 @@ class _Connection:
                         read, self._server._data_root, self._box_owner, doc)
                     answer = {"op": "BOX_RESULT", "result": result}
                     rf.control(rf.CONNECTION, answer)
+                except PlanMissing:
+                    answer = {"op": "BOX_PLAN_MISSING"}
                 except Exception:
                     answer = {"op": "BOX_REFUSED"}
                 await self.send_async(rf.control(rf.CONNECTION, answer))
@@ -403,7 +410,10 @@ class _Connection:
             doc = self._box_scope(doc)
         elif self._role != OWNER:
             raise rf.FrameError("only the owner channel may send connection operations")
-        if op == "OWNER_IDENTITY":
+        if op == "BILLING_PLAN":
+            answer = await asyncio.to_thread(self._billing_plan, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "OWNER_IDENTITY":
             answer = await asyncio.to_thread(self._owner_identity, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "CENTER_ADMISSION":
@@ -411,6 +421,9 @@ class _Connection:
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "ADMITTED_OWNER":
             answer = await asyncio.to_thread(self._admitted_owner, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "SOLE_CENTER":
+            answer = await asyncio.to_thread(self._sole_center, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "OWNER_BOX_ROUTE":
             answer = await asyncio.to_thread(self._owner_box_route, doc)
@@ -464,6 +477,23 @@ class _Connection:
             await self.send_async(rf.control(rf.CONNECTION, {
                 "op": "STATUS_IS", "op_id": doc.get("op_id"), "state": state,
                 "side_effect_state": effect}))
+        else:
+            raise rf.FrameError("unknown connection operation")
+
+    def _box_admit_center(self, doc):
+        """A new center belongs to the relay's owner, never a supplied principal."""
+        try:
+            if set(doc) != {"op", "center"}:
+                raise ValueError("invalid center admission")
+            identities = self._server._owner_identities
+            with self._server._fence.send(
+                    self._server._fence.generation, self._server._fence.token):
+                identities.box_route(self._box_owner)
+                row = identities.admission("admit", self._box_owner, doc["center"])
+            return {"op": "BOX_RESULT", "result": {
+                "generation": row.generation, "machine": row.machine}}
+        except Exception:  # noqa: BLE001 - no identity or persisted state on refusal
+            return {"op": "BOX_REFUSED"}
 
     def _box_scope(self, doc):
         # The socket selected this scope. Guest identity fields grant nothing.
@@ -517,6 +547,27 @@ class _Connection:
         except (OSError, ValueError, LookupError, PermissionError, RuntimeError, sqlite3.Error):
             return {"op": "ROUTER_CREDENTIAL_REFUSED"}
 
+    def _billing_plan(self, doc):
+        from tinyassets.broker.owner_reads import PlanMissing, Plans
+
+        try:
+            if (set(doc) != {"op", "action", "args", "generation", "token"}
+                    or not isinstance(doc["args"], dict)):
+                raise ValueError("invalid billing operation")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                plans = Plans(self._server._data_root)
+                operations = {name: getattr(plans, name) for name in (
+                    "read", "owner_for", "owner_for_checkout",
+                    "apply_tier_event",
+                    "current_checkout_attempt", "begin_checkout_attempt",
+                    "record_checkout_session", "settle_checkout_attempt")}
+                result = operations[doc["action"]](**doc["args"])
+                return {"op": "BILLING_RESULT", "result": result}
+        except PlanMissing:
+            return {"op": "PLAN_MISSING"}
+        except Exception:
+            return {"op": "BILLING_REFUSED"}
+
     def _owner_identity(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.owner_identities import validate_principal
 
@@ -561,6 +612,19 @@ class _Connection:
             return {"op": "OWNER_BOX_UNADMITTED"}
         except Exception:  # noqa: BLE001 - never expose broker state on refusal
             return {"op": "OWNER_BOX_ROUTE_REFUSED"}
+
+    def _sole_center(self, doc: dict[str, Any]) -> dict[str, Any]:
+        try:
+            if (set(doc) != {"op", "principal", "generation", "token"}
+                    or type(doc["generation"]) is not int or type(doc["token"]) is not str):
+                raise ValueError("invalid center request")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                center = self._server._owner_identities.sole_center(doc["principal"])
+                return {"op": "SOLE_CENTER_IS", "center": center}
+        except LookupError:
+            return {"op": "SOLE_CENTER_UNADMITTED"}
+        except Exception:  # noqa: BLE001 - no persisted state on refusal
+            return {"op": "SOLE_CENTER_REFUSED"}
 
     def _center_admission(self, doc: dict[str, Any]) -> dict[str, Any]:
         """DA1: append-only admit/retire; machine always from the reservation."""
@@ -675,18 +739,21 @@ class _Connection:
         from tinyassets.broker.catalog import local_page, validate
 
         try:
-            if set(doc) != {"op", "principal", "command_center", "generation", "token",
-                            "cursor", "limit"}:
+            if not {"op", "principal", "command_center", "generation", "token",
+                    "cursor", "limit"} <= set(doc) <= {
+                    "op", "principal", "command_center", "generation", "token",
+                    "cursor", "limit", "include_revoked"}:
                 raise ValueError("unsupported catalog fields")
             _namespace(doc["principal"], doc["command_center"])
-            validate(doc["cursor"], doc["limit"])
+            validate(doc["cursor"], doc["limit"], doc.get("include_revoked", False))
             if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
                 raise Fenced("invalid fence")
             with self._server._fence.send(doc["generation"], doc["token"]):
                 result = local_page(self._server._ledger_for(doc["principal"]),
                                     principal=doc["principal"],
                                     command_center=doc["command_center"],
-                                    cursor=doc["cursor"], limit=doc["limit"])
+                                    cursor=doc["cursor"], limit=doc["limit"],
+                                    include_revoked=doc.get("include_revoked", False))
                 answer = {"op": "CATALOG_RESULT", "result": result}
                 rf.control(rf.CONNECTION, answer)
                 return answer
@@ -833,13 +900,26 @@ class _Connection:
                 raise ValueError("unsupported connect fields")
             _namespace(doc["principal"], doc["command_center"])
             validate(doc["document"])
+            if self._role == BOX and ("request_ref" in doc["document"]
+                    or doc["document"].get("secret")
+                    or doc["document"]["action"] in {
+                        "rotate", "oauth_offer", "oauth_exchange", "preset_exchange"}
+                    or doc["document"].get("policy", {}).get("auth_scheme", "none") != "none"):
+                raise PermissionError("credential deposits require the door")
             if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
                 raise Fenced("invalid fence")
             with self._server._fence.send(doc["generation"], doc["token"]):
+                if doc["document"]["action"] in {
+                        "oauth_offer", "oauth_exchange", "preset_exchange"}:
+                    if (self._server._owner_identities is None
+                            or self._server._owner_identities.admitted_owner(
+                                doc["command_center"]) != doc["principal"]):
+                        raise PermissionError("connection requires live center admission")
                 result = local_operation(self._server._ledger_for(doc["principal"]),
                                     principal=doc["principal"],
                                     command_center=doc["command_center"],
-                                    document=doc["document"])
+                                    document=doc["document"],
+                                    committed_via="door" if self._role == OWNER else "box")
                 answer = {"op": "HTTP_CONNECT_RESULT", "result": result}
                 rf.control(rf.CONNECTION, answer)
                 return answer
@@ -1032,8 +1112,7 @@ class _Connection:
                                                       resource)
                 threading.Thread(
                     target=self._run, args=(stream, dispatch, grant_id, verb, request,
-                                            doc.get("idle_s"), doc.get("inference_usage"),
-                                            doc.get("refresh") is True),
+                                            doc.get("idle_s"), doc.get("inference_usage")),
                     name=f"broker-stream-{stream_id}", daemon=True,
                 ).start()
             except Exception:  # noqa: BLE001 - nothing was sent: settle it as refused
@@ -1076,32 +1155,8 @@ class _Connection:
         self._checkpoint(stream)
         stream.wrote = True
 
-    def _refresh(self, stream: _Stream, destination: str, rejected_digest: str) -> None:
-        from tinyassets.storage.outbound_connections import ConnectionAuthorizationError
-
-        with stream.wake:
-            self._checkpoint(stream)
-            stream.refresh_sequence += 1
-            stream.refresh_result = None
-            stream.refresh_pending = True
-        try:
-            self.send(rf.control(stream.id, {
-                "op": "REFRESH", "sequence": stream.refresh_sequence,
-                "destination": destination, "rejected_digest": rejected_digest}), stream)
-            with stream.wake:
-                while stream.refresh_result is None:
-                    self._checkpoint(stream)
-                    stream.wake.wait(min(0.1, max(0, stream.deadline - time.monotonic())))
-                self._checkpoint(stream)
-                if not stream.refresh_result:
-                    raise ConnectionAuthorizationError("daemon refresh failed")
-        finally:
-            with stream.wake:
-                stream.refresh_pending = False
-
     def _run(self, stream: _Stream, dispatch: Callable[..., Any], grant_id: str, verb: str,
-             request: dict[str, Any], idle_s: Any, inference_usage=None,
-             refresh_enabled: bool = False) -> None:
+             request: dict[str, Any], idle_s: Any, inference_usage=None) -> None:
         from tinyassets.broker.owner_sources import BOX_REQUEST
 
         box_token = BOX_REQUEST.set(self._role == BOX)
@@ -1124,8 +1179,6 @@ class _Connection:
                 checkpoint=lambda: self._checkpoint(stream),
                 deadline_at=stream.deadline,
                 **({"body": stream.upload} if stream.upload is not None else {}),
-                **({"refresh_request": lambda destination, rejected: self._refresh(
-                    stream, destination, rejected)} if refresh_enabled else {}),
                 **({"inference_usage": inference_usage, "operation_id": stream.op_id}
                    if inference_usage is not None else {}),
             )

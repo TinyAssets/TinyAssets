@@ -46,7 +46,45 @@ Nothing deploys until slice 7.
         refusing.
       - Stripe and plan writes go to the shared plan store. A missing plan
         fails loudly; it never reads as `free`.
-      - Hook create and revoke publish to the router map.
+      - [x] Hook create and revoke publish to the router map (slice 2).
+      3c-1 complete locally: CLI stack removed; shared tests use HTTP.
+      Linux PR selection: 1,191 files in eight completed chunks, 23,463 passed,
+      99 existing skips, zero failures. Required path/store guards: 61 passed,
+      one historical-merge skip in the oracle snapshot. Ruff: 234 changed Python
+      files pass. Retirement inventory and full logs are in the build scratchpad.
+      No deployment in this slice; 3c-2, 3c-3 and task 6 remain separate work.
+      Build order: 3c-1 deletes the CLI stack and provider-specific code;
+      3c-2 moves the flows to the door with broker custody, refresh and
+      RFC 7009 revoke; 3c-3 adds the plan store. Decisions: design.md D3c.
+      - [x] 3c-1: CLI stack and provider-specific code deleted.
+      - [x] 3c-2 admission: creating a center inside a box (universe create →
+        `admit_center`) registers it in the broker's admission map through a
+        bound-channel op, with the owner taken from the bind. Policy rules,
+        effectors, source display and `ta_capabilities` reach the broker
+        only through the channel.
+      - [x] 3c-2a: broker-only custody and refresh, secret-bearing HTTP_CONNECT
+        commit/rotation, broker DISCONNECT erasure, custody metadata and locks.
+        Linux process proof covers six schemes; box-call refresh covers public
+        and registered clients. Validation and deletions: `main-audit.md`.
+      - [x] 3c-2 lifecycle: door flows and center selection, secret-free box
+        connect/rotate actions, ledger request_ref completion and RFC 7009 revoke.
+        All nine auth variants connect, call through a separate box process and
+        fail after disconnect. Secret-bearing browser submissions use the door;
+        keyless connects use the box channel. Validation and deleted tests are
+        recorded in `main-audit.md` (3c-2d).
+      3c-2 admission validation: 48 focused Linux tests passed; PR selection
+      1,192 files in eight completed chunks, 23,506 passed and 99 existing skips.
+      The 34-file heavy run exposed stale model-source fixtures/assertions;
+      after repair, its full rerun passed all 1,357 tests. The two repaired files
+      and their consumers passed 145 focused tests. Ruff passed on changed Python
+      files. Logs and the exact remaining-work inventory: scratchpad `3c2-*`.
+      - [x] 3c-3: `/app/billing/status|checkout|cancel|webhook` key plans
+        by owner in `.broker/plans.db` through fenced `BILLING_PLAN`, never
+        reading a home or `.subscription_state.db` at the router. Billing
+        status omits private seat/storage usage and retains plan limits.
+        Admission writes explicit free; `BOX_SHARED` raises `PlanMissing`
+        for missing rows. `BOX_PUBLISH` copies definitions into `.published/`
+        with authorship from the relay bind. Proof and deletions: `main-audit.md`.
 - [ ] 4. boxhostd persistent per-owner sandbox lifecycle: wake, idle sleep,
       crash restart, memory cap, awake cap.
       - Stopping a box on retirement also closes that box's open broker channels.
@@ -57,6 +95,14 @@ Nothing deploys until slice 7.
 - [ ] 6. Migration and census, with the shared root DB split by owner, the
       synthetic rehearsal, and the `--archive` rehearsal on the production
       copy (run by the lead).
+      - The migration changes the owner of `.platform/credential-vaults/` to the broker uid.
+      - Copy credential ownership rows and deletion tombstones into
+        `.broker/credential-custody.db`; validate every carried-over HTTP slot
+        has its owner. No runtime reads of the old metadata remain.
+      - Plans: copy each tier once from `.subscription_state.db` into
+        `.broker/plans.db`. An unattributable paid tier stops the cutover.
+        Never default to `free`. HTTP connections carry over in place
+        (D3c).
       - It is ONE migration, from production's actual layout (owner-split,
         `fa29c95`) straight to the final shape.
       - DELETE the P2b intermediate move code in `box_layout_migration`

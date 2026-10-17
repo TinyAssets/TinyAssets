@@ -87,7 +87,7 @@ def test_supersession_never_clears_another_source(field):
 def plan(policy=None, failed=("a",)):
     return AgentModelPlan(
         Catalog("owner", "u", tuple(ConnectionModels(
-            name, name, "subscription", "fresh", True, True,
+            name, name, "http", "fresh", True, True,
             (Model("", True, frozenset({"text"}), pricing=Pricing("fresh", unmetered=True)),),
             default_model_id="",
         ) for name in ("a", "b"))),

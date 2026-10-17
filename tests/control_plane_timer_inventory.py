@@ -37,6 +37,9 @@ CLASSES = frozenset({CONTROL_PLANE, CALL_SCOPED, DELETE, CLIENT, BOX})
 #: ``"<path>::<qualname>"`` -> (class, note). ``[Timer]``/``[call_later]`` mark a
 #: callback-scheduling site; ``#n`` is the n-th clock-driven site in one function.
 CLASSIFICATION: dict[str, tuple[str, str]] = {
+    "tinyassets/owner_channel.py::UsageLease._heartbeat": (
+        CALL_SCOPED, "keeps one broker-held accounting lease alive until the caller closes it",
+    ),
     "tinyassets/boxes/gvisor_files.py::GvisorFileBackend._wake": (
         CALL_SCOPED, "host capacity FIFO waits only until this admitted request's deadline",
     ),
@@ -107,15 +110,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CALL_SCOPED, "agent lease refresh for one running automation batch",
     ),
     "tinyassets/auto_ship_ledger.py::_file_lock": (CALL_SCOPED, "lock acquisition"),
-    "tinyassets/owner_channel.py::UsageLease._heartbeat": (
-        CALL_SCOPED,
-        "liveness ping for one model call's usage lease; ends when the lease closes",
-    ),
-    "tinyassets/broker/server.py::_Connection._refresh": (
-        CALL_SCOPED,
-        "one broker stream waits for the daemon's refresh answer only until "
-        "that stream's own deadline; nothing reschedules",
-    ),
     "tinyassets/boxes/host_service.py::_serve": (
         CONTROL_PLANE,
         "root box host reaps idle sandboxes; no owner task or inference scheduling",
@@ -166,15 +160,12 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         "inner credit wait for the same response; condition wait is bounded by "
         "the remaining stream deadline and cancellation wakes it",
     ),
-    "tinyassets/credential_refresh.py::_hold_vault": (CALL_SCOPED, "lock acquisition"),
-    "tinyassets/credential_refresh.py::_refresh_locked": (CALL_SCOPED, "single-flight wait"),
-    "tinyassets/credential_refresh.py::file_lock": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/broker/credential_refresh.py::_hold_vault": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/broker/credential_refresh.py::_refresh_locked": (CALL_SCOPED, "single-flight wait"),
+    "tinyassets/broker/credential_refresh.py::file_lock": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/effectors/__init__.py::EffectChain.settle": (CALL_SCOPED, "effect settle wait"),
     "tinyassets/engine_mcp_http.py::wait_for_engine_mcp_route": (CALL_SCOPED, "startup wait"),
     "tinyassets/engine_mcp_server.py::_read_run_settled": (CALL_SCOPED, "run settle wait"),
-    "tinyassets/external_agents/home.py::exclusive_refresh": (
-        CALL_SCOPED, "owner/service refresh lease wait; 30-second deadline",
-    ),
     "tinyassets/universe_tools.py::_bash": (
         CALL_SCOPED, "one box bash call polls its activity's stop check until the call ends",
     ),
@@ -196,11 +187,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     ),
     "tinyassets/provider_assignment.py::ProviderAssignmentAdmission.shared": (
         CALL_SCOPED, "admission wait",
-    ),
-    "tinyassets/external_agents/jsonrpc_job.py::JsonRpcJob.read": (
-        CALL_SCOPED,
-        "reads one external-agent JSON-RPC turn under idle/tool/absolute "
-        "budgets; ends with the turn's terminal notification, EOF or timeout",
     ),
     "tinyassets/run_file_upload.py::StreamBridge.chunks": (CALL_SCOPED, "upload stream"),
     "tinyassets/run_file_upload.py::StreamBridge.push": (CALL_SCOPED, "upload stream"),
@@ -228,11 +214,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     ),
     "tinyassets/ttl_memo.py::TTLMemo.get": (CALL_SCOPED, "single-flight wait"),
     "tinyassets/universe_seats.py::_wait_for_seat": (CALL_SCOPED, "seat wait"),
-    "tinyassets/workflow_agent.py::WorkAgentAdapter._until_activity_stops": (
-        CALL_SCOPED,
-        "polls ONE native activity call's activity status; ends when the call "
-        "returns or is cancelled because the activity stopped",
-    ),
     "tinyassets/workspace_family.py::family_fence": (CALL_SCOPED, "fence wait"),
     "tinyassets/workspace_fs.py::_retry_transient_windows": (CALL_SCOPED, "Windows retry"),
     "tinyassets/workspace_pool.py::admit": (CALL_SCOPED, "admission wait"),
@@ -242,7 +223,7 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/conversation_store.py::_record_pair": (CALL_SCOPED, "bounded retry"),
     "tinyassets/conversation_store.py::backfill_once": (CALL_SCOPED, "bounded retry"),
     "tinyassets/conversation_store.py::record_turn": (CALL_SCOPED, "bounded retry"),
-    "tinyassets/credential_refresh.py::file_lock#2": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/broker/credential_refresh.py::file_lock#2": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/memory/versioning.py::OutputVersionStore.save_draft": (
         CALL_SCOPED, "bounded retry",
     ),

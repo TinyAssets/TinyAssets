@@ -31,7 +31,7 @@ def page(app_url, request, browser):
         setQueueScope('home-1');MCP.sessionId='test-session';
         sessionStorage.setItem(TOKEN_KEY,'test-token');
         sessionStorage.setItem(EXP_KEY,String(Date.now()+3600000));
-        window.wire={sends:[],answers:0,connected:false,flow:'waiting'};
+        window.wire={sends:[],answers:0,offers:0,connected:false,flow:'waiting'};
         const original=window.fetch;
         window.fetch=async(url,opts)=>{
             if(url==='/mcp'){
@@ -62,11 +62,20 @@ def page(app_url, request, browser):
                 flow:'a'.repeat(43),launch_path:'/app/model-callback/'+'a'.repeat(43)+'?launch=1'});
             if(url==='/app/model-connect/inline_poll'){
                 if(wire.flow!=='ready')return Response.json({status:wire.flow});
-                wire.flow='consumed';wire.answers++;wire.connected=true;
-                return Response.json({status:'confirmation_required',request_id:'free-request',
-                    request:{request_id:'free-request',action:{type:'bind_model_access'}},
-                    answer:{status:'answered'}});
+                wire.flow='consumed';
+                return Response.json({status:'provisioned',model_confirmation:{
+                    grant_id:'model-grant',universe_id:'home-1'}});
             }
+            if(url==='/app/approvals/model_connection'){
+                const data=JSON.parse(opts.body);
+                if(data.grant_id!=='model-grant'||data.universe_id!=='home-1')
+                    throw new Error('Wrong confirmation target');
+                wire.offers++;
+                return Response.json({status:'confirmation_required',request_id:'free-request',
+                    request:{request_id:'free-request',action:{type:'bind_model_access'}}});
+            }
+            if(url==='/app/approvals/answer'){
+                wire.answers++;wire.connected=true;return Response.json({status:'answered'});}
             if(url==='/app/model-connect/inline_cancel'){
                 if(wire.delayCancel)await new Promise(resolve=>wire.releaseCancel=resolve);
                 wire.flow='cancelled';return Response.json({status:'cancelled'});}
@@ -101,10 +110,15 @@ def test_connect_answers_original_once_at_phone_and_desktop_width(page, tmp_path
     with page.expect_popup():
         card.get_by_role("button", name="Connect OpenRouter", exact=True).click()
     page.evaluate("wire.flow='ready'")
+    expect(card.get_by_role("button", name="Confirm model access")).to_be_visible(timeout=10000)
+    assert page.evaluate("wire.answers") == 0
+    assert page.evaluate("wire.connected") is False
+    card.get_by_role("button", name="Confirm model access").click()
     expect(card.get_by_role("status")).to_have_text("Connected", timeout=10000)
     expect(page.get_by_text("Your day is planned.", exact=True)).to_be_visible()
     assert page.evaluate("wire.sends.map(s=>s.message)") == ["Help me plan my day"] * 2
     assert page.evaluate("wire.answers") == 1
+    assert page.evaluate("wire.offers") == 1
     page.evaluate("InlineConnection.check()")
     assert page.evaluate("wire.sends.length") == 2
     expect(page.locator("#composer-input")).to_have_value("an unsent draft")
@@ -171,6 +185,7 @@ def test_cancel_then_retry_connects_and_resumes_once(page):
     with page.expect_popup():
         page.get_by_role("button", name="Retry", exact=True).click()
     page.evaluate("wire.flow='ready'")
+    page.get_by_role("button", name="Confirm model access").click(timeout=10000)
     expect(page.get_by_text("Your day is planned.", exact=True)).to_be_visible(timeout=10000)
     assert page.evaluate("wire.sends.map(s=>s.message)") == ["Help me plan my day"] * 2
     assert page.evaluate("wire.answers") == 1
@@ -187,6 +202,7 @@ def test_second_message_waits_until_original_has_resumed(page):
     with page.expect_popup():
         page.get_by_role("button", name="Connect OpenRouter", exact=True).click()
     page.evaluate("wire.flow='ready'")
+    page.get_by_role("button", name="Confirm model access").click(timeout=10000)
     expect(page.get_by_text("Your day is planned.", exact=True)).to_have_count(2, timeout=10000)
     assert page.evaluate("wire.sends.map(s=>s.message)") == [
         "Help me plan my day", "Help me plan my day", "Then plan tomorrow"
@@ -207,6 +223,7 @@ def test_native_browser_handoff_returns_to_original_message(page):
     assert opened[0]["presentationStyle"] == "popover"
     assert len(page.context.pages) == 1
     page.evaluate("wire.flow='ready'")
+    page.get_by_role("button", name="Confirm model access").click(timeout=10000)
     expect(page.get_by_text("Your day is planned.", exact=True)).to_be_visible(timeout=10000)
     assert page.evaluate("wire.sends.map(s=>s.message)") == ["Help me plan my day"] * 2
     assert page.evaluate("wire.answers") == 1

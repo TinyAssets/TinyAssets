@@ -9,6 +9,7 @@ import pytest
 
 from tests.test_hosted_model_auth import CHALLENGE, VERIFIER, begin, pending, seed_home, take
 from tinyassets.account_deletion import _delete_satellite_rows
+from tinyassets.broker import acquisition
 from tinyassets.onboarding import hosted_model_auth as auth
 from tinyassets.storage import data_dir
 
@@ -25,6 +26,12 @@ def child_take(handle):
 import json,sys
 from tinyassets.onboarding import hosted_model_auth as auth
 data=json.loads(sys.stdin.read())
+from pathlib import Path
+from types import SimpleNamespace
+from tinyassets.broker import supervisor
+live=SimpleNamespace(socket_path=Path(data["socket"]), fence=lambda: tuple(data["fence"]),
+                     verify_broker=lambda _: None)
+supervisor.get_supervisor=lambda _: live
 try:
     flow=auth.take_flow(handle=data['handle'], owner='user-a', universe_id='home-a',
                         verifier=data['verifier'])
@@ -32,8 +39,13 @@ try:
 except auth.HostedAuthError as error:
     print(json.dumps({'error':error.code}))
 """
+    from tinyassets.broker.supervisor import get_supervisor
+
+    live = get_supervisor(data_dir())
     result = subprocess.run([sys.executable, "-c", program],
-                            input=json.dumps({"handle": handle, "verifier": VERIFIER}),
+                            input=json.dumps({"handle": handle, "verifier": VERIFIER,
+                                              "socket": str(live.socket_path),
+                                              "fence": live.fence()}),
                             text=True, capture_output=True, timeout=30, check=True)
     return json.loads(result.stdout)
 
@@ -62,7 +74,8 @@ def test_stored_rows_exclude_raw_handle_verifier_code_and_key():
         columns = {row[1] for row in conn.execute("PRAGMA table_info(hosted_model_flows)")}
         doc = conn.execute("SELECT * FROM hosted_model_flows").fetchone()
     assert columns == {"handle_digest", "owner_user_id", "bound_home_id", "preset_id",
-                       "preset_digest", "challenge", "callback_origin", "created_at", "expires_at"}
+                       "preset_digest", "challenge", "callback_origin", "created_at", "expires_at",
+                       "request_ref"}
     assert handle not in doc and VERIFIER not in doc
     assert CHALLENGE in doc
     assert "synthetic-authorization-code" not in doc
@@ -87,7 +100,7 @@ def test_pending_erasure_is_owner_scoped_even_after_home_changes():
 def test_clock_rollback_rows_are_swept_without_blocking_capacity(monkeypatch):
     first = begin()["flow"]
     created = pending(first)["created_at"]
-    monkeypatch.setattr(auth.time, "time", lambda: created - 1)
+    monkeypatch.setattr(auth.pkce.time, "time", lambda: created - 1)
     monkeypatch.setattr(auth, "MAX_PENDING", 1)
     second = begin()["flow"]
     assert not pending(first)
@@ -97,7 +110,7 @@ def test_clock_rollback_rows_are_swept_without_blocking_capacity(monkeypatch):
 @pytest.mark.parametrize("change", ["future", "overlong", "expired"])
 def test_invalid_stored_lifetime_cannot_be_taken(change):
     handle = begin()["flow"]
-    now = auth.time.time()
+    now = auth.pkce.time.time()
     created, expiry = {"future": (now + 10, now + 100),
                        "overlong": (now, now + 601),
                        "expired": (now - 601, now - 1)}[change]
@@ -133,11 +146,11 @@ def test_exchange_after_take_uses_epoch_expiry_not_monotonic(monkeypatch):
     import asyncio
 
     flow = take(begin()["flow"])
-    monkeypatch.setattr(auth.time, "time", lambda: flow.expires_at)
+    monkeypatch.setattr(auth.pkce.time, "time", lambda: flow.expires_at)
 
     def forbidden():
         raise AssertionError("expired flow cannot contact provider")
 
     with pytest.raises(auth.HostedAuthError, match="model_connection_expired"):
-        asyncio.run(auth.exchange_key(flow=flow, code="synthetic-code", verifier=VERIFIER,
+        asyncio.run(acquisition.exchange_key(flow=flow, code="synthetic-code", verifier=VERIFIER,
                                      client_factory=forbidden))

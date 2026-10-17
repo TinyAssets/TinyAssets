@@ -30,7 +30,9 @@ def admitted(in_process_broker, broker, tmp_path, monkeypatch):  # noqa: F811
     from tinyassets.broker import supervisor
 
     tmp_path.chmod(0o700)
-    identities = OwnerIdentities(tmp_path / "identities.db", initialize=True)
+    state = tmp_path / ".broker"
+    state.mkdir(mode=0o700)
+    identities = OwnerIdentities(state / "owner-identities.db", initialize=True)
     broker.server._owner_identities = identities
     for name in ("alice", "bob", "reserved"):
         identities.resolve(name, allocate=True)
@@ -329,7 +331,8 @@ def test_router_only_routes_need_no_box(tmp_path, monkeypatch, cloud_runtime):  
         raise AssertionError("router-only route resolved a box")
 
     monkeypatch.setattr(owner_identities, "owner_box_route", no_box)
-    listing = publish_definition(tmp_path, author_id="alice", payload=_definition("Public item"))
+    listing = publish_definition(tmp_path / ".published", author_id="alice",
+                                 payload=_definition("Public item"))
     app = universe_server.create_streamable_http_app()
     assert all(not forwarded_path(route.path) for route in app.routes)
     with TestClient(app) as client:
@@ -619,9 +622,15 @@ def test_account_revoke_from_box_removes_only_bound_owners_router_state(
             db.execute("INSERT INTO inline_model_flows VALUES (?,?,?,?,?,?,?)", (
                 owner, owner, "home", b"secret", "browser", "ready", time.time() + 600))
         with flows_db(tmp_path) as (db, now):
-            db.execute("INSERT INTO hosted_model_flows VALUES (?,?,?,?,?,?,?,?,?)", (
+            db.execute("INSERT INTO hosted_model_flows "
+                       "(handle_digest,owner_user_id,bound_home_id,preset_id,preset_digest,"
+                       "challenge,callback_origin,created_at,expires_at) "
+                       "VALUES (?,?,?,?,?,?,?,?,?)", (
                 owner, owner, "home", "preset", "digest", "challenge", "origin", now, now + 500))
-            db.execute("INSERT INTO connection_oauth_flows VALUES (?,?,?,?,?,?,?,?,?,?,?)", (
+            db.execute("INSERT INTO connection_oauth_flows "
+                       "(handle_digest,owner_user_id,universe_id,request_id,action_digest,challenge,"
+                       "client_id,redirect_uri,created_at,expires_at,approved_owner) "
+                       "VALUES (?,?,?,?,?,?,?,?,?,?,?)", (
                 owner, owner, "home", "request", "digest", "challenge", "client", "redirect",
                 now, now + 500, owner))
     # Multiple live keys must all be revoked, including keys beyond the fixture key.

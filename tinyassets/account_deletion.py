@@ -312,19 +312,15 @@ def _stage_home(root: Path, home: str) -> Path | None:
     Failure leaves both the container and unmoved sources for the receipt.
     """
     from tinyassets.boxes.layout import UNIVERSE_SIDECARS_DIR
-    from tinyassets.credential_vault import _credential_root
 
     target = _home_dir(root, home)
     sidecar = root / UNIVERSE_SIDECARS_DIR / home
-    custody = _credential_root(target)
     staging = root / _STAGING_DIR
     staged = staging / home
-    # Platform credential custody lives outside the box; it goes with the account.
-    sources = ((target, staged / "home"), (sidecar, staged / "sidecar"),
-               (custody, staged / "credentials"))
+    sources = ((target, staged / "home"), (sidecar, staged / "sidecar"))
     # Check every parent and source before the first rename. A symlink must
     # never redirect staging or removal into another account's directory.
-    for path in (sidecar.parent, custody.parent.parent, custody.parent, staging, staged,
+    for path in (sidecar.parent, staging, staged,
                  *(p for pair in sources for p in pair)):
         if path.is_symlink() or (path.exists() and not path.is_dir()):
             raise AccountDeletionError(f"{path.name} is not a plain directory")
@@ -1078,9 +1074,8 @@ def delete_account(
     if blockers:
         raise AccountDeletionBlocked("; ".join(blockers))
 
-    # Finish any admitted vault persistence before tombstoning. Later writers
-    # check the tombstone inside their transaction under this same admission.
-    # Release BEFORE staging: Windows cannot rename an open admission-lock file.
+    # Fence owner-side provider admission before staging owner state. Broker
+    # custody has its own deletion tombstone and lock in the broker phase.
     if home and _home_dir(root, home).exists():
         from tinyassets.agent_sessions import RECORDS_DIR
         from tinyassets.provider_assignment import provider_assignment_admission

@@ -1221,19 +1221,16 @@ def write_graph(
             one of YOUR OWN branches by branch_id, public or private; one that an
             automation, webhook, schedule, goal binding, invoking branch or a
             command center loop still depends on is refused with the dependents named.
-            With target=connection, connect_llm deposits the authenticated
-            owner's own Claude/Codex subscription into this command center's private
-            vault (owner-only; see payload_json). Also with target=connection,
-            connect_http provisions a generic outbound http connection to ANY
-            HTTPS API the command center can then act on via the
+
+            With target=connection, connect_http provisions a generic outbound
+            http connection to any HTTPS API the command center can then act on via the
             authenticated_external_call effect — the channel-agnostic way an
             owner builds an outbound channel (chat webhook, ticketing API, etc.)
             without any service-specific code (owner-only; see payload_json). Also
             with target=connection, connect_compute registers an open COMPUTE
-            provider (any Kimi/OpenRouter/OpenAI-compatible endpoint, or a CLI
-            subscription) the command center's automations can run on — registration
+            HTTP provider the command center's automations can run on — registration
             only, no secret (the credential is deposited out of band via the
-            secure browser form / connect_http); owner-only, see payload_json.
+            secure shared-door browser form); owner-only, see payload_json.
             Also with target=connection, remove_http TAKES BACK a deposited http
             connection: it deletes the secret from the vault and the connection
             and its grants from the ledger, and the destination name is free to
@@ -1295,21 +1292,16 @@ def write_graph(
             {"expected_generation": <integer>, "policy": {...}} preference
             document. The authenticated actor's current home is required;
             saving preferences never grants model or spending access.
-            For target=connection operation=connect_llm, pass
-            {"service": "claude"|"codex", "auth_material_b64": "<base64>"} to
-            deposit YOUR OWN subscription into this command center's private vault so
-            the command center can serve on it. Owner-only. base64 is transport: for
-            claude it decodes to your OAuth token; for codex it is the base64 of
-            your auth.json. The secret is stored in the command center's vault and is
-            never echoed back. After a successful deposit, re-point serving with
-            target=agent_binding operation=bind_serving_provider then set_serving.
             For target=connection operation=connect_http, pass
-            {"destination": "<stable key, e.g. webhook:acme>", "secret":
-            "<bearer token>", "allowed_endpoints": [{"host": "api.example.com",
-            "path_template": "/v1/messages", "methods": ["POST"]}]} to provision a
-            generic http connection (auth_scheme bearer). Owner-only; the secret is
-            vaulted and never echoed. Then grant effector consent for the
-            destination and build a node whose effect is authenticated_external_call.
+            {"destination": "<stable key, e.g. webhook:acme>", "auth_scheme":
+            "bearer", "allowed_endpoints": [{"host": "api.example.com",
+            "path_template": "/v1/messages", "methods": ["POST"]}]}.
+            This action takes no credential. For a secret or sign-in, return the
+            connect_url to the owner. It carries request, center and connection;
+            the request completes when its grant arrives through the broker ledger.
+            auth_scheme "none" connects through the box channel with no key.
+            Then grant effector consent for the destination and build a node
+            whose effect is authenticated_external_call.
             To WRITE A FILE through an API that takes base64 (a contents API),
             NEVER generate base64 and NEVER re-type the file - both corrupt it.
             Build two nodes in one branch, both with that effect: `fetch` (a GET
@@ -1323,11 +1315,8 @@ def write_graph(
             {"access_method": "api_key_http", "protocol": "openai_chat"|
             "anthropic_messages", "model": "<model>", "ref": "<grant_id of an http
             connection already granted to this command center>"} to register an open compute
-            provider (Kimi/OpenRouter/any OpenAI-compatible endpoint). For a CLI
-            subscription pass {"access_method": "subscription_cli", "protocol":
-            "cli:codex"|"cli:claude-code", "model": "<model>", "ref": "codex"|
-            "claude-code"}. Owner-only, registration ONLY — NO secret here (deposit the
-            api key out of band via the secure browser form / connect_http first).
+            provider. Registration takes no secret; deposit the key through the
+            secure browser connection form first.
             For target=connection operation=configure_provider_capability, pass
             {"capability_kind": "realtime_voice", "enabled": true,
             "descriptor": {"protocol": "tinyassets.voice.v1", "session_url":
@@ -1337,8 +1326,7 @@ def write_graph(
             privacy_url must also be HTTPS. The session URL must already be in the
             connection's exact POST allowlist. Pass enabled=false without a
             descriptor to revoke. Owner plus home command center admin authority is
-            required; subscription-only providers are refused rather than given a
-            second credential path.
+            required.
             For model-discovery metadata, instead pass {"capability_kind":
             "model_discovery", "definition_id": "<owned compute definition>",
             "enabled": true, "descriptor": {"protocol": "openrouter_user_models_v1",
@@ -1602,20 +1590,7 @@ def write_graph(
             )
         )
     if normalized == "connection":
-        # LLM subscription deposit is an owner-scoped operation under the pinned
-        # write_graph handle (byo-llm-deposit-surface). It routes to its own
-        # owner-scoped handler; cloud_connections only lists. Adds no
-        # advertised handle — the live tool catalog stays pinned.
         connection_operation = (operation or "").strip().lower()
-        if connection_operation == "connect_llm":
-            from tinyassets.api.llm_deposit import connect_llm
-
-            return json.dumps(
-                connect_llm(
-                    universe_id=graph_id,
-                    payload=payload_json,
-                )
-            )
         if connection_operation == "connect_http":
             # Owner-scoped provisioning of a generic outbound http connection so a
             # universe can act on a channel (Slack, any HTTPS API). Its own
@@ -1708,7 +1683,7 @@ def write_graph(
             )
         if connection_operation == "connect_compute":
             # Owner-scoped registration of an open COMPUTE provider (any Kimi/
-            # OpenRouter/OpenAI-compatible endpoint or a CLI subscription). Its own
+            # HTTP endpoint). Its own
             # owner-scoped handler; registration ONLY (no secret — the credential is
             # deposited out of band per the custody boundary). Adds no advertised handle.
             from tinyassets.api.compute_connection import connect_compute
@@ -2539,12 +2514,9 @@ _AUTH_EVIDENCE_TELLS = (
     "login required",
     "please log in",
     "please login",
-    "codex login",
-    "claude login",
     "reauthenticat",
     "re-authenticat",
     "no_credentials",
-    "auth.json",
     # Codex 0.146: "Your access token could not be refreshed. Please log out
     # and sign in again." Claude: "Not logged in · Please run /login".
     "could not be refreshed",
@@ -2782,34 +2754,6 @@ def _record_served_failure(universe_id: str, exc: BaseException, ref: str = "") 
         logger.warning("served turn failed universe=%s (diagnostics unavailable)", universe_id)
 
 
-_NATIVE_AUTH_CLUE = re.compile(
-    r"[a-zA-Z0-9_. -]{1,48} terminal result was not success "
-    r"\(subtype=(?:success|non_success), is_error=true, "
-    r"last_assistant_error=authentication_failed\)"
-)
-
-
-def _has_native_auth_clue(exc: BaseException) -> bool:
-    """Read only the last failed attempt's closed native diagnostic rendering.
-
-    This is a provider-reported clue, never a new failure class, evidence of
-    safe replay, or authority to change credentials. Adapter progress
-    supersedes prior assistant errors before constructing this rendering.
-    """
-    attempts = getattr(exc, "attempts", None)
-    if not isinstance(attempts, (list, tuple)):
-        return False
-    for attempt in reversed(attempts):
-        if getattr(attempt, "status", None) == "failed":
-            detail = getattr(attempt, "detail", "")
-            return (
-                getattr(attempt, "skip_class", None) == "provider_error"
-                and isinstance(detail, str)
-                and _NATIVE_AUTH_CLUE.fullmatch(detail) is not None
-            )
-    return False
-
-
 def _context_overflow(exc: BaseException) -> bool:
     """True when this turn, or anything it wraps, is our own context refusal."""
     seen: set[int] = set()
@@ -2860,8 +2804,6 @@ def _served_failure_code(exc: BaseException) -> str:
         for code in (getattr(exc, "failure_class", None), _attempt_class(exc)):
             if isinstance(code, str) and code in FAILURE_CODES:
                 return code
-        if _has_native_auth_clue(exc):
-            return "native_auth_clue"
     except Exception:  # Malformed diagnostic attributes are not another failure.
         pass
     return "unknown"
@@ -3539,10 +3481,10 @@ def converse(
             "history_saved": saved,
         }
         if held is not None:
-            from tinyassets.api.pending_requests import _connect_llm_request
+            from tinyassets.api.pending_requests import _model_connect_request
 
             try:
-                held["needs_connection"] = _connect_llm_request()
+                held["needs_connection"] = _model_connect_request()
             except Exception:
                 logger.warning("converse: connect request unavailable", exc_info=True)
             return json.dumps(_with_unsettled_steering(
@@ -3871,8 +3813,6 @@ class _WikiCanaryExecutionAuthority(Middleware):
             reset_wiki_canary_authority(previous)
 
 
-
-
 class _ProviderRequestAuthority(Middleware):
     """Mint an inert, exact-message reserve before FastMCP selects a worker."""
 
@@ -3931,7 +3871,6 @@ mcp.add_middleware(CommandCenterNames(frozenset({
 # ---------------------------------------------------------------------------
 # Server Entry Point
 # ---------------------------------------------------------------------------
-
 
 
 # ---------------------------------------------------------------------------

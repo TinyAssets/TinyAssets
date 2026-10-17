@@ -63,12 +63,12 @@ def _receipt(owner: str, sources: tuple[str, ...], *, version: int = 5,
 
 
 def test_snapshot_is_sorted_and_digest_bound():
-    receipt = _receipt("alice", ("claude-code", "codex"))
-    assert receipt.admitted_sources == ("claude-code", "codex")
+    receipt = _receipt("alice", ("api_key_http:source-a", "api_key_http:source-b"))
+    assert receipt.admitted_sources == ("api_key_http:source-a", "api_key_http:source-b")
     assert receipt.manifest_digest == _content_digest(receipt.admitted_sources)
     assert ProviderUniverseWorkReceipt.from_dict(receipt.to_dict()) == receipt
     with pytest.raises(ValueError, match="sorted"):
-        replace(receipt, admitted_sources=("codex", "claude-code"))
+        replace(receipt, admitted_sources=("api_key_http:source-b", "api_key_http:source-a"))
     with pytest.raises(ValueError, match="digest"):
         replace(receipt, manifest_digest="sha256:" + "f" * 64)
 
@@ -83,43 +83,44 @@ def test_attempt_requires_recorded_and_live_owner_membership(tmp_path, monkeypat
                      platform_generated=True)
     set_founder_home(tmp_path, founder_sub="bob", universe_id="u",
                      platform_generated=True)
-    live = {"alice": {"codex"}, "bob": {"claude-code"}}
+    live = {"alice": {"api_key_http:source-b"}, "bob": {"api_key_http:source-a"}}
     monkeypatch.setattr(
         served_model_plan, "connected_sources",
         lambda _base, _universe, owner, *, conn=None: frozenset(live[owner]),
     )
-    monkeypatch.setattr(
-        provider_serving_binding, "_source_custody",
-        lambda _conn, _source, **_kwargs: SimpleNamespace(reference_digest="owned"),
-    )
+    monkeypatch.setattr(provider_serving_binding, "_resolve_serving_source",
+                        lambda base, uid, owner, provider, access: SimpleNamespace(
+                            open_grant=("grant", provider, "credential")))
     store = SQLiteProviderWorkAuthorityStore(tmp_path, clock=lambda: NOW)
-    alice = _receipt("alice", ("codex",))
+    alice = _receipt("alice", ("api_key_http:source-b",))
     with store.connection() as conn:
         conn.execute("BEGIN")
         assert _current_connected_member(
-            conn, tmp_path, alice, ProviderInvocationSelection.connected("codex", "")
-        ).reference_digest == "owned"
-        live["alice"].add("claude-code")
+            conn, tmp_path, alice,
+            ProviderInvocationSelection.connected("api_key_http:source-b", "")
+        ).owner_user_id == "alice"
+        live["alice"].add("api_key_http:source-a")
         with pytest.raises(PermissionError, match="not admitted"):
             _current_connected_member(
                 conn, tmp_path, alice,
-                ProviderInvocationSelection.connected("claude-code", ""),
+                ProviderInvocationSelection.connected("api_key_http:source-a", ""),
             )
-        live["alice"].remove("codex")
+        live["alice"].remove("api_key_http:source-b")
         with pytest.raises(PermissionError, match="not connected"):
             _current_connected_member(
                 conn, tmp_path, alice,
-                ProviderInvocationSelection.connected("codex", ""),
+                ProviderInvocationSelection.connected("api_key_http:source-b", ""),
             )
-        next_run = _receipt("alice", ("claude-code",), run_id="run-two")
+        next_run = _receipt("alice", ("api_key_http:source-a",), run_id="run-two")
         assert _current_connected_member(
             conn, tmp_path, next_run,
-            ProviderInvocationSelection.connected("claude-code", ""),
-        ).reference_digest == "owned"
-        bob = _receipt("bob", ("codex",), run_id="run-bob")
+            ProviderInvocationSelection.connected("api_key_http:source-a", ""),
+        ).owner_user_id == "alice"
+        bob = _receipt("bob", ("api_key_http:source-b",), run_id="run-bob")
         with pytest.raises(PermissionError, match="not connected"):
             _current_connected_member(
-                conn, tmp_path, bob, ProviderInvocationSelection.connected("codex", "")
+                conn, tmp_path, bob,
+                ProviderInvocationSelection.connected("api_key_http:source-b", "")
             )
 
 

@@ -193,56 +193,6 @@ def test_child_env_removes_every_platform_secret_and_keeps_the_rest():
     assert child_env(source) == {"TINYASSETS_DATA_DIR": "/data", "UNRELATED": "kept"}
 
 
-def test_http_engine_config_carries_only_its_route_and_no_ambient_secrets(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from tinyassets import credential_vault, engine_mcp_http
-    from tinyassets.providers.base import ModelConfig
-    from tinyassets.providers.claude_provider import _engine_mcp_flags
-    from tinyassets.providers.owned_process import guest_job_dir, launch_scope
-
-    sentinels = {name: f"SENTINEL-{name}" for name in CHILD_FORBIDDEN_ENV}
-    for name, value in sentinels.items():
-        monkeypatch.setenv(name, value)
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    route = SimpleNamespace(url="http://127.0.0.1:8790/mcp", secret="owner-route",
-                            grant_key="grant-proof")
-    monkeypatch.setattr(engine_mcp_http, "read_engine_mcp_route", lambda **kw: route)
-    monkeypatch.setattr(credential_vault, "_write_exclusive_snapshot_file",
-                        lambda path, data: path.write_bytes(data))
-    config = ModelConfig(engine_mcp_actor_id="owner", engine_mcp_graph_id="home",
-                         credential_snapshot_dir=tmp_path)
-    # The config is sealed only inside a launch: the CLI reads it from the
-    # leased home in the owner's box, so the flag names the guest path and the
-    # file lands in the launch's private snapshot directory.
-    with launch_scope(tmp_path, owner="owner", service="claude", credential_dir=tmp_path,
-                      operation_id="op-engine-route"):
-        flags = _engine_mcp_flags(config, tmp_path)
-    assert "--strict-mcp-config" in flags
-    guest = flags[flags.index("--mcp-config") + 1]
-    assert guest == guest_job_dir("op-engine-route") + "/claude/engine-mcp.json"
-    path = tmp_path / "engine-mcp.json"
-    document = json.loads(path.read_text())
-    server = document["mcpServers"]["tinyassets"]
-    assert set(server) == {"type", "url", "headers"}
-    assert server["type"] == "http" and server["url"].startswith(
-        route.url.replace("127.0.0.1", engine_mcp_http.BOX_ENGINE_HOST, 1))
-    assert server["headers"] == {"Authorization": "Bearer owner-route"}
-    assert not any(value in path.read_text() for value in sentinels.values())
-
-
-def test_missing_http_engine_route_never_falls_back_to_a_spawn(tmp_path, monkeypatch):
-    from tinyassets import engine_mcp_http
-    from tinyassets.providers.base import ModelConfig
-    from tinyassets.providers.claude_provider import _engine_mcp_flags
-
-    monkeypatch.setattr(engine_mcp_http, "read_engine_mcp_route", lambda **kw: None)
-    config = ModelConfig(engine_mcp_actor_id="owner", engine_mcp_graph_id="home",
-                         credential_snapshot_dir=tmp_path)
-    assert _engine_mcp_flags(config, tmp_path) == []
-    assert list(tmp_path.iterdir()) == []
-
-
 # ---------------------------------------------------------------------------
 # the renderer
 # ---------------------------------------------------------------------------
@@ -545,3 +495,28 @@ def test_a_source_that_cannot_be_read_installs_nothing(tmp_path):
 
     assert result.returncode == 7
     assert not daemon.exists()
+
+
+@_POSIX_SHELL
+def test_broker_receives_only_registered_oauth_environment(tmp_path):
+    source, daemon = tmp_path / "env", tmp_path / "daemon.env"
+    source.write_text("STRIPE_SECRET_KEY=not-for-broker\n"
+                      "TINYASSETS_OAUTH_EXAMPLE_CLIENT_ID=client\n"
+                      "TINYASSETS_OAUTH_EXAMPLE_SECRET=private-fixture\n"
+                      "TINYASSETS_OAUTH_DIRECTORY=/app/providers.json\n"
+                      "UNRELATED='line one\nTINYASSETS_OAUTH_FAKE_SECRET=not-a-variable'\n")
+    result = _helper(tmp_path, ["render-daemon-env"], source, daemon)
+    assert result.returncode == 0, result.stderr
+    # The rendered daemon copy assigns none of the registered OAuth names (the
+    # FAKE one only appears inside UNRELATED's quoted value). How compose fills
+    # bare declarations from the project env is covered by the compose tests.
+    oauth = {"TINYASSETS_OAUTH_EXAMPLE_CLIENT_ID", "TINYASSETS_OAUTH_EXAMPLE_SECRET",
+             "TINYASSETS_OAUTH_DIRECTORY"}
+    assert not oauth & _assigned(daemon) and "private-fixture" not in daemon.read_text()
+    broker = tmp_path / "broker.env"
+    assert _assigned(broker) == {"TINYASSETS_OAUTH_EXAMPLE_CLIENT_ID",
+                                 "TINYASSETS_OAUTH_EXAMPLE_SECRET",
+                                 "TINYASSETS_OAUTH_DIRECTORY"}
+    assert "private-fixture" not in result.stdout + result.stderr
+    service = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]["broker"]
+    assert service["env_file"] == [{"path": "/etc/tinyassets/broker.env", "required": False}]

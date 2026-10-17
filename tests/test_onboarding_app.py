@@ -229,8 +229,8 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/model-connect/{operation}", "/app/model-callback/{flow}",
         # The public OAuth client metadata document a sign-in source names.
         "/app/oauth/client-metadata.json",
-        "/app/openai/device/start", "/app/openai/device/poll",
-        "/app/openai/begin", "/app/openai/exchange", "/app/trace",
+
+        "/app/trace",
         "/app/voice/status", "/app/voice/session",
         "/app/serving/bind", "/app/models/preferences",
         "/app/billing/status", "/app/billing/checkout",
@@ -271,8 +271,8 @@ def test_route_is_apex_app_get(monkeypatch):
     for path in ("/app/api/policy", "/app/memory"):
         assert by_path[path].methods == {"GET", "HEAD", "POST"}
     for post_only in (
-        "/app/token", "/app/openai/device/start", "/app/openai/device/poll",
-        "/app/openai/begin", "/app/openai/exchange", "/app/trace",
+        "/app/token",
+        "/app/trace",
         "/app/voice/session",
         "/app/serving/bind",
         "/app/billing/checkout", "/app/billing/cancel",

@@ -198,7 +198,7 @@ def test_get_status_without_home_is_repeatable_and_side_effect_free(
     assert first["active_host"] == {
         "host_id": "host",
         "served_llm_type": "any",
-        "llm_endpoint_bound": "ollama",
+        "llm_endpoint_bound": "broker",
         "api_key_providers_enabled": False,
     }
     assert first["release_state"]["git_sha"] == "candidate-sha"
@@ -1073,16 +1073,10 @@ def _policy_hard_fail() -> BaseException:
 
 
 def _attach_engine_credential(universe_dir: Path) -> None:
-    """Attach a BYO engine key the same way `universe action=set_engine` does."""
-    import base64
-
-    from tinyassets.credential_vault import write_credential_vault
-
-    write_credential_vault(universe_dir, [{
-        "credential_type": "llm_api_key",
-        "service": "anthropic",
-        "secret_b64": base64.b64encode(b"sk-founder-key").decode("ascii"),
-    }])
+    """Attach an owner-bound HTTP model through the real broker grant fixture."""
+    from tests.support.http_model import seed_http_assignment
+    seed_http_assignment(universe_dir.parent, owner_user_id="founder-1",
+                         universe_id=universe_dir.name)
 
 
 def test_newborn_without_a_credential_gets_onboarding_not_a_raw_error(
@@ -1108,8 +1102,8 @@ def test_newborn_without_a_credential_gets_onboarding_not_a_raw_error(
     assert out["reason"] == "setup_required"
     assert "All providers exhausted" not in rendered
     assert "set_engine" not in rendered
-    assert "not exposed by the advertised handles" in rendered
-    assert "byo_api_key" in rendered
+    assert any(path["path"] == "/app/connections" for path in out["setup_paths"])
+    assert "byo_api_key" not in rendered  # No retired box-side key-deposit instructions.
 
 
 def test_setup_required_reply_is_platform_authored_not_the_universe_voice(
@@ -1201,12 +1195,11 @@ def test_unreadable_vault_never_claims_the_credential_is_missing(
     Claiming "no credential attached" from a read failure would send a founder
     to re-attach a key they already have, and would hide a corrupt vault.
     """
-    from tinyassets.credential_vault import credential_vault_path
     from tinyassets.universe_server import converse
 
     _login("founder-1")
     uid = _create_via_action(data_dir, monkeypatch)
-    vault = credential_vault_path(data_dir / uid)
+    vault = data_dir / uid / "provider_definitions.json"
     vault.parent.mkdir(parents=True, exist_ok=True)
     vault.write_text("{not json", encoding="utf-8")
     _engine_raises(monkeypatch, _exhausted())
@@ -1234,53 +1227,15 @@ def test_held_payload_does_not_invoke_a_second_provider_call(
     assert called["count"] == 1
 
 
-@pytest.mark.parametrize(
-    ("engine_source", "extra"),
-    [
-        ("self_hosted_endpoint", {"engine_endpoint": "https://llm.internal/v1"}),
-        ("host_daemon", {}),
-    ],
-)
-def test_non_vault_engine_choice_is_an_outage_not_missing_setup(
-    data_dir, monkeypatch, engine_source, extra
-):
-    """A vault-only test misreads a configured engine outage.
-
-    `set_engine` records `self_hosted_endpoint` / `host_daemon` in config
-    and writes no vault credential. Reading an empty
-    vault as "never set up" would send a founder who already chose an engine
-    back to onboarding and hide that their engine is down.
-    """
-    from tinyassets.config import write_universe_config_fields
-    from tinyassets.universe_server import converse
-
-    _login("founder-1")
-    uid = _create_via_action(data_dir, monkeypatch)
-    write_universe_config_fields(
-        data_dir / uid, engine_source=engine_source, **extra
-    )
-    _engine_raises(monkeypatch, _exhausted())
-
-    out = json.loads(converse(message="Hello"))
-
-    _assert_reads_as_outage_not_onboarding(out)
-
-
 def test_unreadable_config_never_claims_the_engine_is_missing(
     data_dir, monkeypatch
 ):
-    """Codex ADAPT round 2 (2026-07-25), reviewer's exact repro.
-
-    `load_universe_config` degrades a corrupt config to a default
-    `UniverseConfig`, whose `engine_source` is the same value that means "the
-    founder never chose an engine". Without a separate parseability probe, a
-    corrupt config reads as "no engine yet" — losing the founder's recorded
-    choice AND hiding that their config is broken.
-    """
+    """A broken config cannot hide an existing broker-backed HTTP model."""
     from tinyassets.universe_server import converse
 
     _login("founder-1")
     uid = _create_via_action(data_dir, monkeypatch)
+    _attach_engine_credential(data_dir / uid)
     (data_dir / uid / "config.yaml").write_text(
         "engine_source: [unterminated\n", encoding="utf-8"
     )
@@ -1294,16 +1249,12 @@ def test_unreadable_config_never_claims_the_engine_is_missing(
 def test_non_string_engine_source_does_not_crash_the_failing_turn(
     data_dir, monkeypatch
 ):
-    """Codex ADAPT round 2 (2026-07-25): `engine_source: 7` parses fine.
-
-    `_build_config` assigns YAML values without type coercion, so a non-string
-    reaches the comparison. An AttributeError there would escape while we are
-    already handling the founder's failed turn.
-    """
+    """Old config values cannot replace the registered HTTP model's failure."""
     from tinyassets.universe_server import converse
 
     _login("founder-1")
     uid = _create_via_action(data_dir, monkeypatch)
+    _attach_engine_credential(data_dir / uid)
     (data_dir / uid / "config.yaml").write_text("engine_source: 7\n", encoding="utf-8")
     _engine_raises(monkeypatch, _exhausted())
 

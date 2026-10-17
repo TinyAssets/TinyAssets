@@ -242,6 +242,12 @@ def account_type_for_universe(universe_dir: str | Path) -> AccountType:
     Never raises: seat admission and the upgrade line call it, and an unreadable
     owner record must cost the least, not break the run.
     """
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        from tinyassets.broker.owner_reads import remote
+
+        return account_type(remote("plan")["tier"])
     path = Path(universe_dir)
     try:
         owner = owner_of(path.parent, path.name)

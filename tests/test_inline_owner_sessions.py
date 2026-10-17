@@ -151,12 +151,12 @@ def test_revoke_owner_cancels_all_connect_flows_only_for_that_owner(setup, tmp_p
 
     with flows_db(tmp_path) as (conn, now):
         for owner in ("alice", "bob"):
-            conn.execute("INSERT INTO hosted_model_flows VALUES (?,?,?,?,?,?,?,?,?)",
+            conn.execute("INSERT INTO hosted_model_flows VALUES (?,?,?,?,?,?,?,?,?,?)",
                          (owner, owner, "home", "preset", "digest", "challenge", "origin",
-                          now, now + 300))
-            conn.execute("INSERT INTO connection_oauth_flows VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                          now, now + 300, "opaque-request"))
+            conn.execute("INSERT INTO connection_oauth_flows VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                          (owner, owner, "home", "request", "digest", "challenge", "client",
-                          "redirect", now, now + 300, owner))
+                          "redirect", now, now + 300, "{}", owner))
     with flows() as conn:
         conn.execute("INSERT INTO owner_sessions VALUES (?,?,?)",
                      (sessions.hashed("bob-cookie"), json.dumps({"user_id": "bob"}),

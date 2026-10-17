@@ -11,10 +11,8 @@ reader = integration.reader
 configured = integration.configured
 
 
-@pytest.mark.parametrize("configured", ["mixed", "http"], indirect=True)
 @pytest.mark.parametrize("change", ["remove_definition", "revoke_grant"])
 def test_readiness_and_inventory_check_independent_http_members(configured, monkeypatch, change):
-    from tinyassets.credential_vault import write_credential_vault
     from tinyassets.providers.definition import _store_path
 
     integration.enable(configured)
@@ -27,45 +25,24 @@ def test_readiness_and_inventory_check_independent_http_members(configured, monk
     assert _serving_llm_bound(base, "u-models", "owner") is True
     assert list_serving_universes(base) == ["u-models"]
     # Fixture-owned records only; no real credentials, provider or network.
+    definition_path = _store_path("u-models")
+    definition_bytes = definition_path.read_bytes()
     if change == "remove_definition":
         _store_path("u-models").unlink()
     else:
         configured.rig.ledger.revoke_grant("grant-models")
     monkeypatch.setattr("tinyassets.providers.call.get_provider_router",
                         lambda: pytest.fail("readiness must not inspect executor availability"))
-    survives = configured.native is not None
-    assert _serving_llm_bound(base, "u-models", "owner") is survives
-    assert list_serving_universes(base) == (["u-models"] if survives else [])
+    assert _serving_llm_bound(base, "u-models", "owner") is False
+    assert list_serving_universes(base) == []
     assert _serving_llm_bound(base, "u-models", "another-owner") is False
-    if survives:
-        write_credential_vault(base / "u-models", [],
-                               owner_user_id="owner", universe_id="u-models")
-        assert _serving_llm_bound(base, "u-models", "owner") is False
-        assert list_serving_universes(base) == []
-
-
-@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
-@pytest.mark.parametrize("surface", ["rail", "inventory"])
-def test_definition_disappearing_between_custody_reads_preserves_other_member(
-    configured, monkeypatch, surface,
-):
-    from tinyassets.providers import definition
-
-    integration.enable(configured)
-    base = configured.rig.base
-    read = definition.get_definition
-    removed = False
-
-    def disappearing(uid, definition_id):
-        nonlocal removed
-        result = read(uid, definition_id)
-        if not removed:
-            removed = True
-            definition._store_path(uid).unlink()  # fixture metadata only
-        return result
-
-    monkeypatch.setattr(definition, "get_definition", disappearing)
-    if surface == "rail":
-        assert _serving_llm_bound(base, "u-models", "owner") is True
+    # Repair only the unavailable member; readiness must follow live broker state.
+    if change == "remove_definition":
+        definition_path.write_bytes(definition_bytes)
     else:
-        assert list_serving_universes(base) == ["u-models"]
+        # Restore the fixture's original row; public regrant creates a new grant ID.
+        with configured.rig.ledger._connect() as db:
+            db.execute("UPDATE outbound_connection_grants SET revoked_at=NULL WHERE grant_id=?",
+                       ("grant-models",))
+    assert _serving_llm_bound(base, "u-models", "owner") is True
+    assert list_serving_universes(base) == ["u-models"]

@@ -997,16 +997,13 @@
       if(agentId && agentId!=="main") args.agent_id=String(agentId);
       return this.callTool("converse",args,{onModelEvent});
     },
-    // Deposit a generic outbound HTTP connection (an API key + the endpoints it
-    // may call) DIRECTLY over /mcp — the secret rides the tool payload, never a
-    // converse/chat turn — so the command center can then register a model
-    // compute provider on it, or build a channel (Slack/X/...) via the
-    // authenticated_external_call effect. The channel-agnostic way to add any API.
+    // Credentials travel directly to the shared door.
     connectHTTP(destination,secret,allowedEndpoints,authScheme){
-      const payload={destination,secret,allowed_endpoints:allowedEndpoints};
-      if(authScheme) payload.auth_scheme=authScheme;   // bearer (default) | basic | oauth1a
-      return this.callTool("write_graph",{target:"connection",operation:"connect_http",
-        payload_json:JSON.stringify(payload)});
+      if(authScheme==="none")return this.callTool("write_graph",{
+        target:"connection",operation:"connect_http",payload_json:JSON.stringify({
+          destination,auth_scheme:"none",allowed_endpoints:allowedEndpoints})});
+      return ConnectOAuth.post("deposit",{secret,definition:{
+        destination,auth_scheme:authScheme||"bearer",endpoints:allowedEndpoints}});
     },
     // Ask the command center what a pasted credential IS, from its SHAPE only. The
     // credential itself never rides this call — see extractShape() below.
@@ -1119,7 +1116,10 @@
     },
     // The agent's pending asks: EVERY one. Same read from every surface, which
     // is what makes them answerable from the phone with no second mechanism.
-    listRequests(){ return this.read({target:"pending_requests"}); },
+    listRequests(){
+      const center=new URLSearchParams(location.search).get("center");
+      return this.read({target:"pending_requests",...(center?{graph_id:center}:{})});
+    },
   };
 
   // ---- UI ----
@@ -1456,7 +1456,7 @@
   // bounded is a claim this page can no longer check — a row the server itself
   // marks `stale`, or one this page has not refreshed in three working-rate
   // polls, stops being painted rather than leaving a tab thinking forever.
-  const TURN_WORKING_STATES=["ready","inference_started","native_started","tools_pending"];
+  const TURN_WORKING_STATES=["ready","inference_started","tools_pending"];
   // 30s is a fine beat for a host dot; it is far too slow to clear a working
   // indicator for a tab that did not start the turn, where half a minute of
   // stale "thinking" reads as a hang. Faster only while a turn is believed live,
@@ -1527,7 +1527,7 @@
   // line belongs to the live tool painter).
   function waitDetail(){
     if(!serverTurnLive()||!serverTurn.round||
-       (serverTurn.state!=="inference_started"&&serverTurn.state!=="native_started"))
+       serverTurn.state!=="inference_started")
       return "";
     const mins=waitMinutes();
     return "step "+serverTurn.round+(serverTurn.model
@@ -2836,7 +2836,7 @@
         never_run:"model list not checked yet",
         stale:"checking… (showing last known models)",
         catalogue_refresh_unavailable:"couldn't refresh (showing last known models)",
-        native_catalogue_unavailable:"couldn't refresh (showing last known models)"}[reason];
+        catalogue_unavailable:"couldn't refresh (showing last known models)"}[reason];
     },
     renderMenu(){
       const menu=$("model-menu");if(!menu||menu.hidden) return;
@@ -2954,7 +2954,7 @@
     },
     reset(){
       this.epoch++;clearTimeout(this.timer);this.snapshot=null;this.draft=null;
-      this.busy=false;this.stale=true;this.recovery=null;this.nativeDrafts={};modelChoiceForNextTurn=null;
+      this.busy=false;this.stale=true;this.recovery=null;modelChoiceForNextTurn=null;
       this.actual="No answering model reported yet";
       if($("model-dialog").open) $("model-dialog").close();
       // The previous account's model list must not stay on screen either.
@@ -2980,13 +2980,13 @@
           !Array.isArray(doc.options)||!Array.isArray(doc.unavailable)||!Array.isArray(doc.order)||
           !doc.preferences||typeof doc.universe_id!=="string") throw new Error("catalogue unavailable");
         if(this.snapshot&&this.snapshot.universe_id!==doc.universe_id){
-          modelChoiceForNextTurn=null;this.draft=null;this.recovery=null;this.nativeDrafts={};this.actual="No answering model reported yet";
+          modelChoiceForNextTurn=null;this.draft=null;this.recovery=null;this.actual="No answering model reported yet";
         }
         this.snapshot=doc;this.stale=false;
         if(!this.draft) this.draft=copyModelChoice(modelChoiceForNextTurn||doc.preferences.policy||this.automatic());
         // Native catalogue age is displayed separately from the freshness of
         // this owner-authorized picker read. HTTP discovery keeps its expiry gate.
-        const expiries=(doc.sources||[]).filter(source=>source.access_method!=="subscription_cli")
+        const expiries=(doc.sources||[])
           .map(source=>Date.parse(source.expires_at)).filter(Number.isFinite);
         this.expires=Math.min(Date.now()+300000,...expiries);
         clearTimeout(this.timer);
@@ -3058,9 +3058,6 @@
       for(const source of (this.snapshot&&this.snapshot.sources||[])){
         const proposal=this.accessProposal(source),li=document.createElement("li");
         const label=document.createElement("span");label.textContent=source.provider_ref;li.appendChild(label);
-        if(source.access_method==="subscription_cli"&&this.nativeAccessProposal(source,"explicit",[])){
-          this.renderNativeAccess(source,li);accessList.appendChild(li);continue;
-        }
         if(proposal){
           const btn=document.createElement("button");btn.type="button";btn.className="btn btn--link";
           btn.textContent="Allow "+proposal.count+" compatible model"+(proposal.count===1?"":"s")+" and reconnect";
@@ -3137,48 +3134,6 @@
       return {source:copyModelChoice(source),access:copyModelChoice(snapshot.accepted_model_access||{}),
         legacy:copyModelChoice(legacy),universe_id:snapshot.universe_id,binding:copyModelChoice(snapshot.binding)};
     },
-    nativeAccessProposal(source,scope,ids){
-      const proposal=this.accessContext(source);
-      if(!proposal||source.access_method!=="subscription_cli"||!["explicit","discovered"].includes(scope)) return null;
-      if(scope==="discovered"&&source.enumeration!=="supported") return null;
-      if(!Array.isArray(ids)||ids.some(id=>typeof id!=="string"||!id||id!==id.trim()||[...id].length>200||/[\p{C}\p{Z}]/u.test(id.replace(/ /g,"")))||new Set(ids).size!==ids.length) return null;
-      if(scope==="discovered"&&ids.length) return null;
-      const membership=new Set(["source_not_accepted","model_access_optin_required","outside_accepted_model_scope"]);
-      if(!this.snapshot.options.some(row=>row.reference.provider_ref===source.provider_ref&&row.freshness==="fresh"&&
-          (row.reasons||[]).every(reason=>membership.has(reason.reason)))) return null;
-      const prior=proposal.access[source.bind_key];
-      proposal.access[source.bind_key]={model_scope:scope,model_ids:scope==="explicit"?["",...ids]:[],cost_caps:prior?prior.cost_caps:null};
-      return proposal;
-    },
-    renderNativeAccess(source,li){
-      const prior=(this.snapshot.accepted_model_access||{})[source.bind_key];
-      const draft=this.nativeDrafts[source.provider_ref]||(this.nativeDrafts[source.provider_ref]={
-        scope:prior&&prior.model_scope==="discovered"?"discovered":prior&&prior.model_ids.some(Boolean)?"named":"default",
-        text:prior&&prior.model_scope==="explicit"?prior.model_ids.filter(Boolean).join("\n"):""});
-      const mode=document.createElement("select");mode.setAttribute("aria-label","Model access for "+source.provider_ref);
-      this.option(mode,"default","Provider default",false);this.option(mode,"named","Name specific models",false);
-      if(source.enumeration==="supported"||draft.scope==="discovered") this.option(mode,"discovered","Models listed by this source",source.enumeration!=="supported");
-      mode.value=draft.scope;mode.disabled=this.busy;li.appendChild(mode);
-      const input=document.createElement("textarea");input.setAttribute("aria-label","Model IDs for "+source.provider_ref);
-      input.placeholder="One model ID per line";input.rows=2;input.value=draft.text;input.hidden=draft.scope!=="named";input.disabled=this.busy;
-      input.addEventListener("input",()=>{draft.text=input.value;});li.appendChild(input);
-      mode.addEventListener("change",()=>{draft.scope=mode.value;input.hidden=draft.scope!=="named";});
-      const note=document.createElement("p");note.textContent="Named models are unverified; an unavailable name fails without substituting the default. Named and discovered access are alternatives. "+
-        (source.enumeration==="supported"?"Discovery support is installed; the account's full list is not yet proven.":"This source cannot currently verify its full model list.");li.appendChild(note);
-      const btn=document.createElement("button");btn.type="button";btn.className="btn btn--link";btn.textContent="Review model access and reconnect";btn.disabled=this.busy;
-      btn.addEventListener("click",()=>this.allowNativeAccess(source,draft.scope==="discovered"?"discovered":"explicit",
-        draft.scope==="named"?draft.text.split(/\r?\n/).map(id=>id.trim()).filter(Boolean):[]));li.appendChild(btn);
-    },
-    async allowNativeAccess(source,scope,ids){
-      if(this.busy) return;
-      const proposal=this.nativeAccessProposal(source,scope,ids);
-      if(!proposal){this.status("Review the model IDs or refresh this source's supported access. Nothing was changed.");return;}
-      const description=scope==="discovered"?"models listed by this connected source (including future additions); account availability remains unverified until refreshed"
-        :ids.length?"the provider default and these unverified model IDs: "+ids.join(", "):"the provider default only";
-      if(!confirm("Allow "+description+"? This replaces this source's current model scope and reconnects your agent. Other sources, spending limits and saved choices stay unchanged. An unavailable named model fails; it does not silently use the default.")) return;
-      if(!this.fresh()){this.status("Model availability changed while you were confirming. Refresh and review again.");return;}
-      await this.publishAccess(proposal,{provider:source.bind_key,model_access:proposal.access});
-    },
     accessProposal(source){
       const context=this.accessContext(source);
       if(!context) return null;
@@ -3188,13 +3143,10 @@
       if(method==="api_key_http"){
         if(prior&&prior.model_scope==="discovered") return null;
         access[source.bind_key]={model_scope:"discovered",model_ids:[],cost_caps:prior?prior.cost_caps:null};
-      }else if(method==="subscription_cli"){
-        if(prior&&prior.model_scope==="explicit") return null;
-        access[source.bind_key]={model_scope:"explicit",model_ids:[""],cost_caps:prior?prior.cost_caps:null};
       }else return null;
       const membership=new Set(["source_not_accepted","model_access_optin_required","outside_accepted_model_scope"]);
       const count=snapshot.options.filter(row=>row.reference.provider_ref===source.provider_ref&&
-        row.freshness==="fresh"&&(method!=="subscription_cli"||row.reference.model_id==="")&&
+        row.freshness==="fresh"&&
         (row.reasons||[]).every(reason=>membership.has(reason.reason))).length;
       return {source:copyModelChoice(source),access,count,legacy:copyModelChoice(legacy),
         universe_id:snapshot.universe_id,binding:copyModelChoice(snapshot.binding)};
@@ -3209,8 +3161,7 @@
       const proposal=this.accessProposal(source);
       if(!proposal||proposal.count===0) return;
       const caps=proposal.access[source.bind_key].cost_caps;
-      const limits=source.access_method==="subscription_cli" ? "your connected subscription's provider default"
-        :caps===null ? "free compatible models only" : "your existing spending ceilings: "+JSON.stringify(caps);
+      const limits=caps===null ? "free compatible models only" : "your existing spending ceilings: "+JSON.stringify(caps);
       const legacy=proposal.legacy ? " This replaces fixed-provider mode. If reconnecting fails, you can restore the previous setup." : "";
       if(!confirm("Allow "+proposal.count+" compatible model(s) from "+source.provider_ref+" using "+limits+", and reconnect this agent? Other accepted sources and saved choices stay unchanged."+legacy)) return;
       if(!this.fresh()){this.status("Model availability changed while you were confirming. Refresh and review again.");return;}
@@ -4350,7 +4301,6 @@
       // peek failed, THIS is where the page finally learns its command center, so
       // the unconfirmed turn is offered here rather than lost.
       if(!inflightRestored) restoreInflight([]);
-      healServing(s);
     }catch(err){
       if(!current()) return;
       if(err.authRequired) return sessionExpired();
@@ -4385,44 +4335,6 @@
     // working, costs one hidden-check per second.
     clearInterval(workingTimer); workingTimer=setInterval(renderWorking,1000);
     pollStatus();
-  }
-
-  // The status says which engine this command center THINKS on (active_host.llm_endpoint_bound)
-  // and whether anything is serving its background work (no_serving_runtime). A mind
-  // with nothing serving on it is the deposit-without-bind state; heal it once per
-  // page rather than telling the user to reconnect (founder, 2026-09-01: a naive
-  // user would not know to).
-  let servingHealAttempted = false;
-  // Candidate engines, the one the status names first. The writer health here
-  // is host-level presence, not this command center's vault, so each candidate is an
-  // ATTEMPT: the route refuses ("held") when nothing is deposited for it.
-  function unservedCandidates(s){
-    try{
-      const live=s.supervisor_liveness||{};
-      const pump=((live.epoch2_operational||{}).consumer_pump)||[];
-      if(!pump.some(p=>p&&p.reason==="no_serving_runtime")) return [];
-      const bound=String(((s.active_host||{}).llm_endpoint_bound)||"");
-      const writers=((live.provider_auth||{}).writers)||{};
-      const ok=name=>!!(writers[name]&&writers[name].status==="ok");
-      const out=[];
-      const push=(engine,service)=>{ if(ok(engine)&&!out.includes(service)) out.push(service); };
-      if(bound==="codex") push("codex","codex"); else if(bound==="claude-code") push("claude-code","claude");
-      push("codex","codex"); push("claude-code","claude");
-      return out;
-    }catch(_e){ return []; }
-  }
-  async function healServing(s){
-    if(servingHealAttempted) return;
-    const candidates=unservedCandidates(s);
-    if(!candidates.length) return;
-    servingHealAttempted = true;
-    for(const service of candidates){
-      const sv=await serveOn(service);
-      if(sv&&sv.status==="serving"){
-        appendMessage("system","Your command center now runs its background work on your "+serviceLabel(service)+" subscription.");
-        return;
-      }
-    }
   }
 
   // Connecting a mind is part of signing in (founder 2026-08-21), and it
@@ -5390,7 +5302,7 @@
     sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(EXP_KEY); showView("signin"); }
   // The one way into model setup from anywhere in the app: the chat, with the
   // connect request open. Never a separate screen.
-  const CONNECT_REQUEST_ID="sys_connect_llm";
+  const CONNECT_REQUEST_ID="sys_connect_model";
   function openConnectRequest(guidance){
     Voice.stop(false);
     if(views.chat.hidden) showView("chat");
@@ -5409,9 +5321,8 @@
   // The guided sign-in the connect request offers first. Its preset (name,
   // button label, key page) comes from the SERVER's request, so this page
   // names no provider. Nothing here starts on its own: the owner taps.
-  // Finishing is part of that tap: the button says "free models only", the
-  // owner approves at the provider, and the page completes the free-model
-  // request it gets back, with no second screen to approve again.
+  // Provider sign-in saves a connection. The existing owner request then
+  // discloses model access and waits for the owner's confirmation.
   // Generic connection card. The server supplies the provider; the message is
   // replayable only after an explicit before-send setup refusal, never a timeout.
   const InlineConnection={
@@ -5443,6 +5354,10 @@
       appendMessage('platform','',box);
       other.onclick=()=>{if(this.current(record))openConnectRequest();};
       connect.onclick=()=>primary?this.begin(primary):openConnectRequest();
+      if(record.modelConfirmation){
+        note.textContent=record.modelConfirmation.grant_sentence||'Connection saved. Confirm model access to continue.';
+        connect.textContent='Confirm model access';
+      }
       cancel.onclick=async()=>{
         if(!this.current(record)||!record.connectionFlow)return;
         try{await HostedModelConnect.post('inline_cancel',{flow:record.connectionFlow});
@@ -5456,6 +5371,17 @@
     schedule(){clearTimeout(this.timer);this.timer=setTimeout(()=>this.check(),1500);},
     async begin(primary){
       const record=this.record;if(!this.current(record)||this.busy)return;
+      if(record.modelConfirmation){
+        this.busy=true;
+        try{
+          const answered=await MCP.answerRequest({request_id:record.modelConfirmation.request_id,values:{}});
+          if(!this.current(record))return;
+          if(!answered||answered.error||answered.status!=="answered")throw new Error("Model access was not confirmed.");
+          record.modelConfirmation=null;this.save();
+        }catch(_e){if(this.current(record))this.note.textContent="Model access is still pending. Try confirming again.";}
+        finally{this.busy=false;this.schedule();}
+        return;
+      }
       // Reserve the popup inside the gesture, before network or token renewal.
       const popup=NATIVE?null:window.open('about:blank','_blank');
       if(!NATIVE&&!popup){this.failed('Allow the sign-in popup to connect.');return;}
@@ -5491,14 +5417,12 @@
           const result=await HostedModelConnect.post('inline_poll',{flow:record.connectionFlow});
           if(!this.current(record))return;
           if(result.status==='confirmation_required'){
-            // This tap authorized only the server's existing free-only bootstrap.
             if(!result.request||result.request.request_id!==result.request_id||
                !result.request.action||result.request.action.type!=='bind_model_access')
               throw new Error('Connection confirmation did not match the requested setup.');
-            const answered=result.answer || await MCP.answerRequest({request_id:result.request_id,values:{}});
-            if(!this.current(record))return;
-            if(!answered||answered.error||answered.status!=='answered')throw new Error('Connection confirmation did not finish.');
-            record.connectionFlow=null;this.save();
+            record.modelConfirmation=result.request;record.connectionFlow=null;this.save();
+            this.note.textContent=result.request.grant_sentence||'Connection saved. Allow the default agent to use these free models?';
+            this.connect.textContent='Confirm model access';this.connect.disabled=false;this.cancel.hidden=true;
           }else if(result.status==='cancelled')this.failed('Sign-in was cancelled. Your message is kept.');
           else if(result.status==='consumed'){
             this.failed('Connection needs recovery. Use Other AI to finish the saved setup.');
@@ -5561,10 +5485,11 @@
       $("connect-primary").hidden=!(primary&&idle&&!this.request);
       $("btn-hosted-model").textContent=primary?primary.label:"";
       $("btn-hosted-model").disabled=this.busy||!idle;
-      const finish=!NATIVE&&this.setup!=="connected"&&
-        (!!this.request||(this.setup==="recovery"&&!!primary));
+      const finish=this.setup!=="connected"&&
+        (!!this.request||(!NATIVE&&this.setup==="recovery"&&!!primary));
       $("btn-hosted-resume").hidden=!finish;
       $("btn-hosted-resume").disabled=this.busy;
+      $("btn-hosted-resume").textContent=this.request?"Confirm model access":"Finish connecting";
       const grant=$("hosted-model-grant");
       grant.textContent=this.request&&this.request.grant_sentence||"";
       grant.hidden=!grant.textContent;
@@ -5617,6 +5542,10 @@
           if(current())this.status("Your setup answered late. Tap Finish connecting to complete it; nothing was approved yet.");
           return;
         }
+        if(result.status==="provisioned"){
+          this.keyOpen=false;this.status("Connection saved.");
+          await refreshRail();return;
+        }
         req=result.request;
         if(result.status!=="confirmation_required"||!req||req.request_id!==result.request_id||
            !req.action||req.action.type!=="bind_model_access")throw new Error("invalid_connection_response");
@@ -5634,7 +5563,7 @@
         key="";clearTimeout(timer);
         if(epoch===this.epoch){this.busy=false;this.paint();}
       }
-      if(req&&current()) await this.answer(true);
+      if(req&&current()) this.status("Connection saved. Review model access, then confirm.");
     },
     takeCallback(){
       const match=window.location.pathname.match(/^\/app\/model-callback\/([A-Za-z0-9_-]{43})$/);
@@ -5653,7 +5582,9 @@
         return {error:true};
       }
       this.preset=saved.preset;
-      return {flow:saved.flow,code:query.get("code"),code_verifier:saved.verifier};
+      const out={flow:saved.flow,code:query.get("code"),code_verifier:saved.verifier};
+      if(saved.center)out.center=saved.center;
+      return out;
     },
     async post(operation,payload){
       const epoch=this.epoch;
@@ -5661,16 +5592,20 @@
       if(epoch!==this.epoch)throw new Error("sign_in_required");
       if(!token()) throw new Error("sign_in_required");
       // No automatic retry: exchange outcomes may be uncertain.
+      if(!payload.center&&typeof queueScope!=="undefined"&&queueScope)payload.center=queueScope;
       const response=await fetch("/app/model-connect/"+operation,{
         method:"POST",credentials:"same-origin",cache:"no-store",referrerPolicy:"no-referrer",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
         body:JSON.stringify(payload),
       });
       const result=await response.json();
+      if(epoch!==this.epoch)throw new Error("sign_in_required");
       if(!response.ok||result.error){
         const error=new Error(result.error||"model_connection_incomplete");
         error.signIn=result.error==='interactive_approval_required';throw error;
       }
+      if(result.model_confirmation)
+        return InlineApprovals.post("model_connection",result.model_confirmation);
       return result;
     },
     async begin(){
@@ -5688,7 +5623,7 @@
            !/^[A-Za-z0-9_-]{43}$/.test(result.flow)||
            !Number.isFinite(result.expires_in)||result.expires_in<=0||result.expires_in>600) throw new Error("invalid_connection_response");
         sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,preset,
-          flow:result.flow,expires:Date.now()+result.expires_in*1000}));
+          flow:result.flow,center:result.center,expires:Date.now()+result.expires_in*1000}));
         window.location.assign(url.href);
       }catch(_e){
         if(epoch!==this.epoch) return;
@@ -5711,6 +5646,10 @@
       try{
         const result=await this.post(callback?"exchange":"resume",callback||{preset_id:this.preset});
         if(epoch!==this.epoch) return;
+        if(result.status==="provisioned"){
+          this.busy=false;this.status("Connection saved.");
+          await refreshRail();return;
+        }
         if(result.status==="connected"){ this.busy=false; await enterSignedIn(); return; }
         req=result.request;
         if(result.status!=="confirmation_required"||!req||req.request_id!==result.request_id||
@@ -5741,7 +5680,7 @@
             :"Your saved connection is not ready yet. Tap Finish connecting again in a moment, or connect another way below.");
         }
       }finally{if(epoch===this.epoch){this.busy=false;this.paint();}}
-      if(req&&epoch===this.epoch) await this.answer(true);
+      if(req&&epoch===this.epoch) this.status("Connection saved. Review model access, then confirm.");
     },
     async finish(){
       if(this.busy) return;
@@ -5798,25 +5737,6 @@
     },
   };
   // End hosted model connection controller.
-
-  // A deposit is only half of "connect": the command center must also SERVE on it, or
-  // chat works while every run fails with provider_not_bound. Same route the
-  // phone uses; idempotent; returns {status:"serving"|"held", ...}, never throws.
-  async function serveOn(service){
-    try{
-      const r=await fetch("/app/serving/bind",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:JSON.stringify({service})});
-      return (await r.json()).serving||null;
-    }catch(_e){ return null; }
-  }
-  // The two subscription CLIs have friendly names; anything else IS its name,
-  // because the platform does not keep a vendor list to look one up in.
-  const SERVICE_LABELS={claude:"Claude",codex:"OpenAI"};
-  function serviceLabel(service){ return SERVICE_LABELS[service] || service; }
-  function servingSentence(service, sv){
-    if(sv&&sv.status==="serving") return serviceLabel(service)+" connected. Your agent thinks and works on it from the next turn.";
-    const why=(sv&&(sv.detail||sv.reason))?(": "+(sv.detail||sv.reason)):"";
-    return serviceLabel(service)+" credential saved, but your command center is not running on it yet"+why+".";
-  }
 
   // ---- File attachments: every accepted file is uploaded ------------------
   // EVERY accepted file - a small text note included - goes through ONE
@@ -6599,12 +6519,10 @@
       if(b){
         // Leaving the sign-in shape stops its poll. A timer left running against a
         // flow the owner walked away from would keep polling the source forever.
-        if(b.dataset.shape!=="sign_in") SignInConnect.reset();
         ConnectShapes.select(b.dataset.shape);
       }
     });
     $("btn-endpoint-connect").addEventListener("click",connectEndpoint);
-    $("btn-signin-start").addEventListener("click",()=>SignInConnect.start());
     $("btn-signout").addEventListener("click",async()=>{ MCP.endLogin(); sessionStorage.setItem("ta_force_login","1"); await endServerSession(); enterSignedOut(); });
     // Legal links open OUTSIDE the app. In the Capacitor shell a plain <a> would
     // navigate the WebView itself to tinyassets.io and strand the user with no
@@ -7081,7 +6999,8 @@
           removedHere=true;armed=false;
           if(openConfirmation===putAway)openConfirmation=null;
           item.remove();
-          status.textContent="Disconnected from TinyAssets. Your provider account is unchanged. Back in chat, the connect request is waiting whenever you want to reconnect.";
+          status.textContent=removed.status==="removed_locally_revoke_failed" ? removed.message :
+            "Disconnected from TinyAssets. Your provider account is unchanged. Back in chat, the connect request is waiting whenever you want to reconnect.";
         }catch(_e){
           if(!live())return;
           // Nobody knows whether this connection is still there, so this row
@@ -7109,7 +7028,7 @@
           HostedModelConnect.setup=state.setup;HostedModelConnect.paint();
         }catch(_e){
           if(!live())return;
-          status.textContent="Disconnected from TinyAssets. Your provider account is unchanged. Your current connection state could not be re-read here - refresh this page to see it.";
+          status.textContent+=" Your current connection state could not be re-read here - refresh this page to see it.";
         }
       });
       return item;
@@ -7410,25 +7329,33 @@
       }
       const out={flow:saved.flow,code:query.get("code"),code_verifier:saved.verifier,title:saved.title};
       if(saved.source===true) out.source=true;
+      if(saved.center)out.center=saved.center;
       // RFC 9207: the server's own issuer, checked server-side against discovery.
       const iss=query.get("iss");
       if(iss&&iss.length<=2048) out.iss=iss;
       return out;
     },
     async post(operation,payload){
+      const epoch=MCP._loginEpoch;
+      const center=payload.center||(typeof queueScope!=="undefined"?queueScope:"");
       await ensureFreshToken();
+      MCP._assertLogin(epoch);
       if(!token()) throw new Error("sign_in_required");
       // No automatic retry: a code is redeemed at most once.
+      if(center)payload={...payload,center};
       const response=await fetch("/app/model-connect/"+operation,{
         method:"POST",credentials:"same-origin",cache:"no-store",referrerPolicy:"no-referrer",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
         body:JSON.stringify(payload),
       });
       const result=await response.json();
+      MCP._assertLogin(epoch);
       if(!response.ok||result.error){
         const error=new Error((result&&(result.detail||result.error))||"sign_in_incomplete");
         error.signIn=result.error==='interactive_approval_required';throw error;
       }
+      if(result.model_confirmation)
+        return InlineApprovals.post("model_connection",result.model_confirmation);
       return result;
     },
     async begin(req,note,button,opts){
@@ -7440,7 +7367,17 @@
       try{
         const verifier=randToken(32),code_challenge=await challengeFor(verifier);
         sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title,source}));
-        const result=await this.post("oauth_begin",{request_id:req.request_id,code_challenge});
+        const action=req.action||{};
+        const payload={code_challenge};
+        if(req.universe_id)payload.center=req.universe_id;
+        if(req.request_id)payload.request_ref=req.request_id;
+        if(opts&&opts.preset_id)payload.preset_id=opts.preset_id;
+        else payload.definition={destination:action.destination,
+          endpoints:action.endpoints||[{host:action.host,path_template:action.path_template,
+            methods:action.methods}],oauth:{scopes:(action.oauth||{}).scopes||[],
+              ...(action.oauth?.client_id?{client_id:action.oauth.client_id}:{}),
+              ...(action.oauth?.use?{use:action.oauth.use}:{})}};
+        const result=await this.post(opts&&opts.preset_id?"source_sign_in":"oauth_begin",payload);
         const url=new URL(result.authorize_url);
         if(url.protocol!=="https:"||url.username||url.password||
            !/^[A-Za-z0-9_-]{43}$/.test(result.flow)||url.searchParams.get("state")!==result.flow||
@@ -7448,7 +7385,7 @@
           throw new Error("invalid_sign_in_response");
         }
         sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title,source,
-          flow:result.flow,expires:Date.now()+result.expires_in*1000}));
+          flow:result.flow,center:result.center,expires:Date.now()+result.expires_in*1000}));
         window.location.assign(url.href);
       }catch(err){
         sessionStorage.removeItem(this.storageKey);
@@ -7472,23 +7409,19 @@
       try{
         const payload={flow:cb.flow,code:cb.code,code_verifier:cb.code_verifier};
         if(cb.iss) payload.iss=cb.iss;
+        if(cb.center)payload.center=cb.center;
         const result=await this.post("oauth_exchange",payload);
-        if(cb.source){
-          // The platform's own ask: nothing for the agent to hear, and no turn
-          // spent telling it. A powered command center adds the source on the
-          // owner's explicit yes, which is now waiting in the rail.
-          appendMessage("system",result.confirmation
-            ?"Signed in. Confirm \""+frameTitle({title:result.confirmation.title||cb.title})+
-              "\" under Waiting on you to add it to your agent."
-            :result.confirmation_error
-              ?"Signed in, but adding it to your agent needs a look: open Change model."
-              :"Signed in. Your agent can use it now.");
+        if(result.status==="confirmation_required"){
+          HostedModelConnect.setup="recovery";HostedModelConnect.request=result.request;
+          HostedModelConnect.paint();openConnectRequest("Connection saved. Review model access, then confirm.");
+          return;
+        }
+        if(result.status==="provisioned"){
+          appendMessage("system","Connection saved.");
           await refreshRail();
           return;
         }
-        appendMessage("system","Connected. "+(result.receipt||""));
-        await refreshRail();
-        // The shared answer transaction wakes the asking agent, on every device.
+        throw new Error("invalid_connection_response");
       }catch(err){
         appendMessage("system","The sign-in did not finish: "+((err&&err.message)||"unknown error")+". The request is still waiting; open it and sign in again.");
         refreshRail();
@@ -7508,9 +7441,8 @@
     // any key fields fold under "Paste a key instead".
     decorate(req,box,row,note){
       const action=req&&req.action,offer=action&&action.type==="connect"&&action.oauth;
-      if(NATIVE||!offer||typeof offer.authorize_url!=="string") return;
-      let host="";
-      try{ host=new URL(offer.authorize_url).host; }catch(_e){ return; }
+      if(NATIVE||!offer||action.auth_scheme==="none") return;
+      const host=(action.endpoints||[])[0]?.host||"the provider";
       const go=document.createElement("button");
       go.type="button"; go.className="btn btn--primary"; go.style.width="100%";
       // The HOST, not friendly words: the owner sees where the click goes.
@@ -7537,48 +7469,6 @@
   ConnectOAuth.pending=ConnectOAuth.takeCallback();
   ConnectOAuth.resumeWhenSignedIn();
   // End connect OAuth controller.
-
-  // The connect screen's subscription sign-in: the same device client as "Sign in
-  // again", with its own elements and its own state, started from its own button.
-  // Built on first use, because that client is defined further down the page.
-  let subscriptionConnect=null;
-  function subscriptionClient(){
-    if(!subscriptionConnect) subscriptionConnect=Object.assign({},SignInConnect,{
-      ids:{code:"sub-signin-code",value:"sub-signin-code-value",link:"sub-signin-code-link",
-        result:"sub-signin-result"},
-      connectedText:"Signed in. Your agent can run on your subscription now.",
-    });
-    return subscriptionConnect;
-  }
-
-  // Subscriptions the connect screen offers for more volume (data on the setup
-  // request: a service and its words). The page names none of them itself.
-  const SubscriptionCards={
-    signature:"",
-    render(subscriptions){
-      const host=$("connect-subscriptions");
-      const valid=(Array.isArray(subscriptions)?subscriptions:[]).filter(s=>s&&
-        typeof s.service==="string"&&/^[a-z0-9_-]{1,32}$/.test(s.service)&&
-        typeof s.label==="string"&&s.label.length>0&&s.label.length<=80);
-      $("sub-signin").hidden=!valid.length;
-      const signature=JSON.stringify(valid);
-      if(this.signature===signature) return;
-      this.signature=signature;host.replaceChildren();
-      for(const subscription of valid){
-        const card=document.createElement("div");card.className="connect-source";
-        const note=document.createElement("p");note.className="connect-terms";
-        note.textContent=typeof subscription.note==="string"?subscription.note:"";card.appendChild(note);
-        const button=document.createElement("button");button.type="button";button.className="btn btn--ghost";
-        button.textContent=subscription.label;card.appendChild(button);
-        button.addEventListener("click",()=>{
-          const client=subscriptionClient();
-          client.configure(subscription.service,"");
-          client.start();
-        });
-        host.appendChild(card);
-      }
-    },
-  };
 
   // Sources completed by SIGNING IN (installed data on the setup request). One tap
   // asks the server for the platform's own connect request, then hands it to the
@@ -7614,11 +7504,8 @@
       if(this.busy||NATIVE) return;
       this.busy=true;button.disabled=true;status.textContent="Opening the sign-in…";
       try{
-        const result=await ConnectOAuth.post("source_sign_in",{preset_id:source.id});
-        const req=result&&result.request;
-        if(!req||typeof req.request_id!=="string"||!req.action||req.action.type!=="connect"||
-           !req.action.oauth) throw new Error("sign_in_unavailable");
-        await ConnectOAuth.begin(req,status,button,{source:true});
+        await ConnectOAuth.begin({title:source.name,origin:"platform"},status,button,
+          {source:true,preset_id:source.id});
       }catch(error){
         status.textContent="Sign-in could not be started ("+((error&&error.message)||"unknown error")+
           "). Nothing was connected; try again in a moment.";
@@ -7655,8 +7542,7 @@
       const names=[];
       (Array.isArray(setup.sign_in_sources)?setup.sign_in_sources:[]).forEach(s=>{
         if(s&&typeof s.name==="string") names.push(s.name); });
-      (Array.isArray(setup.subscriptions)?setup.subscriptions:[]).forEach(s=>{
-        if(s&&typeof s.name==="string") names.push("your "+s.name+" subscription"); });
+
       names.push("a key");
       return names.length>1?names.slice(0,-1).join(", ")+", or "+names[names.length-1]:names[0];
     },
@@ -8156,8 +8042,7 @@
   }
 
   // The platform's own model-setup entry: the one `connect` action with the
-  // shapes the rail completes itself. An older page's "connect_llm" is the same
-  // entry without them.
+  // shapes the rail completes itself.
   // Any card the connect PANEL answers, not just the one setup card. A reconnect
   // card carries the same `connect` action with its own request id, and matching on
   // the id alone sent it to the generic Accept/Deny controls instead -- so the card
@@ -8168,7 +8053,7 @@
     if(!a) return false;
     const own=req.request_id===CONNECT_REQUEST_ID
       ||(typeof req.request_id==="string"&&req.request_id.startsWith(RECONNECT_REQUEST_PREFIX));
-    return own&&(a.type==="connect_llm"||(a.type==="connect"&&!!a.setup));
+    return own&&a.type==="connect"&&!!a.setup;
   }
   // While unpowered, exactly one pending free-model confirmation is the second
   // half of the setup in progress, so it is finished inside the setup request.
@@ -8671,7 +8556,7 @@
     },
     open(id,interactive=true){
       try{
-      if(this.selected!==id&&typeof CredentialRequests!=="undefined")CredentialRequests.clear();
+      if((this.selected!==id||!$('request-rail').open)&&typeof CredentialRequests!=="undefined")CredentialRequests.clear();
       const folded=foldedModelAccess(railCache);
       if(folded?.request_id===id)id=railCache.find(isSetupRequest).request_id;
       const req=railCache.find(row=>row.request_id===id);
@@ -8831,14 +8716,12 @@
     const setup = (req.action && req.action.setup) || {};
     // Which source this card is FOR. A reconnect card names it; the setup card does
     // not, because it is connecting something new.
-    SignInConnect.configure(setup.service || "", setup.universe_id || "");
     HostedModelConnect.configure(req.sticky ? (setup.primary || null) : null);
     // The connect screen is every setup card that names no source; a reconnect
     // card names the one it repairs and shows only that.
     const screen = !setup.service;
     $("connect-intro").hidden = !screen;
     if(typeof SignInSourceCards!=="undefined") SignInSourceCards.render(screen ? setup.sign_in_sources : []);
-    if(typeof SubscriptionCards!=="undefined") SubscriptionCards.render(screen ? setup.subscriptions : []);
     const keyCards = Array.isArray(setup.sources) ? setup.sources : [];
     $("connect-paste").hidden = !keyCards.length;
     $("connect-paste-summary").textContent = keyCards.length
@@ -8891,8 +8774,11 @@
             const pending=HostedModelConnect.post("deposit_key",{preset_id:source.id,key});key="";
             const result=await pending;
             if(epoch!==MCP._loginEpoch)return;
-            if(result.status!=="confirmation_required")throw new Error("model_confirmation_required");
-            status.textContent="Key saved. Confirm model access in the request below to add it to your pool.";
+            if(result.status!=="confirmation_required"||!result.request)
+              throw new Error("invalid_connection_response");
+            HostedModelConnect.setup="recovery";HostedModelConnect.request=result.request;
+            HostedModelConnect.paint();
+            status.textContent="Connection saved. Review model access, then confirm.";
             refreshRail();
           }catch(error){
             if(epoch===MCP._loginEpoch)status.textContent="Not connected yet ("+(error.message||"unknown error")+"). Check your key and model access, then try again.";
@@ -8905,9 +8791,8 @@
 
   const ConnectShapes={
     shape:"",
-    labels:{api_key:"API key", local:"Your own server", sign_in:"Sign in again"},
+    labels:{api_key:"API key", local:"Your own server"},
     help:{
-      sign_in:"Your saved sign-in for this source is no longer accepted. Signing in again replaces it — there is nothing to copy or paste.",
       api_key:"From your provider's API page: the chat URL, a key, and the model id.",
       local:"A model server you run must be reachable over HTTPS, for example through a tunnel. TinyAssets can't reach localhost.",
     },
@@ -8964,136 +8849,9 @@
       this.shape=shape;
       Array.from($("connect-shapes").children||[]).forEach(b=>
         b.setAttribute("aria-pressed",String(b.dataset.shape===shape)));
-      // `sign_in` has NO fields: the owner types nothing, which is the whole point
-      // of it. So the field box stays hidden for it and its own box appears instead.
-      const signin = shape==="sign_in";
-      $("connect-endpoint").hidden=!shape||signin;
-      $("connect-signin").hidden=!signin;
-      $("signin-help").textContent=signin?(this.help[shape]||""):"";
-      $("endpoint-help").textContent=signin?"":(this.help[shape]||"");
+      $("connect-endpoint").hidden=!shape;
+      $("endpoint-help").textContent=this.help[shape]||"";
       $("endpoint-url").placeholder=this.placeholders[shape]||"";
-    },
-  };
-
-  // The sign-in shape's client. The daemon already had both routes and NO client
-  // called them, so a source whose saved sign-in died had no way back through the
-  // app -- the founder hit exactly that. Start, show the code, poll, and let the
-  // daemon deposit; the credential never touches this page.
-  const SignInConnect={
-    flow:"", timer:0, busy:false, blips:0, epoch:0, service:"", universe:"",
-    // Where this instance draws. The connect screen's subscription sign-in is a
-    // second instance of the same client with its own elements and state.
-    ids:{code:"signin-code",value:"signin-code-value",link:"signin-code-link",result:"signin-result"},
-    connectedText:"Signed in. Your agent can use this connection again.",
-    // Which source the visible card is for. Set from the card, so a reconnect for one
-    // source can never start a flow for another: switching cards resets whatever was
-    // in flight before the new service is adopted.
-    configure(service,universe){
-      const next=String(service||""), where=String(universe||"");
-      if(next!==this.service||where!==this.universe){
-        this.reset(); this.service=next; this.universe=where;
-      }
-    },
-    // A dropped poll is retried, but not forever. Without a cap an offline client
-    // kept a timer alive against a flow that had already expired, polling for as
-    // long as the page stayed open -- found by the test for this, not in review.
-    MAX_BLIPS:5,
-    status(text){ $(this.ids.result).textContent=text; },
-    stop(){ if(this.timer){ clearTimeout(this.timer); this.timer=0; } },
-    reset(){
-      // The epoch is what cancels work already in flight. Clearing the timer is not
-      // enough: a `start` whose response had not arrived yet came back AFTER the
-      // reset, restored the abandoned flow and scheduled polling against it, with
-      // `busy` false so a second start could run alongside (Codex refute-review,
-      // P1 #6). Same generation pattern the model dialog above already uses.
-      this.epoch++;
-      this.stop(); this.flow=""; this.busy=false; this.blips=0;
-      $(this.ids.code).hidden=true; $(this.ids.value).textContent="";
-      this.status("");
-    },
-    async start(){
-      if(this.busy||this.flow) return;
-      if(!this.service){
-        // No card named a source, so there is nothing to sign back in to. The route
-        // would pick the user's home command center and deposit for its own service, which
-        // is not necessarily what the owner is looking at.
-        this.status("Open this from the connection that needs signing in again.");
-        return;
-      }
-      this.busy=true; this.status("Starting sign-in…");
-      const epoch=this.epoch;
-      try{
-        const h=authHeaders(); h["Content-Type"]="application/json";
-        const r=await fetch("/app/openai/device/start",{method:"POST",headers:h,
-          credentials:"same-origin",
-          // The source the card names, and the home the rail is showing. The route
-          // validates both rather than choosing for us; before this it always picked
-          // the user's home and deposited for its own service, so it could not repair
-          // another command center's connection (Codex refute-review, P1 #5).
-          // The source AND the command center the card names. The route resolves the
-          // command center against this caller's admin ACL and refuses one they do not
-          // administer, so naming it here asks rather than asserts.
-          body:JSON.stringify({service:this.service,universe_id:this.universe})});
-        const doc=await r.json().catch(()=>({}));
-        if(epoch!==this.epoch) return;   // reset while this was in flight: drop it
-        if(!r.ok||!doc.flow){
-          // The route's own code, never a guessed cause.
-          this.busy=false;
-          this.status("Sign-in could not be started ("+(doc.error||r.status)+"). Try again.");
-          return;
-        }
-        this.flow=doc.flow; this.blips=0;
-        $(this.ids.value).textContent="Your code: "+(doc.user_code||"");
-        if(doc.verification_url) $(this.ids.link).href=doc.verification_url;
-        $(this.ids.code).hidden=false;
-        this.status("Enter the code on the sign-in page, then come back here.");
-        // The interval the SOURCE asked for, floored so a bad value cannot spin.
-        const wait=Math.max(2,Math.min(Number(doc.interval)||5,30))*1000;
-        this.timer=setTimeout(()=>this.poll(wait,epoch),wait);
-      }catch(_e){
-        if(epoch!==this.epoch) return;
-        this.busy=false; this.status("Sign-in could not be started. Check your connection.");
-      }
-    },
-    async poll(wait,epoch){
-      if(!this.flow||epoch!==this.epoch) return;
-      try{
-        const h=authHeaders(); h["Content-Type"]="application/json";
-        const r=await fetch("/app/openai/device/poll",{method:"POST",headers:h,
-          credentials:"same-origin",body:JSON.stringify({flow:this.flow})});
-        const doc=await r.json().catch(()=>({}));
-        if(epoch!==this.epoch) return;
-        if(doc.status==="pending"){
-          this.blips=0;   // the route answered, so whatever came before is over
-          this.timer=setTimeout(()=>this.poll(wait,epoch),wait);
-          return;
-        }
-        this.reset();
-        if(doc.status==="connected"){
-          this.status(doc.confirmation
-            ? "Signed in. Confirm \""+frameTitle({title:doc.confirmation.title||"Use this source"})+
-              "\" under Waiting on you to add it to your agent."
-            : doc.serving&&doc.serving.status==="serving"
-              ? this.connectedText
-              : "Signed in. Your credential was saved, but your agent's model setup still needs review. Open Change model.");
-          // The card is derived from the stored rejection, which the deposit just
-          // cleared, so refreshing the rail is what makes it disappear.
-          if(typeof refreshRail==="function") refreshRail();
-          return;
-        }
-        this.status("Sign-in did not complete ("+(doc.error||r.status)+"). Try again.");
-      }catch(_e){
-        if(epoch!==this.epoch) return;
-        // A single failed poll is not a failed sign-in; keep waiting -- up to the
-        // cap, after which the owner is told rather than left watching a spinner.
-        this.blips+=1;
-        if(this.blips>this.MAX_BLIPS){
-          this.reset();
-          this.status("Sign-in could not be checked. Check your connection and try again.");
-          return;
-        }
-        this.timer=setTimeout(()=>this.poll(wait,epoch),wait);
-      }
     },
   };
 
@@ -9121,35 +8879,26 @@
     try{
       const asked=await MCP.requestFromUser({
         kind:"LLM", title:"Connect "+host+" as a model",
-        body:"You asked for this under Connect a model. The key goes straight to your command center's vault.",
-        fields:[{name:"key",label:"API key",type:"secret"}],
+        body:"You asked to connect this model through the secure connection door.",
+        fields:[],
         action:{type:"connect",destination,auth_scheme:"bearer",host,path_template:path,methods:["POST"],
           uses:{model:{wire,models:[{id:model,tools:true,context:ENDPOINT_CONTEXT}],billing:"flat"}}},
       });
       if(epoch!==MCP._loginEpoch) return;
       if(!asked||asked.error||!asked.request_id){
         out.textContent="Couldn't connect: "+((asked&&(asked.detail||asked.error))||"no answer")+"."; return; }
-      const answered=await MCP.answerRequest({request_id:asked.request_id,values:{key}});
+      const connected=await ConnectOAuth.post("deposit",{
+        secret:key,request_ref:asked.request_id,definition:{
+          destination,auth_scheme:"bearer",
+          endpoints:[{host,path_template:path,methods:["POST"]}]}});
       key="";
       if(epoch!==MCP._loginEpoch) return;
-      if(!answered||answered.error||answered.status!=="answered"){
-        out.textContent="Not connected yet"+(answered&&answered.detail?": "+answered.detail:"")
-          +". The request is waiting in this list; paste the key there to finish.";
-        refreshRail(); return;
+      if(!connected||connected.error||connected.status!=="provisioned"){
+        out.textContent="Not confirmed. The request is waiting in this list.";
+        await refreshRail(); return;
       }
-      const serving=answered.serving||{};
-      if(serving.status==="serving"){
-        out.textContent="";
-        $("endpoint-url").value=""; $("endpoint-model").value="";
-        await enterSignedIn();
-        appendMessage("system","Your command center now runs on "+model+". Say hello.");
-      }else if(serving.status==="unchanged"){
-        out.textContent="Connected. Your command center keeps its current model; pick "+model+" in Change model when you want it.";
-        refreshRail();
-      }else{
-        out.textContent="Saved, but your command center is not running on it yet"+(serving.detail?": "+serving.detail:"")+".";
-        refreshRail();
-      }
+      await refreshRail();
+      out.textContent="Connection saved. Setup completes when its grant is confirmed.";
     }catch(err){
       if(err&&err.authRequired) return enterSignedOut();
       out.textContent="Couldn't confirm the connection: "+((err&&err.message)||"unknown error")+". Check the list above before trying again.";
@@ -9214,6 +8963,15 @@
   }
 
   function railBody(req){
+    if(["connect","connect_http","rotate_http"].includes(req.action?.type)
+        &&req.action.auth_scheme!=="none"&&!(req.fields||[]).length){
+      const names=req.action.auth_scheme==="oauth1a"
+        ?["api_key","api_secret","access_token","access_token_secret"]
+        :req.action.auth_scheme==="basic"?["username","password"]
+        :[req.action.auth_scheme==="url_secret"?"capability_url":"secret"];
+      req={...req,fields:names.map(name=>({name,type:"secret",
+        label:name==="capability_url"?"Webhook URL":name.replaceAll("_"," ")}))};
+    }
     const box = document.createElement("div"); box.className = "rtab-body";
     const asker=document.createElement("p");
     asker.textContent="From: "+(req.agent_name||req.agent||"Your agent");box.appendChild(asker);
@@ -9410,6 +9168,7 @@
       return;
     }
     const payload = { request_id: req.parent_request_id || req.request_id };
+    if(req.universe_id)payload.universe_id=req.universe_id;
     if(req.item_id) payload.item_id=req.item_id;
     if(mode === "reply" && !text){ note.textContent = "Type something to send."; return; }
     if(text) payload.feedback = text;
@@ -9439,6 +9198,22 @@
         r=await InlineApprovals.post('answer',payload);
       }else if(req.action?.type==='grant_patch_intake'){
         r=await InlineApprovals.post('answer',payload);
+      }else if(mode==="accept"&&["connect","connect_http","rotate_http"].includes(req.action?.type)
+               &&req.action.auth_scheme!=="none"){
+        const action=req.action, values=payload.values||{};
+        const keys=Object.keys(values);
+        const secret=action.auth_scheme==="basic"&&keys.includes("username")
+          ?String(values.username||"")+":"+String(values.password||"")
+          :keys.length===1?String(values[keys[0]]):JSON.stringify(values);
+        delete payload.values;
+        const common={secret,request_ref:req.request_id,center:req.universe_id||queueScope};
+        r=await ConnectOAuth.post(action.type==="rotate_http"?"rotate":"deposit",
+          action.type==="rotate_http"?{...common,destination:action.destination,
+            incarnation:action.incarnation}:{...common,definition:{
+            destination:action.destination,auth_scheme:action.auth_scheme,
+            endpoints:action.endpoints,access:action.access||"exact",
+            scopes:action.scopes||[],git_host:action.git_host||""}});
+        await refreshRail();
       }else r=await MCP.answerRequest(payload);
       if(installAsk&&(installLogin!==MCP._loginEpoch||installScope!==queueScope))return;
       if(r && r.error){
@@ -9515,7 +9290,7 @@
     if(loginEpoch!==MCP._loginEpoch) return;
     if(!failure && r && Array.isArray(r.pending)){
       railFailed(null);
-      renderRail(r.pending, options);
+      renderRail(r.pending.map(row=>r.universe_id?{...row,universe_id:r.universe_id}:row), options);
       InlineApprovals.history(r.recently_answered, r.pending);
       return;
     }

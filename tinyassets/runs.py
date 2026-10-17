@@ -7401,7 +7401,6 @@ ACTIONABLE_BY: dict[str, str] = {
     # host — server-side configuration / credentials / binaries
     "empty_llm_response": "host",
     "provider_unavailable": "host",
-    "provider_subprocess_failed": "host",
     "provider_exhausted": "host",
     "sandbox_unavailable": "host",
     "node_not_approved": "host",

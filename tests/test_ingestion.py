@@ -980,8 +980,8 @@ class TestWorldbuildSynthesisSignal:
 
 
 class TestImageExtractor:
-    def test_placeholder_when_no_vision(self):
-        """Should return placeholder when Ollama is unavailable."""
+    def test_image_metadata(self):
+        """Report factual metadata from the uploaded image."""
         from tinyassets.ingestion.image_extractor import (
             extract_image_description,
         )
@@ -989,62 +989,19 @@ class TestImageExtractor:
         # Use a minimal valid PNG
         png_data = _make_tiny_png()
 
-        with patch(
-            "tinyassets.ingestion.image_extractor._find_vision_model",
-            return_value="",
-        ):
-            result = extract_image_description("map.png", png_data)
+        result = extract_image_description("map.png", png_data)
 
-        assert "Image awaiting visual analysis" in result or "map.png" in result
+        assert "map.png" in result and "Size:" in result
 
-    def test_ollama_vision_called_when_available(self):
-        """Should call Ollama when a vision model is found."""
-        from tinyassets.ingestion.image_extractor import (
-            extract_image_description,
-        )
 
-        png_data = _make_tiny_png()
-
-        mock_resp = json.dumps({"response": "A detailed map of a fantasy kingdom."})
-        mock_urlopen = _mock_urlopen(mock_resp.encode())
-
-        with (
-            patch(
-                "tinyassets.ingestion.image_extractor._find_vision_model",
-                return_value="llava",
-            ),
-            patch(
-                "urllib.request.urlopen",
-                mock_urlopen,
-            ),
-        ):
-            result = extract_image_description(
-                "map.png", png_data, premise="Epic fantasy",
-            )
-
-        assert "fantasy kingdom" in result
-
-    def test_resize_preserves_small_images(self):
-        """Images under MAX_IMAGE_DIMENSION should not be upscaled."""
-        from tinyassets.ingestion.image_extractor import _resize_image
-
-        png_data = _make_tiny_png()
-        result = _resize_image(png_data)
-
-        if result is not None:  # Pillow available
-            assert len(result) > 0
 
     def test_extract_text_routes_images(self):
         """extract_text should route image files to image extractor."""
         png_data = _make_tiny_png()
 
-        with patch(
-            "tinyassets.ingestion.image_extractor._find_vision_model",
-            return_value="",
-        ):
-            result = extract_text("world_map.png", png_data)
+        result = extract_text("world_map.png", png_data)
 
-        # Should get a placeholder (no vision model in tests)
+        # Metadata remains available without inference.
         assert isinstance(result, str)
         assert len(result) > 0
 

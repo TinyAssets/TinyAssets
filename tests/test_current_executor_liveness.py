@@ -21,7 +21,6 @@ def coordinators(tmp_path, monkeypatch):
         entered = threading.Event()
         release = threading.Event()
         consumer = runtime.AssignedQueueConsumer(root, poll_seconds=0.01)
-        monkeypatch.setattr(consumer, "_scavenge_orphaned_credentials", lambda: None)
 
         def poll():
             entered.set()

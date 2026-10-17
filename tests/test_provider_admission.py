@@ -125,8 +125,6 @@ def test_diagnostic_probe_refuses_immediately(monkeypatch):
         pass
 
 
-
-
 def test_a_slot_is_released_when_the_call_raises(monkeypatch):
     """A slot leaked on an error is permanent capacity loss — and errors happen
     precisely when the system is already under load."""
@@ -377,11 +375,6 @@ class TestTheBoundActuallyBindsInTheRouter:
         assert "try_provider_slot" not in src, "user turns must use deadline admission"
 
 
-
-
-
-
-
 class TestTheBoundBindsBehaviourally:
     """Codex beat my source-shape assertions TWICE.
 
@@ -443,7 +436,6 @@ class TestTheBoundBindsBehaviourally:
         carrier.max_tokens = 10
         carrier.max_cost_microunits = 5
         carrier.selected_model = None
-        carrier.native_selection = None
         carrier.settlement_owner = None
         carrier.validate_for_call.return_value = "codex"
 

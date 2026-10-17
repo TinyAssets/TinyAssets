@@ -111,21 +111,6 @@ def test_different_price_rules_do_not_prove_independent_account_capacity():
     )).ineligible} == {"account_exhausted", "capacity_identity_unverified"}
 
 
-@pytest.mark.parametrize("kind", ["subscription", "local"])
-def test_native_defaults_compete_with_ranked_http_without_overriding_owner_choice(kind):
-    plan = mixed_plan()
-    native = ConnectionModels("native", "owned-local", kind, "fresh", True, True, (
-        Model("", True, frozenset({"text"}), pricing=Pricing("fresh", unmetered=True)),
-    ), default_model_id="")
-    plan = replace(
-        plan, catalog=replace(plan.catalog, connections=(*plan.catalog.connections, native)),
-        source_policies=(*plan.source_policies, SourceModelPolicy("native", plan.interaction)),
-    )
-    assert refs(plan) == [ModelRef("second", "second"), ModelRef("first", "first"),
-                          ModelRef("native", "")]
-    plan = replace(plan, policy=replace(plan.policy, mode="explicit",
-                                        current_selection=ModelRef("native", "")))
-    assert plan.next_candidate("owner", "u") == ModelRef("native", "")
 
 
 @pytest.mark.parametrize("mode", ["missing", "extra", "duplicate"])

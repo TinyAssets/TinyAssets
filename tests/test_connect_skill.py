@@ -60,7 +60,7 @@ def test_ta_search_connect_discovers_the_skill_and_request_tool(monkeypatch, tmp
 def test_scripted_unknown_api_service_requests_secure_entry_not_chat(
     tmp_path, monkeypatch, authenticate_request, engine,
 ):
-    from tests.owner_answer import answer_request
+    from tests.support.connection_door import post
     from tinyassets.api.pending_requests import list_requests
     from tinyassets.connection_oauth import directory, discovery
     from tinyassets.storage.pending_requests import get_request
@@ -71,7 +71,6 @@ def test_scripted_unknown_api_service_requests_secure_entry_not_chat(
     payload["action"]["destination"] = "orchard-cloud"
     payload["action"]["endpoints"][0]["host"] = "api.orchard.example"
     payload["title"] = "Connect Orchard Cloud"
-    payload["fields"][0]["url"] = "https://orchard.example/settings/api"
     checked = []
     real_resolve = directory.resolve
 
@@ -88,21 +87,23 @@ def test_scripted_unknown_api_service_requests_secure_entry_not_chat(
     ]
     result = harness._run(tmp_path, monkeypatch, authenticate_request, ["agent"])
     assert result["terminal_status"] == "completed", (result, engine.errors)
-    assert checked == [["api.orchard.example"]]
-    assert any("secure inline entry" in text for text in engine.results)
+    assert checked == []  # Discovery starts only at the shared door.
+    assert any("secure browser" in text for text in engine.results)
     authenticate_request("acct_alice")
     pending = list_requests(universe_id="universe_alice")["pending"]
     request = next(row for row in pending if row.get("title") == payload["title"])
     assert any(request["request_id"] in text for text in engine.results)
     assert request["action"]["type"] == "connect"
-    assert [field["type"] for field in request["fields"]] == ["secret"]
+    assert request["fields"] == []
 
     # Simulate the owner's secure form submission, outside the model wire.
     secret = "SYNTHETIC-ORCHARD-KEY-ONLY-IN-SECURE-ENTRY"
-    deposited = answer_request(universe_id="universe_alice", payload=json.dumps({
-        "request_id": request["request_id"], "values": {"token": secret},
-    }))
-    assert deposited["status"] == "answered", deposited
+    deposited = post("deposit", {"center": "universe_alice",
+        "request_ref": request["request_id"], "secret": secret,
+        "definition": {"destination": "orchard-cloud", "auth_scheme": "bearer",
+                       "endpoints": request["action"]["endpoints"]}})
+    assert deposited["status"] == "provisioned", deposited
+    list_requests(universe_id="universe_alice")
     home = tmp_path / "universe_alice"
     stored = get_request(home, request["request_id"])
     assert secret not in json.dumps([engine.wires, engine.results, pending, deposited, stored])

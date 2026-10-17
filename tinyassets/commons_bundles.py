@@ -126,6 +126,12 @@ def authorize(conn, *, author, bundle_id):
 
 
 def next_version(base_path, bundle_id):
+    from tinyassets.owner_runtime import current
+
+    if current() is not None:
+        from tinyassets.broker.owner_reads import remote
+
+        return remote("bundle_version", bundle_id=bundle_id)
     from tinyassets.commons_catalog import _agent_connect
 
     with _agent_connect(base_path) as conn:

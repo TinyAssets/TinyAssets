@@ -106,7 +106,7 @@ def test_invalid_projection_never_changes_existing_config(tmp_path, overrides):
     assert list(tmp_path.iterdir()) == [config]
 
 
-@pytest.mark.parametrize("provider", ["claude-code", "codex", "api_key_http:legacy"])
+@pytest.mark.parametrize("provider", ["api_key_http:legacy"])
 def test_legacy_single_source_contract_is_unchanged(tmp_path, provider):
     binding = {"binding_id": "legacy-binding", "legacy_extension": "preserved"}
     _publish(tmp_path, provider=provider, binding=binding, assignment_candidates=None)

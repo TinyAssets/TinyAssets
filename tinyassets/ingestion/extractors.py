@@ -61,7 +61,7 @@ def extract_text(filename: str, data: bytes, *, universe_dir: Path | None = None
     if ext == ".epub":
         return _extract_epub(data)
 
-    # Image -- use vision model for description
+    # Image -- factual metadata, without inference
     if detected.file_type == FileType.IMAGE:
         from tinyassets.ingestion.image_extractor import extract_image_description
 

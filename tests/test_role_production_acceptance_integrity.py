@@ -14,15 +14,13 @@ def substitutions(source):
         elif isinstance(node, ast.Import):
             application.update(name.asname or name.name.split('.')[0] for name in node.names
                                if name.name.startswith('tinyassets'))
-    permitted = {'provider_base.subprocess_env_for_provider',
-                 'claude_provider.subprocess_env_for_provider'}
     failures = []
     for node in ast.walk(tree):
         targets = (node.targets if isinstance(node, ast.Assign) else
                    [node.target] if isinstance(node, (ast.AugAssign, ast.AnnAssign)) else [])
         for target in targets:
             text = ast.unparse(target)
-            if text.split('.')[0] in application and text not in permitted:
+            if text.split('.')[0] in application:
                 failures.append(text)
         if isinstance(node, ast.Call):
             function = ast.unparse(node.func)

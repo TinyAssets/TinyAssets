@@ -166,7 +166,7 @@ def _connect(
     auth_scheme: str | None = _URL_SECRET_SCHEME,
     access: str | None = None,
 ) -> dict[str, Any]:
-    from tinyassets.api.http_connection import connect_http
+    from tests.support.connection_door import connect_http
 
     doc: dict[str, Any] = {
         "destination": destination,
@@ -1410,7 +1410,7 @@ def test_rotation_extracts_from_the_new_link(base: Path) -> None:
     """A regenerated webhook is a new LINK, not a new code — so the rotation
     parses it the same way, or the vault ends up holding a whole URL and every
     later call doubles the path."""
-    from tinyassets.api.http_connection import rotate_http
+    from tests.support.connection_door import rotate_http
 
     udir = _make_universe(base, "u-owner", admin="founder")
     _login("founder")
@@ -1638,7 +1638,7 @@ def test_the_connections_chapter_teaches_the_capability_url_shape() -> None:
     assert _URL_SECRET_SCHEME in chapter
     assert "{secret}" in chapter
     assert "{secret+}" in chapter
-    assert URL_SECRET_FIELD_NAME in chapter
+    assert "door" in chapter.lower()
     # The failure mode, named, so the agent recognises the link when it sees one.
     assert "webhook" in chapter.lower()
 

@@ -116,29 +116,6 @@ def test_owner_may_toggle_visibility_without_new_id(base: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_subscription_cli_requires_cli_protocol(base: Path) -> None:
-    with pytest.raises(ProviderDefinitionError):
-        pd.register_definition(
-            universe_id="u-x", owner_user_id="f", access_method="subscription_cli",
-            protocol="openai_chat", model="gpt-5", ref="codex",
-        )
-
-
-def test_api_key_http_rejects_cli_protocol(base: Path) -> None:
-    with pytest.raises(ProviderDefinitionError):
-        pd.register_definition(
-            universe_id="u-x", owner_user_id="f", access_method="api_key_http",
-            protocol="cli:codex", model="gpt-5", ref="http_abc",
-        )
-
-
-def test_subscription_cli_happy_path(base: Path) -> None:
-    d = pd.register_definition(
-        universe_id="u-cli", owner_user_id="f", access_method="subscription_cli",
-        protocol="cli:codex", model="gpt-5-codex", ref="codex",
-    )
-    assert d.access_method == "subscription_cli"
-    assert d.ref == "codex"
 
 
 @pytest.mark.parametrize(

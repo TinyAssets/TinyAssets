@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 
+from tinyassets.broker import acquisition
 from tinyassets.onboarding import hosted_model_auth as auth
 from tinyassets.storage import data_dir
 
@@ -29,12 +30,9 @@ def clean_flows(tmp_path, monkeypatch):
 
 
 def seed_home(owner, home):
-    from tinyassets.daemon_server import grant_universe_access, set_founder_home
+    from tests.support.broker_double import seed_owner_admission
 
-    base = data_dir()
-    (base / home).mkdir(parents=True, exist_ok=True)
-    set_founder_home(base, founder_sub=owner, universe_id=home, platform_generated=True)
-    grant_universe_access(base, universe_id=home, actor_id=owner, permission="admin")
+    seed_owner_admission(data_dir(), principal=owner, center=home)
 
 
 def pending(handle=None):
@@ -77,7 +75,8 @@ def test_authorize_url_uses_fixed_origin_and_distinct_callback():
     assert query["code_challenge"] == [CHALLENGE]
     assert query["code_challenge_method"] == ["S256"]
     assert VERIFIER not in json.dumps(result)
-    assert set(result) == {"flow", "authorize_url", "display_name", "expires_in"}
+    assert set(result) == {"flow", "center", "authorize_url", "display_name", "expires_in"}
+    assert result["center"] == "home-a"
 
 
 @pytest.mark.parametrize("path", ["/app", "/app/model-callback/",
@@ -98,7 +97,6 @@ def test_rejects_unsafe_canonical_callback(resource):
 
 @pytest.mark.parametrize("changed,error", [
     ({"owner": "user-b", "universe_id": "home-b"}, "unknown_model_connection"),
-    ({"universe_id": "home-b"}, "current_home_changed"),
     ({"verifier": "b" * 64}, "invalid_pkce_verifier"),
     ({"verifier": "é" * 64}, "invalid_pkce_verifier"),
 ])
@@ -111,10 +109,17 @@ def test_foreign_or_mismatched_attempt_does_not_consume(changed, error):
         take(handle)
 
 
+def test_foreign_center_does_not_consume_the_flow():
+    handle = begin()["flow"]
+    with pytest.raises(LookupError, match="center not found"):
+        take(handle, universe_id="home-b")
+    assert take(handle).owner == "user-a"
+
+
 def test_expired_flow_cannot_exchange(monkeypatch):
     handle = begin()["flow"]
     expiry = pending(handle)["expires_at"]
-    monkeypatch.setattr(auth.time, "time", lambda: expiry)
+    monkeypatch.setattr(auth.pkce.time, "time", lambda: expiry)
     with pytest.raises(auth.HostedAuthError, match="unknown_model_connection"):
         take(handle)
 
@@ -155,7 +160,7 @@ def test_global_pending_bound_and_expiry_release_capacity(monkeypatch):
     with pytest.raises(auth.HostedAuthError, match="too_many_pending"):
         begin(owner="user-b", universe_id="home-b")
     expiry = pending(first)["expires_at"]
-    monkeypatch.setattr(auth.time, "time", lambda: expiry)
+    monkeypatch.setattr(auth.pkce.time, "time", lambda: expiry)
     assert begin(owner="user-b", universe_id="home-b")
     assert not pending(first)
 
@@ -165,20 +170,21 @@ def test_acquisition_transport_is_not_a_provider_name_switch(monkeypatch):
                      display_name="Different source", authorize_url="https://source.example/auth",
                      exchange_url="https://source.example/keys")
     monkeypatch.setattr(auth, "load_preset", lambda _: preset)
+    monkeypatch.setattr(acquisition, "load_preset", lambda _: preset)
     result = begin(preset_id=preset.id)
     assert result["authorize_url"].startswith("https://source.example/auth?")
     flow = take(result["flow"])
     def handler(request):
         assert str(request.url) == preset.exchange_url
         return httpx.Response(200, json={"key": "other-source-key"})
-    assert asyncio.run(auth.exchange_key(flow=flow, code="code", verifier=VERIFIER,
+    assert asyncio.run(acquisition.exchange_key(flow=flow, code="code", verifier=VERIFIER,
         client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )) == "other-source-key"
 
 
 def exchange(handler, **kwargs):
     flow = take(begin()["flow"])
-    return asyncio.run(auth.exchange_key(
+    return asyncio.run(acquisition.exchange_key(
         flow=flow, code="test-code", verifier=VERIFIER,
         client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         **kwargs,
@@ -217,7 +223,7 @@ def test_no_redirect_retry_or_upstream_error_leak(status):
 
 @pytest.mark.parametrize("body", [b"not json", b"[]", b'{"key":null}',
     b'{"key":""}', b'{"key":"line\\nbreak"}', b'{"key":42}',
-    json.dumps({"key": "x" * 4097}).encode(), b"x" * (auth.MAX_RESPONSE_BYTES + 1),
+    json.dumps({"key": "x" * 4097}).encode(), b"x" * (acquisition.MAX_RESPONSE_BYTES + 1),
     b"[" * 2000 + b"0" + b"]" * 2000])
 def test_malformed_and_oversized_response_is_secret_blind(body):
     with pytest.raises(auth.HostedAuthError, match="model_authorization_response_invalid"):
@@ -237,7 +243,7 @@ def test_network_failure_is_uncertain_not_retried():
 
 
 def test_total_exchange_deadline(monkeypatch):
-    monkeypatch.setattr(auth, "EXCHANGE_TIMEOUT", .01)
+    monkeypatch.setattr(acquisition, "EXCHANGE_TIMEOUT", .01)
     async def handler(request):
         await asyncio.sleep(.1)
         return httpx.Response(200, json={"key": "too-late"})

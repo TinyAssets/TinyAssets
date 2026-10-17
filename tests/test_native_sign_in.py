@@ -10,9 +10,9 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from tests.support.model_connect import rig  # noqa: F401
 from tests.test_app_owner_sign_in import browser
 from tests.test_app_owner_sign_in import login as login_fixture
-from tests.test_model_bootstrap import rig  # noqa: F401
 from tests.test_onboarding_model_connect import ingress  # noqa: F401
 from tinyassets.onboarding import native_sign_in as native
 from tinyassets.onboarding.owner_sessions import COOKIE, hashed

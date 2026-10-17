@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from typing import Literal
 
 Freshness = Literal["fresh", "stale", "missing"]
-SourceKind = Literal["subscription", "local", "http"]
+SourceKind = Literal["http"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -368,7 +368,7 @@ def order_models(
         raise ValueError("source model policies must match the complete catalogue")
     entries: dict[ModelRef, tuple[ConnectionModels, Model]] = {}
     for connection in catalog.connections:
-        if connection.source_kind not in ("subscription", "local", "http"):
+        if connection.source_kind != "http":
             raise ValueError("invalid source kind")
         if not connection.connection_id or not connection.provider_scope:
             raise ValueError("missing connection identity")

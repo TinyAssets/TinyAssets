@@ -452,33 +452,16 @@ def _load_deploy_pending(now: float | None = None) -> dict[str, Any]:
 def _active_host_snapshot(
     served_llm_type: str = "",
 ) -> tuple[dict[str, object], bool, list[str], str]:
-    """Return host-wide provider evidence, not the selected model.
+    """Return the broker transport label, not the selected model.
 
-    A command center's selected source belongs to model_options; this hint
-    reports only which installed and authenticated host endpoint is available.
+    Owner connections and selected models are reported by model_options.
     """
-    import shutil as _shutil
 
     api_key_enabled = api_key_providers_enabled()
     api_key_vars_present = [
         name for name in API_KEY_PROVIDER_ENV_VARS if os.environ.get(name)
     ]
-    from tinyassets.providers.base import subscription_auth_health as _auth_health
-
-    claude_authed = (
-        _shutil.which("claude")
-        and _auth_health("claude-code", allow_probe=False)["status"]
-        != "not_logged_in"
-    )
-    if os.environ.get("OLLAMA_HOST"):
-        endpoint_hint = "ollama"
-    elif api_key_enabled and os.environ.get("ANTHROPIC_BASE_URL"):
-        endpoint_hint = "anthropic"
-    elif claude_authed:
-        endpoint_hint = "claude"
-    else:
-        endpoint_hint = "unset"
-
+    endpoint_hint = "broker"
     active_host: dict[str, object] = {
         "host_id": os.environ.get("UNIVERSE_SERVER_HOST_USER", "host"),
         "served_llm_type": served_llm_type or "any",
@@ -1247,14 +1230,6 @@ def get_status(
             "served_llm_type is unset — daemon accepts ANY LLM type. "
             "Not a local-only guarantee."
         )
-    if endpoint_hint == "unset":
-        caveats.append(
-            "No default LLM provider detected on this host (checked: "
-            "OLLAMA_HOST and Claude CLI). "
-            "That is expected: the platform has no LLM of its own. A command center "
-            "runs on the provider its owner connects -- see read_graph "
-            "target=model_options for that command center."
-        )
     if api_key_vars_present and not api_key_enabled:
         caveats.append(
             "API-key provider env vars are present on this host and ignored: "
@@ -1275,12 +1250,6 @@ def get_status(
         actionable_next_steps.append(
             "Set served_llm_type in the dispatcher config to constrain "
             "which LLM types this daemon will accept work for."
-        )
-    if endpoint_hint == "unset":
-        actionable_next_steps.append(
-            "To run a command center, its owner connects their own provider to it "
-            "(read_graph target=model_options shows what is connected). There "
-            "is no platform or host model to bind."
         )
     if last_completed_llm == "unknown" and activity_tail:
         actionable_next_steps.append(

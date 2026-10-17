@@ -218,18 +218,6 @@ class TestClassifyRunOutcomeError:
             "provider_overloaded",
             "30-60s",
         ),
-        # Gap 2: Claude subprocess failure strings
-        (
-            "claude -p returned exit code 1 quickly -- api likely unavailable",
-            "provider_subprocess_failed",
-            "binary",
-        ),
-        (
-            "claude -p crashed with windows exit code 0xc0000374"
-            " — subprocess failure, applying cooldown",
-            "provider_subprocess_failed",
-            "binary",
-        ),
         # Gap 3: model overloaded / 503
         (
             # "503" hits overload check; "rate-limited" (hyphen) does NOT match "rate limit" (space)
@@ -448,7 +436,6 @@ class TestActionableByCanonicalTable:
         # Mara's case — host-side provider config / credentials.
         ("empty_llm_response", "host"),
         ("provider_unavailable", "host"),
-        ("provider_subprocess_failed", "host"),
         ("provider_exhausted", "host"),
         ("sandbox_unavailable", "host"),
         ("node_not_approved", "host"),

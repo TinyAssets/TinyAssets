@@ -30,22 +30,13 @@ import subprocess
 
 import pytest
 
-from tests import test_model_bootstrap as _bootstrap
 from tests.app_sheet_harness import rail_source
-from tests.inference_usage_helpers import accounting_resolver
+from tests.support import model_connect as _fixture
 from tests.test_onboarding_app import _js_function
 from tinyassets.onboarding import render_app_html
 
 _NODE = shutil.which("node")
-rig = _bootstrap.rig
-finish = _bootstrap.finish
-
-
-def _answer(request_id):
-    from tests.owner_answer import answer_request
-
-    return answer_request(universe_id="u-owner", payload=json.dumps(
-        {"request_id": request_id, "values": {}}))
+rig = _fixture.rig
 
 
 def _rail():
@@ -61,7 +52,7 @@ def _rail():
 
 def test_the_unpowered_request_is_the_setup_with_the_installed_preset_first(rig):
     first = _rail()[0]
-    assert first["request_id"] == "sys_connect_llm" and first["sticky"] is True
+    assert first["request_id"] == "sys_connect_model" and first["sticky"] is True
     action = first["action"]
     assert action["type"] == "connect" and action["use"] == "model"
     primary = action["setup"]["primary"]
@@ -79,136 +70,14 @@ def test_a_powered_universe_sees_only_an_optional_connect_another(rig, monkeypat
     monkeypatch.setattr("tinyassets.api.pending_requests._serving_llm_bound",
                         lambda *a, **k: True)
     row = _rail()[-1]
-    assert row["request_id"] == "sys_connect_llm"
+    assert row["request_id"] == "sys_connect_model"
     assert row["title"] == "Connect another LLM" and row["sticky"] is False
     assert "primary" not in row["action"]["setup"], "a powered universe was offered first power"
 
 
 # --------------------------------------------------------------------------- #
-# The guided sign-in, round-tripped: deposit -> one answer -> the universe
-# serves on ITS OWN connection, with no LLM call on the way.
-# --------------------------------------------------------------------------- #
-
-
-@pytest.fixture
-def no_llm(monkeypatch):
-    """Record every model call; setup must make none (Hard Rule 15).
-
-    Every HTTP model call resolves the credential-blind broker proxy first, so
-    counting that seam counts calls on any connection.
-    """
-    from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
-
-    calls = []
-
-    def forbidden(self, *args, **kwargs):
-        calls.append("model call")
-        raise AssertionError("a model was called during setup")
-
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", accounting_resolver(forbidden))
-    return calls
-
-
-def _assert_serves_on_its_own_connection(base):
-    from tinyassets.commons_catalog import get_binding
-    from tinyassets.provider_assignment import load_provider_assignment
-    from tinyassets.provider_serving_binding import resolve_serving_agent_binding
-    from tinyassets.providers.definition import get_definition
-    from tinyassets.storage.outbound_connections import ConnectionLedger
-
-    # Exactly the check the live turn failed ("exactly one founder serving binding").
-    agent = resolve_serving_agent_binding(base, universe_id="u-owner", owner_user_id="owner")
-    assert get_binding(base, universe_id="u-owner",
-                       binding_id=agent["agent_binding_id"])["status"] == "serving"
-    assignment = load_provider_assignment(base, universe_id="u-owner")
-    assert assignment.state == "ready" and assignment.owner_user_id == "owner"
-    assert assignment.candidates, "serving has no model source"
-    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
-    for member in assignment.candidates:
-        kind, _, did = member.provider.partition(":")
-        assert kind == "api_key_http"
-        definition = get_definition("u-owner", did)
-        assert definition.owner_user_id == "owner"
-        grant = ledger.get_grant(definition.ref)
-        connection = ledger.get_connection(grant.connection_id)
-        # The universe's OWN connection, owned by its owner: never a platform
-        # or host credential (Hard Rule 15).
-        assert grant.owner_user_id == "owner" and grant.universe_id == "u-owner"
-        assert connection.owner_user_id == "owner"
-        assert connection.destination.startswith("model:")
-        assert member.access.cost_caps is None, "setup approved spending"
-
-
-def test_the_guided_sign_in_round_trips_to_a_serving_universe_with_no_llm_call(rig, no_llm):
-    from tinyassets.api.pending_requests import _serving_llm_bound
-
-    assert _serving_llm_bound(rig, "u-owner", "owner") is False
-    started = finish(rig, key="exchanged-test-key")      # what the callback's exchange yields
-    assert started["status"] == "confirmation_required"
-    answered = _answer(started["request_id"])
-    assert answered["status"] == "answered", answered
-    assert _serving_llm_bound(rig, "u-owner", "owner") is True
-    _assert_serves_on_its_own_connection(rig)
-    assert no_llm == [], "setup called a model before the first reply"
-    # Nothing left waiting: the connect entry became the optional one and the
-    # free-model request resolved.
-    rows = _rail()
-    assert [r["request_id"] for r in rows] == ["sys_connect_llm"]
-    assert rows[0]["sticky"] is False
-
-
-def test_reconnect_after_a_product_disconnect_serves_again(rig, no_llm):
-    """The live account's path: connected, disconnected through the product,
-    then the guided sign-in again from the request."""
-    from tinyassets.api.http_connection import remove_http
-    from tinyassets.api.pending_requests import _serving_llm_bound
-
-    first = finish(rig, key="first-test-key")
-    assert _answer(first["request_id"])["status"] == "answered"
-    removed = remove_http(universe_id="u-owner",
-                          payload={"destination": "model:openrouter_user_models_v1"})
-    assert removed["status"] == "removed"
-    assert _serving_llm_bound(rig, "u-owner", "owner") is False
-    assert _rail()[0]["sticky"] is True, "a disconnected universe lost its setup request"
-    again = finish(rig, key="second-test-key")
-    assert _answer(again["request_id"])["status"] == "answered"
-    _assert_serves_on_its_own_connection(rig)
-    assert no_llm == []
-
-
-def test_after_the_approval_a_turn_selects_a_free_tool_model_on_its_own_connection(rig):
-    """The live account's turn failed at the serving-binding check. After the
-    approval, the served plan must find what a turn needs - a free,
-    tool-capable model - on the universe's own connection, with no fetch.
-
-    (The in-process converse needs a request-scoped verified principal to mint
-    its provider carrier, which this suite cannot construct; the live acceptance
-    run covers the reply itself.)"""
-    from tinyassets.provider_assignment import load_provider_assignment
-    from tinyassets.providers.served_model_plan import _http_models
-
-    started = finish(rig, key="exchanged-test-key")
-    assert _answer(started["request_id"])["status"] == "answered"
-    _assert_serves_on_its_own_connection(rig)
-    (member,) = load_provider_assignment(rig, universe_id="u-owner").candidates
-    _snapshot, models, _interaction, _caps, rejected = _http_models("owner", "u-owner", member)
-    assert [m.model_id for m in models.models] == ["new-provider/new-free-model"]
-    assert not rejected
-
-
-# --------------------------------------------------------------------------- #
 # What the owner reads.
 # --------------------------------------------------------------------------- #
-
-
-def test_the_free_model_approval_names_no_internal_ids(rig):
-    started = finish(rig, key="exchanged-test-key")
-    sentence = started["request"]["grant_sentence"]
-    for handle in ("agent_binding", "provdef", "api_key_http", "http_grant", "root source"):
-        assert handle not in sentence, f"internal handle in the owner's text: {handle}"
-    assert "free models only" in sentence
-    rail_row = next(r for r in _rail() if r["request_id"] == started["request_id"])
-    assert "agent_binding" not in rail_row["grant_sentence"]
 
 
 def test_an_unpowered_turn_says_nothing_ran_and_points_at_the_request(rig, monkeypatch):
@@ -221,19 +90,6 @@ def test_an_unpowered_turn_says_nothing_ran_and_points_at_the_request(rig, monke
     assert "Waiting on you" in text
     assert "Actions may already have occurred" not in text
     assert "serving binding" not in text
-
-
-def test_a_disconnected_universe_turn_is_setup_not_a_mystery(rig, monkeypatch):
-    """The live account's exact state: a configured agent, an unassigned model."""
-    from tinyassets import universe_server
-    from tinyassets.api.http_connection import remove_http
-
-    first = finish(rig, key="first-test-key")
-    assert _answer(first["request_id"])["status"] == "answered"
-    remove_http(universe_id="u-owner", payload={"destination": "model:openrouter_user_models_v1"})
-    out = json.loads(universe_server.converse(message="hello?", graph_id="u-owner"))
-    assert out.get("reason") == "setup_required", out
-    assert "Actions may already have occurred" not in json.dumps(out)
 
 
 def test_the_setup_failure_notice_carries_no_retry_caution():
@@ -290,7 +146,7 @@ let railNodes=new Map();
 // it, and the renderer derives the element's state from this rather than reading it
 // back off a node that survives every refresh.
 let connectOtherOpen=false;
-const CONNECT_REQUEST_ID="sys_connect_llm";
+const CONNECT_REQUEST_ID="sys_connect_model";
 // `isSetupRequest` closes over this too, since a reconnect card is answered by the
 // same connect panel: the sliced function needs every module-level name it reads.
 const RECONNECT_REQUEST_PREFIX="reconnect-source:";
@@ -321,7 +177,7 @@ console.log(JSON.stringify({tabs,panelHidden:$('connect-panel').hidden,
     return json.loads(run.stdout)
 
 
-_SETUP = {"request_id": "sys_connect_llm", "kind": "LLM", "sticky": True,
+_SETUP = {"request_id": "sys_connect_model", "kind": "LLM", "sticky": True,
           "title": "Connect the model your universe runs on", "body": "Needs a model.",
           "fields": [], "action": {"type": "connect", "use": "model", "setup": {
               "primary": {"preset_id": "guided_models_v1", "label": "Continue with Example",
@@ -361,7 +217,7 @@ def test_a_powered_user_sees_only_a_collapsed_connect_another():
         "setup expanded for a powered user"
     assert out["panelHidden"] is True and out["sheetOpen"] is False
     assert len(out["tabs"]) == 2, "a powered universe's own model request was hidden"
-    opened = _run_rail([powered], "railOpen='sys_connect_llm';renderRail(railCache);")
+    opened = _run_rail([powered], "railOpen='sys_connect_model';renderRail(railCache);")
     assert opened["tabs"][0]["hasPanel"] is True
     assert opened["primary"] is None, "a powered universe was offered first power"
     assert opened["otherOpen"] is True, "the ways to add another were not shown"
@@ -379,7 +235,8 @@ const calls=[];let signedIn=0,appended=[],refreshed=0;
 const MCP={_loginEpoch:0,
   async requestFromUser(p){
     calls.push(['ask',JSON.parse(JSON.stringify(p)),$('endpoint-key').value]);return ASK;},
-  async answerRequest(p){calls.push(['answer',p]);return ANSWER;}};
+  async answerRequest(p){throw new Error('credential sent to box');}};
+const ConnectOAuth={async post(op,p){calls.push([op,p]);return ANSWER;}};
 async function enterSignedIn(){signedIn++;}
 function enterSignedOut(){}
 function appendMessage(w,t){appended.push(t);}
@@ -408,18 +265,22 @@ def _run_endpoint(url, ask, answer):
 def test_an_api_key_endpoint_is_one_connect_ask_answered_in_the_same_tap():
     out = _run_endpoint("https://api.quillmind.dev/v2/converse",
                         {"status": "pending", "request_id": "req_q"},
-                        {"status": "answered", "serving": {"status": "serving"}})
+                        {"status": "provisioned"})
     (kind, ask, key_in_dom), (kind2, answer) = out["calls"]
-    assert kind == "ask" and kind2 == "answer"
+    assert kind == "ask" and kind2 == "deposit"
     assert key_in_dom == "", "the key was still in the page when the ask went out"
     assert "synthetic-endpoint-key" not in json.dumps(ask), "the key rode the ask"
     action = ask["action"]
     assert action["type"] == "connect" and action["host"] == "api.quillmind.dev"
     assert action["path_template"] == "/v2/converse" and action["methods"] == ["POST"]
     assert action["uses"]["model"]["models"][0]["id"] == "quill-large"
-    assert [f["type"] for f in ask["fields"]] == ["secret"]
-    assert answer == {"request_id": "req_q", "values": {"key": "synthetic-endpoint-key"}}
-    assert out["signedIn"] == 1 and out["key"] == ""
+    assert ask["fields"] == []
+    assert answer == {"request_ref": "req_q", "secret": "synthetic-endpoint-key",
+        "definition": {"destination": action["destination"], "auth_scheme": "bearer",
+            "endpoints": [{"host": action["host"], "path_template": action["path_template"],
+                           "methods": ["POST"]}]}}
+    assert out["signedIn"] == 0 and out["key"] == ""
+    assert out["refreshed"] == 1
 
 
 @pytest.mark.skipif(_NODE is None, reason="node is not installed")

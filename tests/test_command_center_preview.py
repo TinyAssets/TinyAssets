@@ -80,7 +80,7 @@ def test_unpowered_recipient_adopts_only_after_consent_with_zero_provider_calls(
         home, monkeypatch, publication):
     import sqlite3
 
-    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.broker.vault import write_credential_vault
     from tinyassets.providers.router import ProviderRouter
 
     definition_id = (_legacy(home) if publication == "system" else

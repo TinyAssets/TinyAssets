@@ -28,7 +28,6 @@ def hf_pool(tmp_path, monkeypatch, authenticate_request, wires):
 
     from tests.owner_answer import answer_request
     from tinyassets.api.connection_uses import apply_connection_uses
-    from tinyassets.api.http_connection import connect_http
     from tinyassets.connection_oauth.tokens import TokenBundle, encode
     from tinyassets.onboarding.source_connect import _offer_pool_access, sign_in_action
     from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
@@ -55,9 +54,14 @@ def hf_pool(tmp_path, monkeypatch, authenticate_request, wires):
     bundle = TokenBundle(access_token="hf_oauth_alice", token_url="https://huggingface.co/oauth/token",
                          client_id=action["oauth"]["client_id"], refresh_token="hf_rt_alice",
                          expires_at=None, scope="openid profile inference-api")
-    deposit = connect_http(universe_id=parity.A_HOME, allow_oauth2=True, payload={
-        "destination": action["destination"], "secret": encode(bundle), "auth_scheme": "oauth2",
-        "allowed_endpoints": action["endpoints"], "access": "exact"})
+    from tinyassets.broker.http_connect import connect_operation
+    from tinyassets.onboarding.connection_definition import policy
+
+    args = dict(principal=parity.A_OWNER, command_center=parity.A_HOME,
+                destination=action["destination"], policy=policy(action["endpoints"], "oauth2"))
+    prepared = connect_operation(tmp_path, **args, action="prepare")
+    deposit = connect_operation(tmp_path, **args, action="commit",
+                                expected=prepared["revision"], secret=encode(bundle))["projection"]
     assert deposit.get("status") == "provisioned", deposit
     applied = apply_connection_uses(base=tmp_path, uid=parity.A_HOME, actor=parity.A_OWNER,
                                     grant_id=deposit["grant_id"], uses=action["uses"],
@@ -111,43 +115,3 @@ def test_workflow_falls_back_to_hugging_face_after_the_openrouter_daily_cap(
 def test_chat_falls_back_to_hugging_face_after_the_openrouter_daily_cap(hf_pool, monkeypatch):
     pooling.test_chat_daily_quota_skips_sibling_and_uses_next_owned_source(hf_pool, monkeypatch)
     assert hf_pool.second_wire.sent_models == ["openai/gpt-oss-120b"]
-
-
-def test_subscription_deposit_needs_consent_before_joining_existing_sources(
-        hf_pool, monkeypatch, authenticate_request):
-    from tests.owner_answer import answer_request
-    from tinyassets.credential_vault import load_credential_vault, write_credential_vault
-    from tinyassets.onboarding.source_connect import offer_subscription_source
-    from tinyassets.provider_assignment import load_provider_assignment
-    from tinyassets.providers.call import get_provider_router
-
-    authenticate_request(parity.A_OWNER)
-    universe = hf_pool.base / parity.A_HOME
-    records = load_credential_vault(universe)
-    records.append({"credential_type": "llm_subscription", "service": "codex",
-                    "auth_json_b64": "e30="})
-    write_credential_vault(universe, records, owner_user_id=parity.A_OWNER,
-                           universe_id=parity.A_HOME)
-    get_provider_router()._providers["codex"] = SimpleNamespace(is_available=lambda: True)
-    before = load_provider_assignment(hf_pool.base, universe_id=parity.A_HOME)
-    prior = {m.provider: m.access for m in before.candidates}
-    offered = offer_subscription_source(base=hf_pool.base, uid=parity.A_HOME,
-                                        owner=parity.A_OWNER, service="codex")
-    assert offered["request"]["action"]["type"] == "bind_model_access"
-    assert offered["request"]["status"] == "pending"
-    assert load_provider_assignment(hf_pool.base, universe_id=parity.A_HOME) == before
-    action = offered["request"]["action"]
-    assert action["model_access"]["codex"]["cost_caps"] is None
-    for provider, access in prior.items():
-        assert action["proposed_membership"][provider] == access.document()
-    result = answer_request(universe_id=parity.A_HOME,
-                             payload={"request_id": offered["request_id"], "values": {}})
-    assert result.get("status") == "answered", result
-    after = load_provider_assignment(hf_pool.base, universe_id=parity.A_HOME)
-    assert after.provider == before.provider
-    assert {m.provider for m in after.candidates} == set(prior) | {"codex"}
-    for member in after.candidates:
-        if member.provider in prior:
-            assert member.access == prior[member.provider]
-    assert offer_subscription_source(base=hf_pool.base, uid=parity.A_HOME,
-                                      owner=parity.A_OWNER, service="codex") is None

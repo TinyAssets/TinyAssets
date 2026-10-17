@@ -91,18 +91,18 @@ def test_a_missing_home_gets_defaults_and_is_never_created(tmp_path):
 
 def test_the_assignment_writer_puts_authority_in_the_record_and_strips_config(tmp_path):
     home = _home(tmp_path)
-    _config(home, "allowed_providers: [codex]\nstyle: terse\n")
+    _config(home, "allowed_providers: [api_key_http:fixture]\nstyle: terse\n")
     write_provider_assignment_projection(
-        home, state="ready", generation=2, provider="codex",
+        home, state="ready", generation=2, provider="api_key_http:fixture",
         binding={"binding_id": "b1"},
     )
     config_text = (home / "config.yaml").read_text(encoding="utf-8")
     for name in pa.AUTHORITY_FIELDS:
         assert name not in config_text
-    assert "style: terse" in config_text and "preferred_writer: codex" in config_text
+    assert "style: terse" in config_text and "preferred_writer: api_key_http:fixture" in config_text
     loaded = load_universe_config(home)
-    assert loaded.allowed_providers == ["codex"]
-    assert loaded.provider_authority_bindings == {"codex": {"binding_id": "b1"}}
+    assert loaded.allowed_providers == ["api_key_http:fixture"]
+    assert loaded.provider_authority_bindings == {"api_key_http:fixture": {"binding_id": "b1"}}
 
 
 def test_the_generic_config_writer_refuses_authority(tmp_path):

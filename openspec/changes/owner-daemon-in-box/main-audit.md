@@ -479,3 +479,568 @@ No code on main binds as the requesting account outside a turn. The `#5168` help
 - **Per-center platform state out of `<data>/<center>/`.** `isolation-by-box` D2 moves it to the sidecar. In the clean shape most of it (history, pending requests, pause, automations rows, steering, activity) belongs **in the box**, not in a platform sidecar. Only the subscription/usage/billing rows, consents and the next-wake index stay shared. `isolation-by-box` D4 keeps `.pause` as a platform file, which contradicts the report's "put the flag where its reader lives" rule once the scheduler reads a wake index.
 - **App/MCP reads.** Either bind as the requester (`isolation-by-box` D3) or move the owner door into the box. The file browser (`api/universe_file_reads.py`) is the clearest host-path reader to delete.
 - **Shared root DBs** (`.tinyassets.db`, `.runs.db`, `.automations.db`) still hold per-owner rows. This is C6 P7/S10.
+
+
+## Task 3c-2a local validation (2026-10-16)
+
+Custody writers, erasers and refresh now live in the broker package. The
+HTTP_CONNECT commit carries the secret and prepared revision; broker-side
+policy/grant validation precedes custody publication. Rotation uses the stored
+scheme and expected incarnation. DISCONNECT erase returns `secrets_removed`
+and erases custody before deleting fenced ledger rows. Account erasure uses
+broker deletion tombstones, and the router no longer stages vault directories.
+
+The exact requested focused selection plus all changed test files was 88 files:
+1,482 passed initially, with 21 failures and 19 environment-dependent skips.
+All failures were repaired, then the affected 12-file rerun passed 219 tests
+without skips. That includes all 17 Compose parser cases, after copying the
+existing local validation image's Docker/Compose tools into the local oracle
+image (no repository dependency or CI configuration change). The two permanent
+UID erasure cases passed separately under `linux_oracle.py --as-root`.
+No unresolved failure or unexecuted skipped case remains in this selection.
+The full CI affected selection was not run.
+
+New acceptance: AST guard against external vault writers; six deposit schemes
+in a separate broker process with a writer-PID observation and committed grant;
+public and registered-client OAuth refresh on calls from a separate owner-box
+process; unknown REFRESH/REFRESH_ACK refusal; broker-only OAuth environment
+rendering. Existing refresh concurrency, storage failure, disconnect retry,
+rotation policy preservation and lifecycle tests were adapted to broker custody.
+
+Deleted protocol-only tests from `test_broker_refresh.py`:
+`test_foreign_stale_and_revoked_refresh_never_spends` (daemon callback admission),
+`test_lost_ack_keeps_rotation_and_does_not_replay`, and
+`test_broker_without_daemon_callback_cannot_refresh_locally`.
+The rejected-digest test now checks local rejected-token refresh. Existing grant
+and fence suites continue to cover denied dispatch. The old create-fault orphan
+test now requires no deposit on a failed ledger mutation. Vault deletion tests
+now check broker tombstones and locking, replacing daemon-lock staging,
+nonhome-admin and absent-owner-schema assumptions. The record-builder guard
+now names broker deposit/refresh modules. A pre-existing router-session I/O pin
+was brought up to date for its shared session files. The streaming thread check
+permits unrelated threads to exit while still forbidding new worker threads.
+
+Also deleted: daemon `_deposit_http`, the old `broker/refresh.py` callback
+preparation, the daemon OAuth service's refresh operation, refresh frames and
+client callback plumbing, and the standalone Slack vault-deposit script.
+Slack diagnostic scripts now use existing broker custody only.
+
+Task 6 must migrate credential ownership/deletion metadata into
+`.broker/credential-custody.db` and change credential-vault directory ownership
+to the broker uid. Existing HTTP secret files remain in place. The environment
+installer renders only OAuth configuration into `broker.env`; no provider code
+or host provisioning was added. RFC 7009 is 3c-2b. Remaining door flows, box
+secret-free actions, full CI, independent review and cutover remain with their
+respective lanes/lead. No sub-agents, external reviewers, push, merge, branch
+switch or deployment were used for this task.
+
+## Task 3c-2b partial build (2026-10-16)
+
+Local commits `5477624cf28` and `d6605267a55` implement provider revocation
+and standalone `/app/connections` controls. `SOLE_CENTER` is a fenced broker
+identity query; explicit centers still use `ADMITTED_OWNER`. Unknown, foreign,
+retired and ambiguous centers return 404 at the door. The handler reads no
+owner home, ACL, provider assignment or disconnection store. Protected-cookie
+and bearer identity agreement is retained at this now-shared handler.
+
+`DISCONNECT` erasure invokes RFC 7009 under the custody lock, with the current
+refresh token or otherwise the access token, and registered client auth from
+the trusted directory. A provider error never prevents local erasure. Its
+fixed failure code remains on the revoked connection row (`revocation_error`,
+`custody_erased`); `HTTP_CONNECT` replaces that receipt on a fresh connect.
+`CONNECTION_CATALOG(include_revoked=True)` keeps interrupted local cleanup
+reachable at the door without the former owner-side disconnection read.
+
+Deleted paths: the connection handler's `_read_home`, founder-home/admin
+checks, `remove_http` composition and `unfinished_disconnections` read. The
+box's existing removal composition is unchanged. No tests were deleted.
+Catalog and connection-lifecycle fixtures now seed broker admission; the
+deleted-account deposit fixture uses broker erasure. Structural inventories
+were reconciled with earlier custody/CLI deletions, and the platform-call spy
+fixture now uses HTTP sources instead of retired executors.
+
+New tests: `tests/test_connection_door.py` covers an empty router root,
+admission selection, foreign centers, identity conflict, stale incarnation,
+fenced cleanup retry and broker query fencing. `tests/test_broker_revocation.py`
+adds `test_disconnect_revokes_current_token_then_erases` for public and
+client_secret_post clients, each with refresh-token and access-token cases;
+it also covers HTTP/network/directory failures, absent endpoint, stale fence,
+erased-grant call refusal, idempotent removal and fresh reconnection.
+These are not the requested complete per-auth door-to-box lifecycle tests.
+
+The requested focused selection plus structural guards and touched tests was
+121 files: 2,447 passed, 17 failed, 3 setup errors and 2 root-only skips on the
+initial snapshot. Both skipped cases subsequently passed with
+`linux_oracle.py --as-root` (the two permanent-UID cases in
+`test_owner_box_destroy.py`). The first six-file implementation run passed 65;
+the subsequent door/catalog/revoke run passed 27. The eleven-file repair run
+passed 153 with one remaining provider-resolution fixture failure. No skip,
+xfail or quarantine was added; the full CI affected selection was not run.
+The final `test_platform_has_no_llm.py` rerun passed all 16 after using a real
+HTTP definition/grant and a synthetic executor. Every initial failed/error case
+is now covered by a passing repair rerun, and both skipped cases executed as
+root. Ruff passed on all 21 changed Python files. The final full selection was
+not repeated; validation is the initial selection plus these focused reruns.
+
+Remaining work, explicitly uncompleted:
+1. Move `/app/model-connect/*` (including popup, source sign-in, presets,
+   generic OAuth/DCR and registered clients) to the standalone shared door;
+   remove its home/pending/provider-store dependencies and apply admission
+   center selection there. Only `/app/connections` moved in this build.
+2. Move authorization-code/token exchanges into the broker, including preset
+   PKCE exchange, and remove router token exchange/client-secret custody.
+3. Remove secret parameters from box MCP and approval connect schemas,
+   implementations, instructions and docs; return door links for secret/sign-in
+   schemes and use bound-channel keyless HTTP_CONNECT.
+4. Carry opaque `request_ref` through broker connection/grant rows and ledger
+   queries, and resolve the box's pending connect request from that ledger.
+5. Add the full nine-auth-type separate-process door-to-box connect/call/
+   refresh/disconnect acceptance matrix and router flow-consumption assertions;
+   update/delete superseded connect tests with a deletion inventory.
+6. Tick 3c-2 and replace its partial as-built note only after those are complete.
+
+No reviewer/sub-agent, new worktree, push, merge, branch switch, git-config
+change or deployment was performed.
+
+
+## Task 3c-2c build (2026-10-16)
+
+Implementation commit: `d8fa40b9dae`.
+
+`/app/model-connect/` is a shared door prefix. Preset PKCE begin/exchange/resume,
+key deposit, inline popup begin/poll/cancel, generic OAuth with public DCR,
+registered clients, source sign-in and the public client metadata document now
+work without a home, pending-request, provider-assignment or universe-store read.
+The authenticated owner selects a live admitted center, using `SOLE_CENTER` when
+omitted; unknown/foreign centers return 404. Definitions come from installed
+source/acquisition data, credential-free input or a broker catalog query. The
+browser preserves the selected center across authorization redirects.
+
+`HTTP_CONNECT` adds door-only `oauth_offer`, `oauth_exchange` and
+`preset_exchange` actions. The broker resolves registered-client metadata and
+performs authorization-code/token and preset-key exchanges, then commits custody
+and the grant. Registered client secrets remain in `broker.env`; the environment
+installer now excludes the OAuth namespace from `daemon.env`. Browser redirects,
+state/challenges, frozen public definitions and sealed popup verifiers remain at
+the door. Redemption consumes the flow before IPC; responses contain only a
+credential-free projection. Key deposits use the existing prepare/commit action.
+The opaque `request_ref` is stored on the connection row and returned by commit,
+resume and `GRANTED_RESOURCE`; the door never resolves a pending request.
+
+Deleted production paths: router token exchange and token-bundle encoding in
+`connection_oauth.flow`; router preset exchange transport (moved into
+`broker/acquisition.py`); home/ACL/pending composition in `model_connect`;
+`model_bootstrap.complete_bootstrap` and `_resume_key`; source sign-in's
+`raise_sign_in_ask`, `is_canonical_sign_in` and `offer_signed_in_source`.
+Owner-side model-access helpers remain for the next task. No provider-specific
+exchange code was introduced.
+
+Deleted tests asserting those removed compositions:
+- Entire `tests/test_model_bootstrap.py`: `test_catalogue_failure_is_resumable_without_another_oauth_exchange`,
+  `test_concurrent_manual_and_oauth_keys_have_one_deposit_winner`,
+  `test_deposit_composes_existing_request_but_does_not_answer_or_serve`,
+  `test_disconnect_then_guided_reconnect_requires_fresh_approval`,
+  `test_empty_resume_requires_authorization_not_generic_server_error`,
+  `test_home_rebinding_refuses_new_deposit`,
+  `test_owner_approval_uses_existing_enable_path`,
+  `test_partial_activation_resumes_same_request_without_rotating_custody`,
+  `test_partial_bootstrap_removal_invalidates_old_pending_approval`, and
+  `test_second_oauth_result_cannot_replace_first_deposit`. Its shared fixture
+  moved to `tests/support/model_connect.py`.
+- `test_manual_catalogue_never_selects_paid_model` in the manual-connect suite.
+- `test_sign_in_on_a_powered_command_center_asks_to_add_it` and
+  `test_post_sign_in_database_failure_preserves_success` in the source sign-in
+  suite. Direct source authorization and broker custody replace the old
+  pending-ask/automatic-serving assertions in the remaining source tests.
+
+Replaced/renamed tests (their former names no longer assert the deleted path):
+`test_manual_owner_reaches_existing_approval_then_connects`,
+`test_manual_does_not_replace_existing_setup`,
+`test_deletion_between_ingress_scope_and_durable_begin_cannot_recreate_metadata`,
+`test_new_owner_begin_provisions_own_empty_home_without_llm`,
+`test_one_tap_raises_the_platforms_ask_from_installed_data`,
+`test_sign_in_on_an_unpowered_command_center_serves_on_it`, and
+`test_rail_sign_in_uses_server_provenance_for_relay`.
+
+Manual reconnect/approval tests now verify broker grant reuse and resume.
+New-owner tests require admission without bootstrapping a home; retirement
+races are tested against the admission map. OAuth, popup, persistence and
+router-schema fixtures now use the standalone definition and broker contract.
+
+New acceptance tests in `tests/test_model_connect_door_lifecycle.py`:
+- `test_door_exchange_box_call_refresh_disconnect[dcr]`
+- `test_door_exchange_box_call_refresh_disconnect[registered]`
+- `test_door_exchange_box_call_refresh_disconnect[preset]`
+- `test_source_sign_in_uses_client_metadata_without_owner_state[dcr]`
+- `test_inline_popup_flow_at_empty_door_polls_and_cancels[preset]`
+
+The three lifecycle cases use separate broker and box processes with fake
+providers and no provider network. They cover door connect, a box effector
+call, broker refresh for OAuth, disconnect, RFC 7009 when configured and refusal
+of the next box call. Credentials are generated only inside the broker process;
+router token/secret/store access seams fail the test. The router root contains
+only shared runtime/flow state, and flow consumption, opaque request references,
+replay refusal and foreign-center 404s are asserted.
+
+Remaining scope is unchanged: box-side secret-free connect actions and door
+links, completion of the box's pending request from `request_ref`, and the other
+six authentication lifecycle cases are the next task. Do not tick all of 3c-2
+until that work is complete. Full CI, independent review, migration/cutover,
+deployed-SHA assertion and the live naive-user pass remain with the lead.
+This build is local only; no sub-agents, new worktree, push, merge, branch switch,
+git-config change or deployment was performed.
+
+Validation: the requested patterns, every structural-guard test and the touched
+tests comprised a 115-file focused Linux selection: **2,327 passed, 3 failed,
+2 root-only skips**. The three failures were a source-card admission fixture and
+two deployment assertions that still expected registered clients in daemon.env.
+The final six-file repair run passed **164 tests**, including all three failed
+cases, all five new door tests using the real box effector, hosted PKCE, generic
+OAuth/browser callback tests and source sign-in. Both root-only cases in
+`test_owner_box_destroy.py` passed separately with `--as-root` (**2 passed**).
+The additional source-pooling run passed 48 with one normalized-policy assertion
+failure subsequently fixed and covered by the final 164-pass run. The prior
+six-file door run passed 130 with one exact response-shape assertion failure,
+also fixed and covered by the final run. All failures in the focused selection and all root-only skips now have
+a passing execution; obsolete path assertions are deleted as listed above.
+No skip, xfail or quarantine was introduced. The full CI affected selection was not run or claimed. Ruff passed on
+all **33 changed Python files**, the background-authority inventory is clean,
+and `git diff --check` passed.
+
+After the implementation commit restored the original non-ASCII verifier test
+value caught by the commit hook, the complete hosted-auth file passed again:
+**51 passed** on Linux. The commit's import-graph, path-resolver, provider-drift
+and skill hooks passed; final ruff still passed all 33 changed Python files.
+
+
+## Task 3c-2d build (2026-10-16)
+
+Implementation commit: `b6e2c91cac4`. Its import-graph, path-resolver,
+provider-drift, skill and text-encoding commit hooks passed.
+
+3c-2 is complete locally. Box `connect_http` and `rotate_http` no longer take
+credentials; the old secret-taking implementations, `allow_oauth2`/`allow_keyless`
+switches, `answer_connect_with_token`, `_assembled_secret`, `_rotate_answer`,
+box-side `_with_sign_in_offer`, the keyless vault marker and `connect_source`
+helper are deleted. Secret/token/key/password/capability-URL values are absent
+from the box connect schema and rejected by connect approvals. The box returns
+an `/app` link containing request, center and connection ID. Generic browser
+connect, rotation and model-endpoint forms post secrets directly to the shared
+door. The keyless action commits through HTTP_CONNECT and dispatch needs no vault.
+
+The existing continuation tick and pending-request read reconcile broker
+GRANTED_RESOURCE rows by request_ref and policy. They apply connection uses and
+resolve through the existing answer/wake transaction. Failures remain pending
+and are returned explicitly. Rotation also records request_ref. The door reads
+no owner request and the box reads no router state; no push path was added.
+
+New tests in `tests/test_model_connect_door_lifecycle.py`:
+- `test_other_auth_connect_box_call_disconnect` (none, bearer, basic, header,
+  oauth1a, url_secret; three door disconnects and three box disconnects).
+- `test_box_action_and_approval_link_then_ledger_completion` (links, rejected
+  secret values, unmatched/matched request_ref, repeat polling and no router read).
+- `test_box_connect_schema_has_no_secret_parameters`.
+
+Existing credential tests now enter through the shared door, then poll the box
+ledger. OAuth tests discover at the door; source-pooling fixtures separately
+apply model consent inside the owner context. Browser tests fail if credential
+values are sent through the approval/MCP transport. A structural-guard fixture
+that captured a mocked `/fake` path during imports now uses a per-test data root.
+
+Deleted tests for the removed in-box token-answer path:
+- `tests/test_consent_owner_answers.py::test_oauth_token_answer_requires_owner_proof_before_deposit`
+- `tests/test_generic_oauth_connections.py::test_the_stored_token_url_is_pinned_to_the_discovered_one`
+
+Deleted stale bootstrap/automatic-serving tests whose implementation was removed in 3c-2c:
+- `tests/test_notification_is_the_setup.py::test_the_guided_sign_in_round_trips_to_a_serving_universe_with_no_llm_call`
+- `tests/test_notification_is_the_setup.py::test_reconnect_after_a_product_disconnect_serves_again`
+- `tests/test_notification_is_the_setup.py::test_after_the_approval_a_turn_selects_a_free_tool_model_on_its_own_connection`
+- `tests/test_notification_is_the_setup.py::test_the_free_model_approval_names_no_internal_ids`
+- `tests/test_notification_is_the_setup.py::test_a_disconnected_universe_turn_is_setup_not_a_mystery`
+
+Renamed and ported tests (their assertions now exercise the door):
+- `test_card_connects_with_one_key_and_returns_unanswered_consent` ?
+  `test_card_connects_with_one_key_at_door` in `test_free_source_cards.py`.
+- `test_oauth_is_the_primary_action_when_the_provider_offers_it` ?
+  `test_oauth_discovery_begins_at_the_door` in `test_generic_oauth_connections.py`.
+- `test_a_rotation_needs_a_box_to_paste_into` ?
+  `test_a_fieldless_rotation_returns_the_door` in `test_replacing_a_rejected_credential.py`.
+
+Validation (focused only; no full affected selection):
+- Requested patterns, every GUARDS test and all touched test files are covered;
+  the initial 161-file Linux selection ran 3,416 cases: **3,318 passed, 96 failed,
+  2 root-only skips**. Collection first exposed two stale imports of the already
+  deleted model-bootstrap module; they now use the shared owner fixture.
+- The five-file core repair passed **202**, with four failures subsequently fixed.
+  The broader repair passed **930**, with 17 failures subsequently fixed.
+- Final lifecycle/OAuth/browser/guidance run: **184 passed**.
+- Final continuation/pending/model-use/broker/rotation/approval run: **362 passed**,
+  with three receipt/ASGI-fixture failures fixed and covered by the last two-file
+  run: **153 passed**. All original failures now have passing executions or
+  ported replacement tests; none were skipped, xfailed or quarantined.
+- Both root-only `test_owner_box_destroy.py` cases passed separately with
+  `linux_oracle.py --as-root`: **2 passed**. A skip is not counted as a pass.
+- Ruff passed on all **40 changed Python files**; JavaScript syntax, the channel
+  ratchet, `git diff --check` and `openspec validate owner-daemon-in-box --strict`
+  passed.
+
+Linux logs, JUnit and selection manifests are outside the repository at
+`C:/Users/Jonathan/AppData/Local/Temp/ta-3c2d-7vcbyijm/`.
+The full CI selection, independent review, deployment/cutover, deployed-SHA
+assertion and live naive-user pass remain with the lead. This task did not push,
+merge, change branches, create a worktree or dispatch another agent.
+
+
+## 3c-3 shared plans and commons publication (2026-10-16)
+
+Implementation commits: `94f4cf683a1` and `5bce9478a58`. Billing is owner-keyed at the broker;
+router calls use fenced `BILLING_PLAN`, box plan/catalog reads use `BOX_SHARED`,
+and `BOX_PUBLISH` selects the author from the relay bind. The one plan writer
+owns tier ordering, processor mappings and checkout attempts. Admission's
+attached-database transaction creates the explicit free row. Missing rows raise
+`PlanMissing`; a later center admission cannot silently recreate them.
+
+Deleted runtime paths: router home/center billing resolution and per-center
+billing writes, router seat/storage usage queries, box direct commons publishing,
+box shared-preview writes, and router preview-cache writes. Billing status omits
+usage; its plan limits remain. Owner quota and update-preparation reads use the
+channel. Legacy non-owner subscription readers remain for task 6/6a; no census
+or cutover copy was built. Published data uses the existing storage inventory;
+there are no new disk names or timers.
+
+Deleted tests, by file:
+- `test_checkout_lease.py`: `test_a_fresh_legacy_claim_still_blocks`,
+  `test_a_stale_legacy_claim_is_cleared_and_replaced`, and
+  `test_a_corrupt_legacy_claim_fails_closed` exercised runtime migration of the
+  retired per-center checkout claim. The shared store keeps one owner attempt.
+- `test_billing_boundary.py`: `test_an_unreadable_state_db_reads_as_free_never_paid`
+  and `test_an_unreadable_db_reports_no_end_date` asserted silent defaults.
+  Replacement: `test_an_unreadable_shared_plan_fails_loudly`; event ordering,
+  end-date and webhook tests now use shared rows.
+- `test_account_plan_action.py`: `test_no_home_is_not_an_upgrade_on_any_surface`
+  is replaced by `test_missing_plan_fails_on_every_surface`.
+- `test_public_run_link.py`: `test_preview_replacement_preserves_exact_bytes`
+  and `test_preview_write_refuses_linked_cache_directory` exercised the deleted
+  cache writer. `test_legacy_preview_renders_only_published_component_and_caches`
+  is replaced by `test_legacy_preview_is_public_and_does_not_write_at_router`.
+No test file was deleted; no skip, xfail or quarantine was added.
+
+Focused Linux validation (no full affected selection):
+- The requested patterns, all structural GUARDS files and touched tests ran in
+  a 119-file selection: **2,228 passed, 10 failed, 2 root-only skips**.
+- Seven failures came from daemon/router fixtures missing the explicit shared
+  plan or seeding the public listing in the old root. The two relay-payload
+  assertions and the stale session-store raw-I/O pin were existing drift.
+  The nine-file repair run passed **317**, with those last three stale
+  assertions still in its pre-edit snapshot; their final file rerun is recorded below.
+- Core billing/checkout/ordering/provisioning run: **165 passed**. Separate
+  process, binding and router-store guard proof: **33 passed**. Provisioning's
+  existing rig: **4 passed**. Root-required owner-destruction file: **5 passed**,
+  including both cases skipped as unprivileged; skips are not counted as proof.
+- Final fixture rerun: **178 passed**. All ten initial failures now have passing
+  executions; the final seven process/placement tests also pass in the repair run.
+- Ruff passed on all **29 changed Python files**. `git diff --check` and
+  `openspec validate owner-daemon-in-box --strict` passed. Existing storage and
+  timer inventories and the channel-agnostic guard passed in the focused selection.
+
+No new disk-name or timer registration was required; `plans.db` and `.published`
+were already classified. Receipts are outside the repository in the Windows
+temporary folder (`3c3-*-linux.log`, `3c3-linux-selection.json`). The lead retains the
+full CI selection, independent adversarial review (delegation was prohibited),
+task 6 census/rehearsal, deployment and live naive-user proof.
+
+
+## 3c CI regression repair (2026-10-17)
+
+Local repair of the 53 cases from CI's exact affected selection. D2 keeps
+owner request routing, protected approvals, account revocation and one-time key
+display; D3c moves discovery and all credential submission to the shared door,
+with broker custody and box completion by request_ref. Category **a** repairs
+a retained product behavior; **b** ports a deleted path's test to its retained
+user behavior. No tests were deleted, skipped, xfailed or quarantined.
+
+Additional product fixes found while exercising the retained behavior:
+- Door deposits capture the original login and center before token refresh,
+  refuse a changed login before sending, and discard late results after an
+  account switch without replaying the deposit.
+- A queued close event cannot erase a newly reopened API-key card.
+- Rendering default secret fields does not mutate the cached request, so
+  polling does not mistake that local form state for a changed request.
+
+The starter release follows `openspec/specs/platform-check-scope/spec.md`'s
+new immutable release requirement and the manifest test's version/hash pairing:
+`3-broker-connections`, SHA-256
+`23f4610ff686e0a449e4fb84f82645da823dab3b67439ac1ccf46879e13d4ca7`.
+
+### Disposition of every original failure
+
+Original IDs below remain the index even where a replacement has a more accurate
+name. No user-visible behavior was removed by this repair.
+
+| Original failing test | Category | Evidence and change |
+|---|---|---|
+| `tests/test_app_browser_notifications.py::test_item_verbs_use_the_existing_answer_path[accept]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_app_browser_notifications.py::test_item_verbs_use_the_existing_answer_path[deny]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_app_browser_notifications.py::test_item_verbs_use_the_existing_answer_path[reply]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_app_pending_requests_browser.py::test_cleared_reconnect_returns_on_later_failure_and_history_can_reask` | b | Assert the explicit request center now carried by the answer; clearing, later failure and history re-ask still execute. Failure was an additional universe_id, not lost behavior. |
+| `tests/test_app_pending_requests_browser.py::test_pending_requests_at_latest_and_new_arrival_answer[False-390]` | a | Ordinary answers no longer add an empty selected-chat center. The existing answer and scroll behavior assertions remain. |
+| `tests/test_app_pending_requests_browser.py::test_pending_requests_at_latest_and_new_arrival_answer[False-1280]` | a | Ordinary answers no longer add an empty selected-chat center. The existing answer and scroll behavior assertions remain. |
+| `tests/test_app_pending_requests_browser.py::test_pending_requests_at_latest_and_new_arrival_answer[True-390]` | a | Ordinary answers no longer add an empty selected-chat center. The existing answer and scroll behavior assertions remain. |
+| `tests/test_app_pending_requests_browser.py::test_pending_requests_at_latest_and_new_arrival_answer[True-1280]` | a | Ordinary answers no longer add an empty selected-chat center. The existing answer and scroll behavior assertions remain. |
+| `tests/test_app_request_rail_executes.py::test_model_setup_retry_is_visible_and_not_relayed_to_an_unpowered_agent[False]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_app_request_rail_executes.py::test_model_setup_retry_is_visible_and_not_relayed_to_an_unpowered_agent[True]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_app_request_rail_executes.py::test_patch_consent_rail_uses_protected_owner_door[True-accept]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_app_request_rail_executes.py::test_patch_consent_rail_uses_protected_owner_door[True-deny]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_app_request_rail_executes.py::test_patch_consent_rail_uses_protected_owner_door[True-clear]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_app_request_rail_executes.py::test_patch_consent_rail_uses_protected_owner_door[False-accept]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_app_request_rail_executes.py::test_patch_consent_rail_uses_protected_owner_door[False-deny]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_app_request_rail_executes.py::test_patch_consent_rail_uses_protected_owner_door[False-clear]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_credential_request_browser.py::test_card_is_reachable_in_real_needs_you_and_poll_preserves_secret[390]` | a | Polling preserves an existing row center when the response omits its envelope center, preventing card replacement and loss of the one-time API key. D2 keeps key issuance at the door. |
+| `tests/test_credential_request_browser.py::test_card_is_reachable_in_real_needs_you_and_poll_preserves_secret[1280]` | a | Polling preserves an existing row center when the response omits its envelope center, preventing card replacement and loss of the one-time API key. D2 keeps key issuance at the door. |
+| `tests/test_huggingface_sign_in_source.py::test_an_agent_cannot_raise_the_sign_in_ask_itself` | b | Ported to a fieldless connect ask and door link without box discovery; an agent may request a connection but cannot authorize it. |
+| `tests/test_huggingface_sign_in_source.py::test_an_agent_ask_under_the_same_name_gets_no_pool_offer` | b | Assert connect at the box, then OAuth at the door and no automatic model-pool offer. D3c removed box discovery and automatic serving. |
+| `tests/test_inline_owner_sessions.py::test_revoke_owner_cancels_all_connect_flows_only_for_that_owner` | b | Seed request_ref and frozen definition_json in the router flow schema; keep owner-specific revocation assertions. Failure was an obsolete positional INSERT. |
+| `tests/test_multi_value_credential_ask.py::test_one_box_of_four_is_refused_not_deposited_as_the_whole_credential` | b | Assert the broker door validation error and all missing OAuth bundle names, with no deposit. D3c moved bundle validation out of box answers. |
+| `tests/test_multi_value_credential_ask.py::test_a_legacy_request_stored_under_the_old_rules_is_refused` | b | Send the hostile legacy answer directly to the box approval endpoint, bypassing the test helper that now deposits at the door; retain rejection and empty-vault assertions. |
+| `tests/test_needs_you_open_browser.py::test_web_request_types_open_and_remain_actionable[False-model]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_web_request_types_open_and_remain_actionable[False-question]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_web_request_types_open_and_remain_actionable[False-patch]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_web_request_types_open_and_remain_actionable[False-patch_recommendation]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_web_request_types_open_and_remain_actionable[False-optional]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_web_request_types_open_and_remain_actionable[True-model]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_web_request_types_open_and_remain_actionable[True-question]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_web_request_types_open_and_remain_actionable[True-patch]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_web_request_types_open_and_remain_actionable[True-patch_recommendation]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_web_request_types_open_and_remain_actionable[True-optional]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_native_request_types_open_in_app_or_keep_visible_handoff[question-android]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_native_request_types_open_in_app_or_keep_visible_handoff[question-ios]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_native_request_types_open_in_app_or_keep_visible_handoff[question-desktop]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_native_request_types_open_in_app_or_keep_visible_handoff[patch_recommendation-android]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_native_request_types_open_in_app_or_keep_visible_handoff[patch_recommendation-ios]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_native_request_types_open_in_app_or_keep_visible_handoff[patch_recommendation-desktop]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_native_request_types_open_in_app_or_keep_visible_handoff[optional-android]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_native_request_types_open_in_app_or_keep_visible_handoff[optional-ios]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_needs_you_open_browser.py::test_native_request_types_open_in_app_or_keep_visible_handoff[optional-desktop]` | a | Do not attach an empty selected-chat center to ordinary answers. Existing web/native open, accept, clear and browser-handoff assertions are unchanged. |
+| `tests/test_onboarding_mcp_session_recovery.py::test_deposit_cannot_replay_under_a_different_login[401-False]` | b | Exercise the retained keyless MCP connect under the same handshake/login race. Secret deposit no longer uses MCP. Added Chromium door-deposit tests for refresh and delayed success/401/404 after login changes. |
+| `tests/test_onboarding_mcp_session_recovery.py::test_deposit_cannot_replay_under_a_different_login[404-False]` | b | Exercise the retained keyless MCP connect under the same handshake/login race. Secret deposit no longer uses MCP. Added Chromium door-deposit tests for refresh and delayed success/401/404 after login changes. |
+| `tests/test_onboarding_mcp_session_recovery.py::test_deposit_cannot_replay_under_a_different_login[404-True]` | b | Exercise the retained keyless MCP connect under the same handshake/login race. Secret deposit no longer uses MCP. Added Chromium door-deposit tests for refresh and delayed success/401/404 after login changes. |
+| `tests/test_onboarding_mcp_session_recovery.py::test_delayed_handshake_cannot_send_a_secret_under_the_next_login` | b | Exercise the retained keyless MCP connect under the same handshake/login race. Secret deposit no longer uses MCP. Added Chromium door-deposit tests for refresh and delayed success/401/404 after login changes. |
+| `tests/test_onboarding_mcp_session_recovery.py::test_stale_repair_handshake_cannot_discard_the_new_login_session` | b | Exercise the retained keyless MCP connect under the same handshake/login race. Secret deposit no longer uses MCP. Added Chromium door-deposit tests for refresh and delayed success/401/404 after login changes. |
+| `tests/test_request_answer_routing.py::test_subagent_card_answer_in_real_browser[app_sheet]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_request_answer_routing.py::test_subagent_card_answer_in_real_browser[inline_card]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_request_answer_routing.py::test_subagent_card_answer_in_real_browser[desktop]` | a | Removed the selected-chat fallback from ordinary answers; an explicit request center is retained. Missing queueScope had thrown before submission. D2 keeps request/agent answer routing. |
+| `tests/test_request_fields_are_answerable.py::test_the_documented_oauth1a_names_are_the_ones_the_deposit_reads` | b | Keep OAuth bundle-name parity and assert served tools direct secrets to the shared door; removed the expectation that box tool guidance teaches secret submission. |
+| `tests/test_starter_manifest.py::test_published_starter_release_is_immutable` | a | Publish version 3-broker-connections and pin its computed manifest digest together, following platform-check-scope. Version 2 content was changed by 3c; its digest was not silently repinned. |
+| `tests/test_starter_ta_tasks.py::test_connect_my_google_calendar_offers_owner_sign_in_through_ta` | b | Calendar ask retains public endpoints/scopes and opens the owner door; assert no box-discovered provider_id or private secret. D3c places discovery at the door. |
+
+### Local commits and focused validation
+
+- `73fefaada19`: new immutable starter release.
+- `85dd0f542a4`: port superseded connection tests to the D3c contract.
+- `38ca04fbfaa`: repair request cards, routing and login-bound door submission.
+- `6cac7542153`: clear the previous one-time key on immediate same-sheet reopen.
+
+All 53 original cases passed in the 13-file regression run (287 passed; its
+three failures were new test-interception synchronization errors, since fixed).
+The final door/OAuth rerun passed 49. A further two-file run passed 163,
+including the new four-field Chromium proof, and found only two stale
+empty-center expectations in `test_onboarding_app.py`; after their update,
+that complete file passed 147.
+
+The 99-file owner/broker/router/structural selection passed 1,867, with those
+same two onboarding expectation failures and two root-only skips. The final
+147-pass file run covers both failures. The complete owner-destruction file
+passed 5 under `--as-root`, including both skipped cases; skips are not
+counted as passing proof. Ruff on every touched Python file, JavaScript syntax,
+`git diff --check`, and strict OpenSpec validation passed.
+
+No reviewer was dispatched because delegation was explicitly prohibited.
+These are local commits only; no push, merge, branch change, host git configuration
+change, worktree creation or deployment was performed.
+
+### Full original CI chunks
+
+Each uses the original 155-file list and order from the supplied scratch
+folder, through `python scripts/linux_oracle.py -- -q --no-header
+-p no:cacheprovider <files>`. The selector still reports 1,196 files. Existing
+skip counts are reported separately and are not credited as passing cases.
+
+| Chunk | Passed | Failed | Existing skips | Elapsed |
+|---|---:|---:|---:|---:|
+| aa | 2,999 | 0 | 0 | 833.45s |
+| ac | 3,113 | 0 | 2 | 1222.75s |
+| ad | 3,491 | 0 | 8 | 592.35s |
+| ae | 3,192 | 0 | 5 | 608.88s |
+| af | 2,979 | 0 | 0 | 715.18s |
+| ag | 2,362 | 0 | 1 | 580.76s |
+
+The immediate-reopen refinement was made after the full chunks had taken
+snapshots of the original 53 repairs. Its final two-file Chromium run passed
+83; the final combined 112-file run covered every requested regression file and
+every owner/broker/router/structural file on the final implementation:
+**2,160 passed, zero failed, two root-only skips in 432.53s**. Both skipped
+owner-destruction cases passed in the separate five-pass root run above.
+All six original failing chunks completed with **18,136 passed, zero failed,
+16 pre-existing skips**. No skip, xfail or quarantine was added. The interrupted first
+`ae` run held the pre-repair onboarding assertions and was restarted from the
+corrected onboarding-assertion snapshot; it is not counted as a completed
+validation run.
+
+
+Receipt files are outside the repository under
+`C:/Users/Jonathan/AppData/Local/Temp/`:
+`3c-regression-chunk-{aa,ac,ad,ae,af,ag}.log`,
+`3c-regression-final-selection.json`, `3c-regression-final-selection.log`,
+`3c-regression-root.log`, and `3c-regression-reopen-final.log`.
+The original chunk lists and original failure logs remain unchanged in the
+supplied scratch directory.
+
+
+## D3c test hygiene: restore 24 retained tests
+
+Compared each named test with `conv/c6-owner-daemon-s3` and the D3c decisions.
+All 24 still cover retained behavior, so none was deleted. No product code,
+gate, skip, xfail or quarantine changed. The counts below use the hygiene
+gate's own assertion counter (including expected exceptions and assertion helpers).
+The retained names preserve the base-to-head comparison even where they mention
+retired executor shapes.
+
+| Test (`tests/` prefix, `.py` suffix omitted) | Removed in 3c | Replacement checked now | Base / repaired count |
+|---|---|---|---|
+| `test_billing_boundary::test_the_end_date_is_stored_and_cleared_with_the_tier` | Deleted metadata row after clearing the end date. | Owner-keyed SQL row retains paid tier with SQL NULL end date; another owner with no row raises PlanMissing. | 3 / 4 |
+| `test_connect_free_ai_screen::test_sign_in_source_card_is_one_tap_to_the_platforms_own_ask` | Visible failure detail after unavailable sign-in. | Shared-door sign-in failure displays sign_in_unavailable and keeps retry enabled. | 9 / 9 |
+| `test_conversation_failure_history::test_exception_to_code_and_fixed_notice_never_copy_diagnostics` | Native terminal-text classification and its notice. | HTTP attempt's typed rate-limit class is recognized; a diagnostic string masquerading as a class becomes unknown. Existing fixed-notice secrecy checks remain. | 9 / 9 |
+| `test_engine_mcp_server::test_sandboxed_config_engine_mcp_off_by_default` | CLI tool allow/deny entries. | Disabled engine configuration carries neither actor nor graph routing identity. | 3 / 3 |
+| `test_engine_mcp_server::test_sandboxed_config_on_when_all_conditions_met` | Seven CLI allow/deny and resource-reader checks. | Exactly four model tools; publish/remix remain outside backend authority; no resource-reader tool or CLI allow/deny fields; configured timeout survives. Owner/graph and backend capabilities remain checked. | 11 / 11 |
+| `test_engine_mcp_server::test_connect_compute_is_exposed_in_both_provider_allowlists` | Provider-specific prefixed bash allowlist. | A connect_compute-only grant exposes bash so ta can reach registration without exposing backend handles directly. | 5 / 5 |
+| `test_engine_mcp_server::test_served_allowlists_do_not_drift` | Identity of a second executor's tool tuple. | An explicit empty backend grant exposes no model tools. Existing canonical four-tool checks remain. | 4 / 4 |
+| `test_first_contact::test_newborn_without_a_credential_gets_onboarding_not_a_raw_error` | Legacy advertised-handle and pasted-key setup guidance. | Setup names the connections door and omits the retired byo_api_key path. | 8 / 8 |
+| `test_generic_oauth_connections::test_sign_in_round_trip_through_the_real_callback` | Immediate box answer/continuation and answer-delivery origin rows. | Broker grant created by the real callback binds the expected owner, center and connection; request_ref and token-free response remain checked. | 19 / 19 |
+| `test_http_connection_provisioning::test_unsupported_auth_scheme_rejected` | Response's old allowed-scheme list. | Unsupported scheme leaves neither custody nor a broker connection row. Keyless none is supported and is no longer a negative case. | 3 / 3 |
+| `test_inline_model_connect::test_popup_callback_and_once_only_server_held_exchange` | Box answer embedded in confirmation response. | Broker exchange receives the callback code and the verifier matching the stored flow challenge; once-only and secret-free response checks remain. | 11 / 12 |
+| `test_manifest_connection_inventory::test_readiness_and_inventory_check_independent_http_members` | Native fallback survival and removal. | After either HTTP definition loss or grant revocation, restoring that fixture member restores both readiness and scheduler inventory without executor probing. | 9 / 9 |
+| `test_model_options_composition::test_actual_owned_catalog_projects_without_enabling_serving` | Native-first ranking and zero native calls. | Advisory order contains only the owned HTTP source and leaves scheduler serving inventory empty. | 11 / 11 |
+| `test_oauth_discovery_cimd::test_unlisted_mcp_through_connect_card` | Box-discovered OAuth source/scopes. | Box ask makes zero discovery requests; the real door round trip still discovers and uses the unlisted endpoint and scopes. | 20 / 20 |
+| `test_one_agent_definition::test_the_guard_covers_every_registered_provider_kind` | Two native provider kinds in the registry. | Guard covers actual installed HTTP wire protocols; the native provider registry is absent and the retired process-launch module is not importable. | 3 / 3 |
+| `test_one_agent_definition::test_the_turn_gives_every_executor_the_same_instructions` | Equality with native executor prompt. | HTTP round retains the agent's original instructions as well as the conditional request-budget line. | 2 / 2 |
+| `test_open_serving_bind::test_open_provider_authorizes_and_reserves_a_served_turn` | Optional subscription snapshot field equals None. | The served authority has no snapshot-directory field at all; connection-grant and budget checks remain. | 5 / 5 |
+| `test_owner_broker_egress::test_vault_and_provider_cli_refuse` | CLI spawn confinement exception. | Retired process-launch module is not importable; box custody access still raises PermissionError. | 2 / 2 |
+| `test_refresh_session_seal::test_the_key_is_scrubbed_at_IMPORT_before_any_store_call` | Seal key absent from deleted CLI environment builder. | Real session file contains no plaintext refresh token; import-time environment scrubbing and configured-key readback remain checked. | 7 / 7 |
+| `test_replacing_a_rejected_credential::test_a_scheme_with_no_pasted_key_is_refused_in_both_places` | Old direct-rotation detail text. | Refused keyless rotation at door/request rail leaves the custody vault empty. | 4 / 4 |
+| `test_run_provider_session::test_foreground_run_launches_selected_open_provider_and_settles_once` | No calls to subscription snapshot helper. | Subscription snapshot API is absent altogether; real foreground HTTP launch, credential-free wire and settlement remain checked. | 8 / 8 |
+| `test_served_authority_shared_chain::test_execution_uses_live_connected_chain` | Native provider selected in subscription branch. | Ready HTTP execution has connection_grant authority in addition to the expected owner and connected-request budget. | 6 / 6 |
+| `test_vault_account_deletion_guard::test_deletion_waits_for_inflight_vault_persist_then_erases` | Timing of daemon tombstone relative to vault writer. | After broker erasure waits for the in-flight writer and removes custody, a later writer is rejected by the broker tombstone. | 5 / 5 |
+| `test_work_agent_allowance::test_actual_foreground_receipt_uses_parent_allocation_ceiling` | Native-only admitted source. | HTTP receipt is bound to the expected command center, alongside principal, source and parent allocation limits. | 11 / 11 |
+
+
+Validation for this repair:
+- Final full 20-file Linux oracle selection: **624 passed, zero failed, zero skipped**
+  in 147.78s, Python 3.11.17, bubblewrap 0.12.0, UID 1001. Command:
+  `python scripts/linux_oracle.py -- -q --no-header -p no:cacheprovider <all 20 files above>`.
+- Ruff on all 20 changed Python files and `git diff --check`: passed.
+- The first oracle run found two incorrect test assumptions: reusing a revoked grant
+  ID and requiring an agent codec for text-only HTTP dialects. Both were corrected;
+  the complete final run above covers the corrections. No product defect was found.
+- Full Linux receipt: `C:/Users/Jonathan/AppData/Local/Temp/3c-hygiene-linux-final.log`.
+  Gate verification runs after commit against committed HEAD; its receipt is
+  `C:/Users/Jonathan/AppData/Local/Temp/3c-hygiene-gate.log`.

@@ -887,7 +887,6 @@ def _broker_channel(data_root: Path, *, principal: str, command_center: str, gra
     live in the broker's own tree, and this process cannot open either.
     """
     from tinyassets.broker.client import BrokerClient
-    from tinyassets.broker.refresh import prepare
     from tinyassets.broker.supervisor import get_supervisor
 
     supervisor = get_supervisor(Path(data_root))
@@ -896,10 +895,7 @@ def _broker_channel(data_root: Path, *, principal: str, command_center: str, gra
 
     client = BrokerClient(supervisor.socket_path, principal=principal,
                           command_center=command_center, fence=supervisor.fence,
-                          verify_peer=supervisor.verify_broker,
-                          refresh_factory=lambda grant, connection: prepare(
-                              data_root, principal=principal, command_center=command_center,
-                              grant_id=grant, connection_id=connection))
+                          verify_peer=supervisor.verify_broker)
     from tinyassets.agent_loop.model_stream import shared_broker_client
 
     return _BrokerChannel(
@@ -907,9 +903,6 @@ def _broker_channel(data_root: Path, *, principal: str, command_center: str, gra
         stream_factory=lambda: shared_broker_client(
             supervisor.socket_path, principal=principal, command_center=command_center,
             fence=supervisor.fence, verify_peer=supervisor.verify_broker,
-            refresh_factory=lambda grant, connection: prepare(
-                data_root, principal=principal, command_center=command_center,
-                grant_id=grant, connection_id=connection),
         ),
     )
 
@@ -1060,7 +1053,7 @@ class CredentialBlindBroker:
                  on_connect: Callable[[Any], None] | None = None,
                  checkpoint: Callable[[], None] | None = None,
                  deadline_at: float | None = None, inference_usage=None,
-                 operation_id: str | None = None, body=None, refresh_request=None) -> Any:
+                 operation_id: str | None = None, body=None) -> Any:
         """One request on the grant. ``stream=True`` returns a :class:`BrokerStream`
         whose body is read as it arrives (I14); every check before the response
         is identical, and the body is scanned byte by byte instead of whole."""
@@ -1121,7 +1114,8 @@ class CredentialBlindBroker:
             _validate_connection_credential_scheme(
                 resource.connection_type, resource.credential_ref
             )
-            credential = self._resolve_credential(
+            keyless = resource.connection_type == "http" and resource.auth_scheme == "none"
+            credential = "" if keyless else self._resolve_credential(
                 resource.credential_ref, resource.connection_type
             )
         except Exception:
@@ -1129,7 +1123,7 @@ class CredentialBlindBroker:
             raise ProxyRequestError(
                 "outbound request failed: credential unavailable"
             ) from None
-        if not credential:
+        if not credential and not keyless:
             self._record_error(resource, grant_id, verb, "credential unavailable")
             raise ProxyRequestError("outbound request failed: credential unavailable")
         # The request may ASK for a longer budget; whether it gets one is read
@@ -1182,9 +1176,8 @@ class CredentialBlindBroker:
                     if deadline_at is not None and time.monotonic() >= deadline_at:
                         raise OutboundDeadlineExceeded("outbound request exceeded its time budget")
                     return self._oauth_bundle(resource, grant_id, verb, credential,
-                                              rejected=rejected, refresh_request=refresh_request)
-            return self._oauth_bundle(resource, grant_id, verb, credential, rejected=rejected,
-                                      refresh_request=refresh_request)
+                                              rejected=rejected)
+            return self._oauth_bundle(resource, grant_id, verb, credential, rejected=rejected)
 
         if oauth:
             from tinyassets.connection_oauth.tokens import decode
@@ -1264,15 +1257,14 @@ class CredentialBlindBroker:
 
     def _oauth_bundle(
         self, resource: ConnectionResource, grant_id: str, verb: str, credential: str,
-        *, rejected: str = "", refresh_request=None,
+        *, rejected: str = "",
     ) -> Any:
         if self._oauth_tokens is None:
             self._record_error(resource, grant_id, verb, "oauth2 tokens unavailable")
             raise ProxyRequestError("outbound request failed: credential unavailable")
         destination = (resource.credential_ref or "")[len(_HTTP_CREDENTIAL_REF_PREFIX):].strip()
         try:
-            return self._oauth_tokens.current(destination, credential, rejected=rejected,
-                **({"refresh_request": refresh_request} if refresh_request is not None else {}))
+            return self._oauth_tokens.current(destination, credential, rejected=rejected)
         except ConnectionAuthorizationError:
             self._record_error(resource, grant_id, verb, "connection authorization failed")
             raise
@@ -4720,7 +4712,7 @@ def _build_credential_broker_dispatch(
 ) -> Callable[[str, str, object], Any]:
     runtime_root = Path(config["runtime_root"])
     runtime_root.mkdir(parents=True, exist_ok=True)
-    from tinyassets.connection_oauth.tokens import ConnectionTokens
+    from tinyassets.broker.tokens import ConnectionTokens
     from tinyassets.storage.agent_request_usage import resolve_inference_usage
 
     data_root = Path(config.get("data_root", Path(config["ledger_db_path"]).parent))
@@ -4742,10 +4734,6 @@ def _build_credential_broker_dispatch(
         oauth_tokens=ConnectionTokens(
             universe_dir=config["universe_dir"],
             owner_user_id=config["owner_user_id"],
-            oauth_service=config.get("oauth_service"),
-            # The broker process never refreshes from the owner's vault: the
-            # daemon's refresh admission does, and hands the bundle back.
-            allow_local_refresh=False,
         ),
     )
     return broker.dispatch
@@ -5020,6 +5008,11 @@ class ConnectionLedger:
                 # migration must never widen an existing grant.
                 ("access_mode", "TEXT NOT NULL DEFAULT 'exact'"),
                 ("incarnation", "TEXT NOT NULL DEFAULT ''"),
+                ("revocation_error", "TEXT NOT NULL DEFAULT ''"),
+                ("custody_erased", "INTEGER NOT NULL DEFAULT 0"),
+                ("request_ref", "TEXT NOT NULL DEFAULT ''"),
+                ("committed_via", "TEXT NOT NULL DEFAULT ''"),
+                ("revocation_message", "TEXT NOT NULL DEFAULT ''"),
                 # Empty for every existing row: a migration never names a host
                 # the owner did not.
                 ("git_host", "TEXT NOT NULL DEFAULT ''"),

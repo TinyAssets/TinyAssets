@@ -1,3 +1,4 @@
+
 """HTTP removal retains owner/incarnation fencing across real broker IPC."""
 # ruff: noqa: F811 -- imported pytest fixtures
 import socket
@@ -22,6 +23,12 @@ def removal(discovery, monkeypatch):
     from tinyassets.daemon_server import grant_universe_access
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(discovery.root))
+    from tests.support.broker_double import seed_owner_admission
+    from tinyassets.broker.owner_identities import OwnerIdentities
+
+    seed_owner_admission(discovery.root, principal="alice", center="cc-alice")
+    discovery.broker.server._owner_identities = OwnerIdentities(
+        discovery.root / ".broker/owner-identities.db")
     (discovery.root / "cc-alice").mkdir()
     grant_universe_access(discovery.root, universe_id="cc-alice", actor_id="alice",
                           permission="admin")
@@ -53,7 +60,7 @@ def operation(rig, **changes):
 
 
 def test_actual_remove_fences_then_erases_via_ipc(removal, monkeypatch):
-    from tinyassets import credential_vault
+    from tinyassets.broker import vault as credential_vault
     original = credential_vault.forget_credential
 
     def forget(*args, **kwargs):
@@ -86,14 +93,14 @@ def test_stale_incarnation_and_unfenced_erase_refuse(removal):
 
 
 def test_failed_vault_cleanup_remains_fenced_and_retryable(removal, monkeypatch):
-    from tinyassets import credential_vault
+    from tinyassets.broker import vault as credential_vault
     original = credential_vault.forget_credential
 
     def fail(*args, **kwargs):
         raise OSError("fixture custody failure")
 
     monkeypatch.setattr(credential_vault, "forget_credential", fail)
-    with pytest.raises(OSError, match="custody failure"):
+    with pytest.raises(PermissionError):
         removal.remove()
     assert removal.ledger._get_connection_resource(removal.connection).revoked_at is not None
     monkeypatch.setattr(credential_vault, "forget_credential", original)
@@ -101,8 +108,8 @@ def test_failed_vault_cleanup_remains_fenced_and_retryable(removal, monkeypatch)
 
 
 def test_broker_outage_does_not_remove_custody_or_open_ledger(removal, monkeypatch):
-    from tinyassets import credential_vault
     from tinyassets.broker import supervisor
+    from tinyassets.broker import vault as credential_vault
     from tinyassets.storage.outbound_connections import ProxyRequestError
 
     def forbidden(*args, **kwargs):
@@ -216,7 +223,8 @@ def test_lifecycle_status_uses_broker_and_outage_is_not_disconnected(removal, mo
 
 
 def test_rotation_keeps_ledger_policy_and_writes_only_owner_vault(removal, monkeypatch):
-    from tinyassets.api.http_connection import preview_rotate_http, rotate_http
+    from tests.support.connection_door import rotate_http
+    from tinyassets.api.http_connection import preview_rotate_http
     from tinyassets.auth.middleware import identity_context
     from tinyassets.auth.provider import Identity
     from tinyassets.broker import supervisor
@@ -245,7 +253,7 @@ def test_rotation_keeps_ledger_policy_and_writes_only_owner_vault(removal, monke
 
 
 def test_rotation_refuses_revoked_grant_before_vault_write(removal):
-    from tinyassets.api.http_connection import rotate_http
+    from tests.support.connection_door import rotate_http
     from tinyassets.auth.middleware import identity_context
     from tinyassets.auth.provider import Identity
 

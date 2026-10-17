@@ -117,7 +117,6 @@ def _stage_bundle() -> Path:
     # design-note Option 1. Excludes runtime artifacts (.db, __pycache__,
     # logs) that would bloat the bundle without adding value.
     file_count = _copy_tree(TINYASSETS_SRC, STAGE_ROOT / "tinyassets")
-    _copy_tree(REPO_ROOT / "models", STAGE_ROOT / "models")
     print(f"Staged tinyassets/ package: {file_count} files")
 
     return STAGE_ROOT

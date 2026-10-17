@@ -6,16 +6,20 @@ import httpx
 import pytest
 from starlette.applications import Starlette
 
+from tests.support.model_connect import rig  # noqa: F401 - shared real-store fixture
 from tests.test_hosted_model_auth import CHALLENGE, VERIFIER, pending
-from tests.test_model_bootstrap import rig  # noqa: F401 - shared real-store fixture
 from tinyassets import onboarding
+from tinyassets.broker import acquisition
 from tinyassets.onboarding import hosted_model_auth as hosted
 
 pytestmark = pytest.mark.usefixtures("rig")
 
 
 @pytest.fixture(autouse=True)
-def ingress(monkeypatch):
+def ingress(monkeypatch, rig):  # noqa: F811 - shared fixture
+    from tests.support.broker_double import seed_owner_admission
+
+    seed_owner_admission(rig, principal="owner", center="u-owner")
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     monkeypatch.setattr(onboarding, "app_config", lambda: {"resource": "https://tinyassets.io/mcp"})
     monkeypatch.setattr(onboarding, "_read_home", lambda identity, **kw: "u-owner")
@@ -43,19 +47,19 @@ def test_begin_exchange_and_resume_real_store_composition(monkeypatch):
     async def exchange(**kwargs):
         calls.append(kwargs)
         return "synthetic-oauth-key"
-    monkeypatch.setattr(hosted, "exchange_key", exchange)
+    monkeypatch.setattr(acquisition, "exchange_key", exchange)
     payload = {"flow": first.json()["flow"], "code": "synthetic-code", "code_verifier": VERIFIER}
     result = post("exchange", payload)
     assert result.status_code == 200, result.text
-    assert result.json()["status"] == "confirmation_required"
+    assert result.json()["status"] == "provisioned"
     assert "synthetic-oauth-key" not in result.text
     assert len(calls) == 1
     replay = post("exchange", payload)
-    assert replay.status_code == 409
+    assert replay.status_code == 404
     assert len(calls) == 1
     resume = post("resume", {"preset_id": "openrouter_user_models_v1"})
     assert resume.status_code == 200, resume.text
-    assert resume.json()["request_id"] == result.json()["request_id"]
+    assert resume.json()["grant_id"] == result.json()["grant_id"]
 
 
 @pytest.mark.parametrize("origin", ["", "http://tinyassets.io", "https://elsewhere.invalid",
@@ -74,13 +78,13 @@ def test_foreign_home_cannot_redeem_or_start(monkeypatch):
     first = begin()
     async def forbidden(**kwargs):
         raise AssertionError("must not contact provider")
-    monkeypatch.setattr(hosted, "exchange_key", forbidden)
+    monkeypatch.setattr(acquisition, "exchange_key", forbidden)
     stranger = Identity(user_id="stranger", username="stranger", capabilities=["write"])
     with identity_context(stranger):
         result = post("exchange", {"flow": first.json()["flow"], "code": "code",
                                    "code_verifier": VERIFIER})
-        assert result.status_code == 409
-        assert begin().status_code == 409
+        assert result.status_code == 404
+        assert begin().status_code == 404
     assert pending(first.json()["flow"])
 
 
@@ -107,40 +111,28 @@ def test_bad_challenge_does_not_bootstrap_a_home(monkeypatch):
 def test_preset_change_during_exchange_cannot_deposit(monkeypatch):
     from dataclasses import replace
 
-    from tinyassets.onboarding import model_bootstrap
-
     first = begin()
     preset = hosted.load_preset("openrouter_user_models_v1")
     async def exchange(**kwargs):
         monkeypatch.setattr(hosted, "load_preset", lambda _: replace(preset, digest="changed"))
         return "synthetic-key"
-    def forbidden(**kwargs):
-        raise AssertionError("must not deposit against changed preset")
-    monkeypatch.setattr(hosted, "exchange_key", exchange)
-    monkeypatch.setattr(model_bootstrap, "complete_bootstrap", forbidden)
+    monkeypatch.setattr(acquisition, "exchange_key", exchange)
     response = post("exchange", {"flow": first.json()["flow"], "code": "synthetic-code",
                                  "code_verifier": VERIFIER})
-    assert response.status_code == 409
+    assert response.status_code == 502
     assert response.json()["error"] == "model_connection_preset_changed"
 
 
-def test_new_owner_begin_provisions_own_empty_home_without_llm(request, monkeypatch):
+def test_new_owner_without_admission_cannot_create_a_home(request):
     from tinyassets.auth.middleware import identity_context
     from tinyassets.auth.provider import Identity
-    from tinyassets.daemon_server import get_founder_home
 
     base = request.getfixturevalue("rig")
-    monkeypatch.setattr(onboarding, "_read_home",
-                        lambda identity, **kw: get_founder_home(base, identity.user_id) or "")
+    before = set(base.iterdir())
     new_owner = Identity(user_id="brand-new-owner", username="new-owner", capabilities=["write"])
     with identity_context(new_owner):
-        assert not get_founder_home(base, new_owner.user_id)
-        response = begin()
-        assert response.status_code == 200, response.text
-        home = get_founder_home(base, new_owner.user_id)
-        assert home and home != "u-owner"
-        record = pending(response.json()["flow"])
-        assert record["owner_user_id"] == new_owner.user_id and record["bound_home_id"] == home
+        assert begin().status_code == 404
+    assert set(base.iterdir()) == before
 
 
 def test_anonymous_cannot_start_or_resume_or_exchange():
@@ -175,21 +167,18 @@ def test_callback_is_nonmutating_shell_with_private_headers(monkeypatch):
     assert not pending()
 
 
-def test_deletion_between_ingress_scope_and_durable_begin_cannot_recreate_metadata(monkeypatch):
-    from tinyassets.account_deletion import delete_account
+def test_retirement_between_ingress_and_durable_begin_cannot_create_flow(monkeypatch):
+    from tinyassets.broker.owner_identities import OwnerIdentities
     from tinyassets.storage import data_dir
 
     original = hosted.begin_flow
 
     def delayed_begin(**kwargs):
-        receipt = delete_account(data_dir(), founder_sub=kwargs["owner"],
-                                 cancel_billing=lambda _: "cancelled",
-                                 delete_identity=lambda _: "deleted")
-        assert receipt["unfinished_phases"] == []
+        identities = OwnerIdentities(data_dir() / ".broker/owner-identities.db")
+        identities.admission("retire", kwargs["owner"], kwargs["universe_id"])
         return original(**kwargs)
 
     monkeypatch.setattr(hosted, "begin_flow", delayed_begin)
     response = begin()
-    assert response.status_code == 409
-    assert response.json()["error"] == "current_home_changed"
+    assert response.status_code == 404
     assert not (data_dir() / ".hosted-model-auth.db").exists()

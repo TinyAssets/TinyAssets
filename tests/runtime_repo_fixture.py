@@ -12,7 +12,7 @@ from pathlib import Path
 
 DOCKERFILE = """\
 FROM mirror.gcr.io/library/python:3.11-slim AS builder
-COPY scripts/codex_cli_smoke.py /tmp/codex_cli_smoke.py
+COPY scripts/image_smoke.py /tmp/image_smoke.py
 WORKDIR /build
 COPY pyproject.toml ./
 COPY tinyassets/ ./tinyassets/
@@ -73,7 +73,7 @@ BASE_FILES: dict[str, str] = {
     "pyproject.toml": "[project]\nname = 'x'\n",
     "tinyassets/__init__.py": "",
     "tinyassets/app.py": "VERSION = 1\n",
-    "scripts/codex_cli_smoke.py": "print('smoke')\n",
+    "scripts/image_smoke.py": "print('smoke')\n",
     "scripts/_canary_common.py": "TOKEN = 1\n",
     "scripts/watchdog.py": "WATCH = 1\n",
     "scripts/unrelated_tool.py": "TOOL = 1\n",

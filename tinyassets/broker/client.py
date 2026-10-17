@@ -86,15 +86,13 @@ class BrokerClient:
 
     def __init__(self, path: Path, *, principal: str, command_center: str,
                  fence: Callable[[], tuple[int, str]], timeout: float = 660.0,
-                 verify_peer: Callable[[socket.socket], None] | None = None,
-                 refresh_factory=None) -> None:
+                 verify_peer: Callable[[socket.socket], None] | None = None) -> None:
         self._path = Path(path)
         self._principal = principal
         self._command_center = command_center
         self._fence = fence
         self._timeout = timeout
         self._verify_peer = verify_peer
-        self._refresh_factory = refresh_factory
         self._lock = threading.Lock()
 
     @staticmethod
@@ -170,15 +168,17 @@ class BrokerClient:
             raise ProxyRequestError("invalid credential broker query response")
         return answer["result"]
 
-    def connection_catalog(self, *, cursor: str, limit: int) -> dict[str, Any]:
+    def connection_catalog(self, *, cursor: str, limit: int,
+                           include_revoked: bool = False) -> dict[str, Any]:
         from tinyassets.broker.catalog import validate
         from tinyassets.storage.outbound_connections import ProxyRequestError
 
-        validate(cursor, limit)
+        validate(cursor, limit, include_revoked)
         generation, token = self._fence()
         wire = {"op": "CONNECTION_CATALOG", "principal": self._principal,
                 "command_center": self._command_center, "generation": generation,
-                "token": token, "cursor": cursor, "limit": limit}
+                "token": token, "cursor": cursor, "limit": limit,
+                "include_revoked": include_revoked}
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
             try:
@@ -380,8 +380,7 @@ class BrokerClient:
                 policy_grant_ref: str | None = None,
                 policy_agent: str | None = None,
                 policy_task_id: str | None = None) -> dict[str, Any]:
-        refresh = (self._refresh_factory(grant_id, connection_id)
-                   if self._refresh_factory is not None and not self._owner_mode() else None)
+
         generation, token = self._fence()
         open_doc = {
             "op": "OPEN", "op_id": op_id, "generation": generation, "token": token,
@@ -398,8 +397,6 @@ class BrokerClient:
                             policy_task_id=policy_task_id)
         if idle_s is not None:
             open_doc["idle_s"] = idle_s
-        if refresh is not None:
-            open_doc["refresh"] = True
         from tinyassets.storage.outbound_connections import (
             AmbiguousProxyOutcome,
             ProxyRequestError,
@@ -415,7 +412,7 @@ class BrokerClient:
             if self._verify_peer is not None and not self._owner_mode():
                 self._verify_peer(sock)  # before sending any owner-channel factor
             try:
-                head, body, end = self._exchange(sock, open_doc, refresh=refresh)
+                head, body, end = self._exchange(sock, open_doc)
             except (OSError, rf.FrameError):
                 # Transport only (typed ENDs are raised below, outside this
                 # try): the request may have reached the broker and left it.
@@ -432,14 +429,13 @@ class BrokerClient:
         }
 
     @staticmethod
-    def _exchange(sock: socket.socket, open_doc: dict[str, Any], *, refresh=None
+    def _exchange(sock: socket.socket, open_doc: dict[str, Any]
                   ) -> tuple[dict[str, Any] | None, bytearray, dict[str, Any]]:
         """The stream to its END, raising only transport errors."""
 
         sock.sendall(rf.control(_STREAM_ID, open_doc))
         head: dict[str, Any] | None = None
         body = bytearray()
-        refresh_sequence = 0
         while True:
             frame = rf.read_frame_blocking(sock)
             if frame is None:
@@ -452,21 +448,7 @@ class BrokerClient:
                                                      "n": len(frame.payload)}))
                 continue
             doc = frame.control()
-            if doc["op"] == "REFRESH":
-                if (type(doc.get("sequence")) is not int
-                        or doc["sequence"] != refresh_sequence + 1):
-                    raise rf.FrameError("unexpected refresh sequence")
-                refresh_sequence += 1
-                ok = False
-                try:
-                    if refresh is not None:
-                        refresh(doc)
-                        ok = True
-                except Exception:  # noqa: BLE001 - never send credential/endpoint exception text
-                    pass
-                sock.sendall(rf.control(_STREAM_ID, {
-                    "op": "REFRESH_ACK", "sequence": refresh_sequence, "ok": ok}))
-            elif doc["op"] == "HEAD":
+            if doc["op"] == "HEAD":
                 head = doc
             elif doc["op"] == "END":
                 return head, body, doc

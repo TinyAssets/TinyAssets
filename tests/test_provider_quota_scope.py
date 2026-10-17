@@ -57,8 +57,8 @@ def test_daily_details_expiry_and_deferred_cooling_are_owner_scoped():
         assert quota.daily_detail("claude-code", owner="a") == "A daily cap"
         assert quota.daily_detail("claude-code", owner="b") == ""
         assert quota.cooldown_remaining_dict(["claude-code"], owner="a") == {"claude-code": 100}
-        assert quota.all_api_providers_in_cooldown(["claude-code"], owner="b")
-        assert not quota.all_api_providers_in_cooldown(["claude-code"], owner="c")
+        assert not quota.available("claude-code", owner="b")
+        assert quota.available("claude-code", owner="c")
     with patch("tinyassets.providers.quota.time.monotonic", return_value=111):
         assert quota.available("claude-code", owner="b")
         assert not quota.available("claude-code", owner="a")

@@ -104,32 +104,8 @@ def test_auth_notice_does_not_invent_expiry_or_guarantee_reconnect():
         assert unsupported not in notice
 
 
-@pytest.mark.parametrize("skip_class", ["unknown", "timed_out"])
-def test_native_auth_clue_requires_generic_provider_error(skip_class):
-    from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
-
-    exc = _exhausted(None)
-    exc.attempts = [ProviderAttemptDiagnostic(
-        "fixture", "failed", skip_class,
-        "fixture-native terminal result was not success "
-        "(subtype=success, is_error=true, last_assistant_error=authentication_failed)",
-    )]
-    assert "sign-in" not in _served_failure_notice(exc)
 
 
-def test_native_auth_clue_never_uses_an_earlier_failed_attempt():
-    from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
-
-    exc = _exhausted(None)
-    exc.attempts = [
-        ProviderAttemptDiagnostic(
-            "first", "failed", "provider_error",
-            "fixture-native terminal result was not success "
-            "(subtype=success, is_error=true, last_assistant_error=authentication_failed)",
-        ),
-        ProviderAttemptDiagnostic("second", "failed", "provider_error", "different failure"),
-    ]
-    assert "sign-in" not in _served_failure_notice(exc)
 
 
 def test_malformed_attempts_do_not_break_the_unknown_failure_notice():

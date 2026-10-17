@@ -998,12 +998,6 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
             "operator surface before running; approval is not exposed by the "
             "advertised handles.",
         )
-    if "exit code" in msg or "subprocess failure" in msg or "api likely unavailable" in msg:
-        return (
-            "provider_subprocess_failed",
-            "Provider CLI process failed; check that claude/codex binary is"
-            " installed and reachable.",
-        )
     if "concurrent" in msg or "conflict" in msg or "modified" in msg or "stale" in msg:
         return (
             "state_mutation_conflict",
@@ -1046,7 +1040,7 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
             "provider_unavailable",
             _no_provider_advice(),
         )
-    if "call failed" in msg or "groq" in msg or "gemini" in msg or "grok" in msg:
+    if "call failed" in msg:
         return (
             "provider_error",
             "Provider returned an unexpected error; check provider logs"
@@ -2135,9 +2129,6 @@ def _action_resume_run(kwargs: dict[str, Any]) -> str:
         "output": outcome.output,
         "error": outcome.error,
     })
-
-
-
 
 
 def _action_query_runs(kwargs: dict[str, Any]) -> str:

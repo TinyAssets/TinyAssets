@@ -225,7 +225,10 @@ def universes(tmp_path, monkeypatch):
         (base / uid).mkdir(parents=True)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED", "1")
+    from tests.support.broker_double import seed_owner_admission
+
     for owner, uid in ((OWNER, UID), (OTHER, OTHER_UID)):
+        seed_owner_admission(base, principal=owner, center=uid)
         grant_universe_access(base, universe_id=uid, actor_id=owner, permission="admin",
                               granted_by=owner)
         set_founder_home(base, founder_sub=owner, universe_id=uid, platform_generated=True)
@@ -260,6 +263,24 @@ def _ask(action=None, fields=None, uid=UID):
 
 
 def _post(operation, data, *, home=UID, cookie=None):
+    if operation == "oauth_begin" and "request_id" in data:
+        data = {**data}
+        data["request_ref"] = data.pop("request_id")
+        data["center"] = home
+        from tinyassets.api.helpers import _universe_dir
+        from tinyassets.storage.pending_requests import get_request
+
+        row = get_request(_universe_dir(home), data["request_ref"])
+        action = row["action"] if row else TASKS_ASK
+        offer = action.get("oauth") or {}
+        data["definition"] = {"destination": action["destination"],
+            "endpoints": action.get("endpoints") or [
+                {"host": action["host"], "path_template": action["path_template"],
+                 "methods": action["methods"]}],
+            "oauth": {k: v for k, v in offer.items()
+                      if k in {"scopes", "client_id", "use"}}}
+        if offer.get("registration_method") == "existing" and offer.get("client_id"):
+            data["definition"]["oauth"]["client_id"] = offer["client_id"]
     from tests.owner_answer import session_cookie
     from tinyassets import onboarding
 
@@ -268,7 +289,7 @@ def _post(operation, data, *, home=UID, cookie=None):
             app=Starlette(routes=onboarding.onboarding_routes())),
             base_url="https://tinyassets.io",
         ) as client:
-            proof = (session_cookie() if operation == "oauth_begin" else "")
+            proof = (session_cookie() if operation in {"oauth_begin", "source_sign_in"} else "")
             return await client.post("/app/model-connect/" + operation, json=data,
                                      headers={"Origin": "https://tinyassets.io",
                                               "Cookie": proof if cookie is None else cookie})
@@ -306,7 +327,8 @@ def app(monkeypatch, universes):
 def _sign_in(provider, request_id, *, owner=OWNER):
     """Tap Sign in, approve at the provider, come back: the whole owner gesture."""
     with _as(owner):
-        begun = _post("oauth_begin", {"request_id": request_id, "code_challenge": CHALLENGE})
+        begun = _post("oauth_begin", {"request_id": request_id, "code_challenge": CHALLENGE},
+                      home=UID if owner == OWNER else OTHER_UID)
         assert begun.status_code == 200, begun.text
         back = urlsplit(provider.authorize(begun.json()["authorize_url"]))
         # The provider returns the browser to the fixed callback: a public shell.
@@ -358,7 +380,7 @@ def _vault_bundle(base, uid=UID):
 def _connected(provider, app, tmp_path):
     with _as(OWNER):
         asked = _ask()
-    assert asked.get("primary") == "sign_in", asked
+    assert asked.get("primary") == "connect", asked
     _begun, _back, done = _sign_in(provider, asked["request_id"])
     assert done.status_code == 200, done.text
     from tinyassets.api.http_connection import _ids
@@ -451,36 +473,33 @@ def test_discovery_via_the_connection_host_still_works_with_a_client_id(provider
 # --------------------------------------------------------------------------- #
 
 
-def test_oauth_is_the_primary_action_when_the_provider_offers_it(provider, universes):
+def test_oauth_discovery_begins_at_the_door(provider, app):
     with _as(OWNER):
-        asked = _ask()
-        assert asked["primary"] == "sign_in"
-        assert asked["action"]["oauth"]["authorize_url"] == f"https://{AUTH}/authorize"
-        assert "Sign in at auth.tasklark.io" in asked["grant_sentence"]
-        # Every host the sign-in talks to is shown, not only where the owner clicks.
-        assert "Tokens come from tokens.tasklark.io" in asked["grant_sentence"]
-        assert "paste a key instead" in asked["grant_sentence"]
-        # With sign-in on offer, the ask needs no key field at all.
-        bare = _ask(fields=[], action={**TASKS_ASK, "destination": "tasklark-2"})
-        assert bare["primary"] == "sign_in" and bare["fields"] == []
-        # And that ask cannot be "accepted" with nothing: it is completed by signing in.
+        asked = _ask(fields=[])
+        assert asked["primary"] == "connect" and asked["fields"] == []
+        assert "authorize_url" not in asked["action"]["oauth"]
         from tests.owner_answer import answer_request
 
-        refused = answer_request(universe_id=UID, payload=json.dumps(
-            {"request_id": bare["request_id"], "values": {}}))
-        assert refused["error"] == "request_invalid" and "signing in" in refused["detail"]
+        linked = answer_request(universe_id=UID, payload={
+            "request_id": asked["request_id"], "values": {}})
+        assert linked["status"] == "connect_required"
+        assert "request=" + asked["request_id"] in linked["connect_url"]
+        begun = _post("oauth_begin", {"request_id": asked["request_id"],
+                                      "code_challenge": CHALLENGE})
+    assert begun.status_code == 200, begun.text
+    assert begun.json()["authorize_url"].startswith(f"https://{AUTH}/authorize")
 
 
-def test_key_paste_when_the_provider_offers_no_oauth(provider, universes):
+def test_key_paste_when_the_provider_offers_no_oauth(provider, app):
     provider.advertise = False
     with _as(OWNER):
-        asked = _ask()
-        assert "oauth" not in asked["action"] and "primary" not in asked
-        assert asked["oauth_unavailable"] == "no_authorization_server_metadata"
-        # Without an offer, a key field is required: nothing to sign in with.
-        bare = _ask(fields=[], action={**TASKS_ASK, "destination": "tasklark-2"})
-        assert bare["error"] == "request_invalid"
-        assert "no sign-in is offered" in bare["detail"]
+        asked = _ask(fields=[])
+        assert asked["primary"] == "connect"
+        assert "oauth_unavailable" not in asked
+        begun = _post("oauth_begin", {"request_id": asked["request_id"],
+                                      "code_challenge": CHALLENGE})
+    assert begun.status_code != 200
+    assert begun.json()["error"] == "no_authorization_server_metadata"
 
 
 def test_an_agent_cannot_forge_a_discovered_offer(universes):
@@ -517,20 +536,8 @@ def test_sign_in_round_trip_through_the_real_callback(provider, app, tmp_path):
 
     assert done.status_code == 200, done.text
     body = done.json()
-    assert body["status"] == "answered" and body["signed_in"] is True
-    assert body["server_continuation"] is True
-    from contextlib import closing
-
-    from tinyassets.storage.pending_requests import _db
-
-    with closing(_db(app / UID)) as conn:
-        delivery, = conn.execute(
-            "SELECT origin_json,outcome_json FROM request_answer_deliveries WHERE request_id=?",
-            (asked["request_id"],),
-        ).fetchall()
-    assert json.loads(delivery[0])["owner"] == OWNER
-    assert json.loads(delivery[0])["agent"] == asked["agent"]
-    assert json.loads(delivery[1])["status"] == "answered"
+    assert body["status"] == "provisioned"
+    assert body["request_ref"] == asked["request_id"]
     for token in list(provider.access) + list(provider.refresh_live):
         assert token not in done.text  # no token ever crosses back to the app
 
@@ -541,6 +548,10 @@ def test_sign_in_round_trip_through_the_real_callback(provider, app, tmp_path):
     ledger = ConnectionLedger(app / ".broker" / "outbound.db", data_root=app)
     resource = ledger._get_connection_resource(connection_id)
     assert resource.auth_scheme == "oauth2"
+    grant = ledger.require_active_grant(grant_id)
+    assert grant.owner_user_id == OWNER
+    assert grant.universe_id == UID
+    assert grant.connection_id == connection_id
     bundle = _vault_bundle(app)
     assert bundle.token_url == f"https://{TOKEN}/token"
     assert bundle.refresh_token in provider.refresh_live
@@ -579,7 +590,7 @@ def _age(base, *, expires_at):
     """Move the stored access token's expiry (the vault's own atomic write)."""
     from dataclasses import replace
 
-    from tinyassets.connection_oauth.tokens import ConnectionTokens
+    from tinyassets.broker.tokens import ConnectionTokens
 
     keeper = ConnectionTokens(universe_dir=base / UID, owner_user_id=OWNER)
     keeper._write("tasklark", replace(_vault_bundle(base), expires_at=expires_at))
@@ -656,7 +667,8 @@ def test_a_failed_refresh_is_a_connection_auth_failure_record(provider, app, tmp
         _call(dispatch, grant_id)
     failure = caught.value.failure
     assert failure["stage"] == "connection" and failure["class"] == "auth"
-    assert failure["provider_detail"] == "daemon refresh failed"
+    assert ("invalid_grant" in failure["provider_detail"]
+            or "refresh token" in failure["provider_detail"])
     assert provider.api_calls == []  # nothing was sent on a dead authorization
 
 
@@ -666,7 +678,7 @@ def test_a_failed_refresh_is_a_connection_auth_failure_record(provider, app, tmp
 
 
 def test_oauth2_cannot_be_pasted_and_a_bundle_is_never_sent_as_a_key(universes):
-    from tinyassets.api.http_connection import connect_http
+    from tests.support.connection_door import connect_http
     from tinyassets.connection_oauth.tokens import TokenBundle, encode
     from tinyassets.storage.outbound_connections import (
         SsrfValidationError,
@@ -768,13 +780,14 @@ const sessionStorage={getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),
 const window={location:{pathname:'/app',search:'',assign:u=>navigations.push(u)}};
 const history={replaceState:(a,b,u)=>{window.location.pathname=u;window.location.search='';}};
 const NATIVE=false,token=()=>'t',authHeaders=()=>({}),ensureFreshToken=async()=>{};
+const MCP={_loginEpoch:0,_assertLogin:epoch=>{if(epoch!==0)throw Error('Account changed');}};
 const randToken=()=> 'v'.repeat(43),challengeFor=async()=> 'c'.repeat(43);
 const turns=[];
 const appendMessage=()=>{},refreshRail=async()=>{},frameTitle=r=>r.title;
 const sendTurn=(...args)=>turns.push(args);
 let historyLoaded=true;
 const fetch=async(url,o)=>{posts.push({url,body:JSON.parse(o.body)});
- return {ok:true,json:async()=>({flow:'f'.repeat(43),expires_in:600,
+ return {ok:true,json:async()=>({flow:'f'.repeat(43),center:'center-a',expires_in:600,
   authorize_url:'https://auth.tasklark.io/authorize?state='+'f'.repeat(43)})};};
 const setTimeout=()=>{};
 __SOURCE__
@@ -801,6 +814,7 @@ function body(fields){const box=new El('div');
 def test_the_rail_puts_sign_in_first_and_folds_the_key_under_it():
     out = _run_rail("""
 const req={request_id:'r1',title:'Connect tasklark',action:{type:'connect',
+  destination:'tasklark',host:'api.tasklark.io',path_template:'/tasks',methods:['POST'],
   oauth:{authorize_url:'https://auth.tasklark.io/authorize'}}};
 const b=body(['textarea']);ConnectOAuth.decorate(req,b.box,b.row,b.note);
 const first=b.box.children[0];
@@ -813,10 +827,13 @@ console.log(JSON.stringify({first:first.textContent,folded:b.box.children[1].tag
  saved:JSON.parse(storage.get('ta_connect_oauth')),plainFirst:plain.box.children[0].tag,
  onlyAcceptHidden:only.acc.hidden,keyAcceptHidden:b.acc.hidden}));
 """)
-    assert out["first"] == "Sign in with auth.tasklark.io"
+    assert out["first"] == "Sign in with the provider"
     assert out["folded"] == "details" and out["foldedHoldsKey"] is True
     assert out["posts"] == [{"url": "/app/model-connect/oauth_begin",
-                             "body": {"request_id": "r1", "code_challenge": "c" * 43}}]
+                             "body": {"request_ref": "r1", "code_challenge": "c" * 43,
+                                      "definition": {"destination": "tasklark", "endpoints": [
+                                          {"host": "api.tasklark.io", "path_template": "/tasks",
+                                           "methods": ["POST"]}], "oauth": {"scopes": []}}}}]
     assert out["navigations"][0].startswith("https://auth.tasklark.io/authorize")
     assert out["saved"]["flow"] == "f" * 43 and out["saved"]["verifier"] == "v" * 43
     assert out["plainFirst"] == "label"  # no offer: the key ask is untouched
@@ -824,7 +841,7 @@ console.log(JSON.stringify({first:first.textContent,folded:b.box.children[1].tag
 
 
 @pytest.mark.parametrize("origin,source,turn_count", [("platform", True, 0), ("agent", False, 0)])
-def test_rail_sign_in_uses_server_provenance_for_relay(origin, source, turn_count):
+def test_rail_sign_in_keeps_center_and_does_not_relay_a_chat(origin, source, turn_count):
     out = _run_rail("""
 const req={request_id:'r1',title:'Connect source',origin:__ORIGIN__,action:{type:'connect',
   oauth:{authorize_url:'https://auth.tasklark.io/authorize'}}};
@@ -834,19 +851,21 @@ const saved=JSON.parse(storage.get('ta_connect_oauth'));
 window.location.pathname='/app/model-callback/connect';
 window.location.search='?code=abc&state='+saved.flow;
 ConnectOAuth.pending=ConnectOAuth.takeCallback();
-ConnectOAuth.post=async()=>({status:'answered',signed_in:true,server_continuation:true});
+let exchange;
+ConnectOAuth.post=async(op,payload)=>{exchange=payload;return {status:'provisioned'};};
 await ConnectOAuth.finish();
-console.log(JSON.stringify({saved,turns}));
+console.log(JSON.stringify({saved,turns,exchange}));
 """.replace("__ORIGIN__", json.dumps(origin)))
     assert out["saved"]["source"] is source
-    # Both kinds use server-bound delivery; the selected chat is never a relay.
+    assert out["saved"]["center"] == out["exchange"]["center"] == "center-a"
+    # The box completes its opaque reference; browser chat is never a relay.
     assert len(out["turns"]) == turn_count
 
 
 def test_the_callback_is_taken_before_account_sign_in_and_only_once():
     out = _run_rail("""
 storage.set('ta_connect_oauth',JSON.stringify({verifier:'v'.repeat(43),flow:'f'.repeat(43),
-  title:'Connect tasklark',expires:Date.now()+60000}));
+  title:'Connect tasklark',center:'center-a',expires:Date.now()+60000}));
 window.location.pathname='/app/model-callback/connect';
 window.location.search='?code=abc&state='+'f'.repeat(43);
 const taken=ConnectOAuth.takeCallback();
@@ -855,7 +874,7 @@ console.log(JSON.stringify({taken,again,path:window.location.pathname,search:win
   left:storage.has('ta_connect_oauth')}));
 """)
     assert out["taken"] == {"flow": "f" * 43, "code": "abc", "code_verifier": "v" * 43,
-                            "title": "Connect tasklark"}
+                            "title": "Connect tasklark", "center": "center-a"}
     assert out["again"] is None  # the URL is stripped; nothing is left to redeem
     assert out["path"] == "/app" and out["search"] == "" and out["left"] is False
 
@@ -874,33 +893,11 @@ def test_no_vendor_names_in_the_oauth_code():
 # --------------------------------------------------------------------------- #
 
 
-def test_the_stored_token_url_is_pinned_to_the_discovered_one(provider, app):
-    from tinyassets.api.pending_requests import answer_connect_with_token
-    from tinyassets.connection_oauth.tokens import TokenBundle, encode
-
-    with _as(OWNER):
-        asked = _ask()
-        elsewhere = encode(TokenBundle(
-            access_token="at-x", refresh_token="rt-x", client_id="c",
-            token_url="https://collector.example.net/token"))
-        refused = answer_connect_with_token(universe_id=UID, request_id=asked["request_id"],
-                                            token=elsewhere, owner_session={"test": "owner"})
-    assert refused["error"] == "request_invalid"
-    assert "token endpoint" in refused["detail"]
-    from tinyassets.credential_vault import load_credential_vault
-
-    assert not [r for r in load_credential_vault(app / UID) if r.get("destination") == "tasklark"]
-
-    _begun, _back, done = _sign_in(provider, asked["request_id"])
-    assert done.status_code == 200, done.text
-    assert _vault_bundle(app).token_url == asked["action"]["oauth"]["token_url"]
-
-
 def test_rfc9207_issuer_is_checked_when_the_server_supports_it(provider, app):
     provider.iss = True
     with _as(OWNER):
         asked = _ask()
-    assert asked["action"]["oauth"]["iss_parameter_supported"] is True
+    assert "iss_parameter_supported" not in asked["action"]["oauth"]
 
     def attempt(**extra):
         with _as(OWNER):
@@ -929,24 +926,24 @@ def test_lock_contention_during_refresh_never_loses_the_rotated_token(
     take that lock would lose the rotated token; the lock is taken first."""
     from contextlib import contextmanager
 
-    from tinyassets.provider_assignment import ProviderAssignmentAdmission
+    from tinyassets.broker import vault
 
     _done, grant_id = _connected(provider, app, tmp_path)
     before = _vault_bundle(app)
     _age(app, expires_at=time.time() + 5)
 
-    real = ProviderAssignmentAdmission._file_lock
+    real = vault.vault_lock
     busy = {"left": 3}
 
     @contextmanager
-    def contended(universe_dir, *, exclusive):
-        if exclusive and busy["left"] > 0:
+    def contended(universe_dir):
+        if busy["left"] > 0:
             busy["left"] -= 1
             raise TimeoutError("provider assignment admission lock remained unavailable")
-        with real(universe_dir, exclusive=exclusive):
+        with real(universe_dir):
             yield
 
-    monkeypatch.setattr(ProviderAssignmentAdmission, "_file_lock", staticmethod(contended))
+    monkeypatch.setattr(vault, "vault_lock", contended)
     dispatch = _broker(app, UID, OWNER, grant_id, tmp_path / "rt")
     assert _call(dispatch, grant_id)["status"] == 200
     after = _vault_bundle(app)

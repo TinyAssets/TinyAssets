@@ -169,17 +169,12 @@ def test_exception_to_code_and_fixed_notice_never_copy_diagnostics():
         assert "did not run" not in notice and "could not run" not in notice
     exc.failure_class = [SECRET]  # malformed diagnostics must not break failure storage
     assert us._served_failure_code(exc) == "unknown"
-    exc.attempts = [
-        SimpleNamespace(
-            status="failed",
-            failure_class=None,
-            skip_class="provider_error",
-            detail="Claude terminal result was not success "
-            "(subtype=success, is_error=true, last_assistant_error=authentication_failed)",
-        )
-    ]
-    assert us._served_failure_code(exc) == "native_auth_clue"
-    assert "not confirmed" in failure_notice("native_auth_clue")
+    # HTTP attempts carry a closed failure class; raw provider text is not a code.
+    exc.attempts = [SimpleNamespace(status="failed", failure_class="provider_rate_limited",
+                                    detail=SECRET)]
+    assert us._served_failure_code(exc) == "provider_rate_limited"
+    exc.attempts[0].failure_class = SECRET
+    assert us._served_failure_code(exc) == "unknown"
 
 
 def test_admitted_failure_is_available_to_the_next_turn_only_for_same_owner(tmp_path, monkeypatch):

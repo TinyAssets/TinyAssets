@@ -20,8 +20,6 @@ logger = logging.getLogger("universe_server.market")
 ENV_CAPABILITIES_VAR = "UNIVERSE_SERVER_CAPABILITIES"
 
 
-
-
 def _current_actor_grants() -> tuple[str, ...]:
     raw = os.environ.get(ENV_CAPABILITIES_VAR, "")
     return tuple(part for part in raw.replace(",", " ").split() if part)
@@ -176,7 +174,7 @@ def classify_patch_request(
     return {
         "access": {
             "claimable_by": ["free_daemon", "paid_daemon"],
-            "code_writer_gate": "claude_or_codex",
+            "code_writer_gate": "connected_model",
             "checker_gate": "opposite_family_checker",
         },
         "meaning": meaning,

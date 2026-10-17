@@ -9,7 +9,6 @@ from tinyassets.commons_catalog import publish_definition
 from tinyassets.onboarding.public_run import (
     handle_public_run,
     preview_path,
-    save_preview,
     share_url,
 )
 
@@ -27,33 +26,19 @@ def request(path, ident):
                     "path_params": {"listing": ident}})
 
 
-def test_preview_replacement_preserves_exact_bytes(tmp_path, monkeypatch):
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    save_preview(tmp_path, "published", b"old-preview")
-    save_preview(tmp_path, "published", b"\x89PNG\r\n\x00new")
-    assert preview_path(tmp_path, "published").read_bytes() == b"\x89PNG\r\n\x00new"
-
-
-def test_preview_write_refuses_linked_cache_directory(tmp_path, monkeypatch):
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    other_home = tmp_path / "other-home"
-    other_home.mkdir()
-    victim = other_home / preview_path(tmp_path, "published").name
-    victim.write_bytes(b"other-owner-data")
-    (tmp_path / "published_previews").symlink_to(other_home, target_is_directory=True)
-    with pytest.raises(OSError):
-        save_preview(tmp_path, "published", b"public-preview")
-    assert victim.read_bytes() == b"other-owner-data"
-    assert list(other_home.iterdir()) == [victim]
+def seed_preview(base, ident, content):
+    path = preview_path(base, ident)
+    path.parent.mkdir(exist_ok=True)
+    path.write_bytes(content)
 
 
 def test_public_listing_is_escaped_and_picture_is_only_public_output(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    listing = publish_definition(tmp_path, author_id="alice",
+    listing = publish_definition(tmp_path / ".published", author_id="alice",
                                  payload=_definition("<script>bad</script>"))
     ident = listing["agent_definition_id"]
-    save_preview(tmp_path, ident, b"public-picture")
+    seed_preview(tmp_path / ".published", ident, b"public-picture")
     page = asyncio.run(handle_public_run(request("/app/run/" + ident, ident)))
     assert page.status_code == 200
     text = page.body.decode()
@@ -85,14 +70,14 @@ def test_only_exact_public_listing_paths_bypass_challenge():
         assert _auth_challenge_path(path), path
 
 
-def test_legacy_preview_renders_only_published_component_and_caches(tmp_path, monkeypatch):
+def test_legacy_preview_is_public_and_does_not_write_at_router(tmp_path, monkeypatch):
     from tests.test_app_ui_by_talking import _ui
     from tinyassets import ui_preview
 
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     screen = _ui("public-screen")
-    listing = publish_definition(tmp_path, author_id="alice", payload=_definition(
+    listing = publish_definition(tmp_path / ".published", author_id="alice", payload=_definition(
         "Public screen", components={"ui": screen}))
     ident = listing["agent_definition_id"]
     rendered = []
@@ -106,10 +91,11 @@ def test_legacy_preview_renders_only_published_component_and_caches(tmp_path, mo
     for _ in range(2):
         response = asyncio.run(handle_public_run(request(path, ident)))
         assert response.status_code == 200
-        assert Path(response.path).read_bytes() == b"public-png"
-    assert rendered == [screen]
+        assert response.body == b"public-png"
+    assert rendered == [screen, screen]
+    assert not preview_path(tmp_path / ".published", ident).exists()
     # A cached picture is not an authority to expose an unpublished ID.
-    save_preview(tmp_path, "private-ui", b"private")
+    seed_preview(tmp_path, "private-ui", b"private")
     response = asyncio.run(handle_public_run(
         request("/app/run/private-ui/preview.png", "private-ui")))
     assert response.status_code == 404

@@ -358,7 +358,7 @@ def test_a_proposal_deposits_cleanly_through_connect_http(base: Path, monkeypatc
     """
     import json as _json
 
-    from tinyassets.api.http_connection import connect_http
+    from tests.support.connection_door import connect_http
 
     _make_universe(base, "u-1", admin="alice")
     _login("alice")

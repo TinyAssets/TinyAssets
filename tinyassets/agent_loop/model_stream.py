@@ -97,8 +97,7 @@ _CLIENTS = {}
 
 
 @asynccontextmanager
-async def shared_broker_client(path, *, principal, command_center, fence, verify_peer,
-                         refresh_factory):
+async def shared_broker_client(path, *, principal, command_center, fence, verify_peer):
     from tinyassets.broker.aclient import AsyncBrokerClient
 
     loop = asyncio.get_running_loop()
@@ -107,7 +106,7 @@ async def shared_broker_client(path, *, principal, command_center, fence, verify
     if entry is None:
         entry = [AsyncBrokerClient(
             path, principal=principal, command_center=command_center, fence=fence,
-            verify_peer=verify_peer, refresh_factory=refresh_factory,
+            verify_peer=verify_peer,
         ), 0]
         _CLIENTS[key] = entry
     entry[1] += 1

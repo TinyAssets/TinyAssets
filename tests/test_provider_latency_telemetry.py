@@ -1,82 +1,8 @@
-"""Latency evidence a completed provider turn must leave behind (2026-09-24).
-
-The parallel-probe investigation (2026-09-24-provider-latency-rootcause.md (archived in git))
-had to reconstruct node timing from CLI session transcripts because a node's
-receipt recorded ``latency_ms: null`` and nothing about tool calls, and a turn
-that went quiet for most of the idle bound and then recovered left no trace.
-These tests pin the evidence a SUCCESSFUL turn now reports:
-
-* the claude reader counts distinct native tool calls and records the longest
-  gap between protocol events, plus the event kind that preceded it;
-* a near-idle gap is logged with allowlisted scalars only;
-* a prompt node's ``ran`` event carries those scalars from the real response.
-
-Driven through the real ``ClaudeProvider._read_stream`` against the fake
-subprocess protocol of ``tests/test_provider_stream_and_classify.py``.
-"""
+"""Provider timing fields preserve only allowlisted response scalars."""
 
 from __future__ import annotations
 
-import logging
-
-from tests.test_provider_stream_and_classify import (
-    INIT,
-    FakeStreamProcess,
-    _assistant_text,
-    _finished,
-    _line,
-    _result,
-    _run_stream,
-    _started,
-)
-from tinyassets.providers.base import ModelConfig, ProviderResponse
-
-_IDLE_S = 0.4
-_PROFILE = ModelConfig(
-    init_timeout_s=_IDLE_S, first_progress_s=_IDLE_S, idle_timeout_s=_IDLE_S,
-    absolute_cap_s=5.0,
-)
-
-
-def test_completed_turn_reports_tool_calls_and_post_tool_silence(caplog):
-    # Two identified tools (one announced twice, as the partial start frame and
-    # the full assistant frame do), then a gap after the last tool result that
-    # stays inside the idle bound, then the answer.
-    proc = FakeStreamProcess([
-        _line(INIT),
-        _line(_started("search", "call-a")),
-        _line(_started("search", "call-a")),
-        _line(_finished("call-a")),
-        _line(_started("search", "call-b")),
-        _line(_finished("call-b")),
-        (0.3, _line(_assistant_text("answer"))),
-        _line(_result("answer")),
-    ])
-    with caplog.at_level(logging.INFO, logger="tinyassets.providers.claude_provider"):
-        response = _run_stream(proc, _PROFILE)
-
-    assert response.text == "answer"
-    assert response.tool_uses == 2
-    assert response.max_silence_after == "tool_result"
-    assert 250 <= response.max_silence_ms < _IDLE_S * 1000
-    [near_idle] = [r for r in caplog.records if "near-idle" in r.getMessage()]
-    message = near_idle.getMessage()
-    assert "after=tool_result" in message and "tool_uses=2" in message
-    assert "answer" not in message
-
-
-def test_a_quick_turn_is_not_logged_as_near_idle(caplog):
-    proc = FakeStreamProcess([
-        _line(INIT),
-        _line(_assistant_text("answer")),
-        _line(_result("answer")),
-    ])
-    with caplog.at_level(logging.INFO, logger="tinyassets.providers.claude_provider"):
-        response = _run_stream(proc, _PROFILE)
-
-    assert response.tool_uses == 0
-    assert response.max_silence_ms < _IDLE_S * 500
-    assert not [r for r in caplog.records if "near-idle" in r.getMessage()]
+from tinyassets.providers.base import ProviderResponse
 
 
 def test_provider_timing_keeps_only_allowlisted_scalars():

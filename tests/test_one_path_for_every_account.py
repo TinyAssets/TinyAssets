@@ -189,7 +189,7 @@ def test_a_paid_source_still_honours_a_window_longer_than_the_turn(agent, monkey
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("kind,narrows", [("engine_inference", True), ("native_agent", False)])
+@pytest.mark.parametrize("kind,narrows", [("engine_inference", True)])
 def test_the_executor_kind_decides_narrowing_without_consulting_a_plan(kind, narrows):
     """A native executor runs on ONE subscription, so its account IS the source.
 

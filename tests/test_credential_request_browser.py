@@ -220,6 +220,111 @@ def test_card_is_reachable_in_real_needs_you_and_poll_preserves_secret(app_url, 
             "el=>el.scrollWidth<=el.clientWidth+1")
         assert FAKE not in page.evaluate("JSON.stringify(railCache)")
         assert len([c for c in calls if c["operation"] == "request_create"]) == 1
+        # Reopen before the queued close event runs: the old key is gone,
+        # and that stale event must not destroy the newly built card.
+        page.evaluate("$('request-rail').close();RequestSheets.open(testAsk.request_id)")
+        expect(page.get_by_label("One-time API key")).to_have_value("")
+        expect(page.get_by_role("checkbox")).to_be_visible()
         page.locator("#request-sheet-close").click()
         expect(page.get_by_label("One-time API key")).to_have_count(0)
+        browser.close()
+
+
+@pytest.mark.real_browser
+@pytest.mark.parametrize("stage,status", [
+    ("refresh", 200), ("response", 200), ("response", 401), ("response", 404),
+])
+def test_door_deposit_stays_with_original_login_and_center(app_url, stage, status):
+    """The shipped door transport fences refresh and never replays a deposit."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page = browser.new_page()
+        calls = []
+        switch_login = """() => {
+          MCP.endLogin();token=()=> 'next-token';queueScope='next-center';
+          MCP.sessionId='next-login-session';
+          if(releaseRefresh)releaseRefresh();
+        }"""
+
+        def deposit(route):
+            calls.append({"body": route.request.post_data_json,
+                          "authorization": route.request.headers.get("authorization")})
+            # Hold the response until the next account owns the page.
+            page.evaluate(switch_login)
+            route.fulfill(status=status, json={"status":"provisioned"})
+
+        page.route("**/app/model-connect/deposit", deposit)
+        _enter_chat(page, app_url)
+        page.evaluate("""stage => {
+          token=()=> 'original-token';queueScope='original-center';
+          window.releaseRefresh=null;window.depositOutcome=null;
+          ensureFreshToken=stage==='refresh'
+            ?()=>new Promise(resolve=>{releaseRefresh=resolve;}) :async()=>{};
+          MCP.connectHTTP('service','test-only-secret',[
+            {host:'api.example.com',path_template:'/v1',methods:['GET']}],'bearer')
+            .then(value=>{depositOutcome={value};},error=>{
+              depositOutcome={error:error.transport||error.message};});
+        }""", stage)
+        if stage == "refresh":
+            page.wait_for_function("() => releaseRefresh!==null")
+            page.evaluate(switch_login)
+        page.wait_for_function("() => depositOutcome!==null")
+        assert page.evaluate("depositOutcome") == {"error": "login_changed"}
+        assert page.evaluate("MCP.sessionId") == "next-login-session"
+        if stage == "refresh":
+            assert calls == []
+        else:
+            assert len(calls) == 1
+            assert calls[0]["authorization"] == "Bearer original-token"
+            assert calls[0]["body"]["center"] == "original-center"
+            assert calls[0]["body"]["secret"] == "test-only-secret"
+        browser.close()
+
+
+def test_fieldless_connection_poll_preserves_values_and_deposits_only_at_door(app_url):
+    import json
+
+    from playwright.sync_api import expect, sync_playwright
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page = browser.new_page()
+        _enter_chat(page, app_url)
+        deposits = []
+        sent = []
+        page.on("request", lambda request: sent.append((request.url, request.post_data or "")))
+
+        def deposit(route):
+            deposits.append(route.request.post_data_json)
+            route.fulfill(json={"status": "provisioned"})
+
+        page.route("**/app/model-connect/deposit", deposit)
+        page.evaluate("""() => {
+          setQueueScope('home');token=()=> 'test-session';
+          window.connectAsk={request_id:'four-fields',universe_id:'home',title:'Connect service',
+            status:'pending',server_continuation:true,fields:[],action:{type:'connect',
+              destination:'service',auth_scheme:'oauth1a',endpoints:[{
+                host:'api.example.com',path_template:'/v1',methods:['GET']}]}};
+          Owner.listRequests=async()=>({universe_id:'home',pending:[structuredClone(connectAsk)]});
+          renderRail([structuredClone(connectAsk)]);RequestSheets.open('four-fields');
+        }""")
+        values = {name: "test-only-" + name for name in (
+            "api_key", "api_secret", "access_token", "access_token_secret")}
+        for name, value in values.items():
+            page.locator("#f_four-fields_" + name).fill(value)
+        page.evaluate("refreshRail()")
+        assert page.evaluate("railCache[0].fields") == []
+        for name, value in values.items():
+            expect(page.locator("#f_four-fields_" + name)).to_have_value(value)
+        with page.expect_response("**/app/model-connect/deposit"):
+            page.get_by_role("button", name="Accept", exact=True).click()
+        assert len(deposits) == 1
+        assert json.loads(deposits[0]["secret"]) == values
+        assert deposits[0]["request_ref"] == "four-fields"
+        assert deposits[0]["center"] == "home"
+        secret_requests = [(url, body) for url, body in sent if "test-only-api_key" in body]
+        assert len(secret_requests) == 1
+        assert secret_requests[0][0].endswith("/app/model-connect/deposit")
         browser.close()

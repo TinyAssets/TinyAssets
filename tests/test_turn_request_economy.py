@@ -353,7 +353,7 @@ def test_low_pool_never_stores_connect_request(agent, monkeypatch):
     agent.requested_rounds = 0
     for _ in range(2):
         assert run(agent) == "finished exact answer"
-        assert not any(row["request_id"] == "sys_connect_llm"
+        assert not any(row["request_id"] == "sys_connect_model"
                        for row in list_pending(agent.served.context.universe_dir))
 
 
@@ -476,7 +476,7 @@ def test_uncapped_member_makes_whole_pool_unbounded(agent, monkeypatch, signed_i
     signed_in("owner")
     card = next(row for row in list_requests(
         universe_id=agent.served.context.universe_dir.name,
-    )["pending"] if row["request_id"] == "sys_connect_llm")
+    )["pending"] if row["request_id"] == "sys_connect_model")
     assert card["status"] == "optional" and "suggestion" not in card
 
 
@@ -547,7 +547,7 @@ def test_real_rail_reads_current_served_pool(agent, monkeypatch, signed_in, rema
     signed_in("owner")
     uid = agent.served.context.universe_dir.name
     result = list_requests(universe_id=uid)
-    card = next(row for row in result["pending"] if row["request_id"] == "sys_connect_llm")
+    card = next(row for row in result["pending"] if row["request_id"] == "sys_connect_model")
     assert card["status"] == ("pending" if remaining == 9 else "optional")
     if remaining == 9:
         assert "(9 left)" in card["suggestion"]
@@ -555,7 +555,7 @@ def test_real_rail_reads_current_served_pool(agent, monkeypatch, signed_in, rema
         assert "https://openrouter.ai/settings/credits" in card["suggestion"]
     else:
         assert "nearly used up" not in card.get("suggestion", "")
-    assert not any(row["request_id"] == "sys_connect_llm"
+    assert not any(row["request_id"] == "sys_connect_model"
                    for row in list_pending(agent.served.context.universe_dir))
 
 

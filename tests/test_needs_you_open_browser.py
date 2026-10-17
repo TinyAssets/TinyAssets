@@ -166,7 +166,7 @@ def test_native_request_types_open_in_app_or_keep_visible_handoff(app_url, brows
     link = sheet.get_by_role("link", name="Open request in browser")
     expect(link).to_be_visible()
     assert link.get_attribute("href").endswith("/app/approval-handoff/" + "r" * 43)
-    expected_id = "sys_connect_llm" if kind in ("setup", "optional_setup", "folded") else "ask"
+    expected_id = "sys_connect_model" if kind in ("setup", "optional_setup", "folded") else "ask"
     assert handoffs == [{"request_id": expected_id,
                          "client": platform}]
     assert sheet.locator("input:visible,textarea:visible,select:visible").count() == 0
@@ -243,7 +243,7 @@ def test_direct_folded_request_opens_setup_and_question_fields_submit(app_url, b
     _prepare(page, app_url, "folded")
     page.evaluate("RequestSheets.open(ask.request_id)")
     expect(page.locator("#connect-panel")).to_be_visible()
-    assert page.evaluate("railOpen") == "sys_connect_llm"
+    assert page.evaluate("railOpen") == "sys_connect_model"
     _prepare(page, app_url, "question")
     page.evaluate("""() => {
       ask={...ask,fields:[{name:'answer',label:'Your answer',type:'text'}]};

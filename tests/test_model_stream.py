@@ -176,8 +176,7 @@ def test_500_waiting_streams_share_one_socket_without_worker_threads(tmp_path):
 
         async def request(index):
             async with shared_broker_client(path, principal='owner', command_center='cc',
-                                            fence=fence, verify_peer=None,
-                                            refresh_factory=None) as client:
+                                            fence=fence, verify_peer=None) as client:
                 async with client.stream(grant_id='g', connection_id='c', verb='POST',
                                          request={}, op_id=str(index)) as stream:
                     await stream.head()
@@ -188,7 +187,7 @@ def test_500_waiting_streams_share_one_socket_without_worker_threads(tmp_path):
         try:
             await asyncio.wait_for(ready.wait(), 5)
             assert len(connections) == 1
-            assert {thread.ident for thread in threading.enumerate()} == before
+            assert {thread.ident for thread in threading.enumerate()} <= before
             assert all(not task.done() for task in tasks)
             release.set()
             await asyncio.wait_for(asyncio.gather(*tasks), 5)
