@@ -121,10 +121,13 @@ def test_deploy_and_timer_ship_and_run_before_image_prune() -> None:
     assert step.index("${snapshot_helper} --apply") < step.index(
         "${helper} --apply --prepare-pull"
     )
-    installer = (ROOT / "deploy/install-host-uptime-services.sh").read_text()
+    from scripts.host_service_bundle import service_bundle
+
     service = (ROOT / "deploy/tinyassets-prune.service").read_text()
     build = (ROOT / ".github/workflows/build-image.yml").read_text()
-    assert "scripts/backup_snapshot_retention.py" in installer
+    assert "scripts/backup_snapshot_retention.py" in service_bundle(
+        ROOT, [ROOT / "deploy/tinyassets-prune.service"]
+    )
     assert "ExecStartPre=/usr/bin/python3 /opt/tinyassets-host-uptime/current/" \
            "scripts/backup_snapshot_retention.py --apply" in service
     assert "'scripts/backup_snapshot_retention.py'" in build
