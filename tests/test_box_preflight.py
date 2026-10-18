@@ -766,12 +766,16 @@ def test_preflight_workflow_and_idle_service_are_decoupled_from_daemon() -> None
     installer = (ROOT / "deploy/install-boxhostd-preflight.sh").read_text()
     assert (
         "sudo flock -w 120 /var/lock/tinyassets-host-mutation.lock "
-        "bash /tmp/install-boxhostd-preflight.sh" in deploy
+        'bash "$stage/deploy/install-boxhostd-preflight.sh"' in deploy
     )
+    assert "stage=$(mktemp -d /tmp/boxhostd-install.XXXXXXXX)" in deploy
+    assert 'tar -xf /tmp/boxhostd-install.tar -C "$stage"' in deploy
     assert "workflow_dispatch:" in gates
     assert "production-host-mutation" in gates
     assert "--kill-who=main -s USR1 boxhostd.service" in gates
-    assert "box_store_durability.py" in installer
+    from scripts.boxhostd_install_files import ship_list
+
+    assert "scripts/box_store_durability.py" in ship_list(ROOT)
     assert 'g4["fsync_remount"]' in (ROOT / "deploy/boxhostd_idle.py").read_text()
     assert "Delegate=yes" in unit
     assert "boxhostd.py" in unit
