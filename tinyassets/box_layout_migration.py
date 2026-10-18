@@ -2141,7 +2141,11 @@ def _build_cutover(data: Path, store: Path, journal: dict, *, apply_quotas=True)
 
     repairs = set(journal.get("reindexed", []))
     for database in sorted({database for database, _ in inventory["tables"]}):
-        with closing(sqlite3.connect(data / database)) as db, db:
+        # Census proved this source exists. O_CREAT on a daemon-owned file in
+        # the ledger's sticky root is denied by Linux protected_regular, even
+        # to root; SQLite's default open then silently falls back to read-only.
+        uri = (data / database).resolve().as_uri() + "?mode=rw"
+        with closing(sqlite3.connect(uri, uri=True)) as db, db:
             repairs.update(f"reindexed: {database}/{index}"
                            for index in check_integrity(db, repair=True))
     journal["reindexed"] = report["reindexed"] = sorted(repairs)

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tarfile
 from contextlib import closing
+from pathlib import Path
 
 import pytest
 
@@ -58,11 +59,18 @@ def test_root_vectors_never_inherit_knowledge_owner(cutover):
     assert (store / "300001/knowledge.db").exists()
 
 
-def test_cutover_repairs_only_named_indexes_and_records_verified_repair(cutover):
+@pytest.mark.parametrize("protected", [False, True])
+def test_cutover_repairs_only_named_indexes_and_records_verified_repair(cutover, protected):
     from tests.test_cutover_index_integrity import corrupt_index
 
     data, store, *_ = cutover
     corrupt_index(data / ".tinyassets.db")
+    if protected:
+        from tinyassets.erasure_ledger import protect_root
+
+        assert Path('/proc/sys/fs/protected_regular').read_text().strip() == '2'
+        os.chown(data / '.tinyassets.db', 1001, 1001)
+        protect_root(data)
     assert migration.census(data)["ready"]
     migration.apply(*cutover)
     receipt = json.loads((data / ".owner-cutover.json").read_text())

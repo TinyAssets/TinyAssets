@@ -530,3 +530,9 @@ and record each repair. Every non-index integrity failure SHALL refuse.
 #### Scenario: Corrupt table alongside index drift
 - **WHEN** any integrity error is not an index-only entry error
 - **THEN** census and apply refuse without attempting index repair
+
+#### Scenario: Resume with protected shared storage
+- **WHEN** stopped apply or its retry opens a daemon-owned source database under a root-owned sticky data directory
+- **THEN** named index repair remains writable without changing source ownership or weakening directory protection
+- **AND** interruption after an owner tree or shared seeding can resume on the same host
+- **AND** independent archive rehearsal trials restore the archived data-root ownership and mode as well as its contents
