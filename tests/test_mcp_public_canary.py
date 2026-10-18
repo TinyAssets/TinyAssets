@@ -895,6 +895,8 @@ def test_pulse_programming_fault_is_not_measured_unhealthy(monkeypatch):
     OSError(errno.EAFNOSUPPORT, "socket creation failed"),
     PermissionError(errno.EACCES, "local socket policy"),
     ssl.SSLError("local TLS setup failed"),
+    http.client.InvalidURL("local URL setup failed"),
+    http.client.CannotSendRequest("local HTTP state failed"),
     ValueError("unknown local failure"),
     RuntimeError("unexpected helper failure"),
 ])
@@ -918,14 +920,23 @@ def test_pulse_local_failures_never_measure_unhealthy(monkeypatch, failure, wrap
 
 @pytest.mark.parametrize("failure", [
     ConnectionRefusedError(errno.ECONNREFUSED, "daemon refused"),
+    ConnectionResetError(errno.ECONNRESET, "daemon reset"),
+    ConnectionAbortedError(errno.ECONNABORTED, "connection aborted"),
+    BrokenPipeError(errno.EPIPE, "daemon closed pipe"),
     TimeoutError("daemon timed out"),
 ])
 @pytest.mark.parametrize("wrapped", [False, True])
-def test_pulse_daemon_connection_failures_are_unhealthy(monkeypatch, failure, wrapped):
+@pytest.mark.parametrize("phase", ["open", "read"])
+def test_pulse_daemon_connection_failures_are_unhealthy(monkeypatch, failure, wrapped, phase):
     def broken(*args, **kwargs):
         raise urllib.error.URLError(failure) if wrapped else failure
 
-    monkeypatch.setattr(canary.urllib.request, "urlopen", broken)
+    if phase == "open":
+        monkeypatch.setattr(canary.urllib.request, "urlopen", broken)
+    else:
+        response = io.BytesIO()
+        response.read = broken
+        monkeypatch.setattr(canary.urllib.request, "urlopen", lambda *a, **kw: response)
     assert canary.main(["--pulse-only", "--url", "http://synthetic/mcp"]) == 10
 
 
@@ -934,6 +945,7 @@ def test_pulse_daemon_connection_failures_are_unhealthy(monkeypatch, failure, wr
     http.client.BadStatusLine("bad daemon status"),
     http.client.IncompleteRead(b"partial", 20),
     http.client.RemoteDisconnected("daemon closed response"),
+    http.client.LineTooLong("daemon header line"),
 ])
 def test_pulse_bad_daemon_responses_are_unhealthy(monkeypatch, failure):
     def broken(*args, **kwargs):

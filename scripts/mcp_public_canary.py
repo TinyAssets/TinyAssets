@@ -823,17 +823,18 @@ def _pulse_only(url: str, timeout: float, *, verbose: bool = False) -> int:
     except urllib.error.HTTPError as exc:
         print(f"[canary] pulse {endpoint} HTTP {exc.code}", file=sys.stderr)
         return 10
-    except (urllib.error.URLError, TimeoutError, ConnectionRefusedError) as exc:
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
         # urllib wraps socket failures, including failures of the LOCAL helper.
-        # Only an explicit refusal or timeout measures daemon reachability.
+        # Only explicit connection/response failures measure daemon reachability.
         # DNS, resource exhaustion, socket/TLS setup and unknown reasons must
         # propagate to the helper-fault exit; the watchdog must never restart.
         reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
-        if not isinstance(reason, (ConnectionRefusedError, TimeoutError)):
+        if not isinstance(reason, (ConnectionRefusedError, ConnectionResetError,
+                                   ConnectionAbortedError, BrokenPipeError, TimeoutError)):
             raise
         print(f"[canary] pulse {endpoint} unreachable: {exc}", file=sys.stderr)
         return 10
-    except (http.client.BadStatusLine, http.client.IncompleteRead) as exc:
+    except (http.client.BadStatusLine, http.client.IncompleteRead, http.client.LineTooLong) as exc:
         print(f"[canary] pulse {endpoint} incomplete response: {exc}", file=sys.stderr)
         return 10
     if status != 200:
