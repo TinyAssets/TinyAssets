@@ -448,7 +448,7 @@ def restore_billing(root, now):
         rows = db.execute("SELECT * FROM plans").fetchall()
     synced = 0
     for row in rows:
-        subscription = find_active_subscription(row["owner"]) or row["subscription_id"]
+        subscription = find_active_subscription(row["owner"], plans=plans) or row["subscription_id"]
         if not subscription:
             if row["tier"] != "free":
                 raise BillingUnavailable("restore paid plan has no subscription mapping")
@@ -485,8 +485,11 @@ def cancel_subscription(subscription_id: str, *, immediately: bool = False) -> d
     )
 
 
-def find_active_subscription(owner_id: str) -> str | None:
-    """The universe's active subscription id, or None. Used by the cancel path."""
+def find_active_subscription(owner_id: str, *, plans=None) -> str | None:
+    """Find a signed subscription, resolving migrated identities during restore."""
+    from tinyassets.billing.events import subscription_owner
+    from tinyassets.broker.owner_reads import PlanMissing
+
     if not _webhook_secret():
         raise BillingUnavailable("no Stripe webhook secret configured")
     starting_after = ""
@@ -500,10 +503,22 @@ def find_active_subscription(owner_id: str) -> str | None:
         found = _get(path)
         data = found.get("data") or []
         for sub in data:
-            if _authorized_subscription_owner(sub) != owner_id:
+            claimed_owner = _authorized_subscription_owner(sub)
+            if not claimed_owner:
                 continue
             # Terminal states are not cancellable and must not mask a live one.
             if str(sub.get("status") or "") in ("canceled", "incomplete_expired"):
+                continue
+            resolved_owner = claimed_owner
+            if plans is not None:
+                try:
+                    resolved_owner = subscription_owner(plans, sub, claimed_owner)
+                except PlanMissing:
+                    # Other accounts' legacy subscriptions may have no local mapping.
+                    continue
+                except PermissionError as exc:
+                    raise BillingUnavailable("restore billing identity mismatch") from exc
+            if resolved_owner != owner_id:
                 continue
             return str(sub["id"])
         if not found.get("has_more") or not data:

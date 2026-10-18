@@ -367,10 +367,61 @@ def test_disaster_resync_migrated_signed_universe_subscription(tmp_path, monkeyp
     obj = _subscription_object(owner_id="legacy-center")
     obj["metadata"]["universe_id"] = obj["metadata"].pop("owner_id")
     obj["customer"] = "cus_migrated"
+    obj["id"] = "sub_current"
+    cancelled = dict(obj, id="sub_backup", status="canceled")
     plans = Plans(tmp_path)
     plans.set_plan("alice", "paid", event_created=1, customer_id="cus_migrated",
-                   subscription_id=obj["id"])
-    monkeypatch.setattr(stripe, "_get", lambda path: (
-        {"data": [obj], "has_more": False} if path.startswith("subscriptions?") else obj))
+                   subscription_id=cancelled["id"])
+    calls = []
+
+    def get(path):
+        calls.append(path)
+        if path.startswith("subscriptions?"):
+            return {"data": [cancelled, obj], "has_more": False}
+        return {"subscriptions/sub_backup": cancelled, "subscriptions/sub_current": obj}[path]
+
+    monkeypatch.setattr(stripe, "_get", get)
     assert stripe.restore_billing(tmp_path, 100)["plans_synced"] == 1
-    assert plans.read("alice")["tier"] == "paid"
+    assert calls == ["subscriptions?status=all&limit=100", "subscriptions/sub_current"]
+    plan = plans.read("alice")
+    assert plan["tier"] == "paid"
+    assert plan["subscription_id"] == "sub_current"
+    assert plan["customer_id"] == "cus_migrated"
+
+
+def test_disaster_discovery_refuses_signed_owner_conflicting_with_customer(billing, monkeypatch):
+    from tests.test_billing_boundary import _subscription_object
+
+    root, plans, _ = billing
+    plans.set_plan("alice", "paid", event_created=1, customer_id="cus_migrated",
+                   subscription_id="sub_backup")
+    plans.set_plan("bob", "free", event_created=0)
+    obj = _subscription_object(owner_id="bob")
+    obj.update(id="sub_current", customer="cus_migrated")
+    before = {owner: plans.read(owner) for owner in ("alice", "bob")}
+    calls = []
+
+    def get(path):
+        calls.append(path)
+        assert path.startswith("subscriptions?")
+        return {"data": [obj], "has_more": False}
+
+    monkeypatch.setattr(stripe, "_get", get)
+    with pytest.raises(stripe.BillingUnavailable, match="identity mismatch"):
+        stripe.restore_billing(root, 100)
+    assert calls == ["subscriptions?status=all&limit=100"]
+    assert {owner: plans.read(owner) for owner in before} == before
+
+
+def test_disaster_discovery_never_assigns_another_legacy_owner(billing, monkeypatch):
+    from tests.test_billing_boundary import _subscription_object
+
+    _, plans, _ = billing
+    plans.set_plan("bob", "paid", event_created=1, customer_id="cus_bob",
+                   subscription_id="sub_bob_backup")
+    obj = _subscription_object(owner_id="legacy-bob")
+    obj["metadata"]["universe_id"] = obj["metadata"].pop("owner_id")
+    obj.update(id="sub_bob_current", customer="cus_bob")
+    monkeypatch.setattr(stripe, "_get", lambda path: {"data": [obj], "has_more": False})
+    assert stripe.find_active_subscription("alice", plans=plans) is None
+    assert stripe.find_active_subscription("bob", plans=plans) == "sub_bob_current"
