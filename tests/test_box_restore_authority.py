@@ -680,3 +680,27 @@ def test_closed_admission_blocks_anonymous_writers(tmp_path, monkeypatch, path, 
             assert (await client.request(method, path)).status_code == 200
 
     asyncio.run(exercise())
+
+
+def test_reapply_repairs_index_drift_on_its_private_registry_copy(tmp_path, monkeypatch):
+    # A failed swap's cleanup trap reapplies quotas from the untouched live
+    # registry; index-only drift there must never leave trees unquotaed.
+    from tests.test_cutover_index_integrity import damage_many_indexes
+
+    trees = tmp_path / "trees"
+    (trees / "300001").mkdir(parents=True)
+    registry = tmp_path / "owner-identities.db"
+    with sqlite3.connect(registry) as db:
+        db.execute("CREATE TABLE box_records (machine INTEGER, project_id INTEGER,"
+                   " bhard_bytes INTEGER)")
+        db.execute("INSERT INTO box_records VALUES (300001, 300001, 1048576)")
+    damage_many_indexes(registry, corrupt_table=False)
+    before = registry.read_bytes()
+    commands = []
+    monkeypatch.setattr(restore.subprocess, "run", lambda args, **kw: commands.append(args))
+    monkeypatch.setattr(restore, "verify_owner", lambda *args: None)
+    monkeypatch.setattr(restore.os, "chown", lambda *args: None)
+    restore.reapply(tmp_path, trees, registry)
+    assert [c[3] for c in commands] == [f"project -s -p {trees / '300001'} 300001",
+                                       "limit -p bhard=1024k 300001"]
+    assert registry.read_bytes() == before

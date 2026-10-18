@@ -38,7 +38,9 @@ def reapply(store: Path, trees: Path, registry: Path, *, clear: bool = False) ->
     with readonly_db(registry) as db:
         from tinyassets.sqlite_integrity import check
 
-        check(db)
+        # A private copy: repair index-only drift here, as every reader does,
+        # so a restore's cleanup trap can always reapply owner quotas.
+        check(db, repair=True)
         rows = db.execute("SELECT machine, project_id, bhard_bytes FROM box_records").fetchall()
     by_uid = {}
     for uid, project, limit in rows:
