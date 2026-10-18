@@ -20,6 +20,7 @@ from typing import Any
 
 from tinyassets.branch_tasks_v2 import DESCRIPTOR_VALIDITY_SECONDS
 from tinyassets.consumer_reason_actions import RETIRED_FLEET_CONTROL_REASON
+from tinyassets.owner_activity import owner_work
 from tinyassets.platform_runtime_provenance import (
     require_process_cloud_admission,
 )
@@ -408,6 +409,7 @@ class AssignedQueueConsumer:
                     self._last_poll_failed = False
             self._stop.wait(self.poll_seconds)
 
+    @owner_work
     def poll_once(self) -> int:
         """Beat for serving universes, automations, and owner continuations."""
         try:
@@ -801,6 +803,7 @@ class AssignedQueueConsumer:
             reason,
         )
 
+    @owner_work
     def _run_automations(
         self,
         universe_id: str,

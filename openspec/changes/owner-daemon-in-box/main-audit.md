@@ -1,5 +1,43 @@
 # Main vs the clean per-user-instance shape: read-only audit
 
+## Review round 3: monotonic restore and cutover corrections (2026-10-18)
+
+Starting head `0f6cd44e3a7`, same cutover branch and base. Synthetic fixtures and
+disposable local venues only; no production access, deploy, publication, branch
+switch or delegated work. Receipts: `C:/Users/Jonathan/AppData/Local/Temp/ta-c6-review3/`.
+
+- Restore now has one rule, **Restore keeps monotonic facts**, specified in design
+  and the owner-isolation delta. The exact shared-store/table/file inventory is
+  in design.md. `restore_facts.carry_shared` reads current facts without touching
+  live SQLite sidecars, projects revocations and complete local erasure into
+  staging, then `fence_owner_journals` unions consumed IDs and advances epochs.
+  Both volumes remain untouched on projection failure. Legacy pairs normalize
+  through the same forward migration before applying the rule.
+- Deleted the newer-deletion/identity/destruction equality refusals, pristine
+  post-cutover manifest comparisons, and owner-write-loss switch. Archive and
+  identity-pair validation remain. Existing scenarios now assert carried facts;
+  none of their tests or shape probes was retired. Every owner mutation consumes
+  its ID before execution, including bash; replay refuses instead of returning
+  a cached result or executing again.
+- Deletion-only startup enters no dispatch lifespan or egress loop. Background
+  delivery, run, scheduler, activity, maintenance and consumer dispatch hold the
+  owner activity gate; drain sees active work and refuses queued execution.
+- Every checkout with a session becomes a permanent settlement mapping, including
+  expired/completed attempts. Webhooks resolve it and deletion inspects every
+  mapped session. Only sessionless attempts are dropped and counted.
+- Root `lancedb/` always drops with `unattributed_root_vectors`; no other store
+  can attribute it. Admitted centers' vectors remain verbatim owner data.
+- One SQLite integrity helper reports named index-only failures as repairable
+  during read-only census. After the verified pair and stopped daemon, apply
+  repairs those named indexes, verifies and records them. Non-index corruption
+  refuses. The separate concern records the reported index drift without values.
+
+Validation results are recorded here after the final runs.
+
+Earlier dated sections below are historical receipts. Their per-item restore
+refusals, inferred root-vector ownership and lease-only checkout handling are
+superseded by this section and the current design/specification.
+
 ## Restore, publication, knowledge and rehearsal corrections (2026-10-18)
 
 Resumed from `b927cfd4d3c` and its uncommitted published-definition migration;

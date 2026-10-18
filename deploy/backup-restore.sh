@@ -518,19 +518,18 @@ if [[ -n "${BOX_STAGE}" ]]; then
         log "ERROR: current owner-box receipt/survivor census refused restore"
         exit 4
     fi
-    CUTOVER_RESTORE_ARGS=()
-    if [[ "${CUTOVER_ACCEPT_OWNER_WRITE_LOSS:-0}" == "1" ]]; then
-        log "Restoring the paired pre-cutover backup: all post-cutover owner writes will be lost"
-        CUTOVER_RESTORE_ARGS+=(--accept-owner-write-loss)
-    fi
-    # Validate router deletion receipts and box revocations while both layouts
-    # are locked, before moving ANY owner tree or the shared volume.
+    log "Restoring snapshot contents while retaining current monotonic facts"
+    # Carry live monotonic facts into unpublished staging while both layouts
+    # are locked. Any failure leaves both pre-restore volumes intact.
     if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
             --snapshot-data "${STAGE_DIR}" --restore-from "${VOLUME_DIR}" \
-            --cutover-store "${BOX_STORE_DIR}" --restored-store "${BOX_STAGE}" \
-            "${CUTOVER_RESTORE_ARGS[@]}"; then
-        log "ERROR: restore would roll back authority or replay an operation"
+            --cutover-store "${BOX_STORE_DIR}" --restored-store "${BOX_STAGE}"; then
+        log "ERROR: restore could not carry live monotonic facts"
         exit 4
+    fi
+    # A legacy snapshot is normalized by the forward cutover before install.
+    if [[ -f "${STAGE_DIR}/.boxhost/boxhost.db" ]]; then
+        quota_restore=1
     fi
     BOX_OLD="$(mktemp -d "${BOX_STORE_DIR}/.tinyassets-box-restore-old.XXXXXX")"
     BOX_SWAP_ACTIVE=1

@@ -1,5 +1,34 @@
 # Design: the owner's daemon in the owner's box
 
+## Restore keeps monotonic facts
+
+Restore reads current live facts with every consumer stopped and both layouts
+locked. It carries them into the staged shared and owner volumes before publishing
+either volume or starting any daemon. Failure discards staging and preserves the
+pre-restore volumes. Snapshot contents never overrule these facts:
+
+- Owner erasures: router `deleted_owners`, broker `owner_box_revocations`, custody
+  `deleted_principals`, and host `owner_destroys`. Restored erased owners follow
+  deletion's local sweep and complete tree destruction, with shared custody and
+  router credentials erased as well.
+- Shared revocations: API-key `revoked_at`; removed hook-owner mappings; removed
+  owner sessions, login flows/completions, approval handoffs, inline/hosted model
+  flows, OAuth codes/access/refresh tokens and sealed refresh-session files;
+  removed or replaced router credentials; broker connection/grant `revoked_at`,
+  removed connection capabilities, erased custody slots and their metadata,
+  revoked browser-vault records and deleted policy authority. A removed credential
+  is a revocation even when its writer retains no tombstone: snapshot authority
+  must intersect live authority, including its credential incarnation.
+- Consumed operation IDs and epochs in every owner's `.owner-boxd/boxhost.db`.
+  Restore unions IDs as refusals and advances epochs beyond both generations.
+  Every mutating tool, including bash, consumes its ID before execution.
+
+This single carry-forward mechanism replaces newer-deletion, identity-frontier,
+destruction-receipt and shared-manifest rollback refusals. Pair validation still
+rejects malformed archives and mismatched identities. Restore never calls remote
+billing or provider endpoints. Rehearsal proves post-snapshot key revocation and
+owner erasure survive, and pre-restore write and bash IDs cannot execute again.
+
 ## Shape check against the research (required for every slice)
 
 | Research rule | This design |
@@ -504,13 +533,14 @@ consumer-liveness and workspace-staging artifacts are regenerated. The legacy
 root `knowledge.db` moves whole only when every row in its known knowledge
 tables resolves through its memory-scope center/user columns to one admitted
 owner. Unknown/unscoped or competing ownership is a counted `no_owner_key` or
-`conflicting_owners` drop; no default owner is inferred. Its root vectors and
-sidecars follow that disposition. Census reports knowledge files and bytes per
+`conflicting_owners` drop; no default owner is inferred. Knowledge SQLite sidecars follow that disposition. Root `lancedb/` is always
+dropped and counted as `unattributed_root_vectors`; it never inherits a knowledge owner. Census reports knowledge files and bytes per
 owner and reason-coded dropped files and bytes. C12 receives the originals.
 
 An uninterrupted generation establishes manifests, then the real paired
-restore returns to owner-split and GNU tar compares against the original input.
-Two independent restored generations crash at `after_owner_tree:1` and
+restore validates the original source bytes, converts through the same forward
+cutover, and verifies the restored owner-box generation. Two independent disposable
+source fixtures then crash at `after_owner_tree:1` and
 `after_seeding`. Each resumes to the uninterrupted shared and owner manifests.
 The test-only `CUTOVER_CRASH_AT` hook calls `os._exit(137)` inside apply; the
 former self-SIGKILL was ignored because Python was namespace PID 1. Deploy
@@ -536,7 +566,8 @@ The synthetic run records 2 owners, 4 centers, 27 census rows, 3 manifests,
 4 history turns, 4 pending reads, 4 saved requests, 8 controls, 8 plan reads,
 4 verified writes and 2 reconnect confirmations. Both restores record one
 byte comparison. The after-write step additionally records 2 fenced owners and
-4 refused replay IDs after a same-layout restore. Tests scan stdout and the report for identifiers, paths and
+6 refused write/bash replay IDs, one carried key revocation and one complete
+owner erasure after a same-layout restore. Tests scan stdout and the report for identifiers, paths and
 content, enforce numeric counters, and check the redacted failure report.
 
 Synthetic proof venue:
@@ -677,14 +708,11 @@ class, legacy runs/checkpoints/transcripts, a never-admitted center, plans,
 custody, shared key/hook authentication, crash/resume and paired restoration.
 The restore uses the real shell/SQLite/tar implementation; only host service,
 mount/quota and absent sandbox-runtime queries are modeled. A completed cutover
-restores only the exact paired source. By default shared and owner output
-manifests must remain unchanged. `CUTOVER_ACCEPT_OWNER_WRITE_LOSS=1` explicitly
-surrenders post-cutover chats, pending requests, pause and other owner writes.
-Only the derived next-wake index and ingress-secret contents may differ in
-shared state: every identity database schema/authority row is hashed in the
-cutover receipt, and all other shared files remain byte fenced. Changed
-identities, admissions, revocations, billing, deletion, custody, operation
-receipts or owner inventory still refuse. Services remain stopped on return.
+accepts only its verified source pair or a valid same-layout pair. A legacy
+source is normalized through the forward cutover in unpublished staging. The
+single monotonic-facts projection then carries current authority, erases deleted
+owners and fences owner journals. Only malformed/mismatched source receipts
+refuse; newer facts are applied, not compared for equality. Services remain stopped on return.
 This is not real XFS quota, sandbox, deployment or production-data proof.
 
 The process rehearsal starts two real owner apps against the migrated roots
@@ -727,7 +755,7 @@ explicit dropped class and row/file counts: e.g. `CLI login state` and
 `orphaned budget reservations`. The separate unowned bucket never invents an
 account. Existing `losses` retains aggregate tables and masked patterns only.
 Sessions and consent/seed sidecars follow
-their center's admission. LanceDB indexes, provider runtime, process locks,
+their center's admission. Center LanceDB files are preserved; provider runtime, process locks,
 PID/liveness files and checkout staging are regenerated; legacy scratch and
 root activity logs are dropped. Arbitrary owner filenames remain verbatim.
 Unclassified root files refuse. Classification also drives output exclusion and
@@ -760,17 +788,12 @@ author's box and a published copy in commons. This matches runtime publication:
 local published definitions per owner separately from exclusive source placement.
 Apply verifies local workflow references before publishing its completed marker.
 
-Same-layout owner-box restore fences `.owner-boxd/boxhost.db` in each staged
-owner tree before either volume swaps or any box starts. It retains the union
-of operation IDs as refusals and advances epochs, generations and incarnations
-beyond both journals. A snapshot predating a journal still receives its refusal
-records. The shared `.boxhost` keeps destruction authority only; its dead owner
-operation merge is removed. Identity and deletion frontiers still refuse rollback.
-A pre-cutover-layout rollback has no owner journal destination: once owner
-operations exist it refuses and requires forward recovery, even with owner-write-loss consent.
-The rehearsal retains its pre-cutover byte comparison, reapplies the cutover,
-then restores a same-layout paired snapshot and proves both snapshot and newer
-operation IDs refuse without overwriting subsequent work for every owner.
+Restore uses the single **Restore keeps monotonic facts** rule above. Legacy
+pairs are normalized through this forward migration before projection, so every
+consumed operation has its one owner-local journal destination. The shared
+`.boxhost` retains only host destruction authority. Rehearsal verifies restored
+content and refused snapshot/later write IDs and bash IDs, retained key
+revocation, and complete erasure in the same paired restore.
 
 The migration classifies every table of every shared root database:
 
@@ -898,9 +921,13 @@ Billing remains shared-layer state. The census derives each paid owner's verifie
 customer/subscription mapping from retained billing records and carries it into
 the shared plan. Missing or conflicting authority refuses with counted reason
 codes on the pseudonymous account report; a paid plan is never seeded without
-its mapping. An unexpired legacy `checkout_attempt_v1` moves into that same plan
-with its original expiry and frozen parameters, so checkout resumes it. Malformed
-or ambiguous attempts refuse census, rather than disappearing at publication.
+its mapping. Every legacy attempt with a session ID becomes a permanent
+`checkout_settlements` mapping, including expired leases and settled sessions.
+The one active lease remains in `plans.attempt` for checkout resumption. Only
+sessionless attempts drop, with `dropped_sessionless_attempts` counted per account.
+Webhooks resolve the permanent session mapping; deletion queries every retained
+mapping before declaring billing absent. Settlement never deletes the mapping.
+Malformed or conflicting mappings refuse census.
 
 The router tombstone fences checkout creation, serialized with in-flight checkout
 and webhook processing. Billing cleanup expires outstanding sessions through the
@@ -910,13 +937,15 @@ immediately cancels and records that subscription. Deletion succeeds only after
 no payable checkout or live subscription remains; uncertain outcomes stay retryable.
 
 Restore authority includes router deletion receipts and owner-box revocations.
-A backup older than either deletion frontier refuses before either volume swaps.
+Newer deletion facts are carried into staging and complete erasure runs before publication.
 Lifecycle maintenance contains suspension, refusal and authentication failures per
 owner, reports an explicit suspended outcome and stops/refuses only that box.
 The authenticated door deletion flow alone may request deletion-only lifecycle
 admission for a suspended owner, preserving drain and tombstone ordering. Such a
-wake admits local deletion only; ordinary requests, turns and scheduled wakes
-remain refused. No owner-store reader or compatibility path is added to the door.
+wake admits local deletion only. The outer ASGI lifespan returns before all
+scheduler, delivery, consumer and maintenance startup; no egress forwarder starts.
+Background execution entry points hold the same activity gate as turns, so drain
+observes running work and queued work cannot start after quiescence. No owner-store reader or compatibility path is added to the door.
 
 ## Founder decisions (2026-10-16)
 
@@ -950,3 +979,39 @@ remain refused. No owner-store reader or compatibility path is added to the door
   - Local image descriptions are dropped.
   - Billing status no longer shows usage figures.
 - **The cutover deploy goes ahead when every gate passes**: a clean census, the real-data rehearsal passing on a fresh backup, the lead's receipt on every slice, green CI, and the report delivered. The founder's condition: "Just make sure the architecture isn't sacrificed on review rounds or hard parts." No weakened shape, compatibility path or skipped gate gets a slice through.
+
+## Index-only corruption at cutover
+
+`sqlite_integrity.check` is shared by read-only census and stopped apply (including
+the deploy and rehearsal apply container). Census reports named repairable indexes
+without opening the source SQLite files. After the paired backup is verified,
+apply repairs exactly those indexes and verifies integrity again, recording
+`reindexed: <db>/<index>` in its durable report. Any other integrity error refuses;
+no table repair or blanket REINDEX is permitted.
+
+The complete shared revocation inventory is read by `restore_facts.carry_shared`
+from the stopped live volume and applied only to the unpublished restored volume:
+
+| Store | Revocation authority |
+| --- | --- |
+| `.api-keys.sqlite3` | `api_keys.revoked_at` |
+| `.hook-owners.sqlite3` | Removed `hook_owners` rows |
+| `.auth.db` | Removed/replaced `oauth_clients`, `authorization_codes`, `access_tokens`, `refresh_tokens` |
+| `.outside-client-authority.sqlite3` | `outside_switch` disabling outside access |
+| `.hosted-model-auth.db` | Consumed/removed `hosted_model_flows`, `connection_oauth_flows` |
+| `.runtime/owner-sessions.db` | `owner_sessions`, `owner_login_flows`, `owner_login_completions`, `owner_refresh_sessions`, `owner_approval_handoffs`, `canary_sign_in_attempts`, `approval_handoffs`, `inline_model_flows` |
+| `.tinyassets.db` | Legacy `user_sessions` |
+| `.broker/credential-custody.db` | `llm_credential_deposit_owners`, `llm_credential_custody`, `llm_credential_deposit_commits`, `llm_credential_refresh_state`; permanent `deleted_principals` |
+| `.broker/outbound.db` | `outbound_connections`, `outbound_connection_grants`, `connection_capabilities`, `browser_vault` |
+| `.broker/state/owner-identities.db` | `owner_box_secrets`; permanent `owner_box_revocations` |
+| `.broker/accounts/*/policy.db` | Latest `policy` generation/document and consumed `once_approvals`; `.deleted` markers |
+| Files | Removed/replaced `.runtime/app_refresh_sessions/*.json`, `.connect/*`, and credential records in `.platform/credential-vaults/*/.credential-vault.json` |
+
+Rows/files representing live authority are intersected by identity and credential
+incarnation; missing live authority is revoked, never restored. Explicit revocation
+fields remain revoked. Owner identity/admission/quota reservations, deletion
+receipts and checkout settlement mappings are also retained. Erasure uses the
+existing broker local sweep and descriptor-based owner-tree destruction. External
+browser-vault keys are outside the archive and remain untouched during staging.
+`box-store-quotas.fence_owner_journals` reads both owner stores, retains all consumed
+IDs as `unknown_after_restore` refusals and advances epoch, generation and incarnation.

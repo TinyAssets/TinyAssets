@@ -546,6 +546,7 @@ def cancel_account_billing(root, owner: str) -> str:
     plan = plans.read(owner)
     expired = False
     cancelled = False
+    cancelled_subscriptions = set()
     try:
         attempt = json.loads(plan["attempt"]) if plan["attempt"] is not None else None
         if attempt is not None:
@@ -557,7 +558,11 @@ def cancel_account_billing(root, owner: str) -> str:
                 raise ValueError("invalid attempt expiry or identity")
     except (ValueError, TypeError, KeyError) as exc:
         raise BillingUnavailable("checkout attempt is malformed") from exc
-    if attempt is not None:
+    attempts = plans.checkout_settlements(owner)
+    if attempt is not None and not any(
+            item["attempt_id"] == attempt["attempt_id"] for item in attempts):
+        attempts.append(attempt)
+    for attempt in attempts:
         for session in _attempt_session(attempt):
             session_id = session.get("id")
             if not session_id:
@@ -572,6 +577,7 @@ def cancel_account_billing(root, owner: str) -> str:
                 if not isinstance(subscription, str) or not subscription:
                     raise BillingUnavailable("completed checkout has no subscription mapping")
                 _cancel_confirmed(subscription)
+                cancelled_subscriptions.add(subscription)
                 _record_deleted_billing(root, owner, subscription, "cancelled")
                 plans.bind_checkout_subscription(owner, customer_id=session.get("customer"),
                                                   subscription_id=subscription)
@@ -590,7 +596,8 @@ def cancel_account_billing(root, owner: str) -> str:
         return "attempt_expired" if expired else "cancelled" if cancelled else "none"
     # Read first so an interrupted cancellation can be retried after Stripe
     # committed it, but before either our plan or deletion receipt was saved.
-    _cancel_confirmed(subscription)
+    if subscription not in cancelled_subscriptions:
+        _cancel_confirmed(subscription)
     _record_deleted_billing(root, owner, subscription, "cancelled")
     plans.apply_tier_event(owner, tier="free",
                            event_created=max(_time.time(), plan["event_created"]),

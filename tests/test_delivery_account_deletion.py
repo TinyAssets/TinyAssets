@@ -101,9 +101,13 @@ def test_delivery_tick_exception_does_not_starve_budget_reconciliation(
     from pathlib import Path
     from types import SimpleNamespace
 
+    from tinyassets.owner_activity import owner_work
+
     tree = ast.parse(Path("tinyassets/owner_runtime.py").read_text(encoding="utf-8"))
     function = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
                     and n.name == "_served_budget_lease_loop")
+    tick = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+                and n.name == "maintenance_tick")
     seen, cursors, file_cursors, deliveries, sleeps = [], [], [], [], []
     updates = []
     process_sleep = time.sleep
@@ -148,6 +152,7 @@ def test_delivery_tick_exception_does_not_starve_budget_reconciliation(
         return builtins.__import__(name, globals, locals, fromlist, level)
 
     scope = {"__builtins__": {**vars(builtins), "__import__": loop_import},
+             "owner_work": owner_work,
              "stop": SimpleNamespace(wait=sleep),
              "reconcile_deliveries": delivery,
              "reconcile_admitted_runs": admitted,
@@ -162,7 +167,7 @@ def test_delivery_tick_exception_does_not_starve_budget_reconciliation(
         "    _file_retention_cursor = ''\n"
         "    return _served_budget_lease_loop\n"
     )
-    factory.body[0].body.insert(2, function)
+    factory.body[0].body[2:2] = [tick, function]
     exec(compile(ast.fix_missing_locations(factory), "loop", "exec"), scope)
     with pytest.raises(StopLoop):
         scope["make_loop"]()()

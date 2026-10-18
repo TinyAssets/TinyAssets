@@ -145,8 +145,12 @@ def test_web_checkout_returns_a_session_and_api_returns_to_the_canonical_app(
             "expires_at": int(expires_at),
         }
 
+    sessions = []
+
     def _create(*, owner_id, attempt_id, params):
-        return {"id": "cs_test_1", "url": "https://checkout.stripe.com/c/pay/cs_test_1"}
+        session = f"cs_test_{len(sessions) + 1}"
+        sessions.append(session)
+        return {"id": session, "url": "https://checkout.stripe.com/c/pay/" + session}
 
     monkeypatch.setattr(stripe_adapter, "checkout_params", _params)
     monkeypatch.setattr(stripe_adapter, "create_checkout_session", _create)
@@ -181,7 +185,9 @@ def test_web_checkout_returns_a_session_and_api_returns_to_the_canonical_app(
         intent="checkout",
         requested_origin="https://evil.example",
     )
-    assert api.checkout_url == "https://checkout.stripe.com/c/pay/cs_test_1"
+    assert api.checkout_url == "https://checkout.stripe.com/c/pay/cs_test_2"
+    assert home.owner_for_checkout(session_id="cs_test_1") == _signed_in_operator.user_id
+    assert home.owner_for_checkout(session_id="cs_test_2") == _signed_in_operator.user_id
     assert seen["success"] == "https://tinyassets.io/app?subscribed=1"
     assert api.eligibility() == web.eligibility()
 
@@ -204,15 +210,19 @@ def test_a_configured_web_origin_is_the_only_non_canonical_return(
         }
 
     monkeypatch.setattr(stripe_adapter, "checkout_params", _params)
+    def create(**kwargs):
+        session = "cs_" + kwargs["attempt_id"]
+        return {"id": session, "url": "https://checkout.stripe.com/c/pay/" + session}
+
     monkeypatch.setattr(
         stripe_adapter,
         "create_checkout_session",
-        lambda **_kwargs: {"id": "cs_2", "url": "https://checkout.stripe.com/c/pay/cs_2"},
+        create,
     )
     monkeypatch.setattr(
         billing,
         "create_checkout_session",
-        lambda **_kwargs: {"id": "cs_2", "url": "https://checkout.stripe.com/c/pay/cs_2"},
+        create,
     )
 
     account_plan(

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tinyassets import rpc_frames as rf
+from tinyassets.owner_activity import owner_work
 
 
 @dataclass(frozen=True)
@@ -107,9 +108,11 @@ def start(relay: Path) -> OwnerRuntime:
         raise PermissionError("owner relay refused startup admission")
     root = OWNER_MOUNT
     from tinyassets.boxes.boxd import OwnerBoxd
+    from tinyassets.owner_activity import activity
 
     tools = OwnerBoxd(owner_id=doc["principal"], owner_root=root,
-                     state_dir=root / ".owner-boxd", relay=relay)
+                     state_dir=root / ".owner-boxd",
+                     relay=None if activity.deletion_only else relay)
     os.environ["TINYASSETS_DATA_DIR"] = str(root)
     os.environ["TINYASSETS_ENGINE_MCP_TOOLS"] = "1"
     os.environ["TINYASSETS_ONBOARDING_APP"] = "1"
@@ -195,7 +198,9 @@ def serving():
     from tinyassets.control_plane.tick import AssignedQueueConsumer
 
     runtime = current()
-    if runtime is None:
+    from tinyassets.owner_activity import activity
+
+    if runtime is None or activity.deletion_only:
         yield
         return
     stop, stopped = threading.Event(), threading.Event()
@@ -221,6 +226,7 @@ def serving():
                 raise RuntimeError("owner engine endpoints did not stop")
 
 
+@owner_work
 def _start_maintenance(stop: threading.Event):
     """Owner recovery and maintenance formerly started by the shared entrypoint."""
     import logging
@@ -277,44 +283,54 @@ def _start_maintenance(stop: threading.Event):
                 _reclaimed,
             )
 
-        def _served_budget_lease_loop() -> None:
-
+        @owner_work
+        def maintenance_tick() -> None:
             nonlocal _admitted_run_cursor, _file_retention_cursor
+            try:
+                from tinyassets.command_center_update_maintenance import tick as update_centers
+
+                update_centers(_sb_data_dir())
+            except Exception:  # noqa: BLE001 - keep unrelated maintenance running
+                logger.exception("command center updates: maintenance unavailable")
+            try:
+                _file_retention_cursor = reconcile_run_files(
+                    _sb_data_dir(), after_operation_id=_file_retention_cursor,
+                )
+            except Exception:  # noqa: BLE001 - retain debt and continue other maintenance
+                logger.exception("run files: retention tick failed")
+            try:
+                _admitted_run_cursor = reconcile_admitted_runs(
+                    _sb_data_dir(), after_run_id=_admitted_run_cursor,
+                )
+            except Exception:  # noqa: BLE001 - independent bounded origin nomination
+                logger.exception("admitted runs: reconciliation tick failed")
+            try:
+                reconcile_deliveries(_sb_data_dir())
+            except Exception:  # noqa: BLE001 - do not starve budget settlement
+                logger.exception("delivery: reconciliation tick failed")
+            try:
+                _n = reconcile_served_budget_leases(_sb_data_dir())
+                if _n:
+                    logger.info(
+                        "served budget: lease-reconciled %d stale "
+                        "reservation(s)",
+                        _n,
+                    )
+            except Exception:  # noqa: BLE001 - loop must never die
+                logger.exception(
+                    "served budget: lease reconciliation tick failed"
+                )
+
+
+        def _served_budget_lease_loop() -> None:
+            from tinyassets.owner_activity import activity
+
             while not stop.wait(300.0):
                 try:
-                    from tinyassets.command_center_update_maintenance import tick as update_centers
-
-                    update_centers(_sb_data_dir())
-                except Exception:  # noqa: BLE001 - keep unrelated maintenance running
-                    logger.exception("command center updates: maintenance unavailable")
-                try:
-                    _file_retention_cursor = reconcile_run_files(
-                        _sb_data_dir(), after_operation_id=_file_retention_cursor,
-                    )
-                except Exception:  # noqa: BLE001 - retain debt and continue other maintenance
-                    logger.exception("run files: retention tick failed")
-                try:
-                    _admitted_run_cursor = reconcile_admitted_runs(
-                        _sb_data_dir(), after_run_id=_admitted_run_cursor,
-                    )
-                except Exception:  # noqa: BLE001 - independent bounded origin nomination
-                    logger.exception("admitted runs: reconciliation tick failed")
-                try:
-                    reconcile_deliveries(_sb_data_dir())
-                except Exception:  # noqa: BLE001 - do not starve budget settlement
-                    logger.exception("delivery: reconciliation tick failed")
-                try:
-                    _n = reconcile_served_budget_leases(_sb_data_dir())
-                    if _n:
-                        logger.info(
-                            "served budget: lease-reconciled %d stale "
-                            "reservation(s)",
-                            _n,
-                        )
-                except Exception:  # noqa: BLE001 - loop must never die
-                    logger.exception(
-                        "served budget: lease reconciliation tick failed"
-                    )
+                    maintenance_tick()
+                except RuntimeError:
+                    if not activity.draining:
+                        raise
 
         maintenance = _threading.Thread(
             target=_served_budget_lease_loop,

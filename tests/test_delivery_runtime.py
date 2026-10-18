@@ -30,6 +30,24 @@ def _attempt(base, receipt):
         ).fetchone())
 
 
+def test_deletion_only_pending_delivery_never_dispatches_and_drain_is_empty(
+        reserved, provider_probe, monkeypatch):
+    from tinyassets import owner_activity
+
+    base, receipt, run_id = reserved
+    gate = owner_activity.Activity()
+    gate.admit_deletion_only()
+    monkeypatch.setattr(owner_activity, "activity", gate)
+    monkeypatch.setattr(runs, "_get_executor",
+                        lambda **kwargs: pytest.fail("deletion startup submitted background work"))
+    with pytest.raises(RuntimeError, match="draining"):
+        runtime.reconcile_deliveries(base)
+    assert _attempt(base, receipt)["state"] == "pending"
+    assert not provider_probe
+    assert gate.quiesce(0)
+    assert gate.status()["active"] == 0
+
+
 @pytest.fixture
 def provider_probe(monkeypatch):
     calls = []

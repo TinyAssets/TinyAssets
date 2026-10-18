@@ -142,6 +142,9 @@ class OwnerTools:
         if not command.strip():
             return "error: a command is required"
         wall = min(max(float(timeout or DEFAULT_WALL_SECONDS), 1), MAX_BASH_SECONDS)
+        await asyncio.to_thread(self.provider.consume_operation, self.handle, op_id,
+                                "bash", {"command": command, "cwd": self._root,
+                                         "wall": wall, "env": env or {}})
         from tinyassets.owner_git import for_command
         from tinyassets.owner_public_egress import PROXY_ENV
 

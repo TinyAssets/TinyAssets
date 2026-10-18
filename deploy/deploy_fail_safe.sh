@@ -2095,6 +2095,9 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
           if [ "$?" -ne 0 ]; then
             migration_refused "check=owner_cutover_census ready=no"
           fi
+          # The shared integrity policy reports repairable index drift in census.
+          # Apply repairs only named indexes after this stopped, verified pair,
+          # rechecks integrity and records each repair in the cutover report.
           box_apply="$(box_migration_container apply /data --store /box-store \
             --backup "/backup/${MIGRATION_SNAPSHOT}" \
             --box-backup "/backup/${box_backup}" 2>&1)"

@@ -81,6 +81,10 @@ def test_legacy_checkout_refuses_ambiguity(source, mutation, reason):
         legacy_attempt(source, other, "b2")
     legacy_attempt(source, value)
     report = census(source)
+    if mutation == "unrecorded":
+        assert report["ready"], report["refusals"]
+        assert report["plans"]["account-0002"]["dropped_sessionless_attempts"] == 1
+        return
     assert not report["ready"]
     assert report["refusals"][reason] == 1
     assert report["billing_refusals"]["account-0002"][reason] == 1
@@ -96,7 +100,71 @@ def billing(tmp_path, monkeypatch):
     value = attempt()
     with sqlite3.connect(plans.path) as db:
         db.execute("UPDATE plans SET attempt=?", (json.dumps(value),))
+    plans.retain_checkout("alice", value)
     return tmp_path, plans, value
+
+
+def test_expired_checkout_mapping_survives_migration_and_new_attempt(source):
+    value = attempt(time.time() - 5000)
+    legacy_attempt(source, value)
+    inventory = {}
+    report = census(source, _inventory=inventory)
+    assert report["ready"], report["refusals"]
+    assert inventory["billing"]["bob"]["attempt"] is None
+    assert inventory["billing"]["bob"]["settlements"] == [value]
+    plans = Plans(source)
+    plans.set_plan("bob", "free", event_created=0)
+    plans.retain_checkout("bob", value)
+    plans.begin_checkout_attempt("bob", now=time.time(), attempt_id="new", mode="test",
+                                 params={}, lease_seconds=60)
+    assert plans.owner_for_checkout(session_id=value["session_id"]) == "bob"
+    assert plans.checkout_settlements("bob") == [value]
+
+
+@pytest.mark.parametrize("identity", ["session_id", "attempt_id"])
+def test_expired_checkout_mappings_cannot_conflict(source, identity):
+    first = attempt(time.time() - 5000)
+    second = dict(first, attempt_id="another-attempt", session_id="cs_another")
+    second[identity] = first[identity]
+    legacy_attempt(source, first, "b1")
+    legacy_attempt(source, second, "b2")
+    report = census(source)
+    assert not report["ready"]
+    assert report["refusals"]["conflicting_checkout_attempts"] == 1
+
+
+def test_deletion_cancels_every_completed_session_after_attempts_are_cleared(billing, monkeypatch):
+    root, plans, first = billing
+    second = attempt(time.time() - 5000)
+    second.update(attempt_id="older-attempt", session_id="cs_older")
+    plans.retain_checkout("alice", second)
+    for value in (first, second):
+        assert apply_event(root, {"type": "checkout.session.completed", "data": {"object": {
+            "id": value["session_id"], "customer": "cus_same",
+            "subscription": "sub_" + value["session_id"],
+        }}}) == {"settled": True}
+    assert plans.read("alice")["attempt"] is None
+    tombstone(root, "alice", {})
+    cancelled = []
+
+    def get(path):
+        name = path.rsplit("/", 1)[-1]
+        return ({"id": name, "status": "complete", "customer": "cus_same",
+                 "subscription": "sub_" + name} if path.startswith("checkout/") else
+                {"id": name, "status": "active"})
+
+    def cancel(path, fields, **kwargs):
+        assert kwargs["method"] == "DELETE"
+        name = path.rsplit("/", 1)[-1]
+        cancelled.append(name)
+        return {"id": name, "status": "canceled"}
+
+    monkeypatch.setattr(stripe, "_get", get)
+    monkeypatch.setattr(stripe, "_post", cancel)
+    assert stripe.cancel_account_billing(root, "alice") == "cancelled"
+    assert sorted(cancelled) == ["sub_cs_older", "sub_cs_synthetic"]
+    assert plans.owner_for_checkout(session_id="cs_older") == "alice"
+    assert plans.owner_for_checkout(session_id="cs_synthetic") == "alice"
 
 
 def test_tombstone_refuses_checkout_and_expires_open_session(billing, monkeypatch):
@@ -183,6 +251,8 @@ def test_completion_before_subscription_event_retains_cancellation_authority(bil
     assert plans.read("alice")["subscription_id"] == "sub_completed"
     tombstone(root, "alice", {})
     monkeypatch.setattr(stripe, "_get", lambda path: {
+        "id": value["session_id"], "status": "complete", "subscription": "sub_completed",
+        "customer": "cus_completed"} if path.startswith("checkout/") else {
         "id": "sub_completed", "status": "active"})
     calls = []
     monkeypatch.setattr(stripe, "_post", lambda path, fields, **kw: (
@@ -196,6 +266,7 @@ def test_lost_session_response_is_reconciled_before_deletion(billing, monkeypatc
     value.update(session_id=None, url=None)
     with sqlite3.connect(plans.path) as db:
         db.execute("UPDATE plans SET attempt=?", (json.dumps(value),))
+        db.execute("DELETE FROM checkout_settlements")
     monkeypatch.setattr(stripe, "_get", lambda path: {"has_more": False, "data": [{
         "id": "cs_recovered", "status": "open",
         "metadata": {stripe.ATTEMPT_ID_KEY: value["attempt_id"]}}]})
@@ -227,6 +298,7 @@ def test_tombstone_waits_for_inflight_checkout_then_cleanup_sees_it(billing, mon
     value.update(session_id=None, url=None)
     with sqlite3.connect(plans.path) as db:
         db.execute("UPDATE plans SET attempt=?", (json.dumps(value),))
+        db.execute("DELETE FROM checkout_settlements")
     entered, release, deleted = threading.Event(), threading.Event(), threading.Event()
     result = []
 

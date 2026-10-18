@@ -39,6 +39,41 @@ def test_cutover_preserves_cancellation_mapping_and_resumes_payable_checkout(cut
         "url": original["url"], "resumed": True}
 
 
+def test_root_vectors_never_inherit_knowledge_owner(cutover):
+    data, store, *_ = cutover
+    _sql(data / "knowledge.db", "CREATE TABLE facts (universe_id TEXT, text TEXT); "
+         "INSERT INTO facts VALUES ('a1','owned knowledge');")
+    for owner in ("alice", "bob"):
+        path = data / "lancedb" / owner / "vectors.lance"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"synthetic mixed root vectors")
+    report = migration.census(data)
+    assert report["ready"], report["refusals"]
+    loss = report["loss_summary"]["unattributed"]["unattributed_root_vectors"]["knowledge stores"]
+    assert loss["files"] == 2
+    assert loss["bytes"] == 2 * len(b"synthetic mixed root vectors")
+    migration.apply(*cutover)
+    for uid in (300001, 300002):
+        assert not (store / str(uid) / "lancedb").exists()
+    assert (store / "300001/knowledge.db").exists()
+
+
+def test_cutover_repairs_only_named_indexes_and_records_verified_repair(cutover):
+    from tests.test_cutover_index_integrity import corrupt_index
+
+    data, store, *_ = cutover
+    corrupt_index(data / ".tinyassets.db")
+    assert migration.census(data)["ready"]
+    migration.apply(*cutover)
+    receipt = json.loads((data / ".owner-cutover.json").read_text())
+    assert receipt["report"]["reindexed"] == ["reindexed: .tinyassets.db/drift"]
+    for uid in (300001, 300002):
+        with sqlite3.connect(store / str(uid) / ".tinyassets.db") as db:
+            assert db.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+            assert db.execute("SELECT COUNT(*) FROM agent_turns INDEXED BY drift"
+                              ).fetchone() == (2,)
+
+
 def _published_workflow(data):
     # Full production definition schema, including all current migrated columns.
     import tempfile
@@ -130,6 +165,18 @@ def cutover(source, tmp_path, monkeypatch):
         pytest.skip(
             "requires linux_oracle.py --as-root; owner=c6-owner-box runs-in=linux_oracle.py"
         )
+    from tinyassets.storage.outbound_connections import _SCHEMA
+
+    with closing(sqlite3.connect(source / "outbound.db")) as db, db:
+        records = db.execute("SELECT destination,owner_user_id FROM outbound_connections"
+                             ).fetchall()
+        db.execute("DROP TABLE outbound_connections")
+        db.executescript(_SCHEMA)
+        for destination, owner in records:
+            db.execute("INSERT INTO outbound_connections (connection_id,owner_user_id,"
+                       "connection_class,scopes_json,provider,destination,credential_ref) "
+                       "VALUES (?,?,'http','[]','synthetic',?,'synthetic')",
+                       (owner + "-legacy", owner, destination))
     for center in ('a1', 'a2', 'b1', 'b2'):
         os.chown(source / center, 1001, 300001 if center[0] == 'a' else 300002)
     destination = tmp_path / 'volume/_data'
@@ -440,15 +487,16 @@ def test_completed_apply_restores_paired_owner_split(cutover, tmp_path):
     assert not (data / 'a1').exists()
     result = _restore_paired(cutover, tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert _fingerprint(data) == before
-    assert json.loads((data / '.layout.json').read_text())['split'] == 'owner-split'
-    assert not (store / '300001').exists()
-    assert not (store / '300002').exists()
+    assert json.loads((data / '.layout.json').read_text())['box_layout'] == 'owner-box'
+    for uid, centers in ((300001, ('a1', 'a2')), (300002, ('b1', 'b2'))):
+        for center in centers:
+            assert (_fingerprint(store / str(uid) / center)['notes.txt']
+                    == before[center + '/notes.txt'])
     assert list(store.glob('.tinyassets-box-restore-old.*/300001/a1/notes.txt'))
 
 
 @pytest.mark.parametrize("authority", ["router", "revocation"])
-def test_same_layout_restore_refuses_deletion_before_either_volume_swap(
+def test_same_layout_restore_carries_deletion_and_destroys_restored_tree(
     cutover, tmp_path, authority,
 ):
     import runpy
@@ -471,16 +519,22 @@ def test_same_layout_restore_refuses_deletion_before_either_volume_swap(
     else:
         _sql(data / ".broker/state/owner-identities.db",
              "INSERT INTO owner_box_revocations VALUES ('alice',1)")
-    before = _fingerprint(data), _fingerprint(store)
     result = _restore_paired(cutover, tmp_path)
-    assert result.returncode == 4, result.stdout + result.stderr
-    assert "forward recovery" in result.stderr
-    assert (_fingerprint(data), _fingerprint(store)) == before
-    assert not list(store.glob(".tinyassets-box-restore-old.*"))
-    assert not (store / "300001/a1/notes.txt").exists()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (store / "300001").exists()
+    assert (store / "300002/b1/notes.txt").exists()
+    receipt = json.loads((data / ".owner-cutover.json").read_text())
+    assert [owner["uid"] for owner in receipt["plan"]] == [300002]
+    migration.verify(data, store)
+    with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
+        assert db.execute("SELECT deleted FROM owner_box_revocations WHERE principal='alice'"
+                          ).fetchone() == (1,)
+    if authority == "router":
+        assert DeletedOwners(data).contains("alice")
+    assert list(store.glob(".tinyassets-box-restore-old.*"))
 
 
-def _restore_paired(cutover, tmp_path, *, accept_owner_write_loss=False):
+def _restore_paired(cutover, tmp_path):
     from tests.test_owner_cutover_restore import REPO, _shim
 
     data, store, data_archive, box_archive = cutover
@@ -497,8 +551,14 @@ def _restore_paired(cutover, tmp_path, *, accept_owner_write_loss=False):
     wrapper = binary / 'python3'
     wrapper.write_text(f"#!{sys.executable}\n" + """import os, runpy, subprocess, sys
 if len(sys.argv) > 1 and sys.argv[1].endswith('/box-store-quotas.py'):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(sys.argv[1])))
+    import deploy.box_project_readback as readback
+    readback.verify_owner = lambda *args: None
+    readback.verify_tree = lambda *args: None
     real_run = subprocess.run
     def run(argv, **kwargs):
+        if argv[0] == 'xfs_quota':
+            return subprocess.CompletedProcess(argv, 0, '', '')
         if argv[0] == '/opt/tinyassets/boxhostd/current/runsc':
             assert argv[-3:] == ['list', '--format=json'] or argv[-2:] == ['list', '--format=json']
             return subprocess.CompletedProcess(argv, 0, '[]', '')
@@ -515,7 +575,6 @@ else:
         env={**os.environ, 'PATH': f"{binary}:{os.environ['PATH']}",
              'BACKUP_FILE': str(data_archive), 'BOX_BACKUP_FILE': str(box_archive),
              'BACKUP_VOLUME': 'synthetic-cutover', 'BOX_STORE_DIR': str(store),
-             'CUTOVER_ACCEPT_OWNER_WRITE_LOSS': str(int(accept_owner_write_loss)),
              'BACKUP_LOG': str(tmp_path / 'restore.log'), 'TEST_VOLUME': str(data)},
         text=True, capture_output=True, check=False)
     return result
@@ -591,7 +650,8 @@ def test_shared_doors_authenticate_migrated_keys_and_hooks(cutover, monkeypatch)
     ('source', 'verified cutover source'), ('new_owner', 'inventory changed'),
     ('receipt_mode', 'root-private'),
 ])
-def test_cutover_restore_guard_refuses_any_changed_generation(cutover, tmp_path, mutation, reason):
+def test_cutover_restore_carries_changes_but_refuses_mismatched_source(
+        cutover, tmp_path, mutation, reason):
     import runpy
 
     from tests.test_owner_cutover_restore import REPO
@@ -600,12 +660,13 @@ def test_cutover_restore_guard_refuses_any_changed_generation(cutover, tmp_path,
     restored = tmp_path / 'restored'
     restored.mkdir()
     with tarfile.open(archive, 'r:gz') as source_archive:
-        source_archive.extractall(restored, filter='data')
+        source_archive.extractall(restored, filter='fully_trusted')
     staged = restored / '_data'
     migration.apply(*cutover)
     helper = runpy.run_path(str(REPO / 'deploy/box-store-quotas.py'))
     fence = helper['fence_restore']
-    fence(data, staged, cutover_store=store)
+    restored_trees = tmp_path / 'restored-trees'
+    restored_trees.mkdir()
     if mutation == 'shared':
         _sql(data / '.broker/plans.db', "UPDATE plans SET tier='paid' WHERE owner='bob'")
     elif mutation == 'owner':
@@ -616,8 +677,13 @@ def test_cutover_restore_guard_refuses_any_changed_generation(cutover, tmp_path,
         (store / '300003').mkdir()
     else:
         (data / '.owner-cutover.json').chmod(0o644)
-    with pytest.raises(ValueError, match=reason):
-        fence(data, staged, cutover_store=store)
+    if mutation in {'source', 'receipt_mode'}:
+        with pytest.raises(ValueError, match=reason):
+            fence(data, staged, cutover_store=store, restored_store=restored_trees)
+    else:
+        fence(data, staged, cutover_store=store, restored_store=restored_trees)
+        assert json.loads((staged / '.layout.json').read_text())['box_layout'] == 'owner-box'
+        assert (restored_trees / '300001/a1/notes.txt').read_text() == 'private history for a1'
     assert (store / '300001/a1').is_dir()
     assert not (data / 'a1').exists()
 
@@ -646,7 +712,7 @@ def test_seeded_tombstones_block_broker_custody_without_old_metadata(cutover):
 @pytest.mark.parametrize('mutation', ['identity', 'admission', 'deletion', 'billing',
                                      'destruction', 'receipt', 'source', 'new_owner',
                                      'owner_operation'])
-def test_accepting_owner_write_loss_still_fences_shared_authority(cutover, tmp_path, mutation):
+def test_legacy_snapshot_carries_live_authority_with_owner_write_loss(cutover, tmp_path, mutation):
     import runpy
 
     from tests.test_owner_cutover_restore import REPO
@@ -655,7 +721,7 @@ def test_accepting_owner_write_loss_still_fences_shared_authority(cutover, tmp_p
     staged_parent = tmp_path / 'staged'
     staged_parent.mkdir()
     with tarfile.open(archive, 'r:gz') as backup:
-        backup.extractall(staged_parent, filter='data')
+        backup.extractall(staged_parent, filter='fully_trusted')
     staged = staged_parent / '_data'
     migration.apply(*cutover)
     (store / '300001/a1/notes.txt').write_text('accepted owner write loss')
@@ -691,9 +757,32 @@ def test_accepting_owner_write_loss_still_fences_shared_authority(cutover, tmp_p
         (store / '300003').mkdir()
     before = _fingerprint(staged)
     helper = runpy.run_path(str(REPO / 'deploy/box-store-quotas.py'))
-    with pytest.raises(ValueError):
-        helper['fence_restore'](data, staged, cutover_store=store, accept_owner_write_loss=True)
-    assert _fingerprint(staged) == before
+    restored_trees = tmp_path / 'restored-trees'
+    restored_trees.mkdir()
+    if mutation in {'receipt', 'source'}:
+        with pytest.raises(ValueError):
+            helper['fence_restore'](data, staged, cutover_store=store,
+                                    restored_store=restored_trees)
+        assert _fingerprint(staged) == before
+    else:
+        helper['fence_restore'](data, staged, cutover_store=store,
+                                restored_store=restored_trees)
+        if mutation == 'owner_operation':
+            with sqlite3.connect(restored_trees / '300001/.owner-boxd/boxhost.db') as db:
+                assert db.execute("SELECT state FROM ops WHERE op_id='write-after-cutover'"
+                                  ).fetchone() == ('unknown_after_restore',)
+        elif mutation == 'destruction':
+            assert not (restored_trees / '300001').exists()
+        elif mutation in {'identity', 'admission', 'deletion'}:
+            relative, table = {
+                'identity': ('.broker/state/owner-identities.db', 'owner_identities'),
+                'admission': ('.broker/state/owner-identities.db', 'center_admissions'),
+                'deletion': ('.broker/credential-custody.db', 'deleted_principals'),
+            }[mutation]
+            with sqlite3.connect(data / relative) as db:
+                expected = db.execute(f'SELECT * FROM {table}').fetchall()
+            with sqlite3.connect(staged / relative) as db:
+                assert db.execute(f'SELECT * FROM {table}').fetchall() == expected
     assert (store / '300001/a1/notes.txt').read_text() == 'accepted owner write loss'
 
 
@@ -844,11 +933,12 @@ def test_migrated_owner_processes_serve_history_requests_and_pause(
             relays.close()
     assert _fingerprint(store / '300001') != json.loads(
         (data / '.owner-cutover.json').read_text())['owner_manifests']['300001']
-    result = _restore_paired(cutover, tmp_path, accept_owner_write_loss=True)
+    result = _restore_paired(cutover, tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert _fingerprint(data) == before
-    assert json.loads((data / '.layout.json').read_text())['split'] == 'owner-split'
-    assert not (store / '300001').exists()
-    assert not (store / '300002').exists()
+    assert json.loads((data / '.layout.json').read_text())['box_layout'] == 'owner-box'
+    for uid, centers in ((300001, ('a1', 'a2')), (300002, ('b1', 'b2'))):
+        for center in centers:
+            assert (_fingerprint(store / str(uid) / center)['notes.txt']
+                    == before[center + '/notes.txt'])
     assert list(store.glob('.tinyassets-box-restore-old.*/300001/a1/notes.txt'))
-    assert 'all post-cutover owner writes will be lost' in result.stdout
+    assert 'retaining current monotonic facts' in result.stdout

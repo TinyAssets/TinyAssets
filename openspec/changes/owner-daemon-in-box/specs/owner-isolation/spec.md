@@ -1,11 +1,50 @@
 ## ADDED Requirements
 
+### Requirement: Restore keeps monotonic facts
+
+Restore SHALL read current live owner erasures, every shared-layer revocation,
+and consumed owner operation IDs and epochs while consumers are stopped. It SHALL
+carry those facts into restored state before publishing volumes or starting a
+daemon. Missing live credentials SHALL remain revoked even when revocation deleted
+their row or file. Erased owners SHALL undergo the same complete local sweep and
+tree destruction as account deletion. Consumed IDs SHALL become refusals and the
+owner journal epoch SHALL advance. Every mutating tool, including bash, SHALL
+record its operation ID before execution. Any carry-forward failure SHALL leave
+the pre-restore volumes intact. Only malformed or mismatched backup pairs SHALL
+be rejected by backup comparisons; newer monotonic facts SHALL be carried forward.
+
+#### Scenario: Revocation after the snapshot
+- **WHEN** a key, hook, session, router credential or broker grant is revoked after a snapshot
+- **THEN** restoring that snapshot preserves the revocation and erased custody
+
+#### Scenario: Erasure after the snapshot
+- **WHEN** an owner is erased after a snapshot
+- **THEN** restore removes that owner's restored local data and shared credentials and preserves its deletion tombstones
+
+#### Scenario: Write and bash replay after restore
+- **WHEN** a consumed write or bash operation ID is submitted after restore
+- **THEN** the journal refuses it without executing it and its epoch exceeds both prior epochs
+
+#### Scenario: Carry-forward failure
+- **WHEN** any monotonic fact cannot be reapplied
+- **THEN** restore fails loudly before publishing either volume and leaves the pre-restore state intact
+
+#### Scenario: Backup predates a completed write
+- **WHEN** an owner-box backup is restored after a later operation completed
+- **THEN** retrying that operation ID is refused without changing restored bytes
+- **AND** both snapshot and later operation IDs remain refused after restart
+- **AND** the restored owner's epoch exceeds both pre-restore epochs
+- **AND** a legacy pair is normalized through the forward cutover before facts
+  are applied, preserving one owner-local journal and no shared operation fence
+
 ### Requirement: Cutover preserves knowledge bytes and removes rehearsal residue
 The migration SHALL copy admitted centers' vector directories and knowledge
 SQLite files verbatim into their owner's box. Census SHALL report knowledge
 file and byte counts per owner. Legacy root knowledge SHALL move whole when
 its recorded scopes resolve every row to one admitted owner; otherwise it
-SHALL be dropped with a counted reason, never treated as regenerated.
+SHALL be dropped with a counted reason, never treated as regenerated. Root
+`lancedb/` SHALL always be dropped with `unattributed_root_vectors`, never
+attributed by inference from another store.
 
 #### Scenario: Center vectors survive cutover
 - **WHEN** an admitted center contains a LanceDB directory and knowledge databases
@@ -17,19 +56,6 @@ SHALL be dropped with a counted reason, never treated as regenerated.
 - **THEN** it unmounts all paths deepest first and detaches the loop
 - **AND** it asserts no venue mount or loop remains before removing any volume
 - **AND** setup makes its mount private and refuses a missing image before creating volumes
-
-### Requirement: Restore fences owner-local operations
-Same-layout owner-box restore SHALL preserve all operation IDs seen in either
-owner-local journal as refusals and advance that journal's epoch before startup.
-The shared host journal SHALL NOT act as a second owner-operation fence.
-
-#### Scenario: Backup predates a completed write
-- **WHEN** an owner-box backup is restored after a later operation completed
-- **THEN** retrying that operation ID is refused without changing restored bytes
-- **AND** both snapshot and later operation IDs remain refused after restart
-- **AND** the restored owner's epoch exceeds both pre-restore epochs
-- **AND** rollback to a pre-cutover layout refuses if it would discard owner
-  operation authority, even when ordinary owner-write loss was accepted
 
 ### Requirement: Published workflows remain locally authoritative
 Migration SHALL retain an admitted author's published definition in that owner's
@@ -46,7 +72,7 @@ that migrated workflow references resolve locally before declaring completion.
 ### Requirement: Shared billing and deletion authority survive cutover
 
 The cutover SHALL preserve verified paid subscription mappings and unexpired
-checkout attempts in shared plans. Census SHALL refuse missing paid mappings and
+checkout leases in shared plans and every session-bearing attempt as a permanent settlement mapping. Census SHALL refuse missing paid mappings and
 malformed or ambiguous attempts with counted reason codes and pseudonymous account
 evidence. Deletion SHALL fence new checkout creation, expire payable sessions and
 cancel live subscriptions before success. Restore SHALL preserve deletion authority.
@@ -55,6 +81,12 @@ cancel live subscriptions before success. Restore SHALL preserve deletion author
 - **WHEN** a legacy paid account is censused
 - **THEN** its verified owner-to-customer-and-subscription mapping is carried into the shared plan
 - **AND** missing or conflicting mappings refuse census with a named, counted reason; no unmapped paid plan is seeded
+
+#### Scenario: Checkout webhook follows an expired lease
+- **WHEN** a migrated completed checkout receives its webhook after the attempt lease expires
+- **THEN** the permanent session mapping resolves its owner
+- **AND** deletion consults every retained session mapping and cancels resulting subscriptions
+- **AND** only attempts without a session are dropped and counted
 
 #### Scenario: Open checkout survives publication
 - **WHEN** a legacy account has an unexpired `checkout_attempt_v1`
@@ -69,7 +101,7 @@ cancel live subscriptions before success. Restore SHALL preserve deletion author
 
 #### Scenario: Restore cannot resurrect a deleted owner
 - **WHEN** current router deletion receipts or owner-box revocations are newer than a staged backup
-- **THEN** restore refuses before swapping either shared or owner volumes, including when broker retirement failed after the local sweep
+- **THEN** restore carries the tombstone and repeats complete erasure before publishing either volume, including when broker retirement failed after the local sweep
 
 ### Requirement: Lifecycle admission failures are isolated per owner
 
@@ -85,7 +117,8 @@ deletion-only cleanup under the existing drain and tombstone rules.
 #### Scenario: Suspended owner can delete without ordinary wake authority
 - **WHEN** an authenticated suspended owner confirms account deletion at the door
 - **THEN** deletion-only admission permits its local sweep followed by the durable tombstone and shared cleanup
-- **AND** ordinary requests, turns and scheduled wakes remain refused, including during the cleanup wake
+- **AND** the outer lifespan starts no scheduler, delivery, consumer or maintenance loop
+- **AND** every background execution holds the activity gate; pending delivery stays unexecuted and deletion drain reports zero work
 
 ### Requirement: Cutover accounts for loss without guessing ownership
 
@@ -128,9 +161,9 @@ custody and its platform vault directory.
 
 #### Scenario: Restore after owner serving writes
 - **WHEN** the operator explicitly accepts post-cutover write loss and restores the verified paired pre-cutover backup after stopping serving
-- **THEN** pre-cutover owner-split bytes are restored exactly, including history, requests and pause state
+- **THEN** original source bytes are verified before forward conversion restores history, requests and pause state in owner boxes
 - **AND** post-cutover owner writes are lost as stated in the census and runbook
-- **AND** changed shared authority, deletion frontiers, source bytes or unsafe restore receipts still refuse
+- **AND** newer shared revocations, erasures and consumed IDs are carried forward; mismatched source bytes or unsafe restore receipts refuse
 
 #### Scenario: The archive rehearsal uses the deployment transaction
 - **WHEN** the operator runs the archive harness with a candidate image
@@ -138,7 +171,7 @@ custody and its platform vault directory.
 - **AND** kills between owner trees and after seeding resume to the uninterrupted generation's manifests
 - **AND** every migrated owner serves history, pending requests, pause/resume and broker plan reads through owner processes and router forwarding
 - **AND** an owner without a model source can complete shared-door connect and model-use confirmation on a disposable clone without changing the restore generation's shared authority
-- **AND** paired restores before and after a serving write compare against the original owner-split archive
+- **AND** paired restores validate original source bytes and verify normalized owner-box state; the after-write restore proves key revocation, owner erasure and write/bash replay refusals
 - **AND** reports contain fixed step names, counts and PASS/FAIL without identities, paths or content
 - **AND** a generated two-owner, four-center archive with rows in all six census classes and all non-conflicting drop reasons exercises the entire harness in the root Linux oracle venue
 
@@ -399,3 +432,19 @@ The broker SHALL own its custody locks, ownership metadata and deletion tombston
 - **WHEN** RFC 7009 revocation fails
 - **THEN** removal returns removed_locally_revoke_failed with a message naming the provider and its recovery URL
 - **AND** custody is erased and retrying removal retains the manual-revocation instruction
+
+### Requirement: Cutover repairs only named index drift
+
+Census SHALL run the shared SQLite integrity policy read-only and report solely
+index-only failures as repairable. Stopped apply SHALL run that same policy after
+the verified paired backup, REINDEX exactly the named indexes, re-check integrity
+and record each repair. Every non-index integrity failure SHALL refuse.
+
+#### Scenario: Missing index entries with intact table
+- **WHEN** integrity_check reports only missing entries or wrong entry counts in named indexes
+- **THEN** census remains ready with repairable indexes listed and no source writes
+- **AND** apply reindexes those indexes and records verified repairs
+
+#### Scenario: Corrupt table alongside index drift
+- **WHEN** any integrity error is not an index-only entry error
+- **THEN** census and apply refuse without attempting index repair

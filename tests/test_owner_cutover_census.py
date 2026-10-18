@@ -534,7 +534,8 @@ def test_files_have_masked_patterns_and_legacy_vaults_are_unopened_drops(source)
     assert report['file_patterns']['owner']['<center>/<id>/<id>/<file>'] == 1
     assert report['knowledge_stores']['account-0001'] == {
         'description': 'knowledge stores', 'files': 1, 'bytes': len('index')}
-    assert report['loss_summary']['unattributed']['no_owner_key']['knowledge stores'] == {
+    dropped = report['loss_summary']['unattributed']['unattributed_root_vectors']
+    assert dropped['knowledge stores'] == {
         'class': 'dropped', 'rows': 0, 'files': 1, 'bytes': len('index')}
     assert report['file_patterns']['owner'][
         '.universe-sidecars/<center>/.effector_consents.db'] == 1

@@ -38,6 +38,24 @@ def test_source_event_types_are_admitted_by_prefix():
     assert not _is_valid_event_type("not_a_known_type")
 
 
+def test_draining_owner_leaves_pending_scheduler_event_queued(base_path, monkeypatch):
+    from tinyassets.owner_activity import Activity
+
+    gate = Activity()
+    assert gate.quiesce(0)
+    monkeypatch.setattr("tinyassets.owner_activity.activity", gate)
+    calls = []
+    scheduler = _scheduler(base_path, calls)
+    event = SchedulerEvent(event_type="source:pending", event_id="pending", payload={})
+    scheduler._event_queue.put(event)
+    scheduler.start()
+    with pytest.raises(RuntimeError, match="draining"):
+        scheduler.tick()
+    assert scheduler._event_queue.get_nowait() is event
+    assert calls == []
+    assert gate.status()["active"] == 0
+
+
 def test_a_source_event_fires_the_bound_branch_as_the_owning_universe(base_path):
     calls: list = []
     register_subscription(

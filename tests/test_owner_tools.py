@@ -11,6 +11,21 @@ from tinyassets.agent_loop.owner_tools import OUTPUT_BYTES, OwnerTools, box_tool
 pytestmark = pytest.mark.role_split
 
 
+def test_bash_consumes_operation_before_effect_and_refuses_replay(owner):
+    from tinyassets.boxes.provider import BoxOperationRefused
+
+    tools = OwnerTools(owner.home)
+
+    async def run():
+        await tools.bash("once", "echo effect >> effects")
+        with pytest.raises(BoxOperationRefused, match="not re-run"):
+            await tools.bash("once", "echo effect >> effects")
+
+    asyncio.run(run())
+    assert (owner.home / "effects").read_text() == "effect\n"
+    assert owner.core._state.lookup("alice", "once") is not None
+
+
 def test_local_tools_read_write_edit_and_definitions(owner):
     tools = OwnerTools(owner.home)
 

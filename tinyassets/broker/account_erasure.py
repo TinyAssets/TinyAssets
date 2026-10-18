@@ -28,7 +28,7 @@ def validate(principal, command_center):
         raise ValueError("invalid account erasure scope")
 
 
-def local_erase(ledger, *, principal, command_center):
+def local_erase(ledger, *, principal, command_center, erase_external_keys=True):
     validate(principal, command_center)
     owned_connections = "SELECT connection_id FROM outbound_connections WHERE owner_user_id=?"
     owned_artifacts = "SELECT artifact_id FROM outbound_connector_artifacts WHERE owner_user_id=?"
@@ -71,7 +71,8 @@ def local_erase(ledger, *, principal, command_center):
     from tinyassets.broker.browser_vault import key_path
 
     path = key_path(ledger, principal)
-    path.unlink(missing_ok=True)
+    if erase_external_keys:
+        path.unlink(missing_ok=True)
     (ledger._db_path.parent / 'browser-vault' / path.name).unlink(missing_ok=True)
     return counts
 

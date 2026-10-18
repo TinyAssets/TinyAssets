@@ -485,16 +485,18 @@ def recover_dead_owner_runs_now() -> int:
     if _RUNS_RECOVERY_LOCK is None:
         return 0
     try:
+        from tinyassets.owner_activity import activity
         from tinyassets.runs import (
             PROCESS_STARTED_AT,
             deliver_terminal_events,
             recover_in_flight_runs,
         )
 
-        base = Path(_base_path())
-        count = recover_in_flight_runs(base, started_before=PROCESS_STARTED_AT)
-        deliver_terminal_events(base)
-        return count
+        with activity.enter():
+            base = Path(_base_path())
+            count = recover_in_flight_runs(base, started_before=PROCESS_STARTED_AT)
+            deliver_terminal_events(base)
+            return count
     except Exception:
         logger.exception("dead-owner run recovery failed")
         return 0

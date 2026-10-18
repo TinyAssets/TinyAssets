@@ -139,7 +139,7 @@ def test_restore_refuses_linked_owner_journals(tmp_path, member):
 
 @pytest.mark.parametrize("authority", ["identity", "admission", "deletion", "destruction",
                                        "router_deletion", "revocation"])
-def test_restore_refuses_authority_rollback_before_changing_staged_receipts(tmp_path, authority):
+def test_restore_carries_newer_authority_without_changing_live_state(tmp_path, authority):
     current, staged = tmp_path / "current", tmp_path / "staged"
     seed(current)
     shutil.copytree(current, staged)
@@ -161,10 +161,26 @@ def test_restore_refuses_authority_rollback_before_changing_staged_receipts(tmp_
                 "deletion": "INSERT INTO deleted_principals VALUES ('owner-digest')",
                 "revocation": "INSERT INTO owner_box_revocations VALUES ('alice',1)",
             }[authority])
-    before = (staged / ".boxhost/boxhost.db").read_bytes()
-    with pytest.raises(ValueError, match="forward recovery"):
-        restore.fence_restore(current, staged)
-    assert (staged / ".boxhost/boxhost.db").read_bytes() == before
+    from tests.test_owner_cutover_census import _fingerprint
+
+    live_trees, restored_trees = tmp_path / "live", tmp_path / "restored"
+    live_trees.mkdir()
+    restored_trees.mkdir()
+    before = _fingerprint(current)
+    restore.fence_restore(current, staged, cutover_store=live_trees, restored_store=restored_trees)
+    assert _fingerprint(current) == before
+    relative, table = {
+        "identity": (".broker/state/owner-identities.db", "owner_identities"),
+        "admission": (".broker/state/owner-identities.db", "center_admissions"),
+        "deletion": (".broker/credential-custody.db", "deleted_principals"),
+        "destruction": (".boxhost/boxhost.db", "owner_destroys"),
+        "router_deletion": (".router-deleted-owners.sqlite3", "deleted_owners"),
+        "revocation": (".broker/state/owner-identities.db", "owner_box_revocations"),
+    }[authority]
+    with sqlite3.connect(current / relative) as db:
+        expected = db.execute(f'SELECT * FROM {table}').fetchall()
+    with sqlite3.connect(staged / relative) as db:
+        assert db.execute(f'SELECT * FROM {table}').fetchall() == expected
 
 
 def test_quota_restore_allows_unmaterialized_reservations(tmp_path, monkeypatch):
@@ -186,3 +202,67 @@ def test_quota_restore_allows_unmaterialized_reservations(tmp_path, monkeypatch)
     with pytest.raises(ValueError, match="absent"):
         restore.reapply(owners, owners, database)
     assert not calls
+
+
+@pytest.mark.parametrize("kind", ["key", "hook", "session", "oauth", "grant", "custody"])
+def test_restore_keeps_shared_revocations_and_never_changes_live(tmp_path, kind):
+    from tests.test_owner_cutover_census import _fingerprint
+
+    current, staged = tmp_path / "current", tmp_path / "staged"
+    seed(current)
+    relative, table, marker = {
+        "key": (".api-keys.sqlite3", "api_keys", "revoked_at REAL"),
+        "hook": (".hook-owners.sqlite3", "hook_owners", "note TEXT"),
+        "session": (".runtime/owner-sessions.db", "owner_sessions", "note TEXT"),
+        "oauth": (".auth.db", "refresh_tokens", "revoked INTEGER"),
+        "grant": (".broker/outbound.db", "outbound_connection_grants", "revoked_at REAL"),
+        "custody": (".broker/credential-custody.db", "llm_credential_custody", "note TEXT"),
+    }[kind]
+    path = current / relative
+    path.parent.mkdir(exist_ok=True, parents=True)
+    with sqlite3.connect(path) as db:
+        db.execute(f"CREATE TABLE {table} (id TEXT PRIMARY KEY, {marker})")
+        db.execute(f"INSERT INTO {table} VALUES ('credential',?)",
+                   (0 if kind == "oauth" else None,))
+    shutil.copytree(current, staged)
+    with sqlite3.connect(path) as db:
+        if kind in {"key", "grant"}:
+            db.execute(f"UPDATE {table} SET revoked_at=42")
+        elif kind == "oauth":
+            db.execute(f"UPDATE {table} SET revoked=1")
+        else:
+            db.execute(f"DELETE FROM {table}")
+    trees, restored = tmp_path / "trees", tmp_path / "restored"
+    trees.mkdir()
+    restored.mkdir()
+    before = _fingerprint(current)
+    restore.fence_restore(current, staged, cutover_store=trees, restored_store=restored)
+    assert _fingerprint(current) == before
+    with sqlite3.connect(staged / relative) as db:
+        assert db.execute(f"SELECT * FROM {table}").fetchall() == (
+            [("credential", 42)] if kind in {"key", "grant"} else
+            [("credential", 1)] if kind == "oauth" else [])
+
+
+def test_failed_monotonic_projection_preserves_live_volumes(tmp_path, monkeypatch):
+    from tests.test_owner_cutover_census import _fingerprint
+    from tinyassets import restore_facts
+    from tinyassets.router_credentials import DeletedOwners
+
+    current, staged = tmp_path / "current", tmp_path / "staged"
+    seed(current)
+    shutil.copytree(current, staged)
+    DeletedOwners(current).add("alice", {})
+    trees, restored = tmp_path / "trees", tmp_path / "restored"
+    trees.mkdir()
+    restored.mkdir()
+    (trees / "live-file").write_bytes(b"pre-restore data")
+    before = _fingerprint(current), _fingerprint(trees)
+
+    def cannot_erase(*args):
+        raise OSError("synthetic erasure failure")
+
+    monkeypatch.setattr(restore_facts, "erase_trees", cannot_erase)
+    with pytest.raises(OSError, match="erasure failure"):
+        restore.fence_restore(current, staged, cutover_store=trees, restored_store=restored)
+    assert (_fingerprint(current), _fingerprint(trees)) == before

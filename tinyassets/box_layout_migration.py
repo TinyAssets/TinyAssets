@@ -154,7 +154,7 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
         principals=("owner_user_id",))
     add(".broker/state/owner-identities.db", "owner_identities center_admissions box_records "
         "owner_box_secrets owner_box_revocations", "broker")
-    add(".broker/plans.db", "plans", "broker")
+    add(".broker/plans.db", "plans checkout_settlements", "broker")
     add(".broker/state/next-wake.db", "next_wakes", "broker")
     add(".broker/credential-custody.db", "llm_credential_deposit_owners llm_credential_custody "
         "llm_credential_deposit_commits llm_credential_refresh_state deleted_principals", "broker")
@@ -331,6 +331,8 @@ def _census_columns(database: str, table: str) -> set[str]:
     if (database, table) == (".broker/plans.db", "plans"):
         columns.update(("owner", "tier", "event_created", "ends_at", "customer_id",
                         "subscription_id", "attempt"))
+    if (database, table) == (".broker/plans.db", "checkout_settlements"):
+        columns.update(("owner", "attempt"))
     if (database, table) == (".tinyassets.db", "webhook_hooks"):
         columns.update(("token_hash", "revoked_at"))
     if (database, table) == (".tinyassets.db", "agent_interchange_idempotency"):
@@ -357,6 +359,7 @@ def census(data: Path, *, _inventory: dict | None = None,
 
     data = Path(data).resolve()
     refusals: Counter = Counter()
+    repairable_indexes = []
     tables: dict[tuple[str, str], list[dict]] = {}
     database_files: set[Path] = set()
     foreign_key_rows: list[tuple[str, str, int | None]] = []
@@ -464,7 +467,13 @@ def census(data: Path, *, _inventory: dict | None = None,
                 database_files.add(path)
                 relative = path.relative_to(data).as_posix()
                 with readonly_db(path) as db:
-                    if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+                    from tinyassets.sqlite_integrity import check as check_integrity
+
+                    try:
+                        repairable_indexes.extend(
+                            f"repairable index: {relative}/{index}"
+                            for index in check_integrity(db))
+                    except ValueError:
                         refusals["database_integrity"] += 1
                     for child, rowid, _, _ in db.execute("PRAGMA foreign_key_check"):
                         positions = ({value[0]: index for index, value in enumerate(db.execute(
@@ -758,6 +767,7 @@ def census(data: Path, *, _inventory: dict | None = None,
             "databases": len(database_files), "tables": table_report, "row_totals": dict(totals),
             "plans": plan_report, "credentials": credential_report, "files": file_report,
             "billing_refusals": billing_refusals,
+            "repairable_indexes": repairable_indexes,
             "file_patterns": patterns, "file_pattern_kinds": file_kinds,
             "losses": losses, "loss_summary": loss_summary,
             "history_splits": history_report,
@@ -954,6 +964,16 @@ def _census_accounts(data, centers, labels, tables, refusals):
     # and webhook delivery markers hold no mapping. Only owner-keyed Plans
     # records (written from verified deliveries) can supply that authority.
     shared = {row["owner"]: row for row in tables.get((".broker/plans.db", "plans"), [])}
+    settlements = tables.get((".broker/plans.db", "checkout_settlements"), [])
+    for row in settlements:
+        if row["owner"] not in labels:
+            refuse(None, "unattributed_checkout_attempt")
+        try:
+            attempt = _cutover_checkout(row["attempt"])
+            if any(attempt[key] != row[key] for key in ("session_id", "attempt_id")):
+                refuse(labels.get(row["owner"]), "conflicting_checkout_attempts")
+        except (ValueError, TypeError, KeyError):
+            refuse(labels.get(row["owner"]), "malformed_checkout_attempt")
     billing = {}
     references = {}
     import time
@@ -987,7 +1007,10 @@ def _census_accounts(data, centers, labels, tables, refusals):
             refuse(label, "invalid_billing_event")
             event, end = 0, None
         attempts = []
-        for raw in [m.get("checkout_attempt_v1") for m in legacy[owner]] + [plan.get("attempt")]:
+        for raw in ([m.get("checkout_attempt_v1") for m in legacy[owner]]
+                    + [plan.get("attempt")]
+                    + [row["attempt"] for row in settlements
+                       if row["owner"] == owner]):
             if raw is None:
                 continue
             try:
@@ -995,9 +1018,10 @@ def _census_accounts(data, centers, labels, tables, refusals):
             except (ValueError, TypeError, KeyError):
                 refuse(label, "malformed_checkout_attempt")
                 continue
-            if attempt["expires_at"] > now:
-                if not attempt["session_id"] or not attempt["url"]:
-                    refuse(label, "ambiguous_checkout_attempt")
+            if attempt["session_id"]:
+                if any(previous != attempt and any(previous[key] == attempt[key]
+                       for key in ("session_id", "attempt_id")) for previous in attempts):
+                    refuse(label, "conflicting_checkout_attempts")
                 if attempt not in attempts:
                     attempts.append(attempt)
                 for value in (attempt["attempt_id"], attempt["session_id"]):
@@ -1005,6 +1029,9 @@ def _census_accounts(data, centers, labels, tables, refusals):
                         if value in references and references[value] != owner:
                             refuse(label, "conflicting_checkout_attempts")
                         references[value] = owner
+            else:
+                plans[label]["dropped_sessionless_attempts"] = (
+                    plans[label].get("dropped_sessionless_attempts", 0) + 1)
         for meta in legacy[owner]:
             if "checkout_claim_at" in meta:
                 try:
@@ -1013,11 +1040,13 @@ def _census_accounts(data, centers, labels, tables, refusals):
                         refuse(label, "ambiguous_checkout_attempt")
                 except (TypeError, ValueError):
                     refuse(label, "malformed_checkout_attempt")
-        if len(attempts) > 1:
+        live_attempts = [attempt for attempt in attempts if attempt["expires_at"] > now]
+        if len(live_attempts) > 1:
             refuse(label, "conflicting_checkout_attempts")
         billing[owner] = dict(tier=tier, event_created=event, ends_at=end,
                               customer_id=customer, subscription_id=subscription,
-                              attempt=attempts[0] if len(attempts) == 1 else None)
+                              attempt=live_attempts[0] if len(live_attempts) == 1 else None,
+                              settlements=attempts)
     return plans, credentials, billing, billing_refusals
 
 
@@ -1143,8 +1172,10 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
 
     def classify(path, relative):
         parts = relative.parts
+        if parts[0] == "lancedb":
+            return "dropped"
         if parts[0] in {"knowledge.db", "knowledge.db-wal", "knowledge.db-shm",
-                         "knowledge.db-journal", "lancedb"}:
+                         "knowledge.db-journal"}:
             return ("owner", legacy_owner) if legacy_owner else "dropped"
         if relative.as_posix() in {".tinyassets.db.prebudgetrepair.bak",
                                   ".tinyassets.db.prebudgetrepair.bak-shm",
@@ -1351,6 +1382,8 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
                           else "retired files")
                     if knowledge:
                         reason, description = legacy_reason or "no_owner_key", "knowledge stores"
+                    if parts[0] == "lancedb":
+                        reason = "unattributed_root_vectors"
                     _count_loss(loss_summary, label, reason, description, "files")
                     if knowledge:
                         group = loss_summary[label][reason][description]
@@ -1898,9 +1931,12 @@ def _seed_shared(data: Path, shared: Path, inventory: dict, report: dict, plan) 
         tier = report["plans"][inventory["labels"][owner.principal]]["tier"]
         record = dict(inventory["billing"][owner.principal])
         attempt = record.pop("attempt")
+        settlements = record.pop("settlements")
         if tier == "paid" and not (record["customer_id"] and record["subscription_id"]):
             raise RuntimeError("paid subscription mapping missing at seed")
         plans.set_plan(owner.principal, **record)
+        for settlement in settlements:
+            plans.retain_checkout(owner.principal, settlement)
         with closing(plans._connect()) as db, db:
             db.execute("UPDATE plans SET attempt=? WHERE owner=?",
                        (json.dumps(attempt) if attempt else None, owner.principal))
@@ -2052,11 +2088,20 @@ def _split_histories(data, store, inventory):
                   else "after_activity_ledger_split")
 
 
-def _build_cutover(data: Path, store: Path, journal: dict) -> None:
+def _build_cutover(data: Path, store: Path, journal: dict, *, apply_quotas=True) -> None:
     inventory = {}
     report = census(data, _inventory=inventory, _source_marker=journal["source_marker"])
     if not report["ready"]:
         raise RuntimeError(f"cutover census refused: {report['refusals']}")
+    from tinyassets.sqlite_integrity import check as check_integrity
+
+    repairs = set(journal.get("reindexed", []))
+    for database in sorted({database for database, _ in inventory["tables"]}):
+        with closing(sqlite3.connect(data / database)) as db, db:
+            repairs.update(f"reindexed: {database}/{index}"
+                           for index in check_integrity(db, repair=True))
+    journal["reindexed"] = report["reindexed"] = sorted(repairs)
+    _atomic_json(data / ".owner-cutover.json", journal)
     plan = [OwnerMove(**{**owner, "centers": tuple(owner["centers"])}) for owner in journal["plan"]]
     shared = store / ".cutover-shared"
     _remove_tree(shared, store)
@@ -2064,9 +2109,10 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
     for index, owner in enumerate(plan, 1):
         tree = store / str(owner.uid)
         tree.mkdir(mode=0o700, exist_ok=True)
-        _xfs_quota(store, f"project -s -p {tree} {owner.uid}")
-        verify_tree(tree, owner.uid, True)
-        _xfs_quota(store, f"limit -p bhard={owner.quota // 1024}k {owner.uid}")
+        if apply_quotas:
+            _xfs_quota(store, f"project -s -p {tree} {owner.uid}")
+            verify_tree(tree, owner.uid, True)
+            _xfs_quota(store, f"limit -p bhard={owner.quota // 1024}k {owner.uid}")
         for center in owner.centers:
             for relative in (center, f".agent-sessions/{center}", f".universe-sidecars/{center}"):
                 source = data / relative
@@ -2134,7 +2180,8 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
                     os.chmod(path, mode)
         workflow_counts[inventory["labels"][owner.principal]] = _verify_workflow_definitions(tree)
         owner_manifests[str(owner.uid)] = _durable_tree(tree)
-        verify_owner(store, tree, owner.uid, owner.quota)
+        if apply_quotas:
+            verify_owner(store, tree, owner.uid, owner.quota)
     for directory, dirs, files in os.walk(shared, followlinks=False):
         for path in (Path(directory), *(Path(directory) / name for name in dirs + files)):
             relative = path.relative_to(shared).parts

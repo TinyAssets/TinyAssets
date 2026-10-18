@@ -56,18 +56,24 @@ def validate_archive(path: Path) -> int:
 
 def restore_replay_probe(mode: str) -> int:
     """Synthetic operations in the disposable venue, through real owner tools."""
+    import asyncio
     import json
+    import os
     import runpy
     import sqlite3
     import subprocess
 
+    from tinyassets import owner_runtime
+    from tinyassets.agent_loop.owner_tools import OwnerTools
     from tinyassets.boxes.boxd import OwnerBoxd
     from tinyassets.boxes.provider import BoxError
+    from tinyassets.router_credentials import DeletedOwners
 
     data, store, backup = Path("/data"), Path("/box-store"), Path("/backup/replay")
     backup.mkdir(exist_ok=True)
     with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
-        owners = db.execute("SELECT principal,machine FROM box_records").fetchall()
+        owners = db.execute("SELECT principal,machine FROM box_records WHERE machine<>399999"
+                            ).fetchall()
     proof = backup / "proof.json"
     epochs = json.loads(proof.read_text()) if mode == "verify" else {}
     for owner, uid in owners:
@@ -75,10 +81,13 @@ def restore_replay_probe(mode: str) -> int:
         core = OwnerBoxd(owner_id=owner, owner_root=tree, state_dir=tree / ".owner-boxd")
         try:
             handle = core.bind(owner)
+            owner_runtime._runtime = owner_runtime.OwnerRuntime(owner, uid, tree, os.getpid(), core)
+            tools = OwnerTools(tree)
             if mode == "snapshot":
                 core.write(handle, "rehearsal-before", "/cc/.replay-proof", b"snapshot",
                            max_bytes=100)
                 epochs[owner] = handle.epoch
+                asyncio.run(tools.bash("rehearsal-bash", "echo once >> .bash-proof"))
             elif mode == "write":
                 core.write(handle, "rehearsal-after", "/cc/.replay-proof", b"after", max_bytes=100)
             elif mode == "verify":
@@ -99,11 +108,35 @@ def restore_replay_probe(mode: str) -> int:
                         raise RuntimeError("restored operation was admitted again")
                 if (tree / ".replay-proof").read_bytes() != b"later work":
                     raise RuntimeError("replayed operation changed later work")
+                try:
+                    asyncio.run(tools.bash("rehearsal-bash", "echo once >> .bash-proof"))
+                except BoxError as exc:
+                    if "not re-run" not in str(exc):
+                        raise
+                else:
+                    raise RuntimeError("restored bash operation was admitted again")
+                if (tree / ".bash-proof").read_text() != "once\n":
+                    raise RuntimeError("replayed bash changed restored work")
             else:
                 raise ValueError("unknown replay proof phase")
         finally:
+            owner_runtime._runtime = None
             core.close()
     if mode == "snapshot":
+        # A separate disposable owner preserves the per-owner replay proof
+        # while exercising complete post-snapshot deletion in the same restore.
+        with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
+            db.execute("INSERT INTO owner_identities VALUES ('restore-erased',399999)")
+            db.execute("INSERT INTO box_records VALUES ('restore-erased',399999,399999,1048576)")
+        erased_tree = store / "399999"
+        erased_tree.mkdir(mode=0o700)
+        (erased_tree / "private").write_bytes(b"synthetic erased content")
+        os.chown(erased_tree, 399999, 399999)
+        from tinyassets.api_keys import ApiKeyStore
+
+        with ApiKeyStore(data).db() as db:
+            db.execute("INSERT INTO api_keys VALUES "
+                       "('restore-key',?,'synthetic','synthetic',1,NULL,NULL)", (owners[0][0],))
         proof.write_text(json.dumps(epochs))
         stamp = "2026-10-17T01-00-00Z"
         shared = backup / f"tinyassets-data-{stamp}.tar.gz"
@@ -112,9 +145,25 @@ def restore_replay_probe(mode: str) -> int:
                         "-C", "/", "--numeric-owner", "--acls", "--xattrs", "data"], check=True)
         subprocess.run(["tar", "-czf", str(boxes), "--transform=s,^,owners/,",
                         "-C", str(store), "--numeric-owner", "--acls", "--xattrs",
-                        *(str(uid) for _, uid in owners)], check=True)
+                        *(str(uid) for _, uid in owners), "399999"], check=True)
         runpy.run_path("/support/deploy/backup-pair.py")["create"](
             shared, boxes, backup / f"tinyassets-pair-{stamp}.json")
+    elif mode == "write":
+        from tinyassets.boxes.destroy import tree as destroy_tree
+
+        DeletedOwners(data).add("restore-erased", {"unfinished_phases": []})
+        with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
+            db.execute("INSERT INTO owner_box_revocations VALUES ('restore-erased',1)")
+        destroy_tree(store, 399999, erase=True)
+        with sqlite3.connect(data / ".api-keys.sqlite3") as db:
+            db.execute("UPDATE api_keys SET revoked_at=42 WHERE key_id='restore-key'")
+    elif mode == "verify":
+        if (store / "399999").exists() or not DeletedOwners(data).contains("restore-erased"):
+            raise RuntimeError("restored erased owner returned")
+        with sqlite3.connect(data / ".api-keys.sqlite3") as db:
+            if db.execute("SELECT revoked_at FROM api_keys WHERE key_id='restore-key'"
+                          ).fetchone() != (42,):
+                raise RuntimeError("restored key revocation was lost")
     return len(owners)
 
 

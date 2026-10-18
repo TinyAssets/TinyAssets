@@ -16,6 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from deploy.box_project_readback import verify_owner, verify_tree  # noqa: E402
+from tinyassets.sqlite_readonly import readonly_db  # noqa: E402
 
 
 def reapply(store: Path, trees: Path, registry: Path, *, clear: bool = False) -> None:
@@ -27,7 +28,7 @@ def reapply(store: Path, trees: Path, registry: Path, *, clear: bool = False) ->
         return
     if registry.is_symlink() or not registry.is_file():
         raise ValueError("paired broker identity database is absent or not regular")
-    with sqlite3.connect(registry.resolve().as_uri() + "?mode=ro", uri=True) as db:
+    with readonly_db(registry) as db:
         if db.execute("PRAGMA quick_check").fetchone() != ("ok",):
             raise ValueError("paired broker identity database failed integrity check")
         rows = db.execute("SELECT machine, project_id, bhard_bytes FROM box_records").fetchall()
@@ -83,59 +84,35 @@ def _cutover_manifest(root: Path, *, exclude=()) -> dict:
     return result
 
 
-def _pristine_cutover_restore(current: Path, staged: Path, store: Path | None, *,
-                             accept_owner_write_loss: bool = False) -> bool:
-    """Exact paired source; owner writes may be explicitly surrendered."""
+def _restore_cutover_source(current: Path, staged: Path, restored_store: Path) -> None:
+    """Normalize the verified legacy pair through the one forward cutover."""
+    from dataclasses import asdict
+
+    from tinyassets.box_layout_migration import (
+        _build_cutover,
+        _owner_plan,
+        _publish_cutover,
+    )
+
     path = current / ".owner-cutover.json"
-    if store is None or not path.is_file() or path.is_symlink():
-        return False
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("verified cutover source receipt missing")
     info = path.stat()
     if info.st_uid != 0 or info.st_mode & 0o077:
         raise ValueError("cutover receipt is not root-private")
     receipt = json.loads(path.read_text())
     if receipt.get("version") != 1 or receipt.get("phase") != "complete":
-        return False
+        raise ValueError("cutover receipt is malformed")
     if _cutover_manifest(staged, exclude=(".tinyassets.db.prebudgetrepair.bak",)) != receipt.get(
             "source_manifest"):
         raise ValueError("restore is not the verified cutover source")
-    actual_shared = _cutover_manifest(current, exclude=(".owner-cutover.json",))
-    expected_shared = receipt.get("final_manifest")
-    if accept_owner_write_loss:
-        from tinyassets.box_layout_migration import cutover_identity_manifest
-
-        if cutover_identity_manifest(current) != receipt.get("identity_manifest"):
-            raise ValueError("post-cutover identity authority requires forward recovery")
-        # Serving reports the next wake even when no shared authority changes.
-        # This derived index is recreated from restored owner schedules; all
-        # identity, deletion, billing, custody and operation receipts stay fenced.
-        runtime_files = {".broker/state/" + database + suffix
-                         for database in ("next-wake.db", "owner-identities.db")
-                         for suffix in ("", "-wal", "-shm", "-journal")}
-        actual_shared = {key: value for key, value in actual_shared.items()
-                         if key not in runtime_files}
-        expected_shared = {key: value for key, value in (expected_shared or {}).items()
-                           if key not in runtime_files}
-    if actual_shared != expected_shared:
-        raise ValueError("post-cutover shared writes require forward recovery")
-    expected = receipt.get("owner_manifests", {})
-    actual = {p.name for p in store.iterdir() if p.name.isdecimal()}
-    if actual != set(expected):
-        raise ValueError("cutover owner tree inventory changed")
-    for uid, manifest in expected.items():
-        if not uid.isdecimal() or (store / uid).is_symlink():
-            raise ValueError("unsafe cutover owner tree")
-        if not accept_owner_write_loss and _cutover_manifest(store / uid) != manifest:
-            raise ValueError("post-cutover owner writes require forward recovery")
-    if accept_owner_write_loss and any(
-            journal["ops"] for journal in _owner_journals(store).values()):
-        # The old layout has no owner journal to carry these refusal records.
-        # Explicit content loss cannot authorize forgetting operation authority.
-        raise ValueError("post-cutover owner operation authority requires forward recovery")
-    return True
+    journal = dict(receipt, phase="build", store=str(restored_store.resolve()),
+                   plan=[asdict(owner) for owner in _owner_plan(staged)])
+    _build_cutover(staged, restored_store, journal, apply_quotas=False)
+    _publish_cutover(staged, restored_store, journal)
 
 
 def fence_restore(current: Path, staged: Path, *, cutover_store: Path | None = None,
-                  accept_owner_write_loss: bool = False,
                   restored_store: Path | None = None) -> None:
     """Fence rollback receipts; never roll back permanent identities or deletion."""
     def layout(root):
@@ -145,45 +122,31 @@ def fence_restore(current: Path, staged: Path, *, cutover_store: Path | None = N
     if "owner-box" not in (layout(current), layout(staged)):
         return
     if layout(current) == "owner-box" and layout(staged) in (None, "owner-split"):
-        if _pristine_cutover_restore(current, staged, cutover_store,
-                                    accept_owner_write_loss=accept_owner_write_loss):
-            return
+        if restored_store is None:
+            raise ValueError("owner-box restore requires both owner stores")
+        _restore_cutover_source(current, staged, restored_store)
     if layout(current) != "owner-box" or layout(staged) != "owner-box":
         raise ValueError("owner-box restore requires reviewed forward layout recovery")
 
-    def rows(root, relative, table, *, optional=False):
-        path = root / relative
-        if path.is_symlink():
-            raise ValueError("restore authority is a symlink")
-        if optional and not path.exists():
-            return []
-        with sqlite3.connect((root / relative).as_uri() + "?mode=ro", uri=True) as db:
-            if db.execute("PRAGMA quick_check").fetchone() != ("ok",):
-                raise ValueError("restore authority failed integrity check")
-            return sorted(db.execute(f"SELECT * FROM {table}").fetchall())
+    from tinyassets.restore_facts import carry_shared, erase_trees
 
-    # These authorities must not be reconstructed from an older archive.
-    # C12/integration owns forward retention of deletion tombstones and the
-    # immutable identity frontier. Refuse until that contract is integrated.
-    for table in ("owner_identities", "center_admissions", "box_records",
-                  "owner_box_revocations"):
-        relative = ".broker/state/owner-identities.db"
-        if rows(current, relative, table) != rows(staged, relative, table):
-            raise ValueError("identity/admission frontier differs; forward recovery needed")
-    relative = ".router-deleted-owners.sqlite3"
-    if rows(current, relative, "deleted_owners", optional=True) != rows(
-            staged, relative, "deleted_owners", optional=True):
-        raise ValueError("router deletion frontier differs; forward recovery needed")
-    if rows(current, ".broker/credential-custody.db", "deleted_principals") != rows(
-        staged, ".broker/credential-custody.db", "deleted_principals"
-    ):
-        raise ValueError("deletion tombstones differ; C12 forward recovery needed")
-    relative = ".boxhost/boxhost.db"
-    if rows(current, relative, "owner_destroys") != rows(staged, relative, "owner_destroys"):
-        raise ValueError("owner destruction frontier differs; forward recovery needed")
     if cutover_store is None or restored_store is None:
         raise ValueError("owner-box restore requires both owner stores")
-    fence_owner_journals(cutover_store, restored_store)
+    erased = carry_shared(current, staged)
+    fence_owner_journals(cutover_store, restored_store, erased=erased)
+    erase_trees(restored_store, erased)
+    receipt = staged / ".owner-cutover.json"
+    if receipt.exists():
+        from tinyassets.box_layout_migration import _atomic_json
+
+        journal = json.loads(receipt.read_text())
+        journal["store"] = str(cutover_store.resolve())
+        journal["plan"] = [owner for owner in journal["plan"] if owner["uid"] not in erased]
+        journal["owner_manifests"] = {
+            tree.name: _cutover_manifest(tree) for tree in restored_store.iterdir()
+            if tree.name.isdecimal() and tree.is_dir()}
+        journal["final_manifest"] = _cutover_manifest(staged, exclude=(".owner-cutover.json",))
+        _atomic_json(receipt, journal)
 
 
 def _owner_journals(root: Path) -> dict:
@@ -207,7 +170,7 @@ def _owner_journals(root: Path) -> dict:
                 info = member.lstat()
                 if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                     raise ValueError("unsafe owner journal member")
-        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+        with readonly_db(path) as db:
             if db.execute("PRAGMA quick_check").fetchone() != ("ok",):
                 raise ValueError("owner journal failed integrity check")
             result[tree.name] = {
@@ -217,12 +180,14 @@ def _owner_journals(root: Path) -> dict:
     return result
 
 
-def fence_owner_journals(current: Path, staged: Path) -> None:
+def fence_owner_journals(current: Path, staged: Path, *, erased=frozenset()) -> None:
     """Offline only: preserve refusal authority in each restored owner's box."""
     from tinyassets.boxes.state import _SCHEMA
 
     live, restored = _owner_journals(current), _owner_journals(staged)
     for uid in sorted(live.keys() | restored.keys()):
+        if int(uid) in erased:
+            continue
         tree = staged / uid
         tree.mkdir(mode=0o700, exist_ok=True)
         if tree.is_symlink() or not tree.is_dir():
@@ -288,7 +253,7 @@ def check_snapshot(data: Path, *, quiescent: bool = False) -> None:
     if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1
             or info.st_mode & 0o077):
         raise ValueError("snapshot receipt database has unsafe identity or mode")
-    with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as db:
+    with readonly_db(database) as db:
         if db.execute("PRAGMA quick_check").fetchone() != ("ok",):
             raise ValueError("snapshot receipt journal failed integrity check")
         for table in ("host", "boxes", "ops", "execs", "owner_destroys"):
@@ -313,7 +278,6 @@ if __name__ == "__main__":
     parser.add_argument("--restore-from", type=Path)
     parser.add_argument("--cutover-store", type=Path)
     parser.add_argument("--restored-store", type=Path)
-    parser.add_argument("--accept-owner-write-loss", action="store_true")
     args = parser.parse_args()
     if args.snapshot_data:
         if args.store or args.trees or args.registry or args.clear:
@@ -321,8 +285,7 @@ if __name__ == "__main__":
         check_snapshot(args.snapshot_data.resolve(), quiescent=args.quiescent)
         if args.restore_from:
             fence_restore(args.restore_from.resolve(), args.snapshot_data.resolve(),
-                          cutover_store=args.cutover_store, restored_store=args.restored_store,
-                          accept_owner_write_loss=args.accept_owner_write_loss)
+                          cutover_store=args.cutover_store, restored_store=args.restored_store)
     elif not all((args.store, args.trees, args.registry)) or args.quiescent or args.restore_from:
         parser.error("quota restoration requires store, trees, paired broker database")
     else:

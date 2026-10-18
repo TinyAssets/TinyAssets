@@ -365,7 +365,8 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
         }
         assert result["restore_before_write"]["comparisons"] == 1
         assert result["restore_after_write"] == {
-            "status": "PASS", "comparisons": 1, "replay_refusals": 4, "fenced_owners": 2,
+            "status": "PASS", "comparisons": 1, "replay_refusals": 6, "fenced_owners": 2,
+            "revoked_keys": 1, "erased_owners": 1,
         }
         captured = capsys.readouterr()
         assert captured.err == ""

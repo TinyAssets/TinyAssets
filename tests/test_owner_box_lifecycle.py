@@ -147,6 +147,18 @@ def test_suspended_cleanup_wake_admits_only_deletion(fleet, awake):
     uid = lease["uid"]
     assert fleet.runtime.alive(uid)
     assert manager.boxes[uid].deletion_only
+    # Pending delivery dispatch is a boot side effect. Even constructing a
+    # maintenance worker is forbidden in this authenticated cleanup startup.
+    from unittest.mock import patch
+
+    from tinyassets import owner_activity, owner_runtime
+
+    with (patch.object(owner_activity, "activity", fleet.states[uid]),
+          patch.object(owner_runtime, "current", return_value=object()),
+          patch.object(owner_runtime, "_start_maintenance") as maintenance):
+        with owner_runtime.serving():
+            assert fleet.states[uid].status()["active"] == 0
+        maintenance.assert_not_called()
     manager.maintain()
     assert fleet.runtime.alive(uid)
     state = fleet.states[uid]
@@ -331,3 +343,27 @@ def test_deleting_box_is_not_idle_even_after_last_turn_and_lease_finish(fleet):
     activity.deletion_refused()
     with activity.enter():
         assert activity.active == 1
+
+
+def test_quiesce_refuses_background_submission_and_maintenance(tmp_path, monkeypatch):
+    from tinyassets import owner_activity, owner_runtime, run_input_runtime
+    from tinyassets.api import runs
+    from tinyassets.control_plane import activities, tick
+
+    gate = Activity()
+    assert gate.quiesce(0)
+    monkeypatch.setattr(owner_activity, "activity", gate)
+    for dispatch in (
+        lambda: owner_runtime._start_maintenance(None),
+        lambda: tick.AssignedQueueConsumer.poll_once(None),
+        lambda: activities.dispatch_all(tmp_path),
+        lambda: activities.tick_in_background(tmp_path),
+        lambda: run_input_runtime.dispatch_admitted_run(tmp_path, run_id="pending", prepare=None),
+    ):
+        with pytest.raises(RuntimeError, match="draining"):
+            dispatch()
+    monkeypatch.setattr(runs, "_RUNS_RECOVERY_LOCK", object())
+    monkeypatch.setattr("tinyassets.runs.recover_in_flight_runs",
+                        lambda *a, **kw: pytest.fail("drained recovery executed"))
+    assert runs.recover_dead_owner_runs_now() == 0
+    assert gate.status()["active"] == 0

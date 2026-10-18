@@ -16,6 +16,7 @@ import time
 from contextlib import closing
 
 from tinyassets import agent_sessions, bound_requests, turn_interrupt
+from tinyassets.owner_activity import owner_work
 from tinyassets.owner_control import ControlUnavailable, control
 from tinyassets.policy_grants import task_is_current
 from tinyassets.singleton_lock import _lock_fd, _unlock_fd
@@ -174,6 +175,7 @@ def _run(home, payload):
         continuation_task.reset(task_token)
 
 
+@owner_work
 def tick(base):
     """Boot/runtime sweep of homes with protected request state only."""
     import logging

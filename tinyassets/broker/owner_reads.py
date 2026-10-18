@@ -27,6 +27,15 @@ class Plans:
             db.execute("CREATE TABLE IF NOT EXISTS plans (owner TEXT PRIMARY KEY, "
                        "tier TEXT NOT NULL, event_created REAL NOT NULL, ends_at REAL, "
                        "customer_id TEXT UNIQUE, subscription_id TEXT UNIQUE, attempt TEXT)")
+            db.execute("CREATE TABLE IF NOT EXISTS checkout_settlements ("
+                       "session_id TEXT PRIMARY KEY, attempt_id TEXT UNIQUE NOT NULL, "
+                       "owner TEXT NOT NULL, attempt TEXT NOT NULL)")
+            db.execute("INSERT OR IGNORE INTO checkout_settlements "
+                       "(session_id,attempt_id,owner,attempt) "
+                       "SELECT json_extract(attempt, '$.session_id'), "
+                       "json_extract(attempt, '$.attempt_id'), owner, attempt FROM plans "
+                       "WHERE json_valid(attempt) AND json_extract(attempt, '$.session_id') "
+                       "IS NOT NULL")
             columns = {row[1] for row in db.execute("PRAGMA table_info(plans)")}
             for name in ("billing_suspended", "abuse_suspended"):
                 if name not in columns:
@@ -124,14 +133,33 @@ class Plans:
             raise PlanMissing("checkout has no owner")
         with closing(self._connect()) as db:
             rows = db.execute(
-                "SELECT owner FROM plans WHERE "
-                "CASE WHEN json_valid(attempt) THEN json_extract(attempt, '$.session_id') END = ? "
-                "OR CASE WHEN json_valid(attempt) THEN "
-                "json_extract(attempt, '$.attempt_id') END = ?",
+                "SELECT DISTINCT owner FROM checkout_settlements WHERE "
+                "session_id=? OR attempt_id=?",
                 (session_id or None, attempt_id or None)).fetchall()
         if len(rows) != 1:
             raise PlanMissing("checkout has no unique owner")
         return rows[0][0]
+
+    def checkout_settlements(self, owner):
+        import json
+
+        with closing(self._connect()) as db:
+            return [json.loads(row[0]) for row in db.execute(
+                "SELECT attempt FROM checkout_settlements WHERE owner=?", (owner,))]
+
+    def retain_checkout(self, owner, attempt):
+        import json
+
+        with closing(self._connect()) as db, db:
+            previous = db.execute("SELECT owner,attempt_id FROM checkout_settlements "
+                                  "WHERE session_id=?", (attempt["session_id"],)).fetchone()
+            if previous is not None and tuple(previous) != (owner, attempt["attempt_id"]):
+                raise ValueError("checkout settlement mapping conflicts")
+            if db.execute("INSERT OR IGNORE INTO checkout_settlements "
+                       "(session_id,attempt_id,owner,attempt) VALUES (?,?,?,?)",
+                       (attempt["session_id"], attempt["attempt_id"], owner, json.dumps(attempt))
+                          ).rowcount == 0 and previous is None:
+                raise ValueError("checkout attempt has another session mapping")
 
     def current_checkout_attempt(self, owner, *, now):
         import json
@@ -170,6 +198,14 @@ class Plans:
                 return False
             attempt.update(session_id=session_id, url=url)
             db.execute("UPDATE plans SET attempt=? WHERE owner=?", (json.dumps(attempt), owner))
+            changed = db.execute("INSERT INTO checkout_settlements "
+                       "(session_id,attempt_id,owner,attempt) "
+                       "VALUES (?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET "
+                       "attempt=excluded.attempt WHERE owner=excluded.owner "
+                       "AND attempt_id=excluded.attempt_id",
+                       (session_id, attempt_id, owner, json.dumps(attempt)))
+            if changed.rowcount != 1:
+                raise ValueError("checkout session has another owner or attempt")
             return True
 
     def settle_checkout_attempt(self, owner, *, session_id="", attempt_id=""):
@@ -177,12 +213,15 @@ class Plans:
             raise ValueError("settle needs a session_id or an attempt_id")
         with closing(self._connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
+            mapped = db.execute("SELECT 1 FROM checkout_settlements WHERE owner=? "
+                                "AND (session_id=? OR attempt_id=?)",
+                                (owner, session_id, attempt_id)).fetchone()
             attempt = self.current_checkout_attempt(owner, now=0)
             if attempt is None or not (
                 (session_id and attempt.get("session_id") == session_id)
                 or (attempt_id and attempt.get("attempt_id") == attempt_id)
             ):
-                return False
+                return bool(mapped)
             db.execute("UPDATE plans SET attempt=NULL WHERE owner=?", (owner,))
             return True
 

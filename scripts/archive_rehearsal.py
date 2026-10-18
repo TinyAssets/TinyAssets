@@ -282,7 +282,7 @@ class Venue:
             ).stdout
         )
 
-    def restore(self, accept_writes, *, replay=False):
+    def restore(self, *, replay=False):
         # Only the absent host service manager and sandbox inventory are
         # represented locally. Extraction, fencing, quotas and swap are real.
         script = r"""set -eu
@@ -328,8 +328,6 @@ bash /support/deploy/backup-restore.sh
             "BOX_STORE_DIR=/box-store",
             "-e",
             "BACKUP_LOG=/tmp/restore.log",
-            "-e",
-            "CUTOVER_ACCEPT_OWNER_WRITE_LOSS=" + str(int(accept_writes)),
             "--entrypoint",
             "sh",
             self.image,
@@ -341,36 +339,31 @@ bash /support/deploy/backup-restore.sh
             raise RuntimeError("restore failed")
         if replay:
             return
-        compared = self.container(
-            "--rm",
-            "--user",
-            "0",
-            "-v",
-            self.names["parent"] + ":/parent:ro",
-            "-v",
-            self.names["backup"] + ":/backup:ro",
-            "--entrypoint",
-            "tar",
-            self.image,
-            "-dzf",
-            "/backup/original.tar.gz",
-            "-C",
-            "/parent",
-            "--numeric-owner",
-            "--acls",
-            "--xattrs",
-            check=False,
-        )
-        lines = compared.stdout.splitlines() + compared.stderr.splitlines()
-        allowed = re.compile(r"^_data: (?:Mode|Uid|Gid) differs$")
-        if any(not allowed.fullmatch(line) for line in lines) or (
-            compared.returncode and not lines
-        ):
-            raise RuntimeError("comparison failed")
+        # The source archive is checked byte-for-byte before the forward
+        # cutover. Verify the normalized generation and all restored owner trees.
+        result = self.migration("verify")
+        if result.returncode:
+            raise RuntimeError("normalized restore verification failed")
         self.helper(
             "from pathlib import Path; import shutil; "
             '[shutil.rmtree(p) for p in Path("/box-store").glob(".tinyassets-box-restore-old.*")]'
         )
+
+    def reset_fixture(self):
+        """Reset disposable inputs between independent crash trials, never restore."""
+        self.helper(
+            "from pathlib import Path; import shutil, tarfile; "
+            "from tinyassets.boxes.destroy import tree; "
+            "root=Path('/data'); store=Path('/box-store'); "
+            "[tree(store,int(p.name),erase=True) for p in store.iterdir() "
+            "if p.name.isdecimal()]; "
+            "[shutil.rmtree(p) if p.is_dir() else p.unlink() for p in root.iterdir()]; "
+            "archive=tarfile.open('/backup/original.tar.gz'); "
+            "members=archive.getmembers(); "
+            "[(setattr(m,'name',m.name.removeprefix('_data/'))) for m in members "
+            "if m.name.startswith('_data/')]; "
+            "archive.extractall(root,members=[m for m in members if m.name!='_data'], "
+            "filter='fully_trusted'); archive.close()")
 
     def close(self):
         failures = 0
@@ -447,9 +440,10 @@ def archive_rehearsal(image, archive, *, store_bytes):
         baseline = venue.manifests()
         passed(step, manifests=len(baseline[1]) + 1)
         step = "restore_before_write"
-        venue.restore(False)
+        venue.restore()
         passed(step, comparisons=1)
         step = "crash_resume"
+        venue.reset_fixture()
         required(venue.migration("preflight"))
         required(venue.migration("census"))
         plan = json.loads(
@@ -472,7 +466,8 @@ def archive_rehearsal(image, archive, *, store_bytes):
             if venue.manifests() != baseline:
                 raise RuntimeError("resumed manifests differ")
             if boundary == "after_owner_tree:1":
-                venue.restore(False)
+                venue.restore()
+                venue.reset_fixture()
                 required(venue.migration("preflight"))
                 required(venue.migration("census"))
         passed(step, interruptions=2, comparisons=2)
@@ -518,18 +513,19 @@ def archive_rehearsal(image, archive, *, store_bytes):
             raise RuntimeError("incomplete serving proof")
         passed(step, **counts)
         step = "restore_after_write"
-        venue.restore(True)
+        venue.restore()
         required(venue.migration("apply"))
         for phase in ("snapshot", "write"):
             venue.helper("import runpy; runpy.run_path('/support/rehearse_box_move.py')"
                          "['restore_replay_probe'](" + repr(phase) + ")")
-        venue.restore(False, replay=True)
+        venue.restore(replay=True)
         replayed = json.loads(venue.helper(
             "import runpy; print(runpy.run_path('/support/rehearse_box_move.py')"
             "['restore_replay_probe']('verify'))").stdout)
         if replayed != census["owners"] or replayed < 1:
             raise RuntimeError("incomplete per-owner replay proof")
-        passed(step, comparisons=1, replay_refusals=2 * replayed, fenced_owners=replayed)
+        passed(step, comparisons=1, replay_refusals=3 * replayed, fenced_owners=replayed,
+               revoked_keys=1, erased_owners=1)
     except BaseException:
         report[step] = {"status": "FAIL"}
         print(step + " FAIL", flush=True)

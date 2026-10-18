@@ -21,6 +21,7 @@ from tinyassets import runs
 from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity
 from tinyassets.branches import BranchDefinition
+from tinyassets.owner_activity import owner_work
 from tinyassets.run_admission_envelope import encode_admission_envelope
 from tinyassets.run_input_origin import OriginHeld
 from tinyassets.scoped_reset import (
@@ -99,6 +100,7 @@ def _terminal_unstarted(
     )
 
 
+@owner_work
 def _work(base, run_id, prepare):
     _require_execution_hooks()
     # Existing reset barrier is outermost. This path must not initialize or
@@ -260,6 +262,7 @@ def _work_under_maintenance_barrier(base, run_id, prepare):
                     logger.exception("Admitted run settlement failed: %s", run_id)
 
 
+@owner_work
 def dispatch_admitted_run(base, *, run_id, prepare, on_settled=None):
     """Submit same reserved run to the existing executor in a fresh context.
 

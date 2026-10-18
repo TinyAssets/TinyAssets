@@ -623,7 +623,7 @@ class _Connection:
                     "read", "owner_for", "owner_for_checkout",
                     "apply_tier_event", "set_suspension", "bind_checkout_subscription",
                     "current_checkout_attempt", "begin_checkout_attempt",
-                    "record_checkout_session", "settle_checkout_attempt")}
+                    "record_checkout_session", "settle_checkout_attempt", "checkout_settlements")}
                 result = operations[doc["action"]](**doc["args"])
                 return {"op": "BILLING_RESULT", "result": result}
         except PlanMissing:

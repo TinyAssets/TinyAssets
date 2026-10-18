@@ -4144,8 +4144,13 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
                 yield
             return
 
+        from tinyassets.owner_activity import activity
         from tinyassets.scoped_reset import prepare_service_writer_barrier
         from tinyassets.storage import data_dir
+
+        if activity.deletion_only:
+            yield
+            return
 
         writer_barrier = prepare_service_writer_barrier(data_dir())
         # Enforceable visibility preflight: declare every universe from its

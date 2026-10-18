@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from tinyassets.owner_activity import owner_work
+
 logger = logging.getLogger(__name__)
 
 # ─── Cron parser ──────────────────────────────────────────────────────────────
@@ -438,8 +440,8 @@ class Scheduler:
 
     # ── Event loop ──
 
+    @owner_work
     def tick(self, *, max_events: int = 100) -> int:
-        """Drain a bounded batch on the execution owner's leased tick."""
         if not self._running:
             return 0
         from tinyassets.control_plane.lease import LeaseLost, current_owner_lease
@@ -478,6 +480,7 @@ class Scheduler:
             logger.exception("scheduler: active re-check failed for %s", subscription_id)
             return False
 
+    @owner_work
     def _dispatch_event(self, event: SchedulerEvent) -> None:
         db = _runs_db(self._base_path)
         try:

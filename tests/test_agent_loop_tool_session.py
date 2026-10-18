@@ -22,10 +22,10 @@ def _open(universe, *, granted=("bash",), session_key=THREAD, turn="live-1"):
                            session_key=session_key, turn=turn)
 
 
-def _call(universe, name, arguments, **kwargs):
+def _call(universe, name, arguments, *, op_id="t1:1:1", **kwargs):
     async def scenario():
         async with _open(universe, **kwargs) as session:
-            return await session.call(name, arguments, op_id="t1:1:1")
+            return await session.call(name, arguments, op_id=op_id)
 
     return asyncio.run(scenario())
 
@@ -37,8 +37,10 @@ def test_a_founder_message_sent_mid_turn_rides_on_the_next_box_result(tmp_path):
     texts = [block.text for block in result.content]
     assert texts[0] == "[exit code 0]"
     assert "also check the invoice" in texts[1]
-    # Delivered once.
-    again = _call(tmp_path, "bash", {"command": "true"})
+    with pytest.raises(EngineToolError, match="box_operation_refused"):
+        _call(tmp_path, "bash", {"command": "true"})
+    # A distinct next operation executes, without delivering the steering twice.
+    again = _call(tmp_path, "bash", {"command": "true"}, op_id="t1:1:2")
     assert len(again.content) == 1
 
 

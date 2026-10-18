@@ -868,6 +868,17 @@ class OwnerBoxd(BoxdCore):
     def bind(self, owner_id: str, *, session_id: str | None = None) -> BoxHandle:
         return super().bind(owner_id, account_id=owner_id, turn_id=session_id)
 
+    def consume_operation(self, handle: BoxHandle, op_id: str, kind: str, payload) -> None:
+        """Durably consume an execution ID before any tool side effect."""
+        with self._lock(self._owner_id):
+            self._auth_locked(handle)
+            self._begin(self._owner_id, op_id, kind, payload)
+
+    def _begin(self, cc: str, op_id: str, kind: str, payload: object) -> None:
+        previous = self._state.begin(cc, op_id, kind, op_digest(kind, payload))
+        if previous is not None:
+            raise BoxOperationRefused("consumed operation id is not re-run")
+
     def run(self, argv, *, cwd, stdin=b"", env=None, wall_seconds, output_bytes,
             line_handler=None, should_cancel=None):
         """Supervise a child of this persistent owner daemon, inside its box."""
