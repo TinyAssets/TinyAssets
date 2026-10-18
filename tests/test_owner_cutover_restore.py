@@ -115,6 +115,16 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(
     monkeypatch.setattr("tinyassets.boxes.destroy.verify_store", lambda *a: None)
     data, store = tmp_path / "volume/_data", tmp_path / "owners"
     seed(data)
+    registry = data / ".broker/state/owner-identities.db"
+    _sql(registry, """
+        CREATE INDEX damaged_admissions ON center_admissions(center) WHERE 0;
+        PRAGMA writable_schema=ON;
+        UPDATE sqlite_master SET sql='CREATE INDEX damaged_admissions ON center_admissions(center)'
+            WHERE name='damaged_admissions';
+    """)
+    with sqlite3.connect(registry) as db:
+        assert db.execute("SELECT center FROM center_admissions INDEXED BY damaged_admissions"
+                          ).fetchall() == []
     for uid in (300001, 300002, 300003):
         owner = {300001: "alice", 300002: "bob", 300003: "carol"}[uid]
         if uid != 300001:
@@ -273,6 +283,12 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(
             assert ErasureLedger(data).receipt("bob")["home_removed"]
         return
     assert "restore complete. Data installed" in completed.stdout
+    from tinyassets.sqlite_integrity import check
+
+    with sqlite3.connect(registry) as db:
+        assert check(db) == []
+        assert db.execute("SELECT center FROM center_admissions INDEXED BY damaged_admissions"
+                          ).fetchall() == [("a",)]
     assert not (store / "300002").exists()  # backup erasure
     assert not (store / "300003").exists()  # surviving erasure
     assert not (store / "300004").exists()  # post-backup owner erased

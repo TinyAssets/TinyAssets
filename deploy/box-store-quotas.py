@@ -36,8 +36,9 @@ def reapply(store: Path, trees: Path, registry: Path, *, clear: bool = False) ->
     if registry.is_symlink() or not registry.is_file():
         raise ValueError("paired broker identity database is absent or not regular")
     with readonly_db(registry) as db:
-        if db.execute("PRAGMA quick_check").fetchone() != ("ok",):
-            raise ValueError("paired broker identity database failed integrity check")
+        from tinyassets.sqlite_integrity import check
+
+        check(db)
         rows = db.execute("SELECT machine, project_id, bhard_bytes FROM box_records").fetchall()
     by_uid = {}
     for uid, project, limit in rows:

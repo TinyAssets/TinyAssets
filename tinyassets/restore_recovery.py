@@ -317,6 +317,9 @@ def disaster_restore(current, staged, trees, *, backup_time, now=None,
     from tinyassets.router_account_deletion import revoke_workos_sessions, workos_user_exists
 
     now = time.time() if now is None else now
+    # Publish the repaired stage, not the disposable copies used by _read.
+    # Both restore modes use the same exhaustive repair/reverification policy.
+    _repair_staged_databases(staged)
     unavailable_sources = []
     erased = erasures(current, staged, identity_exists=identity_exists or workos_user_exists,
                       unavailable_sources=unavailable_sources, store_root=live_trees)
