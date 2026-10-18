@@ -44,46 +44,17 @@ UNIT_FILES=(
     tinyassets-disk-watch.service tinyassets-disk-watch.timer
     tinyassets-ship-logs.service tinyassets-ship-logs.timer
 )
-# The installed-service test in test_backup_owner_box.py exercises the ledger's
-# read closure without the checkout or site-packages filling missing modules.
-RUNTIME_FILES=(
-    deploy/daemon-watchdog.sh
-    deploy/backup.sh
-    deploy/backup-owner-box.sh
-    deploy/backup-live-sqlite.py
-    deploy/backup-pair.py
-    deploy/box-store-check.sh
-    deploy/box-store-archive.py
-    deploy/box-store-quotas.py
-    deploy/box_project_readback.py
-    deploy/ship-logs.sh
-    scripts/__init__.py
-    scripts/_canary_common.py
-    scripts/watchdog.py
-    scripts/mcp_public_canary.py
-    scripts/disk_watch.py
-    scripts/disk_autoprune.py
-    scripts/daemon_image_retention.py
-    scripts/backup_snapshot_retention.py
-    scripts/rotate_run_transcripts.py
-    scripts/backup_ship_gh.py
-    scripts/backup_prune.py
-    tinyassets/__init__.py
-    tinyassets/ttl_memo.py
-    tinyassets/erasure_ledger.py
-    tinyassets/owner_runtime.py
-    tinyassets/owner_activity.py
-    tinyassets/rpc_frames.py
-    tinyassets/restore_recovery.py
-    tinyassets/sqlite_readonly.py
-    tinyassets/boxes/__init__.py
-    tinyassets/boxes/layout.py
-    tinyassets/boxes/provider.py
-    tinyassets/storage/__init__.py
-    tinyassets/storage/rotation.py
-)
-# Release root plus deploy/, scripts/, tinyassets/, storage/ and boxes/.
-EXPECTED_RELEASE_DIRECTORY_COUNT=6
+# Python files come from the real unit commands, including shell heredocs and
+# transitive imports. Capture first so a failed derivation aborts installation.
+BUNDLE_TOOL="$(cd "$(dirname "$0")" && pwd)/../scripts/host_service_bundle.py"
+BUNDLE_ROOT="${TINYASSETS_SOURCE_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+bundle_files="$(python3 "$BUNDLE_TOOL" --root "$BUNDLE_ROOT" "${SERVICES[@]}")"
+mapfile -t RUNTIME_FILES <<< "$bundle_files"
+RUNTIME_FILES+=(scripts/host_service_bundle.py)
+EXPECTED_RELEASE_DIRECTORY_COUNT="$(printf '%s\n' "${RUNTIME_FILES[@]}" | python3 -c '
+import pathlib, sys
+print(len({str(p) for line in sys.stdin for p in pathlib.PurePosixPath(line.strip()).parents}))
+')"
 # journald drop-in. This is the retention policy for the host journal, which
 # deploy/compose.yml makes the durable home of every container's output, so the
 # installer owns it the same way it owns the units: converged on every install,

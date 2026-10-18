@@ -9,7 +9,7 @@ Mirrors the GH-issue alarm pattern from scripts/watchdog.py.
 Exit codes
 ----------
 0   Disk usage below threshold (or DRY_RUN).
-1   Disk usage above threshold — issue opened (or would be in dry-run).
+10  Disk usage above threshold — issue opened (or would be in dry-run).
 2   GH API error (non-fatal in production — logged, exits 0 to avoid
     masking the disk problem with a secondary auth failure).
 
@@ -156,11 +156,11 @@ def check(
 
     if dry_run:
         print(f"[disk-watch] DRY_RUN: would open disk-pressure issue for {path}")
-        return 1
+        return 10
 
     if not token:
         print("[disk-watch] WARN: GITHUB_TOKEN not set — cannot open GH issue", file=sys.stderr)
-        return 1
+        return 10
 
     try:
         url = _issue(token, repo, path, pct, threshold)
@@ -168,7 +168,7 @@ def check(
     except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
         print(f"[disk-watch] WARN: GH issue failed (non-fatal): {exc}", file=sys.stderr)
 
-    return 1
+    return 10
 
 
 def main() -> int:
@@ -180,7 +180,7 @@ def main() -> int:
             path = storage_path(info, os.environ.get("TINYASSETS_IMAGE_RETENTION_STORAGE_PATH", ""))
         except (Refusal, OSError, ValueError, TypeError):
             print("[disk-watch] UNKNOWN: image-store filesystem is not verified", file=sys.stderr)
-            return 1  # Visible, but preserve the rotation/retention command chain.
+            return 10  # Visible, but preserve the rotation/retention command chain.
     threshold = int(os.environ.get("DISK_WARN_PCT", str(_DEFAULT_WARN_PCT)))
     repo = os.environ.get("GITHUB_REPOSITORY", _DEFAULT_REPO)
     token = os.environ.get("GITHUB_TOKEN", "")

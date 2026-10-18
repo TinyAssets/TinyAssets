@@ -30,14 +30,14 @@ def test_below_threshold_returns_0():
     assert rc == 0
 
 
-def test_above_threshold_dry_run_returns_1():
+def test_above_threshold_dry_run_returns_10():
     rc = check(
         path="/var/lib/docker",
         threshold=80,
         dry_run=True,
         disk_fn=lambda p: 85.0,
     )
-    assert rc == 1
+    assert rc == 10
 
 
 def test_above_threshold_opens_issue():
@@ -55,11 +55,11 @@ def test_above_threshold_opens_issue():
         disk_fn=lambda p: 85.0,
         issue_fn=_issue,
     )
-    assert rc == 1
+    assert rc == 10
     assert opened == [{"path": "/var/lib/docker", "pct": 85.0}]
 
 
-def test_above_threshold_no_token_still_returns_1():
+def test_above_threshold_no_token_still_returns_10():
     rc = check(
         path="/var/lib/docker",
         threshold=80,
@@ -67,7 +67,7 @@ def test_above_threshold_no_token_still_returns_1():
         dry_run=False,
         disk_fn=lambda p: 90.0,
     )
-    assert rc == 1
+    assert rc == 10
 
 
 def test_path_not_found_returns_0():
@@ -94,7 +94,7 @@ def test_exactly_at_threshold_is_ok():
     )
     # 80.0 < 80 is False, so this fires — adjust: threshold is EXCLUSIVE
     # (pct < threshold means OK). At exactly 80%, alert fires.
-    assert rc == 1
+    assert rc == 10
 
 
 def test_issue_fn_called_with_correct_args():
@@ -136,7 +136,7 @@ def test_unknown_store_is_visible_without_stopping_rotation(monkeypatch, capsys)
     monkeypatch.setattr(sys, "argv", ["disk_watch.py"])
     monkeypatch.delenv("DISK_WATCH_PATH", raising=False)
     monkeypatch.setattr(disk_watch.Docker, "json", unavailable)
-    assert disk_watch.main() == 1
+    assert disk_watch.main() == 10
     assert "UNKNOWN" in capsys.readouterr().err
 
 
@@ -224,7 +224,7 @@ def test_disk_watch_service_accepts_alert_exit_and_preserves_remediation_order()
     ]
 
     assert [line for line in directives if line.startswith("SuccessExitStatus=")] == [
-        "SuccessExitStatus=1"
+        "SuccessExitStatus=10"
     ]
     assert "WorkingDirectory=/opt/tinyassets-host-uptime/current" in directives
     assert [line for line in directives if line.startswith("ExecStart=")] == [

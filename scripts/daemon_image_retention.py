@@ -603,7 +603,7 @@ def main(argv=None):
             if report["status"] not in ("retained", "pressure_relieved"):
                 raise Refusal("pre_pull_retention_incomplete")
             check_pull_headroom(image_ref=options.image_ref)
-    except (Refusal, OSError, ValueError, TypeError, KeyError, AttributeError, ImportError) as exc:
+    except (Refusal, OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
         reason = str(exc) if isinstance(exc, Refusal) else "evidence_unavailable"
         print(json.dumps(dict(status="refused", reason=reason)))
         return 2

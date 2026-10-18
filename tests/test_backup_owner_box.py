@@ -158,9 +158,15 @@ esac
                 "DRY_RUN": "0",
                 # No checkout, editable install, or inherited Python path may fill
                 # a hole in the installed service's transitive import closure.
-                "PYTHONPATH": str(runtime),
+                "PYTHONPATH": "",
                 "PYTHONNOUSERSITE": "1",
             }
+            for line in unit.splitlines():
+                if line.startswith("Environment="):
+                    for assignment in shlex.split(line.removeprefix("Environment=")):
+                        key, value = assignment.split("=", 1)
+                        env[key] = value.replace(
+                            "/opt/tinyassets-host-uptime/current", str(runtime))
             shim(binary, "python3", 'exec ' + shlex.quote(sys.executable) + ' -S "$@"\n')
             try:
                 result = subprocess.run(

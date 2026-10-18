@@ -5,7 +5,7 @@
 #   2. rotate_run_transcripts — gzip + archive old run artifacts.
 #   3. disk_autoprune.py — bounded recoverable daemon image retention.
 #
-# The ExecStart commands run sequentially. Status 1 is accepted because
+# The ExecStart commands run sequentially. Status 10 is accepted because
 # disk_watch.py intentionally returns it under pressure; other statuses fail
 # the unit. Rotation and auto-prune handle their documented optional paths.
 #
@@ -31,12 +31,13 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+Environment=PYTHONPATH=/opt/tinyassets-host-uptime/current
 Type=oneshot
-SuccessExitStatus=1
+SuccessExitStatus=10
 EnvironmentFile=/etc/tinyassets/env
 WorkingDirectory=/opt/tinyassets-host-uptime/current
 # Step 1 — legacy disk_watch GH-issue alarm. Its intentional pressure status
-# 1 is accepted above so rotation and auto-prune can still run.
+# 10 is accepted above so rotation and auto-prune can still run.
 ExecStart=/usr/bin/python3 /opt/tinyassets-host-uptime/current/scripts/disk_watch.py
 # Step 2 — rotate run transcripts older than retention into archived/.
 ExecStart=/usr/bin/python3 -m scripts.rotate_run_transcripts

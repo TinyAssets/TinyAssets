@@ -1025,11 +1025,17 @@ jobs:
           python scripts/boxhostd_install_files.py > "$list"
           [[ -s "$list" ]]
           mapfile -t boxhostd_files < "$list"
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${boxhostd_files[@]}" \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/"
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo flock -w 120 /var/lock/tinyassets-host-mutation.lock bash /tmp/install-boxhostd-preflight.sh"
+          bundle="${RUNNER_TEMP}/boxhostd-install.tar"
+          tar -cf "$bundle" "${boxhostd_files[@]}"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes "$bundle" \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/boxhostd-install.tar"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" 'bash -s' <<'REMOTE_BOX'
+          set -euo pipefail
+          stage=$(mktemp -d /tmp/boxhostd-install.XXXXXXXX)
+          trap 'rm -rf -- "$stage"' EXIT
+          tar -xf /tmp/boxhostd-install.tar -C "$stage"
+          sudo flock -w 120 /var/lock/tinyassets-host-mutation.lock bash "$stage/deploy/install-boxhostd-preflight.sh"
+          REMOTE_BOX
 
       - name: Enforce daemon image retention (post-canary)
         # Use this revision's policy on the first repaired deploy as well as later

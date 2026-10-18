@@ -118,12 +118,10 @@ a0dde4d5e75d4f8e4287bc2e631b96536e83c80f574fb4ff62c58d472d4f58c5  ${target}/gvis
 EOF
 "${target}/runsc" --version | grep -F "$release" >/dev/null
 changed=0
-for name in boxhostd.py boxhostd_idle.py box_preflight.py box_store_durability.py box-store-device.sh box-store-device-stop.sh box-store-check.sh; do
-    if ! cmp -s "${source_dir}/${name}" "${root}/${name}"; then
-        install -m 0755 "${source_dir}/${name}" "${root}/${name}"
-        changed=1
-    fi
-done
+source_root="$(dirname "$source_dir")"
+bundle_changes="$(python3 "$source_root/scripts/host_service_bundle.py" --root "$source_root" \
+    --install-to "$root" --flat-scripts boxhostd.service box-store-device.service)"
+[[ -z "$bundle_changes" ]] || changed=1
 for name in boxhostd.service var-lib-boxhostd-owners.mount; do
     if ! cmp -s "${source_dir}/${name}" "/etc/systemd/system/${name}"; then
         install -m 0644 "${source_dir}/${name}" "/etc/systemd/system/${name}"

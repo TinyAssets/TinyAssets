@@ -6,6 +6,7 @@ After=var-lib-boxhostd-owners.mount
 ConditionPathExists=/opt/tinyassets/boxhostd/current/runsc
 
 [Service]
+Environment=PYTHONPATH=/opt/tinyassets/boxhostd
 Type=simple
 ExecStartPre=/opt/tinyassets/boxhostd/box-store-check.sh
 ExecStart=/usr/bin/python3 /opt/tinyassets/boxhostd/boxhostd.py

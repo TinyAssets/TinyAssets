@@ -25,6 +25,7 @@ After=docker.service network-online.target
 Wants=network-online.target
 
 [Service]
+Environment=PYTHONPATH=/opt/tinyassets-host-uptime/current
 Type=oneshot
 EnvironmentFile=/etc/tinyassets/env
 ExecStart=/bin/bash /opt/tinyassets-host-uptime/current/deploy/backup.sh

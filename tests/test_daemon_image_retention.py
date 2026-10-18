@@ -815,3 +815,12 @@ def test_cached_prefetch_needs_no_second_reserve_but_missing_image_does(inventor
     retention.check_pull_headroom(docker, disk_fn=lambda _: usage, image_ref=reference(10))
     with pytest.raises(retention.Refusal, match="headroom"):
         retention.check_pull_headroom(docker, disk_fn=lambda _: usage, image_ref=reference(11))
+
+
+def test_missing_import_is_not_converted_to_an_evidence_refusal(monkeypatch):
+    def missing(**kwargs):
+        raise ModuleNotFoundError("synthetic missing retention dependency")
+
+    monkeypatch.setattr(retention, "retain", missing)
+    with pytest.raises(ModuleNotFoundError, match="synthetic missing"):
+        retention.main(["--apply"])

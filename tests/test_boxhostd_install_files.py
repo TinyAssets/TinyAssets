@@ -53,7 +53,7 @@ def test_installer_references_resolve_and_include_the_unit_renderer() -> None:
     assert "deploy/box-store-unit.sh" in paths
     assert set(referenced) <= {Path(path).name for path in paths}
     assert paths[0] == INSTALLER
-    assert len(paths) == len({Path(path).name for path in paths})
+    assert len(paths) == len(set(paths))
     for path in paths:
         assert (ROOT / path).is_file()
 
@@ -75,7 +75,7 @@ def test_only_deploy_prod_runs_the_installer_and_ships_the_derived_list() -> Non
     # Reading the pinned release/checksum or listing a trigger path does not
     # execute the installer (the Linux launch proof does both).
     runners = [path for path in _workflows() if re.search(
-        r"\bbash\s+[^\s\"']*/install-boxhostd-preflight\.sh", path.read_text())]
+        r"\bbash\s+[\"]?[^\s\"']*/install-boxhostd-preflight\.sh", path.read_text())]
     assert [path.name for path in runners] == ["deploy-prod.yml"]
     for path in runners:
         assert_workflow_ships_derived_list(path.read_text(encoding="utf-8"), referenced)

@@ -14,6 +14,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from scripts.host_service_bundle import service_bundle
+
 REPO = Path(__file__).resolve().parent.parent
 INSTALLER = REPO / "deploy" / "install-host-uptime-services.sh"
 BOOTSTRAP = REPO / "deploy" / "hetzner-bootstrap.sh"
@@ -32,42 +34,8 @@ TIMERS = (
 )
 SERVICES = tuple(name.removesuffix(".timer") + ".service" for name in TIMERS)
 UNIT_FILES = tuple(item for pair in zip(SERVICES, TIMERS, strict=True) for item in pair)
-RUNTIME_FILES = (
-    "deploy/daemon-watchdog.sh",
-    "deploy/backup.sh",
-    "deploy/backup-owner-box.sh",
-    "deploy/backup-live-sqlite.py",
-    "deploy/backup-pair.py",
-    "deploy/box-store-check.sh",
-    "deploy/box-store-archive.py",
-    "deploy/box-store-quotas.py",
-    "deploy/box_project_readback.py",
-    "deploy/ship-logs.sh",
-    "scripts/__init__.py",
-    "scripts/_canary_common.py",
-    "scripts/watchdog.py",
-    "scripts/mcp_public_canary.py",
-    "scripts/disk_watch.py",
-    "scripts/disk_autoprune.py",
-    "scripts/daemon_image_retention.py",
-    "scripts/backup_snapshot_retention.py",
-    "scripts/rotate_run_transcripts.py",
-    "scripts/backup_ship_gh.py",
-    "scripts/backup_prune.py",
-    "tinyassets/__init__.py",
-    "tinyassets/ttl_memo.py",
-    "tinyassets/erasure_ledger.py",
-    "tinyassets/owner_runtime.py",
-    "tinyassets/owner_activity.py",
-    "tinyassets/rpc_frames.py",
-    "tinyassets/restore_recovery.py",
-    "tinyassets/sqlite_readonly.py",
-    "tinyassets/boxes/__init__.py",
-    "tinyassets/boxes/layout.py",
-    "tinyassets/boxes/provider.py",
-    "tinyassets/storage/__init__.py",
-    "tinyassets/storage/rotation.py",
-)
+RUNTIME_FILES = (*service_bundle(REPO, [REPO / "deploy" / u for u in SERVICES]),
+                 "scripts/host_service_bundle.py")
 # Not a RUNTIME_FILE: it is installed into /etc/systemd/journald.conf.d rather
 # than into the content-addressed release directory, but it is part of the same
 # manifest and the same transaction.
@@ -776,6 +744,9 @@ case "$cmd" in
   daemon-reload)
     [[ "${FAIL_SYSTEMCTL_AT:-}" == "daemon-reload" ]] && exit 70
     [[ -n "${DAEMON_RELOAD_MARKER:-}" ]] && touch "$DAEMON_RELOAD_MARKER"
+    if [[ -n "${DAEMON_RELOAD_RELEASE:-}" ]]; then
+      while [[ ! -e "$DAEMON_RELOAD_RELEASE" ]]; do sleep 0.05; done
+    fi
     [[ "${DAEMON_RELOAD_SLEEP:-0}" == "0" ]] || sleep "$DAEMON_RELOAD_SLEEP"
     ;;
   enable)
@@ -1582,7 +1553,8 @@ def test_same_target_lock_timeout_is_red_before_systemd(tmp_path):
     env = _install_env(tmp_path)
     marker = tmp_path / "reload.marker"
     env["DAEMON_RELOAD_MARKER"] = _bash_path(marker)
-    env["DAEMON_RELOAD_SLEEP"] = "2"
+    release = tmp_path / "reload.release"
+    env["DAEMON_RELOAD_RELEASE"] = _bash_path(release)
     first = _popen_installer(env)
     deadline = time.time() + 10
     while not marker.exists() and time.time() < deadline:
@@ -1594,7 +1566,10 @@ def test_same_target_lock_timeout_is_red_before_systemd(tmp_path):
         "DAEMON_RELOAD_SLEEP": "0",
         "TINYASSETS_LOCK_WAIT_SECONDS": "0",
     }
-    second = _run_installer(second_env)
+    try:
+        second = _run_installer(second_env)
+    finally:
+        release.touch()
     first_stdout, first_stderr = first.communicate(timeout=20)
 
     assert first.returncode == 0, f"{first_stdout}\n{first_stderr}"

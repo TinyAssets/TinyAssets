@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Files deploy must copy beside deploy/install-boxhostd-preflight.sh.
+"""Files deploy must ship for deploy/install-boxhostd-preflight.sh.
 
 The installer is the ship list. It reads siblings from its own directory
 (``${source_dir}/…``). This script resolves those names to ``deploy/`` or
 ``scripts/`` paths and prints them, plus the installer itself. Workflows copy
-that output into one directory; they do not keep a second list.
+that output with repository paths preserved; they do not keep a second list.
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ def referenced_basenames(text: str) -> list[str]:
 
 
 def ship_list(root: Path) -> list[str]:
-    """Repo-relative paths to copy into one directory before the installer runs."""
+    """Repo-relative paths to archive before the installer runs."""
     installer = root / INSTALLER
     if not installer.is_file():
         raise InstallFileError(f"missing {INSTALLER}")
@@ -96,16 +96,23 @@ def ship_list(root: Path) -> list[str]:
         if path not in seen:
             seen.add(path)
             unique.append(path)
-    basenames = [Path(path).name for path in unique]
+    from scripts.host_service_bundle import service_bundle
+
+    units = [root / path for path in unique if path.endswith(".service")]
+    unique = list(dict.fromkeys([*unique, "scripts/host_service_bundle.py",
+                                *service_bundle(root, units)]))
+    basenames = [Path(path).name for path in unique
+                 if Path(path).parts[0] in SEARCH_ROOTS]
     if len(basenames) != len(set(basenames)):
         raise InstallFileError(
-            "ship list has two files with the same basename; the copy flattens into one directory"
+            "ship list has colliding standalone entrypoint basenames"
         )
     return unique
 
 
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(root))
     try:
         for path in ship_list(root):
             print(path)
