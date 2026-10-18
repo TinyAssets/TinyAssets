@@ -543,3 +543,51 @@ def test_probe_is_liveness_only(tmp_path, monkeypatch):
     monkeypatch.setattr(wd.subprocess, "run", fake_run)
     assert wd._probe(script, "http://127.0.0.1:8001/mcp", 5.0) == (True, "green")
     assert "--pulse-only" in seen["argv"]
+
+
+@pytest.mark.parametrize("failure", ["missing", "import", "syntax", "interpreter", "timeout"])
+def test_helper_fault_is_fatal_without_restart_or_red_state(tmp_path, monkeypatch, capsys, failure):
+    import subprocess
+
+    import scripts.watchdog as wd
+
+    script = tmp_path / "canary.py"
+    script.write_text({
+        "import": "print('x' * 500); import missing_canary_dependency",
+        "syntax": "this is invalid python syntax",
+    }.get(failure, ""))
+    if failure == "missing":
+        script.unlink()
+    elif failure == "interpreter":
+        monkeypatch.setattr(wd.sys, "executable", str(tmp_path / "missing-python"))
+    elif failure == "timeout":
+        def timed_out(*args, **kwargs):
+            raise subprocess.TimeoutExpired(args[0], 5)
+        monkeypatch.setattr(wd.subprocess, "run", timed_out)
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"consecutive_reds": 2, "last_restart_ts": None}))
+    before = state.read_bytes()
+    recorder = _RestartRecorder()
+    with pytest.raises(wd.ProbeFault):
+        wd.watchdog_tick(canary_script=script, state_file=state, restart_fn=recorder)
+    assert recorder.calls == []
+    assert wd.main(["--canary-script", str(script), "--state-file", str(state),
+                    "--threshold", "1", "--dry-run"]) == 1
+    output = capsys.readouterr().err
+    assert "FATAL" in output and "RED #" not in output and "would restart" not in output
+    if failure == "import":
+        assert "ModuleNotFoundError" in output
+    assert state.read_bytes() == before
+
+
+def test_only_explicit_unhealthy_exit_can_restart(tmp_path):
+    import scripts.watchdog as wd
+
+    script = tmp_path / "canary.py"
+    script.write_text("raise SystemExit(10)")
+    recorder = _RestartRecorder()
+    wd.watchdog_tick(canary_script=script, state_file=tmp_path / "state.json",
+                     threshold=1, restart_fn=recorder,
+                     gh_issue_fn=lambda *args: (True, "synthetic"),
+                     alarm_log=tmp_path / "alarm.log")
+    assert recorder.calls == ["tinyassets-daemon.service"]

@@ -1,6 +1,7 @@
 """Every shipped unit executes its real command with only its installed Python."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -8,7 +9,11 @@ import shutil
 import subprocess
 import sys
 import venv
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
+
+import pytest
 
 from scripts.boxhostd_install_files import ship_list
 from scripts.host_service_bundle import service_bundle
@@ -18,7 +23,32 @@ from tests.test_host_uptime_installers import _install_env, _run_installer
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_every_installed_unit_execstart_has_closed_imports(tmp_path):
+@pytest.fixture
+def pulse_server():
+    calls = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            calls.append((self.path, self.headers.get("Authorization")))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"git_sha":"synthetic"}')
+
+        def log_message(self, *_):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/mcp", calls
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_every_installed_unit_execstart_has_closed_imports(tmp_path, pulse_server):
     installation = tmp_path / "uptime"
     installation.mkdir()
     result = _run_installer(_install_env(installation))
@@ -93,7 +123,7 @@ def test_every_installed_unit_execstart_has_closed_imports(tmp_path):
         "tinyassets-disk-watch.service": [(0, "below threshold"), (0, "rotation summary"),
                                            (2, '"reason": "invalid_docker_json"')],
         "tinyassets-prune.service": [(2, '"reason": "invalid_docker_json"')],
-        "tinyassets-watchdog.service": [(0, "RED #1/")],
+        "tinyassets-watchdog.service": [(0, "")],
         "daemon-watchdog.service": [(0, "synthetic docker: restart")],
         "tinyassets-ship-logs.service": [(0, "dry-run")],
         "boxhostd.service": [(1, "delegated systemd service cgroup")],
@@ -139,11 +169,41 @@ def test_every_installed_unit_execstart_has_closed_imports(tmp_path):
                 run_env["DRY_RUN"] = "1"
             if "scripts.rotate_run_transcripts" in args:
                 rotation = (args, cwd, run_env)
+            # Every Python unit must first load successfully in isolation.
+            # Operational venue refusals below cannot stand in for import success.
+            if args[:2] == [python, "-S"]:
+                if args[2] == "-m":
+                    loader = "import runpy; runpy.run_module(" + repr(args[3]) + ")"
+                else:
+                    loader = "import runpy; runpy.run_path(" + repr(args[2]) + ")"
+                imported = subprocess.run([python, "-S", "-c", loader], cwd=cwd,
+                                          env=run_env, text=True, capture_output=True)
+                assert imported.returncode == 0, (name, imported.stdout, imported.stderr)
+                assert not any(error in imported.stdout + imported.stderr for error in (
+                    "Traceback", "ImportError", "ModuleNotFoundError")), name
+            if name == "tinyassets-watchdog.service":
+                run_env["TINYASSETS_WIKI_CANARY_TOKEN"] = "synthetic"
+                args += ["--probe-url", pulse_server[0], "--state-file",
+                         str(tmp_path / "watchdog-state.json"), "--dry-run"]
+                watchdog = (args, cwd, run_env)
             result = subprocess.run(args, cwd=cwd, env=run_env, text=True,
                                     capture_output=True, timeout=30)
             output = result.stdout + result.stderr
-            assert "ModuleNotFoundError" not in output, (name, command, output)
+            assert not any(error in output for error in (
+                "ImportError", "ModuleNotFoundError")), (name, command, output)
+            if code == 0:
+                assert "Traceback" not in output, (name, command, output)
             assert result.returncode == code and evidence in output, (name, command, output)
+    assert pulse_server[1] == [("/mcp/pulse", "Bearer synthetic")]
+    assert json.loads((tmp_path / "watchdog-state.json").read_text())["consecutive_reds"] == 0
+    # A broken installed helper must fail even at threshold; keep its complete traceback.
+    (runtime / "scripts/_canary_common.py").unlink()
+    command, cwd, run_env = watchdog
+    result = subprocess.run([*command, "--threshold", "1"], cwd=cwd, env=run_env,
+                            text=True, capture_output=True, timeout=30)
+    assert result.returncode != 0 and "ModuleNotFoundError" in result.stderr
+    assert "FATAL" in result.stderr and "RED #" not in result.stderr
+    assert "would restart" not in result.stderr
     assert not transcript.exists(), "the real rotation command must reach its layout import"
 
     # A missing transitive import must fail the real unit command loudly.

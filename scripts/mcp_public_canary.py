@@ -37,6 +37,10 @@ Exit codes
 6   Authentication-boundary failure: anonymous initialize was admitted, or
     ``converse`` was not refused at both the anonymous and canary boundaries.
 
+For ``--pulse-only`` only: 0 means healthy, 10 means measured unhealthy.
+All other exits mean the helper could not measure health (including missing
+credentials, imports, interpreter failures and unexpected exceptions).
+
 Usage
 -----
     python scripts/mcp_public_canary.py
@@ -793,9 +797,9 @@ def probe(
 def _pulse_only(url: str, timeout: float, *, verbose: bool = False) -> int:
     """Liveness from release facts authorized as the canary principal.
 
-    Exit 0 when the daemon answers `/mcp/pulse` with a git sha. Anything else
-    is a dead or wedged process. Deliberately narrow: the container needs to
-    know it is serving, and proving the tool surface is a different question
+    Exit 0 when the daemon answers `/mcp/pulse` with a git sha, 10 on measured
+    transport/response failure. Unexpected helper faults propagate. The container
+    needs to know it is serving, and proving the tool surface is a different question
     asked by a different, authenticated probe.
     """
     import json as _json
@@ -817,22 +821,22 @@ def _pulse_only(url: str, timeout: float, *, verbose: bool = False) -> int:
             status = response.status
     except urllib.error.HTTPError as exc:
         print(f"[canary] pulse {endpoint} HTTP {exc.code}", file=sys.stderr)
-        return 1
-    except Exception as exc:  # noqa: BLE001 - any transport failure is dead
+        return 10
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
         print(f"[canary] pulse {endpoint} unreachable: {exc}", file=sys.stderr)
-        return 1
+        return 10
     if status != 200:
         print(f"[canary] pulse {endpoint} HTTP {status}", file=sys.stderr)
-        return 1
+        return 10
     try:
         payload = _json.loads(body)
     except ValueError:
         print(f"[canary] pulse {endpoint} returned non-JSON", file=sys.stderr)
-        return 1
-    sha = str(payload.get("git_sha") or "").strip()
+        return 10
+    sha = str(payload.get("git_sha") or "").strip() if isinstance(payload, dict) else ""
     if not sha:
         print(f"[canary] pulse {endpoint} carries no git_sha", file=sys.stderr)
-        return 1
+        return 10
     if verbose:
         print(f"[canary] pulse OK {endpoint} git_sha={sha}")
     return 0

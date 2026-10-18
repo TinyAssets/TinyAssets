@@ -858,3 +858,25 @@ def test_edge_preflight_cli_does_not_need_the_canary_token(monkeypatch):
     assert canary.main([
         "--edge-preflight", "--url", "https://tinyassets.io/mcp",
     ]) == 0
+
+
+@pytest.mark.parametrize("body", [b'{}', b'[]', b'not json'])
+def test_pulse_measurement_failure_has_distinct_exit(monkeypatch, body):
+    import io
+
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "synthetic")
+    response = io.BytesIO(body)
+    response.status = 200
+    monkeypatch.setattr(canary.urllib.request, "urlopen", lambda *a, **k: response)
+    assert canary.main(["--pulse-only", "--url", "http://synthetic/mcp"]) == 10
+
+
+def test_pulse_programming_fault_is_not_measured_unhealthy(monkeypatch):
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "synthetic")
+
+    def broken(*args, **kwargs):
+        raise ImportError("synthetic missing transport dependency")
+
+    monkeypatch.setattr(canary.urllib.request, "urlopen", broken)
+    with pytest.raises(ImportError):
+        canary.main(["--pulse-only", "--url", "http://synthetic/mcp"])
