@@ -12,6 +12,9 @@ TAG = "tinyassets.command-center-package.v1"
 
 @pytest.fixture
 def published(tmp_path, monkeypatch):
+    from tests.support.shared_catalog import install
+
+    install(monkeypatch, tmp_path)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     from tinyassets import engine_mcp_server as engine
     monkeypatch.setattr(engine, "_ACTOR_ID", "viewer")

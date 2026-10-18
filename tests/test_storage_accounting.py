@@ -220,12 +220,12 @@ class TestPendingIsNeverLost:
             landed["yes"] = True
             return size
 
-        monkeypatch.setitem(
-            sa.STORES, "universe_files",
-            sa.Store("universe_files", sa.SCOPE_UNIVERSE, _scan_then_race),
-        )
-        sa.measure(base, "u-one", "universe_files")
-        monkeypatch.undo()
+        with monkeypatch.context() as scan:
+            scan.setitem(
+                sa.STORES, "universe_files",
+                sa.Store("universe_files", sa.SCOPE_UNIVERSE, _scan_then_race),
+            )
+            sa.measure(base, "u-one", "universe_files")
 
         assert landed
         assert sa.usage(base, A).used_bytes == 30 * KIB  # not 0: the write is not lost
@@ -284,12 +284,12 @@ class TestPendingIsNeverLost:
                 sa.measure(base, "u-one", "universe_files")  # S2: sees it, retires pending
             return size
 
-        monkeypatch.setitem(
-            sa.STORES, "universe_files",
-            sa.Store("universe_files", sa.SCOPE_UNIVERSE, _slow_first_scan),
-        )
-        sa.measure(base, "u-one", "universe_files")  # S1 lands last
-        monkeypatch.undo()
+        with monkeypatch.context() as scan:
+            scan.setitem(
+                sa.STORES, "universe_files",
+                sa.Store("universe_files", sa.SCOPE_UNIVERSE, _slow_first_scan),
+            )
+            sa.measure(base, "u-one", "universe_files")  # S1 lands last
 
         assert sa.usage(base, A).used_bytes >= 40 * KIB
 

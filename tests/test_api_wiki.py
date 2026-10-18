@@ -48,9 +48,9 @@ from tinyassets.daemon_server import ensure_universe_registered, grant_universe_
 
 
 @pytest.fixture
-def wiki_env(tmp_path, monkeypatch):
+def wiki_env(tmp_path, monkeypatch, admitted_center):
     """Isolated wiki root, scaffold pre-built."""
-    wiki_root = tmp_path / "wiki"
+    wiki_root = admitted_center(tmp_path, "wiki")
     monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     _ensure_wiki_scaffold(wiki_root)
@@ -631,11 +631,11 @@ def test_wiki_exact_read_source_scope_and_list_structure_stay_distinct(wiki_env)
 @pytest.mark.parametrize("surface", ["search", "since", "ambient"])
 @pytest.mark.parametrize("scope", ["discovery", "coordination", "all"])
 def test_wiki_visibility_denial_precedes_scope_with_real_grant_control(
-    wiki_env, surface, scope
+    wiki_env, surface, scope, admitted_center
 ):
     data_root = wiki_env.parent
     universe_id = f"visibility-{surface}-{scope}"
-    universe_dir = data_root / universe_id
+    universe_dir = admitted_center(data_root, universe_id)
     ensure_universe_registered(
         data_root, universe_id=universe_id, universe_path=universe_dir
     )

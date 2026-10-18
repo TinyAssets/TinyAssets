@@ -8,9 +8,11 @@ from tinyassets.onboarding.serving import _BINDING_PAYLOAD, _platform_definition
 
 
 @pytest.fixture
-def home(tmp_path):
+def home(tmp_path, monkeypatch):
+    from tests.support.shared_catalog import install
     from tinyassets.daemon_server import grant_universe_access, set_founder_home
 
+    install(monkeypatch, tmp_path)
     (tmp_path / "u-owner").mkdir()
     grant_universe_access(tmp_path, universe_id="u-owner", actor_id="owner-1",
                           permission="admin", granted_by="owner-1")

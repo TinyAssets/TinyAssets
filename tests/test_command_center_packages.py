@@ -97,6 +97,9 @@ def _seed_bob_serving(base: Path) -> None:
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch) -> Path:
     """Alice's built village, and Bob's own small command center."""
+    from tests.support.shared_catalog import install
+
+    install(monkeypatch, tmp_path)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
     _seed_serving_assignment(tmp_path)

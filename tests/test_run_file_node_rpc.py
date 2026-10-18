@@ -32,8 +32,9 @@ def run(state):
 
 
 @pytest.fixture
-def rpc(intake):  # noqa: F811
+def rpc(intake, admitted_center):  # noqa: F811
     base, _, sources, bodies = intake
+    admitted_center(base, "u", "owner")
     refs = capture_authoring_files(
         base,
         owner_id="owner",

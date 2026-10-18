@@ -675,19 +675,22 @@ def test_universes_share_their_owners_pool_but_not_another_accounts(tmp_path):
     seats.stop_refresher()
 
 
-def test_the_seat_count_is_the_owners_tier(tmp_path):
-    """The tier is `universe_owner.account_type_of`: the subscription on the owner's HOME
-    universe covers every universe they own."""
-    from tests.test_universe_owner import _set_paid
+def test_the_seat_count_is_the_owners_tier(tmp_path, monkeypatch):
+    """The owner's broker plan covers every command center in their box."""
+    from tinyassets.broker.owner_reads import Plans
     from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
 
+    plans = Plans(tmp_path)
+    plans.apply("carol", tier="free", event_created=0)
+    monkeypatch.setattr("tinyassets.broker.owner_reads.remote",
+                        lambda operation, **args: plans.read("carol"))
     grant_universe_ownership(tmp_path, universe_id="home", owner_id="carol")
     grant_universe_ownership(tmp_path, universe_id="side", owner_id="carol")
     set_founder_home(tmp_path, founder_sub="carol", universe_id="home")
     key = seats.account_key("side", root=tmp_path)
     assert seats.limits_for_key(key, root=tmp_path).name == "free"
     (tmp_path / "home").mkdir(exist_ok=True)
-    _set_paid(tmp_path / "home")
+    plans.apply("carol", tier="paid", event_created=1)
     paid = seats.occupancy(key, db=seats.ledger_path(tmp_path))
     assert paid["tier"] == "paid"
     assert paid["seats"] == 8

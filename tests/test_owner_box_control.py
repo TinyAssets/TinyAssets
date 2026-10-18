@@ -8,12 +8,18 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from tests.test_owner_box_lifecycle import fleet  # noqa: F401
 from tests.test_owner_box_roll import rolling  # noqa: F401
 from tinyassets.boxes.host_service import HostService
 
 
 def test_control_socket_uses_kernel_router_identity_and_returns_bounded_errors():
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        pytest.skip(
+            "requires linux_oracle.py --as-root; owner=c6-owner-box runs-in=linux_oracle.py"
+        )
     assert os.geteuid() == 0, "run this file with linux_oracle.py --as-root"
     calls = []
 
@@ -87,6 +93,10 @@ else:
 def test_host_restart_lock_precedes_recovery_and_excludes_a_second_controller(tmp_path):
     from tinyassets.boxes.host_service import host_lock
 
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        pytest.skip(
+            "requires linux_oracle.py --as-root; owner=c6-owner-box runs-in=linux_oracle.py"
+        )
     assert os.geteuid() == 0, "run this file with linux_oracle.py --as-root"
     script = """
 import sys
@@ -156,6 +166,10 @@ def test_host_control_rejects_the_deleted_file_admission_operation():
 
 
 def test_roll_socket_pins_broker_and_deploy_identity_and_refuses_router(rolling):  # noqa: F811
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        pytest.skip(
+            "requires linux_oracle.py --as-root; owner=c6-owner-box runs-in=linux_oracle.py"
+        )
     assert os.geteuid() == 0, "run this file with linux_oracle.py --as-root"
     manager = rolling.manager
     uid = manager.ensure_awake("a")

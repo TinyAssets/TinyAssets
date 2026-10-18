@@ -21,13 +21,14 @@ MIB = 1024 * 1024
 
 
 @pytest.fixture
-def base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, admitted_center) -> Path:
     root = tmp_path / "data"
     root.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
     monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(root / "wiki"))
     monkeypatch.setenv("TINYASSETS_FREE_STORAGE_GIB", str(100 * KIB / 1024**3))
     initialize_author_server(root)
+    admitted_center(root, "wiki", A)
     for owner, uid in ((A, "u-a"), (B, "u-b")):
         grant_universe_ownership(root, universe_id=uid, owner_id=owner)
         (root / uid).mkdir()
@@ -73,7 +74,6 @@ class TestFittedWorkspace:
         assert bound == 10 * KIB + 80 * KIB
 
     def test_a_generation_that_outgrew_its_bound_is_refused(self, tmp_path, monkeypatch):
-        from tinyassets.boxes.provider import BOX_ROOT
         from tinyassets.control_plane import binding as binding_module
         from tinyassets.effectors import workspace as wse
 
@@ -87,7 +87,7 @@ class TestFittedWorkspace:
         (lease_dir / "provisioned.bin").write_bytes(b"p" * (50 * KIB))
 
         class _Lease:
-            path = f"{BOX_ROOT}/{center.name}/gen"
+            path = lease_dir
 
         with binding_module.use_binding(binding_module.file_binding(center)):
             with pytest.raises(wse._Refused) as refused:

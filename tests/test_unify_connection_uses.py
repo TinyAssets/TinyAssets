@@ -67,9 +67,11 @@ class _Auth:
 @pytest.fixture
 def owner(tmp_path, monkeypatch):
     """A founder's own unpowered universe, logged in as its owner."""
+    from tests.support.shared_catalog import install
     from tinyassets.daemon_server import grant_universe_access, set_founder_home
 
     base = tmp_path / "data"
+    install(monkeypatch, base)
     (base / UID).mkdir(parents=True)
     seed_owner_admission(base, principal=OWNER, center=UID)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))

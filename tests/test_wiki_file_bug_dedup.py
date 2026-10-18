@@ -21,9 +21,9 @@ import pytest
 
 
 @pytest.fixture
-def wiki_env(tmp_path, monkeypatch):
+def wiki_env(tmp_path, monkeypatch, admitted_center):
     """Set up an isolated wiki root with TINYASSETS_WIKI_PATH."""
-    wiki_root = tmp_path / "wiki"
+    wiki_root = admitted_center(tmp_path, "wiki")
     monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     from tinyassets.api.wiki import _ensure_wiki_scaffold

@@ -243,6 +243,7 @@ def install(monkeypatch):
     original_current = owner_tools.current
     original_tools_for = owner_tools.tools_for
     local_cores = {}
+    local_core_lock = threading.Lock()
     monkeypatch.setattr(owner_tools, "current", lambda: original_current() or admitted.get())
 
     real_require = owner_runtime.require
@@ -261,6 +262,10 @@ def install(monkeypatch):
                 raise PermissionError("foreign owner")
             owner = principal
         key = (root.parent, owner)
+        with local_core_lock:
+            return admitted_runtime(key, root, owner)
+
+    def admitted_runtime(key, root, owner):
         if key not in local_cores:
             state = Path(double._state) / ("local-" + hashlib.sha256(str(key).encode()).hexdigest())
             root.parent.mkdir(parents=True, exist_ok=True)
@@ -329,6 +334,24 @@ def install(monkeypatch):
 
     double.close = close
     return double
+
+
+@pytest.fixture
+def admitted_center():
+    """Create a synthetic center through admission before exercising local IO."""
+    def admit(root, center, principal="test-owner"):
+        from tests.support.broker_double import seed_owner_admission
+        from tinyassets.boxes.lifecycle import admit_center
+        from tinyassets.daemon_server import grant_universe_ownership
+
+        root = Path(root)
+        root.mkdir(parents=True, exist_ok=True)
+        seed_owner_admission(root, principal=principal, center=center)
+        grant_universe_ownership(root, universe_id=center, owner_id=principal)
+        admit_center(root, principal=principal, center=center)
+        return root / center
+
+    return admit
 
 
 @pytest.fixture(autouse=True)

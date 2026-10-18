@@ -283,6 +283,14 @@ def owner_protocol_transport(request, monkeypatch, in_process_broker):
     """
     if in_process_broker is None:
         return
+    install_owner_transport(
+        monkeypatch, in_process_broker,
+        patch_egress=not request.module.__name__.startswith("tests.test_owner_"),
+    )
+
+
+def install_owner_transport(monkeypatch, in_process_broker, *, patch_egress=True):
+    """Install the same broker protocol fixture in pytest and spawned probes."""
     from tinyassets import owner_runtime
     from tinyassets.broker.client import BrokerClient
     from tinyassets.storage.agent_request_usage import UsageStore
@@ -349,7 +357,7 @@ def owner_protocol_transport(request, monkeypatch, in_process_broker):
     monkeypatch.setattr(owner_channel, "request", channel)
     monkeypatch.setattr(BrokerClient, "_connect_owner", connect)
     monkeypatch.setattr(UsageStore, "_lease", lease)
-    if not request.module.__name__.startswith("tests.test_owner_"):
+    if patch_egress:
         monkeypatch.setattr(owner_runtime, "broker_egress", transport)
 
     from tinyassets.broker import owner_reads

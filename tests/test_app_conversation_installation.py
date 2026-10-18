@@ -54,8 +54,10 @@ def install(uid, did, config):
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
+    from tests.support.shared_catalog import install
     from tinyassets.daemon_server import grant_universe_access, set_founder_home
 
+    install(monkeypatch, tmp_path)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     for owner in ("alice", "bob"):
         uid = "u-" + owner

@@ -14,7 +14,7 @@ from tinyassets.request_budget import RunRequestAllocation, TurnRequestBudget
 
 def _with_broker(target, base):
     # Spawn does not inherit pytest's broker fixture or its same-UID group.
-    from tests.support.broker_double import _Registry
+    from tests.support.broker_double import _Registry, install_owner_transport
     from tinyassets.boxes import layout
     from tinyassets.broker import supervisor
 
@@ -23,6 +23,7 @@ def _with_broker(target, base):
         with pytest.MonkeyPatch.context() as patch:
             patch.setattr(layout, "BROKER_READ_GID", os.getgid())
             patch.setattr(supervisor, "get_supervisor", registry.supervisor_for)
+            install_owner_transport(patch, registry)
             target(base)
     finally:
         registry.close()

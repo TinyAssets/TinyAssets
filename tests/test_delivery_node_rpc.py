@@ -32,8 +32,9 @@ SOURCE = """def run(state):
 
 
 @pytest.fixture
-def node_env(linked, monkeypatch):
+def node_env(linked, monkeypatch, admitted_center):
     base, auth, receiver, link = linked
+    admitted_center(base, "u-sender", "sender")
     branch = BranchDefinition.from_dict(get_branch_definition(base, branch_def_id="b-sender"))
     node = branch.node_defs[0]
     node.prompt_template = ""

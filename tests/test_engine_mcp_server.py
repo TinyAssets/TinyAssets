@@ -190,10 +190,12 @@ def test_browse_commons_branches_lists_published_with_read_caps(monkeypatch):
 
 
 def test_browse_commons_agents_delegates_to_read_graph(monkeypatch, tmp_path):
+    from tests.support.shared_catalog import install
     from tinyassets import engine_mcp_server as s
     from tinyassets.commons_catalog import publish_definition
 
     _bind_ids(monkeypatch)
+    install(monkeypatch, tmp_path)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     listed = publish_definition(tmp_path, author_id="other", payload={
         "schema_version": 1, "name": "Triage", "description": "Triage work",

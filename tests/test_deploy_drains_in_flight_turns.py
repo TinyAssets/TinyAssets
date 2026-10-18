@@ -45,7 +45,9 @@ SERVER = REPO / "tinyassets" / "universe_server.py"
 
 #: What the deploy job allows for deploy work, from `.github/workflows/deploy-prod.yml`:
 #: the job's timeout less the "Wait for in-flight turns" step's.
-DEPLOY_JOB_BUDGET_S = 25 * 60
+# 145 minutes minus 55 waiting for turns and 15 for backup verification.
+# The remaining 75 includes the 50-minute owner-box roll and acceptance.
+DEPLOY_JOB_BUDGET_S = 75 * 60
 #: How many times one run can converge, and therefore drain: the forward converge,
 #: plus the rollback converge when the new image does not become acceptable.
 #: Missing this is what made the first version's budget check wrong.
@@ -190,9 +192,10 @@ def test_the_worst_case_deploy_still_fits_inside_the_job():
     assert budget == DEPLOY_JOB_BUDGET_S, "the job budget changed; re-derive the bound"
     workflow = yaml.safe_load((REPO / ".github/workflows/deploy-prod.yml").read_text())
     steps = workflow["jobs"]["deploy"]["steps"]
-    # Reserve advisory live probing without consuming rollback drain/health time.
+    # Reserve both live probing and per-owner roll/acceptance without consuming
+    # the shared daemon's rollback drain/health time.
     probes = sum(next(s for s in steps if s.get("id") == name)["timeout-minutes"] * 60
-                 for name in ("core_canary",))
+                 for name in ("core_canary", "owner_boxes"))
     worst_case = CONVERGES_PER_RUN * (grace + _health_timeout_s()) + DEPLOY_OVERHEAD_S + probes
     assert worst_case <= budget, (
         f"worst case {worst_case}s ({CONVERGES_PER_RUN} x ({grace}s drain + "

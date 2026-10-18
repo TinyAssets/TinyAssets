@@ -708,7 +708,6 @@ def test_the_scratch_root_is_inside_the_command_center_and_startup_makes_none(
     per operation, under the admitted owner identity, by the owner's own cell.
     Startup has nobody to name, so it creates nothing.
     """
-    from tinyassets.boxes.provider import BOX_ROOT
     from tinyassets.effectors.workspace import scratch_pool_root
 
     universe = tmp_path / "data" / "universe-x"
@@ -716,8 +715,8 @@ def test_the_scratch_root_is_inside_the_command_center_and_startup_makes_none(
     monkeypatch.setattr(workspace_pool, "startup_sweep", lambda *a, **k: 0)
     assert runs.ensure_workspace_reconciled(universe, start_sweeper=False) is True
     assert runs._ensure_scratch_root(universe) == scratch_pool_root(universe)
-    # The guest path inside the center's owner box.
-    assert scratch_pool_root(universe) == Path(BOX_ROOT) / "universe-x" / "workspaces" / "scratch"
+    # The local center path inside the persistent owner's box.
+    assert scratch_pool_root(universe) == universe / "workspaces" / "scratch"
     assert not (tmp_path / "data" / "scratch").exists()
     assert not (universe / "workspaces").exists()
 

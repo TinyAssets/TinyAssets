@@ -53,12 +53,14 @@ def test_existing_owner_can_copy_or_delete_share_skill(tmp_path):
 def test_scripted_turn_offers_a_public_post_and_picture_without_posting(
     tmp_path, monkeypatch, authenticate_request, engine,
 ):
+    from tests.support.shared_catalog import install
     from tests.test_automations import _seed_branch
     from tests.test_in_platform_agent_systems import SCOUT, SCRIBE, _library
     from tests.test_ui_preview import _png
     from tinyassets import ui_preview
     from tinyassets.runs import get_run
 
+    install(monkeypatch, tmp_path)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(ui_preview, "_render_spec", lambda *_: {"png": _png()})
     _seed_branch(tmp_path, branch_def_id=SCOUT, visibility="private")

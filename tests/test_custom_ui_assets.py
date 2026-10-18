@@ -162,7 +162,7 @@ def test_a_row_cannot_name_another_persons_blob(door):
         refused = _write(op, payload)
         assert refused["error"] == "app_ui_validation_error", refused
         assert "not in your UI storage" in refused["detail"]
-    with pytest.raises(ca.AgentValidationError, match="not in your UI storage"):
+    with _as(A), pytest.raises(ca.AgentValidationError, match="not in your UI storage"):
         ca.save_app_ui(base, owner_user_id=A, universe_id=HOME_A, expected_revision=0,
                        changes={"ui_library": [stolen]})
     _write("add_ui", {"component": _bundle()})
@@ -344,7 +344,8 @@ def test_unreferenced_blobs_are_swept_after_their_grace(door):
         conn.execute("UPDATE universe_app_ui_asset SET created_at = ?",
                      (time.time() - 2 * ca._ASSET_GC_GRACE_SECONDS,))
     # A young unreferenced blob survives: it may be about to be referenced.
-    ca.store_app_ui_asset(base, owner_user_id=A, data=b"young", media_type="text/plain")
+    with _as(A):
+        ca.store_app_ui_asset(base, owner_user_id=A, data=b"young", media_type="text/plain")
     held = {sha for _, sha in _blobs(base)}
     assert old_sha not in held, "unreferenced and old: swept"
     assert kept_sha in held, "referenced: kept however old"
