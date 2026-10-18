@@ -42,12 +42,47 @@ Cluster validation: the repaired 31-file run records **726 passed, two
 failed, 34 skipped**; its two failures identified the standalone sharing
 transport and exact starter receipt path. Their final two-file rerun passes
 **9/9**. Combined root control/cutover/layout validation passes **61/61**, with
-zero skips. Touched-file Ruff, shape probes and whitespace
-checks pass. Repository-wide Ruff reports 32 findings in six files, all verified
-byte-equivalent to the starting head. Full-shard validation remains in progress.
-The CI selection is 1,205 files, partitioned
-with `ci_required_tests.shard_of(path, 4)`; each shard runs as one Linux pytest
-process with `CI=true`, `TINYASSETS_DATA_DIR=/tmp/ta-data` and `-m "not slow"`.
+zero skips. The required runner's separate backup root file passes **7/7**.
+`cluster-coverage.json` reconciles **761 distinct Linux passes, zero unresolved
+failures**; its remaining history-dependent case passes directly against the
+local Git history (`runtime-history.log`), which the oracle snapshot lacks.
+
+Final CI selection is **1,205 files**, unchanged after both repair commits,
+digest `sha256:aadaf624f138788bc89922ae3dfecb4e20c986c2eef462e35727e4f934ad166e`.
+The four `ci_required_tests.shard_of(path, 4)` partitions cover it exactly once.
+Each final shard ran as **one** Linux pytest process with `CI=true`,
+`TINYASSETS_DATA_DIR=/tmp/ta-data`, `MSYS_NO_PATHCONV=1` in the launcher,
+`-q --no-header -p no:cacheprovider` and `-m "not slow"`.
+Earlier snapshots superseded by the last fixture ports are retained separately;
+they are not substituted for these completed full runs.
+
+| Shard | Files | Passed | Failed/errors | Skipped | Exit |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 449 | 6,502 | 0 / 0 | 6 | 0 |
+| 2 | 250 | 5,413 | 0 / 0 | 12 | 0 |
+| 3 | 254 | 6,339 | 0 / 0 | 69 | 0 |
+| 4 | 252 | 5,449 | 0 / 0 | 37 | 0 |
+| Total | 1,205 | **23,703** | **0 / 0** | 124 | **0** |
+
+The two slow cases are deselected by the requested marker. Skips are not
+credited as passes: 60 require the Docker Compose CLI absent from the ordinary
+oracle image; the remainder are root, OS, history or unavailable-stub venues.
+Only the three explicitly requested root-control guards were added here, and
+all three have actual root passes. No quarantine or xfail was introduced.
+
+All **35 structural guard files pass, 961 cases, zero skips** (`guards.xml`).
+All **34 affected heavy files pass, 1,358 cases, zero skips** (`heavy.xml`).
+Touched-file Ruff, `check_shapes.py` and whitespace checks pass. Repository-wide
+Ruff reports **32 existing findings in six files**, all verified byte-equivalent
+to the starting head. The deploy bound is **4,120 <= 4,500 seconds**, including
+both shared-daemon drains/health waits and the 50-minute owner-box acceptance.
+
+Implementation commits: `a0540fb5f98` (cluster ports and workflow filter),
+`9a5bc0aa0c5` (published reply-budget fixture). Post-commit hygiene against
+`conv/c6-owner-daemon-s3c` passes with `Registry row(s): S8` and the comprehensive
+existing `Test-Removal: retired --` body: **196 added, 190 retired, no newly
+retired tests or weakened retained assertions**. Final documentation-only
+receipt reconciliation is followed by the same gate against final `HEAD`.
 
 ## Final C6 migration and source-reader reconciliation (2026-10-17)
 
