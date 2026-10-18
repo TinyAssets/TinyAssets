@@ -1043,3 +1043,35 @@ def test_cutover_imports_router_custody_and_host_erasure_facts(cutover):
     assert not (data / ".disaster-restore.json").exists()
     assert any(work["quarantine"] == ".old/300003" for entry in ledger.entries()
                for work in entry["work"].values())
+
+
+@pytest.mark.parametrize("relative", ["knowledge.db", "a1/local.db"])
+@pytest.mark.parametrize("corrupt_table", [False, True])
+def test_whole_copied_database_uses_same_integrity_verdict(cutover, relative, corrupt_table):
+    data, store, *_ = cutover
+    _sql(data / relative, """
+        CREATE TABLE facts (universe_id TEXT, value CHECK(value > 0));
+        INSERT INTO facts VALUES ('a1',1);
+        CREATE INDEX facts_drift ON facts(universe_id) WHERE 0;
+        PRAGMA writable_schema=ON;
+        UPDATE sqlite_master SET sql='CREATE INDEX facts_drift ON facts(universe_id)'
+          WHERE name='facts_drift';
+    """)
+    if corrupt_table:
+        _sql(data / relative, "PRAGMA ignore_check_constraints=ON; "
+                             "INSERT INTO facts VALUES ('a1',-1);")
+    before = _fingerprint(data)
+    report = migration.census(data)
+    assert _fingerprint(data) == before
+    if corrupt_table:
+        assert report["refusals"]["database_integrity"] == 1
+        with pytest.raises(RuntimeError, match="census refused"):
+            migration.apply(*cutover)
+    else:
+        assert report["ready"], report["refusals"]
+        assert report["repairable_indexes"] == [f"repairable index: {relative}/facts_drift"]
+        migration.apply(*cutover)
+        with closing(sqlite3.connect(store / "300001" / relative)) as db:
+            assert db.execute("PRAGMA integrity_check(1000000000)").fetchall() == [("ok",)]
+            rows = db.execute("SELECT universe_id FROM facts INDEXED BY facts_drift").fetchall()
+            assert rows == [("a1",)]

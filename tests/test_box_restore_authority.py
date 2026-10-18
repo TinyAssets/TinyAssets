@@ -226,12 +226,20 @@ def test_normal_never_opens_owner_or_sidecar_content(tmp_path, monkeypatch):
     real_open, real_connect = Path.open, sqlite3.connect
 
     def only_marker(path, *args, **kwargs):
-        assert Path(str(path).split("?")[0]).name in {
+        from urllib.parse import unquote, urlsplit
+
+        opened = Path(unquote(urlsplit(str(path)).path))
+        if opened.is_relative_to(staged):
+            return real_connect(path, *args, **kwargs)
+        assert opened.name in {
             ".router-traffic.sqlite3", "credential-custody.db", "owner-identities.db",
             "boxhost.db", ".erasure-ledger.sqlite3"}
         return real_connect(path, *args, **kwargs)
 
     def only_layout(path, *args, **kwargs):
+        if path.is_relative_to(staged):
+            # The extracted stage must be checked/repaired before publication.
+            return real_open(path, *args, **kwargs)
         if path.is_relative_to(tmp_path):
             assert any(path in {root / name for name in (
                 ".layout.json", ".router-traffic.sqlite3", ".broker/credential-custody.db",

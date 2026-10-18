@@ -18,7 +18,7 @@ import stat
 import subprocess
 import sys
 import time
-from contextlib import ExitStack, closing
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -26,7 +26,8 @@ from deploy.box_project_readback import verify_owner, verify_tree
 from tinyassets import storage_layout
 from tinyassets.boxes.layout import OWNER_BOX_MIGRATION
 from tinyassets.broker.owner_identities import OWNER_ID_FIRST, OWNER_ID_LAST
-from tinyassets.sqlite_readonly import readonly_db, readonly_snapshot
+from tinyassets.sqlite_readonly import readonly_db as _private_db
+from tinyassets.sqlite_readonly import readonly_snapshot
 from tinyassets.usage_policy import account_type, limits_for
 
 PENDING = 10
@@ -356,7 +357,47 @@ def _quoted(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+@contextmanager
+def readonly_db(path):
+    """Every migration read verifies and repairs its disposable staged copy."""
+    from tinyassets.sqlite_integrity import check
+
+    with _private_db(path) as db:
+        check(db, repair=True)
+        yield db
+
+
 def census(data: Path, *, _inventory: dict | None = None,
+           _source_marker: dict | None = None) -> dict:
+    from tinyassets.sqlite_integrity import check
+
+    repairs = []
+    failures = 0
+    with readonly_snapshot():
+        # Include whole-store knowledge and center-local databases which are
+        # copied verbatim, before any indexed read can affect attribution.
+        for path in Path(data).rglob("*"):
+            if path.is_symlink() or not path.is_file():
+                continue
+            with path.open("rb") as stream:
+                if stream.read(16) != b"SQLite format 3\x00":
+                    continue
+            try:
+                with _private_db(path) as db:
+                    repairs.extend(f"repairable index: {path.relative_to(data).as_posix()}/{name}"
+                                   for name in check(db, repair=True))
+            except (ValueError, sqlite3.DatabaseError):
+                failures += 1
+        if failures:
+            # Corrupt stores cannot supply an honest row/owner census.
+            return {"version": 1, "ready": False, "owners": 0, "tables": {},
+                    "repairable_indexes": repairs, "refusals": {"database_integrity": failures}}
+        report = _census(data, _inventory=_inventory, _source_marker=_source_marker)
+        report["repairable_indexes"] = sorted(repairs)
+        return report
+
+
+def _census(data: Path, *, _inventory: dict | None = None,
            _source_marker: dict | None = None) -> dict:
     """Read-only, count-only cutover audit, including all refusal evidence.
 
@@ -480,14 +521,6 @@ def census(data: Path, *, _inventory: dict | None = None,
                 database_files.add(path)
                 relative = path.relative_to(data).as_posix()
                 with readonly_db(path) as db:
-                    from tinyassets.sqlite_integrity import check as check_integrity
-
-                    try:
-                        repairable_indexes.extend(
-                            f"repairable index: {relative}/{index}"
-                            for index in check_integrity(db, allow_index_drift=True))
-                    except ValueError:
-                        refusals["database_integrity"] += 1
                     for child, rowid, _, _ in db.execute("PRAGMA foreign_key_check"):
                         positions = ({value[0]: index for index, value in enumerate(db.execute(
                             f"SELECT rowid FROM {_quoted(child)} NOT INDEXED"))}
@@ -2161,18 +2194,11 @@ def _build_cutover(data: Path, store: Path, journal: dict, *, apply_quotas=True)
     report = census(data, _inventory=inventory, _source_marker=journal["source_marker"])
     if not report["ready"]:
         raise RuntimeError(f"cutover census refused: {report['refusals']}")
-    from tinyassets.sqlite_integrity import check as check_integrity
-
+    # Census repaired and exhaustively verified private copies; never repair
+    # the stopped source. Database construction repeats that verdict on its copy.
     repairs = set(journal.get("reindexed", []))
-    for database in sorted({database for database, _ in inventory["tables"]}):
-        _claim_sqlite_sidecars(data / database)
-        # Census proved this source exists. O_CREAT on a daemon-owned file in
-        # the ledger's sticky root is denied by Linux protected_regular, even
-        # to root; SQLite's default open then silently falls back to read-only.
-        uri = (data / database).resolve().as_uri() + "?mode=rw"
-        with closing(sqlite3.connect(uri, uri=True)) as db, db:
-            repairs.update(f"reindexed: {database}/{index}"
-                           for index in check_integrity(db, repair=True))
+    repairs.update(item.replace("repairable index: ", "reindexed: ")
+                   for item in report["repairable_indexes"])
     journal["reindexed"] = report["reindexed"] = sorted(repairs)
     _atomic_json(data / ".owner-cutover.json", journal)
     plan = [OwnerMove(**{**owner, "centers": tuple(owner["centers"])}) for owner in journal["plan"]]
@@ -2258,8 +2284,11 @@ def _build_cutover(data: Path, store: Path, journal: dict, *, apply_quotas=True)
 
     owner_manifests = {}
     workflow_counts = {}
+    from tinyassets.restore_recovery import _repair_staged_databases
+
     for owner in plan:
         tree = store / str(owner.uid)
+        _repair_staged_databases(tree)
         state = BoxHostState(tree / ".owner-boxd/boxhost.db")
         state.epoch(owner.principal)
         state.close()
@@ -2301,15 +2330,7 @@ def _build_cutover(data: Path, store: Path, journal: dict, *, apply_quotas=True)
     traffic = shared / ".router-traffic.sqlite3"
     os.chown(traffic, 0, DAEMON_UID)
     traffic.chmod(0o660)  # root-owned authority; the router records traffic admission
-    for path in shared.rglob("*"):
-        if path.is_file():
-            with path.open("rb") as stream:
-                database = stream.read(16) == b"SQLite format 3\x00"
-            if database:
-                with readonly_db(path) as db:
-                    from tinyassets.sqlite_integrity import check
-
-                    check(db)
+    _repair_staged_databases(shared)
     report["workflow_definitions"] = workflow_counts
     journal.update(phase="publish", report=report, shared=_durable_tree(shared),
                    owner_manifests=owner_manifests,

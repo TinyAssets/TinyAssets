@@ -220,3 +220,15 @@ then the owner's egress policy, then connection grants.
 - **AND** epochs and generations advance beyond both the live and archived copies
 - **AND** every operation ID seen in either copy is retained as unknown, never replayed
 - **AND** differing identity, admission or deletion frontiers refuse the swap until reviewed forward recovery is available
+
+### Requirement: One staged database integrity verdict
+Forward migration, legacy seeding reads and normal pre-traffic rollback SHALL
+repair index-only drift on their staged/private database copies and exhaustively
+re-verify integrity before reading or publishing them. Any non-index corruption
+SHALL refuse. Source archives SHALL remain unchanged.
+
+#### Scenario: Normal rollback to a backup with one damaged index
+- **WHEN** a pre-traffic rollback restores an archive with one repairable index
+- **THEN** the staged index is repaired and the rollback publishes successfully
+- **AND** the rehearsal compares restored schema and data with the archive
+- **AND** a refusal cannot count as a passing rollback step

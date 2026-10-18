@@ -79,6 +79,51 @@ def cleanup_mounts(prefix):
         raise RuntimeError("cleanup residue: " + ", ".join(sorted(residue)))
 
 
+def compare_restored_archive(root, archive_path):
+    """Compare file bytes and SQLite schema/rows; repaired indexes change bytes."""
+    import sqlite3
+    import tarfile
+    from collections import Counter
+    from contextlib import closing
+
+    from tinyassets.sqlite_integrity import check
+    from tinyassets.sqlite_readonly import readonly_db
+
+    def contents(db):
+        schema = db.execute("SELECT type,name,tbl_name,sql FROM sqlite_master "
+                            "ORDER BY type,name").fetchall()
+        rows = {}
+        for kind, name, _, _ in schema:
+            if kind == "table":
+                quoted = '"' + name.replace('"', '""') + '"'
+                rows[name] = Counter(db.execute(f"SELECT * FROM {quoted} NOT INDEXED"))
+        return schema, rows
+
+    with tempfile.TemporaryDirectory(prefix="ta-restore-compare-") as temporary:
+        with tarfile.open(archive_path) as archive:
+            archive.extractall(temporary, filter="data")
+        original = Path(temporary) / "_data"
+        databases = set()
+        for path in original.rglob("*"):
+            if path.is_file():
+                with path.open("rb") as stream:
+                    if stream.read(16) == b"SQLite format 3\x00":
+                        databases.add(path)
+        for path in original.rglob("*"):
+            if not path.is_file():
+                continue
+            restored = root / path.relative_to(original)
+            if path in databases:
+                with readonly_db(path) as before, closing(sqlite3.connect(
+                        restored.as_uri() + "?mode=rw", uri=True)) as after:
+                    check(before, repair=True)
+                    check(after)  # The published file must already be repaired.
+                    assert contents(before) == contents(after), path.name
+            elif not any(path == db.with_name(db.name + suffix) for db in databases
+                         for suffix in ("-wal", "-shm")):
+                assert restored.read_bytes() == path.read_bytes(), path.name
+
+
 class Venue:
     def __init__(self, image, store_bytes):
         self.image, self.store_bytes = image, store_bytes
@@ -310,7 +355,7 @@ class Venue:
             ).stdout
         )
 
-    def restore(self, *, replay=False, disaster=False, refuse=False):
+    def restore(self, *, replay=False, disaster=False, refuse=False, refusal_reason=None):
         def live_bytes():
             return self.helper(
                 "import json; from pathlib import Path; "
@@ -385,16 +430,15 @@ bash /support/deploy/backup-restore.sh
         expected = 4 if refuse else 6 if disaster else 0
         if result.returncode != expected:
             raise RuntimeError("restore failed: " + str(result.returncode))
+        if refusal_reason is not None and refusal_reason not in result.stderr + result.stdout:
+            raise RuntimeError("restore refused for an unexpected reason")
         if before is not None and live_bytes() != before:
             raise RuntimeError("refused rollback changed live data or owner trees")
         if replay or refuse:
             return
         self.helper(
-            "from pathlib import Path; import tarfile; "
-            "archive=tarfile.open('/backup/original.tar.gz'); "
-            "root=Path('/data'); "
-            "assert all((root / m.name.removeprefix('_data/')).read_bytes() == "
-            "archive.extractfile(m).read() for m in archive.getmembers() if m.isfile()); "
+            "import tempfile\n" + inspect.getsource(compare_restored_archive) +
+            "\ncompare_restored_archive(Path('/data'), Path('/backup/original.tar.gz'))\n"
             "assert not any(p.name.isdecimal() for p in Path('/box-store').iterdir())"
         )
         self.helper(
@@ -517,11 +561,8 @@ def archive_rehearsal(image, archive, *, store_bytes):
         baseline = venue.manifests()
         passed(step, manifests=len(baseline[1]) + 1)
         step = "restore_before_write"
-        # A pre-cutover archive may need forward index repair. Rollback must
-        # refuse that archive rather than publish the unrepaired database.
-        refuse_drift = bool(census.get("repairable_indexes"))
-        venue.restore(refuse=refuse_drift)
-        passed(step, comparisons=1, refusals=int(refuse_drift))
+        venue.restore()
+        passed(step, comparisons=1)
         step = "crash_resume"
         venue.reset_fixture()
         required(venue.migration("preflight"))
@@ -546,7 +587,7 @@ def archive_rehearsal(image, archive, *, store_bytes):
             if venue.manifests() != baseline:
                 raise RuntimeError("resumed manifests differ")
             if boundary == "after_owner_tree:1":
-                venue.restore(refuse=refuse_drift)
+                venue.restore()
                 venue.reset_fixture()
                 required(venue.migration("preflight"))
                 required(venue.migration("census"))

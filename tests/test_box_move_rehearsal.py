@@ -595,6 +595,48 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
         venue = original_venue(*args)
         original_migration = venue.migration
         original_reset = venue.reset_fixture
+        original_restore = venue.restore
+        tested_corruption = False
+
+        def checked_restore(**kwargs):
+            nonlocal tested_corruption
+            if not kwargs and not tested_corruption:
+                # Corrupt only the synthetic backup, never the live generation.
+                # The real restore must refuse and prove live bytes unchanged.
+                venue.container(
+                    "--rm", "--user", "0", "-v", venue.names["backup"] + ":/backup",
+                    "--entrypoint", "python", venue.image, "-c", """
+import hashlib, shutil, sqlite3, tarfile, tempfile
+from pathlib import Path
+archive = Path('/backup') / '""" + harness.DATA_ARCHIVE + """'
+shutil.copy2(archive, str(archive) + '.good')
+with tempfile.TemporaryDirectory() as scratch:
+    with tarfile.open(archive) as stream:
+        stream.extractall(scratch, filter='fully_trusted')
+    with sqlite3.connect(Path(scratch) / '_data/.tinyassets.db') as db:
+        db.execute('CREATE TABLE broken_restore (value CHECK(value > 0))')
+        db.execute('PRAGMA ignore_check_constraints=ON')
+        db.execute('INSERT INTO broken_restore VALUES (-1)')
+    with tarfile.open(archive, 'w:gz') as stream:
+        stream.add(Path(scratch) / '_data', arcname='_data')
+Path(str(archive) + '.sha256').write_text(
+    hashlib.sha256(archive.read_bytes()).hexdigest() + '  ' + archive.name + '\\n')
+""")
+                original_restore(refuse=True, refusal_reason="not index-only")
+                venue.container(
+                    "--rm", "--user", "0", "-v", venue.names["backup"] + ":/backup",
+                    "--entrypoint", "python", venue.image, "-c", """
+import hashlib
+from pathlib import Path
+archive = Path('/backup') / '""" + harness.DATA_ARCHIVE + """'
+Path(str(archive) + '.good').replace(archive)
+Path(str(archive) + '.sha256').write_text(
+    hashlib.sha256(archive.read_bytes()).hexdigest() + '  ' + archive.name + '\\n')
+""")
+                tested_corruption = True
+            return original_restore(**kwargs)
+
+        venue.restore = checked_restore
 
         def checked_reset():
             original_reset()
@@ -677,8 +719,7 @@ finally:
             "history_turns": 4, "pending": 4, "pending_saved": 4,
             "controls": 8, "plans": 8, "writes": 4, "reconnect": 2, "production_launch": 1,
         }
-        assert result["restore_before_write"] == {
-            "status": "PASS", "comparisons": 1, "refusals": 1}
+        assert result["restore_before_write"] == {"status": "PASS", "comparisons": 1}
         assert result["normal_restore_after_traffic_refuses"] == {"status": "PASS", "refusals": 1}
         assert result["disaster_provider_unreachable_refuses"] == {"status": "PASS", "refusals": 1}
         assert result["disaster_restore_after_traffic"] == {

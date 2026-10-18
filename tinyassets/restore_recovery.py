@@ -44,7 +44,7 @@ def _read(root, relative):
         from tinyassets.sqlite_integrity import check
 
         try:
-            check(db)
+            check(db, repair=True)
         except ValueError as error:
             raise UnreadableFacts("restore authority failed integrity check") from error
         result = {}
@@ -91,16 +91,33 @@ def normal_preflight(current, staged, owners, *, backup_time, restored_owners=No
     _carry_rollback(current, staged, owners, retained_owners)
 
 
+def _repair_staged_databases(staged):
+    from tinyassets.box_layout_migration import _claim_sqlite_sidecars
+    from tinyassets.sqlite_integrity import check
+
+    for path in staged.rglob("*"):
+        if not path.is_file():
+            continue
+        _safe(staged, path.relative_to(staged))
+        with path.open("rb") as stream:
+            if stream.read(16) != b"SQLite format 3\x00":
+                continue
+        for suffix in ("-wal", "-shm", "-journal"):
+            _safe(staged, str(path.relative_to(staged)) + suffix)
+        _claim_sqlite_sidecars(path)
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=rw", uri=True)) as db, db:
+            check(db, repair=True)
+
+
 def _carry_rollback(current, staged, owners, retained_owners):
     from tinyassets.erasure_ledger import ErasureLedger, carry_forward, seed_legacy
 
     marker = _safe(staged, ".layout.json")
     legacy = not marker.exists() or json.loads(marker.read_text()).get("box_layout") != "owner-box"
+    # Rollback publishes the extracted stage itself. A refusal discards that
+    # stage; live data and owner trees are never repaired or read here.
+    _repair_staged_databases(staged)
     if legacy:
-        from tinyassets.erasure_ledger import _legacy_main_digests
-
-        # Rollback publishes this database without forward migration: refuse drift.
-        _legacy_main_digests(staged, allow_index_drift=False)
         ErasureLedger(staged).initialize()
     ledger = carry_forward(current, staged)
     if legacy:

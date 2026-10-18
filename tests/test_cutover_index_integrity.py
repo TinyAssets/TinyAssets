@@ -85,7 +85,7 @@ def test_non_index_fault_after_110_damaged_indexes_is_never_hidden(source, tmp_p
         errors = db.execute("PRAGMA integrity_check(1000000000)").fetchall()
         assert any("CHECK" in row[0] for row in errors), errors
         with pytest.raises(ValueError, match="not index-only"):
-            check(db, allow_index_drift=True)
+            check(db, repair=True)
     before = (source / ".tinyassets.db").read_bytes()
     if caller == "census":
         assert census(source)["refusals"]["database_integrity"] == 1
@@ -106,14 +106,31 @@ def test_non_index_fault_after_110_damaged_indexes_is_never_hidden(source, tmp_p
     assert (source / ".tinyassets.db").read_bytes() == before
 
 
-def test_rollback_refuses_unrepaired_index_only_drift(source, tmp_path):
+@pytest.mark.parametrize("many", [False, True])
+def test_rollback_repairs_index_only_drift(source, tmp_path, many):
     from tests.test_box_restore_authority import paired
     from tinyassets.restore_recovery import normal_preflight
 
     current, _, live, _ = paired(tmp_path / "pair")
-    damage_many_indexes(source / ".tinyassets.db", corrupt_table=False)
-    with pytest.raises(ValueError, match="requires repair"):
-        normal_preflight(current, source, live, backup_time=1)
-    with closing(sqlite3.connect(source / ".tinyassets.db")) as db, db:
-        assert len(check(db, repair=True)) == 110
+    path = source / ".tinyassets.db"
+    if many:
+        damage_many_indexes(path, corrupt_table=False)
+    else:
+        corrupt_index(path)
+    normal_preflight(current, source, live, backup_time=1)
+    with closing(sqlite3.connect(path)) as db:
         assert check(db) == []
+        assert db.execute("SELECT count(*) FROM agent_turns").fetchone() == (4,)
+
+
+def test_legacy_seeding_repairs_private_copy_without_changing_source(source, tmp_path):
+    from tinyassets.erasure_ledger import _legacy_main_digests
+
+    path = source / ".tinyassets.db"
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute("CREATE TABLE deleted_principals (founder_sub TEXT)")
+        db.execute("INSERT INTO deleted_principals VALUES ('digest')")
+    corrupt_index(path)
+    before = _fingerprint(source)
+    assert _legacy_main_digests(source) == ["digest"]
+    assert _fingerprint(source) == before

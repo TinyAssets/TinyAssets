@@ -353,8 +353,8 @@ def _seed_legacy_fences(source, ledger, store_root):
         ledger.execute("add", {"digest": marker.parent.name})
 
 
-def _legacy_main_digests(source, *, allow_index_drift=True):
-    """Use cutover's index-only policy and read table bytes, never damaged indexes."""
+def _legacy_main_digests(source):
+    """Repair and verify the private staged copy before reading legacy facts."""
     from tinyassets.restore_recovery import _safe
     from tinyassets.sqlite_integrity import check
     from tinyassets.sqlite_readonly import readonly_db
@@ -365,7 +365,7 @@ def _legacy_main_digests(source, *, allow_index_drift=True):
     if not path.exists():
         return []
     with readonly_db(path) as db:
-        check(db, allow_index_drift=allow_index_drift)
+        check(db, repair=True)
         if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
                           "AND name='deleted_principals'").fetchone():
             return []
