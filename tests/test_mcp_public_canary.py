@@ -1,9 +1,14 @@
 """PR-178: mcp_public_canary --assert-handles drift guard (offline)."""
 from __future__ import annotations
 
+import errno
+import http.client
 import importlib.util
 import io
 import json
+import socket
+import ssl
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -880,3 +885,59 @@ def test_pulse_programming_fault_is_not_measured_unhealthy(monkeypatch):
     monkeypatch.setattr(canary.urllib.request, "urlopen", broken)
     with pytest.raises(ImportError):
         canary.main(["--pulse-only", "--url", "http://synthetic/mcp"])
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize("failure", [
+    OSError(errno.EMFILE, "file descriptors exhausted"),
+    OSError(errno.ENOMEM, "allocation failed"),
+    socket.gaierror(socket.EAI_FAIL, "resolver configuration failed"),
+    OSError(errno.EAFNOSUPPORT, "socket creation failed"),
+    PermissionError(errno.EACCES, "local socket policy"),
+    ssl.SSLError("local TLS setup failed"),
+    ValueError("unknown local failure"),
+    RuntimeError("unexpected helper failure"),
+])
+@pytest.mark.parametrize("phase", ["open", "read"])
+def test_pulse_local_failures_never_measure_unhealthy(monkeypatch, failure, wrapped, phase):
+    error = urllib.error.URLError(failure) if wrapped else failure
+
+    def broken(*args, **kwargs):
+        raise error
+
+    if phase == "open":
+        monkeypatch.setattr(canary.urllib.request, "urlopen", broken)
+    else:
+        response = io.BytesIO()
+        response.read = broken
+        monkeypatch.setattr(canary.urllib.request, "urlopen", lambda *a, **kw: response)
+    with pytest.raises(type(error)) as caught:
+        canary.main(["--pulse-only", "--url", "http://synthetic/mcp"])
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("failure", [
+    ConnectionRefusedError(errno.ECONNREFUSED, "daemon refused"),
+    TimeoutError("daemon timed out"),
+])
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_pulse_daemon_connection_failures_are_unhealthy(monkeypatch, failure, wrapped):
+    def broken(*args, **kwargs):
+        raise urllib.error.URLError(failure) if wrapped else failure
+
+    monkeypatch.setattr(canary.urllib.request, "urlopen", broken)
+    assert canary.main(["--pulse-only", "--url", "http://synthetic/mcp"]) == 10
+
+
+@pytest.mark.parametrize("failure", [
+    urllib.error.HTTPError("http://synthetic/mcp/pulse", 503, "unavailable", {}, None),
+    http.client.BadStatusLine("bad daemon status"),
+    http.client.IncompleteRead(b"partial", 20),
+    http.client.RemoteDisconnected("daemon closed response"),
+])
+def test_pulse_bad_daemon_responses_are_unhealthy(monkeypatch, failure):
+    def broken(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(canary.urllib.request, "urlopen", broken)
+    assert canary.main(["--pulse-only", "--url", "http://synthetic/mcp"]) == 10

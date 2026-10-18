@@ -591,3 +591,33 @@ def test_only_explicit_unhealthy_exit_can_restart(tmp_path):
                      gh_issue_fn=lambda *args: (True, "synthetic"),
                      alarm_log=tmp_path / "alarm.log")
     assert recorder.calls == ["tinyassets-daemon.service"]
+
+
+@pytest.mark.parametrize("failure", [
+    "OSError(errno.EMFILE, 'descriptors')", "OSError(errno.ENOMEM, 'memory')",
+    "socket.gaierror(socket.EAI_FAIL, 'resolver')",
+    "OSError(errno.EAFNOSUPPORT, 'socket')", "ssl.SSLError('TLS setup')",
+    "RuntimeError('unknown helper fault')",
+])
+def test_real_pulse_local_fault_exit_never_restarts(tmp_path, monkeypatch, failure):
+    import scripts.watchdog as wd
+
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "synthetic")
+    script = tmp_path / "canary.py"
+    script.write_text(f"""
+import errno, socket, ssl, sys, urllib.error
+sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
+from scripts import mcp_public_canary as canary
+def fail(*args, **kwargs):
+    raise urllib.error.URLError({failure})
+canary.urllib.request.urlopen = fail
+sys.exit(canary.main(sys.argv[1:]))
+""")
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"consecutive_reds": 2, "last_restart_ts": None}))
+    before = state.read_bytes()
+    recorder = _RestartRecorder()
+    with pytest.raises(wd.ProbeFault, match="exit=1"):
+        wd.watchdog_tick(canary_script=script, state_file=state, restart_fn=recorder)
+    assert recorder.calls == []
+    assert state.read_bytes() == before
