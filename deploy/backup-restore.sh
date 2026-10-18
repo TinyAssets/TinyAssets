@@ -576,6 +576,10 @@ if [[ -n "${BOX_STAGE}" ]]; then
     if [[ -n "$fact_report" ]]; then
         while IFS= read -r line; do log "$line"; done <<< "$fact_report"
     fi
+    # A legacy empty pair still displaces quota-tagged trees after completed cutover.
+    if python3 -c 'import json,sys; from pathlib import Path; p=Path(sys.argv[1]); sys.exit(not (p.exists() and json.loads(p.read_text()).get("box_layout") == "owner-box"))' "${VOLUME_DIR}/.layout.json"; then
+        quota_restore=1
+    fi
     # Credential roots, receipt fences and the report must survive power loss
     # before either prepared filesystem becomes live.
     sync -f "$STAGE_DIR"
