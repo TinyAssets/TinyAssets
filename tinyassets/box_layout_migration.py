@@ -2241,6 +2241,13 @@ def _build_cutover(data: Path, store: Path, journal: dict, *, apply_quotas=True)
             if relative == (".platform",):
                 mode = 0o711
             os.chmod(path, mode if path.is_dir() else (0o600 if private else 0o640))
+    fence = shared / ".restore-epoch"
+    fence.write_text("")
+    os.chown(fence, 0, 0)
+    fence.chmod(0o444)
+    traffic = shared / ".router-traffic.sqlite3"
+    os.chown(traffic, 0, DAEMON_UID)
+    traffic.chmod(0o660)  # root-owned authority; the router records traffic admission
     for path in shared.rglob("*"):
         if path.is_file():
             with path.open("rb") as stream:

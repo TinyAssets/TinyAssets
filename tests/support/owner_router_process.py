@@ -18,6 +18,7 @@ def main():
 
     # A test process has no boxhostd mount: the fixed mount is this temp root.
     owner_runtime.OWNER_MOUNT = root
+    owner_runtime.RESTORE_EPOCH = Path("/dev/null")
     owner_runtime._is_owner_mount = lambda path: path == root
     # These process doubles share the host netns; real boxes each bind 3128
     # in their own null netns. Egress commands have a dedicated real-port rig.

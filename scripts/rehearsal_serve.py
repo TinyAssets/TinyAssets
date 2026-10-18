@@ -36,6 +36,11 @@ def owner(root, relay, secret, socket):
     for original, mounted in ((relay, "/run/owner-relay"), (secret, "/run/owner-secret")):
         Path(mounted).touch()
         subprocess.run(["mount", "--bind", original, mounted], check=True)
+    fence = Path("/run/boxhostd/restore-epoch")
+    fence.parent.mkdir(exist_ok=True)
+    fence.touch()
+    subprocess.run(["mount", "--bind", "/data/.restore-epoch", str(fence)], check=True)
+    subprocess.run(["mount", "-o", "remount,bind,ro", str(fence)], check=True)
     uid = Path(root).stat().st_uid
     os.setgroups([])
     os.setgid(uid)

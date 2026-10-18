@@ -2,20 +2,9 @@
 
 ## Restore: pre-traffic exact, post-traffic disaster
 
-NORMAL restore is the exact verified paired backup, with no authority projection.
-Before publishing either volume it checks the LIVE router traffic store, every
-registered live shared store, owner tree and owner `.owner-boxd/boxhost.db`.
-Missing or unreadable live state refuses; absence is never "never started".
-The LIVE `owner_store_catalog` supplies completeness, including stores created
-after the backup; every registered store must exist and pass integrity.
-Any live `traffic_opened_at` refuses, including one newer than the pair;
-normal restore never reopens post-traffic state or a disaster generation. A missing traffic store
-is accepted only when the live layout proves an unfinished pre-traffic cutover.
-Legacy cutover-source pairs retain their exact original bytes and layout.
-Data-only restore and the pre-store override are removed; a missing owner store
-or paired member can never select a path around the live preflight.
-Pair integrity and identity checks, consumer exclusion and atomic publication
-remain mandatory. Failure preserves both original volumes.
+Normal restore exists only for pre-traffic cutover rollback and restores the verified backup pair exactly, without inspecting live owner stores; its only live authority is the root-owned `.layout.json` and `.router-traffic.sqlite3` at fixed paths on the shared data root, outside every owner tree.
+Any set `traffic_opened_at` (including one newer than the backup) or `credentials_after` refuses with exit 4 and directs the operator to disaster recovery; a missing or unreadable marker refuses unless readable layout proves an unfinished pre-traffic cutover, and missing or unreadable layout too always refuses.
+After traffic, only acknowledged disaster recovery is allowed, and its operation fences live in platform-owned state exposed read-only to boxes, never in owner-writable journals or receipt databases.
 
 The cutover initializes router admission closed. The workflow starts the router
 and runs the public and owner-box acceptance canaries while ordinary traffic is
@@ -58,17 +47,11 @@ Credential roots and their reset:
   and billing webhook credentials are not user bearer credentials.
 
 Operation fences:
-- Each owner's `.owner-boxd/boxhost.db`: bump epoch to a fresh restore incarnation;
-  old write/edit/bash handles and epoch-bound operation IDs refuse. These IDs
-  are journal positions, not ULIDs, and MUST NOT be compared with a time cutoff.
-- `.broker/ops.db:meta.cutoff_ms`: advance past restore time plus the broker's maximum admitted future skew (one
-  shared constant, inclusive boundary); admission validates
-  the entire ULID and rejects old IDs before receipt lookup.
-- Owner `.remote-ta-receipts.sqlite3`: advance the execution epoch fence; opaque
-  request IDs are scoped to their epoch-bound execution, not timestamp-compared.
-- Per-center `.external_write_receipts.db`: advance the epoch fence; opaque run
-  and hint IDs are not ULIDs. Newly created run IDs carry their creation epoch;
-  admission refuses old epochs before reserving or activating any receipt.
+- Root-owned shared `.restore-epoch`: replace with a fresh generation and
+  bind read-only at `/run/boxhostd/restore-epoch`; boxd and receipt admission reject
+  IDs from an earlier generation before consulting owner-writable state.
+- `.broker/ops.db:meta.cutoff_ms`: advance past restore time plus the broker's
+  maximum admitted future skew; admission rejects old ULIDs before receipt lookup.
 
 Erasure is the ONE carried fact class. Union tombstones from every readable
 router `deleted_owners`, broker `owner_box_revocations`, custody

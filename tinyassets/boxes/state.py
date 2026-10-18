@@ -175,8 +175,7 @@ class BoxHostState:
             "SELECT epoch, generation FROM boxes WHERE command_center_id = ?", (cc,)
         ).fetchone()
         if row is None:
-            fence = conn.execute("SELECT v FROM host WHERE k='restore_epoch'").fetchone()
-            epoch = fence[0] if fence else 1
+            epoch = 1
             conn.execute(
                 "INSERT INTO boxes (command_center_id, epoch, generation) VALUES (?, ?, 0)",
                 (cc, epoch),

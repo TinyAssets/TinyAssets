@@ -97,19 +97,6 @@ def fence_restore(current: Path, staged: Path, *, cutover_store: Path | None = N
         disaster_restore(current, staged, restored_store, backup_time=backup_time,
                          **(restore_adapters or {}))
     else:
-        live_layout = json.loads((current / ".layout.json").read_text())
-        saved_layout = json.loads((staged / ".layout.json").read_text())
-        if (live_layout.get("box_layout") == "owner-box"
-                and saved_layout.get("box_layout") != "owner-box"):
-            receipt = current / ".owner-cutover.json"
-            info = receipt.lstat()
-            if receipt.is_symlink() or info.st_uid != 0 or info.st_mode & 0o077:
-                raise ValueError("cutover receipt is not root-private")
-            journal = json.loads(receipt.read_text())
-            if (journal.get("phase") != "complete" or journal.get("version") != 1
-                    or _cutover_manifest(staged, exclude=(".tinyassets.db.prebudgetrepair.bak",))
-                    != journal.get("source_manifest")):
-                raise ValueError("restore is not the verified cutover source")
         normal_preflight(current, staged, cutover_store, backup_time=backup_time,
                          restored_owners=restored_store)
 

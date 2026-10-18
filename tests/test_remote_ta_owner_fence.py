@@ -75,7 +75,16 @@ def test_handover_during_dispatch_preserves_unknown_receipt(tmp_path):
     asyncio.run(run())
 
 
-def test_disaster_epoch_refuses_old_execution_before_receipt_lookup(tmp_path):
+def test_disaster_epoch_refuses_old_execution_before_receipt_lookup(tmp_path, monkeypatch):
+    import os
+
+    from tinyassets.boxes.boxd import OwnerBoxd
+    from tinyassets.owner_runtime import OwnerRuntime
+
+    core = OwnerBoxd(owner_id="owner", owner_root=tmp_path,
+                     state_dir=tmp_path / ".owner-boxd", restore_epoch="platform-generation")
+    monkeypatch.setattr("tinyassets.owner_runtime._runtime",
+                        OwnerRuntime("owner", os.getuid(), tmp_path, os.getpid(), core))
     async def run():
         calls = []
         async def dispatch(message):
@@ -85,16 +94,14 @@ def test_disaster_epoch_refuses_old_execution_before_receipt_lookup(tmp_path):
         path = tmp_path / ".remote-ta-receipts.sqlite3"
         bridge = TurnBridge(owner="owner", center="center", turn="turn", handle=handle,
                             database=path, dispatch=dispatch)
-        with sqlite3.connect(path) as db:
-            db.execute("CREATE TABLE restore_fence (epoch INTEGER NOT NULL)")
-            db.execute("INSERT INTO restore_fence VALUES (42)")
         try:
             answer = await asyncio.to_thread(bridge.request, handle, "old-execution", "a"*32, {})
             assert "not re-run" in answer["error"]
             assert calls == []
-            assert await asyncio.to_thread(bridge.request, handle, "42:new", "b"*32, {}) == {
-                "ok": True}
+            assert await asyncio.to_thread(
+                bridge.request, handle, core.operation_prefix() + "new", "b"*32, {}) == {"ok": True}
             assert calls == [{}]
         finally:
             bridge.close()
+            core.close()
     asyncio.run(run())

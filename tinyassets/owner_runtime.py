@@ -29,6 +29,7 @@ _runtime: OwnerRuntime | None = None
 #: boxhostd bind-mounts the owner's durable tree here (one-box-per-owner design;
 #: ``boxes/gvisor_runtime``). It is the only data root an owner daemon serves.
 OWNER_MOUNT = Path("/home/owner")
+RESTORE_EPOCH = Path("/run/boxhostd/restore-epoch")
 
 
 def _is_owner_mount(path: Path) -> bool:
@@ -112,6 +113,7 @@ def start(relay: Path) -> OwnerRuntime:
 
     tools = OwnerBoxd(owner_id=doc["principal"], owner_root=root,
                      state_dir=root / ".owner-boxd",
+                     restore_epoch=RESTORE_EPOCH.read_text(),
                      relay=None if activity.deletion_only else relay)
     os.environ["TINYASSETS_DATA_DIR"] = str(root)
     os.environ["TINYASSETS_ENGINE_MCP_TOOLS"] = "1"

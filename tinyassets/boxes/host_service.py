@@ -253,6 +253,7 @@ def _serve(*, rootfs: Path, data_root: Path) -> None:
         runsc=Path("/opt/tinyassets/boxhostd/current/runsc"), rootfs=rootfs,
         owner_store=Path("/var/lib/boxhostd/owners"), state_root=state / "runsc",
         bundle_root=state / "bundles",
+        restore_epoch_file=data_root / ".restore-epoch",
         cgroup_parent=Path("/sys/fs/cgroup/system.slice/boxhostd.service"))
     recover_daemons(runtime)
     quota = OwnerQuota(runtime.owner_store)

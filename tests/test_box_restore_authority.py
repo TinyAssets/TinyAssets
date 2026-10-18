@@ -72,31 +72,116 @@ def test_normal_restore_is_exact_and_does_not_carry_rows(tmp_path):
     assert (fingerprint(staged), fingerprint(trees)) == before
 
 
-@pytest.mark.parametrize("damage", ["traffic", "missing_marker", "corrupt_marker",
-                                   "missing_store", "corrupt_store", "missing_tree",
-                                   "missing_journal", "corrupt_journal", "empty_journal"])
+@pytest.mark.parametrize("damage", ["traffic", "missing_marker", "corrupt_marker"])
 def test_normal_refuses_before_touching_staging(tmp_path, damage):
     from tinyassets.router_traffic import open_traffic
     current, staged, live, trees = paired(tmp_path)
     if damage == "traffic":
         open_traffic(current)
     else:
-        path = {"marker": current / ".router-traffic.sqlite3",
-                "store": current / ".broker/credential-custody.db",
-                "tree": live / "300001",
-                "journal": live / "300001/.owner-boxd/boxhost.db"}[damage.split("_")[1]]
-        if damage.startswith("empty"):
-            path.write_bytes(b"")
-        elif damage.startswith("corrupt"):
+        path = current / ".router-traffic.sqlite3"
+        if damage.startswith("corrupt"):
             path.write_bytes(b"unreadable")
-        elif path.is_dir():
-            shutil.rmtree(path)
         else:
             path.unlink()
     before = fingerprint(staged), fingerprint(trees)
     with pytest.raises((ValueError, OSError, sqlite3.DatabaseError)):
         restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)
     assert (fingerprint(staged), fingerprint(trees)) == before
+
+
+@pytest.mark.parametrize("marker", ["missing", "corrupt"])
+@pytest.mark.parametrize("layout", ["missing", "corrupt", "unfinished"])
+def test_normal_marker_requires_unfinished_layout(tmp_path, marker, layout):
+    current, staged, live, trees = paired(tmp_path)
+    traffic = current / ".router-traffic.sqlite3"
+    traffic.unlink() if marker == "missing" else traffic.write_bytes(b"corrupt")
+    path = current / ".layout.json"
+    if layout == "missing":
+        path.unlink()
+    elif layout == "corrupt":
+        path.write_text("corrupt")
+    else:
+        path.write_text(json.dumps({"state": "migrating", "migration": "owner-box",
+                                    "box_layout": "owner-split"}))
+    if layout == "unfinished":
+        restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)
+    else:
+        with pytest.raises(ValueError, match="disaster path"):
+            restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)
+
+
+@pytest.mark.parametrize("opened,credentials", [(1, 0), (3, 0), (None, 1)])
+def test_normal_refuses_traffic_regardless_of_backup_age(tmp_path, opened, credentials):
+    current, staged, live, trees = paired(tmp_path)
+    with sqlite3.connect(current / ".router-traffic.sqlite3") as db:
+        db.execute("UPDATE traffic SET traffic_opened_at=?,credentials_after=?",
+                   (opened, credentials))
+    with pytest.raises(ValueError, match="disaster path"):
+        restore.fence_restore(current, staged, cutover_store=live, restored_store=trees,
+                              backup_time=2)
+
+
+OWNER_CONTENT = ["arbitrary/deep/planted.db", ".owner_leases.db", ".tinyassets.db",
+                 ".owner-boxd/boxhost.db", ".remote-ta-receipts.sqlite3",
+                 ".external_write_receipts.db", "a/.external_write_receipts.db",
+                 "a/.agent-workspace/.tmp/project/.owner_leases.db"]
+
+
+def test_normal_never_opens_owner_or_sidecar_content(tmp_path, monkeypatch):
+    from tinyassets.restore_recovery import normal_preflight
+
+    current, staged, live, trees = paired(tmp_path)
+    for root, relatives in ((live / "300001", OWNER_CONTENT), (current, [
+            ".agent-sessions/a/planted.db", ".published/planted.db",
+            ".universe-sidecars/a/starter-seeds.sqlite3", ".owner_leases.db"])):
+        for relative in relatives:
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"planted corrupt database")
+    real_open, real_connect = Path.open, sqlite3.connect
+
+    def only_marker(path, *args, **kwargs):
+        assert ".router-traffic.sqlite3" in str(path)
+        return real_connect(path, *args, **kwargs)
+
+    def only_layout(path, *args, **kwargs):
+        if path.is_relative_to(tmp_path):
+            assert path in {current / ".layout.json", current / ".router-traffic.sqlite3"}
+        else:
+            assert path.name == ".router-traffic.sqlite3"
+            assert path.parent.name.startswith("tinyassets-sqlite-read-")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", only_marker)
+    monkeypatch.setattr(Path, "open", only_layout)
+    monkeypatch.setattr(Path, "iterdir", lambda path: pytest.fail("live enumeration"))
+    normal_preflight(current, staged, live, backup_time=1, restored_owners=trees)
+
+
+@pytest.mark.parametrize("relative", OWNER_CONTENT)
+def test_disaster_ignores_corrupt_owner_content_and_fences_replay(tmp_path, monkeypatch, relative):
+    from tinyassets.boxes.boxd import OwnerBoxd
+    from tinyassets.boxes.provider import BoxOperationRefused
+
+    current, staged, live, trees = paired(tmp_path)
+    core = OwnerBoxd(owner_id="alice", owner_root=trees / "300001",
+                     state_dir=trees / "300001/.owner-boxd")
+    old_id = core.operation_prefix() + "old-operation"
+    for root in (live, trees):
+        path = root / "300001" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"planted corrupt database")
+    before = fingerprint(trees)
+    report = disaster(current, staged, trees, monkeypatch)
+    assert report["operation_fences_reset"]  # the shell's completed exit-6 preparation
+    assert fingerprint(trees) == before
+    core._restore_epoch = (staged / ".restore-epoch").read_text()
+    try:
+        with pytest.raises(BoxOperationRefused, match="not re-run"):
+            core._begin("alice", old_id, "write", {})
+    finally:
+        core.close()
 
 
 def disaster(current, staged, trees, monkeypatch, **kwargs):
@@ -138,7 +223,7 @@ def test_disaster_stale_key_session_hook_and_secret_all_fail(tmp_path, monkeypat
 
 def test_disaster_refuses_write_bash_and_broker_outbound_replay(tmp_path, monkeypatch):
     from tinyassets.boxes.boxd import OwnerBoxd
-    from tinyassets.boxes.provider import BoxOperationRefused, StaleHandle
+    from tinyassets.boxes.provider import BoxOperationRefused
     from tinyassets.broker.ops import OpStore, new_op_id
     current, staged, live, trees = paired(tmp_path)
     core = OwnerBoxd(owner_id="alice", owner_root=live / "300001",
@@ -150,9 +235,10 @@ def test_disaster_refuses_write_bash_and_broker_outbound_replay(tmp_path, monkey
     old_outbound = new_op_id(lambda: 1999999999)
     disaster(current, staged, trees, monkeypatch)
     core = OwnerBoxd(owner_id="alice", owner_root=trees / "300001",
-                     state_dir=trees / "300001/.owner-boxd")
+                     state_dir=trees / "300001/.owner-boxd",
+                     restore_epoch=(staged / ".restore-epoch").read_text())
     try:
-        with pytest.raises(StaleHandle):
+        with pytest.raises(BoxOperationRefused):
             core.write(old, "after-snapshot", "/cc/note", b"bad", max_bytes=100)
         handle = core.bind("alice")
         with pytest.raises(BoxOperationRefused, match="not re-run"):
@@ -160,7 +246,7 @@ def test_disaster_refuses_write_bash_and_broker_outbound_replay(tmp_path, monkey
         with pytest.raises(BoxOperationRefused, match="not re-run"):
             core.consume_operation(handle, "old-bash", "bash", {"command": "echo once"})
         assert (trees / "300001/note").read_text() == "backup"
-        core.write(handle, f"{handle.epoch}:fresh", "/cc/note", b"fresh", max_bytes=100)
+        core.write(handle, core.operation_prefix() + "fresh", "/cc/note", b"fresh", max_bytes=100)
     finally:
         core.close()
     ops = OpStore(staged / ".broker/ops.db", clock=lambda: 2000000001)
@@ -186,145 +272,6 @@ def test_future_dated_consumed_operation_cannot_replay_after_restore(tmp_path, m
     assert restored.admit("outbound", op_id, "digest").kind == "expired"
     boundary = new_op_id(lambda: start + 60 + MAX_FUTURE_SKEW_S)
     assert restored.admit("outbound", boundary, "digest").kind == "expired"
-
-
-@pytest.mark.parametrize("damage", ["missing", "corrupt", "empty", "integrity"])
-@pytest.mark.parametrize("placement", ["router", "owner"])
-def test_normal_checks_live_catalog_stores_absent_from_backup(tmp_path, damage, placement):
-    from tinyassets.owner_lease import register_store
-
-    current, staged, live, trees = paired(tmp_path)
-    root = current if placement == "router" else live / "300001"
-    path = root / "new.db"
-    with sqlite3.connect(path) as db:
-        db.execute("CREATE TABLE records (value TEXT CHECK(length(value)>0))")
-        db.execute("INSERT INTO records VALUES ('valid')")
-    register_store(root, path, "agent_turn_journal")
-    if damage == "missing":
-        path.unlink()
-    elif damage == "corrupt":
-        path.write_bytes(b"corrupt")
-    elif damage == "empty":
-        path.write_bytes(b"")
-    else:
-        with sqlite3.connect(path) as db:
-            db.execute("CREATE INDEX drift ON records(value) WHERE 0")
-            db.execute("PRAGMA writable_schema=ON")
-            db.execute("UPDATE sqlite_master SET sql='CREATE INDEX drift ON records(value)' "
-                       "WHERE name='drift'")
-    before = fingerprint(staged), fingerprint(trees)
-    with pytest.raises((ValueError, sqlite3.DatabaseError)):
-        restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)
-    assert (fingerprint(staged), fingerprint(trees)) == before
-
-
-@pytest.mark.parametrize("placement", ["router", "owner"])
-def test_normal_resolves_registered_runtime_mount_paths(tmp_path, placement):
-    from tinyassets.owner_lease import lease_db
-
-    current, staged, live, trees = paired(tmp_path)
-    root = current if placement == "router" else live / "300001"
-    with sqlite3.connect(root / "new.db") as db:
-        db.execute("CREATE TABLE records (value TEXT)")
-    mount = "/data" if placement == "router" else "/home/owner"
-    with lease_db(root) as db:
-        db.execute("INSERT INTO owner_store_catalog VALUES (?,?,?)",
-                   (mount + "/new.db", "agent_turn_journal", "now"))
-    before = fingerprint(staged), fingerprint(trees)
-    restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)
-    assert (fingerprint(staged), fingerprint(trees)) == before
-
-
-@pytest.mark.parametrize("placement", ["router", "owner"])
-@pytest.mark.parametrize("damage", ["missing", "corrupt", "empty"])
-def test_normal_refuses_missing_or_unreadable_fixed_catalog(tmp_path, placement, damage):
-    current, staged, live, trees = paired(tmp_path)
-    root = current if placement == "router" else live / "300001"
-    catalog = root / ".owner_leases.db"
-    if damage == "missing":
-        catalog.unlink()
-    else:
-        catalog.write_bytes(b"unreadable database" if damage == "corrupt" else b"")
-    before = fingerprint(staged), fingerprint(trees)
-    with pytest.raises((ValueError, sqlite3.DatabaseError)):
-        restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)
-    assert (fingerprint(staged), fingerprint(trees)) == before
-
-
-@pytest.mark.parametrize("placement", ["router", "owner"])
-@pytest.mark.parametrize("catalog", ["escape", "corrupt"])
-def test_normal_ignores_workspace_authority_lookalikes(tmp_path, placement, catalog):
-    from tinyassets.owner_lease import lease_db
-
-    current, staged, live, trees = paired(tmp_path)
-    roots = (current, staged) if placement == "router" else (live / "300001", trees / "300001")
-    for root in roots:
-        workspace = root / "a/.agent-workspace/.tmp/pytest/project"
-        workspace.mkdir(parents=True)
-        if catalog == "escape":
-            with lease_db(workspace) as db:
-                db.execute("INSERT INTO owner_store_catalog VALUES (?,?,?)",
-                           ("/u/.tmp/missing.db", "agent_turn_journal", "now"))
-        else:
-            (workspace / ".owner_leases.db").write_bytes(b"corrupt user file")
-        (workspace / "upload.db").write_bytes(b"verbatim upload")
-    # A database present only in the backup is content, not a missing live store.
-    workspace = roots[1] / "a/.agent-workspace/.tmp/pytest/project"
-    with sqlite3.connect(workspace / "backup-only.db") as db:
-        db.execute("CREATE TABLE uploaded (value TEXT)")
-    before = fingerprint(staged), fingerprint(trees)
-    restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)
-    assert (fingerprint(staged), fingerprint(trees)) == before
-
-
-@pytest.mark.parametrize("placement", ["router", "owner"])
-def test_normal_missing_catalog_with_live_fence_refuses_without_paired_catalog(tmp_path, placement):
-    current, staged, live, trees = paired(tmp_path)
-    root, saved = ((current, staged) if placement == "router"
-                   else (live / "300001", trees / "300001"))
-    for base in (root, saved):
-        (base / ".owner_leases.db").unlink()
-    with sqlite3.connect(root / ".tinyassets.db") as db:
-        db.execute("CREATE TABLE owner_fence (owner_key TEXT, generation INT)")
-        db.execute("INSERT INTO owner_fence VALUES ('cc:a',1)")
-    with pytest.raises(ValueError, match="catalog missing"):
-        restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)
-
-
-@pytest.mark.parametrize("placement,relative", [
-    ("router", ".runtime/mcp-events.sqlite3"),
-    ("router", ".published/.tinyassets.db"),
-    ("owner", ".universe-sidecars/a/starter-seeds.sqlite3"),
-    ("owner", ".universe-sidecars/a/.effector_consents.db"),
-])
-@pytest.mark.parametrize("damage", ["missing", "corrupt"])
-def test_normal_checks_fixed_platform_store_families(tmp_path, placement, relative, damage):
-    current, staged, live, trees = paired(tmp_path)
-    roots = ((current, staged) if placement == "router"
-             else (live / "300001", trees / "300001"))
-    for root in roots:
-        path = root / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(path) as db:
-            db.execute("CREATE TABLE records (value TEXT)")
-    path = roots[0] / relative
-    if damage == "missing":
-        path.unlink()
-    else:
-        path.write_bytes(b"corrupt platform store")
-    before = fingerprint(staged), fingerprint(trees)
-    with pytest.raises((ValueError, sqlite3.DatabaseError)):
-        restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)
-    assert (fingerprint(staged), fingerprint(trees)) == before
-
-
-def test_normal_preserves_uploaded_files_with_database_suffixes(tmp_path):
-    current, staged, live, trees = paired(tmp_path)
-    for root in (live, trees):
-        (root / "300001/upload.db").write_bytes(b"verbatim uploaded file")
-    before = fingerprint(staged), fingerprint(trees)
-    restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)
-    assert (fingerprint(staged), fingerprint(trees)) == before
 
 
 def test_disaster_revokes_every_surviving_owner_and_fails_closed(tmp_path, monkeypatch):
@@ -482,24 +429,6 @@ def test_router_cutover_gate_and_external_token_floor(tmp_path, monkeypatch):
     assert accepts_issued_at(tmp_path, 101)
 
 
-@pytest.mark.parametrize("member", ["directory", "database", "sidecar"])
-def test_normal_refuses_linked_journal_members(tmp_path, member):
-    current, staged, live, trees = paired(tmp_path)
-    directory = live / "300001/.owner-boxd"
-    outside = tmp_path / "outside"
-    outside.write_bytes(b"outside")
-    if member == "directory":
-        directory.rename(directory.with_name("saved"))
-        directory.symlink_to(directory.with_name("saved"), target_is_directory=True)
-    else:
-        path = directory / ("boxhost.db" if member == "database" else "boxhost.db-wal")
-        path.unlink(missing_ok=True)
-        path.symlink_to(outside)
-    with pytest.raises((ValueError, sqlite3.DatabaseError)):
-        restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)
-    assert outside.read_bytes() == b"outside"
-
-
 @pytest.mark.parametrize("placement", ["root", "center"])
 def test_disaster_fences_external_receipts_and_daily_spend(tmp_path, monkeypatch, placement):
     from tinyassets.broker.policy import PolicyRefused, PolicyStore
@@ -517,11 +446,22 @@ def test_disaster_fences_external_receipts_and_daily_spend(tmp_path, monkeypatch
     monkeypatch.setattr("os.chown", lambda *a, **k: None)
     fence_ops(staged, trees, 2000000000)
     assert fingerprint(workspace) == before
+    import os
+
+    from tinyassets.boxes.boxd import OwnerBoxd
+    from tinyassets.owner_runtime import OwnerRuntime
+
+    core = OwnerBoxd(owner_id="alice", owner_root=trees / "300001",
+                     state_dir=trees / "300001/.owner-boxd",
+                     restore_epoch=(staged / ".restore-epoch").read_text())
+    monkeypatch.setattr("tinyassets.owner_runtime._runtime",
+                        OwnerRuntime("alice", 300001, trees / "300001", os.getpid(), core))
     with pytest.raises(ValueError, match="restore epoch"):
         try_reserve_receipt(center, idempotency_hint="absent-from-backup", sink="fixture",
                             run_id="opaque-after-backup")
     assert try_reserve_receipt(center, idempotency_hint="new", sink="fixture",
-                               run_id="2000000000001:new")["status"] == "reserved"
+                               run_id=core.operation_prefix() + "new")["status"] == "reserved"
+    core.close()
     hold = staged / ".broker/restore-spend-until"
     hold.write_text("2000073600")
     policy = PolicyStore(staged, None)
@@ -554,7 +494,7 @@ def test_disaster_drops_provider_custody_and_outbound_authority(tmp_path, monkey
 
 @pytest.mark.parametrize("relative", [".router-traffic.sqlite3", ".broker/ops.db",
                                      ".broker/plans.db", ".broker/restore-spend-until",
-                                     ".disaster-restore.json"])
+                                     ".disaster-restore.json", ".restore-epoch"])
 def test_disaster_never_follows_staged_authority_links(tmp_path, monkeypatch, relative):
     current, staged, live, trees = paired(tmp_path)
     outside = tmp_path / "outside"

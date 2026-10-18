@@ -840,7 +840,8 @@ class OwnerBoxd(BoxdCore):
         return principal
 
     def __init__(self, *, owner_id: str, owner_root: Path, state_dir: Path,
-                 relay: Path | None = None) -> None:
+                 relay: Path | None = None, restore_epoch: str = "") -> None:
+        self._restore_epoch = restore_epoch
         self._owner_id = self._check_cc(owner_id)
         if not owner_root.is_dir() or owner_root.is_symlink():
             raise BoxPathError("owner root must be an existing directory, not a link")
@@ -874,11 +875,17 @@ class OwnerBoxd(BoxdCore):
             self._auth_locked(handle)
             self._begin(self._owner_id, op_id, kind, payload)
 
-    def _begin(self, cc: str, op_id: str, kind: str, payload: object) -> None:
-        with self._state._conn() as db:
-            fence = db.execute("SELECT v FROM host WHERE k='restore_epoch'").fetchone()
-        if fence and not op_id.startswith(str(self._state.epoch(cc)) + ":"):
+    def operation_prefix(self) -> str:
+        return f"{self._restore_epoch}:{self._state.epoch(self._owner_id)}:"
+
+    def check_operation(self, op_id: str) -> None:
+        if self._restore_epoch and (not isinstance(op_id, str)
+                                   or not op_id.startswith(self._restore_epoch + ":")
+                                   or not op_id.startswith(self.operation_prefix())):
             raise BoxOperationRefused("operation predates restore epoch; not re-run")
+
+    def _begin(self, cc: str, op_id: str, kind: str, payload: object) -> None:
+        self.check_operation(op_id)
         previous = self._state.begin(cc, op_id, kind, op_digest(kind, payload))
         if previous is not None:
             raise BoxOperationRefused("consumed operation id is not re-run")

@@ -1,22 +1,13 @@
 ## ADDED Requirements
 
 ### Requirement: Restore: pre-traffic exact, post-traffic disaster
-Normal restore SHALL restore a verified backup pair exactly. It SHALL refuse
-before publication if the LIVE router `traffic_opened_at` exists (including when
-newer than the pair), a disaster credential generation exists, or any registered
-live store, owner tree or owner journal is absent or unreadable. Completeness
-SHALL include the LIVE owner store catalog, even for stores absent from the pair.
-Catalog authority SHALL come only from `.owner_leases.db` at the shared data
-root or owner mount root (the lease callers' fixed bases), never a recursive
-filename search. A catalog proven necessary by its same-layout paired copy or live fenced
-stores SHALL be present and readable. Store checks and receipt fencing SHALL
-use platform paths and admitted centers, ignoring workspace and uploaded files.
-Data-only restore and pre-store overrides SHALL NOT bypass paired validation.
+Normal restore exists only for pre-traffic cutover rollback and restores the verified backup pair exactly, without inspecting live owner stores; its only live authority is the root-owned `.layout.json` and `.router-traffic.sqlite3` at fixed paths on the shared data root, outside every owner tree.
+Any set `traffic_opened_at` (including one newer than the backup) or `credentials_after` refuses with exit 4 and directs the operator to disaster recovery; a missing or unreadable marker refuses unless readable layout proves an unfinished pre-traffic cutover, and missing or unreadable layout too always refuses.
+After traffic, only acknowledged disaster recovery is allowed, and its operation fences live in platform-owned state exposed read-only to boxes, never in owner-writable journals or receipt databases.
 The router SHALL durably record its backed-up traffic marker before admitting
 ordinary traffic after deploy canary acceptance. Closed admission SHALL also
 refuse anonymous writable callbacks; only immutable app probes and the separately
-authenticated canary sign-in may bypass it. A missing live marker store
-SHALL refuse unless the live layout proves the pre-traffic cutover state.
+authenticated canary sign-in may bypass it.
 Disaster recovery SHALL require both existing acknowledgement flags, select the
 newest verified pair, reset every bearer credential root or delete unkeyed digest
 rows, drop external credential custody and outbound grants/vaults, fence every
@@ -47,10 +38,14 @@ startup, and unreachable-provider exit 4 without changing either live volume.
 - **WHEN** the live router marker is newer than the backup pair
 - **THEN** normal restore refuses before swapping either volume
 
-#### Scenario: Missing live authority
-- **WHEN** a registered live store, owner tree or owner journal is missing or unreadable
-- **THEN** normal restore refuses before publication
-- **AND** an absent marker store is accepted only for a proven pre-traffic cutover
+#### Scenario: Missing pre-traffic proof
+- **WHEN** marker and layout are both missing or unreadable
+- **THEN** normal restore refuses with exit 4 before publication
+
+#### Scenario: Owner content is not recovery authority
+- **WHEN** an owner plants a corrupt database anywhere in its writable tree
+- **THEN** neither normal preflight nor disaster fencing opens it
+- **AND** disaster recovery still fences that owner's pre-restore operation IDs
 
 #### Scenario: Acknowledged disaster recovery on a fresh droplet
 - **WHEN** both disaster acknowledgement flags are supplied with the newest verified pair
@@ -194,12 +189,6 @@ custody and its platform vault directory.
 - **AND** reports list per-account `scheduled-run history` and `activity ledger` entry counts, explicit unowned drops and all five accepted user costs
 - **AND** both splits read back content and per-owner counts and require retained plus dropped entries to equal the original total before publication
 - **AND** a hard exit after the scheduled history split resumes both splits without duplication or source loss
-
-#### Scenario: Restore after owner serving writes
-- **WHEN** the operator explicitly accepts post-cutover write loss and restores the verified paired pre-cutover backup after stopping serving
-- **THEN** original source bytes are verified before forward conversion restores history, requests and pause state in owner boxes
-- **AND** post-cutover owner writes are lost as stated in the census and runbook
-- **AND** newer shared revocations, erasures and consumed IDs are carried forward; mismatched source bytes or unsafe restore receipts refuse
 
 #### Scenario: The archive rehearsal uses the deployment transaction
 - **WHEN** the operator runs the archive harness with a candidate image

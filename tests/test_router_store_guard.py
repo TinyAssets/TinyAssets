@@ -150,7 +150,7 @@ _ROLE_DISPATCH = {
         'Box operations bind to their durable journal epoch; router identities have no box journal.'
     ),
     ('operation_epoch.py', 'check'): (
-        'Box replay checks its journal before receipts exist; offline checks use the store.'
+        'Box replay uses the platform restore generation; router IDs have no owner receipts.'
     ),
     ('api_keys.py', 'current_store'): (
         'Router opens its key store; the box uses credential RPC.'

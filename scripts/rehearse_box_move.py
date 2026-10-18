@@ -78,7 +78,9 @@ def restore_replay_probe(mode: str) -> int:
     epochs = json.loads(proof.read_text()) if mode == "verify" else {}
     for owner, uid in owners:
         tree = store / str(uid)
-        core = OwnerBoxd(owner_id=owner, owner_root=tree, state_dir=tree / ".owner-boxd")
+        fence = data / ".restore-epoch"
+        core = OwnerBoxd(owner_id=owner, owner_root=tree, state_dir=tree / ".owner-boxd",
+                         restore_epoch=fence.read_text() if fence.exists() else "")
         try:
             handle = core.bind(owner)
             owner_runtime._runtime = owner_runtime.OwnerRuntime(owner, uid, tree, os.getpid(), core)
@@ -86,16 +88,16 @@ def restore_replay_probe(mode: str) -> int:
             if mode == "snapshot":
                 core.write(handle, "rehearsal-before", "/cc/.replay-proof", b"snapshot",
                            max_bytes=100)
-                epochs[owner] = handle.epoch
+                epochs[owner] = core.operation_prefix()
                 asyncio.run(tools.bash("rehearsal-bash", "echo once >> .bash-proof"))
             elif mode == "write":
                 core.write(handle, "rehearsal-after", "/cc/.replay-proof", b"after", max_bytes=100)
             elif mode == "verify":
-                if handle.epoch <= epochs[owner]:
+                if core.operation_prefix() == epochs[owner]:
                     raise RuntimeError("owner epoch did not advance")
                 if (tree / ".replay-proof").read_bytes() != b"snapshot":
                     raise RuntimeError("owner snapshot was not restored")
-                core.write(handle, f"{handle.epoch}:rehearsal-later", "/cc/.replay-proof",
+                core.write(handle, core.operation_prefix() + "rehearsal-later", "/cc/.replay-proof",
                            b"later work", max_bytes=100)
                 for op_id, content in (("rehearsal-before", b"snapshot"),
                                        ("rehearsal-after", b"after")):

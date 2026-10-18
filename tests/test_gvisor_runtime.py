@@ -20,6 +20,7 @@ def _runtime(tmp_path: Path) -> GvisorRuntime:
     runsc.chmod(0o700)
     for name in ("rootfs", "owners"):
         (tmp_path / name).mkdir()
+    (tmp_path / "restore-epoch").write_text("")
     return GvisorRuntime(
         runsc=runsc, rootfs=tmp_path / "rootfs", owner_store=tmp_path / "owners",
         state_root=tmp_path / "state", bundle_root=tmp_path / "bundles",
@@ -42,7 +43,8 @@ def test_oci_bundle_exposes_only_owner_tree_relay_and_bounded_tmp(tmp_path):
         )
     assert config["root"] == {"path": str(tmp_path / "rootfs"), "readonly": True}
     assert [mount["destination"] for mount in config["mounts"]] == [
-        "/proc", "/home/owner", "/run/boxhostd/relay.sock", "/tmp",
+        "/proc", "/home/owner", "/run/boxhostd/relay.sock",
+        "/run/boxhostd/restore-epoch", "/tmp",
     ]
     assert config["mounts"][-1]["options"][-1] == f"size={TMP_BYTES}"
     assert config["process"]["env"] == [
@@ -92,6 +94,8 @@ def test_persistent_daemon_launch_has_mount_secret_socket_static_env_and_memory_
     assert config["linux"]["resources"]["memory"]["limit"] == 1024**3
     mounts = {item["destination"]: item for item in config["mounts"]}
     assert "ro" in mounts["/run/boxhostd/secret"]["options"]
+    assert mounts["/run/boxhostd/restore-epoch"]["source"] == str(runtime.restore_epoch_file)
+    assert "ro" in mounts["/run/boxhostd/restore-epoch"]["options"]
     assert mounts["/run/owner"]["source"] == str(tmp_path / "300001")
     assert mounts["/home/owner"]["source"] == str(tmp_path / "owners/300001")
     assert config["process"]["env"] == [

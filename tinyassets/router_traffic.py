@@ -1,4 +1,4 @@
-"""Router-owned durable cutover admission and disaster credential fence."""
+"""Root-owned, router-recorded durable cutover admission and disaster credential fence."""
 from __future__ import annotations
 
 import sqlite3

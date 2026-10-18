@@ -142,6 +142,7 @@ def box(broker, tmp_path, monkeypatch):  # noqa: F811
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "0")
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "0")
+    monkeypatch.setattr(owner_runtime, "RESTORE_EPOCH", Path("/dev/null"))
     monkeypatch.setattr(owner_runtime, "OWNER_MOUNT", root)
     monkeypatch.setattr(owner_runtime, "_is_owner_mount", lambda candidate: candidate == root)
     runtime = owner_runtime.start(path)
@@ -447,6 +448,7 @@ from tinyassets.request_budget import TurnRequestBudget
 root, relay, definition = Path(sys.argv[1]), Path(sys.argv[2]), json.loads(sys.argv[3])
 root.mkdir()
 owner_runtime.OWNER_MOUNT = root
+owner_runtime.RESTORE_EPOCH = Path("/dev/null")
 owner_runtime._is_owner_mount = lambda candidate: candidate == root
 runtime = owner_runtime.start(relay)
 (root / 'center').mkdir()
@@ -534,6 +536,7 @@ def test_owner_startup_refuses_credential_environment(tmp_path, monkeypatch, nam
     for secret_name in CHILD_FORBIDDEN_ENV | ENGINE_REQUIRED_SECRET_ENV.keys():
         monkeypatch.delenv(secret_name, raising=False)
     monkeypatch.setattr(owner_runtime, "_runtime", None)
+    monkeypatch.setattr(owner_runtime, "RESTORE_EPOCH", Path("/dev/null"))
     monkeypatch.setattr(owner_runtime, "OWNER_MOUNT", tmp_path)
     monkeypatch.setattr(owner_runtime, "_is_owner_mount", lambda candidate: True)
     monkeypatch.setenv(name, "synthetic-key")
@@ -594,6 +597,7 @@ from tinyassets.storage.outbound_connections import _broker_channel
 root, relay = Path(sys.argv[1]), Path(sys.argv[2])
 root.mkdir()
 owner_runtime.OWNER_MOUNT = root
+owner_runtime.RESTORE_EPOCH = Path("/dev/null")
 owner_runtime._is_owner_mount = lambda candidate: candidate == root
 runtime = owner_runtime.start(relay)
 assert not any(n.startswith('TINYASSETS_OAUTH_') and n.endswith('_SECRET') for n in os.environ)

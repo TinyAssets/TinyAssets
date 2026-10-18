@@ -32,6 +32,7 @@ from tinyassets.universe_owner import account_type_for_universe
 root, relay, mode = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 root.mkdir(exist_ok=True)
 owner_runtime.OWNER_MOUNT = root
+owner_runtime.RESTORE_EPOCH = Path("/dev/null")
 owner_runtime._is_owner_mount = lambda candidate: candidate == root
 runtime = owner_runtime.start(relay)
 try:

@@ -9,7 +9,6 @@ import sqlite3
 import stat
 import time
 from contextlib import closing
-from pathlib import Path
 
 from tinyassets.sqlite_readonly import readonly_db
 
@@ -54,157 +53,38 @@ def _read(root, relative):
         return result
 
 
-def _platform_stores(root, centers=()):
-    """Enumerate creator-owned paths, never discover authority in user content."""
-    from tinyassets.command_center_layout import PLATFORM_DB_NAMES
-    from tinyassets.storage_accounting import ROOT_ENTRIES
-
-    paths = {Path(name) for name in ROOT_ENTRIES
-             if Path(name).suffix in {".db", ".sqlite3"}}
-    for pattern in (".broker/*.db", ".broker/*.sqlite3", ".broker/state/*.db",
-                    ".broker/state/*.sqlite3", ".broker/accounts/*/policy.db",
-                    ".runtime/*.db", ".runtime/*.sqlite3",
-                    ".boxhost/boxhost.db", ".owner-boxd/boxhost.db",
-                    ".published/*.db", ".published/*.sqlite3",
-                    ".agent-sessions/*/*.db", ".agent-sessions/*/*.sqlite3",
-                    ".universe-sidecars/*/starter-seeds.sqlite3",
-                    ".universe-sidecars/*/.effector_consents.db",
-                    ".command-center-packages/packages.db"):
-        paths.update(path.relative_to(root) for path in root.glob(pattern))
-    for center in centers:
-        if not center or Path(center).name != center or center.startswith("."):
-            raise ValueError("invalid admitted center path")
-        paths.update(Path(center) / name for name in PLATFORM_DB_NAMES)
-    return {path for path in paths if _safe(root, path).is_file()}
-
-
-def _check_catalog(root, *, owner_tree=False, saved_root=None):
-    """Read only the LIVE catalog at the lease callers' fixed data-root base."""
-    from tinyassets.owner_lease import LEASE_DB_NAME
-
-    catalog = _safe(root, LEASE_DB_NAME)
-    if not catalog.exists():
-        # A never-used lease base need not have a catalog yet. A paired catalog
-        # or a fence in either fixed fenced store proves it has been used.
-        required = saved_root is not None and _safe(saved_root, LEASE_DB_NAME).exists()
-        for name in (".tinyassets.db", ".remote-ta-receipts.sqlite3"):
-            required |= bool(_read(root, name).get("owner_fence", (None, [], [], []))[3])
-        if required:
-            raise ValueError("live owner store catalog missing")
-        return
-    tables = _read(root, LEASE_DB_NAME)
-    if "owner_store_catalog" not in tables:
-        raise ValueError("live owner store catalog unreadable")
-    for row in tables["owner_store_catalog"][3]:
-        path = Path(row["store_path"])
-        # Box processes register their private, fixed /home/owner mount.
-        if owner_tree and path.is_relative_to("/home/owner"):
-            relative = path.relative_to("/home/owner")
-        elif not owner_tree and path.is_relative_to("/data"):
-            relative = path.relative_to("/data")
-        elif path.is_absolute() and path.is_relative_to(root):
-            relative = path.relative_to(root)
-        else:
-            raise ValueError("registered live store escapes its root")
-        if ".." in relative.parts or not _safe(root, relative).is_file():
-            raise ValueError("registered live owner store missing")
-        if not _read(root, relative):
-            raise ValueError("registered live owner store unreadable")
-
-
 def normal_preflight(current, staged, owners, *, backup_time, restored_owners=None):
-    """Read LIVE evidence before mutating staging or publishing either member."""
+    """Only platform traffic/layout evidence authorizes pre-traffic rollback."""
     from tinyassets.router_traffic import NAME
 
-    layout = json.loads((current / ".layout.json").read_text())
-    saved_layout = json.loads((staged / ".layout.json").read_text())
-    same_layout = layout.get("box_layout") == saved_layout.get("box_layout")
-    # Cutover retires the shared execution catalog and regenerates it inside
-    # owner mounts. Its pre-cutover copy cannot require a retired live path.
-    _check_catalog(current, saved_root=staged if same_layout else None)
-    if not (current / NAME).exists():
-        if (layout.get("box_layout") == "owner-box" or layout.get("state") != "migrating"
-                or layout.get("migration") != "owner-box"):
-            raise ValueError("live router traffic marker missing")
-        if layout.get("split") != "owner-split" and layout.get("box_layout") != "owner-split":
-            raise ValueError("live layout does not prove pre-traffic cutover")
-    else:
+    try:
         marker = _read(current, NAME).get("traffic", (None, [], [], []))[3]
         if len(marker) != 1 or marker[0].get("singleton") != 1:
-            raise ValueError("live router traffic marker unreadable")
-        opened = marker[0]["traffic_opened_at"]
-        credentials_after = marker[0]["credentials_after"]
-        if credentials_after:
-            raise ValueError("normal restore refuses a disaster recovery generation")
-        if opened is not None:
-            relation = "newer than backup" if opened > backup_time else "backup is post-traffic"
-            raise ValueError("normal restore refuses traffic_opened_at: " + relation)
-    registered = set()
-    roots = (current, staged) if same_layout else (current,)
-    for root in roots:
-        registered.update(path.as_posix() for path in _platform_stores(root))
-        receipt = root / ".owner-cutover.json"
-        if receipt.exists():
-            registered.update(name for name in json.loads(receipt.read_text()).get(
-                "final_manifest", {}) if name.endswith((".db", ".sqlite3")))
-    for relative in sorted(registered):
-        # Pre-cutover source databases move to owner trees; completed cutover
-        # normal restore validates its live registry, not retired legacy paths.
-        if not (current / relative).is_file():
-            if layout.get("box_layout") == "owner-box":
-                raise ValueError("registered live store missing: " + relative)
-            continue
-        _read(current, relative)
-    if layout.get("box_layout") != "owner-box":
+            raise ValueError("unreadable traffic marker")
+        opened, credentials_after = marker[0]["traffic_opened_at"], marker[0]["credentials_after"]
+        if type(credentials_after) not in (int, float):
+            raise ValueError("unreadable credential generation")
+    except (OSError, ValueError, sqlite3.DatabaseError, RuntimeError, KeyError):
+        try:
+            layout = json.loads(_safe(current, ".layout.json").read_text())
+            unfinished = (layout.get("box_layout") != "owner-box"
+                          and layout.get("state") == "migrating"
+                          and layout.get("migration") == "owner-box"
+                          and (layout.get("split") == "owner-split"
+                               or layout.get("box_layout") == "owner-split"))
+        except (OSError, ValueError, AttributeError):
+            unfinished = False
+        if not unfinished:
+            raise ValueError("live marker/layout cannot prove pre-traffic cutover; "
+                             "use the disaster path") from None
         return
-    identities = _read(current, ".broker/state/owner-identities.db")
-    saved_identities = _read(staged, ".broker/state/owner-identities.db")
-    saved_machines = {row["principal"]: row["machine_id"]
-                      for row in saved_identities.get(
-        "owner_identities", (None, [], [], []))[3]}
-    for row in identities["owner_identities"][3]:
-        if (row["principal"] in saved_machines
-                and saved_machines[row["principal"]] != row["machine_id"]):
-            raise ValueError("mismatched permanent owner identity in backup pair")
-    deleted = {row["principal"] for row in identities.get(
-        "owner_box_revocations", (None, [], [], []))[3] if row["deleted"]}
-    for row in identities["owner_identities"][3]:
-        if row["principal"] in deleted:
-            continue
-        tree = owners / str(row["machine_id"])
-        if tree.is_symlink() or not tree.is_dir():
-            raise ValueError("registered live owner tree missing")
-        saved_tree = restored_owners / tree.name if restored_owners is not None else None
-        _check_catalog(tree, owner_tree=True, saved_root=saved_tree)
-        centers = _admitted_centers(identities, row["principal"])
-        stores = _platform_stores(tree, centers)
-        if saved_tree is not None:
-            stores |= _platform_stores(saved_tree, _admitted_centers(
-                saved_identities, row["principal"]))
-        for relative in stores:
-            if not _safe(tree, relative).is_file():
-                raise ValueError("registered live owner store missing")
-            _read(tree, relative)
-        if not (tree / ".owner-boxd/boxhost.db").is_file():
-            raise ValueError("live owner journal missing")
-        journal = _read(tree, ".owner-boxd/boxhost.db")
-        if not {"boxes", "ops", "host"}.issubset(journal):
-            raise ValueError("live owner journal unreadable: missing journal schema")
-    known = {str(row["machine_id"]) for row in identities["owner_identities"][3]}
-    if any(path.name.isdecimal() and path.name not in known for path in owners.iterdir()):
-        raise ValueError("live owner inventory changed without an identity reservation")
+    if opened is not None or credentials_after:
+        raise ValueError("normal restore refuses traffic_opened_at or credentials_after; "
+                         "use the disaster path")
 
 
 def _rows(root, relative, table):
     return _read(root, relative).get(table, (None, [], [], []))[3]
-
-
-def _admitted_centers(identities, owner):
-    rows = [row for row in identities.get("center_admissions", (None, [], [], []))[3]
-            if row["principal"] == owner]
-    # Centers cannot be recycled; retirement wins independent of SQLite row order.
-    return ({row["center"] for row in rows if row["event"] == "admit"}
-            - {row["center"] for row in rows if row["event"] == "retire"})
 
 
 def erasures(current, staged, *, identity_exists):
@@ -337,15 +217,14 @@ def reset_credentials(staged, now):
     initialize(staged)
     with closing(sqlite3.connect(staged / NAME)) as db, db:
         db.execute("UPDATE traffic SET traffic_opened_at=NULL, credentials_after=?", (now,))
-    os.chown(staged / NAME, 1001, 1001)
+    os.chown(staged / NAME, 0, 1001)
+    (staged / NAME).chmod(0o660)
 
 
 def fence_ops(staged, trees, now):
-    from tinyassets.boxes.state import _SCHEMA
     from tinyassets.broker.ops import MAX_FUTURE_SKEW_S
 
     cutoff = int(now * 1000) + MAX_FUTURE_SKEW_S * 1000 + 1
-    restore_epoch = int(now * 1000) + 1
     _read(staged, ".broker/ops.db")
     path = _safe(staged, ".broker/ops.db")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -354,44 +233,12 @@ def fence_ops(staged, trees, now):
         db.execute("INSERT INTO meta VALUES ('cutoff_ms',?) ON CONFLICT(key) "
                    "DO UPDATE SET value=MAX(value,excluded.value)", (cutoff,))
     os.chown(path, 1002, 1002)
-    identities = _read(staged, ".broker/state/owner-identities.db")
-    owners = {row["machine_id"]: row["principal"]
-              for row in identities["owner_identities"][3]}
-    for tree in trees.iterdir():
-        if not tree.name.isdecimal():
-            continue
-        path = _safe(tree, ".owner-boxd/boxhost.db")
-        path.parent.mkdir(mode=0o700, exist_ok=True)
-        with closing(sqlite3.connect(path)) as db, db:
-            for statement in _SCHEMA:
-                db.execute(statement)
-            db.execute("INSERT OR IGNORE INTO boxes VALUES (?,1,0)", (owners[int(tree.name)],))
-            db.execute("UPDATE boxes SET epoch=MAX(epoch+1,?), generation=generation+1",
-                       (restore_epoch,))
-            db.execute("INSERT INTO host VALUES ('restore_epoch',?) ON CONFLICT(k) "
-                       "DO UPDATE SET v=MAX(v+1,excluded.v)", (restore_epoch,))
-            db.execute("UPDATE ops SET state='unknown_after_restore'")
-            epoch = db.execute("SELECT epoch FROM boxes WHERE command_center_id=?",
-                               (owners[int(tree.name)],)).fetchone()[0]
-        os.chown(path.parent, int(tree.name), int(tree.name))
-        os.chown(path, int(tree.name), int(tree.name))
-        path.chmod(0o600)
-        # Fence even centers with no earlier receipts. New receipt databases
-        # inherit the owner's epoch through the same runtime check.
-        receipts = {Path(".remote-ta-receipts.sqlite3"), Path(".external_write_receipts.db")}
-        for center in _admitted_centers(identities, owners[int(tree.name)]):
-            if not center or Path(center).name != center or center.startswith("."):
-                raise ValueError("invalid admitted center path")
-            receipts.add(Path(center) / ".external_write_receipts.db")
-        for relative in receipts:
-            receipt = _safe(tree, relative)
-            if not receipt.exists():
-                continue
-            _read(tree, relative)
-            with closing(sqlite3.connect(receipt)) as db, db:
-                db.execute("CREATE TABLE IF NOT EXISTS restore_fence (epoch INTEGER NOT NULL)")
-                db.execute("DELETE FROM restore_fence")
-                db.execute("INSERT INTO restore_fence VALUES (?)", (epoch,))
+    # The entire owner mount, including boxd's journal, is owner-writable.
+    # A fresh platform generation fences every owner without opening their files.
+    fence = _safe(staged, ".restore-epoch")
+    fence.write_text(secrets.token_hex(32))
+    os.chown(fence, 0, 0)
+    fence.chmod(0o444)
 
 
 def disaster_restore(current, staged, trees, *, backup_time, now=None,

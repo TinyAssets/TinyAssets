@@ -21,46 +21,6 @@ from tests.test_owner_cutover_census import source as source
 REPO = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize("damage", ["missing", "unreadable", "integrity"])
-def test_normal_restore_live_catalog_failure_exits_four(tmp_path, damage):
-    import runpy
-
-    from tests.test_box_restore_authority import paired
-    from tests.test_owner_cutover_apply import _restore_paired
-    from tinyassets.owner_lease import lease_db
-
-    current, staged, live, trees = paired(tmp_path)
-    (tmp_path / "volume").mkdir()
-    current = current.rename(tmp_path / "volume/_data")
-    (current / ".boxhost/boxhost.db").chmod(0o600)
-    stamp = "2026-10-17T00-00-00Z"
-    shared = tmp_path / f"tinyassets-data-{stamp}.tar.gz"
-    boxes = tmp_path / f"tinyassets-box-store-{stamp}.tar.gz"
-    for path, root, name in ((shared, current, "_data"), (boxes, live, "owners")):
-        with tarfile.open(path, "w:gz") as archive:
-            archive.add(root, arcname=name)
-    runpy.run_path(str(REPO / "deploy/backup-pair.py"))["create"](
-        shared, boxes, tmp_path / f"tinyassets-pair-{stamp}.json")
-    tree = live / "300001"
-    with lease_db(tree) as db:
-        db.execute("INSERT INTO owner_store_catalog VALUES (?,?,?)",
-                   ("/home/owner/new.db", "agent_turn_journal", "now"))
-    path = tree / "new.db"
-    if damage == "unreadable":
-        path.write_bytes(b"not a readable database")
-    elif damage == "integrity":
-        _sql(path, "CREATE TABLE records (value TEXT); INSERT INTO records VALUES ('x'); "
-             "CREATE INDEX drift ON records(value) WHERE 0; PRAGMA writable_schema=ON; "
-             "UPDATE sqlite_master SET sql='CREATE INDEX drift ON records(value)' "
-             "WHERE name='drift';")
-    before = _fingerprint(current), _fingerprint(live)
-    result = _restore_paired((current, live, shared, boxes), tmp_path)
-    assert result.returncode == 4, result.stdout + result.stderr
-    assert "restore safety preparation refused" in result.stdout
-    assert {k: v for k, v in _fingerprint(current).items() if k != ".layout.lock"} == before[0]
-    assert _fingerprint(live) == before[1]
-
-
 def _shim(directory, name, body):
     path = directory / name
     path.write_text("#!/usr/bin/env bash\nset -eu\n" + body)
@@ -161,6 +121,11 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(tmp
         journal.begin(owner, "backup-op", "write", "digest")
         journal.finish(owner, "backup-op", {})
         journal.close()
+    # Owner-planted garbage in the verified pair cannot block disaster preparation.
+    for relative in ("arbitrary/deep/planted.db", "a/.external_write_receipts.db"):
+        planted = store / "300001" / relative
+        planted.parent.mkdir(parents=True, exist_ok=True)
+        planted.write_bytes(b"owner content, not a database authority")
     # Bob's erasure and an already revoked key are known in the backup.
     DeletedOwners(data).add("bob", {})
     _sql(data / ".api-keys.sqlite3", """
@@ -188,7 +153,7 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(tmp
     journal = BoxHostState(store / "300001/.owner-boxd/boxhost.db")
     journal.begin("alice", "surviving-op", "bash", "surviving-digest")
     journal.finish("alice", "surviving-op", {})
-    previous_epoch = journal.epoch("alice")
+    journal.epoch("alice")
     journal.close()
     before = _fingerprint(data), _fingerprint(store)
     refused = _restore_paired((data, store, data_archive, box_archive), tmp_path)
@@ -220,9 +185,10 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(tmp
     assert (store / "300001/note").read_text() == "backup bytes"
     with sqlite3.connect(store / "300001/.owner-boxd/boxhost.db") as db:
         assert db.execute("SELECT op_id,state FROM ops ORDER BY op_id").fetchall() == [
-            ("backup-op", "unknown_after_restore")]
+            ("backup-op", "done")]
         assert db.execute("SELECT epoch FROM boxes WHERE command_center_id='alice'"
-                          ).fetchone()[0] > previous_epoch
+                          ).fetchone() is None
+    assert (data / ".restore-epoch").read_text()
     with sqlite3.connect(data / ".api-keys.sqlite3") as db:
         assert db.execute("SELECT * FROM api_keys").fetchall() == []
     log = (tmp_path / "restore.log").read_text()
@@ -248,5 +214,5 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(tmp
         assert db.execute("SELECT * FROM api_keys").fetchall() == []
     with sqlite3.connect(store / "300001/.owner-boxd/boxhost.db") as db:
         assert db.execute("SELECT op_id,state FROM ops").fetchall() == [
-            ("backup-op", "unknown_after_restore")]
+            ("backup-op", "done")]
     assert "credential_roots_reset" in recovered.stdout

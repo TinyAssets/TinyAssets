@@ -27,6 +27,7 @@ class GvisorRuntime:
     def __init__(
         self, *, runsc: Path, rootfs: Path, owner_store: Path,
         state_root: Path, bundle_root: Path, cgroup_parent: Path,
+        restore_epoch_file: Path | None = None,
     ) -> None:
         self.runsc = Path(runsc)
         self.rootfs = Path(rootfs)
@@ -34,6 +35,7 @@ class GvisorRuntime:
         self.state_root = Path(state_root)
         self.bundle_root = Path(bundle_root)
         self.cgroup_parent = Path(cgroup_parent)
+        self.restore_epoch_file = restore_epoch_file or self.state_root.parent / "restore-epoch"
         if not self.runsc.is_file() or not os.access(self.runsc, os.X_OK):
             raise BoxError("the pinned runsc binary is unavailable")
         if not self.rootfs.is_dir() or self.rootfs.is_symlink():
@@ -42,6 +44,9 @@ class GvisorRuntime:
             raise BoxError("the mounted owner store is unavailable or a link")
         for path in (self.state_root, self.bundle_root):
             path.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+        if not self.restore_epoch_file.is_file() or self.restore_epoch_file.is_symlink():
+            raise BoxError("platform restore epoch is missing or unsafe")
 
     @staticmethod
     def box_id(uid: int) -> str:
@@ -110,6 +115,9 @@ class GvisorRuntime:
              "options": ["rbind", "rw", "nosuid", "nodev"]},
             {"destination": "/run/boxhostd/relay.sock", "type": "bind",
              "source": str(relay), "options": ["bind", "rw", "nosuid", "nodev"]},
+            {"destination": "/run/boxhostd/restore-epoch", "type": "bind",
+             "source": str(self.restore_epoch_file),
+             "options": ["bind", "ro", "nosuid", "nodev", "noexec"]},
             {"destination": "/tmp", "type": "tmpfs", "source": "tmpfs",
              "options": ["nosuid", "nodev", "mode=1777", f"size={TMP_BYTES}"]},
         ])
