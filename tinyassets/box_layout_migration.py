@@ -1807,8 +1807,13 @@ def _xfs_quota(store: Path, command: str) -> str:
         ["xfs_quota", "-x", "-c", command, str(store)],
         check=True, capture_output=True, text=True,
     )
-    if result.stderr.strip():
-        raise RuntimeError(f"xfs_quota {command}: {result.stderr.strip()}")
+    # Project IDs cannot be set on symlinks or device nodes; xfs_quota names
+    # each one it skips. Owner trees legitimately hold links, and a resumed
+    # cutover walks populated trees. Every other diagnostic still refuses.
+    errors = [line for line in result.stderr.splitlines()
+              if line.strip() and not line.startswith("xfs_quota: skipping special file ")]
+    if errors:
+        raise RuntimeError(f"xfs_quota {command}: " + "\n".join(errors))
     return result.stdout
 
 

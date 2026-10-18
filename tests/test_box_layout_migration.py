@@ -671,3 +671,21 @@ def test_real_copy_preserves_setgid_sticky_and_setuid_modes(tmp_path):
     for name, mode in modes.items():
         assert stat.S_IMODE((guest / name).stat().st_mode) == mode
         assert (guest / name).stat().st_uid == 300001
+
+
+def test_xfs_quota_ignores_only_skipped_special_files(tmp_path, monkeypatch):
+    # A resumed cutover walks populated owner trees; their symlinks make
+    # xfs_quota print a skip notice that must not refuse the move.
+    import subprocess
+
+    from tinyassets import box_layout_migration as migration
+
+    def run(stderr):
+        monkeypatch.setattr(migration.subprocess, "run", lambda *a, **k:
+                            subprocess.CompletedProcess(a[0], 0, "report", stderr))
+        return migration._xfs_quota(tmp_path, "project -s -p tree 300001")
+
+    skipped = "xfs_quota: skipping special file /box-store/300001/a1/shortcut\n"
+    assert run(skipped) == "report"
+    with pytest.raises(RuntimeError, match="cannot find mount point"):
+        run(skipped + "xfs_quota: cannot find mount point for path\n")
