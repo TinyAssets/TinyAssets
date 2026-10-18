@@ -80,6 +80,26 @@ def test_failed_delegation_prevents_even_layout_discovery(monkeypatch):
         boxhostd.main()
 
 
+@pytest.mark.parametrize("failure", ["populated", "ignored-controllers"])
+def test_delegation_refuses_incomplete_kernel_transition(cgroup, monkeypatch, failure):
+    parent, _, _ = cgroup
+    original = Path.write_text
+
+    def incomplete(path, value, *args, **kwargs):
+        if failure == "ignored-controllers" and path.name == "cgroup.subtree_control":
+            return len(value)
+        result = original(path, value, *args, **kwargs)
+        if failure == "populated" and path == parent / "supervisor/cgroup.procs":
+            original(parent / "cgroup.procs", "999")
+        return result
+
+    monkeypatch.setattr(Path, "write_text", incomplete)
+    with pytest.raises(RuntimeError, match=("still populated" if failure == "populated"
+                                           else "did not take effect")):
+        boxhostd.prepare_delegation()
+    assert not (parent / "cgroup.subtree_control").read_text()
+
+
 @pytest.mark.parametrize("committed", [False, True])
 def test_both_layouts_use_the_same_delegated_entry(monkeypatch, tmp_path, committed):
     calls = []
