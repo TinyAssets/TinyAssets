@@ -4,6 +4,7 @@ Only this Linux fixture enables AppAcceptance. Lifespan is off: the independent
 frontend must not start the execution owner's schedulers, reconciliation or LLM.
 """
 
+import os
 import socket
 import sys
 from pathlib import Path
@@ -57,6 +58,23 @@ def main():
     from tinyassets.ingress import AppAcceptance
 
     root = Path(sys.argv[1])
+    runtime = root / "runtime"
+    os.environ["TINYASSETS_DATA_DIR"] = str(runtime)
+    from tinyassets.erasure_ledger import ErasureLedger
+
+    original_call = ErasureLedger._call
+
+    def empty_host(ledger, operation, **fields):
+        # This child has isolated auth/cloud observations and no host process.
+        # Only its synthetic root has an empty erasure authority; real or
+        # explicitly supplied authorities and every mutation retain their path.
+        if (ledger.root == runtime and not ledger.path.exists()
+                and "TINYASSETS_BOXES_RUN" not in os.environ
+                and operation in {"contains", "contains_many"}):
+            return False if operation == "contains" else []
+        return original_call(ledger, operation, **fields)
+
+    ErasureLedger._call = empty_host
     listener = socket.socket(fileno=int(sys.argv[2]))
     middleware.set_provider(FixtureAuth())
     # Isolated observation ONLY; never an environment bypass in product code.

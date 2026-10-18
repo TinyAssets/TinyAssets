@@ -65,6 +65,7 @@ on:
       - "tinyassets/boxes/**"
       - "deploy/deploy_fail_safe.sh"
       - "deploy/install-boxhostd-preflight.sh"
+      - "deploy/boxhostd*"
       - "scripts/rehearsal_launch.py"
       - "scripts/rehearsal_serve.py"
       - "scripts/archive_rehearsal.py"
@@ -143,6 +144,7 @@ on:
       - "tinyassets/boxes/**"
       - "deploy/deploy_fail_safe.sh"
       - "deploy/install-boxhostd-preflight.sh"
+      - "deploy/boxhostd*"
       - "scripts/rehearsal_launch.py"
       - "scripts/rehearsal_serve.py"
       - "scripts/archive_rehearsal.py"
@@ -310,7 +312,7 @@ jobs:
           if-no-files-found: warn
 
   production-owner-launch:
-    name: production extraction through runsc
+    name: production boxhostd startup and owner wake through runsc
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -340,14 +342,16 @@ jobs:
           echo "$digest  $OUT/gvisor.tar.bz2" | sha256sum --strict -c -
           tar -xjf "$OUT/gvisor.tar.bz2" -C "$OUT/gvisor"
       - name: Launch an owner from the production extraction
-        # Disposable synthetic archive only. This adds real runsc, production
-        # OCI mounts/UID/argv and cgroup floor readback to the local chroot proof.
+        # Disposable synthetic archive only. Starts the production entry point
+        # in a populated, undelegated service cgroup; it must evacuate itself,
+        # create its sockets/relays and wake an owner through the UID1001 channel.
+        # Real runsc supplies OCI mounts/UID/argv and cgroup floor readback.
         env:
           OUT: ${{ runner.temp }}/owner-launch
         run: |
           python scripts/linux_oracle.py --as-root --docker-engine --out "$OUT" \
             --env TA_REHEARSAL_BASE_IMAGE=ta-launch-proof \
-            --env TA_REHEARSAL_RUNSC=1 --env TA_REHEARSAL_RUNSC_DIR=/out/gvisor \
+            --env TA_REHEARSAL_RUNSC_DIR=/out/gvisor \
             -- tests/test_box_move_rehearsal.py::test_synthetic_archive_rehearses_final_cutover \
             -q --junitxml=/out/owner-launch.xml
       - name: Refuse absent or skipped launch proof

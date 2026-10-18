@@ -49,7 +49,33 @@ QUARANTINE = REPO_ROOT / ".github" / "known-failing-tests.txt"
 # These files still belong to their ordinary shard and selection receipt.
 ROOT_TEST_FILES = frozenset({
     "tests/test_backup_owner_box.py",
+    "tests/test_backup_script.py",
     "tests/test_owner_cutover_apply.py",
+    "tests/test_box_admission.py",
+    "tests/test_box_destroy.py",
+    "tests/test_box_layout_migration.py",
+    "tests/test_boxhostd_entrypoint.py",
+    "tests/test_box_public_egress.py",
+    "tests/test_box_restore_authority.py",
+    "tests/test_box_store_backup.py",
+    "tests/test_broker_http_connect.py",
+    "tests/test_broker_credential_custody.py",
+    "tests/test_broker_server.py",
+    "tests/test_cutover_billing_deletion.py",
+    "tests/test_center_admissions.py",
+    "tests/test_deleted_authentication.py",
+    "tests/test_erasure_ledger.py",
+    "tests/test_erasure_fail_closed.py",
+    "tests/test_gvisor_runtime.py",
+    "tests/test_model_connect_door_lifecycle.py",
+    "tests/test_owner_box_control.py",
+    "tests/test_owner_box_lifecycle.py",
+    "tests/test_owner_box_roll_process.py",
+    "tests/test_owner_cutover_restore.py",
+    "tests/test_owner_public_egress.py",
+    "tests/test_owner_router.py",
+    "tests/test_owner_waker.py",
+    "tests/test_router_store_guard.py",
 })
 
 # The gate must never pass vacuously. Without a floor, a PR that mass-skips,
@@ -867,7 +893,8 @@ def run_oracle_venues(cmd, *, args, selection, env, junit):
     merged = ET.Element("testsuites")
     seen = set()
     exits = []
-    with tempfile.TemporaryDirectory(prefix="ta-ci-venues-") as temp:
+    with (tempfile.TemporaryDirectory(prefix="ta-ci-venues-") as temp,
+          tempfile.TemporaryDirectory(prefix="r-", dir="/tmp") as root_temp):
         directory = Path(temp)
         directory.chmod(0o755)
         user_directory = directory / "user"
@@ -890,7 +917,9 @@ def run_oracle_venues(cmd, *, args, selection, env, junit):
                                  SHELL="/bin/sh", TMPDIR="/tmp/t")
             else:
                 # Never let root's pytest own the unprivileged run's temp tree.
-                command += [f"--basetemp={directory / 'root-tmp'}"]
+                # AF_UNIX paths include pytest's test name and the service's
+                # socket suffix; keep this root-owned tree as short as /tmp/b.
+                command += [f"--basetemp={root_temp}"]
             print(f"[oracle venue={venue}] " + " ".join(command), flush=True)
             proc = subprocess.run(command, cwd=REPO_ROOT, env=child_env, **identity)
             exits.append(proc.returncode)

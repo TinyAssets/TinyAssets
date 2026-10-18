@@ -43,6 +43,7 @@ on:
       - 'scripts/mcp_public_canary.py'
       - 'scripts/owner_box_canary.py'
       - 'scripts/roll_owner_boxes.py'
+      - 'scripts/rehearsal_restore_provider.py'
       - 'scripts/open_router_traffic.py'
       - 'scripts/core_capability_live.py'
       - 'scripts/core_canary_provision.py'

@@ -105,8 +105,20 @@ def _scan() -> dict[str, list[str]]:
 #: guard lands. Existing authority-record operations remain migration debt;
 #: listing them is not evidence that they refuse links (see the concern below).
 #: The migration checklist for the sealed-box move. Delete an entry when you
-#: convert its site to tinyassets.universe_files; never add one.
+#: convert its site to tinyassets.universe_files. Platform-only custody below
+#: is reviewed separately from owner-writable command-center paths.
 PINNED: dict[str, list[str]] = {
+    # Root-only ledger creation uses O_EXCL|O_NOFOLLOW and fsyncs its directory.
+    # Restore reads/removes stopped shared-root metadata after _safe checks;
+    # no owner box mounts this root (test_erasure_ledger proves custody).
+    "tinyassets/erasure_ledger.py": [
+        "carry_forward: .read_text()", "carry_forward: .unlink()",
+        "initialize: os.open()", "initialize: os.open()",
+    ],
+    # Fixed, read-only host bind, outside /home/owner; never an owner-supplied path.
+    "tinyassets/owner_runtime.py": ["start: .read_text()"],
+    # The router's own Unix socket in its private shared runtime directory.
+    "tinyassets/router_credentials.py": ["serving: .unlink()", "serving: .unlink()"],
     "tinyassets/account_deletion.py": [
         "_rmtree: shutil.rmtree()",
         "_rmtree: shutil.rmtree()",

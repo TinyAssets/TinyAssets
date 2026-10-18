@@ -150,12 +150,16 @@ def check_snapshot(data: Path, *, quiescent: bool = False) -> None:
 
 def rehearsal_adapters():
     """Only the harness mounts this file; production images never contain it."""
-    import runpy
-
     module = Path("/run/tinyassets-rehearsal/rehearsal_restore_provider.py")
     if module.is_symlink() or not module.is_file():
         raise ValueError("recorded providers require the harness-only mount")
-    return runpy.run_path(str(module))["adapters"]()
+    sys.path.insert(0, str(module.parent))
+    try:
+        from rehearsal_restore_provider import adapters
+
+        return adapters()
+    finally:
+        sys.path.remove(str(module.parent))
 
 
 if __name__ == "__main__":

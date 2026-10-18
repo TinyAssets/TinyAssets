@@ -192,6 +192,12 @@ def lifecycle(tmp_path, monkeypatch, request):
     kind = request.param
     router = tmp_path / "router"
     router.mkdir()
+    custody = tmp_path / "custody"
+    custody.mkdir()
+    from tinyassets.erasure_ledger import ErasureLedger
+
+    for root in (router, custody):
+        ErasureLedger(root).initialize()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(router))
     monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
     monkeypatch.setattr(onboarding, "app_config", lambda: {"resource": ORIGIN + "/mcp"})
@@ -199,7 +205,7 @@ def lifecycle(tmp_path, monkeypatch, request):
     parent, child = ctx.Pipe()
     broker_socket, relay_socket = tmp_path / "broker.sock", tmp_path / "box.sock"
     process = ctx.Process(target=_broker_process, args=(
-        str(tmp_path / "custody"), str(broker_socket), str(relay_socket), child, kind))
+        str(custody), str(broker_socket), str(relay_socket), child, kind))
     process.start()
     child.close()
     assert parent.poll(25), "broker startup timed out"
@@ -434,7 +440,7 @@ def test_door_exchange_box_call_refresh_disconnect(lifecycle):
     assert not (rig.router / ".platform").exists()
     assert {p.name for p in rig.router.iterdir()} <= {
         ".runtime", ".hosted-model-auth.db", ".hosted-model-auth.db-wal",
-        ".hosted-model-auth.db-shm"}
+        ".hosted-model-auth.db-shm", ".erasure-ledger.sqlite3"}
 
 
 @pytest.mark.parametrize("lifecycle", ["dcr"], indirect=True)

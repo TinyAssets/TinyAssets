@@ -85,7 +85,8 @@ def _bash_path_env(*leading_paths: Path) -> str:
     return ":".join([*leading, os.environ.get("PATH", "")])
 
 
-def _run(script: Path, env: dict, args: list[str] | None = None) -> subprocess.CompletedProcess:
+def _run(script: Path, env: dict, args: list[str] | None = None,
+         **identity) -> subprocess.CompletedProcess:
     if _is_wsl_bash():
         assignments = " ".join(
             f"{name}={shlex.quote(str(value))}"
@@ -99,11 +100,11 @@ def _run(script: Path, env: dict, args: list[str] | None = None) -> subprocess.C
                 *(shlex.quote(arg) for arg in (args or [])),
             ]
         )
-        return subprocess.run([_BASH, "-lc", command], capture_output=True, text=True)
+        return subprocess.run([_BASH, "-lc", command], capture_output=True, text=True, **identity)
 
     full_env = {**os.environ, **env}
     cmd = [_BASH, _bash_path(script)] + (args or [])
-    return subprocess.run(cmd, capture_output=True, text=True, env=full_env)
+    return subprocess.run(cmd, capture_output=True, text=True, env=full_env, **identity)
 
 
 # ---------------------------------------------------------------------------
@@ -237,8 +238,7 @@ def test_snapshot_reads_broker_only_tree_as_root(tmp_path):
         assert handle.extractfile(member).read() == b'broker-only state'
 
 
-@pytest.mark.skipif(os.name != 'posix' or os.geteuid() == 0,
-                    reason='requires a nonroot Linux caller')
+@pytest.mark.skipif(os.name != 'posix', reason='requires a nonroot Linux caller')
 def test_snapshot_refuses_unreadable_tree_instead_of_skipping_it(tmp_path):
     volume = tmp_path / 'volume' / '_data'
     broker = volume / '.broker'
@@ -249,13 +249,25 @@ def test_snapshot_refuses_unreadable_tree_instead_of_skipping_it(tmp_path):
     fake_env.write_text(
         f"docker() {{ if [[ $1 == volume ]]; then echo {shlex.quote(str(volume))}; fi; }}\n"
         'rclone() { return 0; }\n')
+    identity = {}
+    if os.geteuid() == 0:
+        # Restore tests need root, but this refusal must still exercise a real
+        # unprivileged tar reader rather than root's DAC override.
+        assert tmp_path.is_relative_to('/tmp')
+        for ancestor in (tmp_path, *tmp_path.parents):
+            if ancestor == Path('/tmp'):
+                break
+            ancestor.chmod(0o755)
+        os.chown(tmp_path, 1001, 1001)
+        os.chown(volume, 1001, 1001)
+        identity = dict(user=1001, group=1001, extra_groups=[])
     try:
         result = _run(BACKUP_SH, {
             'BASH_ENV': str(fake_env), 'BACKUP_VOLUME': 'nonexistent-unreadable-test',
             'BACKUP_DEST': 'test:backup', 'BACKUP_MODE': 'snapshot',
             'BACKUP_LOG': str(tmp_path / 'log'),
             'BACKUP_SNAPSHOT_DIR': str(tmp_path / 'snapshots'),
-        })
+        }, **identity)
     finally:
         broker.chmod(0o700)
     assert result.returncode == 2

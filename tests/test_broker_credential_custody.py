@@ -50,7 +50,7 @@ def _broker_process(root, path, channel):
     fence = Fence(state / "fence.json", verify_lease_proof=lambda *_: True)
     server = BrokerServer(ledger_for=dispatchers.ledger_for,
         dispatch_for=dispatchers.dispatch_for, ops=OpStore(state / "ops.db"),
-        fence=fence, roles={os.getuid(): OWNER})
+        fence=fence, roles={os.getuid(): OWNER}, data_root=root)
     original = vault.write_credential_vault
 
     def observed(*args, **kwargs):
@@ -93,6 +93,10 @@ def test_deposit_is_written_in_broker_process(tmp_path, monkeypatch, scheme, sec
     parent, child = ctx.Pipe()
     path = tmp_path / "broker.sock"
     root = tmp_path / "shared"
+    root.mkdir()
+    from tinyassets.erasure_ledger import ErasureLedger
+
+    ErasureLedger(root).initialize()
     process = ctx.Process(target=_broker_process, args=(str(root), str(path), child))
     process.start()
     child.close()

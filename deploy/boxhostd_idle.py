@@ -140,18 +140,6 @@ def publish_preflight(result: Path) -> None:
         harness_result.unlink(missing_ok=True)
 
 
-def prepare_delegation() -> None:
-    """Leave the service cgroup empty so v2 controllers can be delegated."""
-    relative = Path("/proc/self/cgroup").read_text().splitlines()[0].split(":", 2)[2]
-    if not relative.endswith("/boxhostd.service"):
-        raise RuntimeError("boxhostd must start in its systemd service cgroup")
-    parent = Path("/sys/fs/cgroup") / relative.lstrip("/")
-    control = parent / "control"
-    control.mkdir(exist_ok=True)
-    (control / "cgroup.procs").write_text(str(os.getpid()))
-    (parent / "cgroup.subtree_control").write_text("+cpu +memory +pids")
-
-
 def main() -> None:
     pending = threading.Event()
 
@@ -159,7 +147,6 @@ def main() -> None:
         pending.set()
 
     signal.signal(signal.SIGUSR1, request)
-    prepare_delegation()
     while True:
         pending.wait()
         pending.clear()
@@ -170,6 +157,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    if os.geteuid() != 0:
-        raise SystemExit("boxhostd P2a must run as root for delegated cgroups")
-    main()
+    from boxhostd import main as start
+
+    start()

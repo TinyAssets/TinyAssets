@@ -484,6 +484,37 @@ The broker SHALL own its custody locks, ownership metadata and deletion tombston
 - **THEN** removal returns removed_locally_revoke_failed with a message naming the provider and its recovery URL
 - **AND** custody is erased and retrying removal retains the manual-revocation instruction
 
+### Requirement: Production boxhostd delegates before starting either layout
+
+The sole host entry point SHALL move itself from its systemd service cgroup
+into a supervisor leaf and enable cpu, memory and pids on the now-empty service
+cgroup before layout discovery, subprocess creation or listener startup. Idle
+and live entry scripts SHALL converge on this entry point. Missing controllers,
+remaining internal processes or failed delegation SHALL abort startup. Owner
+cgroups SHALL be siblings of the supervisor under the discovered service path.
+The root-only entry point MAY accept an explicit absolute data mount instead of
+discovering the Docker volume; both use the same marker checks and service.
+
+#### Scenario: First wake after cutover restart
+- **WHEN** systemd starts boxhostd in a populated service cgroup with Delegate=yes
+- **THEN** production startup alone evacuates and delegates that cgroup
+- **AND** a UID1001 control request wakes an owner under the pinned real runsc
+- **AND** the authenticated app becomes ready with verified memory, pids and CPU limits
+- **AND** the launch proof supplies no pre-enabled service controllers, owner mounts,
+  app sockets, relay sockets or owner-process environment outside production setup
+
+### Requirement: Private MCP messages retain authenticated provider authority
+
+Provider authorization SHALL read authenticated router identity only from the
+exact current MCP POST request scope, after OwnerIngress authentication. Ambient
+session identity and raw forwarding headers SHALL NOT grant model authority.
+
+#### Scenario: Converse through the private owner route
+- **WHEN** OwnerIngress authenticates the router on the current MCP POST
+- **THEN** provider authorization uses that exact request's authenticated identity
+- **AND** it requires neither a forwarded public bearer nor ambient session identity
+- **AND** raw forwarding headers, GET requests and non-MCP paths grant no model authority
+
 ### Requirement: Cutover repairs only named index drift
 
 Census SHALL run the shared SQLite integrity policy read-only and report solely

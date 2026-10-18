@@ -6,6 +6,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+import pytest
+
 from scripts import linux_oracle
 
 
@@ -41,6 +43,77 @@ def test_snapshot_preserves_container_ownership_without_trusting_host_git():
     assert "tar -C /work --no-same-owner -xf -" in linux_oracle._RUN_SCRIPT
     assert "git init -q ." in linux_oracle._RUN_SCRIPT
     assert "safe.directory" not in linux_oracle._RUN_SCRIPT
+
+
+@pytest.mark.parametrize("mode", ["complete", "missing-object", "no-main", "shallow",
+                                 "disconnected"])
+def test_linked_worktree_history_keeps_committed_and_dirty_changes(tmp_path, mode):
+    import os
+    import shlex
+    import shutil
+
+    source, checkout, snapshot = (tmp_path / name for name in ("source", "checkout", "snapshot"))
+    source.mkdir()
+
+    def git(root, *args):
+        return subprocess.check_output(
+            ["git", "-c", "user.email=fixture@localhost", "-c", "user.name=fixture", *args],
+            cwd=root, text=True).strip()
+
+    git(source, "init", "-q", "-b", "main")
+    (source / "base.txt").write_text("base")
+    git(source, "add", "-A")
+    git(source, "commit", "-qm", "base")
+    base = git(source, "rev-parse", "HEAD")
+    git(source, "update-ref", "refs/remotes/origin/main", base)
+    (source / "committed.txt").write_text("branch change")
+    git(source, "add", "-A")
+    git(source, "commit", "-qm", "branch")
+    head = git(source, "rev-parse", "HEAD")
+    git(source, "worktree", "add", "--detach", str(checkout), head)
+    (checkout / "dirty.txt").write_text("working change")
+    if mode == "no-main":
+        git(source, "update-ref", "-d", "refs/remotes/origin/main")
+    if mode in {"shallow", "disconnected", "no-main"}:
+        boundary = base if mode == "shallow" else head
+        (source / ".git/shallow").write_text(boundary + "\n")
+    history = linux_oracle._source_history(checkout)
+    if mode == "no-main":
+        assert history is None  # Preserve the existing Actions history-borrow path.
+        return
+    objects, actual_head, actual_main = history
+    assert objects == source / ".git/objects"
+    assert (actual_head, actual_main) == (head, base)
+    shutil.copytree(checkout, snapshot, ignore=shutil.ignore_patterns(".git"))
+    script = linux_oracle._REPO_AND_RUN_SCRIPT.format(command="true")
+    script = script.replace("cd /work", "cd " + shlex.quote(str(snapshot)))
+    script = script.replace("/oracle-objects", str(objects))
+    script = script.replace("/oracle-shallow", str(source / ".git/shallow"))
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                            env={**os.environ, "ORACLE_SOURCE_HEAD": (
+                                "0" * 40 if mode == "missing-object" else head),
+                                 "ORACLE_SOURCE_MAIN": base})
+    if mode == "missing-object":
+        assert result.returncode != 0
+        return
+    assert result.returncode == 0, result.stderr
+    assert git(snapshot, "rev-parse", "HEAD~1") == head
+    if mode == "disconnected":
+        from scripts import check_shapes
+        with pytest.raises(subprocess.CalledProcessError):
+            check_shapes._merge_base(snapshot)
+        return
+    assert git(snapshot, "merge-base", "HEAD", "origin/main") == base
+    assert git(snapshot, "diff", "--name-only", "origin/main", "HEAD").splitlines() == [
+        "committed.txt", "dirty.txt"]
+    args = linux_oracle.build_parser().parse_args([])
+    args.source_history = history
+    cmd = linux_oracle.docker_command(args, checkout, "image")
+    assert f"{linux_oracle._docker_path(objects)}:/oracle-objects:ro" in cmd
+    assert "ORACLE_SOURCE_MAIN=" + base in cmd and "ORACLE_SOURCE_HEAD=" + head in cmd
+    if mode == "shallow":
+        assert (snapshot / ".git/shallow").read_text() == base + "\n"
+        assert f"{linux_oracle._docker_path(source / '.git/shallow')}:/oracle-shallow:ro" in cmd
 
 
 def _command(*argv: str) -> list[str]:
@@ -357,6 +430,8 @@ def test_ci_oracle_replays_workflow_shards_and_queue_verdict(monkeypatch):
     selected = [("pr", 4, "pr-selection.txt", "affected", "pr-digest"),
                 ("gate", 6, "gate-selection.txt", "affected", "gate-digest")]
     monkeypatch.setattr(linux_oracle, "_ci_selections", lambda *_a, **_k: selected)
+    history = (root / ".git/objects", "1" * 40, "2" * 40)
+    monkeypatch.setattr(linux_oracle, "_source_history", lambda _root: history)
     commands = []
 
     def command(args, _root, _tag):
@@ -384,4 +459,5 @@ def test_ci_oracle_replays_workflow_shards_and_queue_verdict(monkeypatch):
     assert all(args.pytest_args[-2:] == ["--selection", "gate-digest"]
                for args in runners[4:])
     assert len({args.ci_name for args in runners}) == 10
+    assert all(args.source_history == history for args in runners)
     assert any(getattr(args, "ci_browser", None) for args in commands)

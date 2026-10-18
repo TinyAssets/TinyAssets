@@ -1,3 +1,10 @@
+---
+severity: P1
+title: The scheduled DR drill has no isolated identity provider or owner store
+filed: '2026-10-18'
+summary: The weekly diagnostic lacks an XFS owner store and isolated provider credentials, so disaster restore refuses before publication.
+---
+
 # The scheduled DR drill has no isolated identity provider
 
 The C6 restore review found that `.github/workflows/dr-drill.yml` bootstraps an

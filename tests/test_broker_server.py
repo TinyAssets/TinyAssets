@@ -17,6 +17,7 @@ import time
 
 import pytest
 
+from tests.support.broker_double import broker_process
 from tinyassets import rpc_frames as rf
 from tinyassets.broker.client import BrokerClient, BrokerRefused
 from tinyassets.broker.fence import Fence
@@ -102,7 +103,10 @@ def _no_revocations():
 def broker(tmp_path, monkeypatch):
     from tinyassets.erasure_ledger import ErasureLedger
 
-    ErasureLedger(tmp_path).initialize()
+    # Protocol-only consumers use the shared empty-host authority double when
+    # unprivileged. Native custody tests run this fixture in the root venue.
+    if os.geteuid() == 0:
+        ErasureLedger(tmp_path).initialize()
     tmp_path.chmod(0o700)  # Same-UID protocol fixture, including assignment locks.
     lease = Lease()
     fence = Fence(tmp_path / "fence.json", verify_lease_proof=lease.verify)
@@ -134,6 +138,7 @@ def broker(tmp_path, monkeypatch):
 
     listener = None
 
+    @broker_process()
     def run():
         nonlocal listener
         asyncio.set_event_loop(loop)

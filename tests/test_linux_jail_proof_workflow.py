@@ -109,7 +109,7 @@ def test_production_extraction_job_requires_real_runsc_and_no_skips():
     launch = next(step for step in steps if step.get("name") ==
                   "Launch an owner from the production extraction")
     assert "scripts/linux_oracle.py --as-root --docker-engine" in launch["run"]
-    assert "TA_REHEARSAL_RUNSC=1" in launch["run"]
+    assert "TA_REHEARSAL_RUNSC_DIR=/out/gvisor" in launch["run"]
     assert ("tests/test_box_move_rehearsal.py::test_synthetic_archive_rehearses_final_cutover"
             in launch["run"])
     assert not launch.get("continue-on-error")
@@ -205,7 +205,8 @@ def test_no_secrets_self_hosted_desktop_or_production_reach():
     text = _code_text()
     # Static extraction source and pinned runtime inputs are test inputs;
     # invoking a deployment or accessing a production surface is still barred.
-    for source in ("deploy/deploy_fail_safe.sh", "deploy/install-boxhostd-preflight.sh"):
+    for source in ("deploy/deploy_fail_safe.sh", "deploy/install-boxhostd-preflight.sh",
+                   "deploy/boxhostd*"):
         text = text.replace(source, "static-proof-input")
     for forbidden in (
         "secrets.", "self-hosted", "DESKTOP-KCPMGP3", "tinyassets.io",

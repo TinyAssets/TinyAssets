@@ -142,8 +142,8 @@ class Venue:
             image_tar = Path(temporary) / "image.tar"
             docker("export", "--output", str(image_tar), name)
             docker("cp", str(image_tar), name + ":/support/image.tar")
-        if os.environ.get("TA_REHEARSAL_RUNSC") == "1":
-            docker("cp", os.environ["TA_REHEARSAL_RUNSC_DIR"], name + ":/support/gvisor")
+        # No chroot fallback: a missing pinned runtime must fail this proof.
+        docker("cp", os.environ["TA_REHEARSAL_RUNSC_DIR"], name + ":/support/gvisor")
         image_id = docker("image", "inspect", "-f", "{{.Id}}", self.image).stdout.strip()
         self.container("--rm", "--user", "0",
                        "-v", self.names["support"] + ":/support:ro",
@@ -556,10 +556,12 @@ assert all(not Path(work['store']).is_absolute() and not Path(work['quarantine']
 """))
         result = venue.container(
             "--rm", "--privileged", "--user", "0",
+            "--cgroupns=host", "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
             "-v", venue.names["data"] + ":/data",
             "--mount", "type=bind,src=" + venue.store + ",dst=/var/lib/boxhostd/owners",
             "-v", venue.names["support"] + ":/support:ro",
             "-v", venue.names["harness"] + ":/harness:ro",
+            "-v", venue.names["harness"] + ":/opt/tinyassets/boxhostd",
             "--entrypoint", "python", image, "-B", "/support/rehearsal_serve.py", "host-startup",
             check=False)
         required(result)
@@ -578,13 +580,15 @@ assert all(not Path(work['store']).is_absolute() and not Path(work['quarantine']
             venue.names["data"] + ":/data",
             "--mount",
             "type=bind,src=" + venue.store + ",dst=/box-store",
+            "--mount",
+            "type=bind,src=" + venue.store + ",dst=/var/lib/boxhostd/owners",
             "-v",
             venue.names["support"] + ":/support:ro",
             # Match production's host filesystem: runsc prepares mountpoints;
             # the OCI root remains readonly to the owner inside the sandbox.
             "-v", venue.names["harness"] + ":/harness",
-            *(["-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw", "-e", "TA_REHEARSAL_RUNSC=1"]
-              if os.environ.get("TA_REHEARSAL_RUNSC") == "1" else []),
+            "-v", venue.names["harness"] + ":/opt/tinyassets/boxhostd",
+            "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
             "--entrypoint",
             "python",
             image,

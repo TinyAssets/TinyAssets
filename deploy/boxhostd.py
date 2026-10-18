@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import stat
@@ -11,6 +12,29 @@ import sys
 from pathlib import Path
 
 HARNESS = Path("/opt/tinyassets/boxhostd/harness-current")
+
+
+def prepare_delegation() -> Path:
+    """Evacuate the service before enabling v2 domain controllers or forking."""
+    entries = Path("/proc/self/cgroup").read_text().splitlines()
+    unified = [line.removeprefix("0::") for line in entries if line.startswith("0::")]
+    name = Path(unified[0]).name if len(unified) == 1 else ""
+    if name != "boxhostd.service" and not (name.startswith("boxhostd@")
+                                           and name.endswith(".service")):
+        raise RuntimeError("boxhostd must start in its delegated systemd service cgroup")
+    parent = Path("/sys/fs/cgroup") / unified[0].lstrip("/")
+    needed = {"cpu", "memory", "pids"}
+    if not needed <= set((parent / "cgroup.controllers").read_text().split()):
+        raise RuntimeError("boxhostd requires delegated cpu, memory and pids controllers")
+    supervisor = parent / "supervisor"
+    supervisor.mkdir(exist_ok=True)
+    (supervisor / "cgroup.procs").write_text(str(os.getpid()))
+    if (parent / "cgroup.procs").read_text().strip():
+        raise RuntimeError("boxhostd service cgroup is still populated")
+    (parent / "cgroup.subtree_control").write_text("+cpu +memory +pids")
+    if not needed <= set((parent / "cgroup.subtree_control").read_text().split()):
+        raise RuntimeError("boxhostd controller delegation did not take effect")
+    return parent
 
 
 def data_root() -> Path:
@@ -46,7 +70,14 @@ def owner_box_committed(root: Path) -> bool:
 def main() -> None:
     if os.geteuid() != 0:
         raise RuntimeError("boxhostd needs root for delegated cgroups and XFS quotas")
-    if not owner_box_committed(data_root()):
+    cgroup_parent = prepare_delegation()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--data-root", type=Path,
+                        help="explicit host data mount; otherwise inspect tinyassets-data")
+    root = parser.parse_args().data_root or data_root()
+    if not root.is_absolute() or not root.is_dir() or root.is_symlink():
+        raise RuntimeError("data volume mountpoint is unavailable")
+    if not owner_box_committed(root):
         from boxhostd_idle import main as idle
 
         idle()
@@ -60,7 +91,7 @@ def main() -> None:
     sys.path.insert(0, str(app))
     from tinyassets.boxes.host_service import main as serve
 
-    serve(rootfs=rootfs, data_root=data_root())
+    serve(rootfs=rootfs, data_root=root, cgroup_parent=cgroup_parent)
 
 
 if __name__ == "__main__":

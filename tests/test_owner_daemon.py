@@ -150,12 +150,6 @@ def owner_mode(tmp_path, monkeypatch, agent, in_process_broker, _owner_box_doubl
         path = relay.bind("owner", os.getuid())
         runtime = owner_runtime.start(path)
         assert runtime.tools._public_forwarder._thread.is_alive()
-        # This rig serves the broker on worker threads in the box's process.
-        # Only the process proofs can exercise the real process-local guard.
-        owner_thread = threading.get_ident()
-        refuse = owner_runtime.refuse_router_store
-        monkeypatch.setattr(owner_runtime, "refuse_router_store", lambda name: (
-            None if name == "plans" and threading.get_ident() != owner_thread else refuse(name)))
         from tinyassets.control_plane import binding
 
         monkeypatch.setattr(binding, "file_binding", _owner_box_double.file_binding)
@@ -309,25 +303,28 @@ def test_app_mcp_and_chat_over_unix_socket(owner_mode, agent, monkeypatch, tool)
     (root / "soul.md").write_text("# Owner soul", encoding="utf-8")
     (root / "hello.txt").write_text("owner data", encoding="utf-8")
 
+    import base64
+    import secrets
+    from dataclasses import asdict
+
+    from tinyassets.owner_ingress import OwnerIngress
+
+    identity = Identity(user_id="owner", username="owner", capabilities=[
+        "tinyassets.universe.write", "tinyassets.extensions.read",
+        "tinyassets.extensions.write", "tinyassets.extensions.admin"])
+
     class Auth:
         def resolve_token(self, token):
-            if token == "issued-test-token":
-                return Identity(
-                    user_id="owner",
-                    username="owner",
-                    capabilities=[
-                        "tinyassets.universe.write",
-                        "tinyassets.extensions.read",
-                        "tinyassets.extensions.write",
-                        "tinyassets.extensions.admin",
-                    ],
-                )
+            pytest.fail("owner must authenticate the router, not a public bearer")
 
         def is_auth_required(self):
             return True
 
     monkeypatch.setattr(auth, "_provider", Auth())
-    app = universe_server.create_streamable_http_app()
+    secret = secrets.token_urlsafe(32)
+    secret_file = owner_mode.directory / "http-secret"
+    secret_file.write_text(secret)
+    app = OwnerIngress(universe_server.create_streamable_http_app(), secret_file)
     uds = owner_mode.directory / "app.sock"
     server = uvicorn.Server(uvicorn.Config(app, uds=str(uds), log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
@@ -337,7 +334,9 @@ def test_app_mcp_and_chat_over_unix_socket(owner_mode, agent, monkeypatch, tool)
         while not server.started and thread.is_alive() and time.monotonic() < deadline:
             time.sleep(0.05)
         assert server.started
-        headers = {"Authorization": "Bearer issued-test-token"}
+        headers = {"x-box-secret": secret, "x-owner": "owner",
+                   "x-owner-identity": base64.urlsafe_b64encode(
+                       json.dumps(asdict(identity)).encode()).decode()}
         with httpx.Client(
             transport=httpx.HTTPTransport(uds=str(uds)),
             base_url="http://localhost",

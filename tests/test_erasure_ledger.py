@@ -1,4 +1,4 @@
-﻿"""Erasure authority is monotonic across restores and independent of identity rows."""
+"""Erasure authority is monotonic across restores and independent of identity rows."""
 import asyncio
 import os
 import shutil

@@ -38,6 +38,13 @@ CLASSES = frozenset({CONTROL_PLANE, CALL_SCOPED, DELETE, CLIENT, BOX})
 #: callback-scheduling site; ``#n`` is the n-th clock-driven site in one function.
 CLASSIFICATION: dict[str, tuple[str, str]] = {
 
+    "tinyassets/broker/public_egress.py::watch_erasure": (
+        CONTROL_PLANE, "broker revokes active and idle owner streams after erasure fencing",
+    ),
+    "tinyassets/router_credentials.py::serving.retry_deletions": (
+        CONTROL_PLANE, "router retries fenced account deletion until shared cleanup completes",
+    ),
+
     "tinyassets/broker/waker.py::Waker.run": (
         CONTROL_PLANE, "broker clock wakes admitted, unsuspended owners from timestamp-only "
         "reports and the 24-hour floor; boxhostd queues scheduled wakes behind interactive",
@@ -157,11 +164,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CALL_SCOPED,
         "outer response pump for one admitted stream; ends at EOF, cancel, "
         "fence refusal or the stream's absolute deadline",
-    ),
-    "tinyassets/broker/server.py::_Connection._pump_body#2": (
-        CALL_SCOPED,
-        "inner credit wait for the same response; condition wait is bounded by "
-        "the remaining stream deadline and cancellation wakes it",
     ),
     "tinyassets/broker/credential_refresh.py::_hold_vault": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/broker/credential_refresh.py::_refresh_locked": (CALL_SCOPED, "single-flight wait"),

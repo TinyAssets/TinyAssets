@@ -243,6 +243,8 @@ def host_lock(state: Path):
 def recover_daemons(runtime):
     """Prove the previous controller's sandboxes stopped before admission."""
     states = json.loads(runtime._command("list", "--format=json").stdout)
+    if states is None:  # Pinned runsc serializes its empty Go slice as JSON null.
+        states = []
     if not isinstance(states, list):
         raise BoxError("invalid sandbox census")
     owners = set()
@@ -261,21 +263,22 @@ def recover_daemons(runtime):
         runtime.stop(uid)
 
 
-def main(*, rootfs: Path, data_root: Path) -> None:
+def main(*, rootfs: Path, data_root: Path, cgroup_parent: Path) -> None:
     from tinyassets.boxes.layout import hold
 
     if os.geteuid() != 0:
         raise RuntimeError("box host requires its dedicated root service")
     with hold(data_root), host_lock(Path("/var/lib/boxhostd/state")):
-        _serve(rootfs=rootfs, data_root=data_root)
+        _serve(rootfs=rootfs, data_root=data_root, cgroup_parent=cgroup_parent)
 
 
-def _serve(*, rootfs: Path, data_root: Path) -> None:
+def _serve(*, rootfs: Path, data_root: Path, cgroup_parent: Path) -> None:
     from tinyassets.boxes.images import Images
     if os.geteuid() != 0:
         raise RuntimeError("box host requires its dedicated root service")
     os.umask(0o077)
     RUNTIME.mkdir(mode=0o755, exist_ok=True)
+    os.chmod(RUNTIME, 0o755)  # Same mode as systemd RuntimeDirectory, even on first boot.
     broker_dir = RUNTIME / "broker"
     broker_dir.mkdir(mode=0o750, exist_ok=True)
     os.chown(broker_dir, 1002, 1101)
@@ -289,7 +292,7 @@ def _serve(*, rootfs: Path, data_root: Path) -> None:
         owner_store=Path("/var/lib/boxhostd/owners"), state_root=state / "runsc",
         bundle_root=state / "bundles",
         restore_epoch_file=data_root / ".restore-epoch",
-        cgroup_parent=Path("/sys/fs/cgroup/system.slice/boxhostd.service"))
+        cgroup_parent=cgroup_parent)
     recover_daemons(runtime)
     from tinyassets.erasure_ledger import protect_root
     from tinyassets.restore_recovery import finish_erasures

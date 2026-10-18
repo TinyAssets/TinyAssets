@@ -154,7 +154,7 @@ def broker(directory, *, register=False):
 
     async def serving():
         listener = await server.serve(run / "broker.sock")
-        (run / "broker.sock").chmod(0o666)
+        (run / "broker.sock").chmod(0o660 if register else 0o666)
         async with listener:
             if registration:
                 from tinyassets.boxes.control_channel import receive, send
@@ -221,6 +221,11 @@ def smoke(confirm=False):
         ("owners", "centers", "history", "history_turns", "pending", "pending_saved",
          "controls", "plans", "writes", "reconnect", "production_launch"), 0
     )
+    if not confirm:
+        from rehearsal_launch import production_launch
+
+        production_launch(journal["plan"][0]["principal"])
+        counts["production_launch"] = 1
     Path("/home/owner").mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="/tmp/s6-") as directory:
         run = Path(directory)
@@ -323,11 +328,6 @@ def smoke(confirm=False):
         open_traffic(Path("/data"))  # Synthetic router acceptance before the user pass.
         router = OwnerRouter(Starlette(), resolver=resolve)
         try:
-            if not confirm:
-                from rehearsal_launch import launch_extracted
-
-                launch_extracted(manager, run, journal["plan"][0]["principal"])
-                counts["production_launch"] = 1
             if confirm:
                 # The shared door adopts its real broker peer after retiring all
                 # root authority, exactly as the role launcher requires.
@@ -581,32 +581,18 @@ def host_startup():
         os.close(fd)
         empty.rmdir()
 
-    binary = Path("/opt/tinyassets/boxhostd/current/runsc")
-    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary = Path("/tmp/recovery-only-runsc")
     binary.write_text('#!/bin/sh\n'
                       'case "$*" in *"list --format=json") echo "[]";; '
                       '*"kill "*|*"delete "*) exit 0;; *) exit 97;; esac\n')
     binary.chmod(0o700)
-    from rehearsal_launch import harness
+    from rehearsal_launch import production_host
 
-    rootfs = harness()
     runtime = Path("/run/tinyassets-boxhostd")
-    runtime.mkdir(mode=0o755, exist_ok=True)
     state = runtime / "broker"
-    state.mkdir(mode=0o750, exist_ok=True)
-    os.chown(state, 1002, 1101)
     children = []
-    with tempfile.TemporaryFile() as output:
+    with tempfile.TemporaryFile() as output, production_host(output, runsc=binary):
         try:
-            code = ("from pathlib import Path; from tinyassets.boxes.host_service import main; "
-                    f"main(rootfs=Path({str(rootfs)!r}), data_root=Path('/data'))")
-            children.append(subprocess.Popen([sys.executable, "-c", code],
-                                             stdout=output, stderr=output))
-            deadline = time.monotonic() + 30
-            while not (runtime / "broker-registration.sock").exists():
-                if children[0].poll() is not None or time.monotonic() > deadline:
-                    raise RuntimeError("host did not open broker registration")
-                time.sleep(.05)
             children.append(subprocess.Popen([
                 sys.executable, __file__, "registered-broker", str(state)],
                 stdout=output, stderr=output))

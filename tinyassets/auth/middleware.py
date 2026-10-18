@@ -1139,7 +1139,7 @@ def current_request_boundary_id() -> str | None:
 
 
 def current_mcp_message_identity() -> Identity | None:
-    """Re-derive bearer identity from only the low-level current MCP message."""
+    """Authenticate only this MCP POST: router proof or its public bearer."""
 
     from mcp.server.lowlevel.server import request_ctx
 
@@ -1155,7 +1155,16 @@ def current_mcp_message_identity() -> Identity | None:
         path = request.url.path
     except (AttributeError, TypeError):
         return None
-    if method != "POST" or path not in {"/mcp", "/mcp/"} or len(auth_headers) != 1:
+    if method != "POST" or path not in {"/mcp", "/mcp/"}:
+        return None
+    # OwnerIngress put this identity on this exact request after checking the
+    # per-box secret and bound owner. The router strips public bearer material.
+    # Never use ambient identity: an MCP session can carry multiple requests.
+    trusted = getattr(request, "scope", {}).get("tinyassets_router_identity")
+    if trusted is not None:
+        return (trusted if isinstance(trusted, Identity)
+                and isinstance(trusted.user_id, str) and trusted.user_id.strip() else None)
+    if len(auth_headers) != 1:
         return None
     scheme, separator, credential = auth_headers[0].partition(" ")
     if scheme.lower() != "bearer" or not separator or not credential.strip():

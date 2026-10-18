@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -71,7 +72,10 @@ def test_cli_prints_the_ship_list() -> None:
 
 def test_only_deploy_prod_runs_the_installer_and_ships_the_derived_list() -> None:
     referenced = referenced_basenames((ROOT / INSTALLER).read_text(encoding="utf-8"))
-    runners = [path for path in _workflows() if "install-boxhostd-preflight.sh" in path.read_text()]
+    # Reading the pinned release/checksum or listing a trigger path does not
+    # execute the installer (the Linux launch proof does both).
+    runners = [path for path in _workflows() if re.search(
+        r"\bbash\s+[^\s\"']*/install-boxhostd-preflight\.sh", path.read_text())]
     assert [path.name for path in runners] == ["deploy-prod.yml"]
     for path in runners:
         assert_workflow_ships_derived_list(path.read_text(encoding="utf-8"), referenced)

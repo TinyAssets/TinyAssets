@@ -160,6 +160,10 @@ def test_owner_channel_admission_retry_and_refusals(broker, tmp_path, monkeypatc
 
 
 def test_owner_retirement_is_fenced_complete_and_retryable(broker, tmp_path, monkeypatch):  # noqa: F811
+    from types import SimpleNamespace
+
+    from tinyassets.boxes.host_service import HostService
+
     identities = store(tmp_path, "alice", "bob")
     broker.server._owner_identities = identities
     for owner, center in (("alice", "a"), ("alice", "a2"), ("bob", "b")):
@@ -168,10 +172,11 @@ def test_owner_retirement_is_fenced_complete_and_retryable(broker, tmp_path, mon
 
     destroyed = []
 
-    def stop(operation, owner, **fields):
-        # Retirement asks boxhostd to stop the box and destroy its volume in one
-        # confirmed step (account erasure); a lost acknowledgement is retried.
-        assert operation == "destroy" and owner == "alice" and fields == {"uid": 300001}
+    def destroy(owner, uid):
+        # The root host owns retirement now; model its broker callback before
+        # the synthetic volume destruction and lost acknowledgement.
+        assert owner == "alice" and uid == 300001
+        assert identities.retire_owner(owner) == uid
         assert identities.center_state("a") == identities.center_state("a2") == "retired"
         with pytest.raises(LookupError):
             identities.box_route("alice", rotate=True)
@@ -179,7 +184,12 @@ def test_owner_retirement_is_fenced_complete_and_retryable(broker, tmp_path, mon
         if len(stopped) == 1:
             raise OSError("destroy acknowledgement lost")
         destroyed.append(owner)
-        return {"destroyed": True}
+
+    host = HostService(SimpleNamespace(data_root=tmp_path), None, None,
+                       SimpleNamespace(destroy=destroy))
+
+    def stop(operation, owner, **fields):
+        return host.lifecycle({"lifecycle": operation, "owner": owner, **fields}, 1002)
 
     monkeypatch.setattr("tinyassets.boxes.daemon_control.request", stop)
 

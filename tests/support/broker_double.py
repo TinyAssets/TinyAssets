@@ -30,6 +30,8 @@ import struct
 import sys
 import tempfile
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 import pytest
@@ -37,6 +39,17 @@ import pytest
 #: The broker reads peer credentials off a Unix socket. Everything in this
 #: module is inert where that does not exist; the suite is proven on Linux.
 SUPPORTED = sys.platform != "win32" and hasattr(socket, "SO_PEERCRED")
+_BROKER_PROCESS = ContextVar("test_broker_process", default=False)
+
+
+@contextmanager
+def broker_process():
+    """Model the broker's separate process within a threaded protocol fixture."""
+    token = _BROKER_PROCESS.set(True)
+    try:
+        yield
+    finally:
+        _BROKER_PROCESS.reset(token)
 
 #: The proof the double's fence accepts. Startup normally mints this and hands
 #: its hash to the privileged launcher; no test may depend on the value.
@@ -128,6 +141,7 @@ class _InProcessBroker:
         listening = threading.Event()
         failure: list[BaseException] = []
 
+        @broker_process()
         def run() -> None:
             asyncio.set_event_loop(self._loop)
             try:
@@ -240,8 +254,21 @@ def in_process_broker(request, monkeypatch):
         yield None
         return
 
+    from tinyassets import owner_runtime
     from tinyassets.boxes import layout as role_modes
-    from tinyassets.broker import supervisor
+    from tinyassets.broker import server, supervisor
+
+    current = owner_runtime.current
+    monkeypatch.setattr(owner_runtime, "current",
+                        lambda: None if _BROKER_PROCESS.get() else current())
+    run_stream = server._Connection._run
+
+    @broker_process()
+    def stream(*args, **kwargs):
+        return run_stream(*args, **kwargs)
+
+    # Raw stream threads do not inherit ContextVars; asyncio.to_thread does.
+    monkeypatch.setattr(server._Connection, "_run", stream)
 
     if os.getuid() != 0:
         # The broker reads the daemon's liveness proofs and vault records
@@ -251,6 +278,21 @@ def in_process_broker(request, monkeypatch):
 
     registry = _Registry()
     monkeypatch.setattr(supervisor, "get_supervisor", registry.supervisor_for)
+    if os.getuid() != 0:
+        from tinyassets.erasure_ledger import ErasureLedger
+
+        original_call = ErasureLedger._call
+
+        def empty_host_authority(ledger, operation, **fields):
+            # These same-UID unit fixtures have no root boxhostd. Their synthetic
+            # host starts with no erasures; real custody/IPC proofs run as root
+            # or opt out with role_split. Never replace a supplied authority.
+            if (not ledger.path.exists() and "TINYASSETS_BOXES_RUN" not in os.environ
+                    and operation in {"contains", "contains_many"}):
+                return False if operation == "contains" else []
+            return original_call(ledger, operation, **fields)
+
+        monkeypatch.setattr(ErasureLedger, "_call", empty_host_authority)
     try:
         yield registry
     finally:

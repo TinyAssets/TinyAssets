@@ -139,9 +139,9 @@ def cgroup_pids(cgroup: Path) -> set[int]:
 
 
 def service_cgroup_parent(path: str) -> str:
-    if not path.endswith("/boxhostd.service/control"):
+    if not path.endswith("/boxhostd.service/supervisor"):
         raise RuntimeError("preflight must run under boxhostd.service")
-    return path.removesuffix("/control")
+    return path.removesuffix("/supervisor")
 
 
 def pss_mib(cgroup: Path) -> float:

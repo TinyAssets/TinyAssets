@@ -160,6 +160,19 @@ def test_host_restart_stops_both_runsc_and_bundle_survivors(tmp_path):
     assert (tmp_path / "owner-300002").is_dir()
 
 
+def test_host_first_boot_accepts_runsc_null_census_and_still_reaps_bundles(tmp_path):
+    from tinyassets.boxes.gvisor_runtime import GvisorRuntime
+    from tinyassets.boxes.host_service import recover_daemons
+
+    stopped = []
+    (tmp_path / "owner-300001").mkdir()
+    runtime = SimpleNamespace(
+        box_id=GvisorRuntime.box_id, bundle_root=tmp_path, stop=stopped.append,
+        _command=lambda *args: SimpleNamespace(stdout="null"))
+    recover_daemons(runtime)
+    assert stopped == [300001]
+
+
 def test_host_restart_refuses_untrusted_state_before_stopping_any_box(tmp_path):
     import json
 

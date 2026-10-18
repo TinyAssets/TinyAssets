@@ -682,7 +682,7 @@ def test_boxhostd_publishes_cleanup_step_and_reason(monkeypatch, tmp_path: Path)
 
 def test_box_cgroups_stay_beneath_the_delegated_service() -> None:
     assert (
-        box_preflight.service_cgroup_parent("/system.slice/boxhostd.service/control")
+        box_preflight.service_cgroup_parent("/system.slice/boxhostd.service/supervisor")
         == "/system.slice/boxhostd.service"
     )
     with pytest.raises(RuntimeError, match="boxhostd.service"):

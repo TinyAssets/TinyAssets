@@ -117,12 +117,22 @@ _REPO_AND_RUN_SCRIPT = r"""
 set -e
 cd /work
 # A real repository, not the host's: the worktree's .git is a file pointing at
-# a path this container does not have. History is irrelevant to the suite; a
-# valid HEAD is not.
+# a path this container does not have. Required shards also need the real base
+# to check committed and uncommitted changes, without trusting host Git config.
 git init -q .
-git add -A >/dev/null 2>&1 || true
+if [ -n "${{ORACLE_SOURCE_HEAD:-}}" ]; then
+    test -n "$ORACLE_SOURCE_MAIN"
+    mkdir -p .git/objects/info
+    printf '%s\n' /oracle-objects > .git/objects/info/alternates
+    if [ -f /oracle-shallow ]; then cp /oracle-shallow .git/shallow; fi
+    git cat-file -e "$ORACLE_SOURCE_HEAD^{{commit}}"
+    git cat-file -e "$ORACLE_SOURCE_MAIN^{{commit}}"
+    git update-ref HEAD "$ORACLE_SOURCE_HEAD"
+    git update-ref refs/remotes/origin/main "$ORACLE_SOURCE_MAIN"
+fi
+git add -A >/dev/null 2>&1
 git -c user.email=oracle@localhost -c user.name="linux oracle" \
-    commit -q -m "linux oracle snapshot" >/dev/null 2>&1 || true
+    commit -q --allow-empty -m "linux oracle snapshot" >/dev/null 2>&1
 _py=$(python -V 2>&1 | cut -d' ' -f2)
 _git=$(git --version | cut -d' ' -f3)
 _bwrap=$(bwrap --version 2>/dev/null | cut -d' ' -f2 || echo absent)
@@ -277,6 +287,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.ci:
         return _run_ci(args, root, tag)
+    if args.required_runner:
+        args.source_history = _source_history(root)
     if args.out:
         out = Path(args.out)
         out.mkdir(parents=True, exist_ok=True)
@@ -288,6 +300,7 @@ def main(argv: list[str] | None = None) -> int:
 def _run_ci(args: argparse.Namespace, root: Path, tag: str) -> int:
     """Run both workflow tiers with the same selector and required runner."""
     subprocess.run(["git", "fetch", "origin", "main"], cwd=root, check=True)
+    args.source_history = _source_history(root)
     base = subprocess.run(["git", "merge-base", "origin/main", "HEAD"],
                           cwd=root, check=True, capture_output=True, text=True).stdout.strip()
     changed = set(subprocess.run(["git", "diff", "--name-only", base], cwd=root,
@@ -422,6 +435,19 @@ def _required_runner_command(args: argparse.Namespace) -> str:
     return shlex.join(["python", REQUIRED_RUNNER, "--oracle-venues", *runner_args])
 
 
+def _source_history(root: Path) -> tuple[Path, str, str] | None:
+    """Pin both real refs; checkouts without main keep the Actions borrow path."""
+    common = Path(subprocess.check_output(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=root, text=True).strip())
+    main = subprocess.run(["git", "rev-parse", "--verify", "refs/remotes/origin/main"],
+                          cwd=root, text=True, capture_output=True)
+    if main.returncode:
+        return None  # Never parent a snapshot without the real comparison ref.
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    return common / "objects", head, main.stdout.strip()
+
+
 def docker_command(args: argparse.Namespace, root: Path, tag: str) -> list[str]:
     """The ``docker run`` argv for parsed ``args``."""
     if getattr(args, "ci_select", None):
@@ -461,6 +487,12 @@ def docker_command(args: argparse.Namespace, root: Path, tag: str) -> list[str]:
            "--init", "--rm", "--name",
            f"ta-oracle-{os.getpid()}-{getattr(args, 'ci_name', 'run')}",
            "-v", f"{_docker_path(root)}:/src:ro"]
+    if history := getattr(args, "source_history", None):
+        objects, head, main = history
+        run += ["-v", f"{_docker_path(objects)}:/oracle-objects:ro",
+                "-e", "ORACLE_SOURCE_HEAD=" + head, "-e", "ORACLE_SOURCE_MAIN=" + main]
+        if (shallow := objects.parent / "shallow").is_file():
+            run += ["-v", f"{_docker_path(shallow)}:/oracle-shallow:ro"]
     if getattr(args, "docker_engine", False):
         if not args.as_root or getattr(args, "required_runner", False):
             raise SystemExit("--docker-engine requires --as-root")

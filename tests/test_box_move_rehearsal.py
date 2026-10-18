@@ -487,9 +487,11 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
     import gc
 
     gc.collect()
-    # Real pre-cutover volumes have a service-created lock. Keeping it root-owned
-    # hides fs.protected_regular failures once apply installs the sticky root.
-    os.chown(source / ".layout.lock", 1001, 1001)
+    # The daemon creates both layout files on the pre-cutover volume. Preserve
+    # that custody through migration: root ownership hid the lock failure and
+    # bypassing boxhostd.py used to hide the invalid marker from this proof.
+    for name in (".layout.lock", ".layout.json"):
+        os.chown(source / name, 1001, 1001)
     archive = tmp_path / "tinyassets-data-2026-10-17T00-00-00Z.tar.gz"
     with tarfile.open(archive, "w:gz") as stream:
         stream.add(source, arcname="_data")
