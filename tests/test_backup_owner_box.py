@@ -1,12 +1,13 @@
 """Exercise the live owner-box backup with disposable shims on Linux.
 
-24/7: the nightly backup never stops a service. Any docker or systemctl call
-is a failure, and SQLite files are copied through the online backup API.
+24/7: the nightly backup never stops a service. Only synthetic volume discovery
+may call docker; SQLite files are copied through the online backup API.
 """
 
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -27,21 +28,29 @@ def shim(directory: Path, name: str, body: str) -> None:
 
 @unittest.skipUnless(os.name == "posix" and os.geteuid() == 0, "needs Linux root host")
 class OwnerBoxLiveBackupTest(unittest.TestCase):
-    def test_live_pair_never_stops_a_service(self) -> None:
+    def test_installed_service_publishes_live_pair_without_stopping_writers(self) -> None:
+        from tests.test_host_uptime_installers import _install_env, _run_installer
+
         with tempfile.TemporaryDirectory(prefix="ta-backup-live-", dir="/tmp") as temporary:
             root = Path(temporary)
-            deploy, scripts, binary = (root / part for part in ("deploy", "scripts", "bin"))
-            for directory in (deploy, scripts, binary):
-                directory.mkdir()
-            for name in ("backup-owner-box.sh", "backup-pair.py", "backup-live-sqlite.py"):
-                shutil.copy2(REPO / "deploy" / name, deploy / name)
-            shutil.copy2(REPO / "scripts/backup_prune.py", scripts / "backup_prune.py")
-            shim(deploy, "box-store-check.sh", "exit 0\n")
-            (deploy / "box-store-archive.py").write_text("raise SystemExit(0)\n")
+            installation = root / "installation"
+            installation.mkdir()
+            result = _run_installer(_install_env(installation))
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            runtime = installation / "runtime/current"
+            # Run the installed service command, replacing only its installation prefix.
+            unit = (installation / "systemd/tinyassets-backup.service").read_text()
+            command = next(line.removeprefix("ExecStart=") for line in unit.splitlines()
+                           if line.startswith("ExecStart="))
+            command = shlex.split(command.replace("/opt/tinyassets-host-uptime/current",
+                                                  str(runtime)))
+            binary = root / "bin"
+            binary.mkdir()
             data, box, remote = (root / part for part in ("_data", "owners", "remote"))
             for directory in (data, box, remote):
                 directory.mkdir()
             (data / "file").write_text("receipt and platform data")
+            (data / ".layout.json").write_text('{"box_layout":"owner-box","state":"stable"}')
             private = data / ".platform" / "credential-vaults" / "center"
             private.mkdir(parents=True)
             (private / ".credential-vault.json").write_text("platform credential")
@@ -91,6 +100,21 @@ class OwnerBoxLiveBackupTest(unittest.TestCase):
             log = root / "actions.log"
             for name in ("docker", "systemctl", "xfs_freeze"):
                 shim(binary, name, f'echo "{name} $*" >> "$TEST_LOG"\nexit 1\n')
+            shim(binary, "docker", '''
+if [[ "$*" == "volume inspect --format {{ .Mountpoint }} synthetic-installed-backup" ]]; then
+  printf '%s\\n' "$TEST_DATA"
+else
+  echo "docker $*" >> "$TEST_LOG"
+  exit 1
+fi
+''')
+            shim(binary, "findmnt", '''
+case "${@: -1}" in
+  FSTYPE) echo xfs ;;
+  OPTIONS) echo rw,pquota ;;
+  *) exit 1 ;;
+esac
+''')
             shim(binary, "cp", """
 args=()
 for arg in "$@"; do
@@ -125,12 +149,23 @@ esac
                 "BACKUP_RETAIN_DAILY": "1",
                 "BACKUP_RETAIN_WEEKLY": "0",
                 "BACKUP_RETAIN_MONTHLY": "0",
+                "BACKUP_VOLUME": "synthetic-installed-backup",
+                "TEST_DATA": str(data),
+                "BOX_STORE_DIR": str(box),
+                "BACKUP_DEST": str(remote),
+                "BACKUP_LOG": str(root / "backup.log"),
+                "BACKUP_MODE": "",
+                "DRY_RUN": "0",
+                # No checkout, editable install, or inherited Python path may fill
+                # a hole in the installed service's transitive import closure.
+                "PYTHONPATH": str(runtime),
+                "PYTHONNOUSERSITE": "1",
             }
+            shim(binary, "python3", 'exec ' + shlex.quote(sys.executable) + ' -S "$@"\n')
             try:
                 result = subprocess.run(
-                    ["bash", str(deploy / "backup-owner-box.sh"),
-                     str(data), str(box), str(remote)],
-                    env=env, capture_output=True, text=True, check=False,
+                    command, cwd=root,
+                    env=env, capture_output=True, text=True, check=False, timeout=90,
                 )
             finally:
                 live.close()

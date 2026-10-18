@@ -41,6 +41,7 @@ RUNTIME_FILES = (
     "deploy/box-store-check.sh",
     "deploy/box-store-archive.py",
     "deploy/box-store-quotas.py",
+    "deploy/box_project_readback.py",
     "deploy/ship-logs.sh",
     "scripts/__init__.py",
     "scripts/_canary_common.py",
@@ -55,6 +56,15 @@ RUNTIME_FILES = (
     "scripts/backup_prune.py",
     "tinyassets/__init__.py",
     "tinyassets/ttl_memo.py",
+    "tinyassets/erasure_ledger.py",
+    "tinyassets/owner_runtime.py",
+    "tinyassets/owner_activity.py",
+    "tinyassets/rpc_frames.py",
+    "tinyassets/restore_recovery.py",
+    "tinyassets/sqlite_readonly.py",
+    "tinyassets/boxes/__init__.py",
+    "tinyassets/boxes/layout.py",
+    "tinyassets/boxes/provider.py",
     "tinyassets/storage/__init__.py",
     "tinyassets/storage/rotation.py",
 )
@@ -1452,8 +1462,16 @@ def test_installed_operational_entrypoints_invoke_from_runtime(tmp_path):
     env = _install_env(tmp_path)
     assert _run_installer(env).returncode == 0
     current = tmp_path / "runtime" / "current"
+    data = tmp_path / "snapshot-data"
+    data.mkdir()
+    (data / ".layout.json").write_text('{"box_layout":"owner-box","state":"stable"}')
     (tmp_path / "state" / "tinyassets-daemon.service.active").touch()
     commands = (
+        # The offline backup imports this helper before it checks guest quiescence.
+        # -S prevents an editable checkout or site-packages masking missing files.
+        f"PYTHONPATH={shlex.quote(_bash_path(current))} "
+        "python3 -S deploy/box-store-quotas.py --snapshot-data "
+        + shlex.quote(_bash_path(data)),
         "python3 scripts/watchdog.py --help",
         "python3 scripts/mcp_public_canary.py --help",
         "python3 scripts/disk_watch.py --help",

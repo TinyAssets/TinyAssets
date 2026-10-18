@@ -44,6 +44,8 @@ UNIT_FILES=(
     tinyassets-disk-watch.service tinyassets-disk-watch.timer
     tinyassets-ship-logs.service tinyassets-ship-logs.timer
 )
+# The installed-service test in test_backup_owner_box.py exercises the ledger's
+# read closure without the checkout or site-packages filling missing modules.
 RUNTIME_FILES=(
     deploy/daemon-watchdog.sh
     deploy/backup.sh
@@ -53,6 +55,7 @@ RUNTIME_FILES=(
     deploy/box-store-check.sh
     deploy/box-store-archive.py
     deploy/box-store-quotas.py
+    deploy/box_project_readback.py
     deploy/ship-logs.sh
     scripts/__init__.py
     scripts/_canary_common.py
@@ -67,11 +70,20 @@ RUNTIME_FILES=(
     scripts/backup_prune.py
     tinyassets/__init__.py
     tinyassets/ttl_memo.py
+    tinyassets/erasure_ledger.py
+    tinyassets/owner_runtime.py
+    tinyassets/owner_activity.py
+    tinyassets/rpc_frames.py
+    tinyassets/restore_recovery.py
+    tinyassets/sqlite_readonly.py
+    tinyassets/boxes/__init__.py
+    tinyassets/boxes/layout.py
+    tinyassets/boxes/provider.py
     tinyassets/storage/__init__.py
     tinyassets/storage/rotation.py
 )
-# Release root plus deploy/, scripts/, tinyassets/, and tinyassets/storage/.
-EXPECTED_RELEASE_DIRECTORY_COUNT=5
+# Release root plus deploy/, scripts/, tinyassets/, storage/ and boxes/.
+EXPECTED_RELEASE_DIRECTORY_COUNT=6
 # journald drop-in. This is the retention policy for the host journal, which
 # deploy/compose.yml makes the durable home of every container's output, so the
 # installer owns it the same way it owns the units: converged on every install,
