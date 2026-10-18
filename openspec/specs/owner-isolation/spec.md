@@ -1,5 +1,9 @@
 # Owner isolation
 
+## Purpose
+
+Define source integrity and crash-resume requirements for the owner-box cutover.
+
 ## Requirements
 
 ### Requirement: Cutover repairs only named index drift
