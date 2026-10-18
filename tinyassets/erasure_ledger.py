@@ -373,14 +373,24 @@ def _legacy_main_digests(source):
             "SELECT founder_sub FROM deleted_principals NOT INDEXED")]
 
 
+# Recovery reports can exceed the ordinary 8 MiB universe-file limit. This
+# explicit bound applies equally to live, staged and externally located roots.
+LEGACY_REPORT_MAX_BYTES = 64 * 1024 * 1024
+
+
 def _seed_legacy_work(source, ledger, store_root):
     from tinyassets.restore_recovery import _safe
 
     report_path = _safe(source, ".disaster-restore.json")
-    from tinyassets.universe_files import read_data_path
+    from tinyassets.universe_files import read_universe_file
 
-    raw = read_data_path(report_path)
-    report = json.loads(raw) if raw is not None else {}
+    try:
+        raw = read_universe_file(report_path.parent, report_path.name,
+                                 max_bytes=LEGACY_REPORT_MAX_BYTES)
+    except FileNotFoundError:
+        report = {}
+    else:
+        report = json.loads(raw)
     for target in report.get("pending_erasures", []) + report.get("erasure_failures", []):
         matches = [entry for entry in ledger.entries() if target["uid"] in entry["uids"]]
         if len(matches) != 1:

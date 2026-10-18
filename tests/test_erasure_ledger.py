@@ -419,3 +419,28 @@ def test_normal_legacy_pair_seeds_erasure_before_forward_migration(tmp_path):
     entry, = ErasureLedger(staged).entries()
     assert entry["uids"] == [300001] and entry["work"]
     assert not (staged / ".router-deleted-owners.sqlite3").exists()
+
+
+@pytest.mark.parametrize("inside", [True, False])
+def test_large_legacy_report_uses_same_bound_and_propagates_refusal(tmp_path, monkeypatch, inside):
+    from tinyassets import erasure_ledger as module
+    from tinyassets.universe_files import UniverseFileError
+
+    configured = tmp_path / "configured"
+    configured.mkdir()
+    source = configured if inside else tmp_path / "external"
+    source.mkdir(exist_ok=True)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(configured))
+    ledger_root = tmp_path / "ledger"
+    ledger_root.mkdir()
+    ledger = ErasureLedger(ledger_root)
+    ledger.initialize()
+    report = source / ".disaster-restore.json"
+    raw = b'{"pending_erasures":[],"padding":"' + b'x' * (8 * 1024 * 1024) + b'"}'
+    report.write_bytes(raw)
+    seed_legacy(source, ledger, store_root=tmp_path)
+    # An explicit over-bound refusal must propagate, regardless of location.
+    monkeypatch.setattr(module, "LEGACY_REPORT_MAX_BYTES", len(raw) - 1)
+    with pytest.raises(UniverseFileError):
+        seed_legacy(source, ledger, store_root=tmp_path)
+    assert report.read_bytes() == raw
