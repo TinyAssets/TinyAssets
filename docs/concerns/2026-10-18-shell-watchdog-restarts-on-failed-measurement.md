@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Shell watchdog restarts the daemon when it cannot measure
+filed: '2026-10-18'
+summary: daemon-watchdog.sh treats a failed docker inspect or systemctl is-active as a stopped daemon and restarts it; a measurement failure must fail loudly instead.
+---
+
 # Shell watchdog restarts the daemon when it cannot measure
 
 `deploy/daemon-watchdog.sh` (installed by `deploy/install-host-uptime-services.sh`)
