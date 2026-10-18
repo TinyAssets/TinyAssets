@@ -307,8 +307,6 @@ def disaster_restore(current, staged, trees, *, backup_time, now=None,
     report = {"backup_time": backup_time, "restore_time": now,
               "credential_roots_reset": True, "operation_fences_reset": True,
               "erased_owners": len(erased), "erased_uids": sorted(erased), "billing": billing,
-              "cleanup_complete": False,
-              "erasure_failures": [],
               "unavailable_erasure_sources": unavailable_sources,
               "owners_reconciled": reconciled,
               "spend_blocked_until": int(fence.read_text()),
@@ -321,23 +319,6 @@ def disaster_restore(current, staged, trees, *, backup_time, now=None,
     report_path.chmod(0o600)
     print("WARN disaster restore: " + json.dumps(report, sort_keys=True))
     return report
-
-
-def _save_report(path, report):
-    temporary = path.with_suffix(".tmp")
-    _safe(path.parent, temporary.name)
-    with temporary.open("w") as stream:
-        os.fchown(stream.fileno(), 0, 0)
-        os.fchmod(stream.fileno(), 0o600)
-        json.dump(report, stream, sort_keys=True)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
-    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
 
 
 def finish_erasures(root, store_root=Path("/var/lib/boxhostd/owners"), *, daemons=None):
@@ -402,14 +383,7 @@ def finish_erasures(root, store_root=Path("/var/lib/boxhostd/owners"), *, daemon
                 # even when all bytes have already gone on an earlier attempt.
                 ledger.execute("finish", {"digest": entry["digest"], "ids": [
                     key for key, phase in entry["tasks"].items() if phase == "owner_tree"]})
-    path = _safe(root, ".disaster-restore.json")
-    if path.exists():
-        report = json.loads(path.read_text())
-        updated = {**report, "cleanup_complete": not any(e["work"] for e in ledger.entries()),
-                   "erasure_failures": failures}
-        updated.pop("pending_erasures", None)
-        if updated != report:
-            _save_report(path, updated)
-            print("WARN disaster restore: " + json.dumps(updated, sort_keys=True))
+    if failures:
+        print("WARN erasure cleanup: " + json.dumps(failures, sort_keys=True))
     return not any(e["work"] or (e["uids"] and "owner_tree" in e["tasks"].values())
                    for e in ledger.entries())
