@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
-### Requirement: Restore: pre-traffic exact, post-traffic disaster
-Normal restore exists only for pre-traffic cutover rollback and restores the verified backup pair exactly, without inspecting live owner stores; its only live authority is the root-owned `.layout.json` and `.router-traffic.sqlite3` at fixed paths on the shared data root, outside every owner tree.
+### Requirement: Restore: pre-traffic rollback, post-traffic disaster
+Normal restore SHALL be limited to pre-traffic cutover rollback. It SHALL restore the verified backup pair except for the monotonic erasure ledger, whose live and staged events are unioned. Its admission proof remains root-owned `.layout.json` and `.router-traffic.sqlite3`; no owner-writable state is restore authority.
 Any set `traffic_opened_at` (including one newer than the backup) or `credentials_after` refuses with exit 4 and directs the operator to disaster recovery; a missing or unreadable marker refuses unless readable layout proves an unfinished pre-traffic cutover, and missing or unreadable layout too always refuses.
 After traffic, only acknowledged disaster recovery is allowed, and its operation fences live in platform-owned state exposed read-only to boxes, never in owner-writable journals or receipt databases.
 The router SHALL durably record its backed-up traffic marker before admitting
@@ -20,14 +20,30 @@ use the webhook resolver for signed legacy universe subscription mappings.
 It SHALL reconcile identity erasure through WorkOS and billing through Stripe
 adapter seams, report unavailable billing/suspension sources, loss window and
 classes reverting to backup time, and exit 6 on completed recovery.
-Only erasure tombstones SHALL be carried from readable sources. Erased trees
-SHALL be destroyed before publication, or on an individual erasure failure detached
-into root-owned 0700 quarantine for retry, with router and broker refusal retained.
-An erased box SHALL never start; recovery SHALL report its failure and retry path
-and continue for other owners. Deletion SHALL be iterative with no depth bound,
-descriptor-relative, and never follow symlinks or cross mounts.
+One root-owned append-only `.erasure-ledger.sqlite3` on the shared data root
+SHALL be erasure authority, keyed by sha256(principal). Deletion SHALL append its
+entry first and record each phase completion. The shared root SHALL be root-owned
+with sticky group-write access for the router, preventing replacement of root
+ledger files; all ledger SQLite sidecars SHALL be root-private. Cutover SHALL seed all router
+tombstones, custody digests, boxhost owner_destroys and broker revocations, then
+remove router plaintext tombstone authority. Plaintext required for phases SHALL
+remain only in root-owned state. Local custody and host fences are not retry authority.
+Both restore paths SHALL union readable live and staged ledger events. Every new
+restored home SHALL create new work; prior completion receipts cannot hide it.
+Post-publication cleanup and every start SHALL retry all unfinished home and
+quarantine targets across any number of restores. A quarantine destination SHALL
+be recorded before rename and home_removed SHALL remain false until all targets
+are destroyed. Reports SHALL carry no authoritative cleanup queue.
+Authentication SHALL refuse any principal whose digest is in the ledger, even
+without an identity mapping. Automatic retries SHALL select every ledger entry
+with unfinished phases, without a restore_pending or identity-row filter.
+An erased box SHALL never start. Deletion SHALL be iterative, descriptor-relative,
+and never follow symlinks or cross mounts.
 Identities found only in live platform state and absent from the backup SHALL be
-erased with their permanent UID reservations retained; retained live quota clearing
+erased with their permanent UID reservations retained from the ledger even if
+live identity rows are unavailable; conflicting reservations SHALL refuse restore.
+Forward migration SHALL record new cleanup obligations for copied erased homes.
+Retained live quota clearing
 SHALL not require backup registry membership.
 Pre-cutover pairs SHALL be refused as disaster sources with an explicit explanation
 that forward migration is required; disaster restore requires an owner-box pair.
@@ -41,7 +57,7 @@ startup, and unreachable-provider exit 4 without changing either live volume.
 
 #### Scenario: Exact maintenance-window rollback
 - **WHEN** a verified pair is restored before ordinary traffic has opened
-- **THEN** normal restore preserves the backup's exact paired state
+- **THEN** normal restore preserves the backup pair and unions erasure events created after it
 - **AND** no live credential, policy or operation row is carried forward
 
 #### Scenario: Normal restore after traffic
@@ -152,7 +168,7 @@ prevent sleep, and deletion-only startup SHALL start no background dispatchers.
 
 #### Scenario: Suspended owner can delete without ordinary wake authority
 - **WHEN** an authenticated suspended owner confirms account deletion at the door
-- **THEN** deletion-only admission permits its local sweep followed by the durable tombstone and shared cleanup
+- **THEN** the ledger entry is durable before deletion-only cleanup and shared phase execution
 - **AND** the outer lifespan starts no scheduler, delivery, consumer or maintenance loop
 - **AND** every background execution holds the activity gate; pending delivery stays unexecuted and deletion drain reports zero work
 
@@ -352,12 +368,12 @@ reported next-wake time.
 
 #### Scenario: The shared door orchestrates account deletion
 - **WHEN** an authenticated owner submits same-origin JSON with `confirm == "DELETE"` to `/app/account/delete`
-- **THEN** the router forwards deletion to the owner's secret-authenticated internal route and the box deletes only local data
-- **AND** a blocked or refused deletion returns 409 without changing router state or admissions
+- **THEN** the router first appends the ledger entry, then forwards deletion to the owner's secret-authenticated internal route for local cleanup
+- **AND** a blocked or refused deletion returns 409 with the fence and unfinished ledger work retained; automatic retries need no sign-in
 - **AND** ingress drains new work and waits at most twenty seconds for active turns before the local sweep; a timeout reports drain unfinished
-- **AND** the router persists a tombstone and receipt, retires every owner admission, requires confirmed volume/quota/socket/secret destruction, erases broker custody, cancels shared owner billing, clears router credentials and deletes the external identity before returning 200
+- **AND** the router first persists a root-owned ledger entry, then retires every owner admission, requires confirmed volume/quota/socket/secret destruction, erases broker custody, cancels shared owner billing, clears router credentials and deletes the external identity before returning 200
 - **AND** every failed step is recorded as unfinished; a tombstoned retry completes destruction, custody, billing, credentials and identity from the saved receipt
-- **AND** billing cancellation runs despite destruction failure, and identity survives until earlier phases complete so authenticated retries remain possible
+- **AND** billing cancellation runs despite destruction failure, and identity survives until earlier phases complete while automatic ledger retries continue
 - **AND** the box exposes no operation that revokes router account state
 
 #### Scenario: A scheduled run in a sleeping box

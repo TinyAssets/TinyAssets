@@ -13,7 +13,8 @@ from tinyassets.billing.events import apply_event
 from tinyassets.billing.plan_action import _start_checkout
 from tinyassets.box_layout_migration import census
 from tinyassets.broker.owner_reads import Plans
-from tinyassets.router_credentials import DeletedOwners, tombstone
+from tinyassets.erasure_ledger import ErasureLedger
+from tinyassets.router_credentials import tombstone
 
 
 def attempt(now=None):
@@ -185,7 +186,7 @@ def test_tombstone_refuses_checkout_and_expires_open_session(billing, monkeypatc
     assert stripe.cancel_account_billing(root, "alice") == "attempt_expired"
     assert calls == ["checkout/sessions/cs_synthetic/expire"]
     assert plans.read("alice")["attempt"] is None
-    assert DeletedOwners(root).receipt("alice")["billing_cleanup"] == {"cs_synthetic": "expired"}
+    assert ErasureLedger(root).receipt("alice")["billing_cleanup"] == {"cs_synthetic": "expired"}
 
 
 @pytest.mark.parametrize("status", ["open", "complete", "wrong_id", "outage"])
@@ -238,7 +239,7 @@ def test_late_signed_subscription_is_cancelled_and_recorded(billing, monkeypatch
     assert apply_event(root, event) == {"applied": False, "cancelled": True}
     assert calls == [("subscriptions/sub_tinyassets", "DELETE")]
     assert plans.read("alice")["tier"] == "free"
-    assert DeletedOwners(root).receipt("alice")["billing_cleanup"]["sub_tinyassets"] == "cancelled"
+    assert ErasureLedger(root).receipt("alice")["billing_cleanup"]["sub_tinyassets"] == "cancelled"
 
 
 def test_completion_before_subscription_event_retains_cancellation_authority(billing, monkeypatch):

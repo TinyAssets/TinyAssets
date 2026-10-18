@@ -30,7 +30,7 @@ def apply_event(root, event):
         subscription_end_from_event,
         subscription_state_from_event,
     )
-    from tinyassets.router_credentials import DeletedOwners
+    from tinyassets.erasure_ledger import ErasureLedger
 
     plans = BillingPlans(root)
     obj = (event.get("data") or {}).get("object") or {}
@@ -40,7 +40,7 @@ def apply_event(root, event):
         session_id, attempt_id = settlement
         try:
             owner = plans.owner_for_checkout(session_id=session_id, attempt_id=attempt_id)
-            if DeletedOwners(root).contains(owner):
+            if ErasureLedger(root).contains(owner):
                 return {"settled": True, "billing": cancel_account_billing(root, owner)}
             if event["type"] == "checkout.session.completed":
                 plans.bind_checkout_subscription(owner, customer_id=obj.get("customer"),
@@ -57,7 +57,7 @@ def apply_event(root, event):
     customer = str(obj.get("customer") or "")
     subscription = str(obj.get("id") or "")
     owner = subscription_owner(plans, obj, claimed_owner)
-    if DeletedOwners(root).contains(owner):
+    if ErasureLedger(root).contains(owner):
         cancel_deleted_subscription(root, owner, subscription)
         plan = plans.read(owner)
         plans.apply_tier_event(owner, tier="free",

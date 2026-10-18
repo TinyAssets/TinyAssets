@@ -106,6 +106,21 @@ class HostService:
         from tinyassets.broker.owner_identities import validate_principal
 
         try:
+            if document.get("lifecycle") == "erasure":
+                from tinyassets.erasure_ledger import ErasureLedger
+
+                if (uid != 1001 or set(document) != {"lifecycle", "ledger_op", "arguments"}
+                        or document["ledger_op"] not in {
+                            "contains", "add", "receipt", "save", "pending_page"}):
+                    raise BoxError("erasure operation refused for this peer")
+                result = ErasureLedger(self.admission.data_root).execute(
+                    document["ledger_op"], document["arguments"])
+                if document["ledger_op"] == "receipt":
+                    # Paths and accumulated billing receipts stay in root custody;
+                    # the router needs only the pending-path fence and phase state.
+                    result.pop("billing_cleanup", None)
+                    result["quarantines"] = ["pending"] if result["quarantines"] else []
+                return {"result": result}
             if self.daemons is None:
                 raise BoxError("owner lifecycle is unavailable")
             if (uid in {0, 1002} and document.get("lifecycle") == "roll"
@@ -124,6 +139,11 @@ class HostService:
                 return {"released": True}
             if (uid == 1002 and operation == "destroy"
                     and set(document) == {"lifecycle", "owner", "uid"}):
+                from tinyassets.erasure_ledger import ErasureLedger, principal_digest
+
+                ledger = ErasureLedger(self.admission.data_root)
+                ledger.execute("add", {"digest": principal_digest(owner), "principal": owner,
+                                       "uids": [document["uid"]]})
                 self.daemons.destroy(owner, document["uid"])
                 return {"destroyed": True}
             if ((uid == 1001 or (uid == 1002 and document.get("scheduled") is True))
@@ -256,7 +276,10 @@ def _serve(*, rootfs: Path, data_root: Path) -> None:
         restore_epoch_file=data_root / ".restore-epoch",
         cgroup_parent=Path("/sys/fs/cgroup/system.slice/boxhostd.service"))
     recover_daemons(runtime)
+    from tinyassets.erasure_ledger import protect_root
     from tinyassets.restore_recovery import finish_erasures
+
+    protect_root(data_root)
 
     finish_erasures(data_root)
     quota = OwnerQuota(runtime.owner_store)

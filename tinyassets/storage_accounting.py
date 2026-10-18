@@ -576,7 +576,7 @@ ROOT_ENTRIES: dict[str, str] = {
     ".published": "platform: shared copies of explicitly published definitions",
     ".custody.lock": "platform: broker credential publication and erasure lock",
     ".hook-owners.sqlite3": "platform: router hook token digests and authenticated owners",
-    ".router-deleted-owners.sqlite3": "platform: router tombstones for deleted accounts",
+    ".erasure-ledger.sqlite3": "platform: root-owned append-only account erasure ledger",
     ".restore-epoch": "platform: root-owned disaster operation generation mounted read-only",
     ".router-traffic.sqlite3": "platform: durable router admission and credential restore fence",
     ".router-credentials.json": "platform: rotated operational credentials after disaster",

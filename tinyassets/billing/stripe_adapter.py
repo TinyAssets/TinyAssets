@@ -544,9 +544,9 @@ def _cancel_confirmed(subscription):
 
 
 def _record_deleted_billing(root, owner, key, value):
-    from tinyassets.router_credentials import DeletedOwners
+    from tinyassets.erasure_ledger import ErasureLedger
 
-    deleted = DeletedOwners(root)
+    deleted = ErasureLedger(root)
     if deleted.contains(owner):
         receipt = deleted.receipt(owner)
         receipt.setdefault("billing_cleanup", {})[key] = value

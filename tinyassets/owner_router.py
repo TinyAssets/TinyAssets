@@ -62,10 +62,10 @@ class BoxRoute:
 def resolve_box(owner: str, *, cleanup=False) -> BoxRoute:
     from tinyassets.boxes.daemon_control import request
     from tinyassets.broker.owner_identities import owner_box_route
-    from tinyassets.router_credentials import DeletedOwners
+    from tinyassets.erasure_ledger import ErasureLedger
     from tinyassets.storage import data_dir
 
-    if not cleanup and DeletedOwners(data_dir()).contains(owner):
+    if not cleanup and ErasureLedger(data_dir()).contains(owner):
         raise LookupError("owner account is deleted")
     result = request("resolve", owner, cleanup=cleanup)
     if (set(result) != {"uid", "lease"} or type(result["uid"]) is not int
@@ -219,9 +219,16 @@ async def forward(scope, receive, send, identity, route: BoxRoute):
 async def resume_deleted_accounts(root):
     """Retry durable deletions without requiring the deleted owner to sign in."""
     from tinyassets.auth.provider import Identity
-    from tinyassets.router_credentials import DeletedOwners
+    from tinyassets.erasure_ledger import ErasureLedger
 
-    for owner in await run_in_threadpool(DeletedOwners(root).pending):
+    for entry in await run_in_threadpool(ErasureLedger(root).pending):
+        owner = entry["principal"]
+        if owner is None:
+            import logging
+
+            logging.getLogger(__name__).error(
+                "erasure phases await principal recovery for digest %s", entry["digest"])
+            continue
         await delete_owner_account(Identity(user_id=owner, username=owner))
 
 
@@ -241,28 +248,33 @@ async def _delete_owner_account(identity):
     from tinyassets.billing.stripe_adapter import cancel_account_billing
     from tinyassets.broker.account_erasure import erase_account
     from tinyassets.broker.owner_identities import retire_owner
+    from tinyassets.erasure_ledger import ErasureLedger
     from tinyassets.router_account_deletion import delete_workos_user
-    from tinyassets.router_credentials import DeletedOwners, revoke_account, tombstone
+    from tinyassets.router_credentials import revoke_account, tombstone
     from tinyassets.storage import data_dir
 
     root, owner = data_dir(), identity.user_id
-    deleted = DeletedOwners(root)
+    deleted = ErasureLedger(root)
     receipt = None
     try:
         if await run_in_threadpool(deleted.contains, owner):
             receipt = await run_in_threadpool(deleted.receipt, owner)
         else:
+            await run_in_threadpool(tombstone, root, owner, {"local_cleanup": "pending"})
+            receipt = await run_in_threadpool(deleted.receipt, owner)
+
+        # The ledger fences sign-in before draining already-admitted work.
+        # A blocked drain stays retryable without requiring a new login.
+        if (receipt.get("local_cleanup") == "pending"
+                and "owner_tree" not in receipt.get("completed_phases", [])):
             route = await run_in_threadpool(resolve_box, owner, cleanup=True)
             response = await delete_box_data(identity, route)
             if response.status_code != 200:
                 return response
-            receipt = json.loads(response.body)
-            receipt["completed_phases"] = []
-            receipt["local_unfinished"] = receipt.get("unfinished_phases", [])
-            receipt["billing"] = receipt["identity"] = "pending"
-            receipt["unfinished_phases"] = [
-                "owner_tree", "broker_egress", "billing", "credentials", "identity"]
-            await run_in_threadpool(tombstone, root, owner, receipt)
+            local = json.loads(response.body)
+            receipt.update(local_cleanup="done",
+                           local_unfinished=local.get("unfinished_phases", []))
+            await run_in_threadpool(deleted.save_receipt, owner, receipt)
 
         receipt.setdefault("billing", "pending")
         receipt.setdefault("identity", "pending")

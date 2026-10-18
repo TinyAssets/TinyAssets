@@ -42,10 +42,11 @@ def main():
     authority = OutsideClientAuthority(root)
     with authority.db() as db:
         db.execute("INSERT OR REPLACE INTO outside_switch VALUES (1, 1)")
-    key = current_store().mint(owner, name="router acceptance", authority=authority,
-                                scopes=[{"universe": center, "agent": "main",
-                                         "capability": "read_graph"}])
-    (root / "key.json").write_text(json.dumps(key))
+    if "--deletion-only" not in sys.argv:
+        key = current_store().mint(owner, name="router acceptance", authority=authority,
+                                    scopes=[{"universe": center, "agent": "main",
+                                             "capability": "read_graph"}])
+        (root / "key.json").write_text(json.dumps(key))
     from starlette.responses import JSONResponse, StreamingResponse
     from starlette.routing import Route
 

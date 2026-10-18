@@ -16,14 +16,14 @@ from tests.test_onboarding_session_refresh import _drive, _ok
 from tests.test_workos_provider import _provider, _sign
 from tinyassets.auth import middleware
 from tinyassets.auth.provider import Identity
+from tinyassets.erasure_ledger import ErasureLedger
 from tinyassets.onboarding import owner_sessions, session_store
-from tinyassets.router_credentials import DeletedOwners
 
 
 @pytest.fixture
 def deleted(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    DeletedOwners(tmp_path).add("alice", {"home_removed": False})
+    ErasureLedger(tmp_path).add("alice", {"home_removed": False})
     return tmp_path
 
 
@@ -126,7 +126,7 @@ def test_existing_refresh_handle_and_rotation_refuse_after_tombstone(tmp_path, m
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     handle = session_store.mint("refresh", owner="alice")
     assert session_store.read(handle)[0] == "refresh"
-    DeletedOwners(tmp_path).add("alice", {})
+    ErasureLedger(tmp_path).add("alice", {})
     assert session_store.rotate(handle, "new-refresh") == ""
     assert session_store.read(handle) == ("", "")
 
@@ -134,7 +134,7 @@ def test_existing_refresh_handle_and_rotation_refuse_after_tombstone(tmp_path, m
 def test_deleted_refresh_handle_is_explained_without_contacting_workos(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     handle = session_store.mint("refresh", owner="alice")
-    DeletedOwners(tmp_path).add("alice", {})
+    ErasureLedger(tmp_path).add("alice", {})
     status, body, cookies, calls = _drive(
         {"grant_type": "refresh_token", "session_ref": handle},
         data_dir=str(tmp_path), monkeypatch=monkeypatch,
@@ -160,13 +160,13 @@ def test_local_oauth_authorize_exchange_and_bearer_are_fenced(
     challenge = base64.urlsafe_b64encode(digest).decode().rstrip("=")
     code = provider.create_authorization(client, redirect, "read", "", challenge, "S256")
     if deleted_before_exchange:
-        DeletedOwners(tmp_path).add("alice", {})
+        ErasureLedger(tmp_path).add("alice", {})
     tokens = provider.exchange_code(code, client, redirect, verifier)
     if deleted_before_exchange:
         assert tokens is None
     else:
         assert provider.resolve_token(tokens["access_token"]) is not None
-        DeletedOwners(tmp_path).add("alice", {})
+        ErasureLedger(tmp_path).add("alice", {})
         assert provider.resolve_token(tokens["access_token"]) is None
     with pytest.raises(ValueError, match="Account deleted"):
         provider.create_authorization(client, redirect, "read", "", challenge, "S256")
@@ -175,7 +175,7 @@ def test_local_oauth_authorize_exchange_and_bearer_are_fenced(
 def test_router_startup_resumes_durable_deletion_without_sign_in(deleted, monkeypatch):
     from tinyassets import owner_router, router_credentials
 
-    tombstones = DeletedOwners(deleted)
+    tombstones = ErasureLedger(deleted)
     tombstones.save_receipt("alice", {"unfinished_phases": ["billing"]})
     monkeypatch.setattr(router_credentials, "credential_socket", lambda _: deleted / "c.sock")
 
@@ -184,7 +184,8 @@ def test_router_startup_resumes_durable_deletion_without_sign_in(deleted, monkey
 
         async def cleanup(identity):
             assert identity.user_id == "alice"
-            tombstones.save_receipt("alice", {"unfinished_phases": []})
+            from tinyassets.erasure_ledger import PHASES
+            tombstones.save_receipt("alice", {"completed_phases": list(PHASES)})
             resumed.set()
 
         monkeypatch.setattr(owner_router, "delete_owner_account", cleanup)
@@ -198,11 +199,14 @@ def test_router_startup_resumes_durable_deletion_without_sign_in(deleted, monkey
 def test_quarantine_retry_cancels_billing_without_claiming_erasure(deleted, monkeypatch):
     from tinyassets.owner_router import resume_deleted_accounts
 
-    tombstones = DeletedOwners(deleted)
+    tombstones = ErasureLedger(deleted)
     tombstones.save_receipt("alice", {
         "home_removed": False, "quarantines": ["root-private-quarantine"],
         "completed_phases": ["broker_egress", "credentials"],
         "unfinished_phases": ["owner_tree", "billing", "identity"]})
+    from tinyassets.erasure_ledger import principal_digest
+    tombstones.execute("work", {"digest": principal_digest("alice"), "target": {
+        "uid": 300001, "store": "/synthetic/owners", "quarantine": "/synthetic/q/300001"}})
     monkeypatch.setattr("tinyassets.broker.owner_identities.retire_owner",
                         lambda *a, **k: pytest.fail("quarantine is not the live tree"))
     monkeypatch.setattr("tinyassets.billing.stripe_adapter.cancel_account_billing",

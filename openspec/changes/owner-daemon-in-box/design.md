@@ -1,8 +1,8 @@
 # Design: the owner's daemon in the owner's box
 
-## Restore: pre-traffic exact, post-traffic disaster
+## Restore: pre-traffic rollback, post-traffic disaster
 
-Normal restore exists only for pre-traffic cutover rollback and restores the verified backup pair exactly, without inspecting live owner stores; its only live authority is the root-owned `.layout.json` and `.router-traffic.sqlite3` at fixed paths on the shared data root, outside every owner tree.
+Normal restore exists only for pre-traffic cutover rollback. It restores the verified backup pair except for the monotonic erasure ledger, whose live and staged events are unioned. Its admission proof remains root-owned `.layout.json` and `.router-traffic.sqlite3`; no owner-writable state is restore authority.
 Any set `traffic_opened_at` (including one newer than the backup) or `credentials_after` refuses with exit 4 and directs the operator to disaster recovery; a missing or unreadable marker refuses unless readable layout proves an unfinished pre-traffic cutover, and missing or unreadable layout too always refuses.
 After traffic, only acknowledged disaster recovery is allowed, and its operation fences live in platform-owned state exposed read-only to boxes, never in owner-writable journals or receipt databases.
 
@@ -53,23 +53,35 @@ Operation fences:
 - `.broker/ops.db:meta.cutoff_ms`: advance past restore time plus the broker's
   maximum admitted future skew; admission rejects old ULIDs before receipt lookup.
 
-Erasure is the ONE carried fact class. Union tombstones from every readable
-router `deleted_owners`, broker `owner_box_revocations`, custody
-`deleted_principals`, and host `owner_destroys`, including the backup. Reconcile
-restored identities through the WorkOS adapter: an absent user is erased, an
-indeterminate response refuses. A pre-cutover owner-split pair is not a disaster
-source: it needs forward migration,
-which disaster restore does not perform. Require an owner-box pair after traffic.
-Choose erasure for identities present only in readable live platform state and absent
-from the backup. Retain their erased permanent UID reservations so quarantine
-projects cannot be reassigned. Never carry newer content into restored boxes.
-Destroy erased staged and live owner trees before publication with an iterative,
-descriptor-relative walker. An individual erasure failure retains the router and
-broker tombstones and atomically detaches the tree into a fresh root-owned 0700
-quarantine outside the active owner namespace. Report its UID, failure type and
-retry path loudly; other owners still recover and the erased box never starts.
-Retained live quota clearing uses permanent UID/project IDs, not the backup registry.
-Tests inject the adapter seam and never call the network.
+Erasure has ONE source of truth: root-owned 0600 `.erasure-ledger.sqlite3` at
+the fixed shared data root, outside every owner tree. The data root is root:1001
+01775 so the router can create its own files but cannot replace root authority;
+SQLite sidecars must also be root-private. Its append-only events
+are keyed by sha256(principal), matching broker custody. Boxhostd serves ledger
+reads and phase receipts over its authenticated control socket; only root writes
+the file. Plaintext principals are retained there only for external cleanup.
+Account deletion appends the entry before any deletion phase. Each completed
+phase (home_removed, broker custody, billing, credentials, identity) is recorded.
+
+Both normal rollback and disaster recovery union live (when readable) and staged
+ledger events, never remove an entry, and retain all unfinished cleanup targets
+across arbitrarily many restores. Every restored home creates a new obligation;
+old receipts cannot discharge new work. Quarantine destinations are recorded
+before rename. Post-publication cleanup and every boxhost start retry all pending
+home and quarantine paths with the descriptor-relative walker. home_removed is
+true only after every recorded target and owner destruction have completed.
+Restore reports are diagnostics, never retry authority. Router retries select
+all ledger entries with unfinished phases, with no restore_pending or identity-row
+filter. An unmapped digest remains fenced and pending. Every authentication door
+checks sha256(principal) directly against the ledger.
+
+Cutover seeds the ledger from router tombstones, custody deletion digests,
+boxhost owner_destroys and broker revocations before removing the legacy router
+tombstone store. Custody and boxhost facts remain local enforcement only.
+Disaster recovery also reconciles WorkOS absence and erases post-backup owners,
+retaining permanent UID reservations. Uncertain provider results refuse recovery.
+Pre-cutover pairs require forward migration and cannot be disaster sources.
+Tests use synthetic adapters and never call production providers.
 
 Reconcile plan and billing suspension through the Stripe adapter where configured,
 using the webhook's permanent subscription/customer-to-owner resolver for signed
@@ -175,8 +187,8 @@ adding a check in shared code.
 - **Credential channel.** The existing per-box relay adds `ROUTER_CREDENTIAL`; only its `bind()` supplies owner/uid, the broker checks live admission and forwards to a broker-uid-only router socket under `.runtime`; the router is the only key/hook-map writer, using the existing runtime group without host provisioning.
 - **API key authority.** Owner-mode mint/list/revoke use the channel, with no box key database; grants remain local, a failed grant invalidates the newly minted router key, and a request reference never replays its secret.
 - **Hook ordering.** The router mints hook tokens; the box stores only the digest and delivery configuration; all three revocation paths invalidate the router map before the local row, and failed local creation revokes the router token.
-- **Deleted accounts never mint again.** The shared door owns `/app/account/delete`: authenticated identity, same-origin JSON and `confirm == "DELETE"`. It forwards to the secret-authenticated `/_box/account/delete` route, which deletes only box-local data and returns its receipt (blocked/refused outcomes stop the orchestration). The door then stores the receipt with `DeletedOwners.add` under the credential dispatch lock, fencing all new mints. A retry with a tombstone resumes every unfinished shared phase from the durable receipt; the tombstone refuses new work, never cleanup.
-- **Retirement ends the box's secret** (slice 4): after the local drain and sweep and the shared tombstone, the door retires all owner center admissions through the fenced broker. The broker permanently revokes box admission and requires boxhostd to stop the box, destroy its entire volume and quota limits, and remove its relay/app socket directories and secret. The door records broker custody erasure, owner-keyed billing cancellation and plan update, router credential revocation, then external identity deletion. Billing runs even if destruction fails; identity survives until earlier cleanup completes so the owner can retry. Only a complete receipt returns success. Every failed step stays loud and retryable after the tombstone. There is no box-to-router account-revoke operation; a stale forward fails at ingress.
+- **Deleted accounts never mint again.** The shared door owns `/app/account/delete`: authenticated identity, same-origin JSON and `confirm == "DELETE"`. The door first appends its digest entry to the root-owned erasure ledger under the credential dispatch lock, fencing sign-in and new mints. It then forwards to the secret-authenticated `/_box/account/delete` route for drain and local cleanup. Blocked/refused outcomes retain the fence and unfinished ledger work for automatic retry. A retry with a tombstone resumes every unfinished shared phase from the durable receipt; the tombstone refuses new work, never cleanup.
+- **Retirement ends the box's secret** (slice 4): after the ledger fence and local drain and sweep, the door retires all owner center admissions through the fenced broker. The broker permanently revokes box admission and requires boxhostd to stop the box, destroy its entire volume and quota limits, and remove its relay/app socket directories and secret. The door records broker custody erasure, owner-keyed billing cancellation and plan update, router credential revocation, then external identity deletion. Billing runs even if destruction fails; identity survives until earlier cleanup completes so the owner can retry. Only a complete receipt returns success. Every failed step stays loud and retryable after the tombstone. There is no box-to-router account-revoke operation; a stale forward fails at ingress.
 - **Single identity.** A valid protected session and bearer must name the same owner or the router returns 401 before resolving any box.
 - **Approval handoff.** `/app/approval-handoff[/<ref>]` is sign-in navigation whose rows live in the router's owner-sessions store, so it stays at the door. It is never forwarded.
 - **Bounded router rows.** Hook digests are capped per owner with an atomic count-and-insert. Revoked key rows beyond the newest 100 per owner are pruned, with their rate counters. Live keys keep the existing cap of 25.
@@ -465,8 +477,8 @@ are described in the 3c-2 as-built contract above.
   acknowledgment: prove stop, erase the complete XFS owner tree without following
   links or mounts, clear quota limits, remove relay/app socket directories and
   the secret. Every part is idempotent, including after broker tombstoning.
-  The door serializes deletion attempts and stores a durable shared receipt after
-  the local sweep. It records destruction, broker custody erasure, owner-keyed
+  The door serializes deletion attempts and appends the ledger entry before
+  the local sweep, recording that phase before retirement. It records destruction, broker custody erasure, owner-keyed
   Stripe cancellation plus shared plan update through BILLING_PLAN, router
   credential revocation, and existing WorkOS identity deletion. The door imports identity
   erasure from `router_account_deletion`; billing uses the owner-keyed
@@ -640,9 +652,9 @@ without an engine socket. Task 6 remains open for the lead's archive run and
 the remaining acceptance, regardless of synthetic results.
 
 `box_layout_migration` is the sole cutover module.
-Host admission reads deletion tombstones from the canonical broker custody
-database (`deleted_principals.digest`); it must not reopen the retired shared
-owner table. Missing custody state still refuses admission and destruction.
+Host admission reads the canonical root-owned erasure ledger by principal digest.
+Broker custody digests and boxhost destruction rows provide local enforcement;
+neither selects retries or overrides ledger authority.
 Seeding creates the broker-owned credential directory even when no HTTP
 credentials survive, so a source-free owner can reconnect after cutover.
 Provider definitions remain private owner files (0600); registration already
@@ -848,8 +860,8 @@ author's box and a published copy in commons. This matches runtime publication:
 local published definitions per owner separately from exclusive source placement.
 Apply verifies local workflow references before publishing its completed marker.
 
-Restore follows **Restore: pre-traffic exact, post-traffic disaster** above.
-Normal cutover rollback restores the original pair exactly. Disaster recovery
+Restore follows **Restore: pre-traffic rollback, post-traffic disaster** above.
+Normal cutover rollback restores the original pair while unioning the erasure ledger. Disaster recovery
 resets credentials and fences operations before any box starts.
 
 The migration classifies every table of every shared root database:
@@ -993,16 +1005,17 @@ Webhooks resolve the permanent session mapping; deletion queries every retained
 mapping before declaring billing absent. Settlement never deletes the mapping.
 Malformed or conflicting mappings refuse census.
 
-The router tombstone fences checkout creation, serialized with in-flight checkout
+The erasure ledger fences checkout creation, serialized with in-flight checkout
 and webhook processing. Billing cleanup expires outstanding sessions through the
 Stripe adapter, confirms any resulting subscription cancelled, and records a
 distinct expired-attempt outcome. A subscription delivery for a tombstoned owner
 immediately cancels and records that subscription. Deletion succeeds only after
 no payable checkout or live subscription remains; uncertain outcomes stay retryable.
 
-Restore authority includes router deletion receipts and owner-box revocations.
-Newer deletion facts are carried into staging; erased trees are destroyed or
-root-quarantined before publication.
+Both restores union ledger events into staging. Post-publication cleanup and
+boxhost startup retry all recorded homes and quarantines. Permanent erased UID
+reservations are carried even without live identity rows; conflicting reservations
+refuse restore. Forward migration records new obligations for copied erased homes.
 Lifecycle maintenance contains suspension, refusal and authentication failures per
 owner, reports an explicit suspended outcome and stops/refuses only that box.
 The authenticated door deletion flow alone may request deletion-only lifecycle

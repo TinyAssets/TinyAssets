@@ -143,6 +143,9 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
     add(".api-keys.sqlite3", "api_keys api_key_request_counts", "router")
     add(".hook-owners.sqlite3", "hook_owners", "router")
     add(".router-deleted-owners.sqlite3", "deleted_owners", "router")
+    add(".erasure-ledger.sqlite3", "events", "router")
+    # Shared host facts are preserved and seeded before root-private publication.
+    add(".boxhost/boxhost.db", "host boxes ops execs owner_destroys", "router")
     add(".runtime/owner-sessions.db", "owner_sessions owner_login_flows owner_login_completions "
         "owner_refresh_sessions owner_approval_handoffs canary_sign_in_attempts "
         "approval_handoffs inline_model_flows", "router")
@@ -1259,6 +1262,8 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
         if path in databases:
             return "database_files"
         name = relative.as_posix()
+        if name == ".boxhost/boxhost.lock":
+            return "regenerated"  # BoxHostState recreates its process lock.
         if name in shared:
             return shared[name]
         if any(name == database + suffix for database in CENSUS_RULES
@@ -2207,6 +2212,16 @@ def _build_cutover(data: Path, store: Path, journal: dict, *, apply_quotas=True)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
     _seed_shared(data, shared, inventory, report, plan)
+    from tinyassets.erasure_ledger import NAME, carry_forward
+    from tinyassets.restore_recovery import _identify_erased, _reserve_erasures, _schedule_trees
+
+    if (shared / NAME).exists():
+        os.chown(shared / NAME, 0, 0)
+        (shared / NAME).chmod(0o600)
+    ledger = carry_forward(data, shared)
+    _identify_erased(ledger, data, shared)
+    _reserve_erasures(ledger, shared)
+    _schedule_trees(ledger, [store])
     _crash_at("after_seeding")
     from tinyassets.boxes.layout import BROKER_READ_GID, BROKER_UID, DAEMON_UID
     from tinyassets.boxes.state import BoxHostState
@@ -2235,13 +2250,22 @@ def _build_cutover(data: Path, store: Path, journal: dict, *, apply_quotas=True)
                    {".broker", ".platform", ".published"} else DAEMON_UID)
             if relative == (".platform",):
                 uid = DAEMON_UID
+            if relative and relative[0] == ".boxhost":
+                uid = 0
             gid = BROKER_READ_GID if relative and relative[0] == ".published" else uid
             os.chown(path, uid, gid)
-            private = relative and relative[0] in {".broker", ".platform", ".connect"}
+            private = relative and relative[0] in {".broker", ".platform", ".connect", ".boxhost"}
             mode = 0o700 if private else 0o750
             if relative == (".platform",):
                 mode = 0o711
             os.chmod(path, mode if path.is_dir() else (0o600 if private else 0o640))
+    from tinyassets.erasure_ledger import protect_root
+
+    ledger = shared / ".erasure-ledger.sqlite3"
+    if ledger.exists():
+        protect_root(shared)
+        os.chown(ledger, 0, 0)
+        ledger.chmod(0o600)
     fence = shared / ".restore-epoch"
     fence.write_text("")
     os.chown(fence, 0, 0)
@@ -2274,7 +2298,11 @@ def _build_cutover(data: Path, store: Path, journal: dict, *, apply_quotas=True)
 
 
 def _publish_cutover(data: Path, store: Path, journal: dict) -> None:
+    from tinyassets.erasure_ledger import protect_root
+
     shared = store / ".cutover-shared"
+    if (shared / ".erasure-ledger.sqlite3").exists():
+        protect_root(data)
     if _durable_tree(shared) != journal["shared"]:
         raise RuntimeError("staged shared manifest changed")
     for uid, manifest in journal["owner_manifests"].items():

@@ -235,14 +235,8 @@ class OwnerDaemons:
             raise ValueError("scheduled must be boolean")
         deadline = time.monotonic() + self.wake_timeout
         with self.condition:
-            admission = {}
-            try:
-                record = self.admission.owner(owner)
-            except (BoxSuspended, OwnerSuspended):
-                if not cleanup:
-                    raise
-                admission = {"deletion_only": True}
-                record = self.admission.owner(owner, **admission)
+            admission = {"deletion_only": True} if cleanup else {}
+            record = self.admission.owner(owner, **admission)
             uid = record["uid"]
             box = self.boxes.setdefault(uid, Box(owner, uid))
             if box.owner != owner:

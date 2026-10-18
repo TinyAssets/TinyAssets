@@ -108,7 +108,7 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(
     from tests.test_box_restore_authority import seed
     from tests.test_owner_cutover_apply import _restore_paired
     from tinyassets.boxes.state import BoxHostState
-    from tinyassets.router_credentials import DeletedOwners
+    from tinyassets.erasure_ledger import ErasureLedger
 
     data, store = tmp_path / "volume/_data", tmp_path / "owners"
     seed(data)
@@ -134,7 +134,7 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(
         planted.parent.mkdir(parents=True, exist_ok=True)
         planted.write_bytes(b"owner content, not a database authority")
     # Bob's erasure and an already revoked key are known in the backup.
-    DeletedOwners(data).add("bob", {})
+    ErasureLedger(data).add("bob", {})
     _sql(data / ".api-keys.sqlite3", """
         CREATE TABLE api_keys (id TEXT PRIMARY KEY, revoked_at REAL);
         INSERT INTO api_keys VALUES ('revoked-before-backup',42);
@@ -164,7 +164,7 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(
     (data / ".layout.json").write_text("unreadable layout")
     (data / ".broker/credential-custody.db").write_bytes(b"lost database")
     (store / "300003/.owner-boxd/boxhost.db").write_bytes(b"lost journal")
-    DeletedOwners(data).add("carol", {})
+    ErasureLedger(data).add("carol", {})
     _sql(data / ".api-keys.sqlite3",
          "UPDATE api_keys SET revoked_at=84 WHERE id='revoked-after-backup'")
     journal = BoxHostState(store / "300001/.owner-boxd/boxhost.db")
@@ -250,8 +250,7 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(
         from tinyassets.boxes.provider import BoxAuthError
         from tinyassets.restore_recovery import finish_erasures
 
-        report = json.loads((data / ".disaster-restore.json").read_text())
-        assert report["pending_erasures"]
+        assert any(entry["work"] for entry in ErasureLedger(data).entries())
         assert (store / "300003").exists()  # interrupted before the second owner
         registry = OwnerRegistry(data, tmp_path / "must-not-connect.sock")
         for owner in ("bob", "carol", "later"):
@@ -265,7 +264,7 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(
 
         def ready(owner_store):
             assert owner_store == store
-            assert not json.loads((data / ".disaster-restore.json").read_text())["pending_erasures"]
+            assert not any(entry["work"] for entry in ErasureLedger(data).entries())
             raise StopIteration("startup reached admission after cleanup")
 
         with monkeypatch.context() as startup:
@@ -287,20 +286,20 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(
         finished = _fingerprint(data), _fingerprint(store)
         finish_erasures(data)
         assert (_fingerprint(data), _fingerprint(store)) == finished
-        assert not json.loads((data / ".disaster-restore.json").read_text())["pending_erasures"]
+        assert not any(entry["work"] for entry in ErasureLedger(data).entries())
         for uid in (300002, 300003, 300004):
             assert not (store / str(uid)).exists()
             assert not list(store.glob(f".tinyassets-box-restore-old.*/{uid}"))
         if fault == "quarantine_crash":
-            assert list(store.glob(".tinyassets-erasure-quarantine.*/300002/note"))
-            assert not DeletedOwners(data).receipt("bob")["home_removed"]
+            assert not list(store.glob(".tinyassets-erasure-quarantine.*/300002/note"))
+            assert ErasureLedger(data).receipt("bob")["home_removed"]
         return
     assert "restore complete. Data installed" in completed.stdout
     assert not (store / "300002").exists()  # backup erasure
     assert not (store / "300003").exists()  # surviving erasure
     assert not (store / "300004").exists()  # post-backup owner erased
-    assert DeletedOwners(data).contains("later")
-    assert DeletedOwners(data).contains("bob")
+    assert ErasureLedger(data).contains("later")
+    assert ErasureLedger(data).contains("bob")
     from tinyassets.owner_router import resolve_box
 
     with monkeypatch.context() as admission:
@@ -334,8 +333,8 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(
             assert quarantine.is_dir()
             assert quarantine.parent.stat().st_uid == 0
             assert quarantine.parent.stat().st_mode & 0o777 == 0o700
-        assert not DeletedOwners(data).receipt("bob")["home_removed"]
-        assert not DeletedOwners(data).receipt("later")["home_removed"]
+        assert not ErasureLedger(data).receipt("bob")["home_removed"]
+        assert not ErasureLedger(data).receipt("later")["home_removed"]
         assert all(Path(item["quarantine"]).is_relative_to(store)
                    for item in report["erasure_failures"])
         assert '"erasure_failures": [{' in completed.stdout

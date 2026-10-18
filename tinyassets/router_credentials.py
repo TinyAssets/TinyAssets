@@ -7,19 +7,18 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import os
 import re
 import secrets
 import socket
 import sqlite3
 import threading
-import time
 from contextlib import asynccontextmanager, closing
 from pathlib import Path
 
 from tinyassets import rpc_frames as rf
 from tinyassets.boxes.layout import BROKER_READ_GID, BROKER_UID, DAEMON_UID
+from tinyassets.erasure_ledger import ErasureLedger
 
 #: Router rows one owner may hold, so no box can grow the shared map unbounded.
 MAX_HOOKS_PER_OWNER = 200
@@ -29,70 +28,11 @@ MAX_HOOKS_PER_OWNER = 200
 _DISPATCH = threading.Lock()
 
 
-class DeletedOwners:
-    """Durable tombstones: a deleted account's box can never mint again."""
-
-    def __init__(self, root: Path):
-        from tinyassets.owner_runtime import refuse_router_store
-
-        refuse_router_store("deleted_owners")
-        self.path = root / ".router-deleted-owners.sqlite3"
-
-    def add(self, owner: str, receipt: dict | None = None):
-        with closing(sqlite3.connect(self.path)) as db, db:
-            db.execute("PRAGMA synchronous=FULL")
-            db.execute("CREATE TABLE IF NOT EXISTS deleted_owners ("
-                       "owner TEXT PRIMARY KEY, deleted_at REAL NOT NULL, receipt TEXT)")
-            if "receipt" not in {row[1] for row in db.execute("PRAGMA table_info(deleted_owners)")}:
-                db.execute("ALTER TABLE deleted_owners ADD COLUMN receipt TEXT")
-            db.execute("INSERT OR IGNORE INTO deleted_owners (owner, deleted_at, receipt) "
-                       "VALUES (?, ?, ?)",
-                       (owner, time.time(), json.dumps(receipt)))
-
-    def contains(self, owner: str) -> bool:
-        if not self.path.exists():
-            return False
-        with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)) as db:
-            return db.execute("SELECT 1 FROM deleted_owners WHERE owner=?",
-                              (owner,)).fetchone() is not None
-
-    def pending(self) -> list[str]:
-        if not self.path.exists():
-            return []
-        with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)) as db:
-            rows = db.execute("SELECT owner,receipt FROM deleted_owners").fetchall()
-        return [owner for owner, raw in rows
-                if isinstance(receipt := json.loads(raw or "null"), dict)
-                and receipt.get("unfinished_phases") and not receipt.get("restore_pending")]
-
-    def receipt(self, owner: str) -> dict:
-        with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)) as db:
-            row = db.execute("SELECT receipt FROM deleted_owners WHERE owner=?",
-                             (owner,)).fetchone()
-        if row is None or not isinstance(receipt := json.loads(row[0]), dict):
-            raise RuntimeError("account deletion receipt unavailable")
-        return receipt
-
-    def save_receipt(self, owner: str, receipt: dict):
-        with closing(sqlite3.connect(self.path)) as db, db:
-            db.execute("PRAGMA synchronous=FULL")
-            db.execute("BEGIN IMMEDIATE")
-            previous = db.execute("SELECT receipt FROM deleted_owners WHERE owner=?",
-                                  (owner,)).fetchone()
-            if previous:
-                # A late billing delivery may finish between orchestration phases.
-                cleanup = (json.loads(previous[0]) or {}).get("billing_cleanup", {})
-                receipt["billing_cleanup"] = {**cleanup, **receipt.get("billing_cleanup", {})}
-            if db.execute("UPDATE deleted_owners SET receipt=? WHERE owner=?",
-                          (json.dumps(receipt), owner)).rowcount != 1:
-                raise RuntimeError("account deletion tombstone missing")
-
-
 def active_owner(owner: str, root: Path | None = None) -> bool:
     """One identity fence shared by every router authentication entry point."""
     from tinyassets.storage import data_dir
 
-    if DeletedOwners(root if root is not None else data_dir()).contains(owner):
+    if ErasureLedger(root if root is not None else data_dir()).contains(owner):
         from tinyassets.auth.workos_provider import _log_token_rejection
 
         _log_token_rejection("account_deleted")
@@ -179,7 +119,7 @@ def dispatch(root: Path, owner: str, request: dict) -> dict:
     if not isinstance(request, dict):
         raise ValueError("invalid credential operation")
     with _DISPATCH:
-        deleted = DeletedOwners(root)
+        deleted = ErasureLedger(root)
         if deleted.contains(owner):
             raise PermissionError("owner account is deleted")
         return _dispatch(root, owner, request)
@@ -189,7 +129,7 @@ def tombstone(root: Path, owner: str, receipt: dict):
     from tinyassets.billing.lifecycle import lock
 
     with lock, _DISPATCH:
-        DeletedOwners(root).add(owner, receipt)
+        ErasureLedger(root).add(owner, receipt)
 
 
 def revoke_account(root: Path, owner: str):
@@ -197,7 +137,7 @@ def revoke_account(root: Path, owner: str):
     from tinyassets.api_keys import ApiKeyStore
 
     with _DISPATCH:
-        if not DeletedOwners(root).contains(owner):
+        if not ErasureLedger(root).contains(owner):
             raise RuntimeError("account deletion requires a tombstone")
         _revoke_account(root, owner, ApiKeyStore(root))
 

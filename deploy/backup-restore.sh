@@ -626,7 +626,7 @@ BOX_STAGE=''
 sync -f "$VOLUME_PARENT"
 if [[ -n "${BOX_NAME:-}" ]]; then sync -f "$BOX_STORE_DIR"; fi
 
-if [[ "$DISASTER_RESTORE" == 1 ]]; then
+if [[ -n "${BOX_NAME:-}" ]]; then
     if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
             --finish-erasures "$VOLUME_DIR"; then
         log "ERROR: published recovery cleanup pending; boxhostd will resume before admission"

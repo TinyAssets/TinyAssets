@@ -64,13 +64,17 @@ def fingerprint(root):
     return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
 
 
-def test_normal_restore_is_exact_and_does_not_carry_rows(tmp_path):
+def test_normal_restore_carries_erasure_only(tmp_path):
     current, staged, live, trees = paired(tmp_path)
     with sqlite3.connect(current / ".broker/state/owner-identities.db") as db:
         db.execute("INSERT INTO owner_box_revocations VALUES ('alice',1)")
     before = fingerprint(staged), fingerprint(trees)
     restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)
-    assert (fingerprint(staged), fingerprint(trees)) == before
+    from tinyassets.erasure_ledger import NAME, ErasureLedger
+
+    assert ErasureLedger(staged).contains("alice")
+    assert ({k: v for k, v in fingerprint(staged).items() if k != NAME},
+            fingerprint(trees)) == before
 
 
 @pytest.mark.parametrize("layout", [None, {"split": "owner-split", "state": "stable"}])
@@ -95,13 +99,13 @@ def test_clear_retained_quotas_needs_no_registry_for_post_backup_owner(tmp_path,
 
 
 def test_disaster_erases_post_backup_identity(tmp_path, monkeypatch):
-    from tinyassets.router_credentials import DeletedOwners
+    from tinyassets.erasure_ledger import ErasureLedger
 
     current, staged, live, trees = paired(tmp_path)
     with sqlite3.connect(current / ".broker/state/owner-identities.db") as db:
         db.execute("INSERT INTO owner_identities VALUES ('later',300002)")
     report = disaster(current, staged, trees, monkeypatch)
-    assert DeletedOwners(staged).contains("later")
+    assert ErasureLedger(staged).contains("later")
     assert report["erased_owners"] == 1
     assert report["owners_reconciled"] == 1
     with sqlite3.connect(staged / ".broker/state/owner-identities.db") as db:
@@ -110,16 +114,17 @@ def test_disaster_erases_post_backup_identity(tmp_path, monkeypatch):
 
 
 def test_completed_restore_never_rewrites_later_deletion_receipts(tmp_path, monkeypatch):
+    from tinyassets.erasure_ledger import ErasureLedger
     from tinyassets.restore_recovery import finish_erasures
-    from tinyassets.router_credentials import DeletedOwners
 
     current, staged, live, trees = paired(tmp_path)
     disaster(current, staged, trees, monkeypatch)
     finish_erasures(staged)
-    deleted = DeletedOwners(staged)
+    deleted = ErasureLedger(staged)
     receipt = {"home_removed": False, "unfinished_phases": ["owner_tree"],
                "completed_phases": ["billing", "identity"]}
     deleted.add("alice", receipt)
+    receipt = deleted.receipt("alice")
     before = fingerprint(staged)
     finish_erasures(staged)
     assert deleted.receipt("alice") == receipt
@@ -127,11 +132,11 @@ def test_completed_restore_never_rewrites_later_deletion_receipts(tmp_path, monk
 
 
 def test_missing_owner_store_does_not_complete_published_erasures(tmp_path, monkeypatch):
+    from tinyassets.erasure_ledger import ErasureLedger
     from tinyassets.restore_recovery import finish_erasures
-    from tinyassets.router_credentials import DeletedOwners
 
     current, staged, live, trees = paired(tmp_path)
-    DeletedOwners(current).add("alice", {})
+    ErasureLedger(current).add("alice", {})
     disaster(current, staged, trees, monkeypatch)
     detached = tmp_path / "detached-store"
     live.rename(detached)
@@ -140,7 +145,7 @@ def test_missing_owner_store_does_not_complete_published_erasures(tmp_path, monk
         finish_erasures(staged)
     assert not live.exists()
     assert (fingerprint(staged), fingerprint(detached)) == before
-    assert json.loads((staged / ".disaster-restore.json").read_text())["pending_erasures"]
+    assert any(entry["work"] for entry in ErasureLedger(staged).pending())
 
 
 def test_disaster_reports_unreadable_live_identity_source(tmp_path, monkeypatch):
@@ -222,14 +227,20 @@ def test_normal_never_opens_owner_or_sidecar_content(tmp_path, monkeypatch):
     real_open, real_connect = Path.open, sqlite3.connect
 
     def only_marker(path, *args, **kwargs):
-        assert ".router-traffic.sqlite3" in str(path)
+        assert Path(str(path).split("?")[0]).name in {
+            ".router-traffic.sqlite3", "credential-custody.db", "owner-identities.db",
+            "boxhost.db", ".erasure-ledger.sqlite3"}
         return real_connect(path, *args, **kwargs)
 
     def only_layout(path, *args, **kwargs):
         if path.is_relative_to(tmp_path):
-            assert path in {current / ".layout.json", current / ".router-traffic.sqlite3"}
+            assert any(path in {root / name for name in (
+                ".layout.json", ".router-traffic.sqlite3", ".broker/credential-custody.db",
+                ".broker/state/owner-identities.db", ".boxhost/boxhost.db")}
+                for root in (current, staged))
         else:
-            assert path.name == ".router-traffic.sqlite3"
+            assert path.name in {".router-traffic.sqlite3", "credential-custody.db",
+                                 "owner-identities.db", "boxhost.db"}
             assert path.parent.name.startswith("tinyassets-sqlite-read-")
         return real_open(path, *args, **kwargs)
 
@@ -411,11 +422,11 @@ def test_disaster_erasure_union_and_identity_reconciliation(tmp_path, monkeypatc
     monkeypatch.setattr("os.chown", lambda *args, **kwargs: None)
     import hashlib
 
+    from tinyassets.erasure_ledger import ErasureLedger
     from tinyassets.restore_recovery import erasures
-    from tinyassets.router_credentials import DeletedOwners
     current, staged, live, trees = paired(tmp_path)
     if source == "router":
-        DeletedOwners(current).add("alice", {})
+        ErasureLedger(current).add("alice", {})
     elif source == "broker":
         with sqlite3.connect(current / ".broker/state/owner-identities.db") as db:
             db.execute("INSERT INTO owner_box_revocations VALUES ('alice',1)")
@@ -428,7 +439,7 @@ def test_disaster_erasure_union_and_identity_reconciliation(tmp_path, monkeypatc
         state.begin_owner_destroy("alice", "erase", 300001, "a")
         state.close()
     assert erasures(current, staged, identity_exists=lambda owner: source != "workos") == {300001}
-    assert DeletedOwners(staged).contains("alice")
+    assert ErasureLedger(staged).contains("alice")
 
 
 def test_workos_seam_distinguishes_absent_from_unavailable(monkeypatch):

@@ -67,7 +67,7 @@ def restore_replay_probe(mode: str) -> int:
     from tinyassets.agent_loop.owner_tools import OwnerTools
     from tinyassets.boxes.boxd import OwnerBoxd
     from tinyassets.boxes.provider import BoxError
-    from tinyassets.router_credentials import DeletedOwners
+    from tinyassets.erasure_ledger import ErasureLedger
 
     data, store, backup = Path("/data"), Path("/box-store"), Path("/backup/replay")
     backup.mkdir(exist_ok=True)
@@ -175,7 +175,7 @@ def restore_replay_probe(mode: str) -> int:
         report = json.loads((data / ".disaster-restore.json").read_text())
         if report["owners_reconciled"] != len(owners):
             raise RuntimeError("not every surviving owner was reconciled")
-        if (store / "399999").exists() or not DeletedOwners(data).contains("restore-erased"):
+        if (store / "399999").exists() or not ErasureLedger(data).contains("restore-erased"):
             raise RuntimeError("restored erased owner returned")
         from tinyassets.api_keys import ApiKeyStore
         from tinyassets.broker.ops import OpStore

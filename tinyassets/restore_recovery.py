@@ -1,7 +1,6 @@
 """Offline paired restore: exact before traffic, reset authority after disaster."""
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import secrets
@@ -55,7 +54,8 @@ def _read(root, relative):
         return result
 
 
-def normal_preflight(current, staged, owners, *, backup_time, restored_owners=None):
+def normal_preflight(current, staged, owners, *, backup_time, restored_owners=None,
+                     retained_owners=None):
     """Only platform traffic/layout evidence authorizes pre-traffic rollback."""
     from tinyassets.router_traffic import NAME
 
@@ -79,102 +79,101 @@ def normal_preflight(current, staged, owners, *, backup_time, restored_owners=No
         if not unfinished:
             raise ValueError("live marker/layout cannot prove pre-traffic cutover; "
                              "use the disaster path") from None
+        _carry_rollback(current, staged, owners, retained_owners)
         return
     if opened is not None or credentials_after:
         raise ValueError("normal restore refuses traffic_opened_at or credentials_after; "
                          "use the disaster path")
+    _carry_rollback(current, staged, owners, retained_owners)
+
+
+def _carry_rollback(current, staged, owners, retained_owners):
+    from tinyassets.erasure_ledger import carry_forward
+
+    ledger = carry_forward(current, staged)
+    _identify_erased(ledger, current, staged)
+    _reserve_erasures(ledger, staged)
+    _schedule_trees(ledger, [owners, retained_owners] if retained_owners else [owners])
 
 
 def _rows(root, relative, table):
     return _read(root, relative).get(table, (None, [], [], []))[3]
 
 
-def erasures(current, staged, *, identity_exists, unavailable_sources=None):
-    """The sole carried fact: union readable tombstones, then ask the identity seam."""
-    sources = (
-        (".router-deleted-owners.sqlite3", "deleted_owners"),
-        (".broker/state/owner-identities.db", "owner_box_revocations"),
-        (".broker/credential-custody.db", "deleted_principals"),
-        (".boxhost/boxhost.db", "owner_destroys"),
-    )
-    unavailable_sources = [] if unavailable_sources is None else unavailable_sources
-    erased, digests, machines = set(), set(), set()
+def _identify_erased(ledger, current, staged, identity_exists=None, unavailable_sources=None):
+    from tinyassets.erasure_ledger import principal_digest
+
     identities = _rows(staged, ".broker/state/owner-identities.db", "owner_identities")
     try:
-        live_identities = _rows(current, ".broker/state/owner-identities.db", "owner_identities")
+        live = _rows(current, ".broker/state/owner-identities.db", "owner_identities")
     except (OSError, sqlite3.DatabaseError, UnreadableFacts, RuntimeError):
-        live_identities = []
-        unavailable_sources.append("live owner identities")
-    # A post-backup identity has no restorable box. Choose erasure, never copy
-    # newer owner content or resurrect an account with somebody else's UID.
+        live = []
+        if unavailable_sources is not None:
+            unavailable_sources.append("live owner identities")
     backed_up = {row["principal"] for row in identities}
-    erased.update(row["principal"] for row in live_identities if row["principal"] not in backed_up)
-    for root in (current, staged):
-        for relative, table in sources:
-            try:
-                rows = _rows(root, relative, table)
-            except (OSError, sqlite3.DatabaseError, UnreadableFacts, RuntimeError):
-                if root == staged:
-                    raise
-                unavailable_sources.append("live " + relative)
-                continue
-            for row in rows:
-                if table == "deleted_principals":
-                    digests.add(row["digest"])
-                elif table == "owner_destroys":
-                    erased.add(row["owner_id"])
-                    machines.add(row["uid"])
-                elif table == "deleted_owners":
-                    erased.add(row["owner"])
-                elif row["deleted"]:
-                    erased.add(row["principal"])
-    checked = set()
-    for row in [*identities, *live_identities]:
+    for row in [*identities, *live]:
         owner = row["principal"]
-        if owner in erased or owner in checked:
-            continue
-        if (hashlib.sha256(owner.encode()).hexdigest() in digests
-                or row["machine_id"] in machines or not identity_exists(owner)):
-            erased.add(owner)
-        checked.add(owner)
-    from tinyassets.router_credentials import DeletedOwners
+        if (ledger.contains(owner) or (identity_exists is not None and (
+                owner not in backed_up or not identity_exists(owner)))):
+            ledger.execute("add", {"digest": principal_digest(owner), "principal": owner,
+                                   "uids": [row["machine_id"]]})
+    return identities, live
 
-    deleted = DeletedOwners(staged)
-    for owner in sorted(erased):
-        receipt = {"unfinished_phases": [
-            "owner_tree", "broker_egress", "billing", "credentials", "identity"],
-            "completed_phases": [], "home_removed": False, "restore_pending": True,
-            "source": "disaster erasure reconciliation"}
-        deleted.add(owner, receipt)
-        deleted.save_receipt(owner, receipt)
-    if erased:
-        tombstones = staged / ".router-deleted-owners.sqlite3"
-        os.chown(tombstones, 1001, 1001)
-        tombstones.chmod(0o600)
+
+def erasures(current, staged, *, identity_exists, unavailable_sources=None):
+    """Carry only ledger authority; import pre-ledger facts during the cutover."""
+    from tinyassets.erasure_ledger import carry_forward
+
+    ledger = carry_forward(current, staged, unavailable_sources)
+    _identify_erased(ledger, current, staged, identity_exists, unavailable_sources)
+    entries = ledger.entries()
+    erased = {entry["principal"] for entry in entries if entry["principal"]}
+    _reserve_erasures(ledger, staged)
     identity = _safe(staged, ".broker/state/owner-identities.db")
     with closing(sqlite3.connect(identity)) as db, db:
-        # Carry the erased identity's permanent UID with its tombstone. A
-        # quarantined tree/project must never be assigned to a different owner.
-        for row in live_identities:
-            if row["principal"] in erased and row["principal"] not in backed_up:
-                db.execute("INSERT INTO owner_identities (principal,machine_id) VALUES (?,?)",
-                           (row["principal"], row["machine_id"]))
         for owner in erased:
             db.execute("INSERT INTO owner_box_revocations VALUES (?,1) "
                        "ON CONFLICT(principal) DO UPDATE SET deleted=1", (owner,))
-    # Preserve even digests whose identity row is absent from this older pair:
-    # a later identity reconciliation must not resurrect their custody.
-    digests.update(hashlib.sha256(owner.encode()).hexdigest() for owner in erased)
-    if digests:
+    if entries:
         custody = _safe(staged, ".broker/credential-custody.db")
         with closing(sqlite3.connect(custody)) as db, db:
             db.execute("CREATE TABLE IF NOT EXISTS deleted_principals (digest TEXT PRIMARY KEY)")
             db.executemany("INSERT OR IGNORE INTO deleted_principals VALUES (?)",
-                           [(digest,) for digest in sorted(digests)])
+                           [(entry["digest"],) for entry in entries])
         os.chown(custody, 1002, 1002)
         custody.chmod(0o600)
-    return {row["machine_id"] for row in [*identities, *live_identities]
-            if row["principal"] in erased} | machines
+    return {uid for entry in entries for uid in entry["uids"]}
+
+
+def _reserve_erasures(ledger, staged):
+    """An erased permanent UID can never be reassigned to a surviving owner."""
+    entries = [entry for entry in ledger.entries() if entry["uids"]]
+    if not entries:
+        return
+    identity = _safe(staged, ".broker/state/owner-identities.db")
+    with closing(sqlite3.connect(identity)) as db, db:
+        for entry in entries:
+            owner, uids = entry["principal"], entry["uids"]
+            if not owner or len(uids) != 1:
+                raise ValueError("ambiguous erased UID reservation")
+            rows = db.execute("SELECT principal,machine_id FROM owner_identities "
+                              "WHERE principal=? OR machine_id=?", (owner, uids[0])).fetchall()
+            if any(row != (owner, uids[0]) for row in rows):
+                raise ValueError("erased UID conflicts with permanent reservation")
+            if not rows:
+                db.execute("INSERT INTO owner_identities (principal,machine_id) VALUES (?,?)",
+                           (owner, uids[0]))
+
+
+def _schedule_trees(ledger, stores):
+    for entry in ledger.entries():
+        ledger.execute("restart", {"digest": entry["digest"]})
+        for store in stores:
+            for uid in entry["uids"]:
+                destination = (stores[0] / (".tinyassets-erasure-quarantine." +
+                                           secrets.token_hex(16)) / str(uid))
+                ledger.execute("work", {"digest": entry["digest"], "target": {
+                    "uid": uid, "store": str(store), "quarantine": str(destination)}})
 
 
 # These are wholesale resets, never intersections with live authority.
@@ -203,7 +202,8 @@ def reset_credentials(staged, now):
         present = _read(staged, relative)
         if not present:
             continue
-        with closing(sqlite3.connect(staged / relative)) as db, db:
+        uri = (staged / relative).as_uri() + "?mode=rw"
+        with closing(sqlite3.connect(uri, uri=True)) as db, db:
             for table in tables:
                 if table in present:
                     db.execute(f"DELETE FROM {_quote(table)}")
@@ -235,6 +235,7 @@ def reset_credentials(staged, now):
     from tinyassets.onboarding.canary_sign_in import KEY_ENV
 
     operational = _safe(staged, ".router-credentials.json")
+    operational.unlink(missing_ok=True)
     operational.write_text(json.dumps({name: secrets.token_urlsafe(48) for name in (
         WIKI_CANARY_TOKEN_ENV, KEY_ENV)}))
     operational.chmod(0o600)
@@ -298,16 +299,14 @@ def disaster_restore(current, staged, trees, *, backup_time, now=None,
     stores = [live_trees]
     if retained_trees is not None:
         stores.append(retained_trees)
-    pending = [{"uid": uid, "store": str(store),
-                "quarantine": str(stores[0] / (
-                    ".tinyassets-erasure-quarantine." +
-                    (staged / ".restore-epoch").read_text() + f"-{index}-{uid}") / str(uid))}
-               for index, store in enumerate(stores) for uid in sorted(erased)]
+    from tinyassets.erasure_ledger import ErasureLedger
+
+    _schedule_trees(ErasureLedger(staged), stores)
     report = {"backup_time": backup_time, "restore_time": now,
               "credential_roots_reset": True, "operation_fences_reset": True,
               "erased_owners": len(erased), "erased_uids": sorted(erased), "billing": billing,
               "cleanup_complete": False,
-              "erasure_failures": [], "pending_erasures": pending,
+              "erasure_failures": [],
               "unavailable_erasure_sources": unavailable_sources,
               "owners_reconciled": reconciled,
               "spend_blocked_until": int(fence.read_text()),
@@ -340,54 +339,50 @@ def _save_report(path, report):
 
 
 def finish_erasures(root):
-    """Under the layout lock, resume published cleanup before any box starts."""
+    """Under layout exclusion, retry all ledger paths before any box starts."""
     from tinyassets.boxes.destroy import quarantine, tree
     from tinyassets.boxes.provider import BoxError
-    from tinyassets.router_credentials import DeletedOwners
+    from tinyassets.erasure_ledger import ErasureLedger
 
-    path = _safe(root, ".disaster-restore.json")
-    if not path.exists():
-        return
-    info = path.stat()
-    if info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600:
-        raise ValueError("recovery cleanup requires a root-private report")
-    report = json.loads(path.read_text())
-    if report.get("cleanup_complete"):
-        return
-    while report.get("pending_erasures"):
-        item = report["pending_erasures"][0]
-        uid, store, destination = item["uid"], Path(item["store"]), Path(item["quarantine"])
-        # The fixed destination is recorded BEFORE moving: a crash after rename
-        # can recover its receipt without losing track of the quarantined tree.
-        if not destination.exists():
+    ledger = ErasureLedger(root)
+    failures = []
+    for entry in ledger.entries():
+        for key, item in entry["work"].items():
+            uid, store = item["uid"], Path(item["store"])
+            destination = Path(item["quarantine"])
+            # Root-private ledger recorded both paths before rename. Neither
+            # report replacement nor a later restore can lose the destination.
             try:
-                tree(store, uid, erase=False)
-                tree(store, uid, erase=True)
-            except (OSError, BoxError):
-                quarantine(store, uid, destination_root=destination.parent)
-        if destination.exists():
-            report["erasure_failures"].append({
-                "uid": uid, "quarantine": str(destination), "error": "erasure refused"})
-        report["pending_erasures"].pop(0)
-        _save_report(path, report)
-    failed = {item["uid"] for item in report["erasure_failures"]}
-    deleted = DeletedOwners(root)
-    for row in _rows(root, ".broker/state/owner-identities.db", "owner_identities"):
-        if row["machine_id"] in report.get("erased_uids", []):
-            receipt = deleted.receipt(row["principal"])
-            removed = row["machine_id"] not in failed
-            done = list(receipt.get("completed_phases", []))
-            if removed and "owner_tree" not in done:
-                done.append("owner_tree")
-            updated = {**receipt, "home_removed": removed, "completed_phases": done,
-                       "restore_pending": False,
-                       "quarantines": [item["quarantine"] for item in report["erasure_failures"]
-                                       if item["uid"] == row["machine_id"]],
-                       "unfinished_phases": [step for step in (
-                           "owner_tree", "broker_egress", "billing", "credentials", "identity")
-                           if step not in done]}
-            if updated != receipt:
-                deleted.save_receipt(row["principal"], updated)
-    report["cleanup_complete"] = True
-    _save_report(path, report)
-    print("WARN disaster restore: " + json.dumps(report, sort_keys=True))
+                if destination.exists():
+                    tree(destination.parent, uid, erase=False)
+                    tree(destination.parent, uid, erase=True)
+                else:
+                    try:
+                        tree(store, uid, erase=False)
+                        tree(store, uid, erase=True)
+                    except (OSError, BoxError):
+                        if not store.exists():
+                            raise
+                        quarantine(store, uid, destination_root=destination.parent)
+                        raise BoxError("erasure quarantined; retry required")
+            except (OSError, BoxError) as exc:
+                if not store.exists() and not destination.exists():
+                    raise  # A missing mount is not evidence of completed erasure.
+                failures.append({"uid": uid, "quarantine": str(destination),
+                                 "error": type(exc).__name__})
+                continue
+            ledger.execute("finish", {"digest": entry["digest"], "ids": [key]})
+        # Offline restore work proves the home phase after every path completes.
+        refreshed = next(e for e in ledger.entries() if e["digest"] == entry["digest"])
+        if entry["work"] and not refreshed["work"]:
+            ledger.execute("finish", {"digest": entry["digest"], "ids": [
+                key for key, phase in refreshed["tasks"].items() if phase == "owner_tree"]})
+    path = _safe(root, ".disaster-restore.json")
+    if path.exists():
+        report = json.loads(path.read_text())
+        updated = {**report, "cleanup_complete": not any(e["work"] for e in ledger.entries()),
+                   "erasure_failures": failures}
+        updated.pop("pending_erasures", None)
+        if updated != report:
+            _save_report(path, updated)
+            print("WARN disaster restore: " + json.dumps(updated, sort_keys=True))

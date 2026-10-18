@@ -106,7 +106,7 @@ def fence_restore(current: Path, staged: Path, *, cutover_store: Path | None = N
                          **(restore_adapters or {}))
     else:
         normal_preflight(current, staged, cutover_store, backup_time=backup_time,
-                         restored_owners=restored_store)
+                         restored_owners=restored_store, retained_owners=retained_store)
 
 
 def check_snapshot(data: Path, *, quiescent: bool = False) -> None:

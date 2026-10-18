@@ -703,7 +703,7 @@ def test_door_deletion_removes_only_bound_owners_data_and_router_state(
                 "authorization": "Bearer alice", "origin": origin}, json={"confirm": "DELETE"})
             assert revoked.status_code == 200, revoked.text
             assert revoked.json()["home_removed"] and revoked.json()["unfinished"] == []
-            assert router_credentials.DeletedOwners(tmp_path).contains("alice")
+            assert router_credentials.ErasureLedger(tmp_path).contains("alice")
             assert not (boxes.roots["alice"] / "cc-alice").exists()
             assert not boxes.runtime.alive(admitted.owner_machine("alice"))
             assert boxes.runtime.alive(admitted.owner_machine("bob"))
@@ -784,7 +784,7 @@ def test_a_deleted_owner_can_never_mint_again(tmp_path, monkeypatch):
     assert token
     router_credentials.tombstone(tmp_path, "alice", {})
     router_credentials.revoke_account(tmp_path, "alice")
-    assert router_credentials.DeletedOwners(tmp_path).contains("alice")
+    assert router_credentials.ErasureLedger(tmp_path).contains("alice")
     # The door's revocation removed the hook the owner minted before deletion.
     assert router_credentials.HookOwners(tmp_path).resolve(token) is None
     # The tombstone is durable and checked under the dispatch lock, so a box
@@ -833,9 +833,9 @@ def test_a_failed_account_revoke_can_be_retried_to_completion(
 
             first = await delete()
             assert first.status_code == 503, first.text
-            assert router_credentials.DeletedOwners(tmp_path).contains("alice")
-            receipt = router_credentials.DeletedOwners(tmp_path).receipt("alice")
-            assert receipt["home_removed"]
+            assert router_credentials.ErasureLedger(tmp_path).contains("alice")
+            receipt = router_credentials.ErasureLedger(tmp_path).receipt("alice")
+            assert receipt["home_removed"] == (failure != "retire")
             assert HookOwners(tmp_path).resolve(token) is None
             with pytest.raises(PermissionError, match="deleted"):
                 dispatch(tmp_path, "alice", {"operation": "hook_mint"})
@@ -846,8 +846,8 @@ def test_a_failed_account_revoke_can_be_retried_to_completion(
             monkeypatch.setattr(owner_router, "resolve_box", forbidden)
             assert (await delete()).status_code == 401
             await owner_router.resume_deleted_accounts(tmp_path)
-            retried = router_credentials.DeletedOwners(tmp_path).receipt("alice")
-            assert retried["home_removed"] == receipt["home_removed"]
+            retried = router_credentials.ErasureLedger(tmp_path).receipt("alice")
+            assert retried["home_removed"]
             assert retried["unfinished_phases"] == []
             assert (await delete()).status_code == 401
 
@@ -962,14 +962,15 @@ def test_bound_center_retirement_uses_relay_owner_and_stops_its_daemon(boxes, ad
 
 
 @pytest.mark.parametrize("outcome", ["blocked", "refused"])
-def test_box_deletion_rejection_leaves_lifecycle_and_router_state_untouched(
+def test_box_deletion_rejection_keeps_ledger_fence_and_pending_cleanup(
     router, boxes, admitted, tmp_path, outcome,
 ):
     import sqlite3
 
     from tinyassets.daemon_server import DB_FILENAME
+    from tinyassets.erasure_ledger import ErasureLedger
     from tinyassets.onboarding import app_config, owner_sessions, session_store
-    from tinyassets.router_credentials import DeletedOwners, HookOwners, dispatch
+    from tinyassets.router_credentials import HookOwners, dispatch
 
     with sqlite3.connect(boxes.roots["alice"] / DB_FILENAME) as db:
         if outcome == "blocked":
@@ -997,16 +998,17 @@ def test_box_deletion_rejection_leaves_lifecycle_and_router_state_untouched(
             assert result.json()["error"] == "deletion_" + outcome
 
     asyncio.run(exercise())
-    assert not DeletedOwners(tmp_path).contains("alice")
+    assert ErasureLedger(tmp_path).contains("alice")
+    assert ErasureLedger(tmp_path).receipt("alice")["local_cleanup"] == "pending"
     assert admitted.admissions_after(0) == before
     assert admitted.box_route("alice")[1] == boxes.secrets["alice"]
     assert boxes.runtime.alive(admitted.owner_machine("alice"))
     assert (boxes.roots["alice"] / "cc-alice" / "hello.txt").exists()
-    assert session_store.read(handle)[0]
-    assert owner_sessions.lookup("alice-cookie") is not None
-    assert HookOwners(tmp_path).resolve(token) == "alice"
-    assert any(k["revoked_at"] is None for k in
-               dispatch(tmp_path, "alice", {"operation": "key_list"})["keys"])
+    assert not session_store.read(handle)[0]
+    assert owner_sessions.lookup("alice-cookie") is None
+    assert HookOwners(tmp_path).resolve(token) is None
+    with pytest.raises(PermissionError, match="deleted"):
+        dispatch(tmp_path, "alice", {"operation": "key_list"})
 
 
 @pytest.mark.parametrize("failure", [None, "stop", "owner_tree", "relay", "socket",
@@ -1091,7 +1093,7 @@ def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
                 expected = {"stop": "owner_tree", "relay": "owner_tree", "socket": "owner_tree",
                             "plan": "billing"}.get(failure, failure)
                 assert expected in pending
-                assert router_credentials.DeletedOwners(tmp_path).contains("alice")
+                assert router_credentials.ErasureLedger(tmp_path).contains("alice")
                 assert "identity" not in calls
                 if failure not in {"billing", "plan"}:
                     assert subscription["status"] == "canceled"
@@ -1102,7 +1104,7 @@ def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
             else:
                 assert first.status_code == 200, first.text
                 assert first.json()["unfinished"] == []
-            receipt = router_credentials.DeletedOwners(tmp_path).receipt("alice")
+            receipt = router_credentials.ErasureLedger(tmp_path).receipt("alice")
             assert receipt["billing"] == "cancelled"
             assert receipt["identity"] == "deleted"
             assert receipt["unfinished_phases"] == []
@@ -1117,7 +1119,7 @@ def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
     assert not (boxes.run / str(uid)).exists()
     assert not (boxes.run / "relay" / f"{uid}.sock").exists()
     assert not (boxes.run / "secrets" / str(uid)).exists()
-    receipt = router_credentials.DeletedOwners(tmp_path).receipt("alice")
+    receipt = router_credentials.ErasureLedger(tmp_path).receipt("alice")
     assert receipt["box_destroy"] == {"destroyed": True}
     assert receipt["unfinished_phases"] == []
 
@@ -1165,9 +1167,9 @@ def test_suspended_owner_deletion_sweeps_real_box_and_expires_checkout(
 
     asyncio.run(exercise())
     assert calls == ["checkout/sessions/cs_synthetic/expire"]
-    from tinyassets.router_credentials import DeletedOwners
+    from tinyassets.erasure_ledger import ErasureLedger
 
-    assert DeletedOwners(tmp_path).receipt("alice")["unfinished_phases"] == []
+    assert ErasureLedger(tmp_path).receipt("alice")["unfinished_phases"] == []
     assert not boxes.roots["alice"].exists()
     assert boxes.runtime.alive(admitted.owner_machine("bob"))
 
@@ -1213,7 +1215,7 @@ def test_resolve_lease_protects_real_request_against_concurrent_wake(boxes, admi
 
 @pytest.mark.parametrize("timeout", [False, True])
 def test_deletion_drains_real_turn_before_sweep_and_destroys_late_writes(
-    router, boxes, admitted, timeout,
+    router, boxes, admitted, tmp_path, timeout,
 ):
     from tinyassets.onboarding import app_config
 
@@ -1244,7 +1246,7 @@ def test_deletion_drains_real_turn_before_sweep_and_destroys_late_writes(
                     assert status.json()["draining"] and status.json()["active"] == 1
                 refused = await client.post("/app/api/file", headers=headers,
                                              json={"graph_id": "cc-alice", "path": "hello.txt"})
-                assert refused.status_code == 503
+                assert refused.status_code == 401
                 assert not deleting.done() and root.exists()
                 if timeout:
                     result = await asyncio.wait_for(deleting, 25)
@@ -1253,8 +1255,12 @@ def test_deletion_drains_real_turn_before_sweep_and_destroys_late_writes(
                     assert root.exists() and boxes.runtime.alive(uid)
                 (root / "release-turn").touch()
                 if timeout:
-                    result = await client.post("/app/account/delete", headers=headers,
-                                               json={"confirm": "DELETE"})
+                    from tinyassets.erasure_ledger import ErasureLedger
+                    from tinyassets.owner_router import resume_deleted_accounts
+
+                    await resume_deleted_accounts(tmp_path)
+                    assert ErasureLedger(tmp_path).receipt("alice")["unfinished_phases"] == []
+                    return
                 else:
                     result = await asyncio.wait_for(deleting, 10)
                 assert result.status_code == 200, result.text

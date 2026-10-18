@@ -20,9 +20,9 @@ class OwnerRegistry:
 
     def owner(self, owner: str, *, rotate: bool = False, deletion_only=False) -> dict:
         validate_principal(owner)
-        from tinyassets.router_credentials import DeletedOwners
+        from tinyassets.erasure_ledger import ErasureLedger
 
-        if DeletedOwners(self.data_root).contains(owner):
+        if not deletion_only and ErasureLedger(self.data_root).contains(owner):
             raise BoxAuthError("Account deleted.")
         from tinyassets.boxes.bootstrap import peer
 

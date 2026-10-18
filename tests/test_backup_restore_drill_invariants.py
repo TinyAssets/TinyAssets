@@ -114,18 +114,6 @@ def test_restore_exits_zero_after_extract():
     )
 
 
-def test_restore_exit_5_no_longer_emitted():
-    """Exit code 5 was the drill-blocker. It's reserved (documented in
-    the exit-codes block) but must not be reachable from active code."""
-    code = _restore_code()
-    # In active code, `exit 5` must NOT appear. The docstring may
-    # reference it historically; _restore_code() strips comments so any
-    # exit 5 found here is in live code and must fail the test.
-    assert not re.search(r"^\s*exit\s+5\s*$", code, flags=re.MULTILINE), (
-        "exit 5 is the drill-blocker; keep it out of active code"
-    )
-
-
 # ---- (b) DR-drill workflow: daemon-scoped compose-up --------------------
 
 

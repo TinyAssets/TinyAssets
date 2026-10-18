@@ -695,7 +695,12 @@ class _Connection:
                     or type(doc["generation"]) is not int or not isinstance(doc["token"], str)):
                 raise ValueError("invalid owner retirement")
             with self._server._fence.send(doc["generation"], doc["token"]):
-                uid = self._server._owner_identities.retire_owner(doc["principal"])
+                # A ledger tombstone can predate (or outlive) an identity row.
+                # An absent permanent reservation has no box to destroy.
+                identities = self._server._owner_identities
+                if identities.owner_machine(doc["principal"]) is None:
+                    return {"op": "OWNER_RETIRED"}
+                uid = identities.retire_owner(doc["principal"])
                 from tinyassets.boxes.daemon_control import request
 
                 if request("destroy", doc["principal"], uid=uid) != {"destroyed": True}:

@@ -542,7 +542,7 @@ def test_disaster_restore_keeps_erasure_and_destroys_restored_tree(
     import runpy
 
     from tests.test_owner_cutover_restore import REPO
-    from tinyassets.router_credentials import DeletedOwners
+    from tinyassets.erasure_ledger import ErasureLedger
 
     data, store, data_archive, box_archive = cutover
     migration.apply(*cutover)
@@ -555,7 +555,7 @@ def test_disaster_restore_keeps_erasure_and_destroys_restored_tree(
     # Local sweep succeeded, broker retirement/custody is still unavailable.
     (store / "300001/a1/notes.txt").unlink()
     if authority == "router":
-        DeletedOwners(data).add("alice", {"unfinished_phases": ["owner_tree", "broker_egress"]})
+        ErasureLedger(data).add("alice", {"unfinished_phases": ["owner_tree", "broker_egress"]})
     else:
         _sql(data / ".broker/state/owner-identities.db",
              "INSERT INTO owner_box_revocations VALUES ('alice',1)")
@@ -567,7 +567,7 @@ def test_disaster_restore_keeps_erasure_and_destroys_restored_tree(
         assert db.execute("SELECT deleted FROM owner_box_revocations WHERE principal='alice'"
                           ).fetchone() == (1,)
     if authority == "router":
-        assert DeletedOwners(data).contains("alice")
+        assert ErasureLedger(data).contains("alice")
     assert list(store.glob(".tinyassets-box-restore-old.*"))
 
 
@@ -928,3 +928,48 @@ def test_migrated_owner_processes_serve_history_requests_and_pause(
     assert result.returncode == 4, result.stdout + result.stderr
     assert "traffic_opened_at" in result.stderr
     assert (_fingerprint(data), _fingerprint(store)) == live_before
+
+
+def test_forward_cutover_preserves_ledger_and_reopens_copied_home_work(cutover):
+    from tinyassets.erasure_ledger import PHASES, ErasureLedger
+    from tinyassets.restore_recovery import finish_erasures
+
+    data, store, *_ = cutover
+    ledger = ErasureLedger(data)
+    ledger.add("alice")
+    ledger.save_receipt("alice", {"completed_phases": list(PHASES)})
+    assert ledger.receipt("alice")["home_removed"]
+    assert migration.census(data)["ready"]
+    migration.apply(*cutover)
+    ledger = ErasureLedger(data)
+    assert ledger.contains("alice")
+    assert not ledger.receipt("alice")["home_removed"]
+    assert (store / "300001").exists()
+    finish_erasures(data)  # The actual boxhost startup boundary, before admission.
+    assert not (store / "300001").exists()
+    assert ledger.receipt("alice")["home_removed"]
+    assert (store / "300002/b1/notes.txt").exists()
+
+
+def test_cutover_imports_router_custody_and_host_erasure_facts(cutover):
+    from tinyassets.boxes.state import BoxHostState
+    from tinyassets.erasure_ledger import ErasureLedger, principal_digest
+
+    data, *_ = cutover
+    _sql(data / ".router-deleted-owners.sqlite3", "CREATE TABLE deleted_owners "
+         "(owner TEXT PRIMARY KEY, deleted_at REAL, receipt TEXT);"
+         "INSERT INTO deleted_owners VALUES ('router-only',1,NULL);")
+    custody = data / ".broker/credential-custody.db"
+    custody.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(custody) as db:
+        db.execute("CREATE TABLE deleted_principals (digest TEXT PRIMARY KEY)")
+        db.execute("INSERT INTO deleted_principals VALUES (?)", (principal_digest("custody-only"),))
+    host = BoxHostState(data / ".boxhost/boxhost.db")
+    host.begin_owner_destroy("host-only", "erase", 300003, "c")
+    host.close()
+    report = migration.census(data)
+    assert report["ready"], report["refusals"]
+    migration.apply(*cutover)
+    ledger = ErasureLedger(data)
+    assert all(ledger.contains(owner) for owner in ("router-only", "custody-only", "host-only"))
+    assert not (data / ".router-deleted-owners.sqlite3").exists()
