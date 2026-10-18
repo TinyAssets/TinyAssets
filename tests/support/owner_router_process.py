@@ -25,7 +25,7 @@ def main():
     from tinyassets import owner_public_egress
 
     owner_public_egress.LISTEN_ADDRESS = ("127.0.0.1", 0)
-    app = create_app(relay=relay, secret_file=secret, deletion_only="--deletion-only" in sys.argv)
+    app = create_app(relay=relay, secret_file=secret)
     from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
     from tinyassets.owner_runtime import current
 
@@ -42,11 +42,10 @@ def main():
     authority = OutsideClientAuthority(root)
     with authority.db() as db:
         db.execute("INSERT OR REPLACE INTO outside_switch VALUES (1, 1)")
-    if "--deletion-only" not in sys.argv:
-        key = current_store().mint(owner, name="router acceptance", authority=authority,
-                                    scopes=[{"universe": center, "agent": "main",
-                                             "capability": "read_graph"}])
-        (root / "key.json").write_text(json.dumps(key))
+    key = current_store().mint(owner, name="router acceptance", authority=authority,
+                                scopes=[{"universe": center, "agent": "main",
+                                         "capability": "read_graph"}])
+    (root / "key.json").write_text(json.dumps(key))
     from starlette.responses import JSONResponse, StreamingResponse
     from starlette.routing import Route
 

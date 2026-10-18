@@ -35,11 +35,11 @@ class OwnerRegistry:
                 or frame.control() != {"op": "BOX_ADMISSION_RETIRED"}):
             raise BoxAuthError("broker refused admission retirement")
 
-    def owner(self, owner: str, *, rotate: bool = False, deletion_only=False) -> dict:
+    def owner(self, owner: str, *, rotate: bool = False) -> dict:
         validate_principal(owner)
         from tinyassets.erasure_ledger import ErasureLedger
 
-        if not deletion_only and ErasureLedger(self.data_root).contains(owner):
+        if ErasureLedger(self.data_root).contains(owner):
             raise BoxAuthError("Account deleted.")
         from tinyassets.boxes.bootstrap import peer
 
@@ -49,8 +49,6 @@ class OwnerRegistry:
             if peer(sock)[1:] != (1002, 1002):
                 raise BoxAuthError("lifecycle peer is not the credential broker")
             doc = {"op": "BOX_LIFECYCLE", "principal": owner, "rotate": rotate}
-            if deletion_only:
-                doc["deletion_only"] = True
             sock.sendall(rf.control(rf.CONNECTION, doc))
             frame = rf.read_frame_blocking(sock)
         if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:

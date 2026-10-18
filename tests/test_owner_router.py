@@ -137,9 +137,8 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
         runtime = ProcessRuntime({admitted.owner_machine(owner): root
                                   for owner, root in roots.items()})
         relays = OwnerRelays(run / "relay", SimpleNamespace(broker_socket=host_path))
-        admission = SimpleNamespace(owner=lambda owner, rotate=False, deletion_only=False:
-                                    owner_record(admitted, owner, rotate=rotate,
-                                                 deletion_only=deletion_only),
+        admission = SimpleNamespace(owner=lambda owner, rotate=False:
+                                    owner_record(admitted, owner, rotate=rotate),
                                     retire=lambda owner, uid: admitted.retire_owner(owner))
         def destroy_volume(uid):
             import shutil
@@ -934,8 +933,7 @@ def test_root_lifecycle_broker_operation_uses_admission_and_box_record(
     assert admitted.box_route("alice")[1] == rotated["secret"]
     admitted.plans.set_suspension("alice", reason="abuse", suspended=True)
     assert call(request) == {"op": "BOX_SUSPENDED"}
-    cleanup = call(request | {"deletion_only": True})
-    assert cleanup["op"] == "BOX_LIFECYCLE_IS"
+    assert call(request | {"deletion_only": True}) == {"op": "BOX_REFUSED"}
     assert call(request | {"deletion_only": "yes"}) == {"op": "BOX_REFUSED"}
     from tinyassets.boxes import bootstrap
     from tinyassets.boxes.admission import BoxSuspended, OwnerRegistry
@@ -944,7 +942,6 @@ def test_root_lifecycle_broker_operation_uses_admission_and_box_record(
     registry = OwnerRegistry(admitted.path.parent.parent, boxes.host_path)
     with pytest.raises(BoxSuspended, match="suspended"):
         registry.owner("alice")
-    assert registry.owner("alice", deletion_only=True)["uid"] == admitted.owner_machine("alice")
 
 
 def test_bound_center_retirement_uses_relay_owner_and_stops_its_daemon(boxes, admitted):

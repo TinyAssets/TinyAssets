@@ -15,14 +15,13 @@ class ProcessRuntime:
         self.processes = {}
         self.logs = []
 
-    def start(self, uid, gid, *, relay, app_dir, secret_file, memory_bytes, rootfs=None,
-              deletion_only=False):
+    def start(self, uid, gid, *, relay, app_dir, secret_file, memory_bytes, rootfs=None):
         log = tempfile.TemporaryFile()
         self.logs.append(log)
         self.processes[uid] = subprocess.Popen([
             sys.executable, "-m", self.module, str(self.roots[uid]),
             str(relay), str(secret_file), str(app_dir / "app.sock"),
-        ] + (["--deletion-only"] if deletion_only else []), stdout=log, stderr=log)
+        ], stdout=log, stderr=log)
 
     def alive(self, uid):
         return uid in self.processes and self.processes[uid].poll() is None

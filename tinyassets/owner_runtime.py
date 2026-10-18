@@ -109,12 +109,11 @@ def start(relay: Path) -> OwnerRuntime:
         raise PermissionError("owner relay refused startup admission")
     root = OWNER_MOUNT
     from tinyassets.boxes.boxd import OwnerBoxd
-    from tinyassets.owner_activity import activity
 
     tools = OwnerBoxd(owner_id=doc["principal"], owner_root=root,
                      state_dir=root / ".owner-boxd",
                      restore_epoch=RESTORE_EPOCH.read_text(),
-                     relay=None if activity.deletion_only else relay)
+                     relay=relay)
     os.environ["TINYASSETS_DATA_DIR"] = str(root)
     os.environ["TINYASSETS_ENGINE_MCP_TOOLS"] = "1"
     os.environ["TINYASSETS_ONBOARDING_APP"] = "1"
@@ -200,9 +199,7 @@ def serving():
     from tinyassets.control_plane.tick import AssignedQueueConsumer
 
     runtime = current()
-    from tinyassets.owner_activity import activity
-
-    if runtime is None or activity.deletion_only:
+    if runtime is None:
         yield
         return
     stop, stopped = threading.Event(), threading.Event()

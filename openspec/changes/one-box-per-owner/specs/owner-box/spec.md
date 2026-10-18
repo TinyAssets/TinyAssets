@@ -13,8 +13,8 @@ mount MUST expose the whole filesystem (mountinfo root `/`) and be the topmost
 mount at that path. Immediately after fencing, deletion SHALL retry a separate
 `broker_channels` ledger phase closing all of the principal's broker channels.
 Every established broker stream, including public tunnels, SHALL recheck erasure
-at most every second and close on a fence or unavailable ledger. Cleanup admission
-SHALL be permanently deletion-only, including after a local 409 refusal.
+at most every second and close on a fence or unavailable ledger. Live cleanup admission SHALL be permanently deletion-only, including after a local 409 refusal.
+Sleeping or suspended owners SHALL be fully destroyed without launching a box.
 Cleanup targets SHALL contain only store-relative paths and UIDs, resolved against
 each process's configured store. Startup SHALL record cleanup failures, keep those
 owners fenced, and open control listeners for the remaining owners.

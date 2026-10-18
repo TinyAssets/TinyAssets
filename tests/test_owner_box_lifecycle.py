@@ -26,12 +26,12 @@ def fleet(tmp_path, monkeypatch):
             self.revoked = set()
             self.suspended = set()
 
-        def owner(self, owner, *, rotate=False, deletion_only=False):
+        def owner(self, owner, *, rotate=False):
             from tinyassets.boxes.admission import BoxSuspended
 
             if owner in self.revoked or owner not in {"a", "b", "c"}:
                 raise LookupError("unadmitted")
-            if owner in self.suspended and not deletion_only:
+            if owner in self.suspended:
                 raise BoxSuspended("suspended")
             if rotate:
                 self.secrets[owner] = secrets.token_urlsafe(32)
@@ -49,8 +49,6 @@ def fleet(tmp_path, monkeypatch):
         def start(self, uid, gid, **kwargs):
             self.starts.append((uid, kwargs))
             self.live.add(uid)
-            if kwargs.get("deletion_only"):
-                states[uid].admit_deletion_only()
 
         def alive(self, uid):
             return uid in self.live
@@ -411,3 +409,17 @@ def test_ledger_fenced_cleanup_409_keeps_existing_box_drained(fleet, tmp_path, m
             pytest.fail("fenced owner executed")
     with manager.condition:
         assert not manager._sleep(manager.boxes[uid], idle=0)
+
+
+def test_deletion_latch_refuses_every_restart_path(fleet):
+    manager = fleet.manager
+    uid = manager.ensure_awake("a")
+    manager.resolve("a", cleanup=True)
+    fleet.runtime.live.clear()
+    for scheduled in (False, True):
+        with pytest.raises(BoxError, match="cannot restart"):
+            manager.ensure_awake("a", scheduled=scheduled)
+    manager.maintain()
+    with pytest.raises(BoxError, match="cannot restart"):
+        manager._start(manager.boxes[uid], time.monotonic() + 1)
+    assert len(fleet.runtime.starts) == 1

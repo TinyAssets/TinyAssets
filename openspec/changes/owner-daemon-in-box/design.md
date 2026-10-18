@@ -1017,10 +1017,8 @@ reservations are carried even without live identity rows; conflicting reservatio
 refuse restore. Forward migration records new obligations for copied erased homes.
 Lifecycle maintenance contains suspension, refusal and authentication failures per
 owner, reports an explicit suspended outcome and stops/refuses only that box.
-The authenticated door deletion flow alone may request deletion-only lifecycle
-admission for a suspended owner, preserving drain and tombstone ordering. Such a
-wake admits local deletion only. The outer ASGI lifespan returns before all
-scheduler, delivery, consumer and maintenance startup; no egress forwarder starts.
+Deletion addresses only a live box and permanently latches its ingress against new work.
+Sleeping and suspended owners go directly to confirmed full destruction without a box start.
 Background execution entry points hold the same activity gate as turns, so drain
 observes running work and queued work cannot start after quiescence. Background
 work holds this drain gate without renewing the user-idle clock: a periodic poll

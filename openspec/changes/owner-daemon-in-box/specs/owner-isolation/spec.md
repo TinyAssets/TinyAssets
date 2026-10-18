@@ -40,7 +40,8 @@ are destroyed. Reports SHALL carry no authoritative cleanup queue.
 Authentication SHALL refuse any principal whose digest is in the ledger, even
 without an identity mapping. Automatic retries SHALL select every ledger entry
 with unfinished phases, without a restore_pending or identity-row filter.
-An erased box SHALL never start. Deletion SHALL be iterative, descriptor-relative,
+An erased box SHALL never start; deletion of sleeping or suspended owners SHALL
+destroy the complete volume, quota project, sockets and secret without launching a box. Deletion SHALL be iterative, descriptor-relative,
 and never follow symlinks or cross mounts.
 Identities found only in live platform state and absent from the backup SHALL be
 erased with their permanent UID reservations retained from the ledger even if

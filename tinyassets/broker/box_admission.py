@@ -11,7 +11,7 @@ class OwnerSuspended(PermissionError):
     """Explicit lifecycle refusal; never a host-wide failure."""
 
 
-def owner_record(identities, owner: str, *, rotate: bool, deletion_only=False) -> dict:
+def owner_record(identities, owner: str, *, rotate: bool) -> dict:
     """Root boxhostd's launch inputs; no center or UID is selected by a caller."""
     validate_principal(owner)
     with identities._connect(write=False) as db:
@@ -24,7 +24,7 @@ def owner_record(identities, owner: str, *, rotate: bool, deletion_only=False) -
             "AND r.event='retire')", (owner,))]
     if not centers:
         raise LookupError("owner has no live admission")
-    if identities.plans.suspended(owner) and not deletion_only:
+    if identities.plans.suspended(owner):
         raise OwnerSuspended("owner account is suspended")
     record = resolve(identities, {"op": "BOX_ADMISSION", "principal": owner,
                                   "center": centers[0]})
@@ -37,14 +37,10 @@ def owner_record(identities, owner: str, *, rotate: bool, deletion_only=False) -
 
 
 def lifecycle(identities, doc):
-    if (set(doc) not in ({"op", "principal", "rotate"},
-                        {"op", "principal", "rotate", "deletion_only"})
+    if (set(doc) != {"op", "principal", "rotate"}
             or doc["op"] != "BOX_LIFECYCLE" or type(doc["rotate"]) is not bool):
         raise ValueError("invalid lifecycle request")
-    if type(doc.get("deletion_only", False)) is not bool:
-        raise ValueError("invalid deletion admission")
-    return owner_record(identities, doc["principal"], rotate=doc["rotate"],
-                        deletion_only=doc.get("deletion_only", False))
+    return owner_record(identities, doc["principal"], rotate=doc["rotate"])
 
 
 def resolve(identities, request: dict) -> dict:
