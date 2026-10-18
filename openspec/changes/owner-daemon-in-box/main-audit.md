@@ -4,7 +4,8 @@
 
 Starting head `0f6cd44e3a7`, same cutover branch and base. Synthetic fixtures and
 disposable local venues only; no production access, deploy, publication, branch
-switch or delegated work. Receipts: `C:/Users/Jonathan/AppData/Local/Temp/ta-c6-review3/`.
+switch or delegated work. Accepted receipts: `C:/Users/Jonathan/AppData/Local/Temp/ta-c6-review3/accepted/`.
+Sibling directories contain diagnostic runs and are not final validation receipts.
 
 - Restore now has one rule, **Restore keeps monotonic facts**, specified in design
   and the owner-isolation delta. The exact shared-store/table/file inventory is
@@ -22,6 +23,8 @@ switch or delegated work. Receipts: `C:/Users/Jonathan/AppData/Local/Temp/ta-c6-
 - Deletion-only startup enters no dispatch lifespan or egress loop. Background
   delivery, run, scheduler, activity, maintenance and consumer dispatch hold the
   owner activity gate; drain sees active work and refuses queued execution.
+  Background accounting does not renew user idle, so periodic polls cannot keep
+  an idle box awake. The process test waits for the real drain acknowledgement.
 - Every checkout with a session becomes a permanent settlement mapping, including
   expired/completed attempts. Webhooks resolve it and deletion inspects every
   mapped session. Only sessionless attempts are dropped and counted.
@@ -31,8 +34,54 @@ switch or delegated work. Receipts: `C:/Users/Jonathan/AppData/Local/Temp/ta-c6-
   during read-only census. After the verified pair and stopped daemon, apply
   repairs those named indexes, verifies and records them. Non-index corruption
   refuses. The separate concern records the reported index drift without values.
+- Retired stores are classified only by the canonical cutover inventory; they
+  are not runtime registry entries. The guard checks disjoint classifications
+  and absence of runtime readers, retaining the existing source-channel probe.
 
-Validation results are recorded here after the final runs.
+Validated implementation head: `9a09c60476ec11aed2e987c5e2bee0884a7a1199`
+(commits `4abfec08b3d`, `1fe3b531363`, `9a09c60476e`). Only this audit changed
+after the accepted runs started; source hashes are retained with the receipts.
+
+| Accepted Linux oracle run | Passed | Skipped | Failed / errors |
+| --- | ---: | ---: | ---: |
+| Targeted patterns, touched tests, heavy files and guards | 2,677 | 46 | 0 / 0 |
+| Root-only and supplemental root cases | 203 | 0 | 0 / 0 |
+| Root Docker-engine box-move rehearsal | 12 | 0 | 0 / 0 |
+| CI shard 1 (259 files) | 5,478 | 44 | 0 / 0 |
+| CI shard 2 (254 files) | 5,624 | 8 | 0 / 0 |
+| CI shard 3 (251 files) | 5,574 | 72 | 0 / 0 |
+| CI shard 4 (443 files) | 7,090 | 12 | 0 / 0 |
+
+All seven processes exited 0. The four CI shards total **23,766 passed**, plus
+49 passing subtests, 136 existing skips and two `not slow` deselections. Selection
+used `ci_required_tests.py --ci-select pr --base conv/c6-owner-daemon-s3c` and the
+repository's `shard_of(path, 4)`: 1,207 files, selection digest
+`sha256:6dd3f6328fa6c00e1bae1542abd14d31b5ff49ab0d1ca1a2702695fd13ebab3f`.
+Each shard ran in its own oracle process with `MSYS_NO_PATHCONV=1`,
+`TINYASSETS_DATA_DIR=/tmp/ta-data`, `CI=true`, `-m "not slow"`, `--no-header`
+and `-p no:cacheprovider`.
+
+All 46 targeted skips and all 58 root/Docker-only shard skips match exact passing
+cases in the privileged runs. The remaining 78 shard skips are existing platform,
+optional dependency, Compose-CLI or checkout-history conditions, not passes.
+No skips or xfails were added. All 24 affected heavy files ran (1,047 passing
+cases), and all 39 structural-guard targets ran (821 passing cases); none missing.
+
+The real `--as-root --docker-engine` rehearsal passed every step.
+`restore_after_write` reports `comparisons=1`, `replay_refusals=6`,
+`fenced_owners=2`, `revoked_keys=1`, `erased_owners=1`: the post-snapshot revoked
+key stays revoked, the erased owner stays erased, and write/bash operation IDs
+are refused for both owners after restore. Projection-failure tests retain both
+live volumes; revoked-authority and previous rollback scenarios now assert
+carried facts rather than retiring their tests.
+
+Changed-file Ruff, `check_shapes.py`, strict OpenSpec validation and
+`git diff --check` pass. Whole-repository Ruff still reports 32 baseline findings
+in six files unchanged from starting head; `ruff-baseline.json` records the
+comparison, and no unrelated lint debt was altered. Final post-commit hygiene
+uses `Registry row(s): S8` and the existing `Test-Removal: retired -- ...` line;
+its command, exit status and output are recorded in `gates-final.json` and
+`hygiene-final.log`. No production deployment or live-user verification is claimed.
 
 Earlier dated sections below are historical receipts. Their per-item restore
 refusals, inferred root-vector ownership and lease-only checkout handling are
