@@ -165,9 +165,11 @@ def restore_replay_probe(mode: str) -> int:
         stamp = "2026-10-17T01-00-00Z"
         shared = backup / f"tinyassets-data-{stamp}.tar.gz"
         boxes = backup / f"tinyassets-box-store-{stamp}.tar.gz"
-        subprocess.run(["tar", "-czf", str(shared), "--transform=s,^data,_data,",
+        # The S flag keeps symlink targets verbatim: an owner's links are
+        # content, while member and hard-link names take the archive prefix.
+        subprocess.run(["tar", "-czf", str(shared), "--transform=s,^data,_data,S",
                         "-C", "/", "--numeric-owner", "--acls", "--xattrs", "data"], check=True)
-        subprocess.run(["tar", "-czf", str(boxes), "--transform=s,^,owners/,",
+        subprocess.run(["tar", "-czf", str(boxes), "--transform=s,^,owners/,S",
                         "-C", str(store), "--numeric-owner", "--acls", "--xattrs",
                         *(str(uid) for _, uid in owners), "399999"], check=True)
         runpy.run_path("/support/deploy/backup-pair.py")["create"](
