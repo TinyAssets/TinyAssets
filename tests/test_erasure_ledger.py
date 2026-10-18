@@ -136,6 +136,83 @@ def test_cutover_seeds_all_legacy_sources(tmp_path):
     assert (staged / NAME).stat().st_mode & 0o777 == 0o600
 
 
+@pytest.mark.parametrize("location", ["source", "staging"])
+@pytest.mark.parametrize("kind", ["main", "custody", "router", "host", "revocation", "policy"])
+def test_each_legacy_fence_refuses_auth_and_survives_disaster(
+    tmp_path, monkeypatch, kind, location,
+):
+    current, staged, live, trees = paired(tmp_path)
+    restored = tmp_path / "restored"
+    shutil.copytree(current, restored)  # A recovery point predating the fence.
+    root = current if location == "source" else staged
+    digest = principal_digest("alice")
+    if kind == "policy":
+        marker = root / ".broker/accounts" / digest / ".deleted"
+        marker.parent.mkdir(parents=True)
+        marker.touch()
+    else:
+        path, ddl, insert, values = {
+            "main": (".tinyassets.db", "CREATE TABLE deleted_principals "
+                     "(founder_sub TEXT, deleted_at REAL)",
+                     "INSERT INTO deleted_principals VALUES (?,1)", (digest,)),
+            "custody": (".broker/credential-custody.db", "",
+                        "INSERT INTO deleted_principals VALUES (?)", (digest,)),
+            "router": (".router-deleted-owners.sqlite3",
+                       "CREATE TABLE deleted_owners (owner TEXT, receipt TEXT)",
+                       "INSERT INTO deleted_owners VALUES (?,NULL)", ("alice",)),
+            "host": (".boxhost/boxhost.db", "CREATE TABLE owner_destroys "
+                     "(owner_id TEXT, uid INTEGER)",
+                     "INSERT INTO owner_destroys VALUES (?,?)", ("alice", 300001)),
+            "revocation": (".broker/state/owner-identities.db", "",
+                           "INSERT INTO owner_box_revocations VALUES (?,1)", ("alice",)),
+        }[kind]
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(root / path) as db:
+            if ddl:
+                db.execute(ddl)
+            db.execute(insert, values)
+    ledger = ErasureLedger(staged)
+    seed_legacy(current, ledger, store_root=live)
+    entry, = ledger.entries()
+    assert entry["digest"] == digest and entry["uids"] == [300001]
+    assert entry["receipt"]["unfinished_phases"] == list(PHASES)
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(staged))
+    assert _provider(key).resolve_token(_sign(key, sub="alice", sid="fresh-session")) is None
+    # Retired formats cannot participate in the owner-box disaster path.
+    for data in (staged, restored):
+        (data / ".tinyassets.db").unlink(missing_ok=True)
+        for name in (".router-deleted-owners.sqlite3", ".boxhost/boxhost.db",
+                     ".broker/credential-custody.db", ".disaster-restore.json"):
+            (data / name).parent.mkdir(parents=True, exist_ok=True)
+            (data / name).write_bytes(b"retired")
+        with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
+            db.execute("DELETE FROM owner_box_revocations")
+        shutil.rmtree(data / ".broker/accounts", ignore_errors=True)
+    # Disaster recovery writes a local custody fence, but never reads one.
+    (restored / ".broker/credential-custody.db").unlink()
+    for tree in (live / "300001", trees / "300001"):
+        os.chown(tree, 300001, 300001)
+        tree.chmod(0o700)
+    report = disaster(staged, restored, trees, monkeypatch)
+    assert report["erased_owners"] == 1
+    recovered = ErasureLedger(restored)
+    assert recovered.contains("alice") and recovered.pending()[0]["work"]
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(restored))
+    assert _provider(key).resolve_token(_sign(key, sub="alice", sid="after-restore")) is None
+    finish_erasures(restored, live, daemons=recovery_daemons(live, monkeypatch))
+    assert not (live / "300001").exists()
+    assert recovered.receipt("alice")["home_removed"]
+
+
+def test_cutover_does_not_turn_box_retirement_into_account_erasure(tmp_path):
+    current, staged, live, _ = paired(tmp_path)
+    with sqlite3.connect(current / ".broker/state/owner-identities.db") as db:
+        db.execute("INSERT INTO owner_box_revocations VALUES ('alice',0)")
+    seed_legacy(current, ErasureLedger(staged), store_root=live)
+    assert not ErasureLedger(staged).contains("alice")
+
+
 def test_union_cannot_hide_new_work_with_an_old_completion(tmp_path, monkeypatch):
     current, staged, _, _ = paired(tmp_path)
     first = ErasureLedger(current)

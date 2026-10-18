@@ -297,10 +297,29 @@ def carry_forward(current, staged, unavailable_sources=None):
 
 
 def seed_legacy(source, ledger, *, store_root):
-    """Offline import of genuine pre-cutover facts, including rollback to that pair."""
+    """Import source and staged pre-cutover facts before retiring their formats."""
+    from tinyassets.restore_recovery import _rows
+
+    roots = list(dict.fromkeys((source, ledger.root)))
+    for root in roots:
+        _seed_legacy_fences(root, ledger, store_root)
+    # Resolve digest-only facts after BOTH roots have contributed their fences.
+    for root in roots:
+        for row in _rows(root, ".broker/state/owner-identities.db", "owner_identities"):
+            if ledger.contains(row["principal"]):
+                ledger.execute("add", {"digest": principal_digest(row["principal"]),
+                                       "principal": row["principal"], "uids": [row["machine_id"]]})
+    for root in roots:
+        _seed_legacy_work(root, ledger, store_root)
+    for suffix in ("", "-journal", "-wal", "-shm"):
+        (ledger.root / (".router-deleted-owners.sqlite3" + suffix)).unlink(missing_ok=True)
+
+
+def _seed_legacy_fences(source, ledger, store_root):
     from tinyassets.restore_recovery import _rows, _safe
 
     sources = ((".router-deleted-owners.sqlite3", "deleted_owners"),
+               (".tinyassets.db", "deleted_principals"),
                (".broker/credential-custody.db", "deleted_principals"),
                (".boxhost/boxhost.db", "owner_destroys"),
                (".broker/state/owner-identities.db", "owner_box_revocations"))
@@ -309,7 +328,10 @@ def seed_legacy(source, ledger, *, store_root):
             if table == "owner_box_revocations" and not row["deleted"]:
                 continue
             owner = row.get("owner", row.get("owner_id", row.get("principal")))
-            digest = row["digest"] if table == "deleted_principals" else principal_digest(owner)
+            if table == "deleted_principals":
+                digest = row["founder_sub"] if relative == ".tinyassets.db" else row["digest"]
+            else:
+                digest = principal_digest(owner)
             receipt = json.loads(row.get("receipt") or "null") or {}
             ledger.execute("add", {"digest": digest, "principal": owner, "receipt": receipt,
                                    "uids": [row["uid"]] if table == "owner_destroys" else []})
@@ -318,10 +340,15 @@ def seed_legacy(source, ledger, *, store_root):
                 ledger.execute("work", {"digest": digest, "target": relative_target({
                     "uid": int(destination.name), "store": str(destination.parent),
                     "quarantine": str(destination)}, store_root)})
-    for row in _rows(source, ".broker/state/owner-identities.db", "owner_identities"):
-        if ledger.contains(row["principal"]):
-            ledger.execute("add", {"digest": principal_digest(row["principal"]),
-                                   "principal": row["principal"], "uids": [row["machine_id"]]})
+    # Policy erasure removes policy.db but leaves this digest-named fence.
+    for marker in (source / ".broker/accounts").glob("*/.deleted"):
+        _safe(source, marker.relative_to(source))
+        ledger.execute("add", {"digest": marker.parent.name})
+
+
+def _seed_legacy_work(source, ledger, store_root):
+    from tinyassets.restore_recovery import _safe
+
     report_path = _safe(source, ".disaster-restore.json")
     report = json.loads(report_path.read_text()) if report_path.exists() else {}
     for target in report.get("pending_erasures", []) + report.get("erasure_failures", []):
@@ -337,8 +364,6 @@ def seed_legacy(source, ledger, *, store_root):
             if relative != target:
                 ledger.execute("work", {"digest": entry["digest"], "target": relative})
                 ledger.execute("finish", {"digest": entry["digest"], "ids": [key]})
-    for suffix in ("", "-journal", "-wal", "-shm"):
-        (ledger.root / (".router-deleted-owners.sqlite3" + suffix)).unlink(missing_ok=True)
 
 
 def require_active(root, owner):

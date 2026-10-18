@@ -25,7 +25,9 @@ SHALL be erasure authority, keyed by sha256(principal). Deletion SHALL append it
 entry first and record each phase completion. The shared root SHALL be root-owned
 with sticky group-write access for the router, preventing replacement of root
 ledger files; all ledger SQLite sidecars SHALL be root-private. Cutover SHALL seed all router
-tombstones, custody digests, boxhost owner_destroys and broker revocations, then
+tombstones, `.tinyassets.db.deleted_principals(founder_sub)` digests, custody
+digests in both source and staging, boxhost owner_destroys, broker revocations
+with deleted=1, and `.broker/accounts/<digest>/.deleted` policy markers, then
 remove the router tombstone store and shared host journal. Plaintext required for phases SHALL
 remain only in root-owned state. Local custody fences are not retry authority.
 Both restore paths SHALL union readable live and staged ledger events; owner-box
