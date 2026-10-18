@@ -95,7 +95,11 @@ def _repair_staged_databases(staged):
     from tinyassets.box_layout_migration import _claim_sqlite_sidecars
     from tinyassets.sqlite_integrity import check
 
-    for path in staged.rglob("*"):
+    for path in sorted(staged.rglob("*")):
+        # A sidecar belongs to its database: closing a repaired database may
+        # remove its -wal/-shm before the scan reaches them.
+        if path.name.endswith(("-wal", "-shm", "-journal")):
+            continue
         # Owner content includes links. Discover SQLite without following any
         # symlink; only database candidates need private-inode custody.
         info = path.lstat()

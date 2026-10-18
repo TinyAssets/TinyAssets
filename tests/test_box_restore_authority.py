@@ -704,3 +704,25 @@ def test_reapply_repairs_index_drift_on_its_private_registry_copy(tmp_path, monk
     assert [c[3] for c in commands] == [f"project -s -p {trees / '300001'} 300001",
                                        "limit -p bhard=1024k 300001"]
     assert registry.read_bytes() == before
+
+
+def test_staged_repair_survives_sidecars_removed_by_repairing_their_database(tmp_path):
+    # Real owner trees hold WAL databases (e.g. a pre-migrate backup) with
+    # -wal/-shm on disk; repairing and closing one removes its sidecars.
+    from tinyassets.restore_recovery import _repair_staged_databases
+
+    live = tmp_path / "live.db"
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    keep = sqlite3.connect(live)
+    keep.execute("PRAGMA journal_mode=WAL")
+    keep.execute("PRAGMA wal_autocheckpoint=0")
+    keep.execute("CREATE TABLE notes (body)")
+    keep.execute("INSERT INTO notes VALUES ('kept')")
+    keep.commit()
+    for suffix in ("", "-wal", "-shm"):
+        shutil.copyfile(f"{live}{suffix}", stage / f"memory.db.bak{suffix}")
+    keep.close()
+    _repair_staged_databases(stage)
+    with sqlite3.connect(stage / "memory.db.bak") as db:
+        assert db.execute("SELECT body FROM notes").fetchall() == [("kept",)]
