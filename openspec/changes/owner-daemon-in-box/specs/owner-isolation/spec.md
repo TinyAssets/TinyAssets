@@ -6,6 +6,11 @@ before publication if the LIVE router `traffic_opened_at` exists (including when
 newer than the pair), a disaster credential generation exists, or any registered
 live store, owner tree or owner journal is absent or unreadable. Completeness
 SHALL include the LIVE owner store catalog, even for stores absent from the pair.
+Catalog authority SHALL come only from `.owner_leases.db` at the shared data
+root or owner mount root (the lease callers' fixed bases), never a recursive
+filename search. A catalog proven necessary by its same-layout paired copy or live fenced
+stores SHALL be present and readable. Store checks and receipt fencing SHALL
+use platform paths and admitted centers, ignoring workspace and uploaded files.
 Data-only restore and pre-store overrides SHALL NOT bypass paired validation.
 The router SHALL durably record its backed-up traffic marker before admitting
 ordinary traffic after deploy canary acceptance. Closed admission SHALL also

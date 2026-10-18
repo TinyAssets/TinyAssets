@@ -39,6 +39,7 @@ def seed(root):
 
 
 def paired(tmp_path):
+    from tinyassets.owner_lease import lease_db
     from tinyassets.router_traffic import initialize
     current, staged = tmp_path / "current", tmp_path / "staged"
     live, trees = tmp_path / "live", tmp_path / "trees"
@@ -50,6 +51,9 @@ def paired(tmp_path):
     journal = BoxHostState(tree / ".owner-boxd/boxhost.db")
     journal.epoch("alice")
     journal.close()
+    for root in (current, tree):
+        with lease_db(root):
+            pass
     shutil.copytree(current, staged)
     shutil.copytree(live, trees)
     return current, staged, live, trees
@@ -228,6 +232,89 @@ def test_normal_resolves_registered_runtime_mount_paths(tmp_path, placement):
                    (mount + "/new.db", "agent_turn_journal", "now"))
     before = fingerprint(staged), fingerprint(trees)
     restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)
+    assert (fingerprint(staged), fingerprint(trees)) == before
+
+
+@pytest.mark.parametrize("placement", ["router", "owner"])
+@pytest.mark.parametrize("damage", ["missing", "corrupt", "empty"])
+def test_normal_refuses_missing_or_unreadable_fixed_catalog(tmp_path, placement, damage):
+    current, staged, live, trees = paired(tmp_path)
+    root = current if placement == "router" else live / "300001"
+    catalog = root / ".owner_leases.db"
+    if damage == "missing":
+        catalog.unlink()
+    else:
+        catalog.write_bytes(b"unreadable database" if damage == "corrupt" else b"")
+    before = fingerprint(staged), fingerprint(trees)
+    with pytest.raises((ValueError, sqlite3.DatabaseError)):
+        restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)
+    assert (fingerprint(staged), fingerprint(trees)) == before
+
+
+@pytest.mark.parametrize("placement", ["router", "owner"])
+@pytest.mark.parametrize("catalog", ["escape", "corrupt"])
+def test_normal_ignores_workspace_authority_lookalikes(tmp_path, placement, catalog):
+    from tinyassets.owner_lease import lease_db
+
+    current, staged, live, trees = paired(tmp_path)
+    roots = (current, staged) if placement == "router" else (live / "300001", trees / "300001")
+    for root in roots:
+        workspace = root / "a/.agent-workspace/.tmp/pytest/project"
+        workspace.mkdir(parents=True)
+        if catalog == "escape":
+            with lease_db(workspace) as db:
+                db.execute("INSERT INTO owner_store_catalog VALUES (?,?,?)",
+                           ("/u/.tmp/missing.db", "agent_turn_journal", "now"))
+        else:
+            (workspace / ".owner_leases.db").write_bytes(b"corrupt user file")
+        (workspace / "upload.db").write_bytes(b"verbatim upload")
+    # A database present only in the backup is content, not a missing live store.
+    workspace = roots[1] / "a/.agent-workspace/.tmp/pytest/project"
+    with sqlite3.connect(workspace / "backup-only.db") as db:
+        db.execute("CREATE TABLE uploaded (value TEXT)")
+    before = fingerprint(staged), fingerprint(trees)
+    restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)
+    assert (fingerprint(staged), fingerprint(trees)) == before
+
+
+@pytest.mark.parametrize("placement", ["router", "owner"])
+def test_normal_missing_catalog_with_live_fence_refuses_without_paired_catalog(tmp_path, placement):
+    current, staged, live, trees = paired(tmp_path)
+    root, saved = ((current, staged) if placement == "router"
+                   else (live / "300001", trees / "300001"))
+    for base in (root, saved):
+        (base / ".owner_leases.db").unlink()
+    with sqlite3.connect(root / ".tinyassets.db") as db:
+        db.execute("CREATE TABLE owner_fence (owner_key TEXT, generation INT)")
+        db.execute("INSERT INTO owner_fence VALUES ('cc:a',1)")
+    with pytest.raises(ValueError, match="catalog missing"):
+        restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)
+
+
+@pytest.mark.parametrize("placement,relative", [
+    ("router", ".runtime/mcp-events.sqlite3"),
+    ("router", ".published/.tinyassets.db"),
+    ("owner", ".universe-sidecars/a/starter-seeds.sqlite3"),
+    ("owner", ".universe-sidecars/a/.effector_consents.db"),
+])
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_normal_checks_fixed_platform_store_families(tmp_path, placement, relative, damage):
+    current, staged, live, trees = paired(tmp_path)
+    roots = ((current, staged) if placement == "router"
+             else (live / "300001", trees / "300001"))
+    for root in roots:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(path) as db:
+            db.execute("CREATE TABLE records (value TEXT)")
+    path = roots[0] / relative
+    if damage == "missing":
+        path.unlink()
+    else:
+        path.write_bytes(b"corrupt platform store")
+    before = fingerprint(staged), fingerprint(trees)
+    with pytest.raises((ValueError, sqlite3.DatabaseError)):
+        restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)
     assert (fingerprint(staged), fingerprint(trees)) == before
 
 
@@ -413,17 +500,23 @@ def test_normal_refuses_linked_journal_members(tmp_path, member):
     assert outside.read_bytes() == b"outside"
 
 
-def test_disaster_fences_external_receipts_and_daily_spend(tmp_path, monkeypatch):
+@pytest.mark.parametrize("placement", ["root", "center"])
+def test_disaster_fences_external_receipts_and_daily_spend(tmp_path, monkeypatch, placement):
     from tinyassets.broker.policy import PolicyRefused, PolicyStore
     from tinyassets.restore_recovery import fence_ops
     from tinyassets.storage.external_write_receipts import try_reserve_receipt
     current, staged, live, trees = paired(tmp_path)
-    center = trees / "300001/a"
-    center.mkdir()
+    workspace = trees / "300001/a/.agent-workspace/.tmp/project"
+    workspace.mkdir(parents=True)
+    for name in (".remote-ta-receipts.sqlite3", ".external_write_receipts.db"):
+        (workspace / name).write_bytes(b"user content, not receipt authority")
+    before = fingerprint(workspace)
+    center = trees / ("300001/a" if placement == "center" else "300001")
     assert try_reserve_receipt(center, idempotency_hint="old", sink="fixture",
                                run_id="opaque-before")["status"] == "reserved"
     monkeypatch.setattr("os.chown", lambda *a, **k: None)
     fence_ops(staged, trees, 2000000000)
+    assert fingerprint(workspace) == before
     with pytest.raises(ValueError, match="restore epoch"):
         try_reserve_receipt(center, idempotency_hint="absent-from-backup", sink="fixture",
                             run_id="opaque-after-backup")

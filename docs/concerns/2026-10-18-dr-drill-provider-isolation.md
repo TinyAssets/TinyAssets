@@ -11,3 +11,9 @@ entry point, or an isolated real provider tenant. Never provide production
 WorkOS credentials to this drill. The local archive rehearsal already proves
 recorded-provider reconciliation, provider-only erasure, and unreachable-provider
 exit 4. No workflow was dispatched during this review.
+
+The fresh drill droplet also never provisions the XFS owner store or boxhostd:
+`/var/lib/boxhostd/owners` is absent, so `BOX_NAME` remains unset and
+`deploy/backup-restore.sh` exits 4 before provider reconciliation. Provision the
+owner-box host as deploy does before disaster restore. This weekly diagnostic
+is not a deploy gate.
