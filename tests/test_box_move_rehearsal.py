@@ -677,7 +677,8 @@ finally:
             "history_turns": 4, "pending": 4, "pending_saved": 4,
             "controls": 8, "plans": 8, "writes": 4, "reconnect": 2, "production_launch": 1,
         }
-        assert result["restore_before_write"]["comparisons"] == 1
+        assert result["restore_before_write"] == {
+            "status": "PASS", "comparisons": 1, "refusals": 1}
         assert result["normal_restore_after_traffic_refuses"] == {"status": "PASS", "refusals": 1}
         assert result["disaster_provider_unreachable_refuses"] == {"status": "PASS", "refusals": 1}
         assert result["disaster_restore_after_traffic"] == {

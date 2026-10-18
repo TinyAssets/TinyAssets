@@ -311,6 +311,16 @@ class Venue:
         )
 
     def restore(self, *, replay=False, disaster=False, refuse=False):
+        def live_bytes():
+            return self.helper(
+                "import json; from pathlib import Path; "
+                "from tinyassets.box_layout_migration import _durable_tree; "
+                "print(json.dumps([_durable_tree(Path('/data')), "
+                "{p.name:_durable_tree(p) for p in Path('/box-store').iterdir() "
+                "if p.name.isdecimal()}], sort_keys=True))"
+            ).stdout
+
+        before = live_bytes() if refuse and not replay else None
         # Provider responses and absent host services are recorded at this
         # venue boundary. Extraction, fencing, quotas and swap are real.
         script = r"""set -eu
@@ -375,6 +385,8 @@ bash /support/deploy/backup-restore.sh
         expected = 4 if refuse else 6 if disaster else 0
         if result.returncode != expected:
             raise RuntimeError("restore failed: " + str(result.returncode))
+        if before is not None and live_bytes() != before:
+            raise RuntimeError("refused rollback changed live data or owner trees")
         if replay or refuse:
             return
         self.helper(
@@ -505,8 +517,11 @@ def archive_rehearsal(image, archive, *, store_bytes):
         baseline = venue.manifests()
         passed(step, manifests=len(baseline[1]) + 1)
         step = "restore_before_write"
-        venue.restore()
-        passed(step, comparisons=1)
+        # A pre-cutover archive may need forward index repair. Rollback must
+        # refuse that archive rather than publish the unrepaired database.
+        refuse_drift = bool(census.get("repairable_indexes"))
+        venue.restore(refuse=refuse_drift)
+        passed(step, comparisons=1, refusals=int(refuse_drift))
         step = "crash_resume"
         venue.reset_fixture()
         required(venue.migration("preflight"))
@@ -531,7 +546,7 @@ def archive_rehearsal(image, archive, *, store_bytes):
             if venue.manifests() != baseline:
                 raise RuntimeError("resumed manifests differ")
             if boundary == "after_owner_tree:1":
-                venue.restore()
+                venue.restore(refuse=refuse_drift)
                 venue.reset_fixture()
                 required(venue.migration("preflight"))
                 required(venue.migration("census"))
