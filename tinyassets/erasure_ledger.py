@@ -315,8 +315,13 @@ def seed_legacy(source, ledger, *, store_root):
                                        "principal": row["principal"], "uids": [row["machine_id"]]})
     for root in roots:
         _seed_legacy_work(root, ledger, store_root)
+    from tinyassets.universe_files import unlink_data_path
+
     for suffix in ("", "-journal", "-wal", "-shm"):
-        (ledger.root / (".router-deleted-owners.sqlite3" + suffix)).unlink(missing_ok=True)
+        try:
+            unlink_data_path(ledger.root / (".router-deleted-owners.sqlite3" + suffix))
+        except FileNotFoundError:
+            pass
 
 
 def _seed_legacy_fences(source, ledger, store_root):
@@ -372,7 +377,10 @@ def _seed_legacy_work(source, ledger, store_root):
     from tinyassets.restore_recovery import _safe
 
     report_path = _safe(source, ".disaster-restore.json")
-    report = json.loads(report_path.read_text()) if report_path.exists() else {}
+    from tinyassets.universe_files import read_data_path
+
+    raw = read_data_path(report_path)
+    report = json.loads(raw) if raw is not None else {}
     for target in report.get("pending_erasures", []) + report.get("erasure_failures", []):
         matches = [entry for entry in ledger.entries() if target["uid"] in entry["uids"]]
         if len(matches) != 1:

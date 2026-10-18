@@ -112,7 +112,6 @@ PINNED: dict[str, list[str]] = {
     # Restore reads/removes stopped shared-root metadata after _safe checks;
     # no owner box mounts this root (test_erasure_ledger proves custody).
     "tinyassets/erasure_ledger.py": [
-        "carry_forward: .read_text()", "carry_forward: .unlink()",
         "initialize: os.open()", "initialize: os.open()",
     ],
     # Fixed, read-only host bind, outside /home/owner; never an owner-supplied path.
