@@ -329,8 +329,11 @@ async def _delete_owner_account(identity):
         # Money cleanup must run even when stopping or erasing the box failed.
         await phase("billing", lambda: cancel_account_billing(root, owner))
         await phase("credentials", lambda: revoke_account(root, owner))
-        # Durable router retries finish cleanup even though sign-in is fenced.
-        await phase("identity", lambda: delete_workos_user(owner))
+        # External identity is the last phase. Read the authority again: a
+        # receipt save can retain owner_tree work that a caller tried to finish.
+        recorded = await run_in_threadpool(deleted.receipt, owner)
+        if all(step in recorded["completed_phases"] for step in PHASES if step != "identity"):
+            await phase("identity", lambda: delete_workos_user(owner))
         receipt["unfinished_phases"] = [step for step in PHASES
             if step not in done]
         await run_in_threadpool(deleted.save_receipt, owner, receipt)

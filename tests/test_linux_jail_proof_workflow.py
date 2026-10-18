@@ -97,8 +97,26 @@ def _triggers(wf: dict) -> dict:
 
 def _job(wf: dict) -> dict:
     jobs = wf["jobs"]
-    assert list(jobs) == [_JOB], f"exactly one job named {_JOB!r}, got {list(jobs)}"
+    assert set(jobs) == {_JOB, "production-owner-launch"}
     return jobs[_JOB]
+
+
+def test_production_extraction_job_requires_real_runsc_and_no_skips():
+    job = _load()["jobs"]["production-owner-launch"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert "draft == false" in job["if"]
+    steps = job["steps"]
+    launch = next(step for step in steps if step.get("name") ==
+                  "Launch an owner from the production extraction")
+    assert "scripts/linux_oracle.py --as-root --docker-engine" in launch["run"]
+    assert "TA_REHEARSAL_RUNSC=1" in launch["run"]
+    assert ("tests/test_box_move_rehearsal.py::test_synthetic_archive_rehearses_final_cutover"
+            in launch["run"])
+    assert not launch.get("continue-on-error")
+    verdict = next(step for step in steps if step.get("name") ==
+                   "Refuse absent or skipped launch proof")
+    assert verdict["if"] == "always()"
+    assert all(word in verdict["run"] for word in ("skipped", "failure", "error"))
 
 
 def _steps(wf: dict) -> list[dict]:
@@ -185,6 +203,10 @@ def test_checkout_does_not_persist_credentials():
 
 def test_no_secrets_self_hosted_desktop_or_production_reach():
     text = _code_text()
+    # Static extraction source and pinned runtime inputs are test inputs;
+    # invoking a deployment or accessing a production surface is still barred.
+    for source in ("deploy/deploy_fail_safe.sh", "deploy/install-boxhostd-preflight.sh"):
+        text = text.replace(source, "static-proof-input")
     for forbidden in (
         "secrets.", "self-hosted", "DESKTOP-KCPMGP3", "tinyassets.io",
         "deploy", "--privileged", "GITHUB_TOKEN", "--cap-add", "docker push",
@@ -336,7 +358,8 @@ def test_the_jail_runs_through_the_shared_oracle_as_uid_1001():
     wf = _load()
     run = _step(wf, _RUN_STEP)["run"]
     assert "python scripts/linux_oracle.py --out \"$OUT_DIR\" --apparmor ta-jail-userns" in run
-    assert "docker run" not in run and "docker build" not in _code_text(), (
+    assert "docker run" not in run and all(
+        "docker build" not in step.get("run", "") for step in _steps(wf)), (
         "a second, inline container recipe is what the oracle replaced"
     )
     assert "--as-root" not in run and "--no-bwrap" not in run

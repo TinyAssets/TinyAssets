@@ -140,6 +140,40 @@ box. No owner or founder machine SHALL be on any path.
 - **WHEN** the daemon is redeployed while a session runs in a box
 - **THEN** the session continues and completes without an interrupted turn
 
+### Requirement: Cutover launch and erasure completion use production paths
+The extracted harness root SHALL be traversable by an owner UID (0555).
+The archive rehearsal SHALL execute the image Python and launch an owner daemon
+with the production argv from the production extraction. The Linux jail workflow
+SHALL also launch that extraction through real runsc.
+
+HTTP connection commits SHALL consult `erasure_ledger.py` inside the row-writing
+transaction; a fenced principal SHALL write nothing. Close-all SHALL cancel
+in-flight HTTP connection channels by their registered principal.
+
+Startup recovery and account deletion SHALL call the same owner-destroy
+function. It SHALL retire admission, stop the runtime, erase every recorded
+tree, clear quota, and remove relay, app socket and secret before recording
+owner_tree complete. A root host may retire only a ledger-fenced principal's
+matching permanent UID through the broker. A missing reservation cannot retire
+another principal's UID.
+
+External identity deletion SHALL run last, after every other phase is recorded
+complete in the erasure ledger. Billing cancellation SHALL still run when box
+cleanup fails. Durable retries SHALL finish identity deletion once eligible.
+
+#### Scenario: A newly extracted image launches an owner
+- **WHEN** deploy or rehearsal extracts the image into a private staging directory
+- **THEN** the final root is 0555 and the owner UID traverses it, imports TinyAssets with the image Python, and serves the production daemon
+
+#### Scenario: Cold-start recovery needs broker admission retirement
+- **WHEN** the host restarts with pending erasures and no running broker
+- **THEN** registration and erasure listeners open before cleanup waits for broker readiness
+- **AND** recovery calls full owner destruction and retains every task if any sub-step fails
+
+#### Scenario: A connection commit resumes after account erasure
+- **WHEN** an HTTP_CONNECT worker resumes after the owner's fence and custody deletion
+- **THEN** its channel is cancelled and the row-writing transaction refuses the fenced principal
+
 ### Requirement: Box limits are the two account limits plus a host floor
 A box's account limits SHALL be exactly seats (concurrent top-level sessions)
 and storage (the box disk's hard bound, equal to the account's storage quota).

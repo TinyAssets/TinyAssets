@@ -340,8 +340,8 @@ def _save_report(path, report):
         os.close(directory)
 
 
-def finish_erasures(root, store_root=Path("/var/lib/boxhostd/owners")):
-    """Under layout exclusion, retry all ledger paths before any box starts."""
+def finish_erasures(root, store_root=Path("/var/lib/boxhostd/owners"), *, daemons=None):
+    """Under layout exclusion, retry fenced owners through full destruction."""
     from tinyassets.boxes.destroy import quarantine, tree
     from tinyassets.boxes.provider import BoxError
     from tinyassets.erasure_ledger import ErasureLedger, validate_target
@@ -349,6 +349,7 @@ def finish_erasures(root, store_root=Path("/var/lib/boxhostd/owners")):
     ledger = ErasureLedger(root)
     failures = []
     for entry in ledger.entries():
+        completed = []
         for key, item in entry["work"].items():
             uid = item["uid"]
             store = store_root / item["store"]
@@ -380,12 +381,27 @@ def finish_erasures(root, store_root=Path("/var/lib/boxhostd/owners")):
                 ledger.execute("save", {"digest": entry["digest"], "receipt": {
                     "erasure_failures": failures[-1:]}})
                 continue
-            ledger.execute("finish", {"digest": entry["digest"], "ids": [key]})
-        # Offline restore work proves the home phase after every path completes.
-        refreshed = next(e for e in ledger.entries() if e["digest"] == entry["digest"])
-        if entry["work"] and not refreshed["work"]:
-            ledger.execute("finish", {"digest": entry["digest"], "ids": [
-                key for key, phase in refreshed["tasks"].items() if phase == "owner_tree"]})
+            completed.append(key)
+        if daemons is not None and "owner_tree" in entry["tasks"].values():
+            uids = set(entry["uids"]) | {item["uid"] for item in entry["work"].values()}
+            # Online deletion may not have reached its permanent reservation;
+            # the router owns that retry. Do not append a spurious failure.
+            if entry["principal"] is None or not uids:
+                continue
+            try:
+                if len(completed) != len(entry["work"]):
+                    raise BoxError("full owner destruction remains pending")
+                for uid in sorted(uids):
+                    daemons.destroy(entry["principal"], uid)
+            except Exception as exc:
+                failures.append({"digest": entry["digest"], "error": type(exc).__name__})
+                ledger.execute("save", {"digest": entry["digest"], "receipt": {
+                    "erasure_failures": failures[-1:]}})
+            else:
+                # Tree work remains durable across ANY failed destruction step,
+                # even when all bytes have already gone on an earlier attempt.
+                ledger.execute("finish", {"digest": entry["digest"], "ids": [
+                    key for key, phase in entry["tasks"].items() if phase == "owner_tree"]})
     path = _safe(root, ".disaster-restore.json")
     if path.exists():
         report = json.loads(path.read_text())
@@ -395,3 +411,5 @@ def finish_erasures(root, store_root=Path("/var/lib/boxhostd/owners")):
         if updated != report:
             _save_report(path, updated)
             print("WARN disaster restore: " + json.dumps(updated, sort_keys=True))
+    return not any(e["work"] or (e["uids"] and "owner_tree" in e["tasks"].values())
+                   for e in ledger.entries())

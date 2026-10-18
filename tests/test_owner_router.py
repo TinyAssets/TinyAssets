@@ -139,7 +139,8 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
         relays = OwnerRelays(run / "relay", SimpleNamespace(broker_socket=host_path))
         admission = SimpleNamespace(owner=lambda owner, rotate=False, deletion_only=False:
                                     owner_record(admitted, owner, rotate=rotate,
-                                                 deletion_only=deletion_only))
+                                                 deletion_only=deletion_only),
+                                    retire=lambda owner, uid: admitted.retire_owner(owner))
         def destroy_volume(uid):
             import shutil
 
@@ -1003,7 +1004,7 @@ def test_box_deletion_rejection_keeps_ledger_fence_and_pending_cleanup(
                 json={"confirm": "DELETE", "session_ref": handle})
             assert result.status_code == 503, result.text
             assert result.json()["error"] == "deletion_incomplete"
-            assert result.json()["receipt"]["unfinished_phases"] == ["owner_tree"]
+            assert result.json()["receipt"]["unfinished_phases"] == ["owner_tree", "identity"]
 
     asyncio.run(exercise())
     assert ErasureLedger(tmp_path).contains("alice")
@@ -1102,7 +1103,7 @@ def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
                             "plan": "billing"}.get(failure, failure)
                 assert expected in pending
                 assert router_credentials.ErasureLedger(tmp_path).contains("alice")
-                assert ("identity" in calls) == (failure != "identity")
+                assert "identity" not in calls
                 if failure not in {"billing", "plan"}:
                     assert subscription["status"] == "canceled"
                 assert (await delete()).status_code == 401
@@ -1120,6 +1121,7 @@ def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
 
     asyncio.run(exercise())
     assert sorted(calls) == ["identity", "stripe"]
+    assert calls[-1] == "identity"
     assert plans.read("alice")["tier"] == "free"
     assert not boxes.roots["alice"].exists()
     assert boxes.roots["bob"].exists()
@@ -1259,7 +1261,8 @@ def test_deletion_drains_real_turn_before_sweep_and_destroys_late_writes(
                 if timeout:
                     result = await asyncio.wait_for(deleting, 25)
                     assert result.status_code == 503
-                    assert result.json()["receipt"]["unfinished_phases"] == ["owner_tree"]
+                    assert result.json()["receipt"]["unfinished_phases"] == [
+                        "owner_tree", "identity"]
                     assert root.exists() and boxes.runtime.alive(uid)
                 (root / "release-turn").touch()
                 if timeout:

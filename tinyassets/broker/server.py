@@ -356,6 +356,10 @@ class _Connection:
             raise rf.FrameError("unknown stream operation")
 
     async def _connection_op(self, op: str, doc: dict[str, Any]) -> None:
+        if self._role == BOX_HOST and op == "BOX_RETIRE_ADMISSION":
+            answer = await asyncio.to_thread(self._retire_box_admission, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+            return
         if self._role in {BOX_HOST, BOX}:
             from tinyassets.erasure_ledger import require_active
 
@@ -539,6 +543,8 @@ class _Connection:
             answer = await asyncio.to_thread(self._usage, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "HTTP_CONNECT":
+            _namespace(doc.get("principal"), doc.get("command_center"))
+            self._principals.add(doc["principal"])
             answer = await asyncio.to_thread(self._http_connect, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "OWNER_POLICY":
@@ -759,7 +765,7 @@ class _Connection:
                 identities = self._server._owner_identities
                 if identities.owner_machine(doc["principal"]) is None:
                     raise RuntimeError("owner tree absence requires its permanent reservation")
-                uid = identities.retire_owner(doc["principal"])
+                uid = identities.owner_machine(doc["principal"])
                 from tinyassets.boxes.daemon_control import request
 
                 if request("destroy", doc["principal"], uid=uid) != {"destroyed": True}:
@@ -767,6 +773,35 @@ class _Connection:
             return {"op": "OWNER_RETIRED"}
         except Exception:
             return {"op": "OWNER_RETIRE_REFUSED"}
+
+    def _retire_box_admission(self, doc):
+        from tinyassets.erasure_ledger import ErasureLedger
+
+        try:
+            if (set(doc) != {"op", "principal", "uid"} or type(doc["uid"]) is not int
+                    or not 300001 <= doc["uid"] <= 399999):
+                raise ValueError("invalid admission retirement")
+            ledger = ErasureLedger(self._server._data_root)
+            if not ledger.contains(doc["principal"]):
+                raise PermissionError("retirement requires an erasure fence")
+            identities = self._server._owner_identities
+            uid = identities.owner_machine(doc["principal"])
+            if uid != doc["uid"]:
+                # The root host supplies ledger-recorded historical UIDs. An
+                # absent reservation must not conceal another owner's mapping.
+                from contextlib import closing
+
+                with closing(identities._connect(write=False)) as db:
+                    conflicting = db.execute(
+                        "SELECT 1 FROM owner_identities WHERE machine_id=?",
+                        (doc["uid"],)).fetchone()
+                if uid is not None or conflicting:
+                    raise PermissionError("retirement reservation differs")
+            else:
+                identities.retire_owner(doc["principal"])
+            return {"op": "BOX_ADMISSION_RETIRED"}
+        except Exception:
+            return {"op": "BOX_REFUSED"}
 
     def _center_admission(self, doc: dict[str, Any]) -> dict[str, Any]:
         """DA1: append-only admit/retire; machine always from the reservation."""
@@ -1037,6 +1072,7 @@ class _Connection:
 
     def _http_connect(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.http_connect import local_operation, validate
+        from tinyassets.erasure_ledger import require_active
 
         try:
             if set(doc) != {"op", "principal", "command_center", "generation", "token",
@@ -1053,6 +1089,9 @@ class _Connection:
             if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
                 raise Fenced("invalid fence")
             with self._server._fence.send(doc["generation"], doc["token"]):
+                if self._closed.is_set():
+                    raise PermissionError("connection cancelled")
+                require_active(self._server._data_root, doc["principal"])
                 if doc["document"]["action"] in {
                         "oauth_offer", "oauth_exchange", "preset_exchange"}:
                     if (self._server._owner_identities is None

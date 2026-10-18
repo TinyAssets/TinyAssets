@@ -18,6 +18,88 @@ FIRST = {"host": "models.example.com", "path_template": "/catalogue", "methods":
 EXTRA = {"host": "models.example.com", "path_template": "/extra", "methods": ["GET"]}
 
 
+def test_delayed_commit_after_erasure_writes_no_rows(removal, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tinyassets.broker.account_erasure import ACCOUNT_SCOPE, local_erase
+    from tinyassets.broker.http_connect import local_operation
+    from tinyassets.erasure_ledger import ErasureLedger
+
+    ledger = removal.ledger
+    document = {"action": "prepare", "destination": "fresh", "expected": "", "secret": "",
+                "policy": {"auth_scheme": "none", "scopes": ["GET"], "endpoints": [FIRST],
+                           "access_mode": "exact", "git_host": ""}}
+
+    def call(doc):
+        return local_operation(ledger, principal="alice", command_center="cc-alice",
+                               document=doc, committed_via="door")
+
+    revision = call(document)["revision"]
+    entered, resume = threading.Event(), threading.Event()
+    original = ledger._connect
+    main_thread = threading.get_ident()
+
+    def delayed():
+        if threading.get_ident() != main_thread:
+            entered.set()
+            assert resume.wait(10)
+        return original()
+
+    monkeypatch.setattr(ledger, "_connect", delayed)
+    with ThreadPoolExecutor() as executor:
+        pending = executor.submit(call, {**document, "action": "commit", "expected": revision})
+        try:
+            assert entered.wait(5)
+            ErasureLedger(removal.root).add("alice")
+            local_erase(ledger, principal="alice", command_center=ACCOUNT_SCOPE,
+                        erase_external_keys=False)
+        finally:
+            resume.set()
+        with pytest.raises(PermissionError):
+            pending.result(5)
+    with original() as db:
+        for table in ("outbound_connections", "outbound_connection_grants"):
+            assert db.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0
+
+
+def test_http_connect_registers_before_worker_and_close_all_cancels(broker, monkeypatch):
+    import asyncio
+    import threading
+    from types import SimpleNamespace
+
+    from tinyassets.broker.server import OWNER, _Connection
+
+    async def exercise():
+        entered, resume = threading.Event(), threading.Event()
+        aborted = []
+        channel = _Connection(broker.server, SimpleNamespace(
+            transport=SimpleNamespace(abort=lambda: aborted.append(True))), OWNER)
+
+        def worker(doc):
+            entered.set()
+            assert resume.wait(5)
+            assert channel._closed.is_set()
+            return {"op": "HTTP_CONNECT_REFUSED"}
+
+        monkeypatch.setattr(channel, "_http_connect", worker)
+        task = asyncio.create_task(channel._connection_op("HTTP_CONNECT", {
+            "op": "HTTP_CONNECT", "principal": "alice", "command_center": "cc-alice"}))
+        channel._handler = task
+        broker.server._connections.add(channel)
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            assert channel._principals == {"alice"}
+            broker.server.close_owner("alice")
+            assert channel._closed.is_set() and aborted == [True]
+        finally:
+            resume.set()
+            await asyncio.gather(task, return_exceptions=True)
+            broker.server._connections.discard(channel)
+
+    asyncio.run(exercise())
+
+
 def connect(**changes):
     from tests.support.connection_door import connect_http
     with identity_context(Identity(user_id="alice", username="alice", capabilities=["write"])):

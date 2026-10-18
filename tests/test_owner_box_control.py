@@ -15,6 +15,32 @@ from tests.test_owner_box_roll import rolling  # noqa: F401
 from tinyassets.boxes.host_service import HostService
 
 
+def test_detached_runtime_does_not_wait_for_daemon_stdio(tmp_path, capfd):
+    import signal
+
+    from tinyassets.boxes.gvisor_runtime import GvisorRuntime
+
+    executable = tmp_path / "runsc"
+    pidfile = tmp_path / "daemon.pid"
+    executable.write_text(
+        f"#!{sys.executable}\nimport subprocess, sys\nfrom pathlib import Path\n"
+        "if sys.argv[-1] == '--detach':\n"
+        " print('detached runtime diagnostic', file=sys.stderr)\n"
+        " child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f" Path({str(pidfile)!r}).write_text(str(child.pid))\n"
+        "else:\n print('captured control output')\n")
+    executable.chmod(0o755)
+    runtime = object.__new__(GvisorRuntime)
+    runtime.runsc, runtime.state_root = executable, tmp_path
+    try:
+        assert runtime._command("run", "--detach", timeout=2).returncode == 0
+        assert capfd.readouterr().err == "detached runtime diagnostic\n"
+        assert runtime._command("state", timeout=2).stdout == "captured control output\n"
+    finally:
+        if pidfile.exists():
+            os.kill(int(pidfile.read_text()), signal.SIGKILL)
+
+
 def test_control_socket_uses_kernel_router_identity_and_returns_bounded_errors():
     if not hasattr(os, "geteuid") or os.geteuid() != 0:
         pytest.skip(

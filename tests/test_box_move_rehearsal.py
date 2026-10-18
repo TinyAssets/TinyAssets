@@ -521,7 +521,7 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
         assert result["serving"] == {
             "status": "PASS", "owners": 2, "centers": 4, "history": 4,
             "history_turns": 4, "pending": 4, "pending_saved": 4,
-            "controls": 8, "plans": 8, "writes": 4, "reconnect": 2,
+            "controls": 8, "plans": 8, "writes": 4, "reconnect": 2, "production_launch": 1,
         }
         assert result["restore_before_write"]["comparisons"] == 1
         assert result["normal_restore_after_traffic_refuses"] == {"status": "PASS", "refusals": 1}

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.support.recovery_daemons import recovery_daemons
 from tests.test_owner_cutover_census import _fingerprint, _sql
 from tests.test_owner_cutover_census import source as source
 from tinyassets.boxes.layout import OWNER_BOX_MIGRATION
@@ -258,35 +259,11 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(
         for owner in ("bob", "carol", "later"):
             with pytest.raises(BoxAuthError, match="Account deleted"):
                 registry.owner(owner)
-        # Exercise the actual host startup boundary: recovery must finish before
-        # quota/daemon construction can make any lifecycle listener reachable.
-        from types import SimpleNamespace
-
-        from tinyassets.boxes import host_service
-
-        def ready(owner_store):
-            assert owner_store == store
-            assert not any(entry["work"] for entry in ErasureLedger(data).entries())
-            raise StopIteration("startup reached admission after cleanup")
-
-        with monkeypatch.context() as startup:
-            startup.setattr(host_service, "RUNTIME", tmp_path / "runtime")
-            startup.setattr(host_service, "Path", lambda path: (
-                tmp_path / "host-state" if path == "/var/lib/boxhostd/state" else Path(path)))
-            startup.setattr(host_service, "OwnerRelays", lambda *args: None)
-            startup.setattr(host_service, "GvisorRuntime", lambda **kwargs: SimpleNamespace(
-                owner_store=store, bundle_root=tmp_path / "bundles",
-                _command=lambda *args: SimpleNamespace(stdout="[]")))
-            (tmp_path / "bundles").mkdir()
-            startup.setattr(host_service, "OwnerQuota", ready)
-            previous_umask = os.umask(0o077)
-            try:
-                with pytest.raises(StopIteration, match="after cleanup"):
-                    host_service._serve(rootfs=tmp_path / "rootfs", data_root=data)
-            finally:
-                os.umask(previous_umask)
+        # Recovery completes only through the account deletion destroy function.
+        finish_erasures(data, store, daemons=recovery_daemons(store, monkeypatch))
+        assert not any(entry["work"] for entry in ErasureLedger(data).entries())
         finished = _fingerprint(data), _fingerprint(store)
-        finish_erasures(data, store)
+        finish_erasures(data, store, daemons=recovery_daemons(store, monkeypatch))
         assert (_fingerprint(data), _fingerprint(store)) == finished
         assert not any(entry["work"] for entry in ErasureLedger(data).entries())
         for uid in (300002, 300003, 300004):

@@ -117,7 +117,7 @@ def owner(root, relay, secret, socket):
     serve(app, Path(socket))
 
 
-def broker(directory):
+def broker(directory, *, register=False):
     from tinyassets.broker.fence import Fence
     from tinyassets.broker.ops import OpStore
     from tinyassets.broker.owner_identities import OwnerIdentities
@@ -129,6 +129,11 @@ def broker(directory):
     os.setgroups([1102])
     os.setgid(1002)
     os.setuid(1002)
+    registration = None
+    if register:
+        from tinyassets.boxes.bootstrap import register_broker
+
+        registration = register_broker("r" * 64)
     dispatch = _Dispatchers(Path("/data"), allow_test_fixtures=False)
     identities = OwnerIdentities(
         Path("/data/.broker/state/owner-identities.db"), plans=Plans("/data")
@@ -151,7 +156,17 @@ def broker(directory):
         listener = await server.serve(run / "broker.sock")
         (run / "broker.sock").chmod(0o666)
         async with listener:
-            await listener.serve_forever()
+            if registration:
+                from tinyassets.boxes.control_channel import receive, send
+
+                channel, identity = registration
+                send(channel, {"ready": True})
+                assert receive(channel, identity) == {"ready": True}
+            try:
+                await listener.serve_forever()
+            finally:
+                if registration:
+                    registration[0].close()
 
     asyncio.run(serving())
 
@@ -204,7 +219,7 @@ def smoke(confirm=False):
     journal = json.loads(Path("/data/.owner-cutover.json").read_text())
     counts = dict.fromkeys(
         ("owners", "centers", "history", "history_turns", "pending", "pending_saved",
-         "controls", "plans", "writes", "reconnect"), 0
+         "controls", "plans", "writes", "reconnect", "production_launch"), 0
     )
     Path("/home/owner").mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="/tmp/s6-") as directory:
@@ -308,6 +323,11 @@ def smoke(confirm=False):
         open_traffic(Path("/data"))  # Synthetic router acceptance before the user pass.
         router = OwnerRouter(Starlette(), resolver=resolve)
         try:
+            if not confirm:
+                from rehearsal_launch import launch_extracted
+
+                launch_extracted(manager, run, journal["plan"][0]["principal"])
+                counts["production_launch"] = 1
             if confirm:
                 # The shared door adopts its real broker peer after retiring all
                 # root authority, exactly as the role launcher requires.
@@ -564,11 +584,12 @@ def host_startup():
     binary = Path("/opt/tinyassets/boxhostd/current/runsc")
     binary.parent.mkdir(parents=True, exist_ok=True)
     binary.write_text('#!/bin/sh\n'
-                      'case "$*" in *"list --format=json") echo "[]";; *) exit 97;; esac\n')
+                      'case "$*" in *"list --format=json") echo "[]";; '
+                      '*"kill "*|*"delete "*) exit 0;; *) exit 97;; esac\n')
     binary.chmod(0o700)
-    rootfs = Path("/tmp/rehearsal-images") / ("harness-" + "a" * 64)
-    rootfs.mkdir(parents=True)
-    (rootfs / ".box-image-id").write_text("sha256:" + "a" * 64)
+    from rehearsal_launch import harness
+
+    rootfs = harness()
     runtime = Path("/run/tinyassets-boxhostd")
     runtime.mkdir(mode=0o755, exist_ok=True)
     state = runtime / "broker"
@@ -577,18 +598,26 @@ def host_startup():
     children = []
     with tempfile.TemporaryFile() as output:
         try:
-            children.append(subprocess.Popen([sys.executable, __file__, "broker", str(state)],
-                                             stdout=output, stderr=output))
             code = ("from pathlib import Path; from tinyassets.boxes.host_service import main; "
                     f"main(rootfs=Path({str(rootfs)!r}), data_root=Path('/data'))")
             children.append(subprocess.Popen([sys.executable, "-c", code],
                                              stdout=output, stderr=output))
             deadline = time.monotonic() + 30
-            while not all((runtime / name).exists() for name in
-                          ("daemon.sock", "erasure.sock", "broker/broker.sock")):
+            while not (runtime / "broker-registration.sock").exists():
+                if children[0].poll() is not None or time.monotonic() > deadline:
+                    raise RuntimeError("host did not open broker registration")
+                time.sleep(.05)
+            children.append(subprocess.Popen([
+                sys.executable, __file__, "registered-broker", str(state)],
+                stdout=output, stderr=output))
+            deadline = time.monotonic() + 30
+            while not (ledger.receipt("rehearsal-erased")["home_removed"]
+                       and ledger.receipt("rehearsal-failed").get("erasure_failures")):
                 if (any(child.poll() is not None for child in children)
                         or time.monotonic() > deadline):
-                    raise RuntimeError("host startup failed")
+                    output.seek(0)
+                    raise RuntimeError("host startup failed: " +
+                                       output.read().decode(errors="replace"))
                 time.sleep(.05)
             assert not (store / "399997").exists()
             assert ledger.receipt("rehearsal-erased")["home_removed"]
@@ -630,6 +659,7 @@ def reconnect(clone):
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         {"owner": owner, "broker": broker, "door": door, "reconnect": reconnect,
+         "registered-broker": lambda directory: broker(directory, register=True),
          "host-startup": host_startup}[sys.argv[1]](
             *sys.argv[2:]
         )

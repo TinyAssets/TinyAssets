@@ -18,6 +18,23 @@ class OwnerRegistry:
     def __init__(self, data_root: Path, broker_socket: Path) -> None:
         self.data_root, self.broker_socket = data_root, broker_socket
 
+    def retire(self, owner: str, uid: int) -> None:
+        """Root cleanup retires broker admission without recursively destroying."""
+        from tinyassets.boxes.bootstrap import peer
+
+        validate_principal(owner)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(10)
+            sock.connect(str(self.broker_socket))
+            if peer(sock)[1:] != (1002, 1002):
+                raise BoxAuthError("lifecycle peer is not the credential broker")
+            sock.sendall(rf.control(rf.CONNECTION, {
+                "op": "BOX_RETIRE_ADMISSION", "principal": owner, "uid": uid}))
+            frame = rf.read_frame_blocking(sock)
+        if (frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION
+                or frame.control() != {"op": "BOX_ADMISSION_RETIRED"}):
+            raise BoxAuthError("broker refused admission retirement")
+
     def owner(self, owner: str, *, rotate: bool = False, deletion_only=False) -> dict:
         validate_principal(owner)
         from tinyassets.erasure_ledger import ErasureLedger

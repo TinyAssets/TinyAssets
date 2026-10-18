@@ -939,7 +939,8 @@ def test_migrated_owner_processes_serve_history_requests_and_pause(
     assert (_fingerprint(data), _fingerprint(store)) == live_before
 
 
-def test_forward_cutover_preserves_ledger_and_reopens_copied_home_work(cutover):
+def test_forward_cutover_preserves_ledger_and_reopens_copied_home_work(cutover, monkeypatch):
+    from tests.support.recovery_daemons import recovery_daemons
     from tinyassets.erasure_ledger import PHASES, ErasureLedger
     from tinyassets.restore_recovery import finish_erasures
 
@@ -955,7 +956,7 @@ def test_forward_cutover_preserves_ledger_and_reopens_copied_home_work(cutover):
     assert ledger.contains("alice")
     assert not ledger.receipt("alice")["home_removed"]
     assert (store / "300001").exists()
-    finish_erasures(data, store)  # The actual boxhost startup boundary, before admission.
+    finish_erasures(data, store, daemons=recovery_daemons(store, monkeypatch))
     assert not (store / "300001").exists()
     assert ledger.receipt("alice")["home_removed"]
     assert (store / "300002/b1/notes.txt").exists()

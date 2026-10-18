@@ -10,6 +10,7 @@ import re
 import shutil
 import signal
 import subprocess
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -84,7 +85,7 @@ class Venue:
         self.prefix = "ta-s6-" + uuid.uuid4().hex[:12]
         self.names = {
             k: self.prefix + "-" + k
-            for k in ("image", "store", "parent", "data", "backup", "support")
+            for k in ("image", "store", "parent", "data", "backup", "support", "harness")
         }
         self.volumes, self.containers = [], []
         self.device = ""
@@ -98,7 +99,7 @@ class Venue:
     def setup(self, archive):
         if docker("image", "inspect", self.image, check=False).returncode:
             raise ImageNotFound(f"image not found: {self.image}")
-        for key in ("image", "store", "parent", "backup", "support"):
+        for key in ("image", "store", "parent", "backup", "support", "harness"):
             docker("volume", "create", self.names[key])
             self.volumes.append(self.names[key])
 
@@ -133,6 +134,22 @@ class Venue:
                name + ":/support/rehearse_box_move.py")
         docker("cp", str(ROOT / "scripts/rehearsal_restore_provider.py"),
                name + ":/support/rehearsal_restore_provider.py")
+        docker("cp", str(ROOT / "scripts/rehearsal_launch.py"),
+               name + ":/support/rehearsal_launch.py")
+        # Export the candidate image once. The extraction function below is the
+        # same one install_box_harness calls in deploy_fail_safe.sh.
+        with tempfile.TemporaryDirectory(prefix="ta-harness-") as temporary:
+            image_tar = Path(temporary) / "image.tar"
+            docker("export", "--output", str(image_tar), name)
+            docker("cp", str(image_tar), name + ":/support/image.tar")
+        if os.environ.get("TA_REHEARSAL_RUNSC") == "1":
+            docker("cp", os.environ["TA_REHEARSAL_RUNSC_DIR"], name + ":/support/gvisor")
+        image_id = docker("image", "inspect", "-f", "{{.Id}}", self.image).stdout.strip()
+        self.container("--rm", "--user", "0",
+                       "-v", self.names["support"] + ":/support:ro",
+                       "-v", self.names["harness"] + ":/harness",
+                       "--entrypoint", "python", self.image, "-B",
+                       "/support/rehearsal_launch.py", "extract", image_id)
         self.container(
             "--rm",
             "--user",
@@ -542,6 +559,7 @@ assert all(not Path(work['store']).is_absolute() and not Path(work['quarantine']
             "-v", venue.names["data"] + ":/data",
             "--mount", "type=bind,src=" + venue.store + ",dst=/var/lib/boxhostd/owners",
             "-v", venue.names["support"] + ":/support:ro",
+            "-v", venue.names["harness"] + ":/harness:ro",
             "--entrypoint", "python", image, "-B", "/support/rehearsal_serve.py", "host-startup",
             check=False)
         required(result)
@@ -553,6 +571,7 @@ assert all(not Path(work['store']).is_absolute() and not Path(work['quarantine']
         result = venue.container(
             "--rm",
             "--privileged",
+            "--cgroupns=host",
             "--user",
             "0",
             "-v",
@@ -561,6 +580,11 @@ assert all(not Path(work['store']).is_absolute() and not Path(work['quarantine']
             "type=bind,src=" + venue.store + ",dst=/box-store",
             "-v",
             venue.names["support"] + ":/support:ro",
+            # Match production's host filesystem: runsc prepares mountpoints;
+            # the OCI root remains readonly to the owner inside the sandbox.
+            "-v", venue.names["harness"] + ":/harness",
+            *(["-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw", "-e", "TA_REHEARSAL_RUNSC=1"]
+              if os.environ.get("TA_REHEARSAL_RUNSC") == "1" else []),
             "--entrypoint",
             "python",
             image,
@@ -581,10 +605,12 @@ assert all(not Path(work['store']).is_absolute() and not Path(work['quarantine']
             "plans",
             "writes",
             "reconnect",
+            "production_launch",
         }
         if (
             set(counts) != expected
             or counts["owners"] != census["owners"]
+            or counts["production_launch"] != 1
             or counts["writes"] < 1
             or counts["reconnect"] < 1
         ):

@@ -1715,6 +1715,18 @@ log "candidate box layout: ${BOX_CANDIDATE_LAYOUT}"
 # #4920 installs the static box harness before an owner-box move. The call is
 # below, after the canary gate and the in-flight proof, so a deploy that must
 # not move data never writes the harness. A rollback does not install it.
+extract_box_harness() {  # production image tar on stdin; $1 stage, $2 image ID
+  local stage="$1" image_id="$2"
+  tar -x -C "$stage" || return 1
+    # The box sees no platform volume roots. /home/owner and /tmp are mounted
+    # by runsc; root changes use its 256 MiB memory overlay, not the host disk.
+    rm -rf -- "$stage/data" "$stage/.broker" "$stage/.platform" "$stage/.runtime" || return 1
+    mkdir -p "$stage/home/owner" "$stage/tmp" "$stage/run/boxhostd" || return 1
+    printf '%s\n' "$image_id" > "$stage/.box-image-id" || return 1
+    find -P "$stage" -xdev \( -type d -o -type f \) -exec chmod a-w {} + || return 1
+    # mktemp creates 0700; tar exports need not contain an entry for / itself.
+    chmod 0555 "$stage" || return 1
+}
 install_box_harness() {  # $1 = immutable image; install static rootfs, no owner data
   local image="$1" image_id root target stage container target_name
   root="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}"
@@ -1727,21 +1739,16 @@ install_box_harness() {  # $1 = immutable image; install static rootfs, no owner
     container="$(docker create --network none --entrypoint /bin/true "$image")" || {
       rmdir "$stage"; return 1;
     }
-    if ! docker export "$container" | tar -x -C "$stage"; then
+    if ! docker export "$container" | extract_box_harness "$stage" "$image_id"; then
       docker rm "$container" >/dev/null 2>&1 || true
       rm -rf -- "$stage"
       return 1
     fi
     docker rm "$container" >/dev/null || return 1
-    # The box sees no platform volume roots. /home/owner and /tmp are mounted
-    # by runsc; root changes use its 256 MiB memory overlay, not the host disk.
-    rm -rf -- "$stage/data" "$stage/.broker" "$stage/.platform" "$stage/.runtime"
-    mkdir -p "$stage/home/owner" "$stage/tmp" "$stage/run/boxhostd"
-    printf '%s\n' "$image_id" > "$stage/.box-image-id"
-    find -P "$stage" -xdev \( -type d -o -type f \) -exec chmod a-w {} +
     mv -- "$stage" "$target" || return 1
   fi
   [ "$(cat "${target}/.box-image-id")" = "$image_id" ] || return 1
+  chmod 0555 "$target" || return 1
   [ ! -e "$target/data" ] && [ ! -e "$target/.broker" ] && \
     [ ! -e "$target/.platform" ] && [ ! -e "$target/.runtime" ] || return 1
   ln -s "$target_name" "${root}/.harness-current.$$" || return 1

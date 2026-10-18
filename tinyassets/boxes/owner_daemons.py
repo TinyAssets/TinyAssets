@@ -336,6 +336,7 @@ class OwnerDaemons:
 
         with self.condition:
             self.retire(owner, uid)
+            self.admission.retire(owner, uid)
             self.quota.destroy(uid)
             self.relays.retire(uid)
             socket_tree(self.directory, uid)

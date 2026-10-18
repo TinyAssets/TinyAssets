@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.support.recovery_daemons import recovery_daemons
 from tinyassets.auth.provider import Identity
 from tinyassets.erasure_ledger import ErasureLedger, fresh_install, principal_digest
 
@@ -99,9 +100,10 @@ def test_box_failure_does_not_block_shared_phases_and_retries(tmp_path, monkeypa
                             calls.append(_name) or _result)
     identity = Identity(user_id="alice", username="alice")
     assert asyncio.run(owner_router.delete_owner_account(identity)).status_code == 503
-    assert ledger.receipt("alice")["unfinished_phases"] == ["owner_tree"]
+    assert ledger.receipt("alice")["unfinished_phases"] == ["owner_tree", "identity"]
     assert all(name in ledger.receipt("alice")["completed_phases"] for name in (
-        "billing", "identity", "credentials", "broker_egress"))
+        "billing", "credentials", "broker_egress"))
+    assert "identity" not in calls
     failing[0] = False
     assert asyncio.run(owner_router.delete_owner_account(identity)).status_code == 200
     assert ledger.receipt("alice")["unfinished_phases"] == []
@@ -156,7 +158,7 @@ def test_public_egress_refuses_ledger_fenced_owner_with_live_broker_admission(tm
     assert not proxy.active
 
 
-def test_unmounted_store_keeps_restore_tree_phase_pending(tmp_path):
+def test_unmounted_store_keeps_restore_tree_phase_pending(tmp_path, monkeypatch):
     from tinyassets.boxes.destroy import tree
     from tinyassets.boxes.provider import BoxError
     from tinyassets.restore_recovery import finish_erasures
@@ -172,7 +174,7 @@ def test_unmounted_store_keeps_restore_tree_phase_pending(tmp_path):
         "quarantine": ".quarantine/300001"}})
     with pytest.raises(BoxError, match="mount"):
         tree(store, 300001, erase=True)
-    finish_erasures(data, store)
+    finish_erasures(data, store, daemons=recovery_daemons(store, monkeypatch))
     assert "owner_tree" in ledger.receipt("alice")["unfinished_phases"]
     assert ledger.entries()[0]["work"]
     assert not (store / ".quarantine").exists()
@@ -236,7 +238,7 @@ def test_store_identity_and_absent_tree(tmp_path, monkeypatch, drift):
         ledger.execute("work", {"digest": principal_digest("alice"), "target": {
             "store": ".", "uid": 300001,
             "quarantine": ".quarantine/300001"}})
-        finish_erasures(data, mount)
+        finish_erasures(data, mount, daemons=recovery_daemons(mount, monkeypatch))
         assert ledger.receipt("alice")["home_removed"]
         assert not ledger.entries()[0]["work"]
     else:
@@ -358,7 +360,7 @@ def test_channel_closure_is_first_independent_retryable_ledger_phase(tmp_path, m
     response = asyncio.run(owner_router.delete_owner_account(identity))
     assert isinstance(response, JSONResponse) and response.status_code == 503
     assert calls == ["channels", "resolve"]
-    assert ledger.receipt("alice")["unfinished_phases"] == ["broker_channels"]
+    assert ledger.receipt("alice")["unfinished_phases"] == ["broker_channels", "identity"]
     failing[0] = False
     assert asyncio.run(owner_router.delete_owner_account(identity)).status_code == 200
     assert calls == ["channels", "resolve", "channels"]
@@ -387,9 +389,101 @@ def test_relative_cleanup_relocation_continues_after_failure(tmp_path, monkeypat
     assert all(work["store"] == "." and not work["quarantine"].startswith("/")
                for entry in ledger.entries() for work in entry["work"].values())
     container.rename(host)
-    finish_erasures(tmp_path, host)
+    finish_erasures(tmp_path, host, daemons=recovery_daemons(host, monkeypatch))
     assert not (host / "300002").exists()
     assert ledger.receipt("erased")["home_removed"]
     assert not ledger.receipt("failed")["home_removed"]
     assert ledger.receipt("failed")["erasure_failures"]
     assert ledger.contains("failed") and not ledger.contains("other-owner")
+
+
+@pytest.mark.parametrize("step", ["runtime", "admission", "quota", "relay", "socket", "secret"])
+def test_recovery_never_finishes_failed_destroy_after_tree_success(tmp_path, monkeypatch, step):
+    from pathlib import Path
+
+    from tinyassets.boxes import destroy
+    from tinyassets.restore_recovery import finish_erasures
+
+    root, store = tmp_path / "data", tmp_path / "store"
+    root.mkdir()
+    store.mkdir()
+    uid = 300001
+    tree = store / str(uid)
+    tree.mkdir(mode=0o700)
+    os.chown(tree, uid, uid)
+    (tree / "private").write_text("erase")
+    monkeypatch.setattr(destroy, "verify_store", lambda *a: None)
+    ledger = ErasureLedger(root)
+    ledger.initialize()
+    ledger.execute("add", {"digest": principal_digest("alice"),
+                           "principal": "alice", "uids": [uid]})
+    ledger.execute("work", {"digest": principal_digest("alice"), "target": {
+        "store": ".", "uid": uid, "quarantine": ".quarantine/300001"}})
+    daemons = recovery_daemons(store, monkeypatch)
+    secrets = daemons.directory / "secrets"
+    secrets.mkdir()
+    secret = secrets / str(uid)
+    secret.write_text("secret")
+    failing = [True]
+    target, method = {"runtime": (daemons.runtime, "stop"),
+                      "admission": (daemons.admission, "retire"),
+                      "quota": (daemons.quota, "destroy"),
+                      "relay": (daemons.relays, "retire"),
+                      "socket": (destroy, "socket_tree"),
+                      "secret": (Path, "unlink")}[step]
+    original = getattr(target, method)
+
+    def fail(*args, **kw):
+        if failing[0] and (step != "secret" or args[0] == secret):
+            raise OSError("injected destroy failure")
+        return original(*args, **kw)
+
+    monkeypatch.setattr(target, method, fail)
+    for _ in range(2):
+        finish_erasures(root, store, daemons=daemons)
+        assert not tree.exists()  # A later absent-tree success is insufficient.
+        assert not ledger.receipt("alice")["home_removed"]
+        assert ledger.entries()[0]["work"]
+    failing[0] = False
+    finish_erasures(root, store, daemons=daemons)
+    assert ledger.receipt("alice")["home_removed"]
+    assert not ledger.entries()[0]["work"]
+    assert not secret.exists()
+
+
+def test_root_admission_retirement_requires_fence_and_exact_reservation(tmp_path):
+    from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.server import BOX_HOST, _Connection
+
+    ledger = ErasureLedger(tmp_path)
+    ledger.initialize()
+    state = tmp_path / "broker"
+    state.mkdir(mode=0o700)
+    identities = OwnerIdentities(state / "identities.db", initialize=True)
+    alice = identities.resolve("alice", allocate=True).uid
+    bob = identities.resolve("bob", allocate=True).uid
+    identities.admission("admit", "alice", "a")
+    server = SimpleNamespace(_data_root=tmp_path, _owner_identities=identities)
+
+    async def exercise():
+        channel = _Connection(server, None, BOX_HOST)
+
+        async def call(owner, uid):
+            await channel._connection_op("BOX_RETIRE_ADMISSION", {
+                "op": "BOX_RETIRE_ADMISSION", "principal": owner, "uid": uid})
+            from tinyassets import rpc_frames as rf
+
+            return channel._queue.get_nowait() == rf.control(
+                rf.CONNECTION, {"op": "BOX_ADMISSION_RETIRED"})
+
+        assert not await call("alice", alice)
+        ledger.add("alice")
+        assert not await call("alice", bob)
+        assert await call("alice", alice)
+        assert identities.center_state("a") == "retired"
+        assert await call("alice", alice)
+        ledger.add("historical")
+        assert not await call("historical", bob)
+        assert await call("historical", 399998)
+
+    asyncio.run(exercise())

@@ -107,6 +107,11 @@ def local_operation(ledger, *, principal, command_center, document, committed_vi
     validate_git_scopes(policy["scopes"], hosts=[ep.host for ep in endpoints], git_host=host)
     with ledger._connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        # Serialize against custody erasure before consulting the sole fence.
+        # A worker already dispatched before close-all cannot recreate rows.
+        from tinyassets.erasure_ledger import require_active
+
+        require_active(ledger._data_root, principal)
         row = conn.execute("SELECT * FROM outbound_connections WHERE connection_id=?",
                            (connection_id,)).fetchone()
         grow = conn.execute("SELECT * FROM outbound_connection_grants WHERE grant_id=?",

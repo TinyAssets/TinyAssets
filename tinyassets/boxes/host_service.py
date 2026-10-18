@@ -10,6 +10,7 @@ import signal
 import socket
 import stat
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -29,6 +30,7 @@ class HostService:
         self.admission, self.quota, self.relays = admission, quota, relays
         self._broker_lock = threading.Lock()
         self._broker = None
+        self.broker_ready = threading.Event()
         self._slots = threading.BoundedSemaphore(32)
         self._broker_slots = threading.BoundedSemaphore(4)
         self._erasure_slots = threading.BoundedSemaphore(32)
@@ -63,6 +65,7 @@ class HostService:
                     raise BoxError("broker registration expired before readiness")
                 self._broker = (pidfd, proof, True)
             send(sock, {"ready": True})
+            self.broker_ready.set()
             sock.settimeout(None)
             while not select.select([pidfd], [], [], 0)[0]:
                 ready, _, _ = select.select([sock, pidfd], [], [], 1)
@@ -74,6 +77,7 @@ class HostService:
             with self._broker_lock:
                 if self._broker is not None and self._broker[0] == pidfd:
                     self._broker = None
+                    self.broker_ready.clear()
             if pidfd is not None:
                 os.close(pidfd)
             sock.close()
@@ -292,10 +296,6 @@ def _serve(*, rootfs: Path, data_root: Path) -> None:
 
     protect_root(data_root)
 
-    try:
-        finish_erasures(data_root, runtime.owner_store)
-    except Exception:
-        logging.getLogger(__name__).exception("startup erasure retry failed; ledger fences remain")
     quota = OwnerQuota(runtime.owner_store)
     daemons = OwnerDaemons(
         runtime, admission, quota, relays, RUNTIME,
@@ -309,15 +309,26 @@ def _serve(*, rootfs: Path, data_root: Path) -> None:
         signal.signal(sig, lambda *_: stop.set())
     listeners = [threading.Thread(target=service.serve, args=(
         RUNTIME / name, uid, handler, stop), daemon=True)
-        for name, uid, handler in (("broker-registration.sock", 1002, service.register),
-                                  ("daemon.sock", 1102, service.daemon),
-                                  ("erasure.sock", 1102, service.erasure))]
+        for name, uid, handler in (("erasure.sock", 1102, service.erasure),
+                                  ("broker-registration.sock", 1002, service.register),
+                                  ("daemon.sock", 1102, service.daemon))]
     try:
+        # The broker registers before serving. Recovery must not block that
+        # handshake; erased owners remain fenced while other owners can serve.
         for listener in listeners:
             listener.start()
+        recovery_at = 0
         while not stop.wait(1):
             if not all(listener.is_alive() for listener in listeners):
                 raise RuntimeError("box host control listener failed")
+            if service.broker_ready.is_set() and time.monotonic() >= recovery_at:
+                try:
+                    complete = finish_erasures(data_root, runtime.owner_store, daemons=daemons)
+                    recovery_at = float("inf") if complete else time.monotonic() + 30
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "startup erasure retry failed; ledger fences remain")
+                    recovery_at = time.monotonic() + 30
             daemons.maintain()
     finally:
         stop.set()

@@ -55,6 +55,12 @@ class GvisorRuntime:
         return f"owner-{uid}"
 
     def _command(self, *args: str, timeout: float = 120) -> subprocess.CompletedProcess[str]:
+        # A detached sandbox inherits its stdio. Pipes would stay open for the
+        # daemon's lifetime and make communicate() time out after runsc exits.
+        # Inherit the host service's stderr so launch failures and daemon errors
+        # reach its journal without a pipe owned by this short-lived command.
+        output = ({"stdout": subprocess.DEVNULL}
+                  if args[:2] == ("run", "--detach") else {"capture_output": True})
         return subprocess.run(
             [
                 str(self.runsc), "--root", str(self.state_root),
@@ -62,7 +68,7 @@ class GvisorRuntime:
                 "--host-uds=all",
                 f"--overlay2={OVERLAY}", *args,
             ],
-            check=True, capture_output=True, text=True, timeout=timeout,
+            check=True, text=True, timeout=timeout, **output,
         )
 
     def _owner_tree(self, uid: int, gid: int) -> Path:

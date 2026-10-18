@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from tests.support.recovery_daemons import recovery_daemons
 from tests.test_box_restore_authority import disaster, paired
 from tests.test_workos_provider import _provider, _sign
 from tinyassets.erasure_ledger import NAME, PHASES, ErasureLedger, carry_forward, principal_digest
@@ -41,7 +42,7 @@ def test_two_disaster_restores_keep_earlier_quarantine(tmp_path, monkeypatch):
 
     monkeypatch.setattr(destroy, "tree", tree)
     disaster(current, backup, trees, monkeypatch)
-    finish_erasures(backup, live)
+    finish_erasures(backup, live, daemons=recovery_daemons(live, monkeypatch))
     entry = ErasureLedger(backup).pending()[0]
     earlier = live / next(iter(entry["work"].values()))["quarantine"]
     assert earlier.exists()
@@ -51,12 +52,12 @@ def test_two_disaster_restores_keep_earlier_quarantine(tmp_path, monkeypatch):
         staged = tmp_path / f"restore-{index}"
         shutil.copytree(original, staged)
         disaster(backup, staged, trees, monkeypatch)
-        finish_erasures(staged, live)
+        finish_erasures(staged, live, daemons=recovery_daemons(live, monkeypatch))
         assert earlier.exists()
         assert not ErasureLedger(staged).receipt("alice")["home_removed"]
         backup = staged
     blocked[0] = False
-    finish_erasures(backup, live)
+    finish_erasures(backup, live, daemons=recovery_daemons(live, monkeypatch))
     assert not earlier.exists()
     assert ErasureLedger(backup).receipt("alice")["home_removed"]
     assert all(not entry["work"] for entry in ErasureLedger(backup).entries())
@@ -93,9 +94,10 @@ def test_retry_without_identity_row_finishes_billing_and_identity(tmp_path, monk
                         lambda *a: calls.append("identity") or "deleted")
     assert not (tmp_path / ".broker/state/owner-identities.db").exists()
     asyncio.run(resume_deleted_accounts(tmp_path))
-    assert ledger.pending()[0]["receipt"]["unfinished_phases"] == ["billing"]
+    assert ledger.pending()[0]["receipt"]["unfinished_phases"] == ["billing", "identity"]
+    assert calls == ["billing"]
     asyncio.run(resume_deleted_accounts(tmp_path))
-    assert calls == ["billing", "identity", "billing"]
+    assert calls == ["billing", "billing", "identity"]
     assert ledger.pending() == []
 
 
@@ -177,7 +179,7 @@ def test_ledger_only_erased_uid_stays_reserved(tmp_path, disaster_path):
         assert db.execute("SELECT MAX(machine_id)+1 FROM owner_identities").fetchone() == (300003,)
 
 
-def test_normal_restore_tracks_retained_and_restored_trees(tmp_path):
+def test_normal_restore_tracks_retained_and_restored_trees(tmp_path, monkeypatch):
     current, staged, live, trees = paired(tmp_path)
     ErasureLedger(current).add("alice")
     retained = live / ".retained"
@@ -189,7 +191,7 @@ def test_normal_restore_tracks_retained_and_restored_trees(tmp_path):
         os.chown(store / "300001", 300001, 300001)
         (store / "300001").chmod(0o700)
     assert not ErasureLedger(staged).receipt("alice")["home_removed"]
-    finish_erasures(staged, live)
+    finish_erasures(staged, live, daemons=recovery_daemons(live, monkeypatch))
     assert not (live / "300001").exists()
     assert not (retained / "300001").exists()
     assert ErasureLedger(staged).receipt("alice")["home_removed"]
