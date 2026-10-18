@@ -332,11 +332,22 @@ def await_report(box, expected):
         assert time.monotonic() < deadline, (at, expected)
 
 
+def sleep_when_quiet(box):
+    # A broker report arrives before the background tick unwinds its gate.
+    # Exercise real drain until that work finishes; never force-stop an active box.
+    deadline = time.monotonic() + 20
+    while True:
+        with box.manager.condition:
+            if box.manager._sleep(box.manager.boxes[box.uid], idle=0):
+                return
+        assert box.runtime.alive(box.uid)
+        assert time.monotonic() < deadline, "background work did not drain"
+
+
 def test_sleeping_box_runs_without_request_and_duplicate_wake_is_idempotent(sleeping_box):
     box = sleeping_box
     await_report(box, box.at)
-    with box.manager.condition:
-        assert box.manager._sleep(box.manager.boxes[box.uid], idle=0)
+    sleep_when_quiet(box)
     assert not box.runtime.alive(box.uid)
     assert not (box.root / "executed").exists()
     (box.root / "clock").write_text(str(box.at))
@@ -347,8 +358,7 @@ def test_sleeping_box_runs_without_request_and_duplicate_wake_is_idempotent(slee
     assert box.runtime.alive(box.uid)
     assert (box.root / "executed").read_text().splitlines() == [box.automation.automation_id]
     # Lost ACK/stale delivery is allowed. Restart the real tick at the same instant.
-    with box.manager.condition:
-        assert box.manager._sleep(box.manager.boxes[box.uid], idle=0)
+    sleep_when_quiet(box)
     while not box.reports.empty():
         box.reports.get_nowait()
     box.manager.ensure_awake(box.owner, scheduled=True)

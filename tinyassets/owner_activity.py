@@ -22,18 +22,20 @@ class Activity:
             self.deletion_only = self.deleting = self.draining = True
 
     @contextmanager
-    def enter(self):
+    def enter(self, *, keep_awake=True):
         with self.lock:
             if self.draining:
                 raise RuntimeError("owner box is draining")
             self.active += 1
-            self.last = time.monotonic()
+            if keep_awake:
+                self.last = time.monotonic()
         try:
             yield
         finally:
             with self.lock:
                 self.active -= 1
-                self.last = time.monotonic()
+                if keep_awake:
+                    self.last = time.monotonic()
                 self.lock.notify_all()
 
     def quiesce(self, timeout):
@@ -65,9 +67,9 @@ activity = Activity()
 
 
 def owner_work(function):
-    """Hold the gate for scheduled work as well as disconnected HTTP turns."""
+    """Count background work for drain without renewing the user-idle clock."""
     @wraps(function)
     def wrapped(*args, **kwargs):
-        with activity.enter():
+        with activity.enter(keep_awake=False):
             return function(*args, **kwargs)
     return wrapped

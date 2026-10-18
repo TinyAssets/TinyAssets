@@ -33,6 +33,8 @@ INFRASTRUCTURE: frozenset[str] = frozenset({
     "tinyassets/broker/owner_reads.py",
     "tinyassets/broker/next_wake.py",
     "tinyassets/broker/owner_sources.py",
+    # Offline restore holds both layout locks and writes only unpublished staging.
+    "tinyassets/restore_facts.py",
 })
 
 #: Owner-written stores not fenced yet. Safe while exactly one owner tree runs

@@ -945,7 +945,10 @@ admission for a suspended owner, preserving drain and tombstone ordering. Such a
 wake admits local deletion only. The outer ASGI lifespan returns before all
 scheduler, delivery, consumer and maintenance startup; no egress forwarder starts.
 Background execution entry points hold the same activity gate as turns, so drain
-observes running work and queued work cannot start after quiescence. No owner-store reader or compatibility path is added to the door.
+observes running work and queued work cannot start after quiescence. Background
+work holds this drain gate without renewing the user-idle clock: a periodic poll
+cannot keep an otherwise idle box awake forever, and active work still prevents
+sleep. No owner-store reader or compatibility path is added to the door.
 
 ## Founder decisions (2026-10-16)
 

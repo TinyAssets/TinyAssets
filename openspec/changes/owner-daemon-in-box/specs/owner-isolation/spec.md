@@ -37,6 +37,10 @@ be rejected by backup comparisons; newer monotonic facts SHALL be carried forwar
 - **AND** a legacy pair is normalized through the forward cutover before facts
   are applied, preserving one owner-local journal and no shared operation fence
 
+#### Scenario: Restore cannot resurrect a deleted owner
+- **WHEN** current router deletion receipts or owner-box revocations are newer than a staged backup
+- **THEN** restore carries the tombstone and repeats complete erasure before publishing either volume, including when broker retirement failed after the local sweep
+
 ### Requirement: Cutover preserves knowledge bytes and removes rehearsal residue
 The migration SHALL copy admitted centers' vector directories and knowledge
 SQLite files verbatim into their owner's box. Census SHALL report knowledge
@@ -99,15 +103,13 @@ cancel live subscriptions before success. Restore SHALL preserve deletion author
 - **AND** cleanup reports a distinct outcome for an expired attempt; uncertainty prevents deletion success
 - **AND** a subsequent subscription webhook for the tombstoned owner cancels that subscription immediately and records the cancellation
 
-#### Scenario: Restore cannot resurrect a deleted owner
-- **WHEN** current router deletion receipts or owner-box revocations are newer than a staged backup
-- **THEN** restore carries the tombstone and repeats complete erasure before publishing either volume, including when broker retirement failed after the local sweep
-
 ### Requirement: Lifecycle admission failures are isolated per owner
 
 Maintenance SHALL contain admission failures per owner and retain explicit suspended
 status. Only the authenticated door deletion flow SHALL admit a suspended owner for
-deletion-only cleanup under the existing drain and tombstone rules.
+deletion-only cleanup under the existing drain and tombstone rules. Background execution SHALL
+hold the activity gate without renewing the user-idle clock; active work SHALL
+prevent sleep, and deletion-only startup SHALL start no background dispatchers.
 
 #### Scenario: One suspension does not stop the fleet
 - **WHEN** one loaded owner is suspended while two other owners run work
@@ -119,6 +121,11 @@ deletion-only cleanup under the existing drain and tombstone rules.
 - **THEN** deletion-only admission permits its local sweep followed by the durable tombstone and shared cleanup
 - **AND** the outer lifespan starts no scheduler, delivery, consumer or maintenance loop
 - **AND** every background execution holds the activity gate; pending delivery stays unexecuted and deletion drain reports zero work
+
+#### Scenario: Periodic checks leave an idle box eligible for sleep
+- **WHEN** background work enters an owner whose user-idle interval has elapsed
+- **THEN** drain refuses while that work is active
+- **AND** after it finishes the box can sleep without a fresh user-idle interval
 
 ### Requirement: Cutover accounts for loss without guessing ownership
 

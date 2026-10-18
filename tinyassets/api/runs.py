@@ -492,7 +492,7 @@ def recover_dead_owner_runs_now() -> int:
             recover_in_flight_runs,
         )
 
-        with activity.enter():
+        with activity.enter(keep_awake=False):
             base = Path(_base_path())
             count = recover_in_flight_runs(base, started_before=PROCESS_STARTED_AT)
             deliver_terminal_events(base)

@@ -367,3 +367,21 @@ def test_quiesce_refuses_background_submission_and_maintenance(tmp_path, monkeyp
                         lambda *a, **kw: pytest.fail("drained recovery executed"))
     assert runs.recover_dead_owner_runs_now() == 0
     assert gate.status()["active"] == 0
+
+
+def test_background_work_blocks_drain_without_renewing_user_idle(monkeypatch):
+    from tinyassets import owner_activity
+
+    gate = Activity()
+    gate.last = 0
+    monkeypatch.setattr(owner_activity, "activity", gate)
+    monkeypatch.setattr(owner_activity, "time", SimpleNamespace(monotonic=lambda: 1000))
+
+    @owner_activity.owner_work
+    def background():
+        status = gate.status(drain=True, idle=900)
+        assert status["active"] == 1 and not status["draining"]
+
+    background()
+    assert gate.status()["idle_seconds"] == 1000
+    assert gate.status(drain=True, idle=900)["draining"]
