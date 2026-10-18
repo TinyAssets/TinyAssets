@@ -578,7 +578,6 @@ ROOT_ENTRIES: dict[str, str] = {
     ".hook-owners.sqlite3": "platform: router hook token digests and authenticated owners",
     ".router-deleted-owners.sqlite3": "platform: router tombstones for deleted accounts",
     ".owner-boxd": "platform: in-box file operation generations and idempotency receipts",
-    ".source_channel_policy.db": "platform: retired source-channel policy removed by cutover",
     ".boxhost": "platform: root-private owner generations and idempotency receipts",
     ".platform": "platform: platform stores; legacy agent homes move to quota-charged owner boxes",
     ".layout.json": "platform: committed storage layout admission marker",
