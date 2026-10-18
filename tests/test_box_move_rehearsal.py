@@ -5,6 +5,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tarfile
 import uuid
 from pathlib import Path
@@ -42,53 +43,94 @@ def test_cleanup_unmounts_all_aliases_before_detach_and_asserts_no_residue(monke
     from scripts import archive_rehearsal as harness
 
     prefix = "ta-s6-012345abcdef"
-    targets = ["/var/lib/docker/volumes/" + prefix + "-store/_data",
-               "/mnt/docker-desktop-disk/data/docker/volumes/" + prefix + "-store/_data",
-               "/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/test",
-               "/parent-distro/mnt/deep/alias"]
-    mounted, attached, calls = set(targets), {"/dev/loop77"}, []
+    volume = "docker/volumes/" + prefix + "-store/_data"
+    targets = ["/var/lib/" + volume,
+               "/mnt/docker-desktop-disk/data/" + volume,
+               "/parent-distro/mnt/docker-desktop-disk/data/" + volume,
+               "/run/desktop/mnt/docker-desktop-disk/data/" + volume]
+    # Three covered mounts at the shallow alias require all three passes.
+    mounted = dict.fromkeys(targets, 1)
+    mounted[targets[0]] = 3
+    attached, calls = {"/dev/loop77"}, []
+    backing = "/var/lib/docker/volumes/" + prefix + "-image/_data/store.img"
 
-    def read_text(_):
-        return "\n".join(f"{i} 1 7:77 / {target} rw - xfs /dev/loop77 rw"
-                         for i, target in enumerate(sorted(mounted)))
+    def mount_text():
+        return "\n".join(f"/dev/loop77 {target} xfs rw 0 0" for target in sorted(mounted))
 
     def run(args, **kwargs):
+        assert args[:8] == ["nsenter", "-t", "1", "-m", "sh", "-c", 'exec "$@"', "sh"]
+        args = args[8:]
         calls.append(args)
         code, output = 0, ""
-        if args[:2] == ["losetup", "--list"]:
+        if args == ["cat", "/proc/mounts"]:
+            output = mount_text()
+        elif args[:2] == ["losetup", "--list"]:
             output = json.dumps({"loopdevices": [
-                {"name": device, "back-file": "/volumes/" + prefix + "-image/store.img"}
-                for device in attached]})
+                {"name": device, "back-file": backing} for device in attached] + [
+                    {"name": "/dev/loop99", "back-file": "/unrelated/store.img"}]})
         elif args[0] == "umount":
-            if len(args) == 2 and args[-1] == targets[-1]:
-                code = 1  # Only this busy alias needs the lazy fallback.
-            elif residue != "mount":
+            assert len(args) == 2
+            if residue == "mount":
+                code = 1
+            else:
                 if residue == "propagated":
                     mounted.clear()
                     attached.clear()  # Last mount autoclears its loop.
                 else:
-                    mounted.remove(args[-1])
+                    mounted[args[-1]] -= 1
+                    if not mounted[args[-1]]:
+                        del mounted[args[-1]]
         elif args[:2] == ["losetup", "-d"]:
-            assert not mounted
+            assert not mounted or residue == "mount"
             if residue != "loop":
                 attached.remove(args[-1])
         else:
             raise AssertionError(args)
         return subprocess.CompletedProcess(args, code, output)
 
-    monkeypatch.setattr(harness.Path, "read_text", read_text)
     monkeypatch.setattr(harness.subprocess, "run", run)
+
+    def docker(*args, **kwargs):
+        if args[0] == "run":
+            assert "--privileged" in args and "--pid=host" in args
+            entry = args.index("--entrypoint")
+            assert args[entry + 1:entry + 4] == ("python", "synthetic", "-c")
+            # Execute the actual helper payload as the fake namespace runner.
+            with monkeypatch.context() as patch:
+                patch.setattr(sys, "argv", ["-c", prefix])
+                try:
+                    exec(args[entry + 4], {})
+                except SystemExit:
+                    paths = sorted(mounted) if residue == "mount" else [backing]
+                    return subprocess.CompletedProcess(args, 1,
+                                                       "cleanup residue: " + ", ".join(paths))
+            return subprocess.CompletedProcess(args, 0, "")
+        assert args[:2] == ("volume", "rm")
+        assert not mounted and not attached
+        calls.append(list(args))
+        return subprocess.CompletedProcess(args, 0, "")
+
+    monkeypatch.setattr(harness, "docker", docker)
+    venue = harness.Venue("synthetic", 1)
+    venue.prefix = prefix
+    venue.volumes = [prefix + "-image", prefix + "-store"]
     if residue in {"mount", "loop"}:
-        with pytest.raises(RuntimeError, match="cleanup left a venue"):
-            harness.cleanup_mounts(prefix)
+        with pytest.raises(RuntimeError, match="volumes retained.*" +
+                           re.escape(targets[0] if residue == "mount" else backing)):
+            venue.close()
+        assert not any(args[:2] == ["volume", "rm"] for args in calls)
     else:
-        harness.cleanup_mounts(prefix)
+        venue.close()
         assert not mounted and not attached
     normal = [args[1] for args in calls if args[0] == "umount" and len(args) == 2]
-    ordered = sorted(targets, key=lambda p: (p.count("/"), len(p)), reverse=True)
-    assert normal == (ordered[:1] if residue == "propagated" else ordered)
-    if residue != "propagated":
-        assert ["umount", "-l", targets[-1]] in calls
+    ordered = sorted(targets, key=lambda p: (p.count("/"), len(p), p), reverse=True)
+    expected = (ordered[:1] if residue == "propagated" else
+                ordered * 3 if residue == "mount" else ordered + [targets[0]] * 2)
+    assert normal == expected
+    if residue is False:
+        detach = calls.index(["losetup", "-d", "/dev/loop77"])
+        assert all(index > detach for index, args in enumerate(calls)
+                   if args[:2] == ["volume", "rm"])
 
 
 def test_cleanup_never_removes_volumes_after_failed_residue_assertion(monkeypatch):
@@ -123,6 +165,103 @@ def test_report_failure_does_not_disclose_diagnostics(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert captured.out == "setup FAIL\ncleanup PASS\n"
     assert captured.err == ""
+
+
+@pytest.mark.parametrize("failure", ["step", "exception", "interrupt", "sigterm"])
+def test_cleanup_runs_before_step_failure_or_interrupt_escapes(monkeypatch, failure):
+    from scripts import archive_rehearsal as harness
+
+    calls = []
+
+    class FailedVenue:
+        def __init__(self, *_):
+            pass
+
+        def setup(self, _):
+            calls.append("setup")
+
+        def migration(self, step):
+            calls.append(step)
+            if failure == "exception":
+                raise ValueError("synthetic failure")
+            if failure == "interrupt":
+                raise KeyboardInterrupt
+            if failure == "sigterm":
+                handlers[harness.signal.SIGTERM]()
+            return subprocess.CompletedProcess([], 1, "")
+
+        def close(self):
+            calls.append("cleanup")
+
+    monkeypatch.setattr(harness, "Venue", FailedVenue)
+    if failure == "sigterm":
+        handlers = {}
+        monkeypatch.setattr(harness.signal, "signal", lambda sig, handler: handlers.update(
+            {sig: handler}))
+        monkeypatch.setattr(sys, "argv", ["rehearsal", "--archive", "synthetic", "--image", "test"])
+        from scripts import rehearse_box_move
+
+        monkeypatch.setattr(rehearse_box_move, "validate_archive", lambda _: 1)
+        with pytest.raises(SystemExit):
+            harness.main()
+    else:
+        error = {"step": RuntimeError, "exception": ValueError, "interrupt": KeyboardInterrupt}
+        with pytest.raises(error[failure]):
+            harness.archive_rehearsal("synthetic", "unused", store_bytes=1)
+    assert calls == ["setup", "preflight", "cleanup"]
+
+
+def test_container_removal_failure_still_cleans_mounts(monkeypatch):
+    from scripts import archive_rehearsal as harness
+
+    calls = []
+
+    def docker(*args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, int(args[0] == "rm"), "", "busy")
+
+    monkeypatch.setattr(harness, "docker", docker)
+    venue = harness.Venue("synthetic", 1)
+    venue.volumes = [venue.names["image"]]
+    venue.containers = [venue.prefix + "-run-0"]
+    with pytest.raises(RuntimeError, match="could not remove venue containers"):
+        venue.close()
+    assert [args[0] for args in calls] == ["rm", "run"]
+
+
+@pytest.mark.parametrize("sig", ["SIGTERM", "SIGINT"])
+@pytest.mark.parametrize("phase", ["rm", "run", "volume"])
+def test_cleanup_defers_signals_until_all_resources_are_removed(monkeypatch, sig, phase):
+    from scripts import archive_rehearsal as harness
+
+    calls = []
+
+    def terminate(*_):
+        raise KeyboardInterrupt
+
+    original = {harness.signal.SIGTERM: terminate, harness.signal.SIGINT: terminate}
+    handlers = original.copy()
+
+    def install(sig, handler):
+        previous = handlers[sig]
+        handlers[sig] = handler
+        return previous
+
+    def docker(*args, **kwargs):
+        calls.append(args[0])
+        if args[0] == phase:
+            handlers[getattr(harness.signal, sig)]()
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(harness.signal, "signal", install)
+    monkeypatch.setattr(harness, "docker", docker)
+    venue = harness.Venue("synthetic", 1)
+    venue.containers = [venue.prefix + "-run-0"]
+    venue.volumes = [venue.names["image"], venue.names["store"]]
+    with pytest.raises(KeyboardInterrupt):
+        venue.close()
+    assert calls == ["rm", "run", "volume", "volume"]
+    assert handlers == original
 
 
 @pytest.mark.parametrize("mode", ["deploy", "--restore-bundle"])

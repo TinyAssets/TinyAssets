@@ -35,47 +35,47 @@ def docker(*argv, check=True):
 
 
 def cleanup_mounts(prefix):
-    """Run in the engine mount namespace; refuse volume deletion on residue."""
+    """Run every mount/loop command in PID 1's mount namespace via its shell."""
     if not re.fullmatch(r"ta-s6-[a-f0-9]{12}", prefix):
         raise RuntimeError("invalid cleanup venue")
 
+    def host(*args, check=False):
+        # Keep Python in the helper: Docker Desktop's VM has only shell tools.
+        return subprocess.run(["nsenter", "-t", "1", "-m", "sh", "-c",
+                               'exec "$@"', "sh", *args], check=check,
+                              capture_output=True, text=True)
+
     def loops():
-        result = subprocess.run(["losetup", "--list", "--json", "--output", "NAME,BACK-FILE"],
-                                check=True, capture_output=True, text=True)
-        return {item["name"] for item in json.loads(result.stdout).get("loopdevices", [])
-                if prefix in item.get("back-file", "")}
+        result = host("losetup", "--list", "--json", "--output", "NAME,BACK-FILE",
+                      check=True)
+        return {item["name"]: item["back-file"]
+                for item in json.loads(result.stdout).get("loopdevices", [])
+                if any(prefix + "-" + kind + "/" in item.get("back-file", "")
+                       for kind in ("image", "store"))}
 
     def mounts():
         def decode(value):
             return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), value)
 
-        result = []
-        for line in Path("/proc/self/mountinfo").read_text().splitlines():
-            before, after = line.split(" - ", 1)
-            fields, tail = before.split(), after.split()
-            result.append((decode(fields[4]), decode(tail[1]), decode(fields[3])))
-        return result
+        return {decode(line.split()[1])
+                for line in host("cat", "/proc/mounts", check=True).stdout.splitlines()
+                if prefix in decode(line.split()[1])}
 
-    devices = loops()
-    selected = [(target, source, root) for target, source, root in mounts()
-                if source in devices or prefix in target or prefix in root]
-    for target, _, _ in sorted(selected, key=lambda row: (row[0].count("/"), len(row[0])),
-                               reverse=True):
-        # Unmounting a propagated bind can remove its aliases in the same call.
-        if not any(path == target for path, _, _ in mounts()):
-            continue
-        result = subprocess.run(["umount", target], capture_output=True)
-        if result.returncode and any(path == target for path, _, _ in mounts()):
-            subprocess.run(["umount", "-l", target], check=True, capture_output=True)
-    if any(source in devices or prefix in target or prefix in root
-           for target, source, root in mounts()):
-        raise RuntimeError("cleanup left a venue mount")
+    for _ in range(3):
+        selected = mounts()
+        if not selected:
+            break
+        for target in sorted(selected, key=lambda path: (path.count("/"), len(path), path),
+                             reverse=True):
+            # Propagation may remove aliases or re-expose a covered parent.
+            if target in mounts():
+                host("umount", target)
     # mount -o loop may autoclear the device when its last mount is removed.
-    for device in sorted(devices & loops()):
-        subprocess.run(["losetup", "-d", device], check=True, capture_output=True)
-    if loops() or any(source in devices or prefix in target or prefix in root
-                      for target, source, root in mounts()):
-        raise RuntimeError("cleanup left a venue mount or loop")
+    for device in sorted(loops()):
+        host("losetup", "-d", device)
+    residue = mounts() | set(loops().values())
+    if residue:
+        raise RuntimeError("cleanup residue: " + ", ".join(sorted(residue)))
 
 
 class Venue:
@@ -374,12 +374,25 @@ bash /support/deploy/backup-restore.sh
             "filter='fully_trusted'); archive.close()")
 
     def close(self):
+        interrupted = []
+
+        def defer(*_):
+            interrupted.append(True)
+
+        handlers = {sig: signal.signal(sig, defer) for sig in (signal.SIGINT, signal.SIGTERM)}
+        try:
+            self._cleanup()
+        finally:
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
+        if interrupted:
+            raise KeyboardInterrupt
+
+    def _cleanup(self):
         failures = 0
         for name in reversed(self.containers):
             result = docker("rm", "-f", name, check=False)
             failures += bool(result.returncode and "No such container" not in result.stderr)
-        if failures:
-            raise RuntimeError("cleanup could not remove venue containers")
         if self.volumes:
             result = docker(
                 "run",
@@ -392,16 +405,20 @@ bash /support/deploy/backup-restore.sh
                 "python",
                 self.image,
                 "-c",
-                "import ctypes, json, os, re, subprocess; from pathlib import Path\n"
-                "fd = os.open('/proc/1/ns/mnt', os.O_RDONLY)\n"
-                "libc = ctypes.CDLL(None, use_errno=True)\n"
-                "if libc.setns(fd, 0): raise OSError(ctypes.get_errno(), 'setns failed')\n"
-                "os.close(fd)\n" +
-                inspect.getsource(cleanup_mounts) + "\ncleanup_mounts(" + repr(self.prefix) + ")",
+                "import json, re, subprocess, sys\n" +
+                inspect.getsource(cleanup_mounts) +
+                "\ntry:\n    cleanup_mounts(sys.argv[1])\n"
+                "except RuntimeError as exc:\n    print(str(exc))\n    sys.exit(1)\n",
+                self.prefix,
                 check=False,
             )
             if result.returncode:
-                raise RuntimeError("cleanup residue assertion failed; volumes retained")
+                detail = (result.stdout or "").strip()
+                raise RuntimeError("cleanup residue assertion failed; volumes retained" +
+                                   (": " + detail if detail.startswith("cleanup residue: ")
+                                    else ""))
+        if failures:
+            raise RuntimeError("cleanup could not remove venue containers")
         for name in reversed(self.volumes):
             failures += bool(docker("volume", "rm", name, check=False).returncode)
         if failures:
