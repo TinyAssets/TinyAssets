@@ -136,9 +136,8 @@ def test_all_box_operations_refuse_ledger_fenced_live_owner(tmp_path, op):
 
 
 def test_public_egress_refuses_ledger_fenced_owner_with_live_broker_admission(tmp_path):
-    from tests.test_box_public_egress import exchange
+    from tests.test_box_public_egress import broker_proxy, exchange
     from tinyassets.broker.owner_identities import OwnerIdentities
-    from tinyassets.broker.public_egress import PublicEgress
 
     ledger = ErasureLedger(tmp_path)
     ledger.initialize()
@@ -153,9 +152,9 @@ def test_public_egress_refuses_ledger_fenced_owner_with_live_broker_admission(tm
         db.execute("INSERT INTO box_records VALUES (?,?,?,?)", ("alice", uid, uid, 1048576))
     ledger.add("alice")
     assert identities.box_route("alice")[0] == uid  # broker state still admits it
-    proxy = PublicEgress(identities, tmp_path)
+    proxy = broker_proxy(identities, tmp_path)
     assert asyncio.run(exchange(proxy, b"GET http://example.test/ HTTP/1.0\r\n\r\n")) == b"REFUSED"
-    assert not proxy.active
+    assert not proxy._public_egress.active
 
 
 def test_unmounted_store_keeps_restore_tree_phase_pending(tmp_path, monkeypatch):

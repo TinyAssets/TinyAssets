@@ -31,8 +31,7 @@ async def watch_erasure(root, principals, close):
 
 
 class PublicEgress:
-    def __init__(self, identities, data_root=None, *, watched=False):
-        self.watched = watched
+    def __init__(self, identities, data_root=None):
         self.identities = identities
         self.data_root = data_root
         self.active = {}
@@ -47,7 +46,6 @@ class PublicEgress:
         pumps = []
         task = asyncio.current_task()
         self.channels[task] = (owner, writer)
-        guards = []
         try:
             await asyncio.to_thread(resolve_owner, self.identities, document,
                                     data_root=self.data_root)
@@ -55,9 +53,6 @@ class PublicEgress:
                 raise EgressRefused("owner or host egress capacity reached")
             self.active[owner] = self.active.get(owner, 0) + 1
             admitted = True
-            if not self.watched:
-                guards.append(asyncio.create_task(watch_erasure(
-                    self.data_root, lambda: (owner,), self.close_owner)))
             writer.write(rf.control(rf.CONNECTION, {"op": "BOX_ADMITTED"}))
             await asyncio.wait_for(writer.drain(), 30)
             # readuntil retains body bytes, and limits are checked before DNS.
@@ -96,8 +91,6 @@ class PublicEgress:
                 await asyncio.wait_for(writer.drain(), 1)
         finally:
             self.channels.pop(task, None)
-            for guard in guards:
-                guard.cancel()
             for pump in pumps:
                 pump.cancel()
             if upstream is not None:
@@ -110,7 +103,7 @@ class PublicEgress:
                 if not self.active[owner]:
                     del self.active[owner]
             writer.close()
-            await asyncio.gather(*guards, *pumps, return_exceptions=True)
+            await asyncio.gather(*pumps, return_exceptions=True)
 
     def close_owner(self, owner):
         for task, (principal, writer) in tuple(self.channels.items()):

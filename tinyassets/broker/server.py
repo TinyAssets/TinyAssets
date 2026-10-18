@@ -169,7 +169,7 @@ class BrokerServer:
         self._data_root = data_root
         from tinyassets.broker.public_egress import PublicEgress
 
-        self._public_egress = PublicEgress(owner_identities, data_root, watched=True)
+        self._public_egress = PublicEgress(owner_identities, data_root)
         self._connections = set()
         self._erasure_watch = None
         self._streams: dict[tuple[int, int], _Stream] = {}
