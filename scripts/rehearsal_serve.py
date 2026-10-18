@@ -549,11 +549,8 @@ def host_startup():
 
     store = Path("/var/lib/boxhostd/owners")
     ledger = ErasureLedger(Path("/data"))
-    uuid = subprocess.check_output(
-        ["findmnt", "--mountpoint", str(store), "-no", "UUID"], text=True).strip()
-    proof = store.parent / ".owners-identity"
-    proof.write_text("xfs " + uuid + "\n")
-    proof.chmod(0o600)
+    subprocess.run(["bash", "/support/deploy/box-store-check.sh", str(store), "--initialize"],
+                   check=True)
     # A real empty-subdirectory bind has the same device and UUID. It must
     # never prove absence, including when stacked above the configured root.
     empty = store / ".rehearsal-empty"

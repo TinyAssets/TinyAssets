@@ -42,7 +42,11 @@ def production_host(output, *, runsc=Path("/support/gvisor/runsc")):
     (installed / "current/runsc").symlink_to(runsc)
     cgroup = Path("/sys/fs/cgroup") / ("boxhostd@" + uuid.uuid4().hex + ".service")
     cgroup.mkdir()  # systemd creates the unit; no owner cgroup or controller writes here.
-    env = {"PATH": "/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    # systemd applies the unit's limits, but leaves subtree delegation to ExecStart.
+    for name, value in (("memory.max", str(7 * 1024**3)), ("pids.max", "5120"),
+                        ("cpu.max", "300000 100000")):
+        (cgroup / name).write_text(value)
+    env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
            "HOME": "/root"}
     code = """
 import os, sys
@@ -56,7 +60,11 @@ os.execve(sys.executable, [sys.executable, '-B', '/support/deploy/boxhostd.py',
 """
     process = None
     try:
-        process = subprocess.Popen([sys.executable, "-B", "-c", code, str(cgroup)],
+        subprocess.run(["bash", "/support/deploy/box-store-check.sh"],
+                       env=env, stdout=output, stderr=output, check=True)
+        # Match ExecStart's host interpreter. Application site-packages must
+        # not hide an import dependency unavailable to the production host.
+        process = subprocess.Popen(["/usr/bin/python3", "-B", "-c", code, str(cgroup)],
                                    env=env, stdout=output, stderr=output)
         socket = Path("/run/tinyassets-boxhostd/broker-registration.sock")
         deadline = time.monotonic() + 30
@@ -79,21 +87,24 @@ os.execve(sys.executable, [sys.executable, '-B', '/support/deploy/boxhostd.py',
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(10)
-        # Include failed launches; none may leave a sandbox in the engine.
-        if (cgroup / "cgroup.procs").exists():
-            (cgroup / "cgroup.kill").write_text("1")
-            deadline = time.monotonic() + 10
-            while "populated 1" in (cgroup / "cgroup.events").read_text():
-                if time.monotonic() > deadline:
-                    raise RuntimeError("production launch cgroup did not empty")
-                time.sleep(.05)
-            for child in sorted(cgroup.rglob("*"), key=lambda p: len(p.parts), reverse=True):
-                if child.is_dir():
-                    child.rmdir()
-            cgroup.rmdir()
-        (installed / "current/runsc").unlink()
-        (installed / "current").rmdir()
-        (installed / "harness-current").unlink()
+        try:
+            # Include failed launches; none may leave a sandbox in the engine.
+            # This is the unit's default KillMode=control-group teardown.
+            if (cgroup / "cgroup.procs").exists():
+                (cgroup / "cgroup.kill").write_text("1")
+                deadline = time.monotonic() + 10
+                while "populated 1" in (cgroup / "cgroup.events").read_text():
+                    if time.monotonic() > deadline:
+                        raise RuntimeError("production launch cgroup did not empty")
+                    time.sleep(.05)
+                for child in sorted(cgroup.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+                    if child.is_dir():
+                        child.rmdir()
+                cgroup.rmdir()
+        finally:
+            (installed / "current/runsc").unlink()
+            (installed / "current").rmdir()
+            (installed / "harness-current").unlink()
 
 
 def production_launch(owner_name):
