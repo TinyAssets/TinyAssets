@@ -529,21 +529,19 @@ if [[ -n "${BOX_STAGE}" ]]; then
         log "ERROR: a storage writer still owns the live or staged layout"
         exit 4
     fi
-    census_dir="$VOLUME_DIR"
     pair_ts="${TAR_NAME#tinyassets-data-}"
     pair_ts="${pair_ts#tinyassets-snapshot-}"
     pair_ts="${pair_ts%.tar.gz}"
     disaster_args=(--backup-time "$pair_ts")
     if [[ "$DISASTER_RESTORE" == 1 ]]; then
-        census_dir="$STAGE_DIR"
         disaster_args=(--disaster-restore --acknowledge-unrecoverable-facts --backup-time "$pair_ts")
         if [[ "$REHEARSAL_PROVIDER" == 1 ]]; then
             disaster_args+=(--rehearsal-provider)
         fi
     fi
     if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
-            --snapshot-data "$census_dir" --quiescent; then
-        log "ERROR: current owner-box receipt/survivor census refused restore"
+            --snapshot-data "$STAGE_DIR" --quiescent; then
+        log "ERROR: staged owner-box receipt/survivor census refused restore"
         exit 4
     fi
     if [[ "$DISASTER_RESTORE" == 1 ]]; then
@@ -585,12 +583,8 @@ if [[ -n "${BOX_STAGE}" ]]; then
     # box_records. The staged pre-move archive has no boxes to install, so
     # retain those trees and their quota state together for rollback/inspection.
     if [[ "$quota_restore" == 1 ]]; then
-        clear_registry="${VOLUME_DIR}/.broker/state/owner-identities.db"
-        if [[ "$DISASTER_RESTORE" == 1 ]]; then
-            clear_registry="$REGISTRY"
-        fi
         if ! python3 "$quota_script" "${BOX_STORE_DIR}" "${BOX_OLD}" \
-                "$clear_registry" --clear; then
+                "$REGISTRY" --clear; then
             log "ERROR: failed to clear retained box project IDs"
             exit 4
         fi

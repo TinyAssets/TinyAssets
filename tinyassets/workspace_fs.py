@@ -1067,8 +1067,10 @@ class BoxPoolFilesystem:
             return
         import uuid
 
+        from tinyassets.operation_epoch import new_identity
+
         try:
-            op_id = provider.operation_prefix() + "workspace-sweep:" + uuid.uuid4().hex
+            op_id = new_identity("workspace-sweep:" + uuid.uuid4().hex)
             provider.remove(handle, op_id, file_path)
         except BoxNotFound:
             return

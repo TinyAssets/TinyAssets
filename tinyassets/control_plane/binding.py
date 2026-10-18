@@ -45,6 +45,8 @@ class SessionBinding:
             raise BoxAuthError("session binding differs from admitted owner/center")
 
     def operation_id(self, purpose: str) -> str:
+        from tinyassets.operation_epoch import new_identity
+
         # The binding's ordinal survives thread handoffs. Reconnecting the same
         # session starts at the same ordinal: a changed operation is refused by
         # the host digest instead of being silently replayed under a fresh ID.
@@ -52,7 +54,7 @@ class SessionBinding:
             if self._ended:
                 raise BoxAuthError("session has ended")
             self._sequence += 1
-            return f"session:{self.session_id}:{self._sequence}:{purpose}"
+            return new_identity(f"session:{self.session_id}:{self._sequence}:{purpose}")
 
     def cancel_terminal(self) -> None:
         """An explicit owner stop; transport loss must never call this method."""

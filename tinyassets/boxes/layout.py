@@ -19,6 +19,7 @@ BROKER_READ_GID = 1102
 VAULT_FILE_MODE = 0o640
 LIVENESS_DIRECTORY_MODE = 0o2750
 LIVENESS_FILE_MODE = 0o640
+OWNER_BOX_MIGRATION = "owner-daemon"
 
 #: Daemon-owned files that belong to one command center but must not live
 #: inside it (consent databases, seed locks): ``<data>/.universe-sidecars/<center>``.

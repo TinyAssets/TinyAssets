@@ -57,7 +57,18 @@ Erasure is the ONE carried fact class. Union tombstones from every readable
 router `deleted_owners`, broker `owner_box_revocations`, custody
 `deleted_principals`, and host `owner_destroys`, including the backup. Reconcile
 restored identities through the WorkOS adapter: an absent user is erased, an
-indeterminate response refuses. Destroy erased owner trees before publication.
+indeterminate response refuses. A pre-cutover owner-split pair is not a disaster
+source: it needs forward migration,
+which disaster restore does not perform. Require an owner-box pair after traffic.
+Choose erasure for identities present only in readable live platform state and absent
+from the backup. Retain their erased permanent UID reservations so quarantine
+projects cannot be reassigned. Never carry newer content into restored boxes.
+Destroy erased staged and live owner trees before publication with an iterative,
+descriptor-relative walker. An individual erasure failure retains the router and
+broker tombstones and atomically detaches the tree into a fresh root-owned 0700
+quarantine outside the active owner namespace. Report its UID, failure type and
+retry path loudly; other owners still recover and the erased box never starts.
+Retained live quota clearing uses permanent UID/project IDs, not the backup registry.
 Tests inject the adapter seam and never call the network.
 
 Reconcile plan and billing suspension through the Stripe adapter where configured,
@@ -990,7 +1001,8 @@ immediately cancels and records that subscription. Deletion succeeds only after
 no payable checkout or live subscription remains; uncertain outcomes stay retryable.
 
 Restore authority includes router deletion receipts and owner-box revocations.
-Newer deletion facts are carried into staging and complete erasure runs before publication.
+Newer deletion facts are carried into staging; erased trees are destroyed or
+root-quarantined before publication.
 Lifecycle maintenance contains suspension, refusal and authentication failures per
 owner, reports an explicit suspended outcome and stops/refuses only that box.
 The authenticated door deletion flow alone may request deletion-only lifecycle

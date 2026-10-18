@@ -24,6 +24,7 @@ from pathlib import Path, PurePosixPath
 
 from deploy.box_project_readback import verify_owner, verify_tree
 from tinyassets import storage_layout
+from tinyassets.boxes.layout import OWNER_BOX_MIGRATION
 from tinyassets.broker.owner_identities import OWNER_ID_FIRST, OWNER_ID_LAST
 from tinyassets.sqlite_readonly import readonly_db, readonly_snapshot
 from tinyassets.usage_policy import account_type, limits_for
@@ -2417,7 +2418,7 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
                            data, exclude=(".tinyassets.db.prebudgetrepair.bak",))}
             _atomic_json(journal_path, journal)
         _atomic_json(storage_layout.marker_path(data), {
-            **journal["source_marker"], "state": "migrating", "migration": "owner-daemon",
+            **journal["source_marker"], "state": "migrating", "migration": OWNER_BOX_MIGRATION,
         })
         if journal["phase"] == "build":
             _build_cutover(data, store, journal)

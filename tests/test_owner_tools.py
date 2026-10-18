@@ -11,6 +11,84 @@ from tinyassets.agent_loop.owner_tools import OUTPUT_BYTES, OwnerTools, box_tool
 pytestmark = pytest.mark.role_split
 
 
+@pytest.mark.parametrize("producer", ["write", "edit", "bash", "engine_hook", "preview",
+                                     "workspace", "binding", "turn", "turn_hook"])
+def test_operation_producers_mint_current_generation_and_refuse_old(owner, monkeypatch, producer):
+    from types import SimpleNamespace
+
+    from tinyassets import universe_tools
+    from tinyassets.boxes.provider import BoxOperationRefused
+
+    captured = []
+    begin = owner.core._begin
+
+    def record(cc, op, kind, payload):
+        captured.append(op)
+        return begin(cc, op, kind, payload)
+
+    monkeypatch.setattr(owner.core, "_begin", record)
+
+    def invoke():
+        if producer == "write":
+            universe_tools.write_file(owner.home, "note", "one", agent_id="main")
+        elif producer == "edit":
+            (owner.home / "note").write_text("one")
+            universe_tools.edit_file(owner.home, "note", "one", "two", agent_id="main")
+        elif producer == "bash":
+            assert "[exit code 0]" in universe_tools.bash(owner.home, "true", agent_id="main")
+        elif producer == "engine_hook":
+            from tinyassets import extension_hooks
+
+            monkeypatch.setattr(extension_hooks, "has_hooks", lambda *a: True)
+            monkeypatch.setattr(extension_hooks, "command", lambda *a: "echo hook")
+            monkeypatch.setattr("tinyassets.api.helpers._universe_dir", lambda *a: owner.home)
+
+            async def dispatch(*args):
+                return lambda message: {}
+
+            monkeypatch.setattr("tinyassets.ta_capabilities.engine_dispatch", dispatch)
+            server = SimpleNamespace(_GRAPH_ID="center", _ACTOR_ID="alice",
+                                     _acting_agent=lambda: "main")
+            asyncio.run(extension_hooks._engine_event(server, "after_tool", {}))
+        elif producer == "preview":
+            from tinyassets.ui_preview import write_preview
+
+            assert write_preview(owner.home, "screen", b"png") == "/u/previews/screen.png"
+        elif producer == "workspace":
+            from tinyassets.workspace_fs import BoxPoolFilesystem
+
+            path = owner.home / ".agent-workspace/lease"
+            path.mkdir(parents=True, exist_ok=True)
+            BoxPoolFilesystem(owner.runtime.root).remove_tree_no_follow(path)
+            assert not path.exists()
+        elif producer == "binding":
+            from tinyassets.control_plane.binding import SessionBinding
+
+            binding = SessionBinding(owner.core, SimpleNamespace(turn_id="turn"), None, owner.home)
+            owner.core.consume_operation(owner.core.bind("alice"), binding.operation_id("bash"),
+                                         "bash", {})
+        else:
+            from tinyassets.daemon_server import set_founder_home
+            from tinyassets.storage.agent_turn_journal import AgentTurnJournal
+
+            set_founder_home(owner.runtime.root, founder_sub="alice", universe_id="center")
+            journal = AgentTurnJournal(owner.runtime.root)
+            turn = journal.create("alice", "center", prompt="hello", system="fixture")
+            # Coordinator tool positions and turn hooks derive from the
+            # durable turn identity; replay must never prefix it again.
+            suffix = ":1:1" if producer == "turn" else ":hook:after_tool"
+            owner.core.consume_operation(owner.core.bind("alice"), turn.turn_id + suffix,
+                                         "bash", {})
+        return captured[-1]
+
+    old = invoke()
+    owner.core._restore_epoch = "new-platform-generation"
+    fresh = invoke()  # real admission and effect, not just a prefix comparison
+    assert fresh.startswith(owner.core.operation_prefix())
+    with pytest.raises(BoxOperationRefused, match="not re-run"):
+        owner.core.consume_operation(owner.core.bind("alice"), old, "bash", {})
+
+
 def test_bash_consumes_operation_before_effect_and_refuses_replay(owner):
     from tinyassets.boxes.provider import BoxOperationRefused
 

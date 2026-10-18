@@ -10,6 +10,7 @@ import stat
 import time
 from contextlib import closing
 
+from tinyassets.boxes.layout import OWNER_BOX_MIGRATION
 from tinyassets.sqlite_readonly import readonly_db
 
 
@@ -69,7 +70,7 @@ def normal_preflight(current, staged, owners, *, backup_time, restored_owners=No
             layout = json.loads(_safe(current, ".layout.json").read_text())
             unfinished = (layout.get("box_layout") != "owner-box"
                           and layout.get("state") == "migrating"
-                          and layout.get("migration") == "owner-box"
+                          and layout.get("migration") == OWNER_BOX_MIGRATION
                           and (layout.get("split") == "owner-split"
                                or layout.get("box_layout") == "owner-split"))
         except (OSError, ValueError, AttributeError):
@@ -87,7 +88,7 @@ def _rows(root, relative, table):
     return _read(root, relative).get(table, (None, [], [], []))[3]
 
 
-def erasures(current, staged, *, identity_exists):
+def erasures(current, staged, *, identity_exists, unavailable_sources=None):
     """The sole carried fact: union readable tombstones, then ask the identity seam."""
     sources = (
         (".router-deleted-owners.sqlite3", "deleted_owners"),
@@ -95,8 +96,18 @@ def erasures(current, staged, *, identity_exists):
         (".broker/credential-custody.db", "deleted_principals"),
         (".boxhost/boxhost.db", "owner_destroys"),
     )
+    unavailable_sources = [] if unavailable_sources is None else unavailable_sources
     erased, digests, machines = set(), set(), set()
     identities = _rows(staged, ".broker/state/owner-identities.db", "owner_identities")
+    try:
+        live_identities = _rows(current, ".broker/state/owner-identities.db", "owner_identities")
+    except (OSError, sqlite3.DatabaseError, UnreadableFacts, RuntimeError):
+        live_identities = []
+        unavailable_sources.append("live owner identities")
+    # A post-backup identity has no restorable box. Choose erasure, never copy
+    # newer owner content or resurrect an account with somebody else's UID.
+    backed_up = {row["principal"] for row in identities}
+    erased.update(row["principal"] for row in live_identities if row["principal"] not in backed_up)
     for root in (current, staged):
         for relative, table in sources:
             try:
@@ -104,6 +115,7 @@ def erasures(current, staged, *, identity_exists):
             except (OSError, sqlite3.DatabaseError, UnreadableFacts, RuntimeError):
                 if root == staged:
                     raise
+                unavailable_sources.append("live " + relative)
                 continue
             for row in rows:
                 if table == "deleted_principals":
@@ -115,11 +127,15 @@ def erasures(current, staged, *, identity_exists):
                     erased.add(row["owner"])
                 elif row["deleted"]:
                     erased.add(row["principal"])
-    for row in identities:
+    checked = set()
+    for row in [*identities, *live_identities]:
         owner = row["principal"]
+        if owner in erased or owner in checked:
+            continue
         if (hashlib.sha256(owner.encode()).hexdigest() in digests
                 or row["machine_id"] in machines or not identity_exists(owner)):
             erased.add(owner)
+        checked.add(owner)
     from tinyassets.router_credentials import DeletedOwners
 
     for owner in sorted(erased):
@@ -132,6 +148,12 @@ def erasures(current, staged, *, identity_exists):
         tombstones.chmod(0o600)
     identity = _safe(staged, ".broker/state/owner-identities.db")
     with closing(sqlite3.connect(identity)) as db, db:
+        # Carry the erased identity's permanent UID with its tombstone. A
+        # quarantined tree/project must never be assigned to a different owner.
+        for row in live_identities:
+            if row["principal"] in erased and row["principal"] not in backed_up:
+                db.execute("INSERT INTO owner_identities (principal,machine_id) VALUES (?,?)",
+                           (row["principal"], row["machine_id"]))
         for owner in erased:
             db.execute("INSERT INTO owner_box_revocations VALUES (?,1) "
                        "ON CONFLICT(principal) DO UPDATE SET deleted=1", (owner,))
@@ -146,7 +168,8 @@ def erasures(current, staged, *, identity_exists):
                            [(digest,) for digest in sorted(digests)])
         os.chown(custody, 1002, 1002)
         custody.chmod(0o600)
-    return {row["machine_id"] for row in identities if row["principal"] in erased} | machines
+    return {row["machine_id"] for row in [*identities, *live_identities]
+            if row["principal"] in erased} | machines
 
 
 # These are wholesale resets, never intersections with live authority.
@@ -242,16 +265,18 @@ def fence_ops(staged, trees, now):
 
 
 def disaster_restore(current, staged, trees, *, backup_time, now=None,
-                     identity_exists=None, billing_sync=None, revoke_sessions=None):
+                     identity_exists=None, billing_sync=None, revoke_sessions=None,
+                     live_trees=None):
     from tinyassets.billing.stripe_adapter import restore_billing
+    from tinyassets.boxes.destroy import quarantine
     from tinyassets.boxes.destroy import tree as destroy
+    from tinyassets.boxes.provider import BoxError
     from tinyassets.router_account_deletion import revoke_workos_sessions, workos_user_exists
 
     now = time.time() if now is None else now
-    erased = erasures(current, staged, identity_exists=identity_exists or workos_user_exists)
-    for uid in sorted(erased):
-        destroy(trees, uid, erase=False)
-        destroy(trees, uid, erase=True)
+    unavailable_sources = []
+    erased = erasures(current, staged, identity_exists=identity_exists or workos_user_exists,
+                      unavailable_sources=unavailable_sources)
     reconciled = 0
     for row in _rows(staged, ".broker/state/owner-identities.db", "owner_identities"):
         if row["machine_id"] not in erased:
@@ -265,15 +290,38 @@ def disaster_restore(current, staged, trees, *, backup_time, now=None,
     fence = _safe(staged, ".broker/restore-spend-until")
     fence.write_text(str((int(now) // 86400 + 1) * 86400))
     os.chown(fence, 1002, 1002)
+    report_path = _safe(staged, ".disaster-restore.json")
+    failures = []
+    for store in (trees, *([live_trees] if live_trees is not None else [])):
+        for uid in sorted(erased):
+            try:
+                destroy(store, uid, erase=False)
+                destroy(store, uid, erase=True)
+            except (OSError, BoxError) as error:
+                path = quarantine(store, uid, destination_root=live_trees or trees.parent)
+                failures.append({"uid": uid, "quarantine": str(path),
+                                 "error": type(error).__name__})
+    if failures:
+        from tinyassets.router_credentials import DeletedOwners
+
+        deleted = DeletedOwners(staged)
+        identities = _rows(staged, ".broker/state/owner-identities.db", "owner_identities")
+        for row in identities:
+            if row["machine_id"] in {item["uid"] for item in failures}:
+                deleted.save_receipt(row["principal"], {
+                    "unfinished_phases": ["owner_tree", "billing", "identity"],
+                    "home_removed": False, "source": "disaster erasure quarantine"})
     report = {"backup_time": backup_time, "restore_time": now,
               "credential_roots_reset": True, "operation_fences_reset": True,
               "erased_owners": len(erased), "billing": billing,
+              "erasure_failures": failures,
+              "unavailable_erasure_sources": unavailable_sources,
               "owners_reconciled": reconciled,
               "spend_blocked_until": int(fence.read_text()),
               "reverted_classes": ["owner consents and grants", "effector consents",
                   "capability grants", "graph receivers", "outside grants",
                   "spend reservations", "policies", "content", "turns", "schedules",
                   "receipts", "abuse suspension history"]}
-    _safe(staged, ".disaster-restore.json").write_text(json.dumps(report, sort_keys=True))
+    report_path.write_text(json.dumps(report, sort_keys=True))
     print("WARN disaster restore: " + json.dumps(report, sort_keys=True))
     return report

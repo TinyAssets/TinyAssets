@@ -21,7 +21,17 @@ It SHALL reconcile identity erasure through WorkOS and billing through Stripe
 adapter seams, report unavailable billing/suspension sources, loss window and
 classes reverting to backup time, and exit 6 on completed recovery.
 Only erasure tombstones SHALL be carried from readable sources. Erased trees
-SHALL be destroyed before publication. Unsafe paths, invalid pairs, uncertain
+SHALL be destroyed before publication, or on an individual erasure failure detached
+into root-owned 0700 quarantine for retry, with router and broker refusal retained.
+An erased box SHALL never start; recovery SHALL report its failure and retry path
+and continue for other owners. Deletion SHALL be iterative with no depth bound,
+descriptor-relative, and never follow symlinks or cross mounts.
+Identities found only in live platform state and absent from the backup SHALL be
+erased with their permanent UID reservations retained; retained live quota clearing
+SHALL not require backup registry membership.
+Pre-cutover pairs SHALL be refused as disaster sources with an explicit explanation
+that forward migration is required; disaster restore requires an owner-box pair.
+Unsafe platform paths, invalid pairs, uncertain
 identity reconciliation and preparation failures SHALL preserve original volumes.
 The DR drill SHALL fetch, verify and transfer both archives and their manifest.
 Rehearsal provider injection SHALL require an explicit harness argument and a
@@ -62,7 +72,7 @@ startup, and unreachable-provider exit 4 without changing either live volume.
 - **AND** an uncertain identity lookup refuses publication
 
 #### Scenario: Disaster preparation failure
-- **WHEN** credential reset, fencing, erasure or reconciliation cannot complete
+- **WHEN** credential reset, fencing, erasure quarantine or reconciliation cannot complete
 - **THEN** neither staged volume is published and original state remains intact
 
 ### Requirement: Cutover preserves knowledge bytes and removes rehearsal residue

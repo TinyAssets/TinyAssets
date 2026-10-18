@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from tinyassets.boxes.layout import OWNER_BOX_MIGRATION
 from tinyassets.boxes.state import BoxHostState
 
 SPEC = importlib.util.spec_from_file_location(
@@ -72,6 +73,51 @@ def test_normal_restore_is_exact_and_does_not_carry_rows(tmp_path):
     assert (fingerprint(staged), fingerprint(trees)) == before
 
 
+@pytest.mark.parametrize("layout", [None, {"split": "owner-split", "state": "stable"}])
+def test_pre_cutover_pair_is_not_a_disaster_source(tmp_path, layout):
+    current, staged, live, trees = paired(tmp_path)
+    marker = staged / ".layout.json"
+    marker.unlink() if layout is None else marker.write_text(json.dumps(layout))
+    with pytest.raises(ValueError, match="pre-cutover backup.*requires forward migration"):
+        restore.fence_restore(current, staged, cutover_store=live, restored_store=trees,
+                              disaster=True)
+
+
+def test_clear_retained_quotas_needs_no_registry_for_post_backup_owner(tmp_path, monkeypatch):
+    current, staged, live, trees = paired(tmp_path)
+    (live / "300002").mkdir()
+    commands = []
+    monkeypatch.setattr(restore.subprocess, "run", lambda args, **kw: commands.append(args))
+    monkeypatch.setattr(restore, "verify_tree", lambda *args: None)
+    # Even a missing live registry cannot turn retained content into authority.
+    restore.reapply(live, live, tmp_path / "absent-registry", clear=True)
+    assert {command[3].split()[-1] for command in commands} == {"300001", "300002"}
+
+
+def test_disaster_erases_post_backup_identity(tmp_path, monkeypatch):
+    from tinyassets.router_credentials import DeletedOwners
+
+    current, staged, live, trees = paired(tmp_path)
+    with sqlite3.connect(current / ".broker/state/owner-identities.db") as db:
+        db.execute("INSERT INTO owner_identities VALUES ('later',300002)")
+    report = disaster(current, staged, trees, monkeypatch)
+    assert DeletedOwners(staged).contains("later")
+    assert report["erased_owners"] == 1
+    assert report["owners_reconciled"] == 1
+    with sqlite3.connect(staged / ".broker/state/owner-identities.db") as db:
+        assert db.execute("SELECT machine_id FROM owner_identities WHERE principal='later'"
+                          ).fetchone() == (300002,)
+
+
+def test_disaster_reports_unreadable_live_identity_source(tmp_path, monkeypatch):
+    current, staged, live, trees = paired(tmp_path)
+    (current / ".broker/state/owner-identities.db").write_bytes(b"damaged platform registry")
+    report = disaster(current, staged, trees, monkeypatch)
+    assert "live owner identities" in report["unavailable_erasure_sources"]
+    assert report["owners_reconciled"] == 1
+    assert (trees / "300001/note").read_text() == "backup"
+
+
 @pytest.mark.parametrize("damage", ["traffic", "missing_marker", "corrupt_marker"])
 def test_normal_refuses_before_touching_staging(tmp_path, damage):
     from tinyassets.router_traffic import open_traffic
@@ -102,7 +148,7 @@ def test_normal_marker_requires_unfinished_layout(tmp_path, marker, layout):
     elif layout == "corrupt":
         path.write_text("corrupt")
     else:
-        path.write_text(json.dumps({"state": "migrating", "migration": "owner-box",
+        path.write_text(json.dumps({"state": "migrating", "migration": OWNER_BOX_MIGRATION,
                                     "box_layout": "owner-split"}))
     if layout == "unfinished":
         restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)

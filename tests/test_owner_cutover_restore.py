@@ -17,6 +17,7 @@ import pytest
 
 from tests.test_owner_cutover_census import _fingerprint, _sql
 from tests.test_owner_cutover_census import source as source
+from tinyassets.boxes.layout import OWNER_BOX_MIGRATION
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -45,7 +46,7 @@ def test_paired_restore_after_half_move_is_byte_exact(source, tmp_path, interrup
     # marker as well as the owner bytes. Never require the destination schema
     # to exist in the live half-moved volume to restore the source generation.
     (volume / ".layout.json").write_text(json.dumps({
-        "layout": 2, "split": "owner-split", "state": "migrating", "migration": "owner-box",
+        "layout": 2, "split": "owner-split", "state": "migrating", "migration": OWNER_BOX_MIGRATION,
     }))
     shutil.copytree(volume / "a1", store / "300001/a1")
     if interruption in {"box_records", "removed_host_tree"}:
@@ -94,7 +95,10 @@ fi
 @pytest.mark.skipif(os.name != "posix" or os.geteuid() != 0,
                     reason="root-private restore journals; owner=c6-owner-box "
                            "runs-in=linux_oracle.py--as-root")
-def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(tmp_path):
+@pytest.mark.parametrize("erasure_failure", [False, True])
+def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(
+    tmp_path, erasure_failure, monkeypatch,
+):
     import runpy
     import sqlite3
 
@@ -142,6 +146,16 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(tmp
     runpy.run_path(str(REPO / "deploy/backup-pair.py"))["create"](
         data_archive, box_archive, tmp_path / f"tinyassets-pair-{timestamp}.json")
 
+    # A newer live owner is absent from the paired backup registry.
+    later = store / "300004"
+    later.mkdir(mode=0o700)
+    os.chown(later, 300004, 300004)
+    (later / "note").write_text("post-backup content")
+    _sql(data / ".broker/state/owner-identities.db", """
+        INSERT INTO owner_identities VALUES ('later',300004);
+        INSERT INTO box_records VALUES (300004,300004,1048576);
+    """)
+
     # Simulate damaged live layout, custody and journal, while independent
     # deletion/key records and Alice's newer consumed operation survive.
     (data / ".layout.json").write_text("unreadable layout")
@@ -170,6 +184,18 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(tmp
         return subprocess.run(["bash", str(REPO / "deploy/backup-restore.sh"), *args],
                               env=env, capture_output=True, text=True, check=False)
 
+    if erasure_failure:
+        wrapper = tmp_path / "bin/python3"
+        wrapper.write_text(wrapper.read_text().replace(
+            "    sys.argv = sys.argv[1:]", """    import tinyassets.boxes.destroy as destruction
+    real_destroy = destruction.tree
+    def destroy(store, uid, **kwargs):
+        if uid in (300002, 300004) and (store / str(uid)).exists():
+            raise OSError('forced one-owner erasure failure')
+        return real_destroy(store, uid, **kwargs)
+    destruction.tree = destroy
+    sys.argv = sys.argv[1:]"""))
+
     flags = ("--disaster-restore", "--acknowledge-unrecoverable-facts")
     for flag in flags:
         assert run(flag).returncode == 1
@@ -182,6 +208,21 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(tmp
     assert "restore complete. Data installed" in completed.stdout
     assert not (store / "300002").exists()  # backup erasure
     assert not (store / "300003").exists()  # surviving erasure
+    assert not (store / "300004").exists()  # post-backup owner erased
+    assert DeletedOwners(data).contains("later")
+    assert DeletedOwners(data).contains("bob")
+    from tinyassets.owner_router import resolve_box
+
+    with monkeypatch.context() as admission:
+        admission.setenv("TINYASSETS_DATA_DIR", str(data))
+        admission.setattr("tinyassets.boxes.daemon_control.request",
+                          lambda *a, **kw: pytest.fail("erased owner reached box startup"))
+        for erased_owner in ("bob", "carol", "later"):
+            with pytest.raises(LookupError, match="deleted"):
+                resolve_box(erased_owner)
+    with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
+        assert db.execute("SELECT deleted FROM owner_box_revocations WHERE principal='bob'"
+                          ).fetchone() == (1,)
     assert (store / "300001/note").read_text() == "backup bytes"
     with sqlite3.connect(store / "300001/.owner-boxd/boxhost.db") as db:
         assert db.execute("SELECT op_id,state FROM ops ORDER BY op_id").fetchall() == [
@@ -194,6 +235,20 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(tmp
     log = (tmp_path / "restore.log").read_text()
     report = json.loads((data / ".disaster-restore.json").read_text())
     assert report["credential_roots_reset"] and report["operation_fences_reset"]
+    assert bool(report["erasure_failures"]) == erasure_failure
+    if erasure_failure:
+        assert len(report["erasure_failures"]) == 3  # Bob twice, post-backup owner once
+        for failure in report["erasure_failures"]:
+            quarantine = Path(failure["quarantine"])
+            assert failure["uid"] in (300002, 300004)
+            assert quarantine.is_dir()
+            assert quarantine.parent.stat().st_uid == 0
+            assert quarantine.parent.stat().st_mode & 0o777 == 0o700
+        assert not DeletedOwners(data).receipt("bob")["home_removed"]
+        assert not DeletedOwners(data).receipt("later")["home_removed"]
+        assert all(Path(item["quarantine"]).is_relative_to(store)
+                   for item in report["erasure_failures"])
+        assert '"erasure_failures": [{' in completed.stdout
     assert "owner consents and grants" in report["reverted_classes"]
     assert report["backup_time"] < report["restore_time"]
     assert "WARN disaster restore:" in completed.stdout

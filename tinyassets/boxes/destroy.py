@@ -19,39 +19,74 @@ def _mount(fd: int) -> str:
     raise BoxError("kernel mount identity is unavailable")
 
 
-def _walk(fd: int, device: int, mount: str, *, erase: bool, depth: int = 0) -> int:
-    if depth > 128:
-        raise BoxError("owner tree exceeds the erasure depth bound")
+def _walk(fd: int, device: int, mount: str, *, erase: bool) -> int:
+    # Keep opened directories, not owner-controlled path strings. Postorder
+    # traversal has no Python recursion/depth bound and never follows links.
+    stack = [(fd, iter(os.listdir(fd)), None)]
     count = 0
-    for name in os.listdir(fd):
-        info = os.stat(name, dir_fd=fd, follow_symlinks=False)
-        if info.st_dev != device:
-            raise BoxError("owner tree contains a foreign mount")
-        entry = os.open(name, os.O_PATH | os.O_NOFOLLOW, dir_fd=fd)
-        try:
-            if _mount(entry) != mount:
+    try:
+        while stack:
+            current_fd, entries, parent_name = stack[-1]
+            name = next(entries, None)
+            if name is None:
+                if erase:
+                    os.fsync(current_fd)
+                stack.pop()
+                if stack:
+                    os.close(current_fd)
+                    if erase:
+                        os.rmdir(parent_name, dir_fd=stack[-1][0])
+                continue
+            info = os.stat(name, dir_fd=current_fd, follow_symlinks=False)
+            if info.st_dev != device:
                 raise BoxError("owner tree contains a foreign mount")
-        finally:
-            os.close(entry)
-        if stat.S_ISDIR(info.st_mode):
-            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            entry = os.open(name, os.O_PATH | os.O_NOFOLLOW, dir_fd=current_fd)
             try:
-                current = os.fstat(child)
-                if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
-                    raise BoxError("owner tree changed after quiescence")
-                if _mount(child) != mount:
+                if _mount(entry) != mount:
                     raise BoxError("owner tree contains a foreign mount")
-                count += _walk(child, device, mount, erase=erase, depth=depth + 1)
             finally:
-                os.close(child)
-            if erase:
-                os.rmdir(name, dir_fd=fd)
-        elif erase:
-            os.unlink(name, dir_fd=fd)
-        count += 1
-    if erase:
-        os.fsync(fd)
+                os.close(entry)
+            if stat.S_ISDIR(info.st_mode):
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=current_fd)
+                try:
+                    current = os.fstat(child)
+                    if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+                        raise BoxError("owner tree changed after quiescence")
+                    if _mount(child) != mount:
+                        raise BoxError("owner tree contains a foreign mount")
+                    children = iter(os.listdir(child))
+                except BaseException:
+                    os.close(child)
+                    raise
+                stack.append((child, children, name))
+            elif erase:
+                os.unlink(name, dir_fd=current_fd)
+            count += 1
+    finally:
+        for child, _, _ in stack[1:]:
+            os.close(child)
     return count
+
+
+def quarantine(store: Path, uid: int, *, destination_root: Path) -> Path:
+    """Detach an unerased tree into root-private storage on the same filesystem."""
+    import tempfile
+
+    GvisorRuntime.box_id(uid)
+    target = Path(tempfile.mkdtemp(prefix=".tinyassets-erasure-quarantine.", dir=destination_root))
+    os.chown(target, 0, 0)
+    target.chmod(0o700)
+    parent = os.open(store, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    destination = os.open(target, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.rename(str(uid), str(uid), src_dir_fd=parent, dst_dir_fd=destination)
+        os.fsync(parent)
+        os.fsync(destination)
+    finally:
+        os.close(destination)
+        os.close(parent)
+    return target / str(uid)
 
 
 def tree(store: Path, uid: int, *, erase: bool) -> int:

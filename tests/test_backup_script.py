@@ -12,6 +12,7 @@ Coverage:
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
@@ -26,6 +27,8 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
+
+from tinyassets.boxes.layout import OWNER_BOX_MIGRATION
 
 REPO = Path(__file__).resolve().parent.parent
 BACKUP_SH = REPO / "deploy" / "backup.sh"
@@ -442,7 +445,9 @@ def test_restore_exits_1_when_backup_dest_missing():
 # ---------------------------------------------------------------------------
 
 
-_PRETRAFFIC_LAYOUT = b'{"box_layout":"owner-split","state":"migrating","migration":"owner-box"}'
+_PRETRAFFIC_LAYOUT = json.dumps({
+    "box_layout": "owner-split", "state": "migrating", "migration": OWNER_BOX_MIGRATION,
+}).encode()
 
 
 def _empty_owner_pair(tmp_path):

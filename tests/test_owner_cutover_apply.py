@@ -518,11 +518,16 @@ def test_final_verify_refuses_changed_committed_output(cutover, changed):
     assert (_fingerprint(data), _fingerprint(store)) == before
 
 
-def test_completed_apply_restores_paired_owner_split(cutover, tmp_path):
+@pytest.mark.parametrize("journal", ["intact", "missing", "corrupt"])
+def test_completed_apply_restores_paired_owner_split(cutover, tmp_path, journal):
     data, store, *_ = cutover
     before = _fingerprint(data)
     migration.apply(*cutover)
     assert not (data / 'a1').exists()
+    if journal == 'missing':
+        (data / '.boxhost/boxhost.db').unlink()
+    elif journal == 'corrupt':
+        (data / '.boxhost/boxhost.db').write_bytes(b'corrupt live journal')
     result = _restore_paired(cutover, tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
     assert _fingerprint(data) == before
@@ -611,6 +616,20 @@ else:
              'BACKUP_LOG': str(tmp_path / 'restore.log'), 'TEST_VOLUME': str(data)},
         text=True, capture_output=True, check=False)
     return result
+
+
+def test_actual_interrupted_migration_allows_normal_rollback(cutover, tmp_path, monkeypatch):
+    before = _fingerprint(cutover[0])
+
+    def crash(*args):
+        raise OSError("crash after migration marker")
+
+    monkeypatch.setattr(migration, "_copy", crash)
+    with pytest.raises(OSError, match="crash after migration marker"):
+        migration.apply(*cutover)
+    result = _restore_paired(cutover, tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _fingerprint(cutover[0]) == before
 
 
 def test_crash_resume_rejects_a_different_snapshot_pair(cutover, monkeypatch):

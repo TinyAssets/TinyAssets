@@ -24,6 +24,17 @@ def reapply(store: Path, trees: Path, registry: Path, *, clear: bool = False) ->
     }
     if not owner_dirs:
         return
+    if clear:
+        # Permanent project IDs equal UIDs. Retained live trees can postdate
+        # the backup; clearing them needs neither generation's identity store.
+        for uid in sorted(owner_dirs):
+            if not 300001 <= int(uid) <= 399999 or str(int(uid)) != uid:
+                raise ValueError("invalid permanent owner tree")
+            tree = trees / uid
+            subprocess.run(["xfs_quota", "-x", "-c",
+                            f"project -C -p {tree} {uid}", str(store)], check=True)
+            verify_tree(tree, 0, False)
+        return
     if registry.is_symlink() or not registry.is_file():
         raise ValueError("paired broker identity database is absent or not regular")
     with readonly_db(registry) as db:
@@ -51,19 +62,13 @@ def reapply(store: Path, trees: Path, registry: Path, *, clear: bool = False) ->
         tree = trees / uid
         os.chown(tree, int(uid), gid)
         os.chmod(tree, 0o700)
-        if clear:
-            command = f"project -C -p {tree} {project}"
-        else:
-            command = f"project -s -p {tree} {project}"
+        command = f"project -s -p {tree} {project}"
         subprocess.run(["xfs_quota", "-x", "-c", command, str(store)], check=True)
-        if clear:
-            verify_tree(tree, 0, False)
-        if not clear:
-            subprocess.run(
-                ["xfs_quota", "-x", "-c", f"limit -p bhard={limit // 1024}k {project}", str(store)],
-                check=True,
-            )
-            verify_owner(store, tree, project, limit)
+        subprocess.run(
+            ["xfs_quota", "-x", "-c", f"limit -p bhard={limit // 1024}k {project}", str(store)],
+            check=True,
+        )
+        verify_owner(store, tree, project, limit)
 
 
 def _cutover_manifest(root: Path, *, exclude=()) -> dict:
@@ -91,10 +96,13 @@ def fence_restore(current: Path, staged: Path, *, cutover_store: Path | None = N
     if cutover_store is None or restored_store is None:
         raise ValueError("paired restore requires both owner stores")
     if disaster:
-        layout = json.loads((staged / ".layout.json").read_text())
+        marker = staged / ".layout.json"
+        layout = json.loads(marker.read_text()) if marker.exists() else {}
         if layout.get("box_layout") != "owner-box":
-            raise ValueError("disaster restore requires a verified owner-box backup pair")
+            raise ValueError("pre-cutover backup cannot be a disaster source after traffic: "
+                             "it requires forward migration; select a verified owner-box pair")
         disaster_restore(current, staged, restored_store, backup_time=backup_time,
+                         live_trees=cutover_store,
                          **(restore_adapters or {}))
     else:
         normal_preflight(current, staged, cutover_store, backup_time=backup_time,

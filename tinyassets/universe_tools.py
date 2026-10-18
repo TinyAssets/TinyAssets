@@ -97,7 +97,9 @@ def _run(coroutine):
 def _operation_id(purpose):
     import uuid
 
-    return uuid.uuid4().hex
+    from tinyassets.operation_epoch import new_identity
+
+    return new_identity(f"{purpose}:{uuid.uuid4().hex}")
 
 
 def read_file(universe_dir: Path, path: str, offset: int = 0, limit: int = 0,
