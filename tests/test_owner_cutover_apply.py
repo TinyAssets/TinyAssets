@@ -60,11 +60,25 @@ def test_root_vectors_never_inherit_knowledge_owner(cutover):
 
 
 @pytest.mark.parametrize("protected", [False, True])
-def test_cutover_repairs_only_named_indexes_and_records_verified_repair(cutover, protected):
+@pytest.mark.parametrize("wal", [False, True])
+def test_cutover_repairs_only_named_indexes_and_records_verified_repair(cutover, protected, wal):
     from tests.test_cutover_index_integrity import corrupt_index
 
     data, store, *_ = cutover
     corrupt_index(data / ".tinyassets.db")
+    if wal:
+        # A stopped writer can leave committed WAL bytes and shared memory.
+        subprocess.run([sys.executable, '-c', """
+import os, sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.execute('PRAGMA journal_mode=WAL')
+db.execute('PRAGMA user_version=1')
+db.commit()
+os._exit(0)
+""", str(data / '.tinyassets.db')], check=True)
+        assert (data / '.tinyassets.db-wal').stat().st_size > 0
+        for suffix in ('-wal', '-shm'):
+            os.chown(data / ('.tinyassets.db' + suffix), 1001, 1001)
     if protected:
         from tinyassets.erasure_ledger import protect_root
 
@@ -80,6 +94,43 @@ def test_cutover_repairs_only_named_indexes_and_records_verified_repair(cutover,
             assert db.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
             assert db.execute("SELECT COUNT(*) FROM agent_turns INDEXED BY drift"
                               ).fetchone() == (2,)
+
+
+@pytest.mark.parametrize('kind', ['regular', 'missing', 'symlink', 'hardlink', 'fifo'])
+def test_sqlite_sidecar_custody_preserves_bytes_and_refuses_aliases(cutover, tmp_path, kind):
+    data, *_ = cutover
+    path = data / '.tinyassets.db'
+    os.chown(path, 1001, 1001)
+    wal, shm = data / '.tinyassets.db-wal', data / '.tinyassets.db-shm'
+    wal.write_bytes(b'committed WAL bytes')
+    os.chown(wal, 1001, 1001)
+    wal.chmod(0o640)
+    external = tmp_path / 'external'
+    external.write_bytes(b'external bytes')
+    os.chown(external, 1001, 1001)
+    if kind == 'regular':
+        shm.write_bytes(b'shared memory')
+        os.chown(shm, 1001, 1001)
+    elif kind == 'symlink':
+        shm.symlink_to(external)
+    elif kind == 'hardlink':
+        os.link(external, shm)
+    elif kind == 'fifo':
+        os.mkfifo(shm)
+    if kind in {'regular', 'missing'}:
+        migration._claim_sqlite_sidecars(path)
+        assert wal.stat().st_uid == 0
+        if kind == 'regular':
+            assert shm.stat().st_uid == 0
+            assert shm.read_bytes() == b'shared memory'
+    else:
+        with pytest.raises((OSError, RuntimeError)):
+            migration._claim_sqlite_sidecars(path)
+        assert wal.stat().st_uid == 1001  # Validate both before changing either.
+    assert wal.read_bytes() == b'committed WAL bytes'
+    assert wal.stat().st_mode & 0o777 == 0o640
+    assert path.stat().st_uid == external.stat().st_uid == 1001
+    assert external.read_bytes() == b'external bytes'
 
 
 def _published_workflow(data):

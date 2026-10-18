@@ -18,7 +18,7 @@ import stat
 import subprocess
 import sys
 import time
-from contextlib import closing
+from contextlib import ExitStack, closing
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -2132,6 +2132,28 @@ def _split_histories(data, store, inventory):
                   else "after_activity_ledger_split")
 
 
+def _claim_sqlite_sidecars(path: Path) -> None:
+    """Stopped apply preserves WAL bytes while taking custody of recovery files."""
+    with ExitStack() as opened:
+        descriptors = []
+        for suffix in ("-wal", "-shm"):
+            try:
+                fd = os.open(path.with_name(path.name + suffix),
+                             os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            except FileNotFoundError:
+                continue
+            opened.callback(os.close, fd)
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise RuntimeError("SQLite sidecar is not a single-link regular file")
+            descriptors.append(fd)
+        # SQLite still uses O_CREAT for sidecars even with main-database mode=rw.
+        # Validate both before changing either; never truncate committed WAL or
+        # change ownership through an alias outside the stopped source tree.
+        for fd in descriptors:
+            os.fchown(fd, 0, 0)
+
+
 def _build_cutover(data: Path, store: Path, journal: dict, *, apply_quotas=True) -> None:
     inventory = {}
     report = census(data, _inventory=inventory, _source_marker=journal["source_marker"])
@@ -2141,6 +2163,7 @@ def _build_cutover(data: Path, store: Path, journal: dict, *, apply_quotas=True)
 
     repairs = set(journal.get("reindexed", []))
     for database in sorted({database for database, _ in inventory["tables"]}):
+        _claim_sqlite_sidecars(data / database)
         # Census proved this source exists. O_CREAT on a daemon-owned file in
         # the ledger's sticky root is denied by Linux protected_regular, even
         # to root; SQLite's default open then silently falls back to read-only.

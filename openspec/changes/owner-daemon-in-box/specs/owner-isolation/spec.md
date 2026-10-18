@@ -533,6 +533,7 @@ and record each repair. Every non-index integrity failure SHALL refuse.
 
 #### Scenario: Resume with protected shared storage
 - **WHEN** stopped apply or its retry opens a daemon-owned source database under a root-owned sticky data directory
-- **THEN** named index repair remains writable without changing source ownership or weakening directory protection
+- **THEN** named index repair remains writable without changing source database ownership or weakening directory protection
+- **AND** stopped apply takes root custody of existing single-link regular WAL/SHM files without discarding their bytes or relaxing modes, and refuses aliases before changing custody
 - **AND** interruption after an owner tree or shared seeding can resume on the same host
 - **AND** independent archive rehearsal trials restore the archived data-root ownership and mode as well as its contents
