@@ -90,7 +90,7 @@ def normal_preflight(current, staged, owners, *, backup_time, restored_owners=No
 def _carry_rollback(current, staged, owners, retained_owners):
     from tinyassets.erasure_ledger import carry_forward
 
-    ledger = carry_forward(current, staged)
+    ledger = carry_forward(current, staged, store_root=owners)
     _identify_erased(ledger, current, staged)
     _reserve_erasures(ledger, staged)
     _schedule_trees(ledger, [owners, retained_owners] if retained_owners else [owners])
@@ -120,11 +120,12 @@ def _identify_erased(ledger, current, staged, identity_exists=None, unavailable_
     return identities, live
 
 
-def erasures(current, staged, *, identity_exists, unavailable_sources=None):
+def erasures(current, staged, *, identity_exists, unavailable_sources=None,
+             store_root=Path("/var/lib/boxhostd/owners")):
     """Carry only ledger authority; import pre-ledger facts during the cutover."""
     from tinyassets.erasure_ledger import carry_forward
 
-    ledger = carry_forward(current, staged, unavailable_sources)
+    ledger = carry_forward(current, staged, unavailable_sources, store_root=store_root)
     _identify_erased(ledger, current, staged, identity_exists, unavailable_sources)
     entries = ledger.entries()
     erased = {entry["principal"] for entry in entries if entry["principal"]}
@@ -170,10 +171,11 @@ def _schedule_trees(ledger, stores):
         ledger.execute("restart", {"digest": entry["digest"]})
         for store in stores:
             for uid in entry["uids"]:
-                destination = (stores[0] / (".tinyassets-erasure-quarantine." +
-                                           secrets.token_hex(16)) / str(uid))
+                destination = (Path(".tinyassets-erasure-quarantine." + secrets.token_hex(16))
+                               / str(uid))
                 ledger.execute("work", {"digest": entry["digest"], "target": {
-                    "uid": uid, "store": str(store), "quarantine": str(destination)}})
+                    "uid": uid, "store": str(store.relative_to(stores[0])),
+                    "quarantine": str(destination)}})
 
 
 # These are wholesale resets, never intersections with live authority.
@@ -279,7 +281,7 @@ def disaster_restore(current, staged, trees, *, backup_time, now=None,
     now = time.time() if now is None else now
     unavailable_sources = []
     erased = erasures(current, staged, identity_exists=identity_exists or workos_user_exists,
-                      unavailable_sources=unavailable_sources)
+                      unavailable_sources=unavailable_sources, store_root=live_trees)
     reconciled = 0
     for row in _rows(staged, ".broker/state/owner-identities.db", "owner_identities"):
         if row["machine_id"] not in erased:
@@ -338,21 +340,28 @@ def _save_report(path, report):
         os.close(directory)
 
 
-def finish_erasures(root):
+def finish_erasures(root, store_root=Path("/var/lib/boxhostd/owners")):
     """Under layout exclusion, retry all ledger paths before any box starts."""
     from tinyassets.boxes.destroy import quarantine, tree
     from tinyassets.boxes.provider import BoxError
-    from tinyassets.erasure_ledger import ErasureLedger
+    from tinyassets.erasure_ledger import ErasureLedger, validate_target
 
     ledger = ErasureLedger(root)
     failures = []
     for entry in ledger.entries():
         for key, item in entry["work"].items():
-            uid, store = item["uid"], Path(item["store"])
-            destination = Path(item["quarantine"])
+            uid = item["uid"]
+            store = store_root / item["store"]
+            destination = store_root / item["quarantine"]
             # Root-private ledger recorded both paths before rename. Neither
             # report replacement nor a later restore can lose the destination.
             try:
+                validate_target(item)
+                for path in (store, destination):
+                    while path != store_root.parent:
+                        if path.is_symlink():
+                            raise BoxError("erasure target is a symlink")
+                        path = path.parent
                 if destination.exists():
                     tree(destination.parent, uid, erase=False)
                     tree(destination.parent, uid, erase=True)
@@ -365,11 +374,11 @@ def finish_erasures(root):
                             raise
                         quarantine(store, uid, destination_root=destination.parent)
                         raise BoxError("erasure quarantined; retry required")
-            except (OSError, BoxError) as exc:
-                if not store.exists() and not destination.exists():
-                    raise  # A missing mount is not evidence of completed erasure.
-                failures.append({"uid": uid, "quarantine": str(destination),
+            except (OSError, BoxError, ValueError) as exc:
+                failures.append({"uid": uid, "quarantine": item["quarantine"],
                                  "error": type(exc).__name__})
+                ledger.execute("save", {"digest": entry["digest"], "receipt": {
+                    "erasure_failures": failures[-1:]}})
                 continue
             ledger.execute("finish", {"digest": entry["digest"], "ids": [key]})
         # Offline restore work proves the home phase after every path completes.

@@ -252,9 +252,9 @@ async def delete_owner_account(identity):
 async def _delete_owner_account(identity):
     """The door records each shared phase; a tombstone never blocks cleanup."""
     from tinyassets.billing.stripe_adapter import cancel_account_billing
-    from tinyassets.broker.account_erasure import erase_account
+    from tinyassets.broker.account_erasure import close_channels, erase_account
     from tinyassets.broker.owner_identities import retire_owner
-    from tinyassets.erasure_ledger import ErasureLedger
+    from tinyassets.erasure_ledger import PHASES, ErasureLedger
     from tinyassets.router_account_deletion import delete_workos_user
     from tinyassets.router_credentials import revoke_account, tombstone
     from tinyassets.storage import data_dir
@@ -291,11 +291,11 @@ async def _delete_owner_account(identity):
                 if name in {"billing", "identity"} and receipt[name] == "pending":
                     receipt[name] = "error"
             receipt["unfinished_phases"] = sorted(set(failures + [
-                step for step in ("owner_tree", "broker_egress", "billing",
-                                  "credentials", "identity")
+                step for step in PHASES
                 if step not in done]))
             await run_in_threadpool(deleted.save_receipt, owner, receipt)
 
+        await phase("broker_channels", lambda: close_channels(root, principal=owner))
         # Box cleanup is one retryable phase; shared phases never depend on it.
         if "owner_tree" not in done and not receipt.get("quarantines"):
             try:
@@ -331,8 +331,7 @@ async def _delete_owner_account(identity):
         await phase("credentials", lambda: revoke_account(root, owner))
         # Durable router retries finish cleanup even though sign-in is fenced.
         await phase("identity", lambda: delete_workos_user(owner))
-        receipt["unfinished_phases"] = [step for step in (
-            "owner_tree", "broker_egress", "billing", "credentials", "identity")
+        receipt["unfinished_phases"] = [step for step in PHASES
             if step not in done]
         await run_in_threadpool(deleted.save_receipt, owner, receipt)
         if receipt["unfinished_phases"]:

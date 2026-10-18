@@ -628,7 +628,7 @@ if [[ -n "${BOX_NAME:-}" ]]; then sync -f "$BOX_STORE_DIR"; fi
 
 if [[ -n "${BOX_NAME:-}" ]]; then
     if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
-            --finish-erasures "$VOLUME_DIR"; then
+            --finish-erasures "$VOLUME_DIR" --cutover-store "$BOX_STORE_DIR"; then
         log "ERROR: published recovery cleanup pending; boxhostd will resume before admission"
         exit 5
     fi

@@ -70,6 +70,7 @@ def restore_replay_probe(mode: str) -> int:
     from tinyassets.erasure_ledger import ErasureLedger
 
     data, store, backup = Path("/data"), Path("/box-store"), Path("/backup/replay")
+    os.environ["TINYASSETS_DATA_DIR"] = str(data)
     backup.mkdir(exist_ok=True)
     with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
         owners = db.execute("SELECT principal,machine FROM box_records WHERE machine<>399999"
@@ -141,13 +142,21 @@ def restore_replay_probe(mode: str) -> int:
         from tinyassets.onboarding import owner_sessions
         from tinyassets.router_credentials import HookOwners
 
-        credential = ApiKeyStore(data).mint(owners[0][0], name="synthetic", scopes=[],
-                                            authority=None)["key"]
-        HookOwners(data).publish(hashlib.sha256(b"rehearsal-hook").hexdigest(), owners[0][0])
-        with owner_sessions.store() as db:
-            db.execute("INSERT INTO owner_sessions VALUES (?,?,?)",
-                       (owner_sessions.hashed("rehearsal-session"),
-                        json.dumps({"user_id": owners[0][0]}), 4000000000))
+        # Shared credentials are router-owned, including in the root-sticky
+        # data directory installed by a real box-host startup.
+        os.setegid(1001)
+        os.seteuid(1001)
+        try:
+            credential = ApiKeyStore(data).mint(owners[0][0], name="synthetic", scopes=[],
+                                                authority=None)["key"]
+            HookOwners(data).publish(hashlib.sha256(b"rehearsal-hook").hexdigest(), owners[0][0])
+            with owner_sessions.store() as db:
+                db.execute("INSERT INTO owner_sessions VALUES (?,?,?)",
+                           (owner_sessions.hashed("rehearsal-session"),
+                            json.dumps({"user_id": owners[0][0]}), 4000000000))
+        finally:
+            os.seteuid(0)
+            os.setegid(0)
         (backup / "credentials.json").write_text(json.dumps({
             "key": credential, "op": new_op_id()}))
         runpy.run_path("/support/rehearsal_restore_provider.py")["record"](

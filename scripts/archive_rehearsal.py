@@ -254,10 +254,19 @@ class Venue:
         )
 
     def helper(self, code, *args):
+        # Every ephemeral container installs the same device identity proof at
+        # its own mount path, as host setup does in production.
+        code = ("from pathlib import Path; import subprocess; "
+                "uuid=subprocess.check_output(['findmnt','--mountpoint','/box-store',"
+                "'-no','UUID'],text=True).strip(); assert uuid; "
+                "p=Path('/.box-store-identity'); p.write_text('xfs '+uuid+'\\n'); "
+                "p.chmod(0o600); " + code)
         return self.container(
             "--rm",
             "--user",
             "0",
+            "--device",
+            self.device + ":" + self.device,
             "-v",
             self.names["data"] + ":/data",
             "--mount",
@@ -288,6 +297,8 @@ class Venue:
         # Provider responses and absent host services are recorded at this
         # venue boundary. Extraction, fencing, quotas and swap are real.
         script = r"""set -eu
+printf 'xfs %s\n' "$(findmnt --mountpoint /box-store -no UUID)" > /.box-store-identity
+chmod 600 /.box-store-identity
 mkdir -p /tmp/bin /opt/tinyassets/boxhostd/current
 cat > /tmp/bin/docker <<'SH'
 #!/bin/sh
@@ -505,6 +516,39 @@ def archive_rehearsal(image, archive, *, store_bytes):
                 required(venue.migration("preflight"))
                 required(venue.migration("census"))
         passed(step, interruptions=2, comparisons=2)
+        step = "host_startup"
+        required(venue.helper("""
+import os
+from pathlib import Path
+from tinyassets.erasure_ledger import ErasureLedger, principal_digest
+from tinyassets.restore_recovery import _schedule_trees
+ledger = ErasureLedger(Path('/data'))
+ledger.execute('add', {'digest': principal_digest('rehearsal-erased'),
+                      'principal': 'rehearsal-erased', 'uids': [399997]})
+tree = Path('/box-store/399997')
+tree.mkdir(mode=0o700)
+os.chown(tree, 399997, 399997)
+(tree / 'note').write_text('synthetic erased bytes')
+ledger.execute('add', {'digest': principal_digest('rehearsal-failed'),
+                      'principal': 'rehearsal-failed', 'uids': [399998]})
+# Wrong UID must fail destruction, retain the fence, and not prevent listeners.
+Path('/box-store/399998').mkdir(mode=0o700)
+_schedule_trees(ledger, [Path('/box-store')])
+assert all(not Path(work['store']).is_absolute() and not Path(work['quarantine']).is_absolute()
+           for entry in ledger.entries() for work in entry['work'].values())
+"""))
+        result = venue.container(
+            "--rm", "--privileged", "--user", "0",
+            "-v", venue.names["data"] + ":/data",
+            "--mount", "type=bind,src=" + venue.store + ",dst=/var/lib/boxhostd/owners",
+            "-v", venue.names["support"] + ":/support:ro",
+            "--entrypoint", "python", image, "-B", "/support/rehearsal_serve.py", "host-startup",
+            check=False)
+        required(result)
+        startup = json.loads(result.stdout)
+        if startup != {"owners": census["owners"], "erased": 1, "failed": 1, "mount_checks": 4}:
+            raise RuntimeError("incomplete host startup proof")
+        passed(step, **startup)
         step = "serving"
         result = venue.container(
             "--rm",

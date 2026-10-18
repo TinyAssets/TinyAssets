@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -209,6 +210,7 @@ def smoke(confirm=False):
     with tempfile.TemporaryDirectory(prefix="/tmp/s6-") as directory:
         run = Path(directory)
         run.chmod(0o755)
+        os.environ["TINYASSETS_BOXES_RUN"] = str(run)
         state = run / "broker"
         state.mkdir()
         os.chown(state, 1002, 1002)
@@ -283,6 +285,19 @@ def smoke(confirm=False):
             run / "apps",
             awake_cap=max(1, len(journal["plan"])),
         )
+
+        from tinyassets.boxes.host_service import HostService
+
+        authority = HostService(admission, None, None, None)
+        stop = threading.Event()
+        erasure = threading.Thread(target=authority.serve,
+                                   args=(run / "erasure.sock", 1102, authority.erasure, stop))
+        erasure.start()
+        deadline = time.monotonic() + 5
+        while not (run / "erasure.sock").exists():
+            if not erasure.is_alive() or time.monotonic() > deadline:
+                raise RuntimeError("rehearsal erasure authority failed")
+            time.sleep(.01)
 
         def resolve(name):
             uid = manager.ensure_awake(name)
@@ -469,6 +484,8 @@ def smoke(confirm=False):
                     child.kill()
                 child.wait(20)
             relays.close()
+            stop.set()
+            erasure.join(5)
             for stream in logs:
                 stream.close()
         if not confirm:
@@ -499,6 +516,112 @@ def smoke(confirm=False):
         print(json.dumps(counts))
 
 
+
+def host_startup():
+    """Exercise real host listeners after container-path erasure scheduling.
+
+    The disposable runsc census has no sandboxes; owner execution is exercised
+    separately by smoke(). No production service, data or executable is used.
+    """
+    from tinyassets.boxes import destroy
+    from tinyassets.boxes.provider import BoxError
+    from tinyassets.erasure_ledger import ErasureLedger
+
+    store = Path("/var/lib/boxhostd/owners")
+    ledger = ErasureLedger(Path("/data"))
+    uuid = subprocess.check_output(
+        ["findmnt", "--mountpoint", str(store), "-no", "UUID"], text=True).strip()
+    proof = store.parent / ".owners-identity"
+    proof.write_text("xfs " + uuid + "\n")
+    proof.chmod(0o600)
+    # A real empty-subdirectory bind has the same device and UUID. It must
+    # never prove absence, including when stacked above the configured root.
+    empty = store / ".rehearsal-empty"
+    empty.mkdir()
+    fd = os.open(store, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        destroy.verify_store(store, fd)
+        subprocess.run(["mount", "--bind", str(empty), str(store)], check=True)
+        try:
+            for descriptor in (fd, os.open(store, os.O_RDONLY | os.O_DIRECTORY)):
+                try:
+                    try:
+                        destroy.verify_store(store, descriptor)
+                    except BoxError:
+                        pass
+                    else:
+                        raise AssertionError("subtree/covered mount accepted")
+                finally:
+                    if descriptor != fd:
+                        os.close(descriptor)
+        finally:
+            subprocess.run(["umount", str(store)], check=True)
+        destroy.verify_store(store, fd)
+    finally:
+        os.close(fd)
+        empty.rmdir()
+
+    binary = Path("/opt/tinyassets/boxhostd/current/runsc")
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_text('#!/bin/sh\n'
+                      'case "$*" in *"list --format=json") echo "[]";; *) exit 97;; esac\n')
+    binary.chmod(0o700)
+    rootfs = Path("/tmp/rehearsal-images") / ("harness-" + "a" * 64)
+    rootfs.mkdir(parents=True)
+    (rootfs / ".box-image-id").write_text("sha256:" + "a" * 64)
+    runtime = Path("/run/tinyassets-boxhostd")
+    runtime.mkdir(mode=0o755, exist_ok=True)
+    state = runtime / "broker"
+    state.mkdir(mode=0o750, exist_ok=True)
+    os.chown(state, 1002, 1101)
+    children = []
+    with tempfile.TemporaryFile() as output:
+        try:
+            children.append(subprocess.Popen([sys.executable, __file__, "broker", str(state)],
+                                             stdout=output, stderr=output))
+            code = ("from pathlib import Path; from tinyassets.boxes.host_service import main; "
+                    f"main(rootfs=Path({str(rootfs)!r}), data_root=Path('/data'))")
+            children.append(subprocess.Popen([sys.executable, "-c", code],
+                                             stdout=output, stderr=output))
+            deadline = time.monotonic() + 30
+            while not all((runtime / name).exists() for name in
+                          ("daemon.sock", "erasure.sock", "broker/broker.sock")):
+                if (any(child.poll() is not None for child in children)
+                        or time.monotonic() > deadline):
+                    raise RuntimeError("host startup failed")
+                time.sleep(.05)
+            assert not (store / "399997").exists()
+            assert ledger.receipt("rehearsal-erased")["home_removed"]
+            assert ledger.receipt("rehearsal-failed")["erasure_failures"]
+            assert not ledger.receipt("rehearsal-failed")["home_removed"]
+            owners = [row["principal"] for row in json.loads(
+                Path("/data/.owner-cutover.json").read_text())["plan"]]
+            code = """
+import json, sys
+from tinyassets.boxes.daemon_control import request
+for owner in json.loads(sys.argv[1]):
+    assert request('status', owner)['uid'] >= 300001
+try:
+    request('ensure_awake', 'rehearsal-failed', scheduled=False)
+except RuntimeError:
+    pass
+else:
+    raise AssertionError('erased owner admitted')
+"""
+            result = subprocess.run([sys.executable, "-c", code, json.dumps(owners)],
+                                    user=1001, group=1001, extra_groups=[1102],
+                                    capture_output=True, text=True, timeout=30)
+            if result.returncode:
+                output.seek(0)
+                raise RuntimeError("host listener proof failed: " + result.stderr
+                                   + output.read().decode(errors="replace"))
+            print(json.dumps({"owners": len(owners), "erased": 1, "failed": 1, "mount_checks": 4}))
+        finally:
+            for child in reversed(children):
+                child.terminate()
+                child.wait(15)
+
+
 def reconnect(clone):
     subprocess.run(["mount", "--bind", clone + "/data", "/data"], check=True)
     smoke(confirm=True)
@@ -506,7 +629,8 @@ def reconnect(clone):
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        {"owner": owner, "broker": broker, "door": door, "reconnect": reconnect}[sys.argv[1]](
+        {"owner": owner, "broker": broker, "door": door, "reconnect": reconnect,
+         "host-startup": host_startup}[sys.argv[1]](
             *sys.argv[2:]
         )
     else:

@@ -17,11 +17,11 @@ def peer(sock: socket.socket) -> tuple[int, int, int]:
     return struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
 
 
-def connect(path: Path) -> tuple[socket.socket, tuple[int, int, int]]:
+def connect(path: Path, *, timeout=30) -> tuple[socket.socket, tuple[int, int, int]]:
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
-        sock.settimeout(30)
+        sock.settimeout(timeout)
         sock.connect(str(path))
         identity = peer(sock)
         if identity[1:] != (0, 0):

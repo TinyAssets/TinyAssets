@@ -13,7 +13,7 @@ from contextlib import closing
 from pathlib import Path
 
 NAME = ".erasure-ledger.sqlite3"
-PHASES = ("owner_tree", "broker_egress", "billing", "credentials", "identity")
+PHASES = ("broker_channels", "owner_tree", "broker_egress", "billing", "credentials", "identity")
 
 
 def principal_digest(principal):
@@ -54,6 +54,16 @@ class ErasureLedger:
             logging.getLogger(__name__).exception(
                 "erasure authority unavailable; refusing every authentication")
             return True
+
+    def fenced(self, owners):
+        """One authority read for the broker's whole set of live principals."""
+        digests = {principal_digest(owner): owner for owner in owners}
+        try:
+            return [digests[digest] for digest in self._call(
+                "contains_many", digests=list(digests))]
+        except Exception:
+            logging.getLogger(__name__).exception("erasure authority unavailable; closing streams")
+            return list(owners)
 
     def initialize(self):
         """Explicit offline cutover/fresh-install step; never repair authority."""
@@ -119,7 +129,7 @@ class ErasureLedger:
         info = self.root.stat()
         if info.st_uid != 0 or (info.st_mode & 0o022 and not info.st_mode & 0o1000):
             raise PermissionError("erasure ledger parent permits replacement")
-        readonly = operation in {"contains", "pending", "pending_page",
+        readonly = operation in {"contains", "contains_many", "pending", "pending_page",
                                  "entries", "export", "receipt"}
         mode = "ro" if readonly else "rw"
         with closing(sqlite3.connect(self.path.as_uri() + "?mode=" + mode, uri=True)) as db, db:
@@ -147,6 +157,8 @@ class ErasureLedger:
                 return
             if operation == "contains":
                 return digest in entries
+            if operation == "contains_many":
+                return [key for key in args["digests"] if key in entries]
             if operation == "pending_page":
                 return [{"digest": key, "principal": entries[key]["principal"]}
                         for key in sorted(entries) if key > args["after"]
@@ -188,6 +200,7 @@ class ErasureLedger:
                                                         if phase in completed]}
             elif operation == "work":
                 entries[digest]  # A fence always precedes destructive work.
+                validate_target(args["target"])
                 key = uuid.uuid4().hex
                 payload = {"work": {key: args["target"]}, "tasks": {key: "owner_tree"}}
             elif operation == "finish":
@@ -238,7 +251,36 @@ def _project(events):
     return entries
 
 
-def carry_forward(current, staged, unavailable_sources=None):
+def validate_target(target):
+    if type(target["uid"]) is not int or not 300001 <= target["uid"] <= 399999:
+        raise ValueError("invalid erasure UID")
+    for key in ("store", "quarantine"):
+        path = Path(target[key])
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("erasure targets must be store-relative")
+    if Path(target["quarantine"]).name != str(target["uid"]):
+        raise ValueError("quarantine differs from erasure UID")
+
+
+def relative_target(target, store_root):
+    """Import pre-cutover facts once; new ledger work is always relative."""
+    result = dict(target)
+    for key in ("store", "quarantine"):
+        path = Path(result[key])
+        if path.is_absolute():
+            for base in (store_root, Path("/box-store"), Path("/var/lib/boxhostd/owners")):
+                if path.is_relative_to(base):
+                    path = path.relative_to(base)
+                    break
+            else:
+                raise ValueError("legacy erasure target is outside the configured store")
+        result[key] = str(path)
+    validate_target(result)
+    return result
+
+
+def carry_forward(current, staged, unavailable_sources=None, *,
+                  store_root=Path("/var/lib/boxhostd/owners")):
     """Offline cutover/restore union, including every pre-ledger erasure fact."""
     from tinyassets.restore_recovery import UnreadableFacts, _rows
 
@@ -281,9 +323,9 @@ def carry_forward(current, staged, unavailable_sources=None):
                                        "uids": [row["uid"]] if table == "owner_destroys" else []})
                 for path in receipt.get("quarantines", []):
                     destination = Path(path)
-                    ledger.execute("work", {"digest": digest, "target": {
+                    ledger.execute("work", {"digest": digest, "target": relative_target({
                         "uid": int(destination.name), "store": str(destination.parent),
-                        "quarantine": str(destination)}})
+                        "quarantine": str(destination)}, store_root)})
     # Older restore reports carried paths separately. Absorb that last legacy
     # fact before replacing reports with diagnostics; never discard unknown work.
     for root in dict.fromkeys((staged, current)):
@@ -313,9 +355,16 @@ def carry_forward(current, staged, unavailable_sources=None):
                 matches = [entry for entry in ledger.entries() if target["uid"] in entry["uids"]]
                 if len(matches) != 1:
                     raise ValueError("legacy quarantine has no unique erased UID reservation")
-                ledger.execute("work", {"digest": matches[0]["digest"], "target": {
+                ledger.execute("work", {"digest": matches[0]["digest"], "target": relative_target({
                     "uid": target["uid"], "quarantine": target["quarantine"],
-                    "store": target.get("store", str(Path(target["quarantine"]).parent))}})
+                    "store": target.get("store", str(Path(target["quarantine"]).parent))},
+                    store_root)})
+    for entry in ledger.entries():
+        for key, target in entry["work"].items():
+            relative = relative_target(target, store_root)
+            if relative != target:
+                ledger.execute("work", {"digest": entry["digest"], "target": relative})
+                ledger.execute("finish", {"digest": entry["digest"], "ids": [key]})
     for suffix in ("", "-journal", "-wal", "-shm"):
         (staged / (".router-deleted-owners.sqlite3" + suffix)).unlink(missing_ok=True)
     return ledger

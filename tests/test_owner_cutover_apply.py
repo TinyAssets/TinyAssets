@@ -955,7 +955,7 @@ def test_forward_cutover_preserves_ledger_and_reopens_copied_home_work(cutover):
     assert ledger.contains("alice")
     assert not ledger.receipt("alice")["home_removed"]
     assert (store / "300001").exists()
-    finish_erasures(data)  # The actual boxhost startup boundary, before admission.
+    finish_erasures(data, store)  # The actual boxhost startup boundary, before admission.
     assert not (store / "300001").exists()
     assert ledger.receipt("alice")["home_removed"]
     assert (store / "300002/b1/notes.txt").exists()

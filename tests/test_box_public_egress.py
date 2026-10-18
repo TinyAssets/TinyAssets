@@ -122,3 +122,64 @@ async def test_public_proxy_refuses_unknown_or_unadmitted_owner(proxy, monkeypat
     assert await exchange(proxy, b"CONNECT example.test:443 HTTP/1.1\r\n\r\n",
                           principal="bob") == b"REFUSED"
     assert not proxy.active
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("damage", ["fenced", "corrupt", "missing", "close"])
+async def test_established_idle_tunnel_closes_within_erasure_bound(proxy, monkeypatch, damage):
+    from tinyassets.broker.public_egress import ERASURE_CHECK_SECONDS
+    from tinyassets.erasure_ledger import ErasureLedger
+
+    upstream_closed = asyncio.Event()
+    handlers = set()
+
+    async def upstream(reader, writer):
+        try:
+            assert await reader.read() == b""
+            upstream_closed.set()
+        finally:
+            writer.close()
+
+    destination = await asyncio.start_server(upstream, "127.0.0.1", 0)
+    port = destination.sockets[0].getsockname()[1]
+    monkeypatch.setattr("tinyassets.broker.public_egress._checked_addresses",
+                        lambda *a: ["127.0.0.1"])
+
+    async def handle(reader, writer):
+        task = asyncio.current_task()
+        handlers.add(task)
+        try:
+            await proxy.serve(reader, writer, {"op": "BOX_PUBLIC", "principal": "alice"})
+        finally:
+            writer.close()
+            handlers.discard(task)
+
+    listener = await asyncio.start_server(handle, "127.0.0.1", 0)
+    reader, writer = await asyncio.open_connection(
+        "127.0.0.1", listener.sockets[0].getsockname()[1])
+    try:
+        assert (await rf.read_frame(reader)).control()["op"] == "BOX_ADMITTED"
+        writer.write(f"CONNECT example.test:{port} HTTP/1.1\r\n\r\n".encode())
+        await writer.drain()
+        assert b"200" in await reader.readuntil(b"\r\n\r\n")
+        ledger = ErasureLedger(proxy.data_root)
+        if damage == "fenced":
+            ledger.add("alice")
+        elif damage == "corrupt":
+            ledger.path.write_bytes(b"corrupt ledger")
+        elif damage == "missing":
+            ledger.path.unlink()
+        else:
+            proxy.close_owner("alice")
+        async with asyncio.timeout(2 * ERASURE_CHECK_SECONDS + .25):
+            assert await reader.read() == b""
+            await upstream_closed.wait()
+            await asyncio.gather(*handlers, return_exceptions=True)
+        assert not proxy.active
+    finally:
+        writer.close()
+        listener.close()
+        destination.close()
+        await listener.wait_closed()
+        await destination.wait_closed()
+        await asyncio.gather(*handlers, return_exceptions=True)

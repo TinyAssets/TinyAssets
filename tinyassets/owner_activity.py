@@ -57,10 +57,8 @@ class Activity:
                     "deleting": self.deleting}
 
     def deletion_refused(self):
-        """Only a pre-mutation refusal may reopen a deletion drain."""
-        with self.lock:
-            if not self.revoked and not self.deletion_only:
-                self.deleting = self.draining = False
+        """Shared deletion is already ledger-fenced before local cleanup runs."""
+        self.admit_deletion_only()
 
 
 activity = Activity()

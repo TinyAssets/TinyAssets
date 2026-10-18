@@ -44,6 +44,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
 import socket
 import sqlite3
 import struct
@@ -141,6 +142,7 @@ class _Stream:
     #: This stream reached a network write (a guarded send began).
     wrote: bool = False
     upstream: Any = None
+    cancel_socket: Any = None
     upload: Any = None
     authority: Any = None
     wake: threading.Condition = field(default_factory=threading.Condition)
@@ -167,7 +169,9 @@ class BrokerServer:
         self._data_root = data_root
         from tinyassets.broker.public_egress import PublicEgress
 
-        self._public_egress = PublicEgress(owner_identities, data_root)
+        self._public_egress = PublicEgress(owner_identities, data_root, watched=True)
+        self._connections = set()
+        self._erasure_watch = None
         self._streams: dict[tuple[int, int], _Stream] = {}
         self._streams_lock = threading.Lock()
         self._ops.recover()
@@ -197,6 +201,16 @@ class BrokerServer:
         connection = _Connection(self, writer, role)
         pump = asyncio.ensure_future(connection.pump())
         handler = asyncio.current_task()
+        self._connections.add(connection)
+        connection._handler = handler
+        from tinyassets.broker.public_egress import watch_erasure
+
+        if self._erasure_watch is None or self._erasure_watch.done():
+            self._erasure_watch = asyncio.create_task(watch_erasure(
+                self._data_root,
+                lambda: set(self._public_egress.active).union(
+                    *(c._principals for c in self._connections)),
+                self.close_owner))
 
         def pump_ended(task: asyncio.Task) -> None:
             # A write that failed means the peer is gone: tear the connection
@@ -218,9 +232,20 @@ class BrokerServer:
         except (ConnectionError, OSError, asyncio.CancelledError):
             pass
         finally:
+            self._connections.discard(connection)
             connection.abandon()
             pump.cancel()
+            if not self._connections:
+                self._erasure_watch.cancel()
+                self._erasure_watch = None
+            await asyncio.gather(pump, return_exceptions=True)
             writer.close()
+
+    def close_owner(self, principal):
+        self._public_egress.close_owner(principal)
+        for connection in tuple(self._connections):
+            if principal in connection._principals:
+                connection.close()
 
     def _cancel_older(self, generation: int) -> None:
         with self._streams_lock:
@@ -233,16 +258,14 @@ class BrokerServer:
 
     @staticmethod
     def cancel(stream: _Stream) -> None:
-        """Never blocks, never touches a socket: marks the stream cancelled.
-
-        The stream's own thread stops at its next check: before any send
-        (guard), at connect before the write, and between body reads -- each
-        read bounded by the idle timeout. Acting on sockets from another thread
-        raced their lifetime, so cancellation is a flag with a bound, not an abort.
-        """
+        """Cancel reads through a pinned duplicate, never a recycled descriptor."""
         with stream.wake:
             stream.cancelled = True
+            if stream.cancel_socket is not None:
+                with contextlib.suppress(OSError):
+                    stream.cancel_socket.shutdown(socket.SHUT_RDWR)
             stream.wake.notify_all()
+
 
 
 class _Connection:
@@ -257,6 +280,7 @@ class _Connection:
         self._closed = threading.Event()
         self._key = id(self)
         self._usage_leases = []
+        self._principals = set()
 
     async def pump(self) -> None:
         while True:
@@ -373,6 +397,7 @@ class _Connection:
                     answer = await asyncio.to_thread(resolve, self._server._owner_identities,
                                                      {**doc, "op": "BOX_ADMISSION"})
                 if op in {"BOX_CHANNEL", "BOX_SHARED"}:
+                    self._principals.add(doc["principal"])
                     self._box_owner, self._box_center = doc["principal"], doc["center"]
                     self._role = BOX
             except Exception:  # no authority or broker data on a refusal
@@ -487,6 +512,25 @@ class _Connection:
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "MODEL_SOURCE":
             answer = await asyncio.to_thread(self._model_source, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "CLOSE_OWNER_CHANNELS":
+            from tinyassets.broker.account_erasure import validate
+            from tinyassets.erasure_ledger import ErasureLedger
+
+            try:
+                if set(doc) != {"op", "principal", "command_center", "generation", "token"}:
+                    raise ValueError("unsupported closure fields")
+                validate(doc["principal"], doc["command_center"])
+                if (type(doc["generation"]) is not int or not isinstance(doc["token"], str)
+                        or not self._server._fence.admits(doc["generation"], doc["token"])):
+                    raise Fenced("invalid fence")
+                if not await asyncio.to_thread(
+                        ErasureLedger(self._server._data_root).contains, doc["principal"]):
+                    raise ValueError("owner is not fenced")
+                self._server.close_owner(doc["principal"])
+                answer = {"op": "OWNER_CHANNELS_CLOSED"}
+            except Exception:
+                answer = {"op": "OWNER_CHANNELS_REFUSED"}
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "ERASE_ACCOUNT":
             answer = await asyncio.to_thread(self._erase_account, doc)
@@ -1120,7 +1164,12 @@ class _Connection:
         except rf.FrameError:
             await refuse("refused")
             return
+        self._principals.add(principal)
         try:
+            if self._server._data_root is not None:
+                from tinyassets.erasure_ledger import require_active
+
+                await asyncio.to_thread(require_active, self._server._data_root, principal)
             ledger = self._server._ledger_for(principal)
             _grant, resource = await asyncio.to_thread(
                 ledger.authorize_exact, universe_id=command_center, grant_id=grant_id,
@@ -1230,7 +1279,7 @@ class _Connection:
             await refuse(refused)
 
     def _checkpoint(self, stream: _Stream) -> None:
-        if stream.cancelled:
+        if stream.cancelled or self._closed.is_set():
             raise _Cancelled
         if self._role == BOX:
             self._box_scope({})
@@ -1256,6 +1305,16 @@ class _Connection:
         Raising here aborts the exchange before its first byte; past this point
         the stream has written."""
         self._checkpoint(stream)
+        if isinstance(sock, socket.socket):
+            # SSLSocket.dup is unsupported; the raw duplicate is only used for
+            # shutdown. Its lifetime is protected against close/FD reuse.
+            with stream.wake:
+                if stream.cancel_socket is not None:
+                    stream.cancel_socket.close()
+                stream.cancel_socket = socket.socket(fileno=os.dup(sock.fileno()))
+                if stream.cancelled:
+                    stream.cancel_socket.shutdown(socket.SHUT_RDWR)
+                    raise _Cancelled
         stream.wrote = True
 
     def _run(self, stream: _Stream, dispatch: Callable[..., Any], grant_id: str, verb: str,
@@ -1265,7 +1324,7 @@ class _Connection:
         box_token = BOX_REQUEST.set(self._role == BOX)
         outcome, error_class, extra = "failed", "ProxyRequestError", {}
         try:
-            if stream.cancelled:
+            if stream.cancelled or self._closed.is_set():
                 raise _Cancelled
             self._server._ops.mark_may_have_sent(stream.namespace, stream.op_id)
             stream.marked = True
@@ -1318,6 +1377,10 @@ class _Connection:
                 if name == "ConnectionAuthorizationError" and isinstance(failure, dict):
                     extra = {"failure": failure}
         finally:
+            with stream.wake:
+                if stream.cancel_socket is not None:
+                    stream.cancel_socket.close()
+                    stream.cancel_socket = None
             if stream.upstream is not None and outcome != "completed":
                 stream.upstream.close()
             with self._server._streams_lock:
@@ -1339,20 +1402,21 @@ class _Connection:
         buffered = bytearray()
         finished = False
         while True:
+            # Authority may do IPC. Never hold the cancellation lock across it.
+            if stream.authority is not None:
+                self._checkpoint(stream)
             with stream.wake:
-                while True:
-                    if stream.authority is not None:
-                        self._checkpoint(stream)
-                    if stream.cancelled:
-                        raise _Cancelled
-                    if (buffered and stream.credit > 0) or (finished and not buffered) \
-                            or (not finished and len(buffered) < LOOKAHEAD + stream.credit):
-                        break
+                if stream.cancelled:
+                    raise _Cancelled
+                ready = ((buffered and stream.credit > 0) or (finished and not buffered)
+                         or (not finished and len(buffered) < LOOKAHEAD + stream.credit))
+                if not ready:
                     remaining = stream.deadline - time.monotonic()
                     if remaining <= 0:
                         raise _Expired
                     stream.wake.wait(
                         min(0.1, remaining) if stream.authority is not None else remaining)
+                    continue
                 credit = stream.credit
             if buffered and credit > 0:
                 piece = bytes(buffered[:credit])
@@ -1370,6 +1434,11 @@ class _Connection:
                 finished = True
             else:
                 buffered += chunk
+
+    def close(self):
+        self.abandon()
+        self._writer.transport.abort()
+        self._handler.cancel()
 
     def abandon(self) -> None:
         """The peer went away: stop queueing, cancel every stream it owned."""

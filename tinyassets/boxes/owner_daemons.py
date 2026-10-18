@@ -225,6 +225,8 @@ class OwnerDaemons:
                             and box.awake and self.runtime.alive(box.uid)), None)
                 if box is None:
                     raise LookupError("owner has no live cleanup box")
+                box.deletion_only = True
+                self._rpc(box, "delete-admission")
                 uid = box.uid
             else:
                 uid = self.ensure_awake(owner)

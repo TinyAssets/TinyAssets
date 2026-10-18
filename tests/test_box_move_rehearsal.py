@@ -503,6 +503,7 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
             "verify",
             "restore_before_write",
             "crash_resume",
+            "host_startup",
             "serving",
             "normal_restore_after_traffic_refuses",
             "disaster_provider_unreachable_refuses",

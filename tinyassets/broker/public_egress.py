@@ -12,13 +12,35 @@ from tinyassets.broker.box_admission import resolve_owner
 #: Kept in step with ``engine_mcp_http``; the broker imports no daemon module.
 BOX_ENGINE_HOST = "engine.tinyassets.box"
 ENGINE_SOCKET_DIR = ".engine-mcp"
+ERASURE_CHECK_SECONDS = 0.5
+
+
+async def watch_erasure(root, principals, close):
+    """Bound idle streams too; a stuck authority read is a refusal."""
+    from tinyassets.erasure_ledger import ErasureLedger
+    from tinyassets.storage import data_dir
+
+    ledger = ErasureLedger(root if root is not None else data_dir())
+    while True:
+        owners = tuple(principals())
+        if owners:
+            try:
+                fenced = await asyncio.wait_for(
+                    asyncio.to_thread(ledger.fenced, owners), ERASURE_CHECK_SECONDS)
+            except Exception:
+                fenced = owners
+            for owner in fenced:
+                close(owner)
+        await asyncio.sleep(ERASURE_CHECK_SECONDS)
 
 
 class PublicEgress:
-    def __init__(self, identities, data_root=None):
+    def __init__(self, identities, data_root=None, *, watched=False):
+        self.watched = watched
         self.identities = identities
         self.data_root = data_root
         self.active = {}
+        self.channels = {}
 
     async def serve(self, reader, writer, document):
         # Called only for BOX_HOST, before any guest bytes are interpreted as
@@ -27,6 +49,9 @@ class PublicEgress:
         admitted = False
         upstream = None
         pumps = []
+        task = asyncio.current_task()
+        self.channels[task] = (owner, writer)
+        guards = []
         try:
             await asyncio.to_thread(resolve_owner, self.identities, document,
                                     data_root=self.data_root)
@@ -34,6 +59,9 @@ class PublicEgress:
                 raise EgressRefused("owner or host egress capacity reached")
             self.active[owner] = self.active.get(owner, 0) + 1
             admitted = True
+            if not self.watched:
+                guards.append(asyncio.create_task(watch_erasure(
+                    self.data_root, lambda: (owner,), self.close_owner)))
             writer.write(rf.control(rf.CONNECTION, {"op": "BOX_ADMITTED"}))
             await asyncio.wait_for(writer.drain(), 30)
             # readuntil retains body bytes, and limits are checked before DNS.
@@ -80,16 +108,28 @@ class PublicEgress:
                              rf.control(rf.CONNECTION, {"op": "BOX_REFUSED"}))
                 await asyncio.wait_for(writer.drain(), 1)
         finally:
-            for task in pumps:
-                task.cancel()
-            if pumps:
-                await asyncio.gather(*pumps, return_exceptions=True)
+            self.channels.pop(task, None)
+            for guard in guards:
+                guard.cancel()
+            for pump in pumps:
+                pump.cancel()
             if upstream is not None:
-                upstream.close()
+                if task.cancelling():
+                    upstream.transport.abort()
+                else:
+                    upstream.close()
             if admitted:
                 self.active[owner] -= 1
                 if not self.active[owner]:
                     del self.active[owner]
+            writer.close()
+            await asyncio.gather(*guards, *pumps, return_exceptions=True)
+
+    def close_owner(self, owner):
+        for task, (principal, writer) in tuple(self.channels.items()):
+            if principal == owner:
+                writer.transport.abort()
+                task.cancel()
 
     @staticmethod
     async def _pump(reader, writer):

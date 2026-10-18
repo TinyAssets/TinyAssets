@@ -2218,7 +2218,7 @@ def _build_cutover(data: Path, store: Path, journal: dict, *, apply_quotas=True)
     if (shared / NAME).exists():
         os.chown(shared / NAME, 0, 0)
         (shared / NAME).chmod(0o600)
-    ledger = carry_forward(data, shared)
+    ledger = carry_forward(data, shared, store_root=store)
     _identify_erased(ledger, data, shared)
     _reserve_erasures(ledger, shared)
     _schedule_trees(ledger, [store])

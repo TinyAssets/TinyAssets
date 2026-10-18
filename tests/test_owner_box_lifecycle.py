@@ -324,8 +324,8 @@ def test_deleting_box_is_not_idle_even_after_last_turn_and_lease_finish(fleet):
         assert not manager._sleep(manager.boxes[uid], idle=0)
     assert fleet.runtime.live == {uid}
     activity.deletion_refused()
-    with activity.enter():
-        assert activity.active == 1
+    with pytest.raises(RuntimeError, match="draining"), activity.enter():
+        pytest.fail("refused deletion reopened activity")
 
 
 def test_quiesce_refuses_background_submission_and_maintenance(tmp_path, monkeypatch):
@@ -368,3 +368,46 @@ def test_background_work_blocks_drain_without_renewing_user_idle(monkeypatch):
     background()
     assert gate.status()["idle_seconds"] == 1000
     assert gate.status(drain=True, idle=900)["draining"]
+
+
+def test_ledger_fenced_cleanup_409_keeps_existing_box_drained(fleet, tmp_path, monkeypatch):
+    import base64
+    import json
+
+    from starlette.responses import JSONResponse
+
+    from tinyassets import owner_activity, owner_ingress, owner_runtime
+    from tinyassets.erasure_ledger import ErasureLedger
+
+    manager = fleet.manager
+    uid = manager.ensure_awake("a")
+    ledger = ErasureLedger(tmp_path)
+    ledger.initialize()
+    ledger.add("a")
+    route = manager.resolve("a", cleanup=True)
+    gate = fleet.states[uid]
+    assert gate.deletion_only and manager.boxes[uid].deletion_only
+    monkeypatch.setattr(owner_activity, "activity", gate)
+    monkeypatch.setattr(owner_runtime, "current", lambda: SimpleNamespace(principal="a", uid=uid))
+
+    async def refused(identity):
+        return JSONResponse({"error": "deletion_refused"}, status_code=409)
+
+    monkeypatch.setattr(owner_ingress, "delete_local_account", refused)
+    app = owner_ingress.OwnerIngress(None, tmp_path / str(uid) / "secret")
+    headers = {"x-box-secret": route["secret"], "x-owner": "a",
+               "x-owner-identity": base64.b64encode(json.dumps(
+                   {"user_id": "a", "username": "a"}).encode()).decode()}
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
+                                     base_url="http://owner") as client:
+            assert (await client.post("/_box/account/delete", headers=headers)).status_code == 409
+
+    asyncio.run(exercise())
+    manager.release("a", route["lease"])
+    for keep_awake in (True, False):
+        with pytest.raises(RuntimeError, match="draining"), gate.enter(keep_awake=keep_awake):
+            pytest.fail("fenced owner executed")
+    with manager.condition:
+        assert not manager._sleep(manager.boxes[uid], idle=0)

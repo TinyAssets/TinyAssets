@@ -91,6 +91,7 @@ def test_box_failure_does_not_block_shared_phases_and_retries(tmp_path, monkeypa
     for name, target, result in (
         ("billing", "tinyassets.billing.stripe_adapter.cancel_account_billing", "cancelled"),
         ("identity", "tinyassets.router_account_deletion.delete_workos_user", "deleted"),
+        ("broker_channels", "tinyassets.broker.account_erasure.close_channels", None),
         ("broker_egress", "tinyassets.broker.account_erasure.erase_account", None),
         ("credentials", "tinyassets.router_credentials.revoke_account", None),
     ):
@@ -167,11 +168,11 @@ def test_unmounted_store_keeps_restore_tree_phase_pending(tmp_path):
     ledger.initialize()
     ledger.add("alice")
     ledger.execute("work", {"digest": principal_digest("alice"), "target": {
-        "store": str(store), "uid": 300001,
-        "quarantine": str(store / ".quarantine" / "300001")}})
+        "store": ".", "uid": 300001,
+        "quarantine": ".quarantine/300001"}})
     with pytest.raises(BoxError, match="mount"):
         tree(store, 300001, erase=True)
-    finish_erasures(data)
+    finish_erasures(data, store)
     assert "owner_tree" in ledger.receipt("alice")["unfinished_phases"]
     assert ledger.entries()[0]["work"]
     assert not (store / ".quarantine").exists()
@@ -205,6 +206,15 @@ def test_store_identity_and_absent_tree(tmp_path, monkeypatch, drift):
             return SimpleNamespace(st_dev=device + 2)
         return info
 
+    read_text = Path.read_text
+
+    def read_mounts(path, **kw):
+        if str(path) == "/proc/self/mountinfo":
+            return f"42 1 0:1 / {mount} rw - xfs fixture rw\n"
+        return read_text(path, **kw)
+
+    monkeypatch.setattr(Path, "read_text", read_mounts)
+    monkeypatch.setattr(destroy, "_mount", lambda fd: "42")
     monkeypatch.setattr(Path, "stat", stat_path)
     monkeypatch.setattr(os, "fstat", stat_fd)
     if drift == "proof":
@@ -224,9 +234,9 @@ def test_store_identity_and_absent_tree(tmp_path, monkeypatch, drift):
         ledger.initialize()
         ledger.add("alice")
         ledger.execute("work", {"digest": principal_digest("alice"), "target": {
-            "store": str(mount), "uid": 300001,
-            "quarantine": str(mount / ".quarantine" / "300001")}})
-        finish_erasures(data)
+            "store": ".", "uid": 300001,
+            "quarantine": ".quarantine/300001"}})
+        finish_erasures(data, mount)
         assert ledger.receipt("alice")["home_removed"]
         assert not ledger.entries()[0]["work"]
     else:
@@ -297,6 +307,7 @@ from tinyassets.erasure_ledger import ErasureLedger
 ledger = ErasureLedger(Path('/not-readable-by-broker'))
 assert ledger.contains('alice')
 assert not ledger.contains('bob')
+assert ledger.fenced(['alice', 'bob']) == ['alice']
 try:
     ledger.add('bob')
 except RuntimeError:
@@ -310,3 +321,75 @@ else:
             stop.set()
             server.join(5)
     assert not ledger.contains("bob")
+
+
+def test_channel_closure_is_first_independent_retryable_ledger_phase(tmp_path, monkeypatch):
+    from starlette.responses import JSONResponse
+
+    from tinyassets import owner_router
+
+    ledger = ErasureLedger(tmp_path)
+    ledger.initialize()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    calls = []
+    failing = [True]
+
+    def close(*a, **kw):
+        assert ledger.contains("alice")
+        calls.append("channels")
+        if failing[0]:
+            raise OSError("broker temporarily unavailable")
+
+    def resolve(*a, **kw):
+        calls.append("resolve")
+        raise LookupError("no box")
+
+    monkeypatch.setattr("tinyassets.broker.account_erasure.close_channels", close)
+    monkeypatch.setattr(owner_router, "resolve_box", resolve)
+    for target, result in (
+        ("tinyassets.broker.owner_identities.retire_owner", None),
+        ("tinyassets.broker.account_erasure.erase_account", None),
+        ("tinyassets.billing.stripe_adapter.cancel_account_billing", "cancelled"),
+        ("tinyassets.router_credentials.revoke_account", None),
+        ("tinyassets.router_account_deletion.delete_workos_user", "deleted"),
+    ):
+        monkeypatch.setattr(target, lambda *a, _result=result, **kw: _result)
+    identity = Identity(user_id="alice", username="alice")
+    response = asyncio.run(owner_router.delete_owner_account(identity))
+    assert isinstance(response, JSONResponse) and response.status_code == 503
+    assert calls == ["channels", "resolve"]
+    assert ledger.receipt("alice")["unfinished_phases"] == ["broker_channels"]
+    failing[0] = False
+    assert asyncio.run(owner_router.delete_owner_account(identity)).status_code == 200
+    assert calls == ["channels", "resolve", "channels"]
+    assert not ledger.receipt("alice")["unfinished_phases"]
+
+
+def test_relative_cleanup_relocation_continues_after_failure(tmp_path, monkeypatch):
+    from tinyassets.restore_recovery import _schedule_trees, finish_erasures
+
+    monkeypatch.setattr("tinyassets.boxes.destroy.verify_store", lambda *a: None)
+    ledger = ErasureLedger(tmp_path)
+    ledger.initialize()
+    container = tmp_path / "box-store"
+    host = tmp_path / "var/lib/boxhostd/owners"
+    host.parent.mkdir(parents=True)
+    container.mkdir()
+    for uid, principal in ((300001, "failed"), (300002, "erased")):
+        ledger.execute("add", {"digest": principal_digest(principal), "principal": principal,
+                               "uids": [uid]})
+        tree = container / str(uid)
+        tree.mkdir(mode=0o700)
+        (tree / "note").write_text("private")
+        if principal == "erased":
+            os.chown(tree, uid, uid)
+    _schedule_trees(ledger, [container])
+    assert all(work["store"] == "." and not work["quarantine"].startswith("/")
+               for entry in ledger.entries() for work in entry["work"].values())
+    container.rename(host)
+    finish_erasures(tmp_path, host)
+    assert not (host / "300002").exists()
+    assert ledger.receipt("erased")["home_removed"]
+    assert not ledger.receipt("failed")["home_removed"]
+    assert ledger.receipt("failed")["erasure_failures"]
+    assert ledger.contains("failed") and not ledger.contains("other-owner")

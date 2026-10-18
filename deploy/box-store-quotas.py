@@ -186,7 +186,9 @@ if __name__ == "__main__":
     if args.finish_erasures:
         from tinyassets.restore_recovery import finish_erasures
 
-        finish_erasures(args.finish_erasures.resolve())
+        if args.cutover_store is None:
+            parser.error("erasure retry requires --cutover-store")
+        finish_erasures(args.finish_erasures.resolve(), args.cutover_store.resolve())
     elif args.snapshot_data:
         if args.store or args.trees or args.registry or args.clear:
             parser.error("snapshot verification does not accept quota mutation arguments")

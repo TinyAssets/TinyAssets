@@ -103,6 +103,7 @@ def broker(tmp_path, monkeypatch):
     from tinyassets.erasure_ledger import ErasureLedger
 
     ErasureLedger(tmp_path).initialize()
+    tmp_path.chmod(0o700)  # Same-UID protocol fixture, including assignment locks.
     lease = Lease()
     fence = Fence(tmp_path / "fence.json", verify_lease_proof=lease.verify)
     ops = OpStore(tmp_path / "ops.db")
@@ -714,3 +715,70 @@ def test_async_client_reconnects_after_broker_eof(tmp_path, monkeypatch):
             await listener.wait_closed()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("damage", ["fenced", "corrupt", "missing", "operation"])
+def test_idle_streams_close_on_erasure_or_explicit_owner_close(broker, tmp_path, damage):
+    from tinyassets.broker.account_erasure import ACCOUNT_SCOPE
+    from tinyassets.broker.public_egress import ERASURE_CHECK_SECONDS
+    from tinyassets.erasure_ledger import ErasureLedger
+
+    upstream_peers = []
+
+    class Blocked(Script):
+        def __init__(self, connected):
+            super().__init__([])
+            self.socket, peer = socket.socketpair()
+            peer.settimeout(2)
+            upstream_peers.append(peer)
+            connected(self.socket)
+
+        def read(self, max_bytes):
+            return self.socket.recv(max_bytes) or None
+
+        def close(self):
+            self.socket.close()
+            super().close()
+
+    Blocked.wants_socket = True
+    broker.upstreams["next"] = Blocked
+    clients = []
+    try:
+        for index in range(2):
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            clients.append(client)
+            client.settimeout(3)
+            client.connect(str(broker.path))
+            client.sendall(rf.control(1, {
+                "op": "OPEN", "principal": "alice", "command_center": "cc-alice",
+                "grant_id": "grant-a", "connection_id": "conn-a", "verb": "POST",
+                "request": {}, "op_id": new_op_id(str(index) * 16), "credit": 1024,
+                **broker.state}))
+            assert rf.read_frame_blocking(client).control()["op"] == "ADMITTED"
+            assert rf.read_frame_blocking(client).control()["op"] == "HEAD"
+        ledger = ErasureLedger(tmp_path)
+        started = time.monotonic()
+        if damage in {"fenced", "operation"}:
+            ledger.add("alice")
+        elif damage == "corrupt":
+            ledger.path.write_bytes(b"broken ledger")
+        else:
+            ledger.path.unlink()
+        if damage == "operation":
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as control:
+                control.settimeout(3)
+                control.connect(str(broker.path))
+                control.sendall(rf.control(rf.CONNECTION, {
+                    "op": "CLOSE_OWNER_CHANNELS", "principal": "alice",
+                    "command_center": ACCOUNT_SCOPE, **broker.state}))
+                assert rf.read_frame_blocking(control).control() == {"op": "OWNER_CHANNELS_CLOSED"}
+        for client in clients:
+            assert client.recv(1) == b""
+        for peer in upstream_peers:
+            assert peer.recv(1) == b""
+        assert time.monotonic() - started < 2 * ERASURE_CHECK_SECONDS + .25
+    finally:
+        for client in clients:
+            client.close()
+        for peer in upstream_peers:
+            peer.close()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import select
 import signal
@@ -115,10 +116,11 @@ class HostService:
             if document.get("lifecycle") == "erasure":
                 from tinyassets.erasure_ledger import ErasureLedger
 
-                if ((uid != 1001 and not (uid == 1002 and document.get("ledger_op") == "contains"))
+                if ((uid != 1001 and not (uid == 1002 and document.get("ledger_op")
+                                        in {"contains", "contains_many"}))
                         or set(document) != {"lifecycle", "ledger_op", "arguments"}
                         or document["ledger_op"] not in {
-                            "contains", "add", "receipt", "save", "pending_page"}):
+                            "contains", "contains_many", "add", "receipt", "save", "pending_page"}):
                     raise BoxError("erasure operation refused for this peer")
                 result = ErasureLedger(self.admission.data_root).execute(
                     document["ledger_op"], document["arguments"])
@@ -126,6 +128,7 @@ class HostService:
                     # Paths and accumulated billing receipts stay in root custody;
                     # the router needs only the pending-path fence and phase state.
                     result.pop("billing_cleanup", None)
+                    result.pop("erasure_failures", None)
                     result["quarantines"] = ["pending"] if result["quarantines"] else []
                 return {"result": result}
             if self.daemons is None:
@@ -289,7 +292,10 @@ def _serve(*, rootfs: Path, data_root: Path) -> None:
 
     protect_root(data_root)
 
-    finish_erasures(data_root)
+    try:
+        finish_erasures(data_root, runtime.owner_store)
+    except Exception:
+        logging.getLogger(__name__).exception("startup erasure retry failed; ledger fences remain")
     quota = OwnerQuota(runtime.owner_store)
     daemons = OwnerDaemons(
         runtime, admission, quota, relays, RUNTIME,

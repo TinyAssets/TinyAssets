@@ -286,7 +286,7 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(
             finally:
                 os.umask(previous_umask)
         finished = _fingerprint(data), _fingerprint(store)
-        finish_erasures(data)
+        finish_erasures(data, store)
         assert (_fingerprint(data), _fingerprint(store)) == finished
         assert not any(entry["work"] for entry in ErasureLedger(data).entries())
         for uid in (300002, 300003, 300004):
@@ -330,14 +330,14 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(
     if erasure_failure:
         assert len(report["erasure_failures"]) == 3  # Bob twice, post-backup owner once
         for failure in report["erasure_failures"]:
-            quarantine = Path(failure["quarantine"])
+            quarantine = store / failure["quarantine"]
             assert failure["uid"] in (300002, 300004)
             assert quarantine.is_dir()
             assert quarantine.parent.stat().st_uid == 0
             assert quarantine.parent.stat().st_mode & 0o777 == 0o700
         assert not ErasureLedger(data).receipt("bob")["home_removed"]
         assert not ErasureLedger(data).receipt("later")["home_removed"]
-        assert all(Path(item["quarantine"]).is_relative_to(store)
+        assert all(not Path(item["quarantine"]).is_absolute()
                    for item in report["erasure_failures"])
         assert '"erasure_failures": [{' in completed.stdout
     assert "owner consents and grants" in report["reverted_classes"]

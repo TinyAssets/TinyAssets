@@ -10,17 +10,20 @@ from tinyassets.boxes.control_channel import receive, send
 
 def request(operation: str, owner: str | None = None, **fields) -> dict:
     root = Path(os.environ.get("TINYASSETS_BOXES_RUN", "/run/tinyassets-boxhostd"))
-    sock, identity = connect(root / ("erasure.sock" if operation == "erasure" else "daemon.sock"))
+    timeout = (.4 if operation == "erasure" and fields.get("ledger_op") == "contains_many"
+               else 600 if operation == "roll" else 65)
+    sock, identity = connect(root / ("erasure.sock" if operation == "erasure" else "daemon.sock"),
+                             timeout=timeout)
     with sock:
-        sock.settimeout(600 if operation == "roll" else 65)
+        sock.settimeout(timeout)
         document = {"lifecycle": operation, **fields}
         if owner is not None:
             document["owner"] = owner
         send(sock, document)
         result = receive(sock, identity)
-    if result.get("error") == "unadmitted":
-        raise LookupError("owner has no live admission")
-    if "error" in result:
+    if set(result) == {"error"}:
+        if result["error"] == "unadmitted":
+            raise LookupError("owner has no live admission")
         raise RuntimeError("owner box lifecycle failed: " + result["error"])
     return result
 

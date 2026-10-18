@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -25,6 +26,13 @@ def verify_store(store: Path, fd: int) -> None:
             check=True, capture_output=True, text=True, timeout=10)
         mount, = json.loads(result.stdout)["filesystems"]
         root = Path(mount["target"])
+        # findmnt's device/UUID also match a bind of an empty subtree. Match
+        # the opened descriptor to the last (visible) mount at this path.
+        mounts = [line.split() for line in Path("/proc/self/mountinfo").read_text().splitlines()]
+        at_root = [row for row in mounts if re.sub(
+            r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), row[4]) == str(root)]
+        if not at_root or at_root[-1][3] != "/" or at_root[-1][0] != _mount(fd):
+            raise BoxError("owner store mount must expose the whole filesystem root")
         device = root.stat().st_dev
         if (device == root.parent.stat().st_dev or device != os.fstat(fd).st_dev
                 or mount["fstype"] != "xfs" or not mount["uuid"]):

@@ -77,7 +77,15 @@ def local_erase(ledger, *, principal, command_center, erase_external_keys=True):
     return counts
 
 
+def close_channels(data_root, *, principal):
+    return _request(data_root, principal=principal, channels_only=True)
+
+
 def erase_account(data_root, *, principal):
+    return _request(data_root, principal=principal, channels_only=False)
+
+
+def _request(data_root, *, principal, channels_only):
     from tinyassets.broker.supervisor import get_supervisor
     from tinyassets.storage.outbound_connections import ProxyRequestError
 
@@ -86,7 +94,8 @@ def erase_account(data_root, *, principal):
     if supervisor is None:
         raise ProxyRequestError("the credential broker is not running")
     generation, token = supervisor.fence()
-    document = {"op": "ERASE_ACCOUNT", "principal": principal,
+    document = {"op": "CLOSE_OWNER_CHANNELS" if channels_only else "ERASE_ACCOUNT",
+                "principal": principal,
                 "command_center": ACCOUNT_SCOPE, "generation": generation, "token": token}
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
         channel.settimeout(30)
@@ -102,6 +111,10 @@ def erase_account(data_root, *, principal):
             # No automatic replay of an ambiguous mutation. A fresh explicit
             # deletion retry may safely find zero remaining rows.
             raise ProxyRequestError("broker account erasure outcome unavailable") from None
+    if channels_only:
+        if answer != {"op": "OWNER_CHANNELS_CLOSED"}:
+            raise ProxyRequestError("broker channel closure refused")
+        return
     if set(answer) != {"op", "counts"} or answer["op"] != "ACCOUNT_ERASED":
         raise ProxyRequestError("broker account erasure refused")
     counts = answer["counts"]

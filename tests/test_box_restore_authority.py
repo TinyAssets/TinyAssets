@@ -122,14 +122,14 @@ def test_completed_restore_never_rewrites_later_deletion_receipts(tmp_path, monk
 
     current, staged, live, trees = paired(tmp_path)
     disaster(current, staged, trees, monkeypatch)
-    finish_erasures(staged)
+    finish_erasures(staged, live)
     deleted = ErasureLedger(staged)
     receipt = {"home_removed": False, "unfinished_phases": ["owner_tree"],
                "completed_phases": ["billing", "identity"]}
     deleted.add("alice", receipt)
     receipt = deleted.receipt("alice")
     before = fingerprint(staged)
-    finish_erasures(staged)
+    finish_erasures(staged, live)
     assert deleted.receipt("alice") == receipt
     assert fingerprint(staged) == before
 
@@ -144,10 +144,10 @@ def test_missing_owner_store_does_not_complete_published_erasures(tmp_path, monk
     detached = tmp_path / "detached-store"
     live.rename(detached)
     before = fingerprint(staged), fingerprint(detached)
-    with pytest.raises(FileNotFoundError):
-        finish_erasures(staged)
+    finish_erasures(staged, live)
     assert not live.exists()
-    assert (fingerprint(staged), fingerprint(detached)) == before
+    assert fingerprint(detached) == before[1]
+    assert ErasureLedger(staged).receipt("alice")["erasure_failures"]
     assert any(entry["work"] for entry in ErasureLedger(staged).pending())
 
 

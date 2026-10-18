@@ -41,9 +41,9 @@ def test_two_disaster_restores_keep_earlier_quarantine(tmp_path, monkeypatch):
 
     monkeypatch.setattr(destroy, "tree", tree)
     disaster(current, backup, trees, monkeypatch)
-    finish_erasures(backup)
+    finish_erasures(backup, live)
     entry = ErasureLedger(backup).pending()[0]
-    earlier = Path(next(iter(entry["work"].values()))["quarantine"])
+    earlier = live / next(iter(entry["work"].values()))["quarantine"]
     assert earlier.exists()
     assert not entry["receipt"]["home_removed"]
     # Two more restores from the original backup must carry this old path.
@@ -51,12 +51,12 @@ def test_two_disaster_restores_keep_earlier_quarantine(tmp_path, monkeypatch):
         staged = tmp_path / f"restore-{index}"
         shutil.copytree(original, staged)
         disaster(backup, staged, trees, monkeypatch)
-        finish_erasures(staged)
+        finish_erasures(staged, live)
         assert earlier.exists()
         assert not ErasureLedger(staged).receipt("alice")["home_removed"]
         backup = staged
     blocked[0] = False
-    finish_erasures(backup)
+    finish_erasures(backup, live)
     assert not earlier.exists()
     assert ErasureLedger(backup).receipt("alice")["home_removed"]
     assert all(not entry["work"] for entry in ErasureLedger(backup).entries())
@@ -189,7 +189,7 @@ def test_normal_restore_tracks_retained_and_restored_trees(tmp_path):
         os.chown(store / "300001", 300001, 300001)
         (store / "300001").chmod(0o700)
     assert not ErasureLedger(staged).receipt("alice")["home_removed"]
-    finish_erasures(staged)
+    finish_erasures(staged, live)
     assert not (live / "300001").exists()
     assert not (retained / "300001").exists()
     assert ErasureLedger(staged).receipt("alice")["home_removed"]
@@ -234,8 +234,8 @@ def test_legacy_report_quarantine_is_seeded_without_identity_store(tmp_path):
     path = tmp_path / "old-quarantine" / "300002"
     (current / ".disaster-restore.json").write_text(json.dumps({
         "pending_erasures": [], "erasure_failures": [{"uid": 300002, "quarantine": str(path)}]}))
-    ledger = carry_forward(current, staged)
-    assert any(work["quarantine"] == str(path) for entry in ledger.entries()
+    ledger = carry_forward(current, staged, store_root=tmp_path)
+    assert any(work["quarantine"] == str(path.relative_to(tmp_path)) for entry in ledger.entries()
                for work in entry["work"].values())
 
 

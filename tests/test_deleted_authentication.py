@@ -207,11 +207,11 @@ def test_quarantine_retry_cancels_billing_without_claiming_erasure(deleted, monk
     tombstones = ErasureLedger(deleted)
     tombstones.save_receipt("alice", {
         "home_removed": False, "quarantines": ["root-private-quarantine"],
-        "completed_phases": ["broker_egress", "credentials"],
+        "completed_phases": ["broker_channels", "broker_egress", "credentials"],
         "unfinished_phases": ["owner_tree", "billing", "identity"]})
     from tinyassets.erasure_ledger import principal_digest
     tombstones.execute("work", {"digest": principal_digest("alice"), "target": {
-        "uid": 300001, "store": "/synthetic/owners", "quarantine": "/synthetic/q/300001"}})
+        "uid": 300001, "store": ".", "quarantine": "q/300001"}})
     monkeypatch.setattr("tinyassets.broker.owner_identities.retire_owner",
                         lambda *a, **k: pytest.fail("quarantine is not the live tree"))
     monkeypatch.setattr("tinyassets.billing.stripe_adapter.cancel_account_billing",
