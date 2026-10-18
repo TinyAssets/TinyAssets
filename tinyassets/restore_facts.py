@@ -47,6 +47,10 @@ MONOTONIC = {
 }
 
 
+class UnreadableFacts(ValueError):
+    """A damaged store cannot prove its facts (distinct from an unsafe path)."""
+
+
 def _quote(value):
     return '"' + value.replace('"', '""') + '"'
 
@@ -69,7 +73,7 @@ def _read(root, relative):
         return {}
     with readonly_db(path) as db:
         if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
-            raise ValueError("restore authority failed integrity check")
+            raise UnreadableFacts("restore authority failed integrity check")
         result = {}
         for name, ddl in db.execute("SELECT name,sql FROM sqlite_master WHERE type='table'"):
             info = db.execute(f"PRAGMA table_info({_quote(name)})").fetchall()
@@ -155,7 +159,7 @@ def _intersect(db, name, restored, live, erased):
             db.execute(f"DELETE FROM {_quote(name)} WHERE {where}", values)
 
 
-def carry_shared(current: Path, staged: Path) -> set[int]:
+def carry_shared(current: Path, staged: Path, *, disaster: bool = False) -> set[int]:
     """Read the live projection first, then reapply erasures and revocations."""
     authorities, monotonic = dict(AUTHORITIES), dict(MONOTONIC)
     for root in (current, staged):
@@ -164,8 +168,20 @@ def carry_shared(current: Path, staged: Path) -> set[int]:
             authorities[relative] = ("once_approvals",)
             monotonic[relative] = ("policy",)
     relatives = authorities.keys() | monotonic.keys()
-    live = {name: _read(current, name) for name in relatives}
     restored = {name: _read(staged, name) for name in relatives}
+    live = {}
+    readable = set()
+    for name in relatives:
+        try:
+            live[name] = _read(current, name)
+            if (current / name).exists():
+                readable.add(name)
+            elif disaster:
+                live[name] = restored[name]
+        except (OSError, sqlite3.DatabaseError, UnreadableFacts):
+            if not disaster:
+                raise
+            live[name] = restored[name]
     erased = set()
     for name, table, owner_key in (
         (".router-deleted-owners.sqlite3", "deleted_owners", "owner"),
@@ -199,7 +215,7 @@ def carry_shared(current: Path, staged: Path) -> set[int]:
                 for owner in sorted(erased):
                     db.execute("INSERT INTO owner_box_revocations VALUES (?,1) "
                                "ON CONFLICT(principal) DO UPDATE SET deleted=1", (owner,))
-        if (current / relative).exists():
+        if relative in readable:
             import os
 
             source_info = (current / relative).stat()
@@ -213,17 +229,36 @@ def carry_shared(current: Path, staged: Path) -> set[int]:
             relative = path.relative_to(staged)
             source = _safe(current, relative)
             _safe(staged, relative)
-            if path.name != ".deleted" and (not source.exists()
-                                                 or source.read_bytes() != path.read_bytes()):
+            try:
+                contents = source.read_bytes() if source.exists() else None
+            except OSError:
+                if not disaster:
+                    raise
+                contents = None
+            if disaster and contents is None:
+                contents = path.read_bytes()
+            if path.name != ".deleted" and contents != path.read_bytes():
                 path.unlink()
             elif pattern.startswith(".runtime/") and json.loads(path.read_text()).get(
                     "owner") in erased:
                 path.unlink()
         if pattern.endswith(".deleted"):
-            for path in current.glob(pattern):
-                target = _safe(staged, path.relative_to(current))
+            markers = list(current.glob(pattern))
+            if disaster:
+                markers += list(staged.glob(pattern))
+            for path in markers:
+                root = staged if path.is_relative_to(staged) else current
+                source = _safe(root, path.relative_to(root))
+                try:
+                    contents = source.read_bytes()
+                except OSError:
+                    if not disaster:
+                        raise
+                    continue
+                target = _safe(staged, path.relative_to(root))
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(_safe(current, path.relative_to(current)), target)
+                if source != target:
+                    shutil.copy2(source, target)
                 for suffix in ("", "-wal", "-shm", "-journal"):
                     _safe(staged, target.with_name("policy.db" + suffix).relative_to(staged)
                           ).unlink(missing_ok=True)
@@ -233,7 +268,13 @@ def carry_shared(current: Path, staged: Path) -> set[int]:
         source = _safe(current, path.relative_to(staged))
         _safe(staged, path.relative_to(staged))
         payload = json.loads(path.read_text())
-        records = json.loads(source.read_text())["credentials"] if source.exists() else []
+        try:
+            records = json.loads(source.read_text())["credentials"] if source.exists() else (
+                payload["credentials"] if disaster else [])
+        except (OSError, ValueError):
+            if not disaster:
+                raise
+            records = payload["credentials"]
         payload["credentials"] = [row for row in payload["credentials"] if row in records]
         if path.parent.name in erased_centers:
             payload["credentials"] = []
@@ -268,6 +309,22 @@ def carry_shared(current: Path, staged: Path) -> set[int]:
                 _safe(staged, policy + "/policy.db" + suffix).unlink(missing_ok=True)
     return {row.get("machine_id", row.get("machine")) for row in owners
             if row["principal"] in erased}
+
+
+def disaster_unknowns(current: Path, staged: Path, backup_time: str) -> list[str]:
+    """Survivors prove individual facts, never completeness after volume loss."""
+    classes = {f"{relative}:{table}" for registry in (AUTHORITIES, MONOTONIC)
+               for relative, tables in registry.items() for table in tables}
+    classes.update({"owner erasures", "shared revocations", "consumed operation IDs",
+                    "owner journal epochs", "sealed refresh-session revocations",
+                    "router credential revocations", "custody-slot revocations",
+                    "deleted policy authority"})
+    for root in (current, staged):
+        for path in root.glob(".broker/accounts/*/policy.db"):
+            classes.update(f"{path.relative_to(root).as_posix()}:{table}"
+                           for table in ("policy", "once_approvals"))
+    return [f"WARN disaster restore: {name} after {backup_time}: unknown"
+            for name in sorted(classes)]
 
 
 def erase_trees(store: Path, uids: set[int]) -> None:

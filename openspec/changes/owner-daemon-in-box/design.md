@@ -29,6 +29,31 @@ rejects malformed archives and mismatched identities. Restore never calls remote
 billing or provider endpoints. Rehearsal proves post-snapshot key revocation and
 owner erasure survive, and pre-restore write and bash IDs cannot execute again.
 
+### Disaster recovery when live facts are unavailable
+
+Normal restore refuses missing or unreadable live owner-box state. The sole
+operator exception requires both `--disaster-restore` and
+`--acknowledge-unrecoverable-facts`. It restores the newest available backup
+pair (local siblings or the configured remote destination); selecting an older
+timestamp is refused. Pair validation and the stopped-consumer/sandbox census
+remain mandatory. A lost volume must first have an empty replacement mounted at
+the usual paths, including the quota-enabled owner store.
+
+The verified backup supplies the baseline facts. Each readable surviving shared
+authority store and owner journal contributes its proven revocations, erasures,
+consumed IDs and epochs through the existing carry-forward mechanism. Missing or
+unreadable stores retain the backup's facts; absence in a damaged volume is not
+proof of a revocation. Unsafe links, conflicting identities and projection errors
+still refuse before publication. Readable surviving deletion markers are applied
+even when their adjacent database is lost.
+
+Every disaster run logs a `WARN` report naming each fact class whose post-backup
+history is unknown, with the backup timestamp, and exits **6** after successful
+publication (completed with unrecoverable facts). It never starts services. This
+operator path is excluded from normal rehearsal; one synthetic test proves
+default refusal, acknowledged recovery, surviving-record union, backup facts and
+the explicit unknown-class report.
+
 ## Shape check against the research (required for every slice)
 
 | Research rule | This design |

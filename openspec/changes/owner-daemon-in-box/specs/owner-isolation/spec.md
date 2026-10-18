@@ -12,6 +12,22 @@ owner journal epoch SHALL advance. Every mutating tool, including bash, SHALL
 record its operation ID before execution. Any carry-forward failure SHALL leave
 the pre-restore volumes intact. Only malformed or mismatched backup pairs SHALL
 be rejected by backup comparisons; newer monotonic facts SHALL be carried forward.
+When live state is missing or unreadable, restore SHALL refuse by default. Only
+the combined `--disaster-restore --acknowledge-unrecoverable-facts` operator flags
+SHALL permit recovery using the newest available verified backup pair's facts
+unioned with every readable surviving revocation, erasure and operation journal.
+It SHALL reapply these facts before publication, report every fact class whose
+post-backup history is unknown with the backup timestamp, and exit 6 on completed
+disaster recovery. Archive validation, consumer exclusion and projection failures
+SHALL retain their normal fail-closed behavior.
+
+#### Scenario: Live monotonic facts are unavailable after volume loss
+- **WHEN** live state is missing or unreadable
+- **THEN** restore refuses without both explicit disaster and acknowledgement flags
+- **AND** with both flags it uses the newest available backup pair and unions readable surviving records before restoring
+- **AND** backup revocations, erasures and consumed IDs remain applied
+- **AND** the completed run exits 6 and emits WARN lines naming post-backup owner erasures, shared revocation classes, consumed operation IDs and epochs as unknown after the named backup time
+- **AND** normal rehearsal does not enable this exception
 
 #### Scenario: Revocation after the snapshot
 - **WHEN** a key, hook, session, router credential or broker grant is revoked after a snapshot

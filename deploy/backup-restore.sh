@@ -28,6 +28,7 @@
 #   3  remote download failed
 #   4  archive validation, extraction, stop, or swap failed
 #   5  reserved legacy restart failure; never emitted
+#   6  disaster restore completed; post-backup monotonic facts are unrecoverable
 
 set -euo pipefail
 
@@ -41,6 +42,8 @@ BACKUP_LOG="${BACKUP_LOG:-/var/log/tinyassets-backup.log}"
 
 TIMESTAMP_ARG=""
 LIST_MODE=0
+DISASTER_RESTORE=0
+ACKNOWLEDGE_FACTS=0
 DOWNLOAD_DIR=""
 STAGE_DIR=""
 BOX_STAGE=""
@@ -54,9 +57,20 @@ for arg in "$@"; do
     case "${arg}" in
         --timestamp=*) TIMESTAMP_ARG="${arg#--timestamp=}" ;;
         --list)        LIST_MODE=1 ;;
+        --disaster-restore) DISASTER_RESTORE=1 ;;
+        --acknowledge-unrecoverable-facts) ACKNOWLEDGE_FACTS=1 ;;
         *) echo "Unknown argument: ${arg}" >&2; exit 1 ;;
     esac
 done
+
+if [[ "$DISASTER_RESTORE" != "$ACKNOWLEDGE_FACTS" ]]; then
+    echo "Disaster restore requires both --disaster-restore and --acknowledge-unrecoverable-facts" >&2
+    exit 1
+fi
+if [[ "$DISASTER_RESTORE" == 1 && ( -n "$TIMESTAMP_ARG" || "$LIST_MODE" == 1 ) ]]; then
+    echo "Disaster restore requires the newest available backup, without --timestamp or --list" >&2
+    exit 1
+fi
 
 log() {
     # Declared and assigned separately: `local x="$(cmd)"` masks the
@@ -207,6 +221,27 @@ else
         exit 3
     fi
     log "  download OK ($(stat -c %s "${TAR_PATH}" 2>/dev/null || echo '?') bytes)"
+fi
+
+if [[ "$DISASTER_RESTORE" == 1 && -n "$BACKUP_FILE" ]]; then
+    # Local availability is the selected archive's directory. Never silently
+    # ignore a newer backup (including a damaged/incomplete newest generation).
+    if ! python3 - "$BACKUP_FILE" <<'PY'
+import pathlib
+import re
+import sys
+
+selected = pathlib.Path(sys.argv[1])
+pattern = re.compile(r"tinyassets-(?:data|snapshot)-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z)[.]tar[.]gz$")
+match = pattern.fullmatch(selected.name)
+times = [m[1] for path in selected.parent.iterdir() if (m := pattern.fullmatch(path.name))]
+if not match or match[1] != max(times):
+    raise SystemExit("disaster restore requires the newest available local backup")
+PY
+    then
+        log "ERROR: disaster backup selection refused"
+        exit 2
+    fi
 fi
 
 if [[ "${DRY_RUN}" == "1" ]]; then
@@ -401,6 +436,10 @@ if [[ "$staged_layout" == owner-box ]]; then
         exit 4
     fi
 fi
+if [[ "$DISASTER_RESTORE" == 1 && "$staged_layout" != owner-box ]]; then
+    log "ERROR: disaster restore requires a verified owner-box backup pair"
+    exit 4
+fi
 
 if [[ -e "${BOX_STORE_DIR}" && -z "${BOX_NAME:-}" && "$ALLOW_PRE_STORE_BACKUP" == 1 ]]; then
     if ! python3 - "${STAGE_DIR}/.layout.json" "${VOLUME_DIR}/.layout.json" <<'PY'
@@ -513,19 +552,33 @@ if [[ -n "${BOX_STAGE}" ]]; then
         log "ERROR: a storage writer still owns the live or staged layout"
         exit 4
     fi
+    census_dir="$VOLUME_DIR"
+    disaster_args=()
+    if [[ "$DISASTER_RESTORE" == 1 ]]; then
+        census_dir="$STAGE_DIR"
+        disaster_args=(--disaster-restore --acknowledge-unrecoverable-facts --backup-time "$pair_ts")
+    fi
     if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
-            --snapshot-data "${VOLUME_DIR}" --quiescent; then
+            --snapshot-data "$census_dir" --quiescent; then
         log "ERROR: current owner-box receipt/survivor census refused restore"
         exit 4
     fi
-    log "Restoring snapshot contents while retaining current monotonic facts"
+    if [[ "$DISASTER_RESTORE" == 1 ]]; then
+        log "WARN restoring newest backup with readable surviving facts; post-backup history is incomplete"
+    else
+        log "Restoring snapshot contents while retaining current monotonic facts"
+    fi
     # Carry live monotonic facts into unpublished staging while both layouts
     # are locked. Any failure leaves both pre-restore volumes intact.
-    if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
+    if ! fact_report="$(python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
             --snapshot-data "${STAGE_DIR}" --restore-from "${VOLUME_DIR}" \
-            --cutover-store "${BOX_STORE_DIR}" --restored-store "${BOX_STAGE}"; then
+            --cutover-store "${BOX_STORE_DIR}" --restored-store "${BOX_STAGE}" \
+            "${disaster_args[@]}")"; then
         log "ERROR: restore could not carry live monotonic facts"
         exit 4
+    fi
+    if [[ -n "$fact_report" ]]; then
+        while IFS= read -r line; do log "$line"; done <<< "$fact_report"
     fi
     # A legacy snapshot is normalized by the forward cutover before install.
     if [[ -f "${STAGE_DIR}/.boxhost/boxhost.db" ]]; then
@@ -545,8 +598,12 @@ if [[ -n "${BOX_STAGE}" ]]; then
     # box_records. The staged pre-move archive has no boxes to install, so
     # retain those trees and their quota state together for rollback/inspection.
     if [[ "$quota_restore" == 1 ]]; then
+        clear_registry="${VOLUME_DIR}/.broker/state/owner-identities.db"
+        if [[ "$DISASTER_RESTORE" == 1 ]]; then
+            clear_registry="$REGISTRY"
+        fi
         if ! python3 "$quota_script" "${BOX_STORE_DIR}" "${BOX_OLD}" \
-                "${VOLUME_DIR}/.broker/state/owner-identities.db" --clear; then
+                "$clear_registry" --clear; then
             log "ERROR: failed to clear retained box project IDs"
             exit 4
         fi
@@ -592,4 +649,8 @@ if [[ -n "${BOX_NAME:-}" ]]; then
     log "pre-restore box trees retained at ${BOX_OLD} until caller health verification."
 fi
 log "NEXT — start only the intended service, probe it, then remove ${OLD_DIR}."
+if [[ "$DISASTER_RESTORE" == 1 ]]; then
+    log "WARN disaster restore completed with unrecoverable post-backup facts; exit status 6."
+    exit 6
+fi
 exit 0

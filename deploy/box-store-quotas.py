@@ -113,27 +113,33 @@ def _restore_cutover_source(current: Path, staged: Path, restored_store: Path) -
 
 
 def fence_restore(current: Path, staged: Path, *, cutover_store: Path | None = None,
-                  restored_store: Path | None = None) -> None:
+                  restored_store: Path | None = None, disaster: bool = False) -> None:
     """Fence rollback receipts; never roll back permanent identities or deletion."""
     def layout(root):
         marker = root / ".layout.json"
         return json.loads(marker.read_text()).get("box_layout") if marker.exists() else None
 
-    if "owner-box" not in (layout(current), layout(staged)):
+    staged_layout = layout(staged)
+    # Disaster recovery has no trustworthy live layout. Only a verified final
+    # backup can supply it; legacy normalization needs the live cutover receipt.
+    current_layout = staged_layout if disaster else layout(current)
+    if disaster and staged_layout != "owner-box":
+        raise ValueError("disaster restore requires a verified owner-box backup pair")
+    if "owner-box" not in (current_layout, staged_layout):
         return
-    if layout(current) == "owner-box" and layout(staged) in (None, "owner-split"):
+    if current_layout == "owner-box" and staged_layout in (None, "owner-split"):
         if restored_store is None:
             raise ValueError("owner-box restore requires both owner stores")
         _restore_cutover_source(current, staged, restored_store)
-    if layout(current) != "owner-box" or layout(staged) != "owner-box":
+    if current_layout != "owner-box" or layout(staged) != "owner-box":
         raise ValueError("owner-box restore requires reviewed forward layout recovery")
 
     from tinyassets.restore_facts import carry_shared, erase_trees
 
     if cutover_store is None or restored_store is None:
         raise ValueError("owner-box restore requires both owner stores")
-    erased = carry_shared(current, staged)
-    fence_owner_journals(cutover_store, restored_store, erased=erased)
+    erased = carry_shared(current, staged, disaster=disaster)
+    fence_owner_journals(cutover_store, restored_store, erased=erased, disaster=disaster)
     erase_trees(restored_store, erased)
     receipt = staged / ".owner-cutover.json"
     if receipt.exists():
@@ -149,7 +155,9 @@ def fence_restore(current: Path, staged: Path, *, cutover_store: Path | None = N
         _atomic_json(receipt, journal)
 
 
-def _owner_journals(root: Path) -> dict:
+def _owner_journals(root: Path, *, disaster: bool = False) -> dict:
+    if disaster and not root.exists() and not root.is_symlink():
+        return {}
     if root.is_symlink() or not root.is_dir():
         raise ValueError("restore owner store is not a directory")
     result = {}
@@ -170,21 +178,28 @@ def _owner_journals(root: Path) -> dict:
                 info = member.lstat()
                 if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                     raise ValueError("unsafe owner journal member")
-        with readonly_db(path) as db:
-            if db.execute("PRAGMA quick_check").fetchone() != ("ok",):
-                raise ValueError("owner journal failed integrity check")
-            result[tree.name] = {
-                table: db.execute(f"SELECT * FROM {table}").fetchall()
-                for table in ("host", "boxes", "ops")
-            }
+        try:
+            with readonly_db(path) as db:
+                if db.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                    if disaster:
+                        continue
+                    raise ValueError("owner journal failed integrity check")
+                result[tree.name] = {
+                    table: db.execute(f"SELECT * FROM {table}").fetchall()
+                    for table in ("host", "boxes", "ops")
+                }
+        except (OSError, sqlite3.DatabaseError):
+            if not disaster:
+                raise
     return result
 
 
-def fence_owner_journals(current: Path, staged: Path, *, erased=frozenset()) -> None:
+def fence_owner_journals(current: Path, staged: Path, *, erased=frozenset(),
+                         disaster: bool = False) -> None:
     """Offline only: preserve refusal authority in each restored owner's box."""
     from tinyassets.boxes.state import _SCHEMA
 
-    live, restored = _owner_journals(current), _owner_journals(staged)
+    live, restored = _owner_journals(current, disaster=disaster), _owner_journals(staged)
     for uid in sorted(live.keys() | restored.keys()):
         if int(uid) in erased:
             continue
@@ -278,14 +293,28 @@ if __name__ == "__main__":
     parser.add_argument("--restore-from", type=Path)
     parser.add_argument("--cutover-store", type=Path)
     parser.add_argument("--restored-store", type=Path)
+    parser.add_argument("--disaster-restore", action="store_true")
+    parser.add_argument("--acknowledge-unrecoverable-facts", action="store_true")
+    parser.add_argument("--backup-time")
     args = parser.parse_args()
+    if args.disaster_restore != args.acknowledge_unrecoverable_facts:
+        parser.error("disaster restore requires --acknowledge-unrecoverable-facts")
+    if args.disaster_restore and not (args.snapshot_data and args.restore_from
+                                      and args.backup_time):
+        parser.error("disaster restore requires a staged backup, live path and backup time")
     if args.snapshot_data:
         if args.store or args.trees or args.registry or args.clear:
             parser.error("snapshot verification does not accept quota mutation arguments")
         check_snapshot(args.snapshot_data.resolve(), quiescent=args.quiescent)
         if args.restore_from:
             fence_restore(args.restore_from.resolve(), args.snapshot_data.resolve(),
-                          cutover_store=args.cutover_store, restored_store=args.restored_store)
+                          cutover_store=args.cutover_store, restored_store=args.restored_store,
+                          disaster=args.disaster_restore)
+            if args.disaster_restore:
+                from tinyassets.restore_facts import disaster_unknowns
+
+                print("\n".join(disaster_unknowns(args.restore_from, args.snapshot_data,
+                                                  args.backup_time)))
     elif not all((args.store, args.trees, args.registry)) or args.quiescent or args.restore_from:
         parser.error("quota restoration requires store, trees, paired broker database")
     else:
