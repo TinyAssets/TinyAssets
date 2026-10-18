@@ -370,6 +370,8 @@ bash /support/deploy/backup-restore.sh
             "members=archive.getmembers(); "
             "[(setattr(m,'name',m.name.removeprefix('_data/'))) for m in members "
             "if m.name.startswith('_data/')]; "
+            "[(setattr(m,'linkname',m.linkname.removeprefix('_data/'))) for m in members "
+            "if m.islnk()]; "
             "archive.extractall(root,members=[m for m in members if m.name!='_data'], "
             "filter='fully_trusted'); archive.close()")
 
@@ -399,6 +401,8 @@ bash /support/deploy/backup-restore.sh
                 "--rm",
                 "--privileged",
                 "--pid=host",
+                "--user",
+                "0",
                 "--network",
                 "none",
                 "--entrypoint",
