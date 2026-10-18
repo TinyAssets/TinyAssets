@@ -8,9 +8,9 @@ execution, delegation, worktree/configuration/branch change, push or merge.
 Receipts are outside the repository at
 `C:/Users/Jonathan/AppData/Local/Temp/c6-required-ci-repair/`.
 
-The supplied failure file has 191 named cases (192 lines). The initial Linux
+The original supplied failure file has 192 named cases. The initial Linux
 rerun of its 31 files recorded **581 passed, 83 failed, 67 errors, 31 skipped**.
-Forty reported failures already pass at the starting head: 25 HTTP-provider,
+Forty-one reported failures already pass at the starting head: 26 HTTP-provider,
 14 HTTP-lifecycle and one layout-migration case. The previously failing migrated
 owner-process case requires the separate root venue. No prior fix is credited
 from an unprivileged skip.
@@ -18,7 +18,7 @@ from an unprivileged skip.
 | Cluster | Reproduced failures/errors | Cause and disposition |
 | --- | ---: | --- |
 | Wiki/pages | 69 | Fixture port: 67 wiki cases scaffolded before center admission, and two quota cases had no wiki center. A shared `admitted_center` fixture seeds real identity/plan admission and ownership, then uses the existing synthetic startup lifecycle to create the local center. The nine visibility cases also admit their additional centers. Page, visibility, deduplication and quota assertions remain. |
-| HTTP inference and allocation | 3 (39 already passing) | Fixture port: the served-turn observer watched the retired engine execution route instead of local OwnerTools; it now observes the real local call and its started journal row. Two spawned allocation probes installed a broker but omitted its owner transport/lease setup; they now use the same shared protocol installer as ordinary tests. Wire, cancellation, fork and lock-order assertions remain. |
+| HTTP inference and allocation | 3 (40 already passing) | Fixture port: the served-turn observer watched the retired engine execution route instead of local OwnerTools; it now observes the real local call and its started journal row. Two spawned allocation probes installed a broker but omitted its owner transport/lease setup; they now use the same shared protocol installer as ordinary tests. Wire, cancellation, fork and lock-order assertions remain. |
 | Broker/catalog consumers | 34 | Fixture port: imported package fixtures did not carry their defining module's published-catalog transport. Install the existing shared reader with the package fixture, and explicitly in standalone browse, installation, connection and sharing fixtures. Two storage races called `monkeypatch.undo()`, removing broker admission before their final assertions; scoped fault patches now preserve the transport. Includes seven page-read, four publication-intent, eleven completion, six connection-use and six other cases. |
 | Graph execution and workspaces | 31 | Fixture port: delivery/file RPC centers were never admitted (22 cases plus nested family execution); concurrent graph workers raced to construct the same test OwnerBoxd (six cases). Admit the centers and serialize fixture core creation. Two workspace tests still supplied/expected the deleted per-call `/cc` projection; they now use the exact local in-box center path. No graph executor fallback or host path was added. |
 | Remaining contracts and venues | 13 | Fixture ports: three update-surface and one bootstrap case need published-catalog transport; two direct UI writes need their owner identity; one seat test must read the broker plan instead of a deleted home-subscription helper; one starter receipt names the local center. Three root-control tests use the documented root-venue convention and retain their root assertions. Workflow fix: build-image includes the two existing runtime scripts. Budget test: 145 minus 55 turn-wait and 15 backup minutes leaves 75; reserve 50 for owner-box acceptance and ten for advisory probing before checking both shared-daemon converges. |
@@ -29,6 +29,14 @@ removed. The only added skips are the three explicitly requested root-venue
 guards, with actual root execution required. The branch's existing 190 retired
 names and deleted-path rationale remain the prior reconciliation's inventory
 and the external hygiene body's `Test-Removal: retired --` declaration.
+
+The failure inventory subsequently added eleven cases in reply-budget,
+stream-inactivity and daily-cap coverage. Ten share the reply-budget broker
+fixture, which seeded only `provider_definitions.json`; publish its descriptor
+through the real broker writer before accounting issues a reference. This is
+a fixture port, retaining every budget, deadline and credential-scrub assertion.
+The eleventh, daily-cap source switching, passes without a further change.
+All three files pass together: **49 passed, zero skips** (`inference-followup`).
 
 Cluster validation: the repaired 31-file run records **726 passed, two
 failed, 34 skipped**; its two failures identified the standalone sharing

@@ -58,6 +58,8 @@ MODEL_USE = {
 
 @pytest.fixture
 def broker(tmp_path):
+    from tinyassets.broker.owner_sources import publish
+
     ledger = ConnectionLedger(
         tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
         verify_authenticated_principal=lambda: "owner"
@@ -88,6 +90,7 @@ def broker(tmp_path):
     definition = ProviderDefinition(**fields, id=_definition_id(**fields), visibility="private",
                                     created_at="2026-10-04T00:00:00+00:00")
     (root / "provider_definitions.json").write_text(json.dumps([definition.as_dict()]))
+    publish(ledger, "owner", "universe", definition.as_dict())
     calls = []
     outcome = {"raise": None}
 
