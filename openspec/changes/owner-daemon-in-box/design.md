@@ -479,7 +479,8 @@ or explicitly regenerated. Anything else refuses the cutover. The `--archive` re
 The lead's archive command is:
 `python scripts/rehearse_box_move.py --archive <absolute-tinyassets-data-YYYY-MM-DDTHH-MM-SSZ.tar.gz> --image tinyassets-c6-rehearsal:s6-<head>`.
 The archive must retain the `tinyassets-data-YYYY-MM-DDTHH-MM-SSZ.tar.gz`
-filename. The image must already be built from the checked-out head. Every
+filename. The image must already be built from the checked-out head; setup
+refuses with `image not found: <tag>` before creating any volume otherwise. Every
 container runs without a network. Development uses generated archives only.
 The synthetic root end-to-end run passes every step, including both crash
 boundaries, reconnect confirmation, the post-write restore and report privacy.
@@ -489,6 +490,23 @@ the script's explicit disposable runner, sharing caps, mounts, tmpfs and memory
 limits. Both paths invoke read-only preflight, refusing census, ordinary apply
 and final manifest/quota/marker verification. Apply verifies before sealing the
 final owner-daemon marker; the extra verify command reads that sealed output.
+
+The venue bind mount becomes private before mounting XFS, preventing propagation.
+Cleanup removes containers, then discovers every mount of the venue loop device
+and every venue bind mount in the engine namespace. It unmounts deepest first,
+using lazy unmount only after ordinary unmount fails, detaches the loops and
+asserts no venue mount or loop remains before removing any volume. A failed
+assertion retains the volumes and fails loudly, including after partial setup.
+
+Admitted centers' LanceDB directories and knowledge SQLite stores (including
+sidecars) are owner data copied byte-for-byte, never regenerated. Only runtime,
+consumer-liveness and workspace-staging artifacts are regenerated. The legacy
+root `knowledge.db` moves whole only when every row in its known knowledge
+tables resolves through its memory-scope center/user columns to one admitted
+owner. Unknown/unscoped or competing ownership is a counted `no_owner_key` or
+`conflicting_owners` drop; no default owner is inferred. Its root vectors and
+sidecars follow that disposition. Census reports knowledge files and bytes per
+owner and reason-coded dropped files and bytes. C12 receives the originals.
 
 An uninterrupted generation establishes manifests, then the real paired
 restore returns to owner-split and GNU tar compares against the original input.

@@ -503,11 +503,16 @@ def test_files_have_masked_patterns_and_legacy_vaults_are_unopened_drops(source)
     report = census(source)
     assert report['ready'], report['refusals']
     assert report['credential_custody']['outside_broker_files_dropped'] == 1
-    assert report['files']['regenerated'] == 4
-    assert report['files']['dropped'] == 4
+    assert report['files']['regenerated'] == 2
+    assert report['files']['dropped'] == 5
     assert sum(sum(group.values()) for group in report['file_patterns'].values()) == sum(
         report['files'].values())
-    assert report['file_patterns']['regenerated']['lancedb/<id>/<file>'] == 1
+    assert report['file_patterns']['dropped']['<id>/<id>/<file>'] == 1
+    assert report['file_patterns']['owner']['<center>/<id>/<id>/<file>'] == 1
+    assert report['knowledge_stores']['account-0001'] == {
+        'description': 'knowledge stores', 'files': 1, 'bytes': len('index')}
+    assert report['loss_summary']['unattributed']['no_owner_key']['knowledge stores'] == {
+        'class': 'dropped', 'rows': 0, 'files': 1, 'bytes': len('index')}
     assert report['file_patterns']['owner'][
         '.universe-sidecars/<center>/.effector_consents.db'] == 1
     assert report['losses']['account-0001']['files']['<center>/.credential-vault.json'] == 1

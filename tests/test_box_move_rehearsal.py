@@ -19,6 +19,91 @@ from tests.test_owner_cutover_census import source as source
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_missing_image_refuses_before_setup(monkeypatch):
+    from scripts import archive_rehearsal as harness
+
+    calls = []
+
+    def docker(*args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 1)
+
+    monkeypatch.setattr(harness, "docker", docker)
+    venue = harness.Venue("missing:synthetic", 1024**3)
+    with pytest.raises(RuntimeError, match="image not found: missing:synthetic"):
+        venue.setup("unused")
+    venue.close()
+    assert calls == [("image", "inspect", "missing:synthetic")]
+    assert not venue.volumes
+
+
+@pytest.mark.parametrize("residue", [False, "mount", "loop", "propagated"])
+def test_cleanup_unmounts_all_aliases_before_detach_and_asserts_no_residue(monkeypatch, residue):
+    from scripts import archive_rehearsal as harness
+
+    prefix = "ta-s6-012345abcdef"
+    targets = ["/var/lib/docker/volumes/" + prefix + "-store/_data",
+               "/mnt/docker-desktop-disk/data/docker/volumes/" + prefix + "-store/_data",
+               "/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/test",
+               "/parent-distro/mnt/deep/alias"]
+    mounted, attached, calls = set(targets), {"/dev/loop77"}, []
+
+    def read_text(_):
+        return "\n".join(f"{i} 1 7:77 / {target} rw - xfs /dev/loop77 rw"
+                         for i, target in enumerate(sorted(mounted)))
+
+    def run(args, **kwargs):
+        calls.append(args)
+        code, output = 0, ""
+        if args[:2] == ["losetup", "--list"]:
+            output = json.dumps({"loopdevices": [
+                {"name": device, "back-file": "/volumes/" + prefix + "-image/store.img"}
+                for device in attached]})
+        elif args[0] == "umount":
+            if len(args) == 2 and args[-1] == targets[-1]:
+                code = 1  # Only this busy alias needs the lazy fallback.
+            elif residue != "mount":
+                if residue == "propagated":
+                    mounted.clear()
+                    attached.clear()  # Last mount autoclears its loop.
+                else:
+                    mounted.remove(args[-1])
+        elif args[:2] == ["losetup", "-d"]:
+            assert not mounted
+            if residue != "loop":
+                attached.remove(args[-1])
+        else:
+            raise AssertionError(args)
+        return subprocess.CompletedProcess(args, code, output)
+
+    monkeypatch.setattr(harness.Path, "read_text", read_text)
+    monkeypatch.setattr(harness.subprocess, "run", run)
+    if residue in {"mount", "loop"}:
+        with pytest.raises(RuntimeError, match="cleanup left a venue"):
+            harness.cleanup_mounts(prefix)
+    else:
+        harness.cleanup_mounts(prefix)
+        assert not mounted and not attached
+    normal = [args[1] for args in calls if args[0] == "umount" and len(args) == 2]
+    ordered = sorted(targets, key=lambda p: (p.count("/"), len(p)), reverse=True)
+    assert normal == (ordered[:1] if residue == "propagated" else ordered)
+    if residue != "propagated":
+        assert ["umount", "-l", targets[-1]] in calls
+
+
+def test_cleanup_never_removes_volumes_after_failed_residue_assertion(monkeypatch):
+    from scripts import archive_rehearsal as harness
+
+    calls = []
+    monkeypatch.setattr(harness, "docker", lambda *args, **kwargs: (
+        calls.append(args) or subprocess.CompletedProcess(args, 1)))
+    venue = harness.Venue("synthetic", 1)
+    venue.volumes = [venue.names["image"], venue.names["store"]]
+    with pytest.raises(RuntimeError, match="residue assertion failed; volumes retained"):
+        venue.close()
+    assert all(args[:2] != ("volume", "rm") for args in calls)
+
+
 def test_report_failure_does_not_disclose_diagnostics(monkeypatch, capsys):
     from scripts import archive_rehearsal as harness
 
@@ -239,6 +324,15 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
         return result
 
     monkeypatch.setattr(harness, "run", diagnosed)
+    venues = []
+    original_venue = harness.Venue
+
+    def tracked_venue(*args):
+        venue = original_venue(*args)
+        venues.append(venue)
+        return venue
+
+    monkeypatch.setattr(harness, "Venue", tracked_venue)
     try:
         try:
             result = archive_rehearsal(image, archive, store_bytes=1024**3)
@@ -257,6 +351,11 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
             "cleanup",
         }
         assert all(step["status"] == "PASS" for step in result.values())
+        assert len(venues) == 1
+        # close's real engine-namespace mount/loop assertions must succeed
+        # before these volumes can disappear, including the backing loop file.
+        assert harness.docker("volume", "ls", "--filter", "name=" + venues[0].prefix,
+                              "--format", "{{.Name}}").stdout.strip() == ""
         assert result["crash_resume"]["interruptions"] == 2
         assert result["crash_resume"]["comparisons"] == 2
         assert result["serving"] == {

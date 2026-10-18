@@ -1,12 +1,14 @@
 # Main vs the clean per-user-instance shape: read-only audit
 
-## Owner restore replay and published workflow corrections (2026-10-18)
+## Restore, publication, knowledge and rehearsal corrections (2026-10-18)
 
-Starting head `9c8f0db0268`, base `conv/c6-owner-daemon-s3c`; this is the
-single cutover branch. Synthetic fixtures and disposable local volumes only.
-Receipts: `C:/Users/Jonathan/AppData/Local/Temp/c6-owner-replay-publish/`.
+Resumed from `b927cfd4d3c` and its uncommitted published-definition migration;
+base `conv/c6-owner-daemon-s3c`, on the single cutover branch. The WIP's owner
+restore fence and replay probes are retained. Synthetic fixtures and disposable
+local volumes only. Current receipts:
+`C:/Users/Jonathan/AppData/Local/Temp/c6-abcd-validation/`.
 
-- **A ? owner-local restore authority.** `owner_runtime.start` selects
+- **A: owner-local restore authority.** `owner_runtime.start` selects
   `.owner-boxd`; the old restore merged `.boxhost` instead. The offline restore
   now receives both live and staged owner stores while services are stopped
   and both layouts are locked. It merges each journal's operation IDs as
@@ -18,7 +20,7 @@ Receipts: `C:/Users/Jonathan/AppData/Local/Temp/c6-owner-replay-publish/`.
   deletion and destruction frontiers still fence rollback. Pre-cutover rollback
   refuses once owner operations exist, even with owner-write-loss consent:
   that old layout has nowhere to preserve their refusal authority.
-- **A ? proof.** Two owners deliberately reuse the same operation IDs with
+- **A: proof.** Two owners deliberately reuse the same operation IDs with
   different contents. Snapshot and post-snapshot IDs refuse, old handles are
   stale, fresh writes work, later work survives retries and a second restart,
   and the shared host journal remains byte-identical. Conflicts and journal
@@ -26,7 +28,7 @@ Receipts: `C:/Users/Jonathan/AppData/Local/Temp/c6-owner-replay-publish/`.
   original pre-cutover tar comparison, reapplies, then makes and restores a
   same-layout paired archive through the real restore shell. Its counts are
   `comparisons=1 replay_refusals=4 fenced_owners=2`; both IDs refuse for each owner.
-- **B ? runtime shape and migration.** `api/publish_requests.py:759` retains
+- **B: runtime shape and migration.** `api/publish_requests.py:759` retains
   and marks the local definition; `_publish_snapshot` at line 882 marks local
   versions and publishes the frozen definition. `broker/owner_reads.py:225`
   writes that publication in `.published`. `daemon_server.py:2783` resolves
@@ -40,31 +42,61 @@ Receipts: `C:/Users/Jonathan/AppData/Local/Temp/c6-owner-replay-publish/`.
   forks without a definition reference (`daemon_server.py:1048`); snapshot IDs
   are not misinterpreted as workflow definitions. Immutable run/version history
   retains its existing census and preservation rules.
-- **B ? proof.** A migrated workflow binding resolves through the real local
+- **B: proof.** A migrated workflow binding resolves through the real local
   definition reader, and its commons publication is readable through `BOX_READ`.
   Missing source definitions and deliberately lost extracted definitions both
   stop apply before the completed marker or source cleanup.
 
-Validation receipts:
+- **C: verbatim knowledge.** Admitted centers retain LanceDB fragments,
+  manifests and every knowledge SQLite file and sidecar. The existing rsync
+  checksum and final manifests verify them without opening or rebuilding them.
+  Root `knowledge.db` uses the actual `KnowledgeGraph` memory-scope columns:
+  all rows must resolve to one admitted owner. It and its sidecars move whole;
+  unresolved or competing scopes produce counted `no_owner_key` or
+  `conflicting_owners` drops. Root vectors follow that legacy-store disposition.
+  Census reports `knowledge stores` files/bytes per pseudonymous owner and
+  reason-coded dropped files/bytes. Three synthetic apply cases prove exact
+  bytes in the right box and attributed/unattributed legacy dispositions.
+  The older crash/resume and census fixtures now distinguish retained vectors
+  from retired credentials/runtime bytes and assert exact ownership, drop
+  reasons, file/byte counts and unchanged report redaction.
+- **D: disposable cleanup.** Setup refuses a missing image before creating
+  volumes, and makes the venue bind private before mounting XFS. Cleanup starts
+  its interpreter before entering the engine mount namespace, unmounts every
+  loop-source/venue mount deepest first, and re-reads mounts when propagation
+  removes multiple aliases at once. Ordinary unmount precedes lazy fallback.
+  Loops that did not autoclear are detached; no volume is removed until no
+  matching mount or loop remains. Synthetic tests cover aliases, autoclear,
+  residual mounts/loops, volume retention on refusal and missing-image refusal.
+  The real Docker-engine fixture also asserts the venue volumes are gone.
 
-- Requested patterns, touched tests and structural guards: **95 files,
-  2,475 passed, zero failures/errors**, with 37 root-only skips under the existing venue requirement in
-  `targeted.xml`. All 37 have exact matching root passes; `coverage.json`
-  reconciles **2,513 distinct passing cases, zero unresolved cases**.
-- Final root cutover/restore/layout/rehearsal selection: **84 passed, no skips**,
-  `root-final.xml`. The exact requested single-file Docker-engine command also
-  passed **6/6 tests**, all ten rehearsal steps (`rehearsal-exact.log`).
-- All **35 structural guard files, 961 cases**, passed without skips
-  (`guards.json`); no shape probe changed.
-- All **34 affected heavy files, 1,358 cases**, passed without skips (`heavy.xml`).
-- Touched-file Ruff, strict OpenSpec validation, `check_shapes.py` and whitespace
-  checks pass. Whole-repository Ruff retains **32 findings in six files**, each
-  verified unchanged from the starting head (`ruff-all.json`).
+Validation receipts are recorded below after completion. The initial root run
+exposed the obsolete vector-drop fixture and the engine namespace's missing
+interpreter; the next exposed aliases disappearing through propagation. Both
+retained synthetic venues were explicitly cleaned after the fixes, with no
+venue volumes remaining. Earlier interrupted shard receipts are named
+`pre-final-*` and are not credited.
 
-The four final CI shards are recorded below after completion. Eight changed
-Python/shell files are frozen in `validated-source.json`; the final shard run
-uses that source. Earlier interrupted shard receipts are named `pre-final-*`
-and are not credited.
+Current validation:
+- The requested targeted patterns and structural guards initially recorded
+  2,389 passes and one obsolete vector-regeneration expectation, no skips or
+  errors (`targeted.xml`). The corrected census file passes in the final root
+  selection: **172 passed**, zero failures/errors/skips (`root-verified.xml`).
+- The exact root Docker-engine rehearsal command passes **12/12**, zero skips,
+  with all ten steps and the per-owner restore replay counts
+  (`rehearsal-exact.xml`). No rehearsal volumes remain.
+- All **35 structural guard files, 961 cases**, passed without skips. All
+  **34 affected heavy files, 1,358 cases**, also passed without skips.
+  `coverage.json` reconciles **3,577 distinct passing cases**, zero unresolved
+  cases across targeted, root, rehearsal and heavy receipts; the corrected
+  census expectation is not credited from its earlier failing execution.
+- Touched-file Ruff, strict OpenSpec validation, `check_shapes.py` and
+  `git diff --check` pass. Whole-repository Ruff retains **32 findings in six
+  files**, all byte-identical to the starting commit (`ruff-all.json`).
+- `validated-source.json` records the nine Python/shell files in the completed
+  fix, including the interrupted commit. Only the owning CI shard is restarted
+  after the final census-test correction; no runtime source changes after the
+  four-shard restart.
 
 No test, assertion or shape probe was removed, skipped, weakened or quarantined
 by this change.

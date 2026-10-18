@@ -153,6 +153,44 @@ def cutover(source, tmp_path, monkeypatch):
     return source, store, data_backup, box_backup
 
 
+@pytest.mark.parametrize("legacy_scope", ["a1", "missing", None])
+def test_knowledge_stores_move_verbatim_with_counted_legacy_disposition(cutover, legacy_scope):
+    data, store, *_ = cutover
+    originals = {}
+    for relative in ("a1/knowledge.db", "a1/private/knowledge.sqlite3"):
+        _sql(data / relative, "CREATE TABLE facts (body BLOB); "
+             "INSERT INTO facts VALUES (X'001122ff');")
+        originals[relative] = (data / relative).read_bytes()
+    for relative in ("a1/lancedb/facts.lance/data/fragment.lance",
+                     "a1/lancedb/facts.lance/_versions/1.manifest"):
+        path = data / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"synthetic vector bytes\x00\xff")
+        originals[relative] = path.read_bytes()
+    _sql(data / "knowledge.db", "CREATE TABLE facts (universe_id TEXT, text TEXT);")
+    with sqlite3.connect(data / "knowledge.db") as db:
+        db.execute("INSERT INTO facts VALUES (?, 'legacy fact')", (legacy_scope,))
+    legacy = (data / "knowledge.db").read_bytes()
+    report = migration.census(data)
+    assert report["ready"], report["refusals"]
+    if legacy_scope == "a1":
+        originals["knowledge.db"] = legacy
+    else:
+        assert report["loss_summary"]["unattributed"]["no_owner_key"]["knowledge stores"] == {
+            "class": "dropped", "rows": 0, "files": 1, "bytes": len(legacy)}
+    assert report["knowledge_stores"]["account-0001"] == {
+        "description": "knowledge stores", "files": len(originals),
+        "bytes": sum(map(len, originals.values()))}
+    migration.apply(*cutover)
+    migration.verify(data, store)
+    for relative, content in originals.items():
+        assert (store / "300001" / relative).read_bytes() == content
+        assert not (store / "300002" / relative).exists()
+    assert not (data / "knowledge.db").exists()
+    if legacy_scope != "a1":
+        assert not (store / "300001/knowledge.db").exists()
+
+
 @pytest.mark.parametrize('drop_blob', [False, True])
 def test_round6_apply_resumes_hard_crash_between_verified_history_splits(cutover, drop_blob):
     data, store, *_ = cutover
@@ -249,11 +287,14 @@ def test_apply_splits_databases_seeds_stores_and_resumes(cutover, monkeypatch, c
     home = data / '.platform/owners/300001/agent-home'
     home.mkdir(parents=True)
     (home / 'session').write_text('retired cli home')
-    for relative in ('a1/.credential-vault.json', 'a1/lancedb/index',
+    for relative in ('a1/.credential-vault.json',
                      'lancedb/index', '.runtime/stale-pid'):
         path = data / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('legacy-secret-or-runtime-must-not-copy')
+    vector = data / 'a1/lancedb/index'
+    vector.parent.mkdir(parents=True, exist_ok=True)
+    vector.write_bytes(b'owner-vector-must-copy-verbatim')
     _sql(data / '.outside-client-authority.sqlite3', """
         CREATE TABLE outside_switch (id INTEGER PRIMARY KEY, enabled INTEGER);
         INSERT INTO outside_switch VALUES (1,1);
@@ -336,6 +377,7 @@ def test_apply_splits_databases_seeds_stores_and_resumes(cutover, monkeypatch, c
     for tree in (data, store):
         assert all(b'legacy-secret-or-runtime-must-not-copy' not in p.read_bytes()
                    for p in tree.rglob('*') if p.is_file())
+    assert (store / '300001/a1/lancedb/index').read_bytes() == b'owner-vector-must-copy-verbatim'
     with closing(sqlite3.connect(data / '.outside-client-authority.sqlite3')) as db:
         assert db.execute('SELECT * FROM outside_switch').fetchall() == [(1, 1)]
     assert before['tables']['.runs.db/runs']['dropped'] == 2

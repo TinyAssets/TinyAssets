@@ -451,6 +451,8 @@ def census(data: Path, *, _inventory: dict | None = None,
                                  ".tinyassets.db.prebudgetrepair.bak-shm",
                                  ".tinyassets.db.prebudgetrepair.bak-wal"}:
                     continue  # Explicitly out of scope; do not open the stale copy.
+                if path == data / "knowledge.db":
+                    continue  # Whole-store attribution below; never reconstruct its rows.
                 with path.open("rb") as stream:
                     is_database = stream.read(16) == b"SQLite format 3\x00"
                 if not is_database:
@@ -592,12 +594,14 @@ def census(data: Path, *, _inventory: dict | None = None,
         totals: Counter = Counter(dict.fromkeys(
             ("owner", "router", "broker", "published", "dropped", "regenerated"), 0))
         assignments = {}
+        published_owner_copies = {}
         for (database, table), rows in sorted(tables.items()):
             rule = _census_rule(database, table)
             placement = rule.placement if rule else "unknown"
             counts: Counter = Counter()
             reasons: Counter = Counter()
             public = 0
+            published_per_owner: Counter = Counter()
             dropped = len(rows) if placement == "dropped" else 0
             targets = [placement] * len(rows)
             if rule is None:
@@ -613,6 +617,14 @@ def census(data: Path, *, _inventory: dict | None = None,
                                 and row.get("public") == 1)):
                         public += 1
                         targets[index] = "published"
+                        if (database, table) == (".tinyassets.db", "branch_definitions"):
+                            candidates = row_owners(database, table, index)
+                            if row_reason(database, table, index) == "conflicting_owners":
+                                refusals["unattributed_owner_rows"] += 1
+                            elif len(candidates) == 1 and next(iter(candidates)) in owners:
+                                owner = next(iter(candidates))
+                                published_owner_copies[database, table, index] = owner
+                                published_per_owner[labels[owner]] += 1
                         continue
                     reason = row_reason(database, table, index)
                     if reason:
@@ -646,7 +658,8 @@ def census(data: Path, *, _inventory: dict | None = None,
                 report_database = f".broker/accounts/{policy_labels[parts[2]]}/policy.db"
             table_report[f"{report_database}/{table}"] = {
                 "class": placement, "total": len(rows), "per_owner": dict(counts),
-                "published": public, "dropped": dropped, "reasons": dict(reasons),
+                "published": public, "published_per_owner": dict(published_per_owner),
+                "dropped": dropped, "reasons": dict(reasons),
                 "regenerated": len(rows) if placement == "regenerated" else 0,
                 "attribution": ("pending" if rule and placement == "owner"
                                 and not (rule.principals or rule.centers or rule.references)
@@ -714,12 +727,15 @@ def census(data: Path, *, _inventory: dict | None = None,
                     target = "unattributed"
                 blob_targets[key] = target
         histories, history_report = _census_histories(data, admitted, labels, loss_summary)
+        knowledge_report = {label: {"description": "knowledge stores", "files": 0, "bytes": 0}
+                            for label in labels.values()}
         file_report = _census_files(data, known_centers, labels, database_files, refusals,
                                     dropped_centers, run_owners, file_targets, patterns, losses,
                                     {str(uid): owner for owner, uid in permanent.items()},
-                                    file_kinds, loss_summary, blob_targets)
+                                    file_kinds, loss_summary, blob_targets, knowledge_report)
         if _inventory is not None:
             _inventory.update(tables=tables, assignments=assignments, owners=permanent,
+                              published_owner_copies=published_owner_copies,
                               centers=admitted, dropped_centers=dropped_centers, labels=labels,
                               file_targets=file_targets, histories=histories, billing=billing)
         return {
@@ -731,6 +747,7 @@ def census(data: Path, *, _inventory: dict | None = None,
             "file_patterns": patterns, "file_pattern_kinds": file_kinds,
             "losses": losses, "loss_summary": loss_summary,
             "history_splits": history_report,
+            "knowledge_stores": knowledge_report,
             "workflow_history": {
                 label: {unit: table_report.get(f".runs.db/{table}", {}).get(
                     "per_owner", {}).get(label, 0)
@@ -1027,12 +1044,42 @@ def _cutover_checkout(raw):
     return attempt
 
 
+def _legacy_knowledge_owner(path, centers):
+    """Attribute the entire legacy store using its actual memory-scope columns."""
+    candidates = set()
+    if not path.is_file() or path.is_symlink():
+        return None, "no_owner_key"
+    admitted = set().union(*centers.values()) if centers else set()
+    with readonly_db(path) as db:
+        for (table,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+            if table == "sqlite_sequence":
+                continue
+            if table not in {"entities", "edges", "facts", "communities"}:
+                return None, "no_owner_key"
+            columns = {row[1] for row in db.execute(f"PRAGMA table_info({_quoted(table)})")}
+            scope = [name for name in ("universe_id", "user_id") if name in columns]
+            projection = ",".join(map(_quoted, scope)) or "1"
+            for values in db.execute(f"SELECT {projection} FROM {_quoted(table)}"):
+                row = dict(zip(scope, values))
+                owners = centers.get(row.get("universe_id"), set())
+                principal = row.get("user_id")
+                if principal in admitted:
+                    owners = owners | {principal}
+                if not owners:
+                    return None, "no_owner_key"
+                candidates.update(owners)
+    if len(candidates) != 1:
+        return None, "conflicting_owners" if candidates else "no_owner_key"
+    return next(iter(candidates)), None
+
+
 def _census_files(data, centers, labels, databases, refusals, dropped_centers=(),
                   run_owners=None, file_targets=None, patterns=None, losses=None, uid_owners=None,
-                  pattern_kinds=None, loss_summary=None, blob_targets=None):
+                  pattern_kinds=None, loss_summary=None, blob_targets=None, knowledge_report=None):
     from collections import Counter
 
     counts: Counter = Counter()
+    legacy_owner, legacy_reason = _legacy_knowledge_owner(data / "knowledge.db", centers)
     shared = {
         ".layout.json": "broker", ".layout.lock": "broker",
         ".owner-cutover.json": "broker",
@@ -1053,7 +1100,7 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
     # Exact creator-backed roots: storage_accounting.ROOT_ENTRIES and the
     # LanceDB index writers. No suffix-wide rule can drop arbitrary user files.
     regenerated = {
-        ".runtime", "lancedb", ".workspace-staging", ".custody.lock",
+        ".runtime", ".workspace-staging", ".custody.lock",
         ".agent-turn-runners", ".consumer_liveness", ".owner_tree",
         ".universe-tool-slots", ".outbound-proxy", ".run-execution-locks",
         ".run-file-operation-locks", ".delivery-locks", ".workspace-family-locks",
@@ -1082,6 +1129,9 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
 
     def classify(path, relative):
         parts = relative.parts
+        if parts[0] in {"knowledge.db", "knowledge.db-wal", "knowledge.db-shm",
+                         "knowledge.db-journal", "lancedb"}:
+            return ("owner", legacy_owner) if legacy_owner else "dropped"
         if relative.as_posix() in {".tinyassets.db.prebudgetrepair.bak",
                                   ".tinyassets.db.prebudgetrepair.bak-shm",
                                   ".tinyassets.db.prebudgetrepair.bak-wal"}:
@@ -1106,7 +1156,7 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
         if len(parts) > 1 and parts[1] in _CREDENTIAL_ENTRIES:
             return "dropped"
         if parts[0] in centers and len(parts) > 1:
-            if parts[1] in {".runtime", "lancedb", ".consumer_liveness", ".workspace-staging"}:
+            if parts[1] in {".runtime", ".consumer_liveness", ".workspace-staging"}:
                 return "regenerated"
             if parts[1].startswith(".subscription_state.db"):
                 return "broker"
@@ -1242,6 +1292,15 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
             relative = path.relative_to(data)
             parts = relative.parts
             target = classify(path, relative)
+            knowledge = (parts[0] in {"knowledge.db", "knowledge.db-wal", "knowledge.db-shm",
+                                      "knowledge.db-journal", "lancedb"} or
+                         (parts[0] in centers and ("lancedb" in parts[1:] or
+                          any("knowledge" in part and (".db" in part or ".sqlite" in part)
+                              for part in parts[1:]))))
+            if knowledge and isinstance(target, tuple) and knowledge_report is not None:
+                group = knowledge_report[labels[target[1]]]
+                group["files"] += 1
+                group["bytes"] += path.lstat().st_size
             placement = "owner" if isinstance(target, tuple) or target == "split" else target
             counts[labels[target[1]] if isinstance(target, tuple) else placement] += 1
             if file_targets is not None:
@@ -1276,7 +1335,12 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
                         "unknown_dir": "unknown directory files",
                     }.get(kind, "run-file uploads" if parts[0] == ".run-file-custody"
                           else "retired files")
+                    if knowledge:
+                        reason, description = legacy_reason or "no_owner_key", "knowledge stores"
                     _count_loss(loss_summary, label, reason, description, "files")
+                    if knowledge:
+                        group = loss_summary[label][reason][description]
+                        group["bytes"] = group.get("bytes", 0) + path.lstat().st_size
     refusals["unattributed_files"] += counts["unattributed"]
     return dict(counts)
 
@@ -1696,6 +1760,10 @@ def _build_databases(data: Path, store: Path, shared: Path, inventory: dict) -> 
                 destinations[placement] = shared / _database_target(database, table, placement)
         for destination, path in destinations.items():
             selected = {index for index, target in enumerate(targets) if target == destination}
+            if isinstance(destination, tuple):
+                selected.update(index for (db, name, index), owner in
+                                inventory["published_owner_copies"].items()
+                                if (db, name, owner) == (database, table, destination[1]))
             if table in jobs.setdefault(path, {}):
                 raise RuntimeError("multiple source tables map to one destination table")
             jobs[path][table] = (database, selected)
@@ -1763,6 +1831,42 @@ def _build_databases(data: Path, store: Path, shared: Path, inventory: dict) -> 
             if check_db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
                 raise RuntimeError("cutover database integrity check failed")
     return expected
+
+
+def _verify_workflow_definitions(tree: Path) -> dict[str, int]:
+    """Count workflow instances and their local definitions before publication.
+
+    The branches table also holds universe snapshot forks (no branch_def_id).
+    Only definition-bearing instances participate, never snapshot lineage IDs.
+    Immutable version/run history may outlive its live definition and is not an
+    instance; its census attribution and byte-preservation checks remain intact.
+    """
+    definitions = set()
+    main = tree / ".tinyassets.db"
+    if main.exists():
+        with readonly_db(main) as db:
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                          "AND name='branch_definitions'").fetchone():
+                definitions = {row[0] for row in db.execute(
+                    "SELECT branch_def_id FROM branch_definitions")}
+    counts = {"instances": 0, "resolved": 0}
+    for database, tables in ((".tinyassets.db", ("branches", "background_branch_bindings",
+                                              "branch_tasks_v2")),
+                             (".automations.db", ("automations",))):
+        path = tree / database
+        if not path.exists():
+            continue
+        with readonly_db(path) as db:
+            for table in tables:
+                columns = {row[1] for row in db.execute(f"PRAGMA table_info({_quoted(table)})")}
+                if "branch_def_id" not in columns:
+                    continue
+                for (definition,) in db.execute(f"SELECT branch_def_id FROM {_quoted(table)}"):
+                    counts["instances"] += 1
+                    counts["resolved"] += int(definition in definitions)
+    if counts["instances"] != counts["resolved"]:
+        raise RuntimeError("migrated workflow instance has no local definition")
+    return counts
 
 
 def _seed_shared(data: Path, shared: Path, inventory: dict, report: dict, plan) -> None:
@@ -2003,6 +2107,7 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
     from tinyassets.boxes.layout import BROKER_READ_GID, BROKER_UID, DAEMON_UID
 
     owner_manifests = {}
+    workflow_counts = {}
     for owner in plan:
         tree = store / str(owner.uid)
         for directory, dirs, files in os.walk(tree, followlinks=False):
@@ -2011,6 +2116,7 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
                 os.chown(path, owner.uid, owner.uid, follow_symlinks=False)
                 if not path.is_symlink():
                     os.chmod(path, mode)
+        workflow_counts[inventory["labels"][owner.principal]] = _verify_workflow_definitions(tree)
         owner_manifests[str(owner.uid)] = _durable_tree(tree)
         verify_owner(store, tree, owner.uid, owner.quota)
     for directory, dirs, files in os.walk(shared, followlinks=False):
@@ -2035,6 +2141,7 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
                 with readonly_db(path) as db:
                     if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
                         raise RuntimeError("seeded shared database failed integrity check")
+    report["workflow_definitions"] = workflow_counts
     journal.update(phase="publish", report=report, shared=_durable_tree(shared),
                    owner_manifests=owner_manifests,
                    databases=sorted({database for database, _ in inventory["tables"]}),
@@ -2217,6 +2324,7 @@ def verify(data: Path, store: Path) -> None:
         tree = store / str(owner["uid"])
         if _durable_tree(tree) != journal["owner_manifests"][str(owner["uid"])]:
             raise RuntimeError("committed owner manifest changed")
+        _verify_workflow_definitions(tree)
         verify_owner(store, tree, owner["uid"], owner["quota"])
 
 

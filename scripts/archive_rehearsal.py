@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import os
 import re
@@ -18,6 +19,10 @@ DATA_ARCHIVE = f"tinyassets-snapshot-{STAMP}.tar.gz"
 BOX_ARCHIVE = f"tinyassets-box-store-{STAMP}.tar.gz"
 
 
+class ImageNotFound(RuntimeError):
+    pass
+
+
 def run(*argv, check=True, env=None):
     result = subprocess.run(argv, text=True, capture_output=True, env=env)
     if check and result.returncode:
@@ -27,6 +32,50 @@ def run(*argv, check=True, env=None):
 
 def docker(*argv, check=True):
     return run("docker", *argv, check=check)
+
+
+def cleanup_mounts(prefix):
+    """Run in the engine mount namespace; refuse volume deletion on residue."""
+    if not re.fullmatch(r"ta-s6-[a-f0-9]{12}", prefix):
+        raise RuntimeError("invalid cleanup venue")
+
+    def loops():
+        result = subprocess.run(["losetup", "--list", "--json", "--output", "NAME,BACK-FILE"],
+                                check=True, capture_output=True, text=True)
+        return {item["name"] for item in json.loads(result.stdout).get("loopdevices", [])
+                if prefix in item.get("back-file", "")}
+
+    def mounts():
+        def decode(value):
+            return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), value)
+
+        result = []
+        for line in Path("/proc/self/mountinfo").read_text().splitlines():
+            before, after = line.split(" - ", 1)
+            fields, tail = before.split(), after.split()
+            result.append((decode(fields[4]), decode(tail[1]), decode(fields[3])))
+        return result
+
+    devices = loops()
+    selected = [(target, source, root) for target, source, root in mounts()
+                if source in devices or prefix in target or prefix in root]
+    for target, _, _ in sorted(selected, key=lambda row: (row[0].count("/"), len(row[0])),
+                               reverse=True):
+        # Unmounting a propagated bind can remove its aliases in the same call.
+        if not any(path == target for path, _, _ in mounts()):
+            continue
+        result = subprocess.run(["umount", target], capture_output=True)
+        if result.returncode and any(path == target for path, _, _ in mounts()):
+            subprocess.run(["umount", "-l", target], check=True, capture_output=True)
+    if any(source in devices or prefix in target or prefix in root
+           for target, source, root in mounts()):
+        raise RuntimeError("cleanup left a venue mount")
+    # mount -o loop may autoclear the device when its last mount is removed.
+    for device in sorted(devices & loops()):
+        subprocess.run(["losetup", "-d", device], check=True, capture_output=True)
+    if loops() or any(source in devices or prefix in target or prefix in root
+                      for target, source, root in mounts()):
+        raise RuntimeError("cleanup left a venue mount or loop")
 
 
 class Venue:
@@ -47,6 +96,8 @@ class Venue:
         return docker("run", "--name", name, "--network", "none", *argv, check=check)
 
     def setup(self, archive):
+        if docker("image", "inspect", self.image, check=False).returncode:
+            raise ImageNotFound(f"image not found: {self.image}")
         for key in ("image", "store", "parent", "backup", "support"):
             docker("volume", "create", self.names[key])
             self.volumes.append(self.names[key])
@@ -119,6 +170,8 @@ class Venue:
             self.image,
             "-ec",
             'truncate -s "$1" /image/store.img; mkfs.xfs -f /image/store.img >/dev/null; '
+            'nsenter -t 1 -m mount --bind "$3" "$3"; '
+            'nsenter -t 1 -m mount --make-private "$3"; '
             'nsenter -t 1 -m mount -o loop,prjquota "$2" "$3"',
             "sh",
             str(self.store_bytes),
@@ -324,7 +377,9 @@ bash /support/deploy/backup-restore.sh
         for name in reversed(self.containers):
             result = docker("rm", "-f", name, check=False)
             failures += bool(result.returncode and "No such container" not in result.stderr)
-        if self.mounted:
+        if failures:
+            raise RuntimeError("cleanup could not remove venue containers")
+        if self.volumes:
             result = docker(
                 "run",
                 "--rm",
@@ -333,19 +388,19 @@ bash /support/deploy/backup-restore.sh
                 "--network",
                 "none",
                 "--entrypoint",
-                "sh",
+                "python",
                 self.image,
-                "-ec",
-                'nsenter -t 1 -m umount "$1"; '
-                'nsenter -t 1 -m losetup -d "$2" 2>/dev/null || true; '
-                'test -z "$(nsenter -t 1 -m losetup -j "$3")"',
-                "sh",
-                "/proc/1/root" + self.store,
-                self.device,
-                "/proc/1/root" + self.loop_image,
+                "-c",
+                "import ctypes, json, os, re, subprocess; from pathlib import Path\n"
+                "fd = os.open('/proc/1/ns/mnt', os.O_RDONLY)\n"
+                "libc = ctypes.CDLL(None, use_errno=True)\n"
+                "if libc.setns(fd, 0): raise OSError(ctypes.get_errno(), 'setns failed')\n"
+                "os.close(fd)\n" +
+                inspect.getsource(cleanup_mounts) + "\ncleanup_mounts(" + repr(self.prefix) + ")",
                 check=False,
             )
-            failures += bool(result.returncode)
+            if result.returncode:
+                raise RuntimeError("cleanup residue assertion failed; volumes retained")
         for name in reversed(self.volumes):
             failures += bool(docker("volume", "rm", name, check=False).returncode)
         if failures:
@@ -507,6 +562,9 @@ def main():
         archive_rehearsal(
             args.image, args.archive, store_bytes=max(1024**3, int(size * 1.25) + 512 * 1024**2)
         )
+    except ImageNotFound as exc:
+        print(str(exc), flush=True)
+        raise SystemExit(1) from None
     except (ValueError, RuntimeError, OSError, KeyboardInterrupt):
         print("rehearsal FAIL", flush=True)
         raise SystemExit(1) from None

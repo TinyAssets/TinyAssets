@@ -1,5 +1,23 @@
 ## ADDED Requirements
 
+### Requirement: Cutover preserves knowledge bytes and removes rehearsal residue
+The migration SHALL copy admitted centers' vector directories and knowledge
+SQLite files verbatim into their owner's box. Census SHALL report knowledge
+file and byte counts per owner. Legacy root knowledge SHALL move whole when
+its recorded scopes resolve every row to one admitted owner; otherwise it
+SHALL be dropped with a counted reason, never treated as regenerated.
+
+#### Scenario: Center vectors survive cutover
+- **WHEN** an admitted center contains a LanceDB directory and knowledge databases
+- **THEN** apply and verify preserve their original bytes in that owner's box
+- **AND** no runtime rebuild or second read path is required
+
+#### Scenario: Disposable cleanup has propagated loop mounts
+- **WHEN** rehearsal cleanup encounters multiple mount paths for its loop device
+- **THEN** it unmounts all paths deepest first and detaches the loop
+- **AND** it asserts no venue mount or loop remains before removing any volume
+- **AND** setup makes its mount private and refuses a missing image before creating volumes
+
 ### Requirement: Restore fences owner-local operations
 Same-layout owner-box restore SHALL preserve all operation IDs seen in either
 owner-local journal as refusals and advance that journal's epoch before startup.
