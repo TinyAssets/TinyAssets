@@ -434,6 +434,8 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
         )
     base = os.environ["TA_REHEARSAL_BASE_IMAGE"]  # requires --docker-engine
     (source / "a1/shortcut").symlink_to("notes.txt")
+    # Real owner trees hold absolute runtime links (provider exec wrappers).
+    (source / "a1/exec-wrapper").symlink_to("/usr/local/bin/python3")
     os.link(source / "a1/notes.txt", source / "a1/notes-copy.txt")
     from tinyassets import box_layout_migration as migration
     from tinyassets.conversation_store import record_turn

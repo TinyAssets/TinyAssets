@@ -81,6 +81,7 @@ def cleanup_mounts(prefix):
 
 def compare_restored_archive(root, archive_path):
     """Compare file bytes and SQLite schema/rows; repaired indexes change bytes."""
+    import os
     import sqlite3
     import tarfile
     from collections import Counter
@@ -101,18 +102,24 @@ def compare_restored_archive(root, archive_path):
 
     with tempfile.TemporaryDirectory(prefix="ta-restore-compare-") as temporary:
         with tarfile.open(archive_path) as archive:
-            archive.extractall(temporary, filter="data")
+            # Owner content holds absolute symlinks (runtime temp links): the
+            # "tar" filter keeps them; links are compared, never followed.
+            archive.extractall(temporary, filter="tar")
         original = Path(temporary) / "_data"
         databases = set()
         for path in original.rglob("*"):
-            if path.is_file():
+            if not path.is_symlink() and path.is_file():
                 with path.open("rb") as stream:
                     if stream.read(16) == b"SQLite format 3\x00":
                         databases.add(path)
         for path in original.rglob("*"):
+            restored = root / path.relative_to(original)
+            if path.is_symlink():
+                assert restored.is_symlink(), path.name
+                assert os.readlink(restored) == os.readlink(path), path.name
+                continue
             if not path.is_file():
                 continue
-            restored = root / path.relative_to(original)
             if path in databases:
                 with readonly_db(path) as before, closing(sqlite3.connect(
                         restored.as_uri() + "?mode=rw", uri=True)) as after:
