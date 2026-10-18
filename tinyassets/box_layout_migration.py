@@ -290,6 +290,10 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
 
 CENSUS_RULES = _census_rules()
 
+#: Root stores whose code was deleted before cutover. Nothing reads them, so
+#: their rows drop by reason and are counted; a name here is never a reader.
+RETIRED_STORES = frozenset({(".source_channel_policy.db", "source_channel_policy")})
+
 
 def _census_rule(database: str, table: str) -> CensusRule | None:
     parts = PurePosixPath(database).parts
@@ -602,9 +606,12 @@ def census(data: Path, *, _inventory: dict | None = None,
             reasons: Counter = Counter()
             public = 0
             published_per_owner: Counter = Counter()
+            if rule is None and (database, table) in RETIRED_STORES:
+                placement = "dropped"
+                reasons["retired_store"] += len(rows)
             dropped = len(rows) if placement == "dropped" else 0
             targets = [placement] * len(rows)
-            if rule is None:
+            if rule is None and placement != "dropped":
                 refusals["unknown_table"] += 1
             elif placement == "owner":
                 if rows and not (rule.principals or rule.centers or rule.references):
@@ -697,6 +704,13 @@ def census(data: Path, *, _inventory: dict | None = None,
         for (database, table), targets in assignments.items():
             for index, target in enumerate(targets):
                 if target != "dropped":
+                    continue
+                if (database, table) in RETIRED_STORES:
+                    # No attribution rule exists for a deleted store's rows.
+                    _count_loss(loss_summary, "unattributed", "retired_store",
+                                "retired store", "rows")
+                    losses["unattributed"]["rows"][f"{database}/{table}"] = (
+                        losses["unattributed"]["rows"].get(f"{database}/{table}", 0) + 1)
                     continue
                 candidates, _, _ = evidence(database, table, index)
                 label = (labels[next(iter(candidates))] if len(candidates) == 1
@@ -1749,6 +1763,8 @@ def _build_databases(data: Path, store: Path, shared: Path, inventory: dict) -> 
     owners = inventory["owners"]
     for (database, table), rows in inventory["tables"].items():
         rule = _census_rule(database, table)
+        if rule is None and (database, table) in RETIRED_STORES:
+            continue  # dropped and counted by the census; no destination
         assert rule is not None
         targets = inventory["assignments"][database, table]
         destinations = {}

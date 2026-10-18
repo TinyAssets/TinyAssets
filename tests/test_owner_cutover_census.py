@@ -153,6 +153,29 @@ def test_census_refuses_without_guessing_or_mutating(source, mutation, reason):
     assert _fingerprint(source) == before
 
 
+@pytest.mark.parametrize("rows", [0, 2])
+def test_a_retired_store_drops_counted_while_any_other_unknown_table_refuses(source, rows):
+    store = source / ".source_channel_policy.db"
+    _sql(store, "CREATE TABLE source_channel_policy "
+                "(universe_id TEXT, channel_type TEXT, mode TEXT)")
+    for index in range(rows):
+        _sql(store, f"INSERT INTO source_channel_policy VALUES ('a1','source_code','m{index}')")
+    before = _fingerprint(source)
+    report = census(source)
+    assert report["ready"], report["refusals"]
+    table = report["tables"][".source_channel_policy.db/source_channel_policy"]
+    assert table["class"] == "dropped" and table["total"] == rows
+    assert table["dropped"] == rows and table["reasons"] == {"retired_store": rows}
+    if rows:
+        assert report["loss_summary"]["unattributed"]["retired_store"]["retired store"][
+            "rows"] == rows
+    assert _fingerprint(source) == before
+    # The exemption is the named store only: an unknown table beside it refuses.
+    _sql(store, "CREATE TABLE newly_added (owner_user_id TEXT)")
+    report = census(source)
+    assert not report["ready"] and report["refusals"]["unknown_table"] == 1
+
+
 def test_dry_run_never_enters_apply_even_when_apply_is_requested(source):
     before = _fingerprint(source)
     result = subprocess.run(

@@ -95,13 +95,28 @@ def test_no_approval_mode_survives_anywhere_in_the_runtime():
     from pathlib import Path
 
     runtime = Path(__file__).resolve().parent.parent / "tinyassets"
+    # The one-shot cutover census must name the leftover file to drop it, and
+    # does so in exactly one declaration that no reader imports.
+    retired = 'RETIRED_STORES = frozenset({(".source_channel_policy.db", "source_channel_policy")})'
     hits = [
         f"{path.relative_to(runtime)}:{n}"
         for path in runtime.rglob("*.py")
         for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
-        if "source_channel_policy" in line or "apply_auto_approval_policy" in line
+        if ("source_channel_policy" in line or "apply_auto_approval_policy" in line)
+        and not (path.name == "box_layout_migration.py" and line == retired)
     ]
     assert hits == [], hits
+    from tinyassets import box_layout_migration
+
+    assert box_layout_migration.RETIRED_STORES == {
+        (".source_channel_policy.db", "source_channel_policy")}
+    readers = [
+        f"{path.relative_to(runtime)}"
+        for path in runtime.rglob("*.py")
+        if "RETIRED_STORES" in path.read_text(encoding="utf-8")
+        and path.name != "box_layout_migration.py"
+    ]
+    assert readers == [], readers
 
 
 # --------------------------------------------------------------------------
