@@ -34,6 +34,9 @@ def native(broker, tmp_path, monkeypatch, request):  # noqa: F811
 
     shared = tmp_path / "shared"
     (shared / ".broker").mkdir(parents=True, mode=0o700)
+    from tinyassets.erasure_ledger import ErasureLedger
+
+    ErasureLedger(shared).initialize()
     identities = OwnerIdentities(shared / ".broker/owner-identities.db", initialize=True)
     uid = identities.resolve("alice", allocate=True).uid
     if getattr(request, "param", True):
@@ -44,8 +47,9 @@ def native(broker, tmp_path, monkeypatch, request):  # noqa: F811
                    "project_id INT, bhard_bytes INT)")
         db.execute("INSERT INTO box_records VALUES (?, ?, ?, ?)", ("alice", uid, uid, 1024**3))
     broker.server._roles = {os.getuid(): BOX_HOST}
+    broker.server._data_root = shared
     broker.server._owner_identities = identities
-    proxy = broker.server._public_egress = PublicEgress(identities)
+    proxy = broker.server._public_egress = PublicEgress(identities, shared)
     # Same-uid protocol rig only. Production pins the broker's kernel role uid.
     monkeypatch.setattr(bootstrap, "peer", lambda sock: (os.getpid(), 1002, 1002))
     monkeypatch.setattr(relay, "peer", lambda sock: (os.getpid(), 1002, 1002))
@@ -404,3 +408,27 @@ def test_authenticated_git_uses_real_registry_relay_alongside_public_proxy(nativ
         channel.connect(str(native.relay))
         channel.sendall(rf.control(rf.CONNECTION, {"op": "BOX_CONNECT", "center": "foreign"}))
         assert rf.read_frame_blocking(channel) is None
+
+
+@pytest.mark.parametrize("op", ["BOX_CONNECT", "BOX_SHARED", "BOX_PUBLIC"])
+def test_relay_bootstrap_refuses_fenced_owner_with_retained_admission(native, monkeypatch, op):
+    from tinyassets.erasure_ledger import ErasureLedger
+
+    document = {"op": op}
+    if op == "BOX_CONNECT":
+        document["center"] = "center"
+
+    def connect():
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+            channel.settimeout(5)
+            channel.connect(str(native.relay))
+            channel.sendall(rf.control(rf.CONNECTION, document))
+            return rf.read_frame_blocking(channel)
+
+    assert connect().control() == {"op": "BOX_CONNECTED"}
+    # This rig combines host and box Python contexts. Fence from the host side.
+    with monkeypatch.context() as host:
+        host.setattr(owner_runtime, "_runtime", None)
+        ErasureLedger(native.identities.path.parent.parent).add("alice")
+    assert native.identities.admitted_owner("center") == "alice"
+    assert connect() is None

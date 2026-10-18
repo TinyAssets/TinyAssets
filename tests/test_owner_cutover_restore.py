@@ -86,7 +86,8 @@ fi
         text=True, capture_output=True, check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert _fingerprint(volume) == before
+    assert {k: v for k, v in _fingerprint(volume).items()
+            if k != ".erasure-ledger.sqlite3"} == before
     assert not (store / "300001").exists()
     assert list(store.glob(".tinyassets-box-restore-old.*/300001/a1/notes.txt"))
     assert commands.read_text().splitlines() == ["stop boxhostd.service"]
@@ -110,6 +111,7 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(
     from tinyassets.boxes.state import BoxHostState
     from tinyassets.erasure_ledger import ErasureLedger
 
+    monkeypatch.setattr("tinyassets.boxes.destroy.verify_store", lambda *a: None)
     data, store = tmp_path / "volume/_data", tmp_path / "owners"
     seed(data)
     (data / ".boxhost/boxhost.db").chmod(0o600)

@@ -28,7 +28,8 @@ class PublicEgress:
         upstream = None
         pumps = []
         try:
-            await asyncio.to_thread(resolve_owner, self.identities, document)
+            await asyncio.to_thread(resolve_owner, self.identities, document,
+                                    data_root=self.data_root)
             if sum(self.active.values()) >= 64 or self.active.get(owner, 0) >= 32:
                 raise EgressRefused("owner or host egress capacity reached")
             self.active[owner] = self.active.get(owner, 0) + 1

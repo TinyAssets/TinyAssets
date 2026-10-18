@@ -148,6 +148,7 @@ if [[ "$changed" -eq 1 ]]; then
 fi
 systemctl enable --now var-lib-boxhostd-owners.mount
 systemctl is-active --quiet var-lib-boxhostd-owners.mount
+bash "${root}/box-store-check.sh" /var/lib/boxhostd/owners --initialize
 if [[ "$changed" -eq 1 ]]; then
     systemctl restart boxhostd.service
 fi

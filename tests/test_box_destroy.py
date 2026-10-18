@@ -7,6 +7,12 @@ from tinyassets.boxes.destroy import tree
 from tinyassets.boxes.provider import BoxError
 
 
+@pytest.fixture(autouse=True)
+def mounted_store(monkeypatch):
+    # Descriptor traversal proof; mount identity has its own failure matrix.
+    monkeypatch.setattr("tinyassets.boxes.destroy.verify_store", lambda *a: None)
+
+
 def test_destroy_200_deep_tree_and_leave_symlink_target(tmp_path):
     store = tmp_path / "owners"
     root = store / "300001"

@@ -332,6 +332,15 @@ class _Connection:
             raise rf.FrameError("unknown stream operation")
 
     async def _connection_op(self, op: str, doc: dict[str, Any]) -> None:
+        if self._role in {BOX_HOST, BOX}:
+            from tinyassets.erasure_ledger import require_active
+
+            try:
+                owner = self._box_owner if self._role == BOX else doc.get("principal")
+                await asyncio.to_thread(require_active, self._server._data_root, owner)
+            except Exception:
+                await self.send_async(rf.control(rf.CONNECTION, {"op": "BOX_REFUSED"}))
+                return
         if self._role == BOX_HOST:
             if op == "BOX_LIFECYCLE":
                 from tinyassets.broker.box_admission import OwnerSuspended, lifecycle
@@ -559,6 +568,12 @@ class _Connection:
             return {"op": "BOX_REFUSED"}
 
     def _box_scope(self, doc):
+        from tinyassets.erasure_ledger import require_active
+
+        try:
+            require_active(self._server._data_root, self._box_owner)
+        except PermissionError as exc:
+            raise rf.FrameError("erased box admission") from exc
         # The socket selected this scope. Guest identity fields grant nothing.
         if (not getattr(self, "_box_center", None)
                 or doc.get("principal", self._box_owner) != self._box_owner
@@ -696,10 +711,10 @@ class _Connection:
                 raise ValueError("invalid owner retirement")
             with self._server._fence.send(doc["generation"], doc["token"]):
                 # A ledger tombstone can predate (or outlive) an identity row.
-                # An absent permanent reservation has no box to destroy.
+                # Missing authority cannot prove absence on the mounted store.
                 identities = self._server._owner_identities
                 if identities.owner_machine(doc["principal"]) is None:
-                    return {"op": "OWNER_RETIRED"}
+                    raise RuntimeError("owner tree absence requires its permanent reservation")
                 uid = identities.retire_owner(doc["principal"])
                 from tinyassets.boxes.daemon_control import request
 

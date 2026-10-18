@@ -226,6 +226,7 @@ def cutover(source, tmp_path, monkeypatch):
     # XFS mount/quota only: SQLite, rsync, permissions, journal and publication
     # are the real implementations. Real-mount proof belongs to the lead.
     monkeypatch.setattr(migration, '_mounted', lambda *_: None)
+    monkeypatch.setattr('tinyassets.boxes.destroy.verify_store', lambda *a: None)
     monkeypatch.setattr(migration, '_xfs_quota', lambda *_: 'synthetic quota venue')
     monkeypatch.setattr(migration, 'verify_tree', lambda *_: None)
     monkeypatch.setattr(migration, 'verify_owner', lambda *_: None)
@@ -530,7 +531,8 @@ def test_completed_apply_restores_paired_owner_split(cutover, tmp_path, journal)
         (data / '.boxhost/boxhost.db').write_bytes(b'corrupt live journal')
     result = _restore_paired(cutover, tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert _fingerprint(data) == before
+    assert {k: v for k, v in _fingerprint(data).items()
+            if k != '.erasure-ledger.sqlite3'} == before
     assert not any(path.name.isdecimal() for path in store.iterdir())
     assert list(store.glob('.tinyassets-box-restore-old.*/300001/a1/notes.txt'))
 
@@ -555,6 +557,7 @@ def test_disaster_restore_keeps_erasure_and_destroys_restored_tree(
     # Local sweep succeeded, broker retirement/custody is still unavailable.
     (store / "300001/a1/notes.txt").unlink()
     if authority == "router":
+        ErasureLedger(data).initialize()
         ErasureLedger(data).add("alice", {"unfinished_phases": ["owner_tree", "broker_egress"]})
     else:
         _sql(data / ".broker/state/owner-identities.db",
@@ -590,6 +593,8 @@ def _restore_paired(cutover, tmp_path, *, disaster=False):
 if len(sys.argv) > 1 and sys.argv[1].endswith('/box-store-quotas.py'):
     sys.path.insert(0, os.path.dirname(os.path.dirname(sys.argv[1])))
     import deploy.box_project_readback as readback
+    import tinyassets.boxes.destroy as destruction
+    destruction.verify_store = lambda *args: None  # Disposable non-XFS restore fixture.
     readback.verify_owner = lambda *args: None
     readback.verify_tree = lambda *args: None
     real_run = subprocess.run
@@ -629,7 +634,8 @@ def test_actual_interrupted_migration_allows_normal_rollback(cutover, tmp_path, 
         migration.apply(*cutover)
     result = _restore_paired(cutover, tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert _fingerprint(cutover[0]) == before
+    assert {k: v for k, v in _fingerprint(cutover[0]).items()
+            if k != '.erasure-ledger.sqlite3'} == before
 
 
 def test_crash_resume_rejects_a_different_snapshot_pair(cutover, monkeypatch):
@@ -684,6 +690,9 @@ def test_shared_doors_authenticate_migrated_keys_and_hooks(cutover, monkeypatch)
                        'AND revoked_at IS NULL',
                        (hashlib.sha256(token.encode()).hexdigest(), owner))
     migration.apply(*cutover)
+    # This functional reader runs as root; production's writer is UID1001.
+    # Match this test writer for SQLite's journal ownership in the sticky root.
+    os.chown(data / '.api-keys.sqlite3', os.getuid(), os.getgid())
     monkeypatch.setattr(api_keys, 'current_store', lambda: api_keys.ApiKeyStore(data))
     context = router_authentication.set(True)
     try:
@@ -936,6 +945,7 @@ def test_forward_cutover_preserves_ledger_and_reopens_copied_home_work(cutover):
 
     data, store, *_ = cutover
     ledger = ErasureLedger(data)
+    ledger.initialize()
     ledger.add("alice")
     ledger.save_receipt("alice", {"completed_phases": list(PHASES)})
     assert ledger.receipt("alice")["home_removed"]

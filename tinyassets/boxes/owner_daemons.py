@@ -218,10 +218,22 @@ class OwnerDaemons:
     def resolve(self, owner, *, cleanup=False):
         # The same lock covers readiness and the lease: no eviction window.
         with self.condition:
-            uid = self.ensure_awake(owner, cleanup=cleanup)
+            if cleanup:
+                # Cleanup may address an existing process but never readmit or
+                # wake a fenced owner. Cold/missing boxes go straight to destroy.
+                box = next((box for box in self.boxes.values() if box.owner == owner
+                            and box.awake and self.runtime.alive(box.uid)), None)
+                if box is None:
+                    raise LookupError("owner has no live cleanup box")
+                uid = box.uid
+            else:
+                uid = self.ensure_awake(owner)
             token = secrets.token_urlsafe(32)
             self.boxes[uid].leases[token] = time.monotonic() + 10
-            return {"uid": uid, "lease": token}
+            result = {"uid": uid, "lease": token}
+            if cleanup:
+                result["secret"] = self.boxes[uid].secret
+            return result
 
     def release(self, owner, token):
         with self.condition:

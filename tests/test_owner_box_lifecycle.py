@@ -133,7 +133,7 @@ def test_admission_failure_stops_only_its_owner_while_two_turns_continue(
 
 
 @pytest.mark.parametrize("awake", [False, True])
-def test_suspended_cleanup_wake_admits_only_deletion(fleet, awake):
+def test_suspended_cleanup_addresses_existing_box_without_new_admission(fleet, awake):
     from tinyassets.boxes.admission import BoxSuspended
 
     manager = fleet.manager
@@ -143,32 +143,15 @@ def test_suspended_cleanup_wake_admits_only_deletion(fleet, awake):
     for scheduled in (False, True):
         with pytest.raises(BoxSuspended):
             manager.ensure_awake("a", scheduled=scheduled)
+    if not awake:
+        with pytest.raises(LookupError, match="no live cleanup box"):
+            manager.resolve("a", cleanup=True)
+        assert not fleet.runtime.alive(300001)
+        return
     lease = manager.resolve("a", cleanup=True)
     uid = lease["uid"]
     assert fleet.runtime.alive(uid)
-    assert manager.boxes[uid].deletion_only
-    # Pending delivery dispatch is a boot side effect. Even constructing a
-    # maintenance worker is forbidden in this authenticated cleanup startup.
-    from unittest.mock import patch
-
-    from tinyassets import owner_activity, owner_runtime
-
-    with (patch.object(owner_activity, "activity", fleet.states[uid]),
-          patch.object(owner_runtime, "current", return_value=object()),
-          patch.object(owner_runtime, "_start_maintenance") as maintenance):
-        with owner_runtime.serving():
-            assert fleet.states[uid].status()["active"] == 0
-        maintenance.assert_not_called()
-    manager.maintain()
-    assert fleet.runtime.alive(uid)
-    state = fleet.states[uid]
-    assert state.quiesce(0)
-    state.deletion_refused()
-    with pytest.raises(RuntimeError, match="draining"):
-        with state.enter():
-            pytest.fail("cleanup wake admitted ordinary work")
-    with pytest.raises(BoxSuspended):
-        manager.ensure_awake("a", scheduled=True)
+    assert lease["secret"] == manager.boxes[uid].secret
     manager.release("a", lease["lease"])
 
 

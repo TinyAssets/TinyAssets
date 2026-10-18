@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -47,7 +48,42 @@ class ErasureLedger:
         return self.execute(operation, args)
 
     def contains(self, owner):
-        return self._call("contains", digest=principal_digest(owner))
+        try:
+            return self._call("contains", digest=principal_digest(owner))
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "erasure authority unavailable; refusing every authentication")
+            return True
+
+    def initialize(self):
+        """Explicit offline cutover/fresh-install step; never repair authority."""
+        if os.geteuid() != 0:
+            raise PermissionError("erasure initialization requires root")
+        from tinyassets.restore_recovery import _safe
+
+        _safe(self.root, NAME)
+        if self.path.exists():
+            self.execute("entries", {})  # Existing damage is never an empty ledger.
+            return
+        protect_root(self.root)
+        fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        os.close(fd)
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("PRAGMA synchronous=FULL")
+            db.execute("CREATE TABLE initialized (version INTEGER PRIMARY KEY CHECK(version=1))")
+            db.execute("INSERT INTO initialized VALUES (1)")
+            db.execute("CREATE TABLE events (id TEXT PRIMARY KEY, "
+                       "digest TEXT NOT NULL, at REAL NOT NULL, payload TEXT NOT NULL)")
+            for table in ("events", "initialized"):
+                for action in ("UPDATE", "DELETE"):
+                    db.execute(f"CREATE TRIGGER no_{table}_{action.lower()} BEFORE {action} "
+                               f"ON {table} BEGIN SELECT "
+                               "RAISE(ABORT,'append-only erasure ledger'); END")
+        directory = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 
     def add(self, owner, receipt=None):
         return self._call("add", digest=principal_digest(owner), principal=owner,
@@ -79,35 +115,21 @@ class ErasureLedger:
         _safe(self.root, NAME)
         for suffix in ("-journal", "-wal", "-shm"):
             private_file(_safe(self.root, NAME + suffix))
-        if self.path.exists():
-            private_file(self.path)
-            info = self.root.stat()
-            if info.st_uid != 0 or (info.st_mode & 0o022 and not info.st_mode & 0o1000):
-                raise PermissionError("erasure ledger parent permits replacement")
-        elif operation in {"contains", "pending", "pending_page", "entries", "export"}:
-            return False if operation == "contains" else []
-        else:
-            protect_root(self.root)
-            try:
-                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
-                             0o600)
-                os.close(fd)
-            except FileExistsError:
-                private_file(_safe(self.root, NAME))
-            directory = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-        with closing(sqlite3.connect(self.path)) as db, db:
-            db.execute("PRAGMA synchronous=FULL")
-            db.execute("CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, "
-                       "digest TEXT NOT NULL, at REAL NOT NULL, payload TEXT NOT NULL)")
-            db.execute("CREATE TRIGGER IF NOT EXISTS no_update BEFORE UPDATE ON events "
-                       "BEGIN SELECT RAISE(ABORT,'append-only erasure ledger'); END")
-            db.execute("CREATE TRIGGER IF NOT EXISTS no_delete BEFORE DELETE ON events "
-                       "BEGIN SELECT RAISE(ABORT,'append-only erasure ledger'); END")
-            db.execute("BEGIN IMMEDIATE")
+        private_file(self.path)
+        info = self.root.stat()
+        if info.st_uid != 0 or (info.st_mode & 0o022 and not info.st_mode & 0o1000):
+            raise PermissionError("erasure ledger parent permits replacement")
+        readonly = operation in {"contains", "pending", "pending_page",
+                                 "entries", "export", "receipt"}
+        mode = "ro" if readonly else "rw"
+        with closing(sqlite3.connect(self.path.as_uri() + "?mode=" + mode, uri=True)) as db, db:
+            if not readonly:
+                db.execute("PRAGMA synchronous=FULL")
+            db.execute("BEGIN" if readonly else "BEGIN IMMEDIATE")
+            if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+                raise RuntimeError("erasure ledger integrity check failed")
+            if db.execute("SELECT version FROM initialized").fetchall() != [(1,)]:
+                raise RuntimeError("erasure ledger initialization proof missing")
             events = db.execute("SELECT id,digest,at,payload FROM events ORDER BY at,id").fetchall()
             entries = _project(events)
             digest = args.get("digest")
@@ -223,6 +245,7 @@ def carry_forward(current, staged, unavailable_sources=None):
     if (staged / NAME).exists():
         protect_root(staged)
     ledger = ErasureLedger(staged)
+    ledger.initialize()
     unavailable = [] if unavailable_sources is None else unavailable_sources
     sources = ((".router-deleted-owners.sqlite3", "deleted_owners"),
                (".broker/credential-custody.db", "deleted_principals"),
@@ -233,10 +256,9 @@ def carry_forward(current, staged, unavailable_sources=None):
             private_file(root / NAME)
             for suffix in ("-journal", "-wal", "-shm"):
                 private_file(root / (NAME + suffix))
-            events = _rows(root, NAME, "events")
-            if events:
-                ledger.execute("union", {"events": [
-                    [row[k] for k in ("id", "digest", "at", "payload")] for row in events]})
+            if (root / NAME).exists():
+                events = ErasureLedger(root).execute("export", {})
+                ledger.execute("union", {"events": events})
         except (OSError, sqlite3.DatabaseError, UnreadableFacts, RuntimeError):
             if root == staged:
                 raise
@@ -297,3 +319,28 @@ def carry_forward(current, staged, unavailable_sources=None):
     for suffix in ("", "-journal", "-wal", "-shm"):
         (staged / (".router-deleted-owners.sqlite3" + suffix)).unlink(missing_ok=True)
     return ledger
+
+
+def require_active(root, owner):
+    """The authentication fence, also used by every broker box admission."""
+    from tinyassets.broker.owner_identities import validate_principal
+    from tinyassets.storage import data_dir
+
+    validate_principal(owner)
+    if ErasureLedger(root if root is not None else data_dir()).contains(owner):
+        raise PermissionError("owner fenced by erasure authority")
+
+
+def fresh_install(root):
+    """Deploy-only initializer: a fresh data directory has no prior authority."""
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    if any(root.iterdir()):
+        raise RuntimeError("fresh erasure initialization requires an empty data directory")
+    ErasureLedger(root).initialize()
+
+
+if __name__ == "__main__":
+    import sys
+
+    fresh_install(Path(sys.argv[1]))

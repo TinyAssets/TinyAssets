@@ -1,17 +1,39 @@
 ## ADDED Requirements
 
+### Requirement: Erasure fails closed independently of box availability
+Authentication and every broker box admission SHALL consult the single root-owned
+erasure ledger. Only explicit cutover or fresh-install initialization may create
+its schema and sealed initialization header. Reads SHALL be read-only; absent,
+empty, corrupt or unreadable authority SHALL refuse authentication with a loud log.
+Billing, custody, router credentials and identity deletion SHALL each run and
+persist completion independently of box cleanup. Failed box cleanup SHALL retry.
+Erasure and absent-tree completion SHALL require the mounted XFS device and UUID
+recorded by host setup, including for retained and quarantined trees.
+
+#### Scenario: A fenced owner's box is still running
+- **WHEN** a fenced owner requests any broker box operation
+- **THEN** admission is refused through the authentication ledger check
+
+#### Scenario: Cleanup cannot reach the box or its filesystem
+- **WHEN** resolving the box fails or the owner store is unmounted
+- **THEN** shared deletion phases still run and record their results
+- **AND** tree completion remains pending until verified on the expected mount
+
 ### Requirement: Disaster recovery publishes before erasure
 Preparation SHALL only read live volumes and write staging. A preparation
-failure SHALL leave both original volumes intact. The published recovery report
-SHALL retain the permanent UIDs, published and retained tree locations, and
-quarantine destinations until idempotent post-publication cleanup completes.
-Box-host restart SHALL resume that cleanup before opening lifecycle admission.
-Deleted or quarantined principals SHALL be refused at every sign-in, bearer,
-refresh, API-key and hook-token authentication entry using the router deletion
-tombstones, with an account-deleted error and no new authenticated session.
-The router SHALL retry unfinished deletion phases from those tombstones without
-requiring the deleted owner to authenticate. Quarantined bytes SHALL remain
-reported as unerased until root cleanup confirms their removal.
+failure SHALL leave both original volumes intact. The root-owned erasure ledger
+SHALL retain permanent UIDs, published and retained tree locations, and quarantine
+destinations until idempotent post-publication cleanup completes. Recovery reports
+SHALL be diagnostics, never erasure authority. Box-host restart SHALL resume
+cleanup before lifecycle admission. Every authentication entry and broker box
+admission SHALL consult the ledger. The router SHALL retry unfinished phases
+without requiring the deleted owner to authenticate. Quarantined bytes SHALL
+remain unfinished until root cleanup verifies their removal on the expected mount.
+
+#### Scenario: Cleanup is interrupted after recovery publication
+- **WHEN** the host restarts with unfinished ledger tree work
+- **THEN** it retries every recorded path before opening lifecycle admission
+- **AND** reports cannot discard or complete that work
 
 ### Requirement: Each owner has exactly one box that runs the work
 Each owner account SHALL have exactly one box: an isolated sandbox with its

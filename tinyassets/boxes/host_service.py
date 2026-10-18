@@ -30,6 +30,7 @@ class HostService:
         self._broker = None
         self._slots = threading.BoundedSemaphore(32)
         self._broker_slots = threading.BoundedSemaphore(4)
+        self._erasure_slots = threading.BoundedSemaphore(32)
         # Waiting scheduled wakes cannot consume every listener worker and
         # prevent an interactive request from entering the priority queue.
         self._scheduled_slots = threading.BoundedSemaphore(8)
@@ -76,7 +77,10 @@ class HostService:
                 os.close(pidfd)
             sock.close()
 
-    def daemon(self, sock):
+    def erasure(self, sock):
+        self.daemon(sock, erasure_only=True)
+
+    def daemon(self, sock, *, erasure_only=False):
         identity = peer(sock)
         pidfd = None
         try:
@@ -86,6 +90,8 @@ class HostService:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
             sock.settimeout(30)
             document = receive(sock, identity, pidfd)
+            if erasure_only != (document.get("lifecycle") == "erasure"):
+                raise BoxError("wrong control channel for erasure operation")
             if document == {"bootstrap": True} and identity[1] == 1001:
                 with self._broker_lock:
                     broker = self._broker
@@ -109,7 +115,8 @@ class HostService:
             if document.get("lifecycle") == "erasure":
                 from tinyassets.erasure_ledger import ErasureLedger
 
-                if (uid != 1001 or set(document) != {"lifecycle", "ledger_op", "arguments"}
+                if ((uid != 1001 and not (uid == 1002 and document.get("ledger_op") == "contains"))
+                        or set(document) != {"lifecycle", "ledger_op", "arguments"}
                         or document["ledger_op"] not in {
                             "contains", "add", "receipt", "save", "pending_page"}):
                     raise BoxError("erasure operation refused for this peer")
@@ -189,7 +196,8 @@ class HostService:
                     sock, _ = listener.accept()
                 except TimeoutError:
                     continue
-                slots = self._broker_slots if peer(sock)[1] == 1002 else self._slots
+                slots = (self._erasure_slots if handler == self.erasure else
+                         self._broker_slots if peer(sock)[1] == 1002 else self._slots)
                 if not slots.acquire(blocking=False):
                     sock.close()
                     continue
@@ -296,7 +304,8 @@ def _serve(*, rootfs: Path, data_root: Path) -> None:
     listeners = [threading.Thread(target=service.serve, args=(
         RUNTIME / name, uid, handler, stop), daemon=True)
         for name, uid, handler in (("broker-registration.sock", 1002, service.register),
-                                  ("daemon.sock", 1102, service.daemon))]
+                                  ("daemon.sock", 1102, service.daemon),
+                                  ("erasure.sock", 1102, service.erasure))]
     try:
         for listener in listeners:
             listener.start()

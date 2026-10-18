@@ -100,6 +100,9 @@ def _no_revocations():
 
 @pytest.fixture
 def broker(tmp_path, monkeypatch):
+    from tinyassets.erasure_ledger import ErasureLedger
+
+    ErasureLedger(tmp_path).initialize()
     lease = Lease()
     fence = Fence(tmp_path / "fence.json", verify_lease_proof=lease.verify)
     ops = OpStore(tmp_path / "ops.db")
@@ -123,7 +126,7 @@ def broker(tmp_path, monkeypatch):
         return dispatch
 
     server = BrokerServer(ledger_for=Ledger, dispatch_for=dispatch_for, ops=ops, fence=fence,
-                          roles={os.getuid(): OWNER})
+                          roles={os.getuid(): OWNER}, data_root=tmp_path)
     path = tmp_path / "b.sock"
     loop = asyncio.new_event_loop()
     started = threading.Event()

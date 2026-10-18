@@ -12,6 +12,9 @@ from tinyassets.broker.public_egress import PublicEgress
 
 @pytest.fixture
 def proxy(tmp_path):
+    from tinyassets.erasure_ledger import ErasureLedger
+
+    ErasureLedger(tmp_path).initialize()
     tmp_path.chmod(0o700)
     path = tmp_path / "identities.db"
     identities = OwnerIdentities(path, initialize=True)
@@ -21,7 +24,7 @@ def proxy(tmp_path):
         db.execute("CREATE TABLE box_records (principal TEXT, machine INT, "
                    "project_id INT, bhard_bytes INT)")
         db.execute("INSERT INTO box_records VALUES (?,?,?,?)", ("alice", uid, uid, 1048576))
-    return PublicEgress(identities)
+    return PublicEgress(identities, tmp_path)
 
 
 async def exchange(proxy, request, *, center=None, principal="alice"):

@@ -20,6 +20,11 @@ from tinyassets.erasure_ledger import ErasureLedger
 from tinyassets.onboarding import owner_sessions, session_store
 
 
+@pytest.fixture(autouse=True)
+def initialized_ledger(tmp_path):
+    ErasureLedger(tmp_path).initialize()
+
+
 @pytest.fixture
 def deleted(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))

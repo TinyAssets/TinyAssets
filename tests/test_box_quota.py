@@ -124,6 +124,9 @@ def test_retirement_erases_whole_tree_before_clearing_project_and_retries(
 ):
     if os.geteuid() != 0:
         pytest.skip("requires root; owner=C6 runs-in=linux_oracle.py:--as-root")
+    # This fixture models quota commands on a temporary directory; real mount
+    # identity refusal is exercised in test_erasure_fail_closed.
+    monkeypatch.setattr("tinyassets.boxes.destroy.verify_store", lambda *_: None)
     uid = 300001
     root = tmp_path / str(uid)
     root.mkdir(mode=0o700)

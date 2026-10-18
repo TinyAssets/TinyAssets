@@ -58,7 +58,7 @@ def resolve(identities, request: dict) -> dict:
     return _box_record(identities, owner)
 
 
-def resolve_owner(identities, request: dict) -> dict:
+def resolve_owner(identities, request: dict, *, data_root=None) -> dict:
     """Public egress belongs to the owner's box, independently of its centers."""
     if set(request) != {"op", "principal"} or request["op"] != "BOX_PUBLIC":
         raise ValueError("invalid owner public admission request")
@@ -66,6 +66,9 @@ def resolve_owner(identities, request: dict) -> dict:
     validate_principal(owner)
     if identities is None:
         raise PermissionError("owner box admission unavailable")
+    from tinyassets.erasure_ledger import require_active
+
+    require_active(data_root, owner)
     with identities._connect(write=False) as db:
         if db.execute("SELECT 1 FROM owner_box_revocations WHERE principal=?",
                       (owner,)).fetchone():

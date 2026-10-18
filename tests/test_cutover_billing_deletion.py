@@ -93,6 +93,7 @@ def test_legacy_checkout_refuses_ambiguity(source, mutation, reason):
 
 @pytest.fixture
 def billing(tmp_path, monkeypatch):
+    ErasureLedger(tmp_path).initialize()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_synthetic")
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)

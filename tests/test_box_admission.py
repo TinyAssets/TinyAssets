@@ -12,6 +12,14 @@ from tinyassets.broker.box_admission import resolve, resolve_owner
 from tinyassets.broker.owner_identities import OwnerIdentities
 
 
+@pytest.fixture(autouse=True)
+def initialized_ledger(tmp_path, monkeypatch):
+    from tinyassets.erasure_ledger import ErasureLedger
+
+    ErasureLedger(tmp_path).initialize()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+
+
 @pytest.fixture
 def owner_box(tmp_path):
     tmp_path.chmod(0o700)

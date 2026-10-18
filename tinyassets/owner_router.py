@@ -68,11 +68,17 @@ def resolve_box(owner: str, *, cleanup=False) -> BoxRoute:
     if not cleanup and ErasureLedger(data_dir()).contains(owner):
         raise LookupError("owner account is deleted")
     result = request("resolve", owner, cleanup=cleanup)
-    if (set(result) != {"uid", "lease"} or type(result["uid"]) is not int
+    expected = {"uid", "lease", "secret"} if cleanup else {"uid", "lease"}
+    if (set(result) != expected or type(result["uid"]) is not int
             or not isinstance(result["lease"], str) or len(result["lease"]) != 43):
         raise RuntimeError("invalid box lease response")
     try:
-        uid, secret = owner_box_route(data_dir(), principal=owner)
+        if cleanup:
+            uid, secret = result["uid"], result["secret"]
+            if not isinstance(secret, str) or len(secret) != 43:
+                raise RuntimeError("invalid cleanup route secret")
+        else:
+            uid, secret = owner_box_route(data_dir(), principal=owner)
         if uid != result["uid"]:
             raise RuntimeError("owner box identity changed during wake")
     except BaseException:
@@ -263,19 +269,6 @@ async def _delete_owner_account(identity):
             await run_in_threadpool(tombstone, root, owner, {"local_cleanup": "pending"})
             receipt = await run_in_threadpool(deleted.receipt, owner)
 
-        # The ledger fences sign-in before draining already-admitted work.
-        # A blocked drain stays retryable without requiring a new login.
-        if (receipt.get("local_cleanup") == "pending"
-                and "owner_tree" not in receipt.get("completed_phases", [])):
-            route = await run_in_threadpool(resolve_box, owner, cleanup=True)
-            response = await delete_box_data(identity, route)
-            if response.status_code != 200:
-                return response
-            local = json.loads(response.body)
-            receipt.update(local_cleanup="done",
-                           local_unfinished=local.get("unfinished_phases", []))
-            await run_in_threadpool(deleted.save_receipt, owner, receipt)
-
         receipt.setdefault("billing", "pending")
         receipt.setdefault("identity", "pending")
         done = receipt.setdefault("completed_phases", [])
@@ -303,10 +296,31 @@ async def _delete_owner_account(identity):
                 if step not in done]))
             await run_in_threadpool(deleted.save_receipt, owner, receipt)
 
-        # The sweep is best-effort; destruction after a proven stop removes
-        # every remaining local byte, including failed sweep phases and execs.
-        if not receipt.get("quarantines"):
-            await phase("owner_tree", lambda: retire_owner(root, principal=owner))
+        # Box cleanup is one retryable phase; shared phases never depend on it.
+        if "owner_tree" not in done and not receipt.get("quarantines"):
+            try:
+                if receipt.get("local_cleanup") == "pending":
+                    try:
+                        route = await run_in_threadpool(resolve_box, owner, cleanup=True)
+                    except LookupError:
+                        # No admission is not absence: retirement below must still
+                        # stop the runtime and prove erasure on the mounted store.
+                        pass
+                    else:
+                        response = await delete_box_data(identity, route)
+                        if response.status_code != 200:
+                            raise RuntimeError("box cleanup remains unfinished")
+                        local = json.loads(response.body)
+                        receipt.update(local_cleanup="done",
+                                       local_unfinished=local.get("unfinished_phases", []))
+                        await run_in_threadpool(deleted.save_receipt, owner, receipt)
+                await phase("owner_tree", lambda: retire_owner(root, principal=owner))
+            except Exception:
+                import logging
+
+                logging.getLogger(__name__).exception("box cleanup failed; shared phases continue")
+                failures.append("owner_tree")
+                await run_in_threadpool(deleted.save_receipt, owner, receipt)
         if "owner_tree" in done:
             receipt["home_removed"] = True
             receipt["local_unfinished"] = []
@@ -314,11 +328,9 @@ async def _delete_owner_account(identity):
         await phase("broker_egress", lambda: erase_account(root, principal=owner))
         # Money cleanup must run even when stopping or erasing the box failed.
         await phase("billing", lambda: cancel_account_billing(root, owner))
-        if "owner_tree" in done:
-            await phase("credentials", lambda: revoke_account(root, owner))
+        await phase("credentials", lambda: revoke_account(root, owner))
         # Durable router retries finish cleanup even though sign-in is fenced.
-        if all(step in done for step in ("owner_tree", "broker_egress", "billing", "credentials")):
-            await phase("identity", lambda: delete_workos_user(owner))
+        await phase("identity", lambda: delete_workos_user(owner))
         receipt["unfinished_phases"] = [step for step in (
             "owner_tree", "broker_egress", "billing", "credentials", "identity")
             if step not in done]

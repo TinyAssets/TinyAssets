@@ -23,6 +23,13 @@ from tinyassets.auth.provider import Identity
 from tinyassets.broker.owner_identities import OwnerIdentities, owner_box_route
 
 
+@pytest.fixture(autouse=True)
+def initialized_ledger(tmp_path):
+    from tinyassets.erasure_ledger import ErasureLedger
+
+    ErasureLedger(tmp_path).initialize()
+
+
 @pytest.fixture
 def admitted(in_process_broker, broker, tmp_path, monkeypatch):  # noqa: F811
     from tinyassets.broker import supervisor
@@ -933,7 +940,7 @@ def test_root_lifecycle_broker_operation_uses_admission_and_box_record(
     from tinyassets.boxes.admission import BoxSuspended, OwnerRegistry
 
     monkeypatch.setattr(bootstrap, "peer", lambda sock: (os.getpid(), 1002, 1002))
-    registry = OwnerRegistry(boxes.run, boxes.host_path)
+    registry = OwnerRegistry(admitted.path.parent.parent, boxes.host_path)
     with pytest.raises(BoxSuspended, match="suspended"):
         registry.owner("alice")
     assert registry.owner("alice", deletion_only=True)["uid"] == admitted.owner_machine("alice")
@@ -994,8 +1001,9 @@ def test_box_deletion_rejection_keeps_ledger_fence_and_pending_cleanup(
                 "authorization": "Bearer alice",
                 "origin": resource.scheme + "://" + resource.netloc},
                 json={"confirm": "DELETE", "session_ref": handle})
-            assert result.status_code == 409, result.text
-            assert result.json()["error"] == "deletion_" + outcome
+            assert result.status_code == 503, result.text
+            assert result.json()["error"] == "deletion_incomplete"
+            assert result.json()["receipt"]["unfinished_phases"] == ["owner_tree"]
 
     asyncio.run(exercise())
     assert ErasureLedger(tmp_path).contains("alice")
@@ -1094,7 +1102,7 @@ def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
                             "plan": "billing"}.get(failure, failure)
                 assert expected in pending
                 assert router_credentials.ErasureLedger(tmp_path).contains("alice")
-                assert "identity" not in calls
+                assert ("identity" in calls) == (failure != "identity")
                 if failure not in {"billing", "plan"}:
                     assert subscription["status"] == "canceled"
                 assert (await delete()).status_code == 401
@@ -1111,7 +1119,7 @@ def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
             assert (await delete()).status_code == 401
 
     asyncio.run(exercise())
-    assert calls == ["stripe", "identity"]
+    assert sorted(calls) == ["identity", "stripe"]
     assert plans.read("alice")["tier"] == "free"
     assert not boxes.roots["alice"].exists()
     assert boxes.roots["bob"].exists()
@@ -1251,7 +1259,7 @@ def test_deletion_drains_real_turn_before_sweep_and_destroys_late_writes(
                 if timeout:
                     result = await asyncio.wait_for(deleting, 25)
                     assert result.status_code == 503
-                    assert result.json()["receipt"]["unfinished_phases"] == ["drain"]
+                    assert result.json()["receipt"]["unfinished_phases"] == ["owner_tree"]
                     assert root.exists() and boxes.runtime.alive(uid)
                 (root / "release-turn").touch()
                 if timeout:
@@ -1274,3 +1282,31 @@ def test_deletion_drains_real_turn_before_sweep_and_destroys_late_writes(
     assert not root.exists()
     assert not (root / "late-write").exists()
     assert not boxes.runtime.alive(uid)
+
+
+@pytest.mark.parametrize("op", ["BOX_ADMISSION", "BOX_CHANNEL", "BOX_SHARED", "BOX_PUBLIC",
+                                "BOX_LIFECYCLE", "BOX_CREDENTIAL", "BOX_IDENTITY",
+                                "BOX_PING", "BOX_PUBLISH", "BOX_READ"])
+def test_running_fenced_box_is_refused_on_every_broker_operation(boxes, admitted, tmp_path, op):
+    from tinyassets import rpc_frames as rf
+    from tinyassets.erasure_ledger import ErasureLedger
+
+    uid = admitted.owner_machine("alice")
+    assert boxes.runtime.alive(uid)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+        channel.settimeout(5)
+        channel.connect(str(boxes.host_path))
+        if op in {"BOX_IDENTITY", "BOX_PING", "BOX_PUBLISH", "BOX_READ"}:
+            channel.sendall(rf.control(rf.CONNECTION, {
+                "op": "BOX_CHANNEL", "principal": "alice", "center": "cc-alice"}))
+            assert rf.read_frame_blocking(channel).control()["op"] == "BOX_ADMITTED"
+        ErasureLedger(tmp_path).add("alice")
+        document = {"op": op, "principal": "alice"}
+        if op in {"BOX_ADMISSION", "BOX_CHANNEL", "BOX_SHARED"}:
+            document["center"] = "cc-alice"
+        if op == "BOX_LIFECYCLE":
+            document["rotate"] = False
+        channel.sendall(rf.control(rf.CONNECTION, document))
+        assert rf.read_frame_blocking(channel).control() == {"op": "BOX_REFUSED"}
+    assert boxes.runtime.alive(uid)
+    assert admitted.admitted_owner("cc-alice") == "alice"

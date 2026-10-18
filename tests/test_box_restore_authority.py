@@ -20,6 +20,9 @@ SPEC.loader.exec_module(restore)
 def seed(root):
     (root / ".broker/state").mkdir(parents=True)
     (root / ".boxhost").mkdir(mode=0o700)
+    from tinyassets.erasure_ledger import ErasureLedger
+
+    ErasureLedger(root).initialize()
     (root / ".layout.json").write_text(json.dumps({"box_layout": "owner-box", "state": "stable"}))
     with sqlite3.connect(root / ".broker/state/owner-identities.db") as db:
         db.execute("CREATE TABLE owner_identities (principal TEXT, machine_id INT)")
@@ -74,7 +77,7 @@ def test_normal_restore_carries_erasure_only(tmp_path):
 
     assert ErasureLedger(staged).contains("alice")
     assert ({k: v for k, v in fingerprint(staged).items() if k != NAME},
-            fingerprint(trees)) == before
+            fingerprint(trees)) == ({k: v for k, v in before[0].items() if k != NAME}, before[1])
 
 
 @pytest.mark.parametrize("layout", [None, {"split": "owner-split", "state": "stable"}])

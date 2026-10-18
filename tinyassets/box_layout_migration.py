@@ -143,7 +143,7 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
     add(".api-keys.sqlite3", "api_keys api_key_request_counts", "router")
     add(".hook-owners.sqlite3", "hook_owners", "router")
     add(".router-deleted-owners.sqlite3", "deleted_owners", "router")
-    add(".erasure-ledger.sqlite3", "events", "router")
+    add(".erasure-ledger.sqlite3", "events initialized", "router")
     # Shared host facts are preserved and seeded before root-private publication.
     add(".boxhost/boxhost.db", "host boxes ops execs owner_destroys", "router")
     add(".runtime/owner-sessions.db", "owner_sessions owner_login_flows owner_login_completions "

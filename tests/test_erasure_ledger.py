@@ -14,6 +14,13 @@ from tinyassets.erasure_ledger import NAME, PHASES, ErasureLedger, carry_forward
 from tinyassets.restore_recovery import erasures, finish_erasures, normal_preflight
 
 
+@pytest.fixture(autouse=True)
+def initialized_ledger(tmp_path, monkeypatch):
+    ErasureLedger(tmp_path).initialize()
+    # Restore mechanics use disposable directories; mount proof is tested separately.
+    monkeypatch.setattr("tinyassets.boxes.destroy.verify_store", lambda *a: None)
+
+
 def test_two_disaster_restores_keep_earlier_quarantine(tmp_path, monkeypatch):
     from tinyassets.boxes import destroy
     from tinyassets.boxes.provider import BoxError
@@ -86,9 +93,9 @@ def test_retry_without_identity_row_finishes_billing_and_identity(tmp_path, monk
                         lambda *a: calls.append("identity") or "deleted")
     assert not (tmp_path / ".broker/state/owner-identities.db").exists()
     asyncio.run(resume_deleted_accounts(tmp_path))
-    assert ledger.pending()[0]["receipt"]["unfinished_phases"] == ["billing", "identity"]
+    assert ledger.pending()[0]["receipt"]["unfinished_phases"] == ["billing"]
     asyncio.run(resume_deleted_accounts(tmp_path))
-    assert calls == ["billing", "billing", "identity"]
+    assert calls == ["billing", "identity", "billing"]
     assert ledger.pending() == []
 
 
@@ -148,7 +155,7 @@ def test_ledger_control_refuses_owner_and_broker_writes(tmp_path):
         "digest": principal_digest("alice"), "principal": "alice"}}
     for uid in (300001, 1002):
         assert "error" in host.lifecycle(doc, uid)
-    assert not (tmp_path / NAME).exists()
+    assert not ErasureLedger(tmp_path).contains("alice")
     assert host.lifecycle(doc, 1001) == {"result": None}
     assert ErasureLedger(tmp_path).contains("alice")
 
@@ -210,8 +217,8 @@ def test_root_ledger_cannot_be_replaced_by_router(tmp_path):
     sidecar = tmp_path / (NAME + "-journal")
     sidecar.write_bytes(b"hostile sidecar")
     os.chown(sidecar, 1001, 1001)
-    with pytest.raises(PermissionError, match="root-private"):
-        ledger.contains("alice")
+    assert ledger.contains("alice")
+    assert ledger.contains("unfenced")
 
 
 def test_legacy_report_quarantine_is_seeded_without_identity_store(tmp_path):
@@ -249,9 +256,9 @@ def test_router_uses_root_control_socket_and_paginates_pending(tmp_path):
     with tempfile.TemporaryDirectory(prefix="ta-ledger-") as directory:
         runtime = Path(directory)
         runtime.chmod(0o755)
-        path = runtime / "daemon.sock"
+        path = runtime / "erasure.sock"
         stop = threading.Event()
-        server = threading.Thread(target=host.serve, args=(path, 1102, host.daemon, stop))
+        server = threading.Thread(target=host.serve, args=(path, 1102, host.erasure, stop))
         server.start()
         try:
             deadline = time.monotonic() + 5

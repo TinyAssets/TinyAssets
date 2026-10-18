@@ -4,10 +4,42 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
 from pathlib import Path
 
 from tinyassets.boxes.gvisor_runtime import GvisorRuntime
 from tinyassets.boxes.provider import BoxError
+
+
+def verify_store(store: Path, fd: int) -> None:
+    """Verify even an absent UID against setup's root-owned filesystem proof.
+
+    Retained/quarantine directories may be below the mount root. Compare the
+    opened descriptor too, so path replacement cannot substitute another device.
+    """
+    import json
+
+    try:
+        result = subprocess.run(
+            ["findmnt", "--json", "--target", str(store), "-o", "TARGET,FSTYPE,UUID"],
+            check=True, capture_output=True, text=True, timeout=10)
+        mount, = json.loads(result.stdout)["filesystems"]
+        root = Path(mount["target"])
+        device = root.stat().st_dev
+        if (device == root.parent.stat().st_dev or device != os.fstat(fd).st_dev
+                or mount["fstype"] != "xfs" or not mount["uuid"]):
+            raise BoxError("owner store is not the expected mounted XFS filesystem")
+        proof = os.open(root.parent / ("." + root.name + "-identity"),
+                        os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(proof) as stream:
+            info = os.fstat(stream.fileno())
+            if (info.st_uid != 0 or not stat.S_ISREG(info.st_mode)
+                    or info.st_mode & 0o077 or info.st_nlink != 1):
+                raise BoxError("owner store identity is not root-private")
+            if stream.read() != "xfs " + mount["uuid"] + "\n":
+                raise BoxError("owner store filesystem identity changed")
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+        raise BoxError("owner store mount identity cannot be verified") from exc
 
 
 def _mount(fd: int) -> str:
@@ -72,6 +104,11 @@ def _walk(fd: int, device: int, mount: str, *, erase: bool) -> int:
 def quarantine(store: Path, uid: int, *, destination_root: Path) -> Path:
     """Detach an unerased tree into root-private storage on the same filesystem."""
     GvisorRuntime.box_id(uid)
+    parent = os.open(store, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        verify_store(store, parent)
+    finally:
+        os.close(parent)
     target = destination_root
     target.mkdir(mode=0o700, exist_ok=True)
     os.chown(target, 0, 0)
@@ -79,6 +116,8 @@ def quarantine(store: Path, uid: int, *, destination_root: Path) -> Path:
     parent = os.open(store, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     destination = os.open(target, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
+        verify_store(store, parent)
+        verify_store(target, destination)
         os.rename(str(uid), str(uid), src_dir_fd=parent, dst_dir_fd=destination)
         os.fsync(parent)
         os.fsync(destination)
@@ -97,6 +136,7 @@ def tree(store: Path, uid: int, *, erase: bool) -> int:
     GvisorRuntime.box_id(uid)
     parent = os.open(store, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
+        verify_store(store, parent)
         try:
             root = os.open(str(uid), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
         except FileNotFoundError:
