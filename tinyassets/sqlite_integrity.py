@@ -5,9 +5,11 @@ import re
 import sqlite3
 
 
-def check(db: sqlite3.Connection, *, repair: bool = False) -> list[str]:
+def check(db: sqlite3.Connection, *, repair: bool = False,
+          allow_index_drift: bool = False) -> list[str]:
     """Return named repairable indexes; reject every other integrity failure."""
-    errors = [row[0] for row in db.execute("PRAGMA integrity_check")]
+    # Use a billion-error limit, leaving headroom for SQLite counter arithmetic.
+    errors = [row[0] for row in db.execute("PRAGMA integrity_check(1000000000)")]
     if errors == ["ok"]:
         return []
     indexes = set()
@@ -24,6 +26,7 @@ def check(db: sqlite3.Connection, *, repair: bool = False) -> list[str]:
     if repair:
         for name in sorted(indexes):
             db.execute('REINDEX "' + name.replace('"', '""') + '"')
-        if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
-            raise ValueError("database integrity failed after index repair")
+        check(db)  # Strict re-verification uses the same verdict.
+    elif not allow_index_drift:
+        raise ValueError("database index drift requires repair before publication")
     return sorted(indexes)

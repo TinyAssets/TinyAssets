@@ -41,8 +41,12 @@ def _read(root, relative):
     if not path.exists():
         return {}
     with readonly_db(path) as db:
-        if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
-            raise UnreadableFacts("restore authority failed integrity check")
+        from tinyassets.sqlite_integrity import check
+
+        try:
+            check(db)
+        except ValueError as error:
+            raise UnreadableFacts("restore authority failed integrity check") from error
         result = {}
         for name, ddl in db.execute("SELECT name,sql FROM sqlite_master WHERE type='table'"):
             info = db.execute(f"PRAGMA table_info({_quote(name)})").fetchall()
@@ -93,6 +97,10 @@ def _carry_rollback(current, staged, owners, retained_owners):
     marker = _safe(staged, ".layout.json")
     legacy = not marker.exists() or json.loads(marker.read_text()).get("box_layout") != "owner-box"
     if legacy:
+        from tinyassets.erasure_ledger import _legacy_main_digests
+
+        # Rollback publishes this database without forward migration: refuse drift.
+        _legacy_main_digests(staged, allow_index_drift=False)
         ErasureLedger(staged).initialize()
     ledger = carry_forward(current, staged)
     if legacy:

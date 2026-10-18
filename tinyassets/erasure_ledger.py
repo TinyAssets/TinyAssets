@@ -136,8 +136,12 @@ class ErasureLedger:
             if not readonly:
                 db.execute("PRAGMA synchronous=FULL")
             db.execute("BEGIN" if readonly else "BEGIN IMMEDIATE")
-            if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
-                raise RuntimeError("erasure ledger integrity check failed")
+            from tinyassets.sqlite_integrity import check
+
+            try:
+                check(db)
+            except ValueError as error:
+                raise RuntimeError("erasure ledger integrity check failed") from error
             if db.execute("SELECT version FROM initialized").fetchall() != [(1,)]:
                 raise RuntimeError("erasure ledger initialization proof missing")
             events = db.execute("SELECT id,digest,at,payload FROM events ORDER BY at,id").fetchall()
@@ -344,7 +348,7 @@ def _seed_legacy_fences(source, ledger, store_root):
         ledger.execute("add", {"digest": marker.parent.name})
 
 
-def _legacy_main_digests(source):
+def _legacy_main_digests(source, *, allow_index_drift=True):
     """Use cutover's index-only policy and read table bytes, never damaged indexes."""
     from tinyassets.restore_recovery import _safe
     from tinyassets.sqlite_integrity import check
@@ -356,7 +360,7 @@ def _legacy_main_digests(source):
     if not path.exists():
         return []
     with readonly_db(path) as db:
-        check(db)  # Pre-cutover rollback may restore indexes awaiting forward repair.
+        check(db, allow_index_drift=allow_index_drift)
         if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
                           "AND name='deleted_principals'").fetchone():
             return []

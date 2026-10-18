@@ -485,7 +485,7 @@ def census(data: Path, *, _inventory: dict | None = None,
                     try:
                         repairable_indexes.extend(
                             f"repairable index: {relative}/{index}"
-                            for index in check_integrity(db))
+                            for index in check_integrity(db, allow_index_drift=True))
                     except ValueError:
                         refusals["database_integrity"] += 1
                     for child, rowid, _, _ in db.execute("PRAGMA foreign_key_check"):
@@ -1911,8 +1911,9 @@ def _build_databases(data: Path, store: Path, shared: Path, inventory: dict) -> 
             for ddl in deferred:
                 destination.execute(ddl)
         with closing(sqlite3.connect(path)) as check_db:
-            if check_db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
-                raise RuntimeError("cutover database integrity check failed")
+            from tinyassets.sqlite_integrity import check
+
+            check(check_db)
     return expected
 
 
@@ -2306,8 +2307,9 @@ def _build_cutover(data: Path, store: Path, journal: dict, *, apply_quotas=True)
                 database = stream.read(16) == b"SQLite format 3\x00"
             if database:
                 with readonly_db(path) as db:
-                    if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
-                        raise RuntimeError("seeded shared database failed integrity check")
+                    from tinyassets.sqlite_integrity import check
+
+                    check(db)
     report["workflow_definitions"] = workflow_counts
     journal.update(phase="publish", report=report, shared=_durable_tree(shared),
                    owner_manifests=owner_manifests,

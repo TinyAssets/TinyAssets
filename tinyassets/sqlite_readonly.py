@@ -86,7 +86,9 @@ def readonly_db(path: Path) -> Iterator[sqlite3.Connection]:
             raise RuntimeError(f"SQLite store changed during read-only snapshot: {path}")
         if snapshot is not None:
             snapshot[path] = (signatures, digests)
-        conn = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True, timeout=30.0)
+        # SQLite omits CHECK-constraint verification on mode=ro connections.
+        # Only this disposable copy is writable; source bytes remain untouched.
+        conn = sqlite3.connect(f"{database.as_uri()}?mode=rw", uri=True, timeout=30.0)
         try:
             yield conn
         finally:

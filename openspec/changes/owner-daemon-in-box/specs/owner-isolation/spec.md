@@ -526,7 +526,10 @@ session identity and raw forwarding headers SHALL NOT grant model authority.
 Census SHALL run the shared SQLite integrity policy read-only and report solely
 index-only failures as repairable. Stopped apply SHALL run that same policy after
 the verified paired backup, REINDEX exactly the named indexes, re-check integrity
-and record each repair. Every non-index integrity failure SHALL refuse.
+and record each repair. Every non-index integrity failure SHALL refuse. The shared verdict SHALL inspect
+all errors using SQLite's maximum error limit. Legacy seeding may read table bytes
+through index-only drift; pre-cutover rollback SHALL refuse unrepaired drift
+before publishing the staged database.
 
 #### Scenario: Missing index entries with intact table
 - **WHEN** integrity_check reports only missing entries or wrong entry counts in named indexes
