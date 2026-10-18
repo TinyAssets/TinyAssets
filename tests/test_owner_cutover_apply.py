@@ -153,10 +153,45 @@ def test_apply_refuses_workflow_instance_without_local_definition(cutover, monke
             return result
 
         monkeypatch.setattr(migration, "_build_databases", lose_definition)
-    with pytest.raises(RuntimeError, match="instance has no local definition"):
+    message = ("unresolved_workflow_instance" if missing == "source"
+               else "instance has no local definition")
+    with pytest.raises(RuntimeError, match=message):
         migration.apply(*cutover)
-    assert json.loads((data / ".owner-cutover.json").read_text())["phase"] == "build"
+    if missing == "extracted":
+        assert json.loads((data / ".owner-cutover.json").read_text())["phase"] == "build"
+    else:
+        assert not (data / ".owner-cutover.json").exists()
     assert (data / "a1/notes.txt").is_file()
+
+
+@pytest.mark.parametrize("retired", [True, False])
+def test_automation_missing_definition_is_history_only_when_retired(cutover, retired):
+    data, store, *_ = cutover
+    _sql(data / ".automations.db", """
+        CREATE TABLE automations (automation_id TEXT, universe_id TEXT,
+                                  branch_def_id TEXT, retired_at TEXT);
+        CREATE TABLE automation_attempts (automation_id TEXT, result TEXT);
+        INSERT INTO automation_attempts VALUES ('old', 'synthetic run history');
+    """)
+    with sqlite3.connect(data / ".automations.db") as db:
+        db.execute("INSERT INTO automations VALUES ('old','a1','missing',?)",
+                   ("then" if retired else None,))
+    report = migration.census(data)
+    assert report["ready"] is retired
+    if not retired:
+        assert report["refusals"]["unresolved_workflow_instance"] == 1
+        with pytest.raises(RuntimeError, match="unresolved_workflow_instance"):
+            migration.apply(*cutover)
+        return
+    assert report["workflow_history"]["account-0001"][
+        "retired automations kept as history"] == 1
+    migration.apply(*cutover)
+    migration.verify(data, store)
+    with sqlite3.connect(store / "300001/.automations.db") as db:
+        assert db.execute("SELECT * FROM automations").fetchall() == [
+            ("old", "a1", "missing", "then")]
+        assert db.execute("SELECT * FROM automation_attempts").fetchall() == [
+            ("old", "synthetic run history")]
 
 
 @pytest.fixture

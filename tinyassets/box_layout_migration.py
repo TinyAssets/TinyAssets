@@ -295,6 +295,11 @@ CENSUS_RULES = _census_rules()
 #: their rows drop by reason and are counted; a name here is never a reader.
 RETIRED_STORES = frozenset({(".source_channel_policy.db", "source_channel_policy")})
 
+WORKFLOW_INSTANCE_TABLES = ((".tinyassets.db", "branches"),
+                            (".tinyassets.db", "background_branch_bindings"),
+                            (".tinyassets.db", "branch_tasks_v2"),
+                            (".automations.db", "automations"))
+
 
 def _census_rule(database: str, table: str) -> CensusRule | None:
     parts = PurePosixPath(database).parts
@@ -307,6 +312,8 @@ def _census_columns(database: str, table: str) -> set[str]:
     """Read attribution metadata only; never materialize history or token blobs."""
     rule = _census_rule(database, table)
     columns = set()
+    if (database, table) in WORKFLOW_INSTANCE_TABLES:
+        columns.update(("branch_def_id", "retired_at"))
     if rule:
         columns.update(rule.principals + rule.centers)
         columns.update(reference[0] for reference in rule.references)
@@ -683,6 +690,20 @@ def census(data: Path, *, _inventory: dict | None = None,
                                 else "specified"),
             }
 
+        workflow_instances = {}
+        retired_automations = {}
+        for owner, label in labels.items():
+            local = {}
+            for key in (*WORKFLOW_INSTANCE_TABLES, (".tinyassets.db", "branch_definitions")):
+                local[key] = [row for index, row in enumerate(tables.get(key, []))
+                              if assignments[key][index] == ("owner", owner)
+                              or published_owner_copies.get((*key, index)) == owner]
+            counts, history = _workflow_resolution(local)
+            unresolved = counts["instances"] - counts["resolved"]
+            workflow_instances[label] = {**counts, "unresolved_workflow_instance": unresolved}
+            retired_automations[label] = history
+            refusals["unresolved_workflow_instance"] += unresolved
+
         for database, table, index in foreign_key_rows:
             targets = assignments.get((database, table), [])
             if index is None or targets[index] != "dropped":
@@ -773,11 +794,14 @@ def census(data: Path, *, _inventory: dict | None = None,
             "losses": losses, "loss_summary": loss_summary,
             "history_splits": history_report,
             "knowledge_stores": knowledge_report,
+            "workflow_instances": workflow_instances,
             "workflow_history": {
-                label: {unit: table_report.get(f".runs.db/{table}", {}).get(
+                label: {**{unit: table_report.get(f".runs.db/{table}", {}).get(
                     "per_owner", {}).get(label, 0)
                         for table, unit in (("branch_versions", "versions"),
-                                            ("branch_schedules", "schedules"))}
+                                            ("branch_schedules", "schedules"))},
+                        **({"retired automations kept as history": retired_automations[label]}
+                           if retired_automations[label] else {})}
                 for label in labels.values()},
             "accepted_user_costs": [
                 "Every account reconnects a model source; CLI connections are retired.",
@@ -1884,37 +1908,46 @@ def _build_databases(data: Path, store: Path, shared: Path, inventory: dict) -> 
     return expected
 
 
-def _verify_workflow_definitions(tree: Path) -> dict[str, int]:
-    """Count workflow instances and their local definitions before publication.
+def _workflow_resolution(tables: dict) -> tuple[dict[str, int], int]:
+    """The census and built tree use the same live-instance resolution predicate.
 
-    The branches table also holds universe snapshot forks (no branch_def_id).
-    Only definition-bearing instances participate, never snapshot lineage IDs.
-    Immutable version/run history may outlive its live definition and is not an
-    instance; its census attribution and byte-preservation checks remain intact.
+    Missing columns, NULL/empty definitions and retired rows are not instances.
+    Retirement is presence, not truthiness: even an empty retired_at is history.
     """
-    definitions = set()
-    main = tree / ".tinyassets.db"
-    if main.exists():
-        with readonly_db(main) as db:
-            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
-                          "AND name='branch_definitions'").fetchone():
-                definitions = {row[0] for row in db.execute(
-                    "SELECT branch_def_id FROM branch_definitions")}
+    definitions = {row.get("branch_def_id") for row in
+                   tables.get((".tinyassets.db", "branch_definitions"), [])}
     counts = {"instances": 0, "resolved": 0}
-    for database, tables in ((".tinyassets.db", ("branches", "background_branch_bindings",
-                                              "branch_tasks_v2")),
-                             (".automations.db", ("automations",))):
+    history = 0
+    for key in WORKFLOW_INSTANCE_TABLES:
+        for row in tables.get(key, []):
+            if row.get("retired_at") is not None:
+                history += int(key == (".automations.db", "automations"))
+                continue
+            definition = row.get("branch_def_id")
+            if definition is None or definition == "":
+                continue
+            counts["instances"] += 1
+            counts["resolved"] += int(definition in definitions)
+    return counts, history
+
+
+def _verify_workflow_definitions(tree: Path) -> dict[str, int]:
+    """Refuse any live instance without a definition in the built owner's box."""
+    tables = {}
+    for database, table in (*WORKFLOW_INSTANCE_TABLES,
+                            (".tinyassets.db", "branch_definitions")):
         path = tree / database
         if not path.exists():
             continue
         with readonly_db(path) as db:
-            for table in tables:
-                columns = {row[1] for row in db.execute(f"PRAGMA table_info({_quoted(table)})")}
-                if "branch_def_id" not in columns:
-                    continue
-                for (definition,) in db.execute(f"SELECT branch_def_id FROM {_quoted(table)}"):
-                    counts["instances"] += 1
-                    counts["resolved"] += int(definition in definitions)
+            columns = {row[1] for row in db.execute(f"PRAGMA table_info({_quoted(table)})")}
+            if "branch_def_id" not in columns:
+                continue
+            selected = sorted(columns & {"branch_def_id", "retired_at"})
+            db.row_factory = sqlite3.Row
+            tables[database, table] = [dict(row) for row in db.execute(
+                f"SELECT {','.join(map(_quoted, selected))} FROM {_quoted(table)}")]
+    counts, _ = _workflow_resolution(tables)
     if counts["instances"] != counts["resolved"]:
         raise RuntimeError("migrated workflow instance has no local definition")
     return counts

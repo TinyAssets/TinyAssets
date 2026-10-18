@@ -109,6 +109,62 @@ def test_two_owner_census_preserves_totals_and_source_bytes(source):
         assert private not in serialized
 
 
+@pytest.mark.parametrize("database,table", [
+    (".tinyassets.db", "branches"),
+    (".tinyassets.db", "background_branch_bindings"),
+    (".tinyassets.db", "branch_tasks_v2"),
+    (".automations.db", "automations"),
+])
+@pytest.mark.parametrize("case", [
+    "missing", "other_owner", "public_other_owner", "private", "published_copy",
+    "retired", "empty_retired_at", "null", "empty", "no_column",
+])
+def test_census_predicts_apply_workflow_resolution(source, tmp_path, database, table, case):
+    from tinyassets.box_layout_migration import _build_databases, _verify_workflow_definitions
+
+    _sql(source / ".tinyassets.db", """
+        CREATE TABLE branch_definitions
+            (branch_def_id TEXT, author TEXT, published INTEGER, visibility TEXT);
+    """)
+    if case in {"other_owner", "public_other_owner", "private", "published_copy"}:
+        author = "bob" if case in {"other_owner", "public_other_owner"} else "alice"
+        published = int(case in {"published_copy", "public_other_owner"})
+        visibility = "public" if published else "private"
+        _sql(source / ".tinyassets.db", "INSERT INTO branch_definitions VALUES "
+             f"('definition','{author}',{published},'{visibility}')")
+    if table == "branches":
+        _sql(source / database, "DROP TABLE branch_heads; DROP TABLE branches;")
+    definition_column = "" if case == "no_column" else ", branch_def_id TEXT"
+    _sql(source / database, f"CREATE TABLE {table} (universe_id TEXT, retired_at TEXT"
+         f"{definition_column})")
+    retired = "'then'" if case == "retired" else "''" if case == "empty_retired_at" else "NULL"
+    definition = "NULL" if case == "null" else "''" if case == "empty" else "'definition'"
+    values = f"'a1',{retired}" + ("" if case == "no_column" else f",{definition}")
+    _sql(source / database, f"INSERT INTO {table} VALUES ({values})")
+    before = _fingerprint(source)
+    inventory = {}
+    report = census(source, _inventory=inventory)
+    unresolved = case in {"missing", "other_owner", "public_other_owner"}
+    assert report["ready"] is not unresolved, report["refusals"]
+    assert report["workflow_instances"]["account-0001"][
+        "unresolved_workflow_instance"] == int(unresolved)
+    assert report["refusals"].get("unresolved_workflow_instance", 0) == int(unresolved)
+    store = tmp_path / "boxes"
+    _build_databases(source, store, tmp_path / "shared", inventory)
+    if unresolved:
+        with pytest.raises(RuntimeError, match="instance has no local definition"):
+            _verify_workflow_definitions(store / "300001")
+    else:
+        _verify_workflow_definitions(store / "300001")
+    _verify_workflow_definitions(store / "300002")
+    with closing(sqlite3.connect(store / "300001" / database)) as db:
+        assert db.execute(f"SELECT COUNT(*) FROM {table}").fetchone() == (1,)
+    if table == "automations" and case in {"retired", "empty_retired_at"}:
+        assert report["workflow_history"]["account-0001"][
+            "retired automations kept as history"] == 1
+    assert _fingerprint(source) == before
+
+
 @pytest.mark.parametrize("mutation,reason", [
     ("unknown_table", "unknown_table"),
     ("unknown_database", "unknown_table"),
