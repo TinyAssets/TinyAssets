@@ -126,3 +126,33 @@ def test_legacy_seeding_repairs_private_copy_without_changing_source(source, tmp
     before = _fingerprint(source)
     assert _legacy_main_digests(source) == ["digest"]
     assert _fingerprint(source) == before
+
+
+def test_staged_repair_preserves_symlinks_without_following_them(source, tmp_path):
+    from tinyassets.erasure_ledger import _legacy_main_digests
+    from tinyassets.restore_recovery import _repair_staged_databases
+
+    outside = tmp_path / "outside.db"
+    with closing(sqlite3.connect(outside)) as db, db:
+        db.execute("CREATE TABLE agent_turns (turn_id)")
+        db.execute("INSERT INTO agent_turns VALUES (1)")
+    corrupt_index(outside)
+    before = outside.read_bytes()
+    link = source / "linked.db"
+    link.symlink_to(outside)
+    note = source / "note-link.txt"
+    note.symlink_to("a1/notes.txt")
+    corrupt_index(source / ".tinyassets.db")
+
+    _repair_staged_databases(source)
+
+    assert link.is_symlink() and link.readlink() == outside
+    assert note.is_symlink() and note.read_text() == (source / "a1/notes.txt").read_text()
+    assert outside.read_bytes() == before
+    with closing(sqlite3.connect(source / ".tinyassets.db")) as db:
+        assert check(db) == []
+    # Skipping links in the scan must not authorize a linked authority file.
+    (source / ".tinyassets.db").unlink()
+    (source / ".tinyassets.db").symlink_to(outside)
+    with pytest.raises(ValueError, match="symlink"):
+        _legacy_main_digests(source)

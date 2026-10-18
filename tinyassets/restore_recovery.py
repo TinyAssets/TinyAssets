@@ -96,7 +96,10 @@ def _repair_staged_databases(staged):
     from tinyassets.sqlite_integrity import check
 
     for path in staged.rglob("*"):
-        if not path.is_file():
+        # Archives preserve ordinary file symlinks. Repair only their regular
+        # database targets, never follow a link while scanning the stage.
+        # Authority readers still reject symlinks through _safe.
+        if path.is_symlink() or not path.is_file():
             continue
         _safe(staged, path.relative_to(staged))
         with path.open("rb") as stream:
