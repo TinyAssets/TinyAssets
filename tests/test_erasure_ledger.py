@@ -116,11 +116,11 @@ def test_cutover_seeds_all_legacy_sources(tmp_path):
         db.execute("INSERT INTO deleted_owners VALUES ('router-only',NULL)")
     with sqlite3.connect(current / ".broker/credential-custody.db") as db:
         db.execute("INSERT INTO deleted_principals VALUES (?)", (principal_digest("custody-only"),))
-    from tinyassets.boxes.state import BoxHostState
 
-    host = BoxHostState(current / ".boxhost/boxhost.db")
-    host.begin_owner_destroy("host-only", "erase", 300002, "a")
-    host.close()
+    (current / ".boxhost").mkdir(exist_ok=True)
+    with sqlite3.connect(current / ".boxhost/boxhost.db") as db:
+        db.execute("CREATE TABLE owner_destroys (owner_id TEXT, uid INTEGER)")
+        db.execute("INSERT INTO owner_destroys VALUES (?,?)", ("host-only", 300002))
     ledger = carry_forward(current, staged)
     assert all(ledger.contains(owner) for owner in ("router-only", "custody-only", "host-only"))
     assert {entry["digest"] for entry in ledger.pending()} == {
@@ -227,11 +227,11 @@ def test_legacy_report_quarantine_is_seeded_without_identity_store(tmp_path):
     import json
 
     current, staged, _, _ = paired(tmp_path)
-    from tinyassets.boxes.state import BoxHostState
 
-    host = BoxHostState(current / ".boxhost/boxhost.db")
-    host.begin_owner_destroy("later", "erase", 300002, "a")
-    host.close()
+    (current / ".boxhost").mkdir(exist_ok=True)
+    with sqlite3.connect(current / ".boxhost/boxhost.db") as db:
+        db.execute("CREATE TABLE owner_destroys (owner_id TEXT, uid INTEGER)")
+        db.execute("INSERT INTO owner_destroys VALUES (?,?)", ("later", 300002))
     (current / ".broker/state/owner-identities.db").write_bytes(b"damaged")
     path = tmp_path / "old-quarantine" / "300002"
     (current / ".disaster-restore.json").write_text(json.dumps({

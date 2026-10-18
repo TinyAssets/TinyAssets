@@ -53,12 +53,12 @@ class OwnerBoxLiveBackupTest(unittest.TestCase):
                 db.execute("INSERT INTO box_records VALUES (300002, 300002, 1048576)")
                 db.execute("INSERT INTO box_records VALUES (300003, 300003, 1048576)")
             # Owner 300002's destruction began: its tree must not come back.
-            (data / ".boxhost").mkdir()
-            with sqlite3.connect(data / ".boxhost" / "boxhost.db") as db:
-                db.execute("CREATE TABLE owner_destroys (owner_id, op_id, uid, center,"
-                           " epoch, entries, state)")
-                db.execute("INSERT INTO owner_destroys VALUES"
-                           " ('o2', 'op', 300002, 'c', 1, NULL, 'deleting')")
+            from tinyassets.erasure_ledger import ErasureLedger, principal_digest
+
+            ledger = ErasureLedger(data)
+            ledger.initialize()
+            ledger.execute("add", {"digest": principal_digest("o2"), "principal": "o2",
+                                   "uids": [300002]})
             (box / "300002").mkdir()
             (box / "300002" / "file").write_text("erased owner bytes")
             for path in (box / "300002", box / "300002" / "file"):
@@ -174,6 +174,9 @@ esac
             shim(binary, "rclone", 'echo "rclone $*" >> "$TEST_LOG"\nexit 1\n')
             data, box = root / "_data", root / "owners"
             (data / ".broker" / "state").mkdir(parents=True)
+            from tinyassets.erasure_ledger import ErasureLedger
+
+            ErasureLedger(data).initialize()
             with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
                 db.execute("CREATE TABLE box_records (machine, project_id, bhard_bytes)")
             (box / "300002").mkdir(parents=True)

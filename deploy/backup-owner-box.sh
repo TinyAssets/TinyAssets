@@ -111,18 +111,20 @@ python3 "$HERE/backup-live-sqlite.py" "$DATA_DIR" "$DATA_COPY"
 # restoring its copied tree would bring erased files back. Then fail loudly on
 # a pair restore would refuse (box-store-quotas.py reapply).
 python3 - "$BOX_COPY" "$DATA_COPY/.broker/state/owner-identities.db" \
-    "$DATA_COPY/.boxhost/boxhost.db" <<'PY' || exit 2
+    "$DATA_COPY" "$HERE/.." <<'PY' || exit 2
 import shutil
 import sqlite3
 import sys
 from pathlib import Path
 
-trees, registry, boxhost = (Path(value) for value in sys.argv[1:])
+sys.path.insert(0, sys.argv[4])
+from tinyassets.erasure_ledger import ErasureLedger
+
+trees, registry, data = (Path(value) for value in sys.argv[1:4])
 owners = {entry.name for entry in trees.iterdir()
           if entry.name.isdecimal() and entry.is_dir() and not entry.is_symlink()}
-if owners and boxhost.is_file() and not boxhost.is_symlink():
-    with sqlite3.connect(boxhost.as_uri() + "?mode=ro", uri=True) as db:
-        destroyed = {str(row[0]) for row in db.execute("SELECT uid FROM owner_destroys")}
+if owners:
+    destroyed = {str(uid) for entry in ErasureLedger(data).entries() for uid in entry["uids"]}
     for uid in sorted(owners & destroyed):
         shutil.rmtree(trees / uid)
         print(f"owner {uid} is being destroyed; its tree is left out", file=sys.stderr)

@@ -585,8 +585,10 @@ def test_completed_apply_restores_paired_owner_split(cutover, tmp_path, journal)
     migration.apply(*cutover)
     assert not (data / 'a1').exists()
     if journal == 'missing':
-        (data / '.boxhost/boxhost.db').unlink()
+        (data / '.boxhost').mkdir()
+        # A missing legacy journal is irrelevant after cutover.
     elif journal == 'corrupt':
+        (data / '.boxhost').mkdir()
         (data / '.boxhost/boxhost.db').write_bytes(b'corrupt live journal')
     result = _restore_paired(cutover, tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -1022,7 +1024,6 @@ def test_forward_cutover_preserves_ledger_and_reopens_copied_home_work(cutover, 
 
 
 def test_cutover_imports_router_custody_and_host_erasure_facts(cutover):
-    from tinyassets.boxes.state import BoxHostState
     from tinyassets.erasure_ledger import ErasureLedger, principal_digest
 
     data, *_ = cutover
@@ -1034,12 +1035,14 @@ def test_cutover_imports_router_custody_and_host_erasure_facts(cutover):
     with sqlite3.connect(custody) as db:
         db.execute("CREATE TABLE deleted_principals (digest TEXT PRIMARY KEY)")
         db.execute("INSERT INTO deleted_principals VALUES (?)", (principal_digest("custody-only"),))
-    host = BoxHostState(data / ".boxhost/boxhost.db")
-    host.begin_owner_destroy("host-only", "erase", 300003, "c")
-    host.close()
+    (data / ".boxhost").mkdir(exist_ok=True)
+    with sqlite3.connect(data / ".boxhost/boxhost.db") as db:
+        db.execute("CREATE TABLE owner_destroys (owner_id TEXT, uid INTEGER)")
+        db.execute("INSERT INTO owner_destroys VALUES (?,?)", ("host-only", 300003))
     report = migration.census(data)
     assert report["ready"], report["refusals"]
     migration.apply(*cutover)
     ledger = ErasureLedger(data)
     assert all(ledger.contains(owner) for owner in ("router-only", "custody-only", "host-only"))
     assert not (data / ".router-deleted-owners.sqlite3").exists()
+    assert not (data / ".boxhost").exists()

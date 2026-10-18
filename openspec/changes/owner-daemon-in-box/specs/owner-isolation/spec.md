@@ -26,8 +26,8 @@ entry first and record each phase completion. The shared root SHALL be root-owne
 with sticky group-write access for the router, preventing replacement of root
 ledger files; all ledger SQLite sidecars SHALL be root-private. Cutover SHALL seed all router
 tombstones, custody digests, boxhost owner_destroys and broker revocations, then
-remove router plaintext tombstone authority. Plaintext required for phases SHALL
-remain only in root-owned state. Local custody and host fences are not retry authority.
+remove the router tombstone store and shared host journal. Plaintext required for phases SHALL
+remain only in root-owned state. Local custody fences are not retry authority.
 Both restore paths SHALL union readable live and staged ledger events. Every new
 restored home SHALL create new work; prior completion receipts cannot hide it.
 Post-publication cleanup and every start SHALL retry all unfinished home and

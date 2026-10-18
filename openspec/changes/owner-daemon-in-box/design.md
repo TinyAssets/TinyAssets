@@ -77,7 +77,7 @@ checks sha256(principal) directly against the ledger.
 
 Cutover seeds the ledger from router tombstones, custody deletion digests,
 boxhost owner_destroys and broker revocations before removing the legacy router
-tombstone store. Custody and boxhost facts remain local enforcement only.
+tombstone store and shared boxhost journal. Per-box operation journals remain owner-local.
 Disaster recovery also reconciles WorkOS absence and erases post-backup owners,
 retaining permanent UID reservations. Uncertain provider results refuse recovery.
 Pre-cutover pairs require forward migration and cannot be disaster sources.

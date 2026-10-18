@@ -481,7 +481,7 @@ if [[ -n "${BOX_NAME:-}" ]]; then
     REGISTRY="${STAGE_DIR}/.broker/state/owner-identities.db"
     if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
             --snapshot-data "${STAGE_DIR}"; then
-        log "ERROR: staged owner-box receipt journal is missing or invalid"
+        log "ERROR: staged owner-box layout is invalid"
         exit 4
     fi
 fi
@@ -575,10 +575,6 @@ if [[ -n "${BOX_STAGE}" ]]; then
     fi
     if [[ -n "$fact_report" ]]; then
         while IFS= read -r line; do log "$line"; done <<< "$fact_report"
-    fi
-    # Exact legacy rollback retains its original layout; rerun cutover before serving.
-    if [[ -f "${STAGE_DIR}/.boxhost/boxhost.db" ]]; then
-        quota_restore=1
     fi
     # Credential roots, receipt fences and the report must survive power loss
     # before either prepared filesystem becomes live.

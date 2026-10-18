@@ -438,9 +438,10 @@ def test_disaster_erasure_union_and_identity_reconciliation(tmp_path, monkeypatc
             db.execute("INSERT INTO deleted_principals VALUES (?)",
                        (hashlib.sha256(b"alice").hexdigest(),))
     elif source == "host":
-        state = BoxHostState(current / ".boxhost/boxhost.db")
-        state.begin_owner_destroy("alice", "erase", 300001, "a")
-        state.close()
+        (current / ".boxhost").mkdir(exist_ok=True)
+        with sqlite3.connect(current / ".boxhost/boxhost.db") as db:
+            db.execute("CREATE TABLE owner_destroys (owner_id TEXT, uid INTEGER)")
+            db.execute("INSERT INTO owner_destroys VALUES (?,?)", ("alice", 300001))
     assert erasures(current, staged, identity_exists=lambda owner: source != "workos") == {300001}
     assert ErasureLedger(staged).contains("alice")
 

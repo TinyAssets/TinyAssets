@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -102,26 +101,6 @@ def check_snapshot(data: Path, *, quiescent: bool = False) -> None:
         return
     if layout.get("state") != "stable":
         raise ValueError("owner-box snapshot layout is not stable")
-    root, database = data / ".boxhost", data / ".boxhost/boxhost.db"
-    info = root.lstat()
-    if not stat.S_ISDIR(info.st_mode) or (info.st_uid, stat.S_IMODE(info.st_mode)) != (0, 0o700):
-        raise ValueError("snapshot needs its root-private host receipt journal")
-    for entry in root.iterdir():
-        if entry.name not in {"boxhost.db", "boxhost.db-wal", "boxhost.db-shm", "boxhost.lock"}:
-            raise ValueError("unexpected host journal member")
-        member = entry.lstat()
-        if (not stat.S_ISREG(member.st_mode) or member.st_uid != 0
-                or member.st_nlink != 1 or member.st_mode & 0o077):
-            raise ValueError("unsafe host journal sidecar")
-    info = database.lstat()
-    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1
-            or info.st_mode & 0o077):
-        raise ValueError("snapshot receipt database has unsafe identity or mode")
-    with readonly_db(database) as db:
-        if db.execute("PRAGMA quick_check").fetchone() != ("ok",):
-            raise ValueError("snapshot receipt journal failed integrity check")
-        for table in ("host", "boxes", "ops", "execs", "owner_destroys"):
-            db.execute(f"SELECT * FROM {table} LIMIT 0")
     if quiescent:
         result = subprocess.run([
             "/opt/tinyassets/boxhostd/current/runsc", "--root", "/var/lib/boxhostd/state/runsc",

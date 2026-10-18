@@ -144,8 +144,8 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
     add(".hook-owners.sqlite3", "hook_owners", "router")
     add(".router-deleted-owners.sqlite3", "deleted_owners", "router")
     add(".erasure-ledger.sqlite3", "events initialized", "router")
-    # Shared host facts are preserved and seeded before root-private publication.
-    add(".boxhost/boxhost.db", "host boxes ops execs owner_destroys", "router")
+    # Legacy destruction facts are seeded before the shared journal is discarded.
+    add(".boxhost/boxhost.db", "host boxes ops execs owner_destroys", "dropped")
     add(".runtime/owner-sessions.db", "owner_sessions owner_login_flows owner_login_completions "
         "owner_refresh_sessions owner_approval_handoffs canary_sign_in_attempts "
         "approval_handoffs inline_model_flows", "router")
@@ -457,7 +457,7 @@ def census(data: Path, *, _inventory: dict | None = None,
         # Enumerate actual shared files, including SQLite with an unfamiliar
         # filename. A suffix-only scan would silently miss a renamed store.
         shared_roots = [data]
-        for directory in (".broker", ".runtime", ".published", ".command-center-packages"):
+        for directory in (".broker", ".runtime", ".published", ".command-center-packages", ".boxhost"):
             root = data / directory
             if root.is_dir() and not root.is_symlink():
                 shared_roots.extend(p for p in root.rglob("*") if p.is_dir() and not p.is_symlink())
@@ -1263,7 +1263,7 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
             return "database_files"
         name = relative.as_posix()
         if name == ".boxhost/boxhost.lock":
-            return "regenerated"  # BoxHostState recreates its process lock.
+            return "dropped"
         if name in shared:
             return shared[name]
         if any(name == database + suffix for database in CENSUS_RULES
@@ -2277,11 +2277,9 @@ def _build_cutover(data: Path, store: Path, journal: dict, *, apply_quotas=True)
                    {".broker", ".platform", ".published"} else DAEMON_UID)
             if relative == (".platform",):
                 uid = DAEMON_UID
-            if relative and relative[0] == ".boxhost":
-                uid = 0
             gid = BROKER_READ_GID if relative and relative[0] == ".published" else uid
             os.chown(path, uid, gid)
-            private = relative and relative[0] in {".broker", ".platform", ".connect", ".boxhost"}
+            private = relative and relative[0] in {".broker", ".platform", ".connect"}
             mode = 0o700 if private else 0o750
             if relative == (".platform",):
                 mode = 0o711
@@ -2375,22 +2373,13 @@ def _publish_cutover(data: Path, store: Path, journal: dict) -> None:
         path.unlink(missing_ok=True)
     (data / ".tinyassets.db.prebudgetrepair.bak").unlink(missing_ok=True)
     from tinyassets.boxes.layout import BROKER_UID
-    from tinyassets.boxes.state import BoxHostState
 
     vaults = data / ".platform/credential-vaults"
     if vaults.exists():
         for directory, dirs, files in os.walk(vaults):
             for path in (Path(directory), *(Path(directory) / name for name in dirs + files)):
                 os.chown(path, BROKER_UID, BROKER_UID, follow_symlinks=False)
-    host = data / ".boxhost"
-    host.mkdir(mode=0o700, exist_ok=True)
-    state = BoxHostState(host / "boxhost.db", max_bytes=16 * 1024 * 1024)
-    state.close()
-    with closing(sqlite3.connect(host / "boxhost.db")) as db:
-        db.execute("PRAGMA journal_mode=DELETE")
-    for path in host.iterdir():
-        os.chown(path, 0, 0)
-        os.chmod(path, 0o600)
+    _remove_tree(data / ".boxhost", data)
     _durable_tree(data)
     _atomic_json(storage_layout.marker_path(data), {
         **journal["source_marker"], "box_layout": "owner-box", "state": "stable",
