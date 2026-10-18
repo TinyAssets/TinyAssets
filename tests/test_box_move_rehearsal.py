@@ -38,6 +38,45 @@ def test_missing_image_refuses_before_setup(monkeypatch):
     assert not venue.volumes
 
 
+def test_reset_fixture_restores_archived_root_custody(tmp_path, monkeypatch):
+    from scripts import archive_rehearsal as harness
+    from tinyassets.erasure_ledger import protect_root
+
+    if not hasattr(os, 'geteuid') or os.geteuid() != 0:
+        pytest.skip('requires root Linux oracle; owner=c6-owner-box runs-in=linux_oracle.py')
+    root, store = tmp_path / 'data', tmp_path / 'store'
+    root.mkdir()
+    store.mkdir()
+    os.chown(root, 1001, 1001)
+    root.chmod(0o755)
+    original = root / '.tinyassets.db'
+    original.write_bytes(b'synthetic archive bytes')
+    os.chown(original, 1001, 1001)
+    original.chmod(0o640)
+    archive = tmp_path / 'original.tar.gz'
+    with tarfile.open(archive, 'w:gz') as stream:
+        stream.add(root, arcname='_data')
+    original.write_bytes(b'changed')
+    protect_root(root)
+    (root / '.erasure-ledger.sqlite3').write_bytes(b'residue')
+
+    def helper(code):
+        code = code.replace("'/data'", repr(str(root)))
+        code = code.replace("'/box-store'", repr(str(store)))
+        code = code.replace("'/backup/original.tar.gz'", repr(str(archive)))
+        exec(code, {})
+
+    venue = harness.Venue('unused', 1)
+    monkeypatch.setattr(venue, 'helper', helper)
+    venue.reset_fixture()
+    assert (root.stat().st_uid, root.stat().st_gid, root.stat().st_mode & 0o7777) == (
+        1001, 1001, 0o755)
+    assert list(root.iterdir()) == [original]
+    assert original.read_bytes() == b'synthetic archive bytes'
+    assert (original.stat().st_uid, original.stat().st_gid,
+            original.stat().st_mode & 0o7777) == (1001, 1001, 0o640)
+
+
 @pytest.mark.parametrize("residue", [False, "mount", "loop", "propagated"])
 def test_cleanup_unmounts_all_aliases_before_detach_and_asserts_no_residue(monkeypatch, residue):
     from scripts import archive_rehearsal as harness
@@ -487,10 +526,20 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
     import gc
 
     gc.collect()
+    # Real archives can contain repairable index drift in daemon-owned DBs.
+    # Reset must restore both that drift and pre-cutover directory custody.
+    _sql(source / '.tinyassets.db', """
+        CREATE INDEX rehearsal_drift ON universe_owner(universe_id) WHERE 0;
+        PRAGMA writable_schema=ON;
+        UPDATE sqlite_master SET sql='CREATE INDEX rehearsal_drift ON universe_owner(universe_id)'
+          WHERE name='rehearsal_drift';
+    """)
+    os.chown(source, 1001, 1001)
+    source.chmod(0o755)
     # The daemon creates both layout files on the pre-cutover volume. Preserve
     # that custody through migration: root ownership hid the lock failure and
     # bypassing boxhostd.py used to hide the invalid marker from this proof.
-    for name in (".layout.lock", ".layout.json"):
+    for name in (".layout.lock", ".layout.json", ".tinyassets.db"):
         os.chown(source / name, 1001, 1001)
     archive = tmp_path / "tinyassets-data-2026-10-17T00-00-00Z.tar.gz"
     with tarfile.open(archive, "w:gz") as stream:
@@ -545,9 +594,32 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
     def tracked_venue(*args):
         venue = original_venue(*args)
         original_migration = venue.migration
+        original_reset = venue.reset_fixture
+
+        def checked_reset():
+            original_reset()
+            venue.helper("""
+import stat, tarfile
+with tarfile.open('/backup/original.tar.gz') as archive:
+    for member in archive.getmembers():
+        path = Path('/data') / ('.' if member.name == '_data'
+                                else member.name.removeprefix('_data/'))
+        info = path.lstat()
+        assert (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (
+            member.uid, member.gid, member.mode)
+        if member.isfile():
+            assert path.read_bytes() == archive.extractfile(member).read()
+assert not Path('/data/.erasure-ledger.sqlite3').exists()
+""")
 
         def checked_migration(mode, **kwargs):
             result = original_migration(mode, **kwargs)
+            if mode == 'apply' and result.returncode == 137:
+                # Resume must also work on a host whose root was protected by
+                # erasure initialization; resetting an independent trial must
+                # not be the only reason the retry can open its databases.
+                venue.helper("from tinyassets.erasure_ledger import protect_root; "
+                             "protect_root(Path('/data'))")
             if mode in {"apply", "verify"} and result.returncode == 0:
                 venue.helper("""
 import fcntl, os, stat
@@ -567,6 +639,7 @@ finally:
             return result
 
         venue.migration = checked_migration
+        venue.reset_fixture = checked_reset
         venues.append(venue)
         return venue
 

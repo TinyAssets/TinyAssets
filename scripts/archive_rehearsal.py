@@ -405,7 +405,10 @@ bash /support/deploy/backup-restore.sh
             "if m.name.startswith('_data/')]; "
             "[(setattr(m,'linkname',m.linkname.removeprefix('_data/'))) for m in members "
             "if m.islnk()]; "
-            "archive.extractall(root,members=[m for m in members if m.name!='_data'], "
+            # Extract the root entry too: rollback hardened it for the ledger.
+            # An independent trial needs the archived uid/gid/mode, not 0:1001/1775.
+            "[(setattr(m,'name','.')) for m in members if m.name.rstrip('/')=='_data']; "
+            "archive.extractall(root,members=members, "
             "filter='fully_trusted'); archive.close()")
 
     def close(self):
