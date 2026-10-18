@@ -31,6 +31,11 @@ invalid files fail visibly and are never replaced with defaults. Off stops
 unsolicited goal updates, while requested watches/reminders remain active.
 Cancel them explicitly to stop them.
 
+Every active, requested watch needs a fresh observation and a boolean match
+result, even when it does not match or its change was already notified. Invalid
+observations fail the check before any notification or acknowledgement, so a
+failed source cannot look like a successful no-change check.
+
 The helper creates goals-state.json, monitors-state.json and reminders-state.json
 after successful checks. These are editable acknowledgements, not new goals.
 An owner's settled notification decline is acknowledged without retrying; it

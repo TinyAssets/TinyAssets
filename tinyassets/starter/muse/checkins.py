@@ -87,12 +87,17 @@ def check(root, mode, *, now=None, send=notify, acknowledge=False):
                 if now < moment(token):
                     continue
             else:
-                if row.get("matched") is not True:
+                matched = row.get("matched")
+                if not isinstance(matched, bool):
+                    raise ValueError(f"Monitor {key}: matched must be true or false")
+                age = (now - moment(row["observed_at"])).total_seconds()
+                if not 0 <= age <= 3600:
+                    raise ValueError(f"Monitor {key}: a check needs a fresh observation")
+                if not matched:
                     continue
                 token = row["change_id"]
-                age = (now - moment(row["observed_at"])).total_seconds()
-                if not isinstance(token, str) or not token or not 0 <= age <= 3600:
-                    raise ValueError("A match needs a stable change_id and fresh observation")
+                if not isinstance(token, str) or not token:
+                    raise ValueError("A match needs a stable change_id")
             if state.get(key) != token:
                 summary = row["summary"]
                 if not isinstance(summary, str) or not summary.strip():
