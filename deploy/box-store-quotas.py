@@ -144,7 +144,12 @@ def fence_restore(current: Path, staged: Path, *, cutover_store: Path | None = N
     if layout(current) != "owner-box" or layout(staged) != "owner-box":
         raise ValueError("owner-box restore requires reviewed forward layout recovery")
 
-    def rows(root, relative, table):
+    def rows(root, relative, table, *, optional=False):
+        path = root / relative
+        if path.is_symlink():
+            raise ValueError("restore authority is a symlink")
+        if optional and not path.exists():
+            return []
         with sqlite3.connect((root / relative).as_uri() + "?mode=ro", uri=True) as db:
             if db.execute("PRAGMA quick_check").fetchone() != ("ok",):
                 raise ValueError("restore authority failed integrity check")
@@ -153,10 +158,15 @@ def fence_restore(current: Path, staged: Path, *, cutover_store: Path | None = N
     # These authorities must not be reconstructed from an older archive.
     # C12/integration owns forward retention of deletion tombstones and the
     # immutable identity frontier. Refuse until that contract is integrated.
-    for table in ("owner_identities", "center_admissions", "box_records"):
+    for table in ("owner_identities", "center_admissions", "box_records",
+                  "owner_box_revocations"):
         relative = ".broker/state/owner-identities.db"
         if rows(current, relative, table) != rows(staged, relative, table):
             raise ValueError("identity/admission frontier differs; forward recovery needed")
+    relative = ".router-deleted-owners.sqlite3"
+    if rows(current, relative, "deleted_owners", optional=True) != rows(
+            staged, relative, "deleted_owners", optional=True):
+        raise ValueError("router deletion frontier differs; forward recovery needed")
     if rows(current, ".broker/credential-custody.db", "deleted_principals") != rows(
         staged, ".broker/credential-custody.db", "deleted_principals"
     ):

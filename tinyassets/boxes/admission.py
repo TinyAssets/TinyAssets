@@ -10,11 +10,15 @@ from tinyassets.boxes.provider import BoxAuthError
 from tinyassets.broker.owner_identities import validate_center, validate_principal
 
 
+class BoxSuspended(BoxAuthError):
+    """Broker explicitly suspended this owner's ordinary lifecycle admission."""
+
+
 class OwnerRegistry:
     def __init__(self, data_root: Path, broker_socket: Path) -> None:
         self.data_root, self.broker_socket = data_root, broker_socket
 
-    def owner(self, owner: str, *, rotate: bool = False) -> dict:
+    def owner(self, owner: str, *, rotate: bool = False, deletion_only=False) -> dict:
         validate_principal(owner)
         from tinyassets.boxes.bootstrap import peer
 
@@ -23,14 +27,18 @@ class OwnerRegistry:
             sock.connect(str(self.broker_socket))
             if peer(sock)[1:] != (1002, 1002):
                 raise BoxAuthError("lifecycle peer is not the credential broker")
-            sock.sendall(rf.control(rf.CONNECTION, {
-                "op": "BOX_LIFECYCLE", "principal": owner, "rotate": rotate}))
+            doc = {"op": "BOX_LIFECYCLE", "principal": owner, "rotate": rotate}
+            if deletion_only:
+                doc["deletion_only"] = True
+            sock.sendall(rf.control(rf.CONNECTION, doc))
             frame = rf.read_frame_blocking(sock)
         if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
             raise BoxAuthError("invalid lifecycle response")
         result = frame.control()
         if result == {"op": "BOX_UNADMITTED"}:
             raise LookupError("owner has no live admission")
+        if result == {"op": "BOX_SUSPENDED"}:
+            raise BoxSuspended("suspended")
         expected = {"op", "uid", "quota", "centers"} | ({"secret"} if rotate else set())
         if (set(result) != expected or result["op"] != "BOX_LIFECYCLE_IS"
                 or type(result["uid"]) is not int or not 300001 <= result["uid"] <= 399999

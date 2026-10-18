@@ -41,6 +41,9 @@ class OwnerIngress:
                 raise ValueError("router secret required")
             if scope["path"] == "/_box/status" and scope["method"] == "GET":
                 return await JSONResponse(activity.status())(scope, receive, send)
+            if scope["path"] == "/_box/delete-admission" and scope["method"] == "POST":
+                activity.admit_deletion_only()
+                return await JSONResponse(activity.status())(scope, receive, send)
             if scope["path"] in {"/_box/drain", "/_box/revoke"} and scope["method"] == "POST":
                 from starlette.requests import Request
 

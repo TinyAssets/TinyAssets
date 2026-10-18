@@ -184,6 +184,10 @@ def test_preflight_reads_wal_without_writing_data(tmp_path, monkeypatch, live_wr
                 subprocess.run([sys.executable, "-c", child, str(path), sql], check=True)
                 path.with_name(path.name + "-shm").unlink()
                 assert path.with_name(path.name + "-wal").is_file()
+        from tinyassets.broker.owner_reads import Plans
+
+        Plans(data).set_plan("alice", "paid", event_created=0,
+                             customer_id="cus_wal", subscription_id="sub_wal")
         original = {p.relative_to(data): p.read_bytes() for p in data.rglob("*") if p.is_file()}
         modes = {p: stat.S_IMODE(p.stat().st_mode) for p in (data, *data.rglob("*"))}
         for path in modes:

@@ -7,7 +7,11 @@ import sqlite3
 from tinyassets.broker.owner_identities import validate_center, validate_principal
 
 
-def owner_record(identities, owner: str, *, rotate: bool) -> dict:
+class OwnerSuspended(PermissionError):
+    """Explicit lifecycle refusal; never a host-wide failure."""
+
+
+def owner_record(identities, owner: str, *, rotate: bool, deletion_only=False) -> dict:
     """Root boxhostd's launch inputs; no center or UID is selected by a caller."""
     validate_principal(owner)
     with identities._connect(write=False) as db:
@@ -20,8 +24,8 @@ def owner_record(identities, owner: str, *, rotate: bool) -> dict:
             "AND r.event='retire')", (owner,))]
     if not centers:
         raise LookupError("owner has no live admission")
-    if identities.plans.suspended(owner):
-        raise PermissionError("owner account is suspended")
+    if identities.plans.suspended(owner) and not deletion_only:
+        raise OwnerSuspended("owner account is suspended")
     record = resolve(identities, {"op": "BOX_ADMISSION", "principal": owner,
                                   "center": centers[0]})
     result = {"uid": record["uid"], "quota": record["quota"], "centers": centers}
@@ -33,10 +37,14 @@ def owner_record(identities, owner: str, *, rotate: bool) -> dict:
 
 
 def lifecycle(identities, doc):
-    if (set(doc) != {"op", "principal", "rotate"}
+    if (set(doc) not in ({"op", "principal", "rotate"},
+                        {"op", "principal", "rotate", "deletion_only"})
             or doc["op"] != "BOX_LIFECYCLE" or type(doc["rotate"]) is not bool):
         raise ValueError("invalid lifecycle request")
-    return owner_record(identities, doc["principal"], rotate=doc["rotate"])
+    if type(doc.get("deletion_only", False)) is not bool:
+        raise ValueError("invalid deletion admission")
+    return owner_record(identities, doc["principal"], rotate=doc["rotate"],
+                        deletion_only=doc.get("deletion_only", False))
 
 
 def resolve(identities, request: dict) -> dict:

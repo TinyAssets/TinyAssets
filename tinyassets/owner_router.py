@@ -245,7 +245,7 @@ async def _delete_owner_account(identity):
                 result = await run_in_threadpool(operation)
                 if name in {"billing", "identity"}:
                     receipt[name] = result
-                    accepted = {"cancelled", "none"} if name == "billing" else {
+                    accepted = {"cancelled", "none", "attempt_expired"} if name == "billing" else {
                         "deleted", "not_applicable"}
                     if result not in accepted:
                         raise RuntimeError("external deletion remains unfinished")

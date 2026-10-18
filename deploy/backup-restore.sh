@@ -523,6 +523,8 @@ if [[ -n "${BOX_STAGE}" ]]; then
         log "Restoring the paired pre-cutover backup: all post-cutover owner writes will be lost"
         CUTOVER_RESTORE_ARGS+=(--accept-owner-write-loss)
     fi
+    # Validate router deletion receipts and box revocations while both layouts
+    # are locked, before moving ANY owner tree or the shared volume.
     if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
             --snapshot-data "${STAGE_DIR}" --restore-from "${VOLUME_DIR}" \
             --cutover-store "${BOX_STORE_DIR}" "${CUTOVER_RESTORE_ARGS[@]}"; then

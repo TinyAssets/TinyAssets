@@ -1818,6 +1818,7 @@ _CHECKOUT_STATUS = {
     # already open. Both are conflicts with existing state, not failures.
     "already_subscribed": 409,
     "checkout_already_in_progress": 409,
+    "account_deleted": 410,
     # This surface's purchase policy is off (Android). Not an outage.
     "unavailable_in_app": 403,
     # Genuinely us: billing is unconfigured or the processor is unreachable.

@@ -130,8 +130,9 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
         runtime = ProcessRuntime({admitted.owner_machine(owner): root
                                   for owner, root in roots.items()})
         relays = OwnerRelays(run / "relay", SimpleNamespace(broker_socket=host_path))
-        admission = SimpleNamespace(owner=lambda owner, rotate=False:
-                                    owner_record(admitted, owner, rotate=rotate))
+        admission = SimpleNamespace(owner=lambda owner, rotate=False, deletion_only=False:
+                                    owner_record(admitted, owner, rotate=rotate,
+                                                 deletion_only=deletion_only))
         def destroy_volume(uid):
             import shutil
 
@@ -899,7 +900,9 @@ def test_broker_retirement_stops_real_daemon_and_stale_forward_fails(boxes, admi
     asyncio.run(exercise())
 
 
-def test_root_lifecycle_broker_operation_uses_admission_and_box_record(boxes, admitted):
+def test_root_lifecycle_broker_operation_uses_admission_and_box_record(
+    boxes, admitted, monkeypatch,
+):
     from tinyassets import rpc_frames as rf
 
     def call(document):
@@ -919,6 +922,19 @@ def test_root_lifecycle_broker_operation_uses_admission_and_box_record(boxes, ad
     rotated = call(request | {"rotate": True})
     assert rotated["secret"] != old
     assert admitted.box_route("alice")[1] == rotated["secret"]
+    admitted.plans.set_suspension("alice", reason="abuse", suspended=True)
+    assert call(request) == {"op": "BOX_SUSPENDED"}
+    cleanup = call(request | {"deletion_only": True})
+    assert cleanup["op"] == "BOX_LIFECYCLE_IS"
+    assert call(request | {"deletion_only": "yes"}) == {"op": "BOX_REFUSED"}
+    from tinyassets.boxes import bootstrap
+    from tinyassets.boxes.admission import BoxSuspended, OwnerRegistry
+
+    monkeypatch.setattr(bootstrap, "peer", lambda sock: (os.getpid(), 1002, 1002))
+    registry = OwnerRegistry(boxes.run, boxes.host_path)
+    with pytest.raises(BoxSuspended, match="suspended"):
+        registry.owner("alice")
+    assert registry.owner("alice", deletion_only=True)["uid"] == admitted.owner_machine("alice")
 
 
 def test_bound_center_retirement_uses_relay_owner_and_stops_its_daemon(boxes, admitted):
@@ -1098,6 +1114,56 @@ def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
     receipt = router_credentials.DeletedOwners(tmp_path).receipt("alice")
     assert receipt["box_destroy"] == {"destroyed": True}
     assert receipt["unfinished_phases"] == []
+
+
+@pytest.mark.parametrize("asleep", [False, True])
+def test_suspended_owner_deletion_sweeps_real_box_and_expires_checkout(
+    router, boxes, admitted, tmp_path, monkeypatch, asleep,
+):
+    import sqlite3
+
+    from tests.test_cutover_billing_deletion import attempt
+    from tinyassets import router_account_deletion
+    from tinyassets.billing import stripe_adapter
+    from tinyassets.broker.owner_reads import Plans
+    from tinyassets.onboarding import app_config
+
+    plans = Plans(tmp_path)
+    plans.set_suspension("alice", reason="billing", suspended=True)
+    with sqlite3.connect(plans.path) as db:
+        db.execute("UPDATE plans SET attempt=? WHERE owner='alice'", (json.dumps(attempt()),))
+    uid = admitted.owner_machine("alice")
+    if asleep:
+        boxes.manager._stop(boxes.manager.boxes[uid])
+    monkeypatch.setattr(router_account_deletion, "delete_workos_user",
+                        lambda owner: "not_applicable")
+    calls = []
+    monkeypatch.setattr(stripe_adapter, "_get", lambda path: {
+        "id": "cs_synthetic", "status": "open"})
+    monkeypatch.setattr(stripe_adapter, "_post", lambda path, fields: (
+        calls.append(path) or {"id": "cs_synthetic", "status": "expired"}))
+    resource = urlsplit(app_config()["resource"])
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(router),
+                                     base_url="http://test") as client:
+            ordinary = await client.get("/app/me", headers={"authorization": "Bearer alice"})
+            assert ordinary.status_code == 503
+            response = await client.post("/app/account/delete", headers={
+                "authorization": "Bearer alice",
+                "origin": resource.scheme + "://" + resource.netloc},
+                json={"confirm": "DELETE"})
+            assert response.status_code == 200, response.text
+            assert response.json()["billing"] == "attempt_expired"
+            assert response.json()["unfinished"] == []
+
+    asyncio.run(exercise())
+    assert calls == ["checkout/sessions/cs_synthetic/expire"]
+    from tinyassets.router_credentials import DeletedOwners
+
+    assert DeletedOwners(tmp_path).receipt("alice")["unfinished_phases"] == []
+    assert not boxes.roots["alice"].exists()
+    assert boxes.runtime.alive(admitted.owner_machine("bob"))
 
 
 def test_resolve_lease_protects_real_request_against_concurrent_wake(boxes, admitted):

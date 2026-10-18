@@ -176,12 +176,14 @@ def test_checkout_at_door_has_only_shared_account_state(tmp_path, monkeypatch):
         assert seen[0]["owner_id"] == "owner" and len(seen) == 1
         event = {"type": "checkout.session.completed", "livemode": False,
                  "data": {"object": {"id": "cs_owner", "client_reference_id": "other",
+                 "customer": "cus_owner", "subscription": "sub_owner",
                  "metadata": {"tinyassets_attempt_id": seen[0]["attempt_id"]}}}}
         payload = json.dumps(event).encode()
         settled = client.post("/app/billing/webhook", content=payload,
             headers={"stripe-signature": _sign(payload, int(time.time()))})
         assert settled.json() == {"settled": True}
         assert Plans(tmp_path).current_checkout_attempt("owner", now=time.time()) is None
+        assert Plans(tmp_path).read("owner")["subscription_id"] == "sub_owner"
     assert not list(tmp_path.rglob(".tinyassets.db"))
     assert not list(tmp_path.rglob(".subscription_state.db"))
 

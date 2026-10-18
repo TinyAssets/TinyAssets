@@ -854,6 +854,32 @@ explicit classes refuse. Shared tables are not split.
   rollback on a box failure. The founder's external `disabled_manually` hold
   is unchanged; no workflow was enabled, dispatched or run in this slice.
 
+## Billing and deletion at cutover (review round, 2026-10-18)
+
+Billing remains shared-layer state. The census derives each paid owner's verified
+customer/subscription mapping from retained billing records and carries it into
+the shared plan. Missing or conflicting authority refuses with counted reason
+codes on the pseudonymous account report; a paid plan is never seeded without
+its mapping. An unexpired legacy `checkout_attempt_v1` moves into that same plan
+with its original expiry and frozen parameters, so checkout resumes it. Malformed
+or ambiguous attempts refuse census, rather than disappearing at publication.
+
+The router tombstone fences checkout creation, serialized with in-flight checkout
+and webhook processing. Billing cleanup expires outstanding sessions through the
+Stripe adapter, confirms any resulting subscription cancelled, and records a
+distinct expired-attempt outcome. A subscription delivery for a tombstoned owner
+immediately cancels and records that subscription. Deletion succeeds only after
+no payable checkout or live subscription remains; uncertain outcomes stay retryable.
+
+Restore authority includes router deletion receipts and owner-box revocations.
+A backup older than either deletion frontier refuses before either volume swaps.
+Lifecycle maintenance contains suspension, refusal and authentication failures per
+owner, reports an explicit suspended outcome and stops/refuses only that box.
+The authenticated door deletion flow alone may request deletion-only lifecycle
+admission for a suspended owner, preserving drain and tombstone ordering. Such a
+wake admits local deletion only; ordinary requests, turns and scheduled wakes
+remain refused. No owner-store reader or compatibility path is added to the door.
+
 ## Founder decisions (2026-10-16)
 
 - Build what the research says to build.

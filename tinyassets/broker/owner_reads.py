@@ -99,6 +99,15 @@ class Plans:
     apply = set_plan
     apply_tier_event = set_plan
 
+    def bind_checkout_subscription(self, owner, *, customer_id, subscription_id):
+        """A verified completed session supplies cancellation authority, not a tier."""
+        if not all(isinstance(v, str) and v for v in (customer_id, subscription_id)):
+            raise ValueError("checkout subscription mapping missing")
+        self.read(owner)
+        with closing(self._connect()) as db, db:
+            db.execute("UPDATE plans SET customer_id=?, subscription_id=? WHERE owner=?",
+                       (customer_id, subscription_id, owner))
+
     def owner_for(self, *, customer_id="", subscription_id=""):
         if not self.path.exists():
             raise PlanMissing("billing reference has no owner")

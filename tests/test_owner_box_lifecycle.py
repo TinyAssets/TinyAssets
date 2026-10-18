@@ -24,10 +24,15 @@ def fleet(tmp_path, monkeypatch):
         def __init__(self):
             self.secrets = {}
             self.revoked = set()
+            self.suspended = set()
 
-        def owner(self, owner, *, rotate=False):
+        def owner(self, owner, *, rotate=False, deletion_only=False):
+            from tinyassets.boxes.admission import BoxSuspended
+
             if owner in self.revoked or owner not in {"a", "b", "c"}:
                 raise LookupError("unadmitted")
+            if owner in self.suspended and not deletion_only:
+                raise BoxSuspended("suspended")
             if rotate:
                 self.secrets[owner] = secrets.token_urlsafe(32)
             return {"uid": 300001 + ord(owner) - ord("a"), "quota": 1024**3,
@@ -44,6 +49,8 @@ def fleet(tmp_path, monkeypatch):
         def start(self, uid, gid, **kwargs):
             self.starts.append((uid, kwargs))
             self.live.add(uid)
+            if kwargs.get("deletion_only"):
+                states[uid].admit_deletion_only()
 
         def alive(self, uid):
             return uid in self.live
@@ -70,6 +77,8 @@ def fleet(tmp_path, monkeypatch):
         return directory, path
 
     def rpc(box, operation="status", **body):
+        if operation == "delete-admission":
+            states[box.uid].admit_deletion_only()
         return states[box.uid].status(drain=operation == "drain",
                                      revoke=operation == "revoke",
                                      idle=body.get("idle_seconds", 0))
@@ -91,6 +100,64 @@ def test_wake_reuses_one_box_and_rotates_on_restart(fleet):
     manager.ensure_awake("a")
     assert fleet.admission.secrets["a"] != first
     assert len(fleet.runtime.starts) == 2
+
+
+@pytest.mark.parametrize("failure", ["suspended", "auth", "refused", "transport"])
+def test_admission_failure_stops_only_its_owner_while_two_turns_continue(
+    fleet, monkeypatch, failure,
+):
+    from tinyassets.boxes.admission import BoxSuspended
+    from tinyassets.boxes.provider import BoxAuthError
+
+    manager = fleet.manager
+    manager.awake_cap = 3
+    a, b, c = [manager.ensure_awake(owner) for owner in "abc"]
+    original = fleet.admission.owner
+
+    def admission(owner, **kwargs):
+        if owner == "a":
+            raise {"suspended": BoxSuspended, "auth": BoxAuthError,
+                   "refused": PermissionError, "transport": OSError}[failure](failure)
+        return original(owner, **kwargs)
+
+    monkeypatch.setattr(fleet.admission, "owner", admission)
+    with fleet.states[b].enter(), fleet.states[c].enter():
+        for _ in range(2):
+            manager.maintain()
+            assert fleet.runtime.live == {b, c}
+            assert fleet.states[b].status()["active"] == fleet.states[c].status()["active"] == 1
+            assert not fleet.states[b].draining and not fleet.states[c].draining
+    expected = "suspended" if failure == "suspended" else "admission_refused"
+    assert manager.boxes[a].error == expected
+    assert manager.boxes[a].wanted is False
+
+
+@pytest.mark.parametrize("awake", [False, True])
+def test_suspended_cleanup_wake_admits_only_deletion(fleet, awake):
+    from tinyassets.boxes.admission import BoxSuspended
+
+    manager = fleet.manager
+    if awake:
+        manager.ensure_awake("a")
+    fleet.admission.suspended.add("a")
+    for scheduled in (False, True):
+        with pytest.raises(BoxSuspended):
+            manager.ensure_awake("a", scheduled=scheduled)
+    lease = manager.resolve("a", cleanup=True)
+    uid = lease["uid"]
+    assert fleet.runtime.alive(uid)
+    assert manager.boxes[uid].deletion_only
+    manager.maintain()
+    assert fleet.runtime.alive(uid)
+    state = fleet.states[uid]
+    assert state.quiesce(0)
+    state.deletion_refused()
+    with pytest.raises(RuntimeError, match="draining"):
+        with state.enter():
+            pytest.fail("cleanup wake admitted ordinary work")
+    with pytest.raises(BoxSuspended):
+        manager.ensure_awake("a", scheduled=True)
+    manager.release("a", lease["lease"])
 
 
 def test_failed_launch_cleanup_keeps_capacity_and_never_advertises_readiness(fleet, monkeypatch):

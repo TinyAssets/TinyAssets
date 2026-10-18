@@ -15,6 +15,11 @@ class Activity:
         self.draining = False
         self.revoked = False
         self.deleting = False
+        self.deletion_only = False
+
+    def admit_deletion_only(self):
+        with self.lock:
+            self.deletion_only = self.deleting = self.draining = True
 
     @contextmanager
     def enter(self):
@@ -52,7 +57,7 @@ class Activity:
     def deletion_refused(self):
         """Only a pre-mutation refusal may reopen a deletion drain."""
         with self.lock:
-            if not self.revoked:
+            if not self.revoked and not self.deletion_only:
                 self.deleting = self.draining = False
 
 

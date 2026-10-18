@@ -325,7 +325,8 @@ def _census_columns(database: str, table: str) -> set[str]:
     if (database, table) == (".hook-owners.sqlite3", "hook_owners"):
         columns.add("owner")
     if (database, table) == (".broker/plans.db", "plans"):
-        columns.update(("owner", "tier"))
+        columns.update(("owner", "tier", "event_created", "ends_at", "customer_id",
+                        "subscription_id", "attempt"))
     if (database, table) == (".tinyassets.db", "webhook_hooks"):
         columns.update(("token_hash", "revoked_at"))
     if (database, table) == (".tinyassets.db", "agent_interchange_idempotency"):
@@ -657,7 +658,7 @@ def census(data: Path, *, _inventory: dict | None = None,
             if index is None or targets[index] != "dropped":
                 refusals["database_foreign_keys"] += 1
 
-        plan_report, credential_report = _census_accounts(
+        plan_report, credential_report, billing, billing_refusals = _census_accounts(
             data, known_centers, labels, tables, refusals)
         for (database, table), rows in tables.items():
             rule = _census_rule(database, table)
@@ -720,12 +721,13 @@ def census(data: Path, *, _inventory: dict | None = None,
         if _inventory is not None:
             _inventory.update(tables=tables, assignments=assignments, owners=permanent,
                               centers=admitted, dropped_centers=dropped_centers, labels=labels,
-                              file_targets=file_targets, histories=histories)
+                              file_targets=file_targets, histories=histories, billing=billing)
         return {
             "version": 1, "ready": not any(refusals.values()), "owners": len(owners),
             "admitted_centers": len(admitted), "explicit_centers": len(known_centers),
             "databases": len(database_files), "tables": table_report, "row_totals": dict(totals),
             "plans": plan_report, "credentials": credential_report, "files": file_report,
+            "billing_refusals": billing_refusals,
             "file_patterns": patterns, "file_pattern_kinds": file_kinds,
             "losses": losses, "loss_summary": loss_summary,
             "history_splits": history_report,
@@ -815,6 +817,7 @@ def _census_histories(data, centers, labels, loss_summary):
 
 def _census_accounts(data, centers, labels, tables, refusals):
     """Read Stripe's actual tier rows and raw vault shapes without loading secrets into reports."""
+    import math
     from collections import Counter
 
     plans = {label: {"tier": "free", "paid_sources": 0} for label in labels.values()}
@@ -829,6 +832,14 @@ def _census_accounts(data, centers, labels, tables, refusals):
     if custody.is_dir():
         directory_names.update(path.name for path in custody.iterdir())
     paid: Counter = Counter()
+    legacy = {owner: [] for owner in labels}
+    billing_refusals = {}
+
+    def refuse(label, reason):
+        refusals[reason] += 1
+        counts = billing_refusals.setdefault(label or "unattributed", {})
+        counts[reason] = counts.get(reason, 0) + 1
+
     for name in sorted(directory_names):
         directory = data / name
         owners = centers.get(directory.name, set())
@@ -841,7 +852,14 @@ def _census_accounts(data, centers, labels, tables, refusals):
                 if names != {"subscription_meta"}:
                     refusals["unknown_subscription_table"] += 1
                     continue
-                meta = dict(db.execute("SELECT key,value FROM subscription_meta"))
+                entries = db.execute("SELECT key,value FROM subscription_meta").fetchall()
+                meta = dict(entries)
+                if len(meta) != len(entries):
+                    refuse(label, "ambiguous_subscription_metadata")
+            if label is not None:
+                legacy[next(iter(owners))].append(meta)
+            elif meta.get("checkout_attempt_v1") or meta.get("checkout_claim_at"):
+                refuse(None, "unattributed_checkout_attempt")
             tier = meta.get("tier", "free")  # Legacy schema: absence means no subscription.
             if tier not in {"free", "paid"}:
                 refusals["invalid_tier"] += 1
@@ -890,6 +908,8 @@ def _census_accounts(data, centers, labels, tables, refusals):
                     refusals["unclassified_credential_type"] += 1
     for row in tables.get((".broker/plans.db", "plans"), []):
         owner, tier = row.get("owner"), row.get("tier")
+        if owner not in labels and row.get("attempt") is not None:
+            refuse(None, "unattributed_checkout_attempt")
         if tier not in {"free", "paid"}:
             refusals["invalid_tier"] += 1
         elif tier == "paid":
@@ -897,11 +917,114 @@ def _census_accounts(data, centers, labels, tables, refusals):
                 refusals["unattributed_paid_tier"] += 1
             else:
                 label = labels[owner]
-                paid[label] += 1
-                if paid[label] > 1:
-                    refusals["multiple_paid_sources"] += 1
+                paid[label] = max(1, paid[label])
                 plans[label] = {"tier": "paid", "paid_sources": paid[label]}
-    return plans, credentials
+    # The legacy tier-event writer never persisted subscription/customer IDs,
+    # and webhook delivery markers hold no mapping. Only owner-keyed Plans
+    # records (written from verified deliveries) can supply that authority.
+    shared = {row["owner"]: row for row in tables.get((".broker/plans.db", "plans"), [])}
+    billing = {}
+    references = {}
+    import time
+
+    now = time.time()
+    for owner, label in labels.items():
+        plan = shared.get(owner, {})
+        tier = plans[label]["tier"]
+        customer, subscription = plan.get("customer_id"), plan.get("subscription_id")
+        if tier == "paid" and not (_billing_id(customer, "cus_")
+                                    and _billing_id(subscription, "sub_")):
+            refuse(label, "paid_subscription_mapping_missing")
+        for value in (customer, subscription):
+            if value:
+                if value in references and references[value] != owner:
+                    refuse(label, "billing_mapping_conflict")
+                references[value] = owner
+        sources = [dict(event_created=m.get("tier_event_at", 0),
+                        ends_at=m.get("tier_ends_at")) for m in legacy[owner]
+                   if m.get("tier", "free") == tier]
+        if plan.get("tier") == tier:
+            sources.append(plan)
+        try:
+            latest = max(sources, key=lambda m: float(m["event_created"]),
+                         default={"event_created": 0})
+            event = float(latest["event_created"])
+            end = float(latest["ends_at"]) if latest.get("ends_at") else None
+            if not math.isfinite(event) or (end is not None and not math.isfinite(end)):
+                raise ValueError("invalid event time")
+        except (ValueError, TypeError, KeyError):
+            refuse(label, "invalid_billing_event")
+            event, end = 0, None
+        attempts = []
+        for raw in [m.get("checkout_attempt_v1") for m in legacy[owner]] + [plan.get("attempt")]:
+            if raw is None:
+                continue
+            try:
+                attempt = _cutover_checkout(raw)
+            except (ValueError, TypeError, KeyError):
+                refuse(label, "malformed_checkout_attempt")
+                continue
+            if attempt["expires_at"] > now:
+                if not attempt["session_id"] or not attempt["url"]:
+                    refuse(label, "ambiguous_checkout_attempt")
+                if attempt not in attempts:
+                    attempts.append(attempt)
+                for value in (attempt["attempt_id"], attempt["session_id"]):
+                    if value:
+                        if value in references and references[value] != owner:
+                            refuse(label, "conflicting_checkout_attempts")
+                        references[value] = owner
+        for meta in legacy[owner]:
+            if "checkout_claim_at" in meta:
+                try:
+                    claim = float(meta["checkout_claim_at"])
+                    if not math.isfinite(claim) or claim + 2220 > now:
+                        refuse(label, "ambiguous_checkout_attempt")
+                except (TypeError, ValueError):
+                    refuse(label, "malformed_checkout_attempt")
+        if len(attempts) > 1:
+            refuse(label, "conflicting_checkout_attempts")
+        billing[owner] = dict(tier=tier, event_created=event, ends_at=end,
+                              customer_id=customer, subscription_id=subscription,
+                              attempt=attempts[0] if len(attempts) == 1 else None)
+    return plans, credentials, billing, billing_refusals
+
+
+def _billing_id(value, prefix):
+    import re
+
+    return isinstance(value, str) and re.fullmatch(re.escape(prefix) + r"[A-Za-z0-9_]+", value)
+
+
+def _cutover_checkout(raw):
+    """Validate the historical writer's complete record before preserving it."""
+    import math
+
+    attempt = json.loads(raw)
+    if not isinstance(attempt, dict) or set(attempt) != {
+            "attempt_id", "created_at", "expires_at", "mode", "params", "session_id", "url"}:
+        raise ValueError("invalid attempt shape")
+    params = attempt["params"]
+    if (not isinstance(params, dict) or set(params) != {
+            "price_id", "success_url", "cancel_url", "expires_at",
+            "entitlement_version", "entitlement_claim"}
+            or not isinstance(attempt["attempt_id"], str) or not attempt["attempt_id"]
+            or attempt["mode"] not in {"live", "test"}):
+        raise ValueError("invalid frozen checkout")
+    for value in (attempt["created_at"], attempt["expires_at"], params["expires_at"]):
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError("invalid checkout expiry")
+    if not attempt["created_at"] < params["expires_at"] <= attempt["expires_at"]:
+        raise ValueError("checkout outlives its guard")
+    if any(not isinstance(params[key], str) or not params[key] for key in (
+            "price_id", "success_url", "cancel_url", "entitlement_version", "entitlement_claim")):
+        raise ValueError("invalid checkout parameters")
+    if attempt["session_id"] is not None and not _billing_id(attempt["session_id"], "cs_"):
+        raise ValueError("invalid checkout session")
+    if attempt["url"] is not None and (not isinstance(attempt["url"], str)
+                                       or not attempt["url"].startswith("https://")):
+        raise ValueError("invalid checkout URL")
+    return attempt
 
 
 def _census_files(data, centers, labels, databases, refusals, dropped_centers=(),
@@ -1653,21 +1776,14 @@ def _seed_shared(data: Path, shared: Path, inventory: dict, report: dict, plan) 
     plans.initialize()
     for owner in plan:
         tier = report["plans"][inventory["labels"][owner.principal]]["tier"]
-        metadata = []
-        for center in owner.centers:
-            path = data / center / ".subscription_state.db"
-            if path.is_file():
-                with readonly_db(path) as db:
-                    meta = dict(db.execute("SELECT key,value FROM subscription_meta"))
-                if meta.get("tier", "free") == tier:
-                    metadata.append(meta)
-        # A census rejects conflicting paid sources before this point.
-        latest = max(metadata, key=lambda m: float(m.get("tier_event_at", 0)), default={})
-        plans.set_plan(owner.principal, tier, event_created=float(latest.get("tier_event_at", 0)),
-                       ends_at=(float(latest["tier_ends_at"])
-                                if latest.get("tier_ends_at") else None),
-                       customer_id=latest.get("customer_id"),
-                       subscription_id=latest.get("subscription_id"))
+        record = dict(inventory["billing"][owner.principal])
+        attempt = record.pop("attempt")
+        if tier == "paid" and not (record["customer_id"] and record["subscription_id"]):
+            raise RuntimeError("paid subscription mapping missing at seed")
+        plans.set_plan(owner.principal, **record)
+        with closing(plans._connect()) as db, db:
+            db.execute("UPDATE plans SET attempt=? WHERE owner=?",
+                       (json.dumps(attempt) if attempt else None, owner.principal))
         if plans.read(owner.principal)["tier"] != tier:
             raise RuntimeError("seeded plan differs from census")
     identity = shared / ".broker/state/owner-identities.db"

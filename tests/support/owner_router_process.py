@@ -13,7 +13,7 @@ def main():
 
     for name in CHILD_FORBIDDEN_ENV | ENGINE_REQUIRED_SECRET_ENV.keys():
         os.environ.pop(name, None)
-    root, relay, secret, socket = map(Path, sys.argv[1:])
+    root, relay, secret, socket = map(Path, sys.argv[1:5])
     import tinyassets.owner_runtime as owner_runtime
 
     # A test process has no boxhostd mount: the fixed mount is this temp root.
@@ -24,7 +24,7 @@ def main():
     from tinyassets import owner_public_egress
 
     owner_public_egress.LISTEN_ADDRESS = ("127.0.0.1", 0)
-    app = create_app(relay=relay, secret_file=secret)
+    app = create_app(relay=relay, secret_file=secret, deletion_only="--deletion-only" in sys.argv)
     from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
     from tinyassets.owner_runtime import current
 

@@ -16,11 +16,14 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import time as _time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from tinyassets.billing.lifecycle import serialized
 
 _log = logging.getLogger(__name__)
 
@@ -476,19 +479,7 @@ def find_active_subscription(owner_id: str) -> str | None:
     )
 
 
-def cancel_account_billing(root, owner: str) -> str:
-    """Deletion uses the shared owner mapping, including after admission retirement."""
-    from tinyassets.billing.plan_store import BillingPlans
-
-    plans = BillingPlans(root)
-    plan = plans.read(owner)
-    subscription = plan["subscription_id"]
-    if not subscription:
-        if plan["tier"] != "free":
-            raise BillingUnavailable("paid account has no subscription mapping")
-        return "none"
-    # Read first so an interrupted cancellation can be retried after Stripe
-    # committed it, but before either our plan or deletion receipt was saved.
+def _cancel_confirmed(subscription):
     result = _get("subscriptions/" + urllib.parse.quote(subscription, safe=""))
     if result.get("id") != subscription:
         raise BillingUnavailable("subscription identity mismatch")
@@ -497,12 +488,116 @@ def cancel_account_billing(root, owner: str) -> str:
     if result.get("id") != subscription or result.get("status") not in {
             "canceled", "incomplete_expired"}:
         raise BillingUnavailable("subscription cancellation not confirmed")
+
+
+def _record_deleted_billing(root, owner, key, value):
+    from tinyassets.router_credentials import DeletedOwners
+
+    deleted = DeletedOwners(root)
+    if deleted.contains(owner):
+        receipt = deleted.receipt(owner)
+        receipt.setdefault("billing_cleanup", {})[key] = value
+        deleted.save_receipt(owner, receipt)
+
+
+@serialized
+def cancel_deleted_subscription(root, owner, subscription):
+    """Verified late deliveries never revive a tombstoned account's billing."""
+    if not subscription:
+        raise BillingUnavailable("subscription identity missing")
+    _cancel_confirmed(subscription)
+    _record_deleted_billing(root, owner, subscription, "cancelled")
+
+
+def _attempt_session(attempt):
+    session_id = attempt.get("session_id")
+    if session_id:
+        session = _get("checkout/sessions/" + urllib.parse.quote(session_id, safe=""))
+        if session.get("id") != session_id:
+            raise BillingUnavailable("checkout identity mismatch")
+        return [session]
+    # A response can be lost after session creation. Find the session by the
+    # service-generated attempt identity; never create/replay during deletion.
+    matches, after = [], ""
+    for _page in range(20):
+        page = _get("checkout/sessions?limit=100" + (
+            "&starting_after=" + urllib.parse.quote(after, safe="") if after else ""))
+        rows = page.get("data")
+        if not isinstance(rows, list):
+            raise BillingUnavailable("checkout reconciliation failed")
+        matches.extend(row for row in rows if (row.get("metadata") or {}).get(
+            ATTEMPT_ID_KEY) == attempt["attempt_id"])
+        if not page.get("has_more"):
+            if not matches and _time.time() < attempt["expires_at"]:
+                raise BillingUnavailable("checkout creation is unresolved")
+            return matches
+        if not rows:
+            break
+        after = rows[-1]["id"]
+    raise BillingUnavailable("checkout reconciliation exceeded its bound")
+
+
+@serialized
+def cancel_account_billing(root, owner: str) -> str:
+    """Deletion uses the shared owner mapping, including after admission retirement."""
+    from tinyassets.billing.plan_store import BillingPlans
+
+    plans = BillingPlans(root)
+    plan = plans.read(owner)
+    expired = False
+    cancelled = False
+    try:
+        attempt = json.loads(plan["attempt"]) if plan["attempt"] is not None else None
+        if attempt is not None:
+            expiry = attempt["expires_at"]
+            session_expiry = attempt["params"]["expires_at"]
+            if (not isinstance(attempt["attempt_id"], str) or not attempt["attempt_id"]
+                    or any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0
+                           for v in (expiry, session_expiry)) or expiry < session_expiry):
+                raise ValueError("invalid attempt expiry or identity")
+    except (ValueError, TypeError, KeyError) as exc:
+        raise BillingUnavailable("checkout attempt is malformed") from exc
+    if attempt is not None:
+        for session in _attempt_session(attempt):
+            session_id = session.get("id")
+            if not session_id:
+                raise BillingUnavailable("checkout identity missing")
+            if session.get("status") == "open":
+                session = _post("checkout/sessions/" + urllib.parse.quote(
+                    session_id, safe="") + "/expire", [])
+            if session.get("id") != session_id:
+                raise BillingUnavailable("checkout identity mismatch")
+            if session.get("status") == "complete":
+                subscription = session.get("subscription")
+                if not isinstance(subscription, str) or not subscription:
+                    raise BillingUnavailable("completed checkout has no subscription mapping")
+                _cancel_confirmed(subscription)
+                _record_deleted_billing(root, owner, subscription, "cancelled")
+                plans.bind_checkout_subscription(owner, customer_id=session.get("customer"),
+                                                  subscription_id=subscription)
+                cancelled = True
+            elif session.get("status") == "expired":
+                expired = True
+            else:
+                raise BillingUnavailable("checkout expiry not confirmed")
+            _record_deleted_billing(root, owner, session_id, session["status"])
+        if not plans.settle_checkout_attempt(owner, attempt_id=attempt["attempt_id"]):
+            raise BillingUnavailable("checkout settlement not confirmed")
+    subscription = plan["subscription_id"]
+    if not subscription:
+        if plan["tier"] != "free":
+            raise BillingUnavailable("paid account has no subscription mapping")
+        return "attempt_expired" if expired else "cancelled" if cancelled else "none"
+    # Read first so an interrupted cancellation can be retried after Stripe
+    # committed it, but before either our plan or deletion receipt was saved.
+    _cancel_confirmed(subscription)
+    _record_deleted_billing(root, owner, subscription, "cancelled")
     plans.apply_tier_event(owner, tier="free",
                            event_created=max(_time.time(), plan["event_created"]),
                            ends_at=None)
     if plans.read(owner)["tier"] != "free":
         raise BillingUnavailable("account plan cancellation not confirmed")
-    return "cancelled"
+    return "attempt_expired" if expired else "cancelled"
 
 
 

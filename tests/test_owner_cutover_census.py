@@ -57,6 +57,10 @@ def source(tmp_path):
         CREATE TABLE subscription_meta (key TEXT PRIMARY KEY, value TEXT);
         INSERT INTO subscription_meta VALUES ('tier','paid'), ('tier_event_at','42');
     """)
+    from tinyassets.broker.owner_reads import Plans
+
+    Plans(root).set_plan("alice", "paid", event_created=42,
+                         customer_id="cus_legacy", subscription_id="sub_legacy")
     _sql(root / "outbound.db", """
         CREATE TABLE outbound_connections (destination TEXT, owner_user_id TEXT);
         INSERT INTO outbound_connections VALUES ('https://service.invalid/a', 'alice'),
@@ -333,8 +337,7 @@ def test_null_owner_uses_center_and_an_unknown_paid_broker_plan_refuses(source):
     assert table['per_owner'] == {'account-0001': 1}
     assert table['dropped'] == 1
     _sql(source / '.broker/plans.db', """
-        CREATE TABLE plans (owner TEXT, tier TEXT);
-        INSERT INTO plans VALUES ('unknown','paid');
+        INSERT INTO plans (owner,tier,event_created) VALUES ('unknown','paid',0);
     """)
     assert census(source)['refusals']['unattributed_paid_tier'] == 1
 
@@ -351,6 +354,7 @@ def test_owner_name_cannot_collide_with_a_placement_class(source):
             "WHERE owner_principal_id='alice'"],
         'outbound.db': [
             "UPDATE outbound_connections SET owner_user_id='dropped' WHERE owner_user_id='alice'"],
+        '.broker/plans.db': ["UPDATE plans SET owner='dropped' WHERE owner='alice'"],
     }.items():
         _sql(source / path, ';'.join(statements))
     report = census(source)
@@ -806,7 +810,7 @@ def test_admitted_center_wins_through_definitions_and_reports_orphan_workflow_hi
     ('browser-vault/' + 'a' * 64 + '.key', 'broker'),
     ('.auth.db-shm', 'regenerated'),
     ('.api-keys.sqlite3-wal', 'regenerated'),
-    ('.broker/plans.db', 'broker'),
+    ('.broker/plans.db', 'database_files'),
     ('platform-expected-instance.json', 'router'),
     ('.runtime_status.json', 'regenerated'),
     ('.worker_supervisor.synthetic-consumer.json', 'regenerated'),
@@ -820,7 +824,8 @@ def test_admitted_center_wins_through_definitions_and_reports_orphan_workflow_hi
 def test_platform_writer_families_have_explicit_dispositions(source, relative, placement):
     path = source / relative
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text('synthetic platform bytes')
+    if not path.exists():
+        path.write_text('synthetic platform bytes')
     before = _fingerprint(source)
     inventory = {}
     report = census(source, _inventory=inventory)

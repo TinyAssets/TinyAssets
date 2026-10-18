@@ -334,13 +334,15 @@ class _Connection:
     async def _connection_op(self, op: str, doc: dict[str, Any]) -> None:
         if self._role == BOX_HOST:
             if op == "BOX_LIFECYCLE":
-                from tinyassets.broker.box_admission import lifecycle
+                from tinyassets.broker.box_admission import OwnerSuspended, lifecycle
 
                 try:
                     result = await asyncio.to_thread(lifecycle, self._server._owner_identities, doc)
                     answer = {"op": "BOX_LIFECYCLE_IS", **result}
                 except LookupError:
                     answer = {"op": "BOX_UNADMITTED"}
+                except OwnerSuspended:
+                    answer = {"op": "BOX_SUSPENDED"}
                 except Exception:
                     answer = {"op": "BOX_REFUSED"}
                 await self.send_async(rf.control(rf.CONNECTION, answer))
@@ -619,7 +621,7 @@ class _Connection:
                 plans = Plans(self._server._data_root)
                 operations = {name: getattr(plans, name) for name in (
                     "read", "owner_for", "owner_for_checkout",
-                    "apply_tier_event", "set_suspension",
+                    "apply_tier_event", "set_suspension", "bind_checkout_subscription",
                     "current_checkout_attempt", "begin_checkout_attempt",
                     "record_checkout_session", "settle_checkout_attempt")}
                 result = operations[doc["action"]](**doc["args"])

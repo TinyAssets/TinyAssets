@@ -33,6 +33,9 @@ class BillingPlans:
     def apply_tier_event(self, owner, **args):
         return self._call("apply_tier_event", owner=owner, **args)
 
+    def bind_checkout_subscription(self, owner, **args):
+        return self._call("bind_checkout_subscription", owner=owner, **args)
+
     def current_checkout_attempt(self, owner, **args):
         return self._call("current_checkout_attempt", owner=owner, **args)
 

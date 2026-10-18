@@ -1,5 +1,49 @@
 ## ADDED Requirements
 
+### Requirement: Shared billing and deletion authority survive cutover
+
+The cutover SHALL preserve verified paid subscription mappings and unexpired
+checkout attempts in shared plans. Census SHALL refuse missing paid mappings and
+malformed or ambiguous attempts with counted reason codes and pseudonymous account
+evidence. Deletion SHALL fence new checkout creation, expire payable sessions and
+cancel live subscriptions before success. Restore SHALL preserve deletion authority.
+
+#### Scenario: Paid legacy account has cancellation authority
+- **WHEN** a legacy paid account is censused
+- **THEN** its verified owner-to-customer-and-subscription mapping is carried into the shared plan
+- **AND** missing or conflicting mappings refuse census with a named, counted reason; no unmapped paid plan is seeded
+
+#### Scenario: Open checkout survives publication
+- **WHEN** a legacy account has an unexpired `checkout_attempt_v1`
+- **THEN** the shared plan retains its identity, session, frozen parameters and expiry and subsequent checkout resumes it
+- **AND** malformed, conflicting or unattributable attempts refuse census with a named, counted reason
+
+#### Scenario: Account deletion closes payable billing
+- **WHEN** the door tombstones an owner with an outstanding checkout attempt
+- **THEN** new checkout creation is refused and cleanup confirms session expiry or cancellation of its resulting subscription through the Stripe adapter
+- **AND** cleanup reports a distinct outcome for an expired attempt; uncertainty prevents deletion success
+- **AND** a subsequent subscription webhook for the tombstoned owner cancels that subscription immediately and records the cancellation
+
+#### Scenario: Restore cannot resurrect a deleted owner
+- **WHEN** current router deletion receipts or owner-box revocations are newer than a staged backup
+- **THEN** restore refuses before swapping either shared or owner volumes, including when broker retirement failed after the local sweep
+
+### Requirement: Lifecycle admission failures are isolated per owner
+
+Maintenance SHALL contain admission failures per owner and retain explicit suspended
+status. Only the authenticated door deletion flow SHALL admit a suspended owner for
+deletion-only cleanup under the existing drain and tombstone rules.
+
+#### Scenario: One suspension does not stop the fleet
+- **WHEN** one loaded owner is suspended while two other owners run work
+- **THEN** maintenance stops or refuses that owner's box with an explicit suspended outcome
+- **AND** both other owners continue work and the maintenance loop continues
+
+#### Scenario: Suspended owner can delete without ordinary wake authority
+- **WHEN** an authenticated suspended owner confirms account deletion at the door
+- **THEN** deletion-only admission permits its local sweep followed by the durable tombstone and shared cleanup
+- **AND** ordinary requests, turns and scheduled wakes remain refused, including during the cleanup wake
+
 ### Requirement: Cutover accounts for loss without guessing ownership
 
 The census SHALL resolve reviewed parent keys before dropping legacy state,

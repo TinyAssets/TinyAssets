@@ -17,6 +17,28 @@ from tests.test_owner_cutover_census import source as source
 from tinyassets import box_layout_migration as migration
 
 
+def test_cutover_preserves_cancellation_mapping_and_resumes_payable_checkout(cutover, monkeypatch):
+    from tests.test_cutover_billing_deletion import attempt, legacy_attempt
+    from tinyassets.billing.plan_action import _start_checkout
+    from tinyassets.broker.owner_reads import Plans
+
+    data, store, *_ = cutover
+    original = attempt()
+    legacy_attempt(data, original)
+    migration.apply(*cutover)
+    plan = Plans(data)
+    assert plan.read("alice")["customer_id"] == "cus_legacy"
+    assert plan.read("alice")["subscription_id"] == "sub_legacy"
+    assert json.loads(plan.read("bob")["attempt"]) == original
+    assert not (data / "b1/.subscription_state.db").exists()
+    assert not (store / "300002/b1/.subscription_state.db").exists()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data))
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_synthetic")
+    # Use the actual shared writer through the test broker transport.
+    assert _start_checkout(owner="bob", origin="https://tinyassets.io") == {
+        "url": original["url"], "resumed": True}
+
+
 @pytest.fixture
 def cutover(source, tmp_path, monkeypatch):
     if not hasattr(os, "geteuid") or os.geteuid() != 0:
@@ -296,6 +318,39 @@ def test_completed_apply_restores_paired_owner_split(cutover, tmp_path):
     assert not (store / '300001').exists()
     assert not (store / '300002').exists()
     assert list(store.glob('.tinyassets-box-restore-old.*/300001/a1/notes.txt'))
+
+
+@pytest.mark.parametrize("authority", ["router", "revocation"])
+def test_same_layout_restore_refuses_deletion_before_either_volume_swap(
+    cutover, tmp_path, authority,
+):
+    import runpy
+
+    from tests.test_owner_cutover_restore import REPO
+    from tinyassets.router_credentials import DeletedOwners
+
+    data, store, data_archive, box_archive = cutover
+    migration.apply(*cutover)
+    for path, tree, name in ((data_archive, data, "_data"), (box_archive, store, "owners")):
+        with tarfile.open(path, "w:gz") as archive:
+            archive.add(tree, arcname=name)
+        _archive(path, path.read_bytes())
+    runpy.run_path(str(REPO / "deploy/backup-pair.py"))["create"](
+        data_archive, box_archive, tmp_path / "tinyassets-pair-2026-10-17T00-00-00Z.json")
+    # Local sweep succeeded, broker retirement/custody is still unavailable.
+    (store / "300001/a1/notes.txt").unlink()
+    if authority == "router":
+        DeletedOwners(data).add("alice", {"unfinished_phases": ["owner_tree", "broker_egress"]})
+    else:
+        _sql(data / ".broker/state/owner-identities.db",
+             "INSERT INTO owner_box_revocations VALUES ('alice',1)")
+    before = _fingerprint(data), _fingerprint(store)
+    result = _restore_paired(cutover, tmp_path)
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert "forward recovery" in result.stderr
+    assert (_fingerprint(data), _fingerprint(store)) == before
+    assert not list(store.glob(".tinyassets-box-restore-old.*"))
+    assert not (store / "300001/a1/notes.txt").exists()
 
 
 def _restore_paired(cutover, tmp_path, *, accept_owner_write_loss=False):

@@ -5092,6 +5092,7 @@
   // refusal as an outage — and when the status was 5xx the detail the user saw was
   // the Cloudflare Worker's "tunnel origin returned 5xx", not ours at all.
   const CHECKOUT_REFUSALS = {
+    account_deleted: "This account has been deleted.",
     already_subscribed: "You already have an active subscription.",
     checkout_already_in_progress:
       "A checkout for this command center is already open. Finish it in the other tab, "

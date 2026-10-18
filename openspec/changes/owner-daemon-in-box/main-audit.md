@@ -1,5 +1,71 @@
 # Main vs the clean per-user-instance shape: read-only audit
 
+## Six cutover review corrections (2026-10-18)
+
+Starting head `a6374321c2e`, base `conv/c6-owner-daemon-s3c`. All six supplied
+findings reproduce. Work stays local, on synthetic data, with billing calls
+replaced at the existing adapter seam. No live API, production, workflow,
+branch/configuration change, delegation or publication was used.
+Receipts: `C:/Users/Jonathan/AppData/Local/Temp/c6-review-fixes/`.
+
+| Finding | Reproduced path and correction | Regression evidence |
+| --- | --- | --- |
+| Paid legacy mapping | The historical `subscription_state.apply_tier_event` writes only tier/event/end; the webhook marker records delivery verification, not mappings. Census previously accepted this state and `_seed_shared` seeded absent IDs. Census now requires the verified owner-keyed shared plan mapping, preserves it, and reports `paid_subscription_mapping_missing` per pseudonymous account. It does not invent a mapping from tier metadata. | `test_cutover_billing_deletion` missing-mapping and private-inventory cases; `test_owner_cutover_apply` real publication preserves customer/subscription IDs. |
+| Checkout carryover | `_seed_shared` omitted `checkout_attempt_v1` before source cleanup. Census now validates frozen inputs, identity, mode and expiry, refuses malformed/ambiguous/conflicting/unattributed attempts, and seeds the unexpired attempt into shared billing. | Census refusal matrix and real cutover followed by `_start_checkout` returning the original URL without creating another session. |
+| Deletion billing | `cancel_account_billing` returned `none` for free accounts without inspecting their attempt; subscription events had no tombstone fence. The door serializes checkout/webhooks with tombstone creation. Cleanup reconciles lost session responses, confirms expiry or immediate cancellation, returns `attempt_expired`, and keeps durable cleanup evidence. Verified completion binds cancellation authority before settling, without granting a tier; late subscriptions are cancelled and recorded. | Adapter tests for open/completed/lost-response sessions, failed expiry, malformed state, completion-before-subscription ordering, late signed events and an in-flight checkout/tombstone race; real door deletion expires checkout. |
+| Restore deletion authority | `fence_restore` compared identity/admission/custody/destruction but omitted router receipts and `owner_box_revocations`. Both now participate before receipt mutation or either volume swap. | Authority rollback tests plus the real restore shell with valid same-layout paired archives; a local sweep followed by unavailable broker cleanup cannot resurrect owner bytes. |
+| Fleet suspension | Root lifecycle returned generic refusal and maintenance caught only `LookupError`, allowing the host finally block to close every box. The protocol preserves `BOX_SUSPENDED`; maintenance handles admission/auth/transport failures per owner, stops/refuses that box and records `suspended` or `admission_refused`. The waker already contains per-owner task failures. | Three running boxes, with two active turns surviving repeated maintenance while the third is suspended/refused; broker protocol verifies the typed refusal. |
+| Suspended deletion | `cleanup=True` bypassed drain only, then normal lifecycle rejected suspension. The authenticated deletion resolution can request root-only deletion admission; startup and ingress latch the existing activity gate to deletion-only. Ordinary wakes and scheduled work remain refused. | Awake and sleeping real owner processes delete through the authenticated door; lifecycle tests prove ordinary work stays refused even after a local deletion refusal. |
+
+The design's **Billing and deletion at cutover (review round, 2026-10-18)**
+section and two matching requirements cover all six corrections; strict
+OpenSpec validation passes. The shared layer still holds billing and identity
+authority only; no owner-store reader, second serving path or cross-owner app
+check was introduced. No test or shape probe was removed or disabled.
+
+Validation on the final source:
+
+- Requested patterns, touched tests and structural guards: **1,433 passed,
+  zero failed/errors**, 59 files (`targeted.xml`). All 36 root-only skips have
+  exact matching passes in `root-clean.xml`; none is credited as a pass.
+- Root cutover/restore/control/backup/layout selection: **74 passed, zero
+  skips** (`root-clean.xml`). The same-layout shell fixtures include a valid
+  generation manifest, so they reach the deletion-authority refusal itself.
+- All **35 structural guard files: 961 passed, zero skips**, within the targeted run.
+- All **34 affected heavy files: 1,358 passed, zero skips** (`heavy-final.xml`).
+- Docker-engine root rehearsal: **all six steps passed, zero skips**
+  (`rehearsal-final.xml`), through the requested `--as-root --docker-engine` venue.
+- Touched-file Ruff, strict OpenSpec, `check_shapes.py` and whitespace checks
+  pass. Repository-wide Ruff has **32 existing findings in six files**, verified
+  byte-equivalent to the starting head; no lint debt was added.
+
+The full required CI selection contains **1,206 files** (digest
+`sha256:f68881ef98bed601f61dac88da47e99b30dfb5d9d4eef9f0ae0de710f97b6f07`).
+It uses `ci_required_tests.py --ci-select pr --base conv/c6-owner-daemon-s3c`
+and the repository's `shard_of(path, 4)`, one pytest process per shard through
+Linux oracle, with `TINYASSETS_DATA_DIR=/tmp/ta-data`, `CI=true`,
+`MSYS_NO_PATHCONV=1` and `-m "not slow"`.
+
+| Shard | Files | Passed | Subtests passed | Skipped | Deselected | Failed/errors | Exit |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 253 | 5,394 | 0 | 5 | 1 | 0 | 0 |
+| 2 | 450 | 7,107 | 7 | 11 | 1 | 0 | 0 |
+| 3 | 256 | 5,682 | 0 | 100 | 0 | 0 | 0 |
+| 4 | 247 | 5,552 | 42 | 11 | 0 | 0 | 0 |
+| Total | 1,206 | 23,735 | 49 | 127 | 2 | 0 | 0 |
+
+Receipts are `shard-{1,2,3,4}.xml`, matching logs, `shard-manifest.json` and
+`shard-exits.json`. Skips are reported separately, never credited as passes.
+The new regression file was registered in the index before partitioning, so
+the tracked-file shard function agrees with the eventual commit. Superseded
+pre-index runs are retained separately and are not credited. The final source
+matches the 32-file `validated-source.json` fingerprint.
+
+Post-commit hygiene uses `test_hygiene_gate.py --base conv/c6-owner-daemon-s3c
+--head HEAD --body <receipt-directory>/hygiene-body.txt`, preserving `Registry
+row(s): S8` and the existing `Test-Removal: retired --` declaration; this review
+adds no retired tests.
+
 ## Required CI shard reconciliation (2026-10-17)
 
 Starting head: `78984dc9a1c`, on the single cutover branch with base

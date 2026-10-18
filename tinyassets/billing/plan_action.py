@@ -27,6 +27,8 @@ from enum import StrEnum
 from typing import Any
 from urllib.parse import urlsplit
 
+from tinyassets.billing.lifecycle import serialized
+
 #: Where a non-web checkout returns the person. Hard Rule 11 names this as the
 #: only canonical public endpoint. Web may use a configured resource origin
 #: instead; see ``allowed_return_origin``.
@@ -327,6 +329,7 @@ def _snapshot(identity: Any, user_id: str) -> dict[str, Any]:
     }
 
 
+@serialized
 def _start_checkout(*, owner: str, origin: str) -> dict[str, Any]:
     """The existing checkout lease, unchanged. Returns the route's dict."""
     from tinyassets.billing import BillingUnavailable, create_checkout_session
@@ -337,12 +340,15 @@ def _start_checkout(*, owner: str, origin: str) -> dict[str, Any]:
         checkout_params,
         key_is_live,
     )
+    from tinyassets.router_credentials import DeletedOwners
     from tinyassets.storage import data_dir
     from tinyassets.storage.subscription_state import (
         CHECKOUT_SESSION_SECONDS,
         CHECKOUT_WINDOW_SECONDS,
     )
 
+    if DeletedOwners(data_dir()).contains(owner):
+        return {"error": "account_deleted"}
     plans = BillingPlans(data_dir())
     if plans.read(owner)["tier"] == "paid":
         return {"error": "already_subscribed"}

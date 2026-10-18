@@ -28,6 +28,7 @@ def seed(root):
         db.execute("INSERT INTO center_admissions VALUES ('admit', 'alice', 'a')")
         db.execute("CREATE TABLE box_records (machine INT, project_id INT, bhard_bytes INT)")
         db.execute("INSERT INTO box_records VALUES (300001,300001,1048576)")
+        db.execute("CREATE TABLE owner_box_revocations (principal TEXT PRIMARY KEY, deleted INT)")
     with sqlite3.connect(root / ".broker/credential-custody.db") as db:
         db.execute("CREATE TABLE deleted_principals (digest TEXT PRIMARY KEY)")
     state = BoxHostState(root / ".boxhost/boxhost.db")
@@ -61,12 +62,17 @@ def test_restore_retains_all_seen_operations_as_unknown_and_advances_epochs(tmp_
         restored.close()
 
 
-@pytest.mark.parametrize("authority", ["identity", "admission", "deletion", "destruction"])
+@pytest.mark.parametrize("authority", ["identity", "admission", "deletion", "destruction",
+                                       "router_deletion", "revocation"])
 def test_restore_refuses_authority_rollback_before_changing_staged_receipts(tmp_path, authority):
     current, staged = tmp_path / "current", tmp_path / "staged"
     seed(current)
     shutil.copytree(current, staged)
-    if authority == "destruction":
+    if authority == "router_deletion":
+        from tinyassets.router_credentials import DeletedOwners
+
+        DeletedOwners(current).add("alice", {"unfinished_phases": ["owner_tree"]})
+    elif authority == "destruction":
         state = BoxHostState(current / ".boxhost/boxhost.db")
         state.begin_owner_destroy("alice", "erase", 300001, "a")
         state.close()
@@ -78,6 +84,7 @@ def test_restore_refuses_authority_rollback_before_changing_staged_receipts(tmp_
                 "identity": "INSERT INTO owner_identities VALUES ('bob',300002)",
                 "admission": "INSERT INTO center_admissions VALUES ('retire','alice','a')",
                 "deletion": "INSERT INTO deleted_principals VALUES ('owner-digest')",
+                "revocation": "INSERT INTO owner_box_revocations VALUES ('alice',1)",
             }[authority])
     before = (staged / ".boxhost/boxhost.db").read_bytes()
     with pytest.raises(ValueError, match="forward recovery"):

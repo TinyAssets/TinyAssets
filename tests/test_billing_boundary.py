@@ -701,6 +701,7 @@ def test_no_metering_machinery_is_exported():
         ({"url": "https://checkout.stripe.com/c/pay/cs_test_x"}, 200),
         ({"error": "already_subscribed"}, 409),
         ({"error": "checkout_already_in_progress"}, 409),
+        ({"error": "account_deleted"}, 410),
         ({"error": "billing_unavailable", "detail": "no key"}, 503),
     ],
 )

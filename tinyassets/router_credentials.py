@@ -67,6 +67,13 @@ class DeletedOwners:
     def save_receipt(self, owner: str, receipt: dict):
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("PRAGMA synchronous=FULL")
+            db.execute("BEGIN IMMEDIATE")
+            previous = db.execute("SELECT receipt FROM deleted_owners WHERE owner=?",
+                                  (owner,)).fetchone()
+            if previous:
+                # A late billing delivery may finish between orchestration phases.
+                cleanup = (json.loads(previous[0]) or {}).get("billing_cleanup", {})
+                receipt["billing_cleanup"] = {**cleanup, **receipt.get("billing_cleanup", {})}
             if db.execute("UPDATE deleted_owners SET receipt=? WHERE owner=?",
                           (json.dumps(receipt), owner)).rowcount != 1:
                 raise RuntimeError("account deletion tombstone missing")
@@ -158,7 +165,9 @@ def dispatch(root: Path, owner: str, request: dict) -> dict:
 
 
 def tombstone(root: Path, owner: str, receipt: dict):
-    with _DISPATCH:
+    from tinyassets.billing.lifecycle import lock
+
+    with lock, _DISPATCH:
         DeletedOwners(root).add(owner, receipt)
 
 

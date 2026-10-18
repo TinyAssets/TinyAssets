@@ -14,7 +14,9 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tinyassets.boxes.provider import BoxBusy, BoxError
+from tinyassets.boxes.admission import BoxSuspended
+from tinyassets.boxes.provider import BoxAuthError, BoxBusy, BoxError
+from tinyassets.broker.box_admission import OwnerSuspended
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +36,7 @@ class Box:
     image: str = ""
     restarting: bool = False
     roll_failed: bool = False
+    deletion_only: bool = False
     leases: dict[str, float] = field(default_factory=dict)
 
 
@@ -105,7 +108,8 @@ class OwnerDaemons:
         return directory, path
 
     def _start(self, box, deadline, *, image=None, cleanup=True):
-        record = self.admission.owner(box.owner, rotate=True)
+        admission = {"deletion_only": True} if box.deletion_only else {}
+        record = self.admission.owner(box.owner, rotate=True, **admission)
         if record["uid"] != box.uid:
             raise BoxError("broker owner reservation changed")
         self.quota.provision(box.uid, record["quota"], record["centers"][0])
@@ -116,6 +120,8 @@ class OwnerDaemons:
         box.awake = True
         try:
             launch = {}
+            if box.deletion_only:
+                launch["deletion_only"] = True
             if self.images is not None:
                 image = image or self.images.current
                 if not self.images.compatible(image):
@@ -131,7 +137,7 @@ class OwnerDaemons:
                     raise BoxError("owner daemon exited during startup")
                 try:
                     status = self._rpc(box)
-                    if not status["draining"]:
+                    if not status["draining"] or (box.deletion_only and status["deleting"]):
                         box.started = box.last = time.monotonic()
                         box.error = ""
                         box.roll_failed = False
@@ -225,11 +231,18 @@ class OwnerDaemons:
             self.condition.notify_all()
 
     def ensure_awake(self, owner, *, scheduled=False, cleanup=False):
-        if type(scheduled) is not bool:
+        if type(scheduled) is not bool or type(cleanup) is not bool or (scheduled and cleanup):
             raise ValueError("scheduled must be boolean")
         deadline = time.monotonic() + self.wake_timeout
         with self.condition:
-            record = self.admission.owner(owner)
+            admission = {}
+            try:
+                record = self.admission.owner(owner)
+            except (BoxSuspended, OwnerSuspended):
+                if not cleanup:
+                    raise
+                admission = {"deletion_only": True}
+                record = self.admission.owner(owner, **admission)
             uid = record["uid"]
             box = self.boxes.setdefault(uid, Box(owner, uid))
             if box.owner != owner:
@@ -249,6 +262,9 @@ class OwnerDaemons:
                             raise BoxError("owner sandbox has an unverified launch or stop")
                         if self._rpc(box)["draining"] and not cleanup:
                             raise BoxError("owner daemon is still draining")
+                        if admission:
+                            self._rpc(box, "delete-admission")
+                            box.deletion_only = True
                         box.last = time.monotonic()
                         return uid
                     if box.awake:
@@ -271,6 +287,7 @@ class OwnerDaemons:
                         if sum(item.awake or item.restarting for item in
                                self.boxes.values()) < self.awake_cap:
                             box.wanted = True
+                            box.deletion_only = bool(admission)
                             try:
                                 self._start(box, deadline)
                                 return uid
@@ -282,7 +299,7 @@ class OwnerDaemons:
                         raise BoxBusy("owner wake capacity/backoff deadline exceeded")
                     self.condition.wait(min(left, 1))
                     # A queued wake never keeps an admission across retirement.
-                    self.admission.owner(owner)
+                    self.admission.owner(owner, **admission)
             finally:
                 self.waiting.remove(ticket)
                 self.condition.notify_all()
@@ -319,7 +336,13 @@ class OwnerDaemons:
 
     def status(self, owner):
         with self.condition:
-            uid = self.admission.owner(owner)["uid"]
+            try:
+                uid = self.admission.owner(owner)["uid"]
+            except (BoxAuthError, PermissionError):
+                box = next((b for b in self.boxes.values() if b.owner == owner), None)
+                if box is None:
+                    raise
+                uid = box.uid
             box = self.boxes.get(uid)
             return {"uid": uid, "awake": bool(box and box.awake),
                     "failures": box.failures if box else 0,
@@ -426,9 +449,17 @@ class OwnerDaemons:
                 if box.uid in self.rolling:
                     continue
                 try:
-                    self.admission.owner(box.owner)
-                except LookupError:
-                    self._stop(box, retire=True)
+                    admission = {"deletion_only": True} if box.deletion_only else {}
+                    self.admission.owner(box.owner, **admission)
+                except (LookupError, BoxAuthError, PermissionError, OSError) as exc:
+                    outcome = ("suspended" if isinstance(exc, (BoxSuspended, OwnerSuspended))
+                               else "admission_refused")
+                    try:
+                        self._stop(box, retire=True)
+                    except Exception as stop_error:
+                        self._failed(box, stop_error)
+                    box.wanted = False
+                    box.error = outcome
                     continue
                 if box.roll_failed:
                     if box.awake:
