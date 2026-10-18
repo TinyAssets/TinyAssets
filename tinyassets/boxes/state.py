@@ -55,7 +55,6 @@ _SCHEMA = (
     " incarnation INTEGER NOT NULL,"
     " outcome TEXT,"
     " PRIMARY KEY (command_center_id, op_id))",
-
 )
 
 
@@ -68,9 +67,8 @@ def op_digest(kind: str, payload: Any) -> str:
 class BoxHostState:
     """One SQLite file under the box host's private state directory."""
 
-    def __init__(self, path: Path, *, max_bytes: int | None = None) -> None:
+    def __init__(self, path: Path) -> None:
         self._path = Path(path)
-        self._max_bytes = max_bytes
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._pending: dict[str, int] = {}
@@ -124,13 +122,6 @@ class BoxHostState:
         conn = sqlite3.connect(self._path, timeout=30.0, isolation_level=None)
         try:
             conn.execute("PRAGMA journal_mode=WAL")
-            if self._max_bytes is not None:
-                page_size = conn.execute("PRAGMA page_size").fetchone()[0]
-                pages = self._max_bytes // page_size
-                actual = conn.execute(f"PRAGMA max_page_count={pages}").fetchone()[0]
-                if actual > pages:
-                    raise BoxError("host receipt store exceeds its platform bound")
-                conn.execute(f"PRAGMA journal_size_limit={self._max_bytes}")
             conn.execute("BEGIN IMMEDIATE")
             try:
                 yield conn
