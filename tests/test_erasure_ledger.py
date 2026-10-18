@@ -137,7 +137,8 @@ def test_cutover_seeds_all_legacy_sources(tmp_path):
 
 
 @pytest.mark.parametrize("location", ["source", "staging"])
-@pytest.mark.parametrize("kind", ["main", "custody", "router", "host", "revocation", "policy"])
+@pytest.mark.parametrize("kind", ["main", "main-index-drift", "custody", "router", "host",
+                                 "revocation", "policy"])
 def test_each_legacy_fence_refuses_auth_and_survives_disaster(
     tmp_path, monkeypatch, kind, location,
 ):
@@ -165,14 +166,25 @@ def test_each_legacy_fence_refuses_auth_and_survives_disaster(
                      "INSERT INTO owner_destroys VALUES (?,?)", ("alice", 300001)),
             "revocation": (".broker/state/owner-identities.db", "",
                            "INSERT INTO owner_box_revocations VALUES (?,1)", ("alice",)),
-        }[kind]
+        }["main" if kind == "main-index-drift" else kind]
         (root / path).parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(root / path) as db:
             if ddl:
                 db.execute(ddl)
             db.execute(insert, values)
+            if kind == "main-index-drift":
+                db.executescript("""
+                    CREATE INDEX tombstone_index ON deleted_principals(founder_sub) WHERE 0;
+                    PRAGMA writable_schema=ON;
+                    UPDATE sqlite_master SET sql=
+                        'CREATE INDEX tombstone_index ON deleted_principals(founder_sub)'
+                        WHERE name='tombstone_index';
+                """)
+    main_before = (root / ".tinyassets.db").read_bytes() if kind.startswith("main") else None
     ledger = ErasureLedger(staged)
     seed_legacy(current, ledger, store_root=live)
+    if main_before is not None:
+        assert (root / ".tinyassets.db").read_bytes() == main_before
     entry, = ledger.entries()
     assert entry["digest"] == digest and entry["uids"] == [300001]
     assert entry["receipt"]["unfinished_phases"] == list(PHASES)
@@ -211,6 +223,13 @@ def test_cutover_does_not_turn_box_retirement_into_account_erasure(tmp_path):
         db.execute("INSERT INTO owner_box_revocations VALUES ('alice',0)")
     seed_legacy(current, ErasureLedger(staged), store_root=live)
     assert not ErasureLedger(staged).contains("alice")
+
+
+def test_cutover_refuses_corrupt_legacy_main_database(tmp_path):
+    current, staged, live, _ = paired(tmp_path)
+    (current / ".tinyassets.db").write_bytes(b"corrupt table data")
+    with pytest.raises(sqlite3.DatabaseError):
+        seed_legacy(current, ErasureLedger(staged), store_root=live)
 
 
 def test_union_cannot_hide_new_work_with_an_old_completion(tmp_path, monkeypatch):

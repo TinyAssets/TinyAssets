@@ -318,8 +318,9 @@ def seed_legacy(source, ledger, *, store_root):
 def _seed_legacy_fences(source, ledger, store_root):
     from tinyassets.restore_recovery import _rows, _safe
 
+    for digest in _legacy_main_digests(source):
+        ledger.execute("add", {"digest": digest})
     sources = ((".router-deleted-owners.sqlite3", "deleted_owners"),
-               (".tinyassets.db", "deleted_principals"),
                (".broker/credential-custody.db", "deleted_principals"),
                (".boxhost/boxhost.db", "owner_destroys"),
                (".broker/state/owner-identities.db", "owner_box_revocations"))
@@ -328,10 +329,7 @@ def _seed_legacy_fences(source, ledger, store_root):
             if table == "owner_box_revocations" and not row["deleted"]:
                 continue
             owner = row.get("owner", row.get("owner_id", row.get("principal")))
-            if table == "deleted_principals":
-                digest = row["founder_sub"] if relative == ".tinyassets.db" else row["digest"]
-            else:
-                digest = principal_digest(owner)
+            digest = row["digest"] if table == "deleted_principals" else principal_digest(owner)
             receipt = json.loads(row.get("receipt") or "null") or {}
             ledger.execute("add", {"digest": digest, "principal": owner, "receipt": receipt,
                                    "uids": [row["uid"]] if table == "owner_destroys" else []})
@@ -344,6 +342,26 @@ def _seed_legacy_fences(source, ledger, store_root):
     for marker in (source / ".broker/accounts").glob("*/.deleted"):
         _safe(source, marker.relative_to(source))
         ledger.execute("add", {"digest": marker.parent.name})
+
+
+def _legacy_main_digests(source):
+    """Use cutover's index-only policy and read table bytes, never damaged indexes."""
+    from tinyassets.restore_recovery import _safe
+    from tinyassets.sqlite_integrity import check
+    from tinyassets.sqlite_readonly import readonly_db
+
+    path = _safe(source, ".tinyassets.db")
+    for suffix in ("-wal", "-shm", "-journal"):
+        _safe(source, ".tinyassets.db" + suffix)
+    if not path.exists():
+        return []
+    with readonly_db(path) as db:
+        check(db)  # Pre-cutover rollback may restore indexes awaiting forward repair.
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                          "AND name='deleted_principals'").fetchone():
+            return []
+        return [row[0] for row in db.execute(
+            "SELECT founder_sub FROM deleted_principals NOT INDEXED")]
 
 
 def _seed_legacy_work(source, ledger, store_root):
