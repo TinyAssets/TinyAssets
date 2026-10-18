@@ -653,8 +653,7 @@ the remaining acceptance, regardless of synthetic results.
 
 `box_layout_migration` is the sole cutover module.
 Host admission reads the canonical root-owned erasure ledger by principal digest.
-Broker custody digests and boxhost destruction rows provide local enforcement;
-neither selects retries or overrides ledger authority.
+Broker custody digests provide local enforcement; they never select retries or override ledger authority.
 Seeding creates the broker-owned credential directory even when no HTTP
 credentials survive, so a source-free owner can reconnect after cutover.
 Provider definitions remain private owner files (0600); registration already
@@ -1070,27 +1069,5 @@ apply repairs exactly those indexes and verifies integrity again, recording
 `reindexed: <db>/<index>` in its durable report. Any other integrity error refuses;
 no table repair or blanket REINDEX is permitted.
 
-The synthetic archive regression reproduced `crash_resume` exiting 3 before
-`after_owner_tree:1`: reset discarded the archive's root entry and retained
-root-owned 1775 custody, so Linux `protected_regular=2` denied SQLite's default
-O_CREAT open of UID1001 `.tinyassets.db`. SQLite fell back to read-only, then
-REINDEX failed. Source opens now use `mode=rw`; stopped apply also adopts existing
-single-link regular WAL/SHM through validated descriptors, preserving committed
-bytes and modes. Neither database custody nor directory protection is relaxed.
-Reset extracts the archived root metadata along with its contents. The synthetic
-archive now includes daemon-owned index drift and asserts reset metadata/bytes;
-each crash retry additionally runs under protected data-root custody.
 
-Verification (2026-10-18, code through `a1cfbe59ecf`): the root Linux oracle passed
-255 affected tests without skips, followed by the full synthetic Docker/XFS
-archive rehearsal (1 passed, no skips). Setup, preflight, census, apply, verify,
-restore_before_write, crash_resume (two exit-137 interruptions and matching
-manifests), host_startup, serving, normal_restore_after_traffic_refuses,
-disaster_provider_unreachable_refuses, disaster_restore_after_traffic and cleanup
-all passed. The final engine invocation set `TA_REHEARSAL_BASE_IMAGE` to
-`tinyassets-c6-rehearsal:s6-f78ba2075a3` and `TA_REHEARSAL_RUNSC_DIR=/out/gvisor`;
-the test overlays current source onto that production-runtime base. The default
-oracle base lacks `/opt/venv/bin/python` and cannot prove production serving.
-Touched-file Ruff and spec validation passed. The independent adversarial review
-found the WAL case; its correction and retry proof received AGREE. No production
-data, push, workflow dispatch or GitHub post was used.
+Stopped apply must preserve committed WAL/SHM bytes and directory protection while repairing named indexes; rehearsal reset must restore archived root metadata.
