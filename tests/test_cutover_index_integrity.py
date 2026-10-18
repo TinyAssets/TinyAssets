@@ -156,3 +156,22 @@ def test_staged_repair_preserves_symlinks_without_following_them(source, tmp_pat
     (source / ".tinyassets.db").symlink_to(outside)
     with pytest.raises(ValueError, match="symlink"):
         _legacy_main_digests(source)
+
+
+def test_staged_repair_preserves_text_hardlinks_but_refuses_database_hardlinks(source):
+    import os
+
+    from tinyassets.restore_recovery import _repair_staged_databases
+
+    original = source / "a1/notes.txt"
+    linked = source / "a1/notes-copy.txt"
+    os.link(original, linked)
+    _repair_staged_databases(source)
+    assert original.samefile(linked) and original.stat().st_nlink == 2
+    assert linked.read_text() == "private history for a1"
+    database = source / ".tinyassets.db"
+    before = database.read_bytes()
+    os.link(database, source / "linked-database")
+    with pytest.raises(ValueError, match="private regular file"):
+        _repair_staged_databases(source)
+    assert database.read_bytes() == before

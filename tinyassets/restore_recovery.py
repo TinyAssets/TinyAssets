@@ -96,15 +96,20 @@ def _repair_staged_databases(staged):
     from tinyassets.sqlite_integrity import check
 
     for path in staged.rglob("*"):
-        # Archives preserve ordinary file symlinks. Repair only their regular
-        # database targets, never follow a link while scanning the stage.
-        # Authority readers still reject symlinks through _safe.
-        if path.is_symlink() or not path.is_file():
+        # Owner content includes links. Discover SQLite without following any
+        # symlink; only database candidates need private-inode custody.
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode):
             continue
-        _safe(staged, path.relative_to(staged))
-        with path.open("rb") as stream:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(opened.st_mode)
+                    or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino)):
+                raise ValueError("staged file changed during database discovery")
             if stream.read(16) != b"SQLite format 3\x00":
                 continue
+        _safe(staged, path.relative_to(staged))
         for suffix in ("-wal", "-shm", "-journal"):
             _safe(staged, str(path.relative_to(staged)) + suffix)
         _claim_sqlite_sidecars(path)

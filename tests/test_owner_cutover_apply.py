@@ -690,6 +690,28 @@ def test_actual_interrupted_migration_allows_normal_rollback(cutover, tmp_path, 
             if k != '.erasure-ledger.sqlite3'} == before
 
 
+def test_owner_content_links_survive_migration_and_rollback(cutover, tmp_path):
+    data, store, backup, _ = cutover
+    home = data / "a1"
+    (home / "shortcut").symlink_to("notes.txt")
+    os.link(home / "notes.txt", home / "notes-copy.txt")
+    with tarfile.open(backup, "w:gz") as archive:
+        archive.add(data, arcname="_data")
+    _archive(backup, backup.read_bytes())
+
+    def assert_links(home):
+        assert (home / "shortcut").readlink() == Path("notes.txt")
+        assert (home / "shortcut").read_text() == "private history for a1"
+        assert (home / "notes.txt").samefile(home / "notes-copy.txt")
+        assert (home / "notes.txt").stat().st_nlink == 2
+
+    migration.apply(*cutover)
+    assert_links(store / "300001/a1")
+    result = _restore_paired(cutover, tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert_links(data / "a1")
+
+
 def test_crash_resume_rejects_a_different_snapshot_pair(cutover, monkeypatch):
     original = migration._copy
     def crash(*args):

@@ -433,6 +433,8 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
             "requires linux_oracle.py --as-root; owner=c6-owner-box runs-in=linux_oracle.py"
         )
     base = os.environ["TA_REHEARSAL_BASE_IMAGE"]  # requires --docker-engine
+    (source / "a1/shortcut").symlink_to("notes.txt")
+    os.link(source / "a1/notes.txt", source / "a1/notes-copy.txt")
     from tinyassets import box_layout_migration as migration
     from tinyassets.conversation_store import record_turn
     from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
@@ -634,7 +636,16 @@ Path(str(archive) + '.sha256').write_text(
     hashlib.sha256(archive.read_bytes()).hexdigest() + '  ' + archive.name + '\\n')
 """)
                 tested_corruption = True
-            return original_restore(**kwargs)
+            result = original_restore(**kwargs)
+            if not kwargs or kwargs.get("disaster") and not kwargs.get("refuse"):
+                venue.helper("""
+home = (Path('/box-store/300001/a1') if
+        Path('/box-store/300001/a1').exists() else Path('/data/a1'))
+assert (home / 'shortcut').readlink() == Path('notes.txt')
+assert (home / 'shortcut').read_text() == 'private history for a1'
+assert (home / 'notes.txt').samefile(home / 'notes-copy.txt')
+""")
+            return result
 
         venue.restore = checked_restore
 
@@ -666,6 +677,10 @@ assert not Path('/data/.erasure-ledger.sqlite3').exists()
                 venue.helper("""
 import fcntl, os, stat
 root = Path('/data')
+home = Path('/box-store/300001/a1')
+assert (home / 'shortcut').readlink() == Path('notes.txt')
+assert (home / 'shortcut').read_text() == 'private history for a1'
+assert (home / 'notes.txt').samefile(home / 'notes-copy.txt')
 lock = root / '.layout.lock'
 assert os.geteuid() == 0
 assert Path('/proc/sys/fs/protected_regular').read_text().strip() == '2'
