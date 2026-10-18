@@ -73,10 +73,9 @@ def damage_many_indexes(path, *, corrupt_table):
 
 @pytest.mark.parametrize("caller", ["census", "forward", "seed", "rollback"])
 def test_non_index_fault_after_110_damaged_indexes_is_never_hidden(source, tmp_path, caller):
-    from tests.test_box_restore_authority import paired
     from tinyassets.box_layout_migration import _build_cutover
-    from tinyassets.erasure_ledger import ErasureLedger, seed_legacy
-    from tinyassets.restore_recovery import normal_preflight
+    from tinyassets.erasure_ledger import _legacy_main_digests
+    from tinyassets.restore_recovery import _repair_staged_databases
 
     damage_many_indexes(source / ".tinyassets.db", corrupt_table=True)
     from tinyassets.sqlite_readonly import readonly_db
@@ -93,31 +92,24 @@ def test_non_index_fault_after_110_damaged_indexes_is_never_hidden(source, tmp_p
         with pytest.raises(RuntimeError, match="census refused"):
             _build_cutover(source, tmp_path / "store", {"source_marker": None})
     elif caller == "seed":
-        ledger_root = tmp_path / "ledger"
-        ledger_root.mkdir()
-        ledger = ErasureLedger(ledger_root)
-        ledger.initialize()
         with pytest.raises(ValueError, match="not index-only"):
-            seed_legacy(source, ledger, store_root=tmp_path)
+            _legacy_main_digests(source)
     else:
-        current, _, live, _ = paired(tmp_path / "pair")
         with pytest.raises(ValueError, match="not index-only"):
-            normal_preflight(current, source, live, backup_time=1)
+            _repair_staged_databases(source)
     assert (source / ".tinyassets.db").read_bytes() == before
 
 
 @pytest.mark.parametrize("many", [False, True])
-def test_rollback_repairs_index_only_drift(source, tmp_path, many):
-    from tests.test_box_restore_authority import paired
-    from tinyassets.restore_recovery import normal_preflight
+def test_rollback_database_repair_accepts_index_only_drift(source, many):
+    from tinyassets.restore_recovery import _repair_staged_databases
 
-    current, _, live, _ = paired(tmp_path / "pair")
     path = source / ".tinyassets.db"
     if many:
         damage_many_indexes(path, corrupt_table=False)
     else:
         corrupt_index(path)
-    normal_preflight(current, source, live, backup_time=1)
+    _repair_staged_databases(source)
     with closing(sqlite3.connect(path)) as db:
         assert check(db) == []
         assert db.execute("SELECT count(*) FROM agent_turns").fetchone() == (4,)

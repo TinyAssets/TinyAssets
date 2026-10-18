@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.test_owner_cutover_census import source as source
 from tinyassets.boxes.layout import OWNER_BOX_MIGRATION
 from tinyassets.boxes.state import BoxHostState
 
@@ -56,6 +57,53 @@ def paired(tmp_path):
     shutil.copytree(current, staged)
     shutil.copytree(live, trees)
     return current, staged, live, trees
+
+
+@pytest.mark.parametrize("caller", ["seed", "rollback"])
+def test_non_index_fault_after_110_damaged_indexes_refuses_before_erasure(source, tmp_path, caller):
+    from tests.test_cutover_index_integrity import damage_many_indexes
+    from tinyassets.erasure_ledger import ErasureLedger, seed_legacy
+    from tinyassets.restore_recovery import normal_preflight
+
+    damage_many_indexes(source / ".tinyassets.db", corrupt_table=True)
+    before = fingerprint(source)
+    if caller == "seed":
+        ledger_root = tmp_path / "ledger"
+        ledger_root.mkdir()
+        ledger = ErasureLedger(ledger_root)
+        ledger.initialize()
+        with pytest.raises(ValueError, match="not index-only"):
+            seed_legacy(source, ledger, store_root=tmp_path)
+        assert ledger.entries() == []
+    else:
+        current, _, live, _ = paired(tmp_path / "pair")
+        live_before = fingerprint(current), fingerprint(live)
+        with pytest.raises(ValueError, match="not index-only"):
+            normal_preflight(current, source, live, backup_time=1)
+        assert (fingerprint(current), fingerprint(live)) == live_before
+    assert fingerprint(source) == before
+
+
+@pytest.mark.parametrize("many", [False, True])
+def test_rollback_repairs_index_only_drift(source, tmp_path, many):
+    from contextlib import closing
+
+    from tests.test_cutover_index_integrity import corrupt_index, damage_many_indexes
+    from tinyassets.restore_recovery import normal_preflight
+    from tinyassets.sqlite_integrity import check
+
+    current, _, live, _ = paired(tmp_path / "pair")
+    live_before = fingerprint(current), fingerprint(live)
+    path = source / ".tinyassets.db"
+    if many:
+        damage_many_indexes(path, corrupt_table=False)
+    else:
+        corrupt_index(path)
+    normal_preflight(current, source, live, backup_time=1)
+    with closing(sqlite3.connect(path)) as db:
+        assert check(db) == []
+        assert db.execute("SELECT count(*) FROM agent_turns").fetchone() == (4,)
+    assert (fingerprint(current), fingerprint(live)) == live_before
 
 
 def fingerprint(root):
