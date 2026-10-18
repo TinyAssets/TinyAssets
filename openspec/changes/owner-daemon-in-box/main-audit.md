@@ -87,8 +87,8 @@ Current validation:
   (`rehearsal-exact.xml`). No rehearsal volumes remain.
 - All **35 structural guard files, 961 cases**, passed without skips. All
   **34 affected heavy files, 1,358 cases**, also passed without skips.
-  `coverage.json` reconciles **3,577 distinct passing cases**, zero unresolved
-  cases across targeted, root, rehearsal and heavy receipts; the corrected
+  `coverage.json` reconciles **3,595 distinct passing cases**, zero unresolved
+  cases across targeted, root, rehearsal, heavy and supplemental receipts; the corrected
   census expectation is not credited from its earlier failing execution.
 - Touched-file Ruff, strict OpenSpec validation, `check_shapes.py` and
   `git diff --check` pass. Whole-repository Ruff retains **32 findings in six
@@ -97,6 +97,32 @@ Current validation:
   fix, including the interrupted commit. Only the owning CI shard is restarted
   after the final census-test correction; no runtime source changes after the
   four-shard restart.
+
+Implementation commit: `3b50457280a`. The committed PR selection against
+`conv/c6-owner-daemon-s3c` exactly matches the running selection: **1,206 files**,
+digest `sha256:f68881ef98bed601f61dac88da47e99b30dfb5d9d4eef9f0ae0de710f97b6f07`.
+The repository's `shard_of(path, 4)` assigns the files; each shard has one Linux
+oracle process with `TINYASSETS_DATA_DIR=/tmp/ta-data`, `CI=true`,
+`MSYS_NO_PATHCONV=1` and `-m "not slow"`.
+
+| Shard | Files | Passed | Failed | Errors | Skipped |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 253 | 5,400 | 0 | 0 | 5 |
+| 2 | 450 | 7,107 | 0 | 0 | 11 |
+| 3 | 256 | 5,682 | 0 | 0 | 107 |
+| 4 | 247 | 5,557 | 0 | 0 | 11 |
+| Total | 1,206 | **23,746** | **0** | **0** | 134 |
+
+Two tests are deselected by the required `not slow` marker. The 134 skips are
+not credited as passes. All **56 root-only skipped cases** have matching passing
+root receipts: the requested root/rehearsal runs, six owner-control tests and
+twelve supplemental backup/quota/entrypoint/ownership cases. Remaining skips
+are existing platform, optional-dependency or inapplicable-venue cases.
+Every final shard process exits zero (`final-shard-exits.json`); the earlier
+interrupted shard/coordinator statuses are retained only as diagnostic history.
+All nine validated Python/shell hashes remain unchanged. No rehearsal volumes
+remain. Final post-commit hygiene uses the same existing retirement declaration
+and `Registry row(s): S8`; its receipt is `hygiene-final.log`.
 
 No test, assertion or shape probe was removed, skipped, weakened or quarantined
 by this change.
