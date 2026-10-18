@@ -487,16 +487,13 @@ def test_completed_apply_restores_paired_owner_split(cutover, tmp_path):
     assert not (data / 'a1').exists()
     result = _restore_paired(cutover, tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert json.loads((data / '.layout.json').read_text())['box_layout'] == 'owner-box'
-    for uid, centers in ((300001, ('a1', 'a2')), (300002, ('b1', 'b2'))):
-        for center in centers:
-            assert (_fingerprint(store / str(uid) / center)['notes.txt']
-                    == before[center + '/notes.txt'])
+    assert _fingerprint(data) == before
+    assert not any(path.name.isdecimal() for path in store.iterdir())
     assert list(store.glob('.tinyassets-box-restore-old.*/300001/a1/notes.txt'))
 
 
 @pytest.mark.parametrize("authority", ["router", "revocation"])
-def test_same_layout_restore_carries_deletion_and_destroys_restored_tree(
+def test_disaster_restore_keeps_erasure_and_destroys_restored_tree(
     cutover, tmp_path, authority,
 ):
     import runpy
@@ -519,13 +516,10 @@ def test_same_layout_restore_carries_deletion_and_destroys_restored_tree(
     else:
         _sql(data / ".broker/state/owner-identities.db",
              "INSERT INTO owner_box_revocations VALUES ('alice',1)")
-    result = _restore_paired(cutover, tmp_path)
-    assert result.returncode == 0, result.stdout + result.stderr
+    result = _restore_paired(cutover, tmp_path, disaster=True)
+    assert result.returncode == 6, result.stdout + result.stderr
     assert not (store / "300001").exists()
     assert (store / "300002/b1/notes.txt").exists()
-    receipt = json.loads((data / ".owner-cutover.json").read_text())
-    assert [owner["uid"] for owner in receipt["plan"]] == [300002]
-    migration.verify(data, store)
     with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
         assert db.execute("SELECT deleted FROM owner_box_revocations WHERE principal='alice'"
                           ).fetchone() == (1,)
@@ -534,7 +528,7 @@ def test_same_layout_restore_carries_deletion_and_destroys_restored_tree(
     assert list(store.glob(".tinyassets-box-restore-old.*"))
 
 
-def _restore_paired(cutover, tmp_path):
+def _restore_paired(cutover, tmp_path, *, disaster=False):
     from tests.test_owner_cutover_restore import REPO, _shim
 
     data, store, data_archive, box_archive = cutover
@@ -571,7 +565,8 @@ else:
 """)
     wrapper.chmod(0o755)
     result = subprocess.run(
-        ['bash', str(REPO / 'deploy/backup-restore.sh')],
+        ['bash', str(REPO / 'deploy/backup-restore.sh'),
+         *(['--disaster-restore', '--acknowledge-unrecoverable-facts'] if disaster else [])],
         env={**os.environ, 'PATH': f"{binary}:{os.environ['PATH']}",
              'BACKUP_FILE': str(data_archive), 'BOX_BACKUP_FILE': str(box_archive),
              'BACKUP_VOLUME': 'synthetic-cutover', 'BOX_STORE_DIR': str(store),
@@ -650,7 +645,7 @@ def test_shared_doors_authenticate_migrated_keys_and_hooks(cutover, monkeypatch)
     ('source', 'verified cutover source'), ('new_owner', 'inventory changed'),
     ('receipt_mode', 'root-private'),
 ])
-def test_cutover_restore_carries_changes_but_refuses_mismatched_source(
+def test_pretraffic_restore_is_exact_and_refuses_mismatched_source(
         cutover, tmp_path, mutation, reason):
     import runpy
 
@@ -677,13 +672,13 @@ def test_cutover_restore_carries_changes_but_refuses_mismatched_source(
         (store / '300003').mkdir()
     else:
         (data / '.owner-cutover.json').chmod(0o644)
-    if mutation in {'source', 'receipt_mode'}:
+    if mutation in {'source', 'receipt_mode', 'new_owner'}:
         with pytest.raises(ValueError, match=reason):
             fence(data, staged, cutover_store=store, restored_store=restored_trees)
     else:
         fence(data, staged, cutover_store=store, restored_store=restored_trees)
-        assert json.loads((staged / '.layout.json').read_text())['box_layout'] == 'owner-box'
-        assert (restored_trees / '300001/a1/notes.txt').read_text() == 'private history for a1'
+        assert (staged / 'a1/notes.txt').read_text() == 'private history for a1'
+        assert list(restored_trees.iterdir()) == []
     assert (store / '300001/a1').is_dir()
     assert not (data / 'a1').exists()
 
@@ -712,7 +707,7 @@ def test_seeded_tombstones_block_broker_custody_without_old_metadata(cutover):
 @pytest.mark.parametrize('mutation', ['identity', 'admission', 'deletion', 'billing',
                                      'destruction', 'receipt', 'source', 'new_owner',
                                      'owner_operation'])
-def test_legacy_snapshot_carries_live_authority_with_owner_write_loss(cutover, tmp_path, mutation):
+def test_normal_restore_refuses_posttraffic_authority_changes(cutover, tmp_path, mutation):
     import runpy
 
     from tests.test_owner_cutover_restore import REPO
@@ -755,35 +750,18 @@ def test_legacy_snapshot_carries_live_authority_with_owner_write_loss(cutover, t
         (staged / 'a1/notes.txt').write_text('different paired source')
     else:
         (store / '300003').mkdir()
+    from tinyassets.router_traffic import open_traffic
+
+    open_traffic(data)
     before = _fingerprint(staged)
     helper = runpy.run_path(str(REPO / 'deploy/box-store-quotas.py'))
     restored_trees = tmp_path / 'restored-trees'
     restored_trees.mkdir()
-    if mutation in {'receipt', 'source'}:
-        with pytest.raises(ValueError):
-            helper['fence_restore'](data, staged, cutover_store=store,
-                                    restored_store=restored_trees)
-        assert _fingerprint(staged) == before
-    else:
+    with pytest.raises(ValueError):
         helper['fence_restore'](data, staged, cutover_store=store,
                                 restored_store=restored_trees)
-        if mutation == 'owner_operation':
-            with sqlite3.connect(restored_trees / '300001/.owner-boxd/boxhost.db') as db:
-                assert db.execute("SELECT state FROM ops WHERE op_id='write-after-cutover'"
-                                  ).fetchone() == ('unknown_after_restore',)
-        elif mutation == 'destruction':
-            assert not (restored_trees / '300001').exists()
-        elif mutation in {'identity', 'admission', 'deletion'}:
-            relative, table = {
-                'identity': ('.broker/state/owner-identities.db', 'owner_identities'),
-                'admission': ('.broker/state/owner-identities.db', 'center_admissions'),
-                'deletion': ('.broker/credential-custody.db', 'deleted_principals'),
-            }[mutation]
-            with sqlite3.connect(data / relative) as db:
-                expected = db.execute(f'SELECT * FROM {table}').fetchall()
-            with sqlite3.connect(staged / relative) as db:
-                assert db.execute(f'SELECT * FROM {table}').fetchall() == expected
-    assert (store / '300001/a1/notes.txt').read_text() == 'accepted owner write loss'
+    assert _fingerprint(staged) == before
+    assert list(restored_trees.iterdir()) == []
 
 
 def test_migrated_owner_processes_serve_history_requests_and_pause(
@@ -933,12 +911,11 @@ def test_migrated_owner_processes_serve_history_requests_and_pause(
             relays.close()
     assert _fingerprint(store / '300001') != json.loads(
         (data / '.owner-cutover.json').read_text())['owner_manifests']['300001']
+    from tinyassets.router_traffic import open_traffic
+
+    open_traffic(data)
+    live_before = _fingerprint(data), _fingerprint(store)
     result = _restore_paired(cutover, tmp_path)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert json.loads((data / '.layout.json').read_text())['box_layout'] == 'owner-box'
-    for uid, centers in ((300001, ('a1', 'a2')), (300002, ('b1', 'b2'))):
-        for center in centers:
-            assert (_fingerprint(store / str(uid) / center)['notes.txt']
-                    == before[center + '/notes.txt'])
-    assert list(store.glob('.tinyassets-box-restore-old.*/300001/a1/notes.txt'))
-    assert 'retaining current monotonic facts' in result.stdout
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert "traffic_opened_at" in result.stderr
+    assert (_fingerprint(data), _fingerprint(store)) == live_before

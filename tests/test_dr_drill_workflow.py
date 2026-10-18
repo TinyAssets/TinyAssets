@@ -540,11 +540,15 @@ def test_transfer_propagates_pipeline_failure_and_verifies_checksum():
 
 
 def test_restore_uses_exact_transferred_backup_file():
-    restore = _step("Restore exact backup on drill Droplet")
+    restore = _step("Disaster restore on drill Droplet")
     run = restore["run"]
     assert "BACKUP_FILE=" in run
     assert "BACKUP_DEST=" not in run
     assert "steps.backup.outputs.tarball" in str(restore.get("env", {}))
+    assert "--disaster-restore --acknowledge-unrecoverable-facts" in run
+    assert 'test "$rc" -eq 6' in run
+    assert '"credential_roots_reset": true' in run
+    assert '"operation_fences_reset": true' in run
 
 
 def test_restored_state_proof_precedes_compose_and_probe():

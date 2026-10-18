@@ -91,6 +91,7 @@ _ROUTER_IMPORTS = {
     "tinyassets.broker.owner_identities",
     "tinyassets.onboarding.owner_sessions",
     "tinyassets.router_credentials",
+    "tinyassets.router_traffic",  # Router-owned shared admission marker.
     "tinyassets.router_account_deletion",  # Shared identity erasure.
     "tinyassets.storage",  # data_dir is passed only to the shared store APIs.
 }
@@ -145,6 +146,12 @@ def test_router_guard_detects_owner_store_imports_and_file_access(source):
 # D7: the reviewed process boundaries, by module and qualified function.
 # Owner-runtime's own lifecycle is intrinsic to that module, not a second path.
 _ROLE_DISPATCH = {
+    ('operation_epoch.py', 'new_identity'): (
+        'Box operations bind to their durable journal epoch; router identities have no box journal.'
+    ),
+    ('operation_epoch.py', 'check'): (
+        'Box replay checks its journal before receipts exist; offline checks use the store.'
+    ),
     ('api_keys.py', 'current_store'): (
         'Router opens its key store; the box uses credential RPC.'
     ),

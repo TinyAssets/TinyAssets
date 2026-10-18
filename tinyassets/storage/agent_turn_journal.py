@@ -481,7 +481,9 @@ class AgentTurnJournal:
         work_receipt_id: str = "",
         agent_id: str = "main",
     ) -> TurnSnapshot:
-        scope = _scope(owner, universe, uuid.uuid4().hex)
+        from tinyassets.operation_epoch import new_identity
+
+        scope = _scope(owner, universe, new_identity(uuid.uuid4().hex))
         agent_id = records.identity(agent_id or "main")
         if not isinstance(prompt, str) or not isinstance(system, str):
             raise records.invalid()

@@ -327,3 +327,33 @@ def test_tombstone_waits_for_inflight_checkout_then_cleanup_sees_it(billing, mon
         deletion.join(5)
     assert deleted.is_set() and result[0]["id"] == "cs_synthetic"
     assert json.loads(plans.read("alice")["attempt"])["session_id"] == "cs_synthetic"
+
+
+@pytest.mark.parametrize("status,tier,suspended", [("active", "paid", False),
+                                                  ("past_due", "free", True)])
+def test_disaster_resync_reads_current_subscription_through_adapter(
+        tmp_path, monkeypatch, status, tier, suspended):
+    from tests.test_billing_boundary import _subscription_object
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_synthetic")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)
+    monkeypatch.setenv("STRIPE_PRICE_ID", "price_test")
+    obj = _subscription_object(owner_id="alice", status=status)
+    obj["customer"] = "cus_current"
+    plans = Plans(tmp_path)
+    plans.set_plan("alice", "free", event_created=1)
+    calls = []
+    def get(path):
+        calls.append(path)
+        if path.startswith("subscriptions?"):
+            return {"data": [obj], "has_more": False}
+        assert path == "subscriptions/sub_tinyassets"
+        return obj
+    monkeypatch.setattr(stripe, "_get", get)
+    report = stripe.restore_billing(tmp_path, 100)
+    assert report["plans_synced"] == 1
+    assert calls == ["subscriptions?status=all&limit=100", "subscriptions/sub_tinyassets"]
+    plan = plans.read("alice")
+    assert plan["tier"] == tier
+    assert bool(plan["billing_suspended"]) is suspended
+    assert plan["subscription_id"] == "sub_tinyassets"

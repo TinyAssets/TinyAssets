@@ -73,3 +73,28 @@ def test_handover_during_dispatch_preserves_unknown_receipt(tmp_path):
         successor.close()
 
     asyncio.run(run())
+
+
+def test_disaster_epoch_refuses_old_execution_before_receipt_lookup(tmp_path):
+    async def run():
+        calls = []
+        async def dispatch(message):
+            calls.append(message)
+            return {"ok": True}
+        handle = SimpleNamespace(account_id="owner", command_center_id="center", turn_id="turn")
+        path = tmp_path / ".remote-ta-receipts.sqlite3"
+        bridge = TurnBridge(owner="owner", center="center", turn="turn", handle=handle,
+                            database=path, dispatch=dispatch)
+        with sqlite3.connect(path) as db:
+            db.execute("CREATE TABLE restore_fence (epoch INTEGER NOT NULL)")
+            db.execute("INSERT INTO restore_fence VALUES (42)")
+        try:
+            answer = await asyncio.to_thread(bridge.request, handle, "old-execution", "a"*32, {})
+            assert "not re-run" in answer["error"]
+            assert calls == []
+            assert await asyncio.to_thread(bridge.request, handle, "42:new", "b"*32, {}) == {
+                "ok": True}
+            assert calls == [{}]
+        finally:
+            bridge.close()
+    asyncio.run(run())

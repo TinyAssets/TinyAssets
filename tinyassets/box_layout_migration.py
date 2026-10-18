@@ -74,6 +74,7 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
 
     main = ".tinyassets.db"
     add(main, "user_accounts user_sessions", "router")
+    add(".router-traffic.sqlite3", "traffic", "router")
     add(main, "deleted_principals llm_credential_deposit_owners llm_credential_custody "
         "llm_credential_deposit_commits llm_credential_refresh_state", "broker")
     add(main, "author_definitions author_forks agent_definitions agent_component_lineage "
@@ -1125,7 +1126,8 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
     legacy_owner, legacy_reason = _legacy_knowledge_owner(data / "knowledge.db", centers)
     shared = {
         ".layout.json": "broker", ".layout.lock": "broker",
-        ".owner-cutover.json": "broker",
+        ".owner-cutover.json": "broker", ".router-traffic.sqlite3": "router",
+        ".router-credentials.json": "router",
         "platform-expected-instance.json": "router", "release-state.json": "router",
         ".billing_webhook_verified.json": "router",
         ".broker/state/fence.json": "broker",
@@ -2151,6 +2153,9 @@ def _build_cutover(data: Path, store: Path, journal: dict, *, apply_quotas=True)
                     destination.unlink()
     _build_databases(data, store, shared, inventory)
     _split_histories(data, store, inventory)
+    from tinyassets.router_traffic import initialize as initialize_traffic
+
+    initialize_traffic(shared)
     # File-only shared state stays in its authority's custody and is included
     # in the same verified publication as the extracted databases.
     for relative, target in inventory["file_targets"].items():
@@ -2167,11 +2172,15 @@ def _build_cutover(data: Path, store: Path, journal: dict, *, apply_quotas=True)
     _seed_shared(data, shared, inventory, report, plan)
     _crash_at("after_seeding")
     from tinyassets.boxes.layout import BROKER_READ_GID, BROKER_UID, DAEMON_UID
+    from tinyassets.boxes.state import BoxHostState
 
     owner_manifests = {}
     workflow_counts = {}
     for owner in plan:
         tree = store / str(owner.uid)
+        state = BoxHostState(tree / ".owner-boxd/boxhost.db")
+        state.epoch(owner.principal)
+        state.close()
         for directory, dirs, files in os.walk(tree, followlinks=False):
             for path in (Path(directory), *(Path(directory) / name for name in dirs + files)):
                 mode = stat.S_IMODE(path.lstat().st_mode)

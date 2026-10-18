@@ -1,217 +1,59 @@
-# TinyAssets state restore runbook
+# Paired restore
 
-Use this procedure for whole-volume recovery, rollback after a bad migration,
-or a fresh-host recovery drill. Nightly full archives are gzip files named
-`tinyassets-data-YYYY-MM-DDTHH-MM-SSZ.tar.gz`.
+Restore stops every consumer and never restarts services. Keep both retained
+pre-restore volumes until validation succeeds. Never swap those volumes back
+manually after traffic; doing so bypasses credential and operation fences.
 
-`deploy/backup-restore.sh` validates and stages the data and paired box-store
-archives before stopping consumers. It swaps the staged data into place and
-retains the prior volume and owner trees for rollback. It never starts a service.
+## Maintenance-window rollback
 
-## Preconditions
-
-- Docker, rclone, Python 3, GNU tar, and `flock` are installed.
-- `/etc/tinyassets/env` contains the configured `BACKUP_DEST`, unless restoring
-  an already-downloaded archive with `BACKUP_FILE`.
-- The repository is present at `/opt/tinyassets`.
-- There is enough free space beside the Docker volume for the staged restore
-  and retained pre-restore data.
-
-Do not wipe or recreate the live volume. The restore script does not mutate it
-until archive validation and staging have succeeded.
-
-## Restore from the configured remote
+Normal restore is only for the pre-traffic cutover window. It restores the exact
+verified shared/owner pair, including the original layout. The live router
+`traffic_opened_at` marker, registered shared stores, owner trees and owner
+journals must be readable. Missing live state refuses. A missing traffic store
+is accepted only when the live layout proves a pre-traffic cutover.
 
 ```bash
-set -a
-. /etc/tinyassets/env
-set +a
+sudo -E bash /opt/tinyassets/deploy/backup-restore.sh --timestamp=YYYY-MM-DDTHH-MM-SSZ
+```
 
-# Show only eligible full-volume archives.
-sudo -E bash /opt/tinyassets/deploy/backup-restore.sh --list
+Do not use that command for an operational rollback after traffic opens.
 
-# Confirm selection without mutation.
-DRY_RUN=1 sudo -E bash /opt/tinyassets/deploy/backup-restore.sh
+## Disaster recovery, including a fresh droplet
 
-# Restore the newest full-volume archive.
-sudo -E bash /opt/tinyassets/deploy/backup-restore.sh
+Provision empty replacement shared and quota-enabled XFS owner mounts at the
+usual locations. Retain the newest verified pair: data tar, owner-store tar and
+pair manifest. Set BACKUP_FILE and BOX_BACKUP_FILE when using local archives.
+A disaster restore refuses an older local or remote pair.
 
-# Or restore one exact UTC snapshot.
+Supply the existing WorkOS API credential for read-only identity reconciliation
+and the Stripe adapter configuration when available. An uncertain WorkOS lookup
+refuses publication; absence of billing configuration is listed in the report.
+No application service or box may start during preparation.
+
+```bash
+set +e
 sudo -E bash /opt/tinyassets/deploy/backup-restore.sh \
-  --timestamp=2026-07-23T03-00-00Z
+  --disaster-restore --acknowledge-unrecoverable-facts
+rc=$?
+set -e
+test "$rc" -eq 6
 ```
 
-## Restore an already-downloaded GitHub Release archive
+Status **6** means completed disaster recovery, with acknowledged loss from backup
+time to restore time. Every other nonzero status is failure. Inspect the durable
+`.disaster-restore.json` and logged report for credential reset, operation fences,
+erased owners, billing reconciliation and the daily-spend hold. All owners must
+sign in and reconnect external credentials. Pre-restore bearer credentials and
+operations are refused. Consents, grants, content and other listed classes revert
+to backup time. Erasure alone is carried from readable tombstones and WorkOS;
+erased trees are destroyed before publication.
 
-`BACKUP_FILE` must be an absolute, readable, non-symlink regular-file path. It
-bypasses rclone and remains caller-owned.
+Start only an image compatible with the restored layout. Run the acceptance
+canaries while ordinary traffic remains closed, then use the router's local
+root-authenticated acceptance RPC (run `scripts/open_router_traffic.py` as host root).
+The router commits `traffic_opened_at` before admitting user traffic. Verify the
+deployed SHA and app path before deleting retained directories.
 
-```bash
-sudo -E env \
-  BACKUP_FILE=/var/backups/tinyassets/tinyassets-data-2026-07-23T03-00-00Z.tar.gz \
-  bash /opt/tinyassets/deploy/backup-restore.sh
-```
-
-Do not combine `BACKUP_FILE` with `--list` or `--timestamp`.
-
-## What a successful restore does
-
-The script:
-
-1. Rejects an unreadable archive and any member that is absolute, traverses
-   upward, is outside `_data`, is a symbolic/hard link, or is a special file.
-2. Extracts the archive into a unique sibling stage with `_data` stripped,
-   preserving dotfiles and nested files.
-3. Acquires a non-blocking lock scoped to this resolved Docker volume.
-4. Stops every running container that Docker reports as mounting the volume.
-5. Renames the current `_data` to a unique retained sibling and moves the
-   staged directory into `_data`.
-6. Automatically puts the prior directory back if the second rename fails.
-
-The final output prints the live path and retained pre-restore path. Record the
-retained path before continuing.
-
-## Start and verify separately
-
-```bash
-sudo systemctl start tinyassets-daemon
-sudo systemctl status tinyassets-daemon --no-pager
-
-python3 /opt/tinyassets/scripts/mcp_public_canary.py \
-  --url http://127.0.0.1:8001/mcp --verbose
-```
-
-Only a green canary proves the restored daemon is usable. On a drill host, keep
-the host available when the probe is red so the failure evidence survives.
-
-## Remove retained data after a green canary
-
-Set `OLD_DIR` to the exact path printed by the restore. Verify its shape before
-removing it:
-
-```bash
-OLD_DIR=/var/lib/docker/volumes/tinyassets-data/.tinyassets-restore-old.REPLACE
-case "${OLD_DIR}" in
-  /var/lib/docker/volumes/*/.tinyassets-restore-old.*)
-    sudo rm -rf -- "${OLD_DIR}"
-    ;;
-  *)
-    echo "refusing unexpected OLD_DIR: ${OLD_DIR}" >&2
-    exit 1
-    ;;
-esac
-```
-
-## Roll back after a red canary
-
-Stop the daemon. Keep the failed restored directory as evidence, and move the
-retained prior directory back:
-
-```bash
-sudo systemctl stop tinyassets-daemon
-
-LIVE_DIR=/var/lib/docker/volumes/tinyassets-data/_data
-OLD_DIR=/var/lib/docker/volumes/tinyassets-data/.tinyassets-restore-old.REPLACE
-FAILED_DIR=/var/lib/docker/volumes/tinyassets-data/.tinyassets-restore-failed.$(date -u +%Y%m%dT%H%M%SZ)
-
-case "${LIVE_DIR}|${OLD_DIR}|${FAILED_DIR}" in
-  /var/lib/docker/volumes/*/_data\|/var/lib/docker/volumes/*/.tinyassets-restore-old.*\|/var/lib/docker/volumes/*/.tinyassets-restore-failed.*)
-    sudo mv -- "${LIVE_DIR}" "${FAILED_DIR}"
-    sudo mv -- "${OLD_DIR}" "${LIVE_DIR}"
-    ;;
-  *)
-    echo "refusing unexpected restore paths" >&2
-    exit 1
-    ;;
-esac
-
-sudo systemctl start tinyassets-daemon
-python3 /opt/tinyassets/scripts/mcp_public_canary.py \
-  --url http://127.0.0.1:8001/mcp --verbose
-```
-
-## Common failures
-
-- `archive member validation failed`: the live volume and containers have not
-  been changed. Select another full archive.
-- `restore already in progress`: another restore holds this volume's lock.
-  Wait for it; restores of different volume directories use independent locks.
-- `failed to stop all running volume consumers`: inspect
-  `docker ps -a --filter volume=tinyassets-data`; no directory swap occurred.
-- `failed to install staged volume`: the script attempted automatic rollback.
-  Confirm `_data` contains the prior state and preserve any
-  `.tinyassets-restore-old.*` directory before retrying.
-- Disk full while staging: free space beside the volume or provision a larger
-  disk. Do not stream-extract into the live volume; that bypasses validation
-  and rollback.
-
-The automated fresh-host proof is `.github/workflows/dr-drill.yml`. It
-transfers a selected full archive, invokes this restore script, starts only the
-daemon, probes through an SSH port forward, destroys a green drill host, and
-keeps a red host by default.
-# Box-store pair
-
-The production box store uses the 20 GiB DigitalOcean volume
-`tinyassets-box-store` at
-`/dev/disk/by-id/scsi-0DO_Volume_tinyassets-box-store`. Dispatch
-`box-store-volume.yml` on main before the deploy that installs the store.
-The device script formats an unformatted volume as XFS once and mounts it
-through `var-lib-boxhostd-owners.mount` with `pquota,noatime,nodiscard`.
-It never reformats a volume with a filesystem. An absent volume requires an
-explicit config choice of the 8 GiB loop image; a missing configured volume
-later fails rather than switching stores. An installed loop store with
-owner data is never automatically switched to the volume; restore the
-matched backup pair onto the mounted volume during a maintenance window.
-Do not delete or detach the volume during restore or rollback.
-
-An installed box store adds `tinyassets-box-store-<timestamp>.tar.gz` beside
-each full data archive in the rclone destination. `backup.sh` freezes XFS
-while archiving only numeric owner trees to local staging, thaws it, validates
-the archive, then uploads it. The box member is not shipped to GitHub releases. Restore requires
-the exact timestamp pair and
-extracts the box member to a temporary directory on the XFS store. Numeric
-owners, ACLs, xattrs and safe in-tree links are preserved. The broker's
-`.broker/state/owner-identities.db` export in the data archive must contain `boxes`
-rows with `uid`, `gid`, `project_id` and `bhard_bytes` for every owner tree;
-restore clears project IDs from retained old trees, re-applies each XFS project
-and `bhard` to installed trees, then runs `xfs_quota report`.
-An empty P2a box store needs no registry rows. A local restore can provide the
-matching archive through `BOX_BACKUP_FILE` and a registry export through
-`BOX_REGISTRY_FILE`. `BOX_STORE_DIR` permits a restore drill on a mounted
-temporary XFS store.
-For a data backup from before box-store pairing, set
-`ALLOW_PRE_STORE_BACKUP=1` when the box member is absent. The restore logs this
-allowance and retains the current box trees only when neither the staged archive
-nor the live volume has an owner-box layout marker. An owner-box layout requires
-its paired box-store archive.
-
-The restore script stops boxhostd and retains old owner trees in
-`.tinyassets-box-restore-old.*` on the store. After checking both restored
-data and boxes, start `boxhostd.service`; remove the retained old trees only
-after the post-restore verification. To roll back before removing them, stop
-boxhostd, move the restored numeric owner trees aside, move the retained old
-trees back, restore the retained old data volume, and re-apply the old project
-IDs and `bhard` limits from the retained data volume's
-`.broker/state/owner-identities.db` with `box-store-quotas.py`:
-
-```bash
-sudo python3 deploy/box-store-quotas.py \
-  /var/lib/boxhostd/owners /var/lib/boxhostd/owners \
-  /var/lib/docker/volumes/tinyassets-data/_data/.broker/state/owner-identities.db
-```
-
-Then start services and
-verify the public canary. Keep both archive members and the old directories
-until verification completes.
-
-
-Owner-box snapshots include the root-private `.boxhost/boxhost.db` receipt
-journal in the data member. Stop all volume consumers and boxhostd before
-`BACKUP_MODE=snapshot`; the exclusive layout lock and empty runsc census must
-pass. Online owner-box backup is currently refused and remains a cutover gate.
-Restore refuses an owner-box archive without its matching journal, keeps both
-live and staged layout locks through the swap, and retains the original data
-and owner trees. Verify receipt replay/unknown states, generations, quota
-assignments, cross-owner refusals and retained deletion fences on a production
-copy before authorizing the production cutover. A synthetic fixture pass is
-not production-copy migration or restore evidence.
+The scheduled `.github/workflows/dr-drill.yml` uses the acknowledged disaster
+path and asserts status 6 plus credential-reset and operation-fence evidence.
+A drill must not open a production tunnel or enable production workflows.

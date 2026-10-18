@@ -53,12 +53,16 @@ Inputs:
    systemd units, log rotation, swap).
 8. Streams the exact validated backup from primary to drill, then requires the
    destination SHA-256 to match before restore.
-9. Runs `deploy/backup-restore.sh` with the exact transferred `BACKUP_FILE` and
-   verifies the representative member at Docker's inspected volume mountpoint.
+9. Runs `deploy/backup-restore.sh` with the newest verified pair and both
+   `--disaster-restore --acknowledge-unrecoverable-facts` flags. Requires completed
+   status 6 and credential-reset/operation-fence evidence. Identity reconciliation
+   requires WorkOS configuration; inspect the loss-window and billing report.
+   Representative content must survive; credential and receipt stores intentionally change.
 10. Requires exactly one `TINYASSETS_IMAGE=` assignment in the fresh template
    and writes only the validated public digest into it. It starts only the
    daemon compose service, waits 30s, opens an SSH port-forward to loopback,
    and probes `http://localhost:8001/mcp` via `scripts/mcp_probe.py status`
+   with the drill's rotated canary bearer (the old configured bearer is invalid)
    (no Cloudflare tunnel required).
 
 ## Pass / fail criteria

@@ -282,7 +282,7 @@ class Venue:
             ).stdout
         )
 
-    def restore(self, *, replay=False):
+    def restore(self, *, replay=False, disaster=False, refuse=False):
         # Only the absent host service manager and sandbox inventory are
         # represented locally. Extraction, fencing, quotas and swap are real.
         script = r"""set -eu
@@ -301,6 +301,10 @@ chmod +x /tmp/bin/* /opt/tinyassets/boxhostd/current/runsc
 export PATH=/tmp/bin:$PATH
 bash /support/deploy/backup-restore.sh
 """
+        if disaster:
+            script = script.replace("bash /support/deploy/backup-restore.sh",
+                                    "bash /support/deploy/backup-restore.sh "
+                                    "--disaster-restore --acknowledge-unrecoverable-facts")
         result = self.container(
             "--rm",
             "--privileged",
@@ -335,15 +339,19 @@ bash /support/deploy/backup-restore.sh
             script,
             check=False,
         )
-        if result.returncode:
-            raise RuntimeError("restore failed")
-        if replay:
+        expected = 4 if refuse else 6 if disaster else 0
+        if result.returncode != expected:
+            raise RuntimeError("restore failed: " + str(result.returncode))
+        if replay or refuse:
             return
-        # The source archive is checked byte-for-byte before the forward
-        # cutover. Verify the normalized generation and all restored owner trees.
-        result = self.migration("verify")
-        if result.returncode:
-            raise RuntimeError("normalized restore verification failed")
+        self.helper(
+            "from pathlib import Path; import tarfile; "
+            "archive=tarfile.open('/backup/original.tar.gz'); "
+            "root=Path('/data'); "
+            "assert all((root / m.name.removeprefix('_data/')).read_bytes() == "
+            "archive.extractfile(m).read() for m in archive.getmembers() if m.isfile()); "
+            "assert not any(p.name.isdecimal() for p in Path('/box-store').iterdir())"
+        )
         self.helper(
             "from pathlib import Path; import shutil; "
             '[shutil.rmtree(p) for p in Path("/box-store").glob(".tinyassets-box-restore-old.*")]'
@@ -512,20 +520,21 @@ def archive_rehearsal(image, archive, *, store_bytes):
         ):
             raise RuntimeError("incomplete serving proof")
         passed(step, **counts)
-        step = "restore_after_write"
-        venue.restore()
-        required(venue.migration("apply"))
         for phase in ("snapshot", "write"):
             venue.helper("import runpy; runpy.run_path('/support/rehearse_box_move.py')"
                          "['restore_replay_probe'](" + repr(phase) + ")")
-        venue.restore(replay=True)
+        step = "normal_restore_after_traffic_refuses"
+        venue.restore(replay=True, refuse=True)
+        passed(step, refusals=1)
+        step = "disaster_restore_after_traffic"
+        venue.restore(replay=True, disaster=True)
         replayed = json.loads(venue.helper(
             "import runpy; print(runpy.run_path('/support/rehearse_box_move.py')"
             "['restore_replay_probe']('verify'))").stdout)
         if replayed != census["owners"] or replayed < 1:
-            raise RuntimeError("incomplete per-owner replay proof")
-        passed(step, comparisons=1, replay_refusals=3 * replayed, fenced_owners=replayed,
-               revoked_keys=1, erased_owners=1)
+            raise RuntimeError("incomplete replay proof")
+        passed(step, comparisons=1, replay_refusals=3 * replayed + 1, fenced_owners=replayed,
+               stale_credentials=3, erased_owners=1)
     except BaseException:
         report[step] = {"status": "FAIL"}
         print(step + " FAIL", flush=True)

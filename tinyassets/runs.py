@@ -1864,7 +1864,9 @@ def create_run(
         # A run is somebody's; no synthetic principal is minted.
         raise ValueError("create_run actor must be a real principal; an unowned value is not one")
     initialize_runs_db(base_path)
-    run_id = uuid.uuid4().hex[:16]
+    from tinyassets.operation_epoch import new_identity
+
+    run_id = new_identity(uuid.uuid4().hex[:16])
     resolved_owner_user_id = (
         str(owner_user_id or "")
         if owner_user_id is not None

@@ -875,6 +875,10 @@ class OwnerBoxd(BoxdCore):
             self._begin(self._owner_id, op_id, kind, payload)
 
     def _begin(self, cc: str, op_id: str, kind: str, payload: object) -> None:
+        with self._state._conn() as db:
+            fence = db.execute("SELECT v FROM host WHERE k='restore_epoch'").fetchone()
+        if fence and not op_id.startswith(str(self._state.epoch(cc)) + ":"):
+            raise BoxOperationRefused("operation predates restore epoch; not re-run")
         previous = self._state.begin(cc, op_id, kind, op_digest(kind, payload))
         if previous is not None:
             raise BoxOperationRefused("consumed operation id is not re-run")

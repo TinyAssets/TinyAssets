@@ -364,6 +364,7 @@ def _fake_rclone_bin(tmp_path: Path) -> Path:
         "    exit 0\n"
         "fi\n"
         'if [[ "$1" == "ls" ]]; then exit 0; fi\n'
+        'if [[ "$1" == "cat" ]]; then cat "$REMOTE_PAIR"; exit 0; fi\n'
         'if [[ "$1" == "obscure" ]]; then echo "obscured"; exit 0; fi\n'
         "exit 0\n",
         encoding="utf-8",
@@ -441,6 +442,18 @@ def test_restore_exits_1_when_backup_dest_missing():
 # ---------------------------------------------------------------------------
 
 
+_PRETRAFFIC_LAYOUT = b'{"box_layout":"owner-split","state":"migrating","migration":"owner-box"}'
+
+
+def _empty_owner_pair(tmp_path):
+    owners = tmp_path / "owners"
+    owners.mkdir(exist_ok=True)
+    pair = tmp_path / "tinyassets-box-store-2026-07-23T00-00-00Z.tar.gz"
+    with tarfile.open(pair, "w:gz") as archive:
+        archive.add(owners, arcname="owners")
+    return pair
+
+
 def _fake_restore_bin(tmp_path: Path, volume_dir: Path) -> Path:
     """Create Docker/rclone shims for an isolated named-volume test."""
     fake_bin = tmp_path / "restore-bin"
@@ -467,6 +480,14 @@ def _fake_restore_bin(tmp_path: Path, volume_dir: Path) -> Path:
         newline="\n",
     )
     (fake_bin / "docker").chmod(0o755)
+    (volume_dir / ".layout.json").write_bytes(_PRETRAFFIC_LAYOUT)
+    for name, body in {
+        "findmnt": 'if [[ "${@: -1}" == FSTYPE ]]; then echo xfs; else echo rw,prjquota; fi',
+        "systemctl": ':',
+    }.items():
+        path = fake_bin / name
+        path.write_text("#!/usr/bin/env bash\n" + body + "\n", newline="\n")
+        path.chmod(0o755)
     return fake_bin
 
 
@@ -479,6 +500,7 @@ def _backup_archive(tmp_path: Path, source_dir: Path) -> Path:
     remote = tmp_path / "remote"
     remote.mkdir()
     fake_bin = _fake_restore_bin(tmp_path, source_dir)
+    (source_dir / ".layout.json").write_text('{"box_layout":"owner-split","state":"stable"}')
     fake_rclone = fake_bin / "rclone"
     fake_rclone.write_text(
         "#!/usr/bin/env bash\n"
@@ -510,8 +532,14 @@ def _backup_archive(tmp_path: Path, source_dir: Path) -> Path:
 
 
 def _restore_env(tmp_path: Path, volume_dir: Path, archive: Path, fake_bin: Path) -> dict:
+    pair = _empty_owner_pair(tmp_path)
+    # Use the production timestamp pairing contract, including for corrupt archives.
+    selected = tmp_path / "tinyassets-data-2026-07-23T00-00-00Z.tar.gz"
+    selected.write_bytes(archive.read_bytes())
     return {
-        "BACKUP_FILE": _bash_path(archive),
+        "BACKUP_FILE": _bash_path(selected),
+        "BOX_BACKUP_FILE": _bash_path(pair),
+        "BOX_STORE_DIR": _bash_path(tmp_path / "owners"),
         "BACKUP_LOG": _bash_path(tmp_path / "restore.log"),
         "BACKUP_VOLUME": "test-volume",
         "TEST_VOLUME_DIR": _bash_path(volume_dir),
@@ -535,7 +563,7 @@ def test_restore_rejects_unsafe_docker_volume_name(tmp_path):
 def test_restore_round_trip_from_backup_archive_preserves_dotfiles(tmp_path):
     source_dir = tmp_path / "source-volume" / "_data"
     source_dir.mkdir(parents=True)
-    (source_dir / ".tinyassets.db").write_text("secret-state", encoding="utf-8")
+    (source_dir / ".private-state").write_text("secret-state", encoding="utf-8")
     (source_dir / "nested").mkdir()
     (source_dir / "nested" / "canon.json").write_text("{}", encoding="utf-8")
     archive = _backup_archive(tmp_path, source_dir)
@@ -548,7 +576,7 @@ def test_restore_round_trip_from_backup_archive_preserves_dotfiles(tmp_path):
     result = _run(RESTORE_SH, _restore_env(tmp_path, target_dir, archive, fake_bin))
 
     assert result.returncode == 0, f"restore failed:\n{result.stdout}\n{result.stderr}"
-    assert (target_dir / ".tinyassets.db").read_text(encoding="utf-8") == "secret-state"
+    assert (target_dir / ".private-state").read_text(encoding="utf-8") == "secret-state"
     assert (target_dir / "nested" / "canon.json").read_text(encoding="utf-8") == "{}"
     assert not (target_dir / "obsolete.txt").exists()
     assert archive.exists(), "caller-owned BACKUP_FILE must not be deleted"
@@ -557,6 +585,28 @@ def test_restore_round_trip_from_backup_archive_preserves_dotfiles(tmp_path):
     assert list(target_dir.parent.glob(".tinyassets-restore-old.*")), (
         "successful swap must retain the previous volume for post-canary rollback"
     )
+
+
+@pytest.mark.parametrize("opened", [False, True])
+def test_normal_restore_without_live_owner_store_refuses_before_swap(tmp_path, opened):
+    from tinyassets.router_traffic import initialize, open_traffic
+
+    target = tmp_path / "volume/_data"
+    target.mkdir(parents=True)
+    (target / "prior").write_text("unchanged")
+    archive = _simple_full_archive(tmp_path / "old.tar.gz")
+    binary = _fake_restore_bin(tmp_path, target)
+    env = _restore_env(tmp_path, target, archive, binary)
+    if opened:
+        initialize(target)
+        open_traffic(target)
+    env["BOX_STORE_DIR"] = _bash_path(tmp_path / "absent-owners")
+    env["ALLOW_PRE_STORE_BACKUP"] = "1"  # The retired override cannot bypass refusal.
+    result = _run(RESTORE_SH, env)
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert "paired restore requires a readable live owner store" in result.stdout
+    assert (target / "prior").read_text() == "unchanged"
+    assert not list(target.parent.glob(".tinyassets-restore-old.*"))
 
 
 def test_restore_corrupt_archive_leaves_volume_and_containers_intact(tmp_path):
@@ -622,6 +672,9 @@ def test_restore_consumer_enumeration_failure_leaves_volume_intact(tmp_path):
 
 def _simple_full_archive(path: Path, value: str = "new") -> Path:
     with tarfile.open(path, "w:gz") as tar:
+        layout = tarfile.TarInfo("_data/.layout.json")
+        layout.size = len(_PRETRAFFIC_LAYOUT)
+        tar.addfile(layout, BytesIO(_PRETRAFFIC_LAYOUT))
         member = tarfile.TarInfo("_data/value.txt")
         data = value.encode("utf-8")
         member.size = len(data)
@@ -773,6 +826,7 @@ def test_remote_restore_filters_brain_and_uses_unique_download_dir(tmp_path):
     target_dir.mkdir(parents=True)
     remote_archive = _simple_full_archive(tmp_path / "remote-data.tar.gz")
     fake_bin = _fake_restore_bin(tmp_path, target_dir)
+    remote_pair = _empty_owner_pair(tmp_path)
     rclone_log = tmp_path / "rclone.log"
     (fake_bin / "rclone").write_text(
         "#!/usr/bin/env bash\n"
@@ -782,6 +836,7 @@ def test_remote_restore_filters_brain_and_uses_unique_download_dir(tmp_path):
         "  exit 0\n"
         "fi\n"
         'if [[ "$1" == "ls" ]]; then exit 0; fi\n'
+        'if [[ "$1" == "cat" ]]; then cat "$REMOTE_PAIR"; exit 0; fi\n'
         'if [[ "$1" == "copyto" ]]; then\n'
         '  argc=$#; dest="${!argc}"; echo "$dest" >> "$RCLONE_LOG"\n'
         '  cp "$REMOTE_ARCHIVE" "$dest"; exit 0\n'
@@ -797,6 +852,8 @@ def test_remote_restore_filters_brain_and_uses_unique_download_dir(tmp_path):
         "BACKUP_VOLUME": "test-volume",
         "TEST_VOLUME_DIR": _bash_path(target_dir),
         "REMOTE_ARCHIVE": _bash_path(remote_archive),
+        "REMOTE_PAIR": _bash_path(remote_pair),
+        "BOX_STORE_DIR": _bash_path(tmp_path / "owners"),
         "RCLONE_LOG": _bash_path(rclone_log),
         "PATH": _bash_path_env(fake_bin),
     }

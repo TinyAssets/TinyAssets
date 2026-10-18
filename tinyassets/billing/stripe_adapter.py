@@ -431,6 +431,42 @@ def create_checkout_session(
     return {"id": str(session["id"]), "url": str(session["url"])}
 
 
+def restore_billing(root, now):
+    """Offline staging writer; remote reads use the ordinary Stripe adapter seam."""
+    from contextlib import closing
+
+    from tinyassets.broker.owner_reads import Plans
+
+    plans = Plans(root)
+    if not plans.path.exists():
+        return {"plans": "source unavailable", "abuse_suspension": "no external source"}
+    if not _secret_key():
+        return {"plans": "Stripe not configured", "abuse_suspension": "no external source"}
+    plans.initialize()
+    with closing(plans._connect()) as db:
+        rows = db.execute("SELECT * FROM plans").fetchall()
+    synced = 0
+    for row in rows:
+        subscription = find_active_subscription(row["owner"]) or row["subscription_id"]
+        if not subscription:
+            if row["tier"] != "free":
+                raise BillingUnavailable("restore paid plan has no subscription mapping")
+            plans.set_suspension(row["owner"], reason="billing", suspended=False)
+            continue
+        obj = _get("subscriptions/" + urllib.parse.quote(subscription, safe=""))
+        event = {"type": "customer.subscription.updated", "data": {"object": obj}}
+        state = subscription_state_from_event(event)
+        if obj.get("id") != subscription or state is None or state[0] != row["owner"]:
+            raise BillingUnavailable("restore billing identity mismatch")
+        plans.set_plan(row["owner"], state[1], event_created=max(now, row["event_created"] + 1),
+                       ends_at=subscription_end_from_event(event),
+                       customer_id=obj.get("customer"), subscription_id=subscription)
+        plans.set_suspension(row["owner"], reason="billing",
+                             suspended=obj.get("status") in {"unpaid", "past_due"})
+        synced += 1
+    return {"plans_synced": synced, "abuse_suspension": "no external source"}
+
+
 def cancel_subscription(subscription_id: str, *, immediately: bool = False) -> dict:
     """Cancel a subscription.
 

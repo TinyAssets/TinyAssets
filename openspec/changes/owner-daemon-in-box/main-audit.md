@@ -1,25 +1,50 @@
 # Main vs the clean per-user-instance shape: read-only audit
 
-## Review round 3: monotonic restore and cutover corrections (2026-10-18)
+## Review round 4: exact pre-traffic or acknowledged disaster restore (2026-10-18)
+
+Starting head `9d31b5052b5`, base `conv/c6-owner-daemon-s3c`, same worktree and
+branch. Synthetic local venues only; no production access, workflow execution,
+publication, branch/configuration change or delegation. Receipts and diagnostic
+runs are outside the repository at
+`C:/Users/Jonathan/AppData/Local/Temp/c6-restore-r4-10820se3/`.
+
+- Normal restore publishes the exact pair only before traffic. It reads the LIVE
+  router marker and refuses opened/disaster generations, missing or corrupt live
+  stores, owner trees and journals. The old data-only/pre-store fallback is gone.
+- The deploy requests admission after public and owner-box canary acceptance via
+  host-root RPC. The router commits `.router-traffic.sqlite3:traffic_opened_at`;
+  that file is backed up. Anonymous writable callbacks are closed too. Static app
+  probes and separately authenticated canary sign-in do not open admission.
+- Disaster resets bearer roots or deletes unkeyed digest rows, drops external
+  credential custody/outbound grants/browser vaults, fences opaque receipt IDs by
+  owner epoch and broker ULIDs by cutoff, and blocks spend through the restore day.
+  WorkOS identity and Stripe billing reconciliation use existing adapter seams.
+  Erasure alone unions readable tombstones; erased trees disappear before startup.
+- `restore_facts.py`, AUTHORITIES/MONOTONIC and the carry-forward callers are
+  deleted. `design.md` contains the complete current credential and fence lists.
+  The durable report lists the loss window, reset evidence and unreconciled classes;
+  completed disaster exits 6. DR workflow/runbook use both acknowledgement flags.
+- Existing restore tests were ported without dropping archive safety, ownership,
+  quota, atomic-swap, rollback or concurrency assertions. Structural inventories
+  classify the router-owned admission store and the two operation-role boundaries.
+  CI also exposed two races: browser cancellation now rejects a late frame, and the
+  deletion test waits for its initiating HTTP activity to leave before asserting
+  the one held background turn. The original assertions remain.
+
+Earlier restore evidence below is historical and superseded by this section and
+current design/specification. No production deployment or live-user proof is claimed.
+
+## Historical review round 3: monotonic restore and cutover corrections (2026-10-18)
 
 Starting head `0f6cd44e3a7`, same cutover branch and base. Synthetic fixtures and
 disposable local venues only; no production access, deploy, publication, branch
 switch or delegated work. Accepted receipts: `C:/Users/Jonathan/AppData/Local/Temp/ta-c6-review3/accepted/`.
 Sibling directories contain diagnostic runs and are not final validation receipts.
 
-- Restore now has one rule, **Restore keeps monotonic facts**, specified in design
-  and the owner-isolation delta. The exact shared-store/table/file inventory is
-  in design.md. `restore_facts.carry_shared` reads current facts without touching
-  live SQLite sidecars, projects revocations and complete local erasure into
-  staging, then `fence_owner_journals` unions consumed IDs and advances epochs.
-  Both volumes remain untouched on projection failure. Legacy pairs normalize
-  through the same forward migration before applying the rule.
-- Deleted the newer-deletion/identity/destruction equality refusals, pristine
-  post-cutover manifest comparisons, and owner-write-loss switch. Archive and
-  identity-pair validation remain. Existing scenarios now assert carried facts;
-  none of their tests or shape probes was retired. Every owner mutation consumes
-  its ID before execution, including bash; replay refuses instead of returning
-  a cached result or executing again.
+- Restore's round-3 carry-forward implementation is retired by round 4 above.
+  Archive and identity-pair validation remain; consumed operations still refuse
+  replay. Current restore rules and inventories live in design.md and the
+  owner-isolation delta, not this historical evidence record.
 - Deletion-only startup enters no dispatch lifespan or egress loop. Background
   delivery, run, scheduler, activity, maintenance and consumer dispatch hold the
   owner activity gate; drain sees active work and refuses queued execution.

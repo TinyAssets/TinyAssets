@@ -712,7 +712,7 @@ jobs:
           fi
           echo "Transferred and verified: ${TARBALL} (${destination_sha256})"
 
-      - name: Restore exact backup on drill Droplet
+      - name: Disaster restore on drill Droplet
         id: restore
         env:
           DRILL_IP: ${{ steps.drillip.outputs.ip }}
@@ -729,7 +729,13 @@ jobs:
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "root@${DRILL_IP}" \
               "BACKUP_FILE=${backup_file} DRY_RUN=0 \
-               bash /opt/tinyassets/deploy/backup-restore.sh" 2>&1
+               bash /opt/tinyassets/deploy/backup-restore.sh \
+                 --disaster-restore --acknowledge-unrecoverable-facts" \
+                 > "${RUNNER_TEMP}/disaster-restore.log" 2>&1 && rc=0 || rc=$?
+          cat "${RUNNER_TEMP}/disaster-restore.log"
+          test "$rc" -eq 6
+          grep -q '"credential_roots_reset": true' "${RUNNER_TEMP}/disaster-restore.log"
+          grep -q '"operation_fences_reset": true' "${RUNNER_TEMP}/disaster-restore.log"
 
       - name: Verify representative restored state
         env:
@@ -850,9 +856,26 @@ jobs:
       - name: Probe drill Droplet directly
         id: drillprobe
         env:
-          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
           DRILL_IP: ${{ steps.drillip.outputs.ip }}
         run: |
+          set -euo pipefail
+          # Disaster recovery invalidates the former operational bearer too.
+          # Read only this drill's replacement, without emitting the secret.
+          TINYASSETS_WIKI_CANARY_TOKEN=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "root@${DRILL_IP}" "python3 -" <<'PY'
+          import json
+          from pathlib import Path
+          import subprocess
+
+          mount = subprocess.check_output(
+              ["docker", "volume", "inspect", "--format", "{{.Mountpoint}}", "tinyassets-data"],
+              text=True).strip()
+          print(json.loads((Path(mount) / ".router-credentials.json").read_text())[
+              "TINYASSETS_WIKI_CANARY_TOKEN"])
+          PY
+          )
+          echo "::add-mask::${TINYASSETS_WIKI_CANARY_TOKEN}"
+          export TINYASSETS_WIKI_CANARY_TOKEN
           # compose.yml binds daemon on 127.0.0.1:8001 (loopback only).
           # External HTTP probe to ${DRILL_IP}:8001 gets connection-refused
           # regardless of daemon health. Fix via SSH port-forward: open a

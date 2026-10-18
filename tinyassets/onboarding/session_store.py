@@ -153,6 +153,12 @@ def _load_key() -> bytes:
     # without the key. Popping BEFORE the parse means even a rejected value
     # does not survive in the environment.
     raw = os.environ.pop(SEAL_KEY_ENV, "")
+    from tinyassets.storage import data_dir
+    from tinyassets.universe_files import read_data_path
+
+    restored_key = read_data_path(data_dir() / ".runtime/restore-session-seal.key", max_bytes=128)
+    if restored_key is not None:
+        raw = restored_key.decode("ascii").strip()
     if raw.strip():
         key = _decode_key(raw)
         if key is None:

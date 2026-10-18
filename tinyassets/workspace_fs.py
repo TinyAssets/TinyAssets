@@ -1068,7 +1068,8 @@ class BoxPoolFilesystem:
         import uuid
 
         try:
-            provider.remove(handle, "workspace-sweep:" + uuid.uuid4().hex, file_path)
+            provider.remove(handle, f"{handle.epoch}:workspace-sweep:" + uuid.uuid4().hex,
+                            file_path)
         except BoxNotFound:
             return
 

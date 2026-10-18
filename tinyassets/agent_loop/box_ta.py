@@ -220,6 +220,12 @@ class TurnBridge:
         """Called on the box collector thread; duplicates never redispatch."""
         if not isinstance(request, str) or not _ID.fullmatch(request):
             return {"error": "invalid ta request id"}
+        from tinyassets.operation_epoch import check
+
+        try:
+            check(self.database, execution)
+        except ValueError:
+            return {"error": "operation predates restore epoch; not re-run"}
         raw = json.dumps(message, sort_keys=True, separators=(",", ":"))
         if len(raw.encode()) > MAX_REQUEST:
             return {"error": "ta request too large"}

@@ -347,7 +347,8 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
             "restore_before_write",
             "crash_resume",
             "serving",
-            "restore_after_write",
+            "normal_restore_after_traffic_refuses",
+            "disaster_restore_after_traffic",
             "cleanup",
         }
         assert all(step["status"] == "PASS" for step in result.values())
@@ -364,9 +365,10 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
             "controls": 8, "plans": 8, "writes": 4, "reconnect": 2,
         }
         assert result["restore_before_write"]["comparisons"] == 1
-        assert result["restore_after_write"] == {
-            "status": "PASS", "comparisons": 1, "replay_refusals": 6, "fenced_owners": 2,
-            "revoked_keys": 1, "erased_owners": 1,
+        assert result["normal_restore_after_traffic_refuses"] == {"status": "PASS", "refusals": 1}
+        assert result["disaster_restore_after_traffic"] == {
+            "status": "PASS", "comparisons": 1, "replay_refusals": 7, "fenced_owners": 2,
+            "stale_credentials": 3, "erased_owners": 1,
         }
         captured = capsys.readouterr()
         assert captured.err == ""

@@ -323,6 +323,12 @@ class WorkOSAuthProvider(AuthProvider):
             _log_token_rejection("invalid_subject")
             return None
 
+        from tinyassets.router_traffic import accepts_issued_at
+        from tinyassets.storage import data_dir
+
+        if not accepts_issued_at(data_dir(), claims.get("iat")):
+            _log_token_rejection("expired")
+            return None
         return claims
 
     def resolve_token(self, token: str) -> Identity | None:

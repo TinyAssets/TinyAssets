@@ -180,17 +180,17 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(tmp
     assert (store / "300001/note").read_text() == "backup bytes"
     with sqlite3.connect(store / "300001/.owner-boxd/boxhost.db") as db:
         assert db.execute("SELECT op_id,state FROM ops ORDER BY op_id").fetchall() == [
-            ("backup-op", "unknown_after_restore"), ("surviving-op", "unknown_after_restore")]
+            ("backup-op", "unknown_after_restore")]
         assert db.execute("SELECT epoch FROM boxes WHERE command_center_id='alice'"
                           ).fetchone()[0] > previous_epoch
     with sqlite3.connect(data / ".api-keys.sqlite3") as db:
-        assert db.execute("SELECT revoked_at FROM api_keys ORDER BY id").fetchall() == [
-            (84,), (42,)]
+        assert db.execute("SELECT * FROM api_keys").fetchall() == []
     log = (tmp_path / "restore.log").read_text()
-    for fact in ("owner erasures", "shared revocations", "consumed operation IDs",
-                 "owner journal epochs", ".broker/credential-custody.db:deleted_principals"):
-        warning = f"WARN disaster restore: {fact} after {timestamp}: unknown"
-        assert warning in completed.stdout and warning in log
+    report = json.loads((data / ".disaster-restore.json").read_text())
+    assert report["credential_roots_reset"] and report["operation_fences_reset"]
+    assert "owner consents and grants" in report["reverted_classes"]
+    assert report["backup_time"] < report["restore_time"]
+    assert "WARN disaster restore:" in completed.stdout
     assert "WARN disaster restore completed" in log
 
     # A wholly lost generation has no surviving directory entries to consult.
@@ -205,9 +205,8 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(tmp
     assert (store / "300001/note").read_text() == "backup bytes"
     assert not (store / "300002").exists()
     with sqlite3.connect(data / ".api-keys.sqlite3") as db:
-        assert db.execute("SELECT revoked_at FROM api_keys WHERE id='revoked-before-backup'"
-                          ).fetchone() == (42,)
+        assert db.execute("SELECT * FROM api_keys").fetchall() == []
     with sqlite3.connect(store / "300001/.owner-boxd/boxhost.db") as db:
         assert db.execute("SELECT op_id,state FROM ops").fetchall() == [
             ("backup-op", "unknown_after_restore")]
-    assert f"owner erasures after {timestamp}: unknown" in recovered.stdout
+    assert "credential_roots_reset" in recovered.stdout

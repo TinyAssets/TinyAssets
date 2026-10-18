@@ -1230,7 +1230,9 @@ def test_deletion_drains_real_turn_before_sweep_and_destroys_late_writes(
                     while time.monotonic() < deadline:
                         status = await box.get("/_box/status", headers={
                             "x-box-secret": boxes.secrets["alice"]})
-                        if status.json()["draining"]:
+                        # The triggering HTTP response can arrive before its
+                        # activity context exits. Wait for only the held turn.
+                        if status.json()["draining"] and status.json()["active"] == 1:
                             break
                         await asyncio.sleep(.01)
                     assert status.json()["draining"] and status.json()["active"] == 1

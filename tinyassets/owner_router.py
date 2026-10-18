@@ -107,11 +107,28 @@ class OwnerRouter:
         return getattr(self.app, name)
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or not forwarded_path(scope["path"]):
+        if scope["type"] != "http":
             return await self.app(scope, receive, send)
         from tinyassets.auth.middleware import current_identity_or_none
+        from tinyassets.router_traffic import admits
+        from tinyassets.storage import data_dir
 
         identity = current_identity_or_none()
+        if not forwarded_path(scope["path"]):
+            # Only immutable public app assets and the independently keyed
+            # canary sign-in may bypass closed admission. Anonymous token,
+            # OAuth and billing callbacks can write shared authority too.
+            path = scope["path"]
+            probe = (scope["method"] in {"GET", "HEAD"} and (
+                path in {"/app", "/app/sw.js", "/app/ui-frame",
+                         "/app/oauth/client-metadata.json"}
+                or path.startswith("/app/m/")))
+            canary_login = path == "/app/canary-sign-in"
+            if not probe and not canary_login and not await run_in_threadpool(
+                    admits, data_dir(), identity.user_id if identity else None):
+                return await JSONResponse({"error": "maintenance"}, status_code=503)(
+                    scope, receive, send)
+            return await self.app(scope, receive, send)
         token = hook_token(scope["path"])
         if token is not None:
             from tinyassets.router_credentials import hook_identity
@@ -120,6 +137,9 @@ class OwnerRouter:
             identity = await run_in_threadpool(hook_identity, data_dir(), token)
         if identity is None:
             return await JSONResponse({"error": "not_found"}, status_code=404)(
+                scope, receive, send)
+        if not await run_in_threadpool(admits, data_dir(), identity.user_id):
+            return await JSONResponse({"error": "maintenance"}, status_code=503)(
                 scope, receive, send)
         if scope["path"].startswith("/app/"):
             from tinyassets.onboarding.owner_sessions import COOKIE, lookup

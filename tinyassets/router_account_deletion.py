@@ -20,6 +20,34 @@ class AccountDeletionError(RuntimeError):
     """Deletion refused. The message never carries a secret."""
 
 
+def workos_user_exists(user_id: str, *, request=None) -> bool:
+    """Restore reconciliation through the same WorkOS transport seam as deletion."""
+    if _WORKOS_USER_ID.fullmatch(user_id) is None:
+        return True  # A local/non-WorkOS principal has no upstream identity.
+    api_key = os.environ.get("WORKOS_API_KEY", "").strip()
+    if not api_key:
+        raise AccountDeletionError("WorkOS restore reconciliation is not configured")
+    req = urllib.request.Request(
+        f"{_WORKOS_BASE_URL}/user_management/users/{urllib.parse.quote(user_id, safe='')}",
+        headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+        method="GET")
+    try:
+        with (request or urllib.request.urlopen)(req, timeout=20) as response:
+            if response.status != 200:
+                raise AccountDeletionError("WorkOS restore reconciliation failed")
+            import json
+
+            if json.load(response).get("id") != user_id:
+                raise AccountDeletionError("WorkOS restore identity mismatch")
+            return True
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return False
+        raise AccountDeletionError("WorkOS restore reconciliation failed") from None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise AccountDeletionError("WorkOS restore reconciliation unavailable") from None
+
+
 def delete_workos_user(
     user_id: str, *, request: Callable[..., Any] | None = None
 ) -> str:

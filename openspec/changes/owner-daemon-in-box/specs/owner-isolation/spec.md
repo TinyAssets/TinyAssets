@@ -1,61 +1,58 @@
 ## ADDED Requirements
 
-### Requirement: Restore keeps monotonic facts
+### Requirement: Restore: pre-traffic exact, post-traffic disaster
+Normal restore SHALL restore a verified backup pair exactly. It SHALL refuse
+before publication if the LIVE router `traffic_opened_at` exists (including when
+newer than the pair), a disaster credential generation exists, or any registered
+live store, owner tree or owner journal is absent or unreadable.
+Data-only restore and pre-store overrides SHALL NOT bypass paired validation.
+The router SHALL durably record its backed-up traffic marker before admitting
+ordinary traffic after deploy canary acceptance. Closed admission SHALL also
+refuse anonymous writable callbacks; only immutable app probes and the separately
+authenticated canary sign-in may bypass it. A missing live marker store
+SHALL refuse unless the live layout proves the pre-traffic cutover state.
+Disaster recovery SHALL require both existing acknowledgement flags, select the
+newest verified pair, reset every bearer credential root or delete unkeyed digest
+rows, drop external credential custody and outbound grants/vaults, fence every
+operation/receipt authority, and block remaining daily spend until the next day.
+It SHALL reconcile identity erasure through WorkOS and billing through Stripe
+adapter seams, report unavailable billing/suspension sources, loss window and
+classes reverting to backup time, and exit 6 on completed recovery.
+Only erasure tombstones SHALL be carried from readable sources. Erased trees
+SHALL be destroyed before publication. Unsafe paths, invalid pairs, uncertain
+identity reconciliation and preparation failures SHALL preserve original volumes.
 
-Restore SHALL read current live owner erasures, every shared-layer revocation,
-and consumed owner operation IDs and epochs while consumers are stopped. It SHALL
-carry those facts into restored state before publishing volumes or starting a
-daemon. Missing live credentials SHALL remain revoked even when revocation deleted
-their row or file. Erased owners SHALL undergo the same complete local sweep and
-tree destruction as account deletion. Consumed IDs SHALL become refusals and the
-owner journal epoch SHALL advance. Every mutating tool, including bash, SHALL
-record its operation ID before execution. Any carry-forward failure SHALL leave
-the pre-restore volumes intact. Only malformed or mismatched backup pairs SHALL
-be rejected by backup comparisons; newer monotonic facts SHALL be carried forward.
-When live state is missing or unreadable, restore SHALL refuse by default. Only
-the combined `--disaster-restore --acknowledge-unrecoverable-facts` operator flags
-SHALL permit recovery using the newest available verified backup pair's facts
-unioned with every readable surviving revocation, erasure and operation journal.
-It SHALL reapply these facts before publication, report every fact class whose
-post-backup history is unknown with the backup timestamp, and exit 6 on completed
-disaster recovery. Archive validation, consumer exclusion and projection failures
-SHALL retain their normal fail-closed behavior.
+#### Scenario: Exact maintenance-window rollback
+- **WHEN** a verified pair is restored before ordinary traffic has opened
+- **THEN** normal restore preserves the backup's exact paired state
+- **AND** no live credential, policy or operation row is carried forward
 
-#### Scenario: Live monotonic facts are unavailable after volume loss
-- **WHEN** live state is missing or unreadable
-- **THEN** restore refuses without both explicit disaster and acknowledgement flags
-- **AND** with both flags it uses the newest available backup pair and unions readable surviving records before restoring
-- **AND** backup revocations, erasures and consumed IDs remain applied
-- **AND** the completed run exits 6 and emits WARN lines naming post-backup owner erasures, shared revocation classes, consumed operation IDs and epochs as unknown after the named backup time
-- **AND** normal rehearsal does not enable this exception
+#### Scenario: Normal restore after traffic
+- **WHEN** the live router marker is newer than the backup pair
+- **THEN** normal restore refuses before swapping either volume
 
-#### Scenario: Revocation after the snapshot
-- **WHEN** a key, hook, session, router credential or broker grant is revoked after a snapshot
-- **THEN** restoring that snapshot preserves the revocation and erased custody
+#### Scenario: Missing live authority
+- **WHEN** a registered live store, owner tree or owner journal is missing or unreadable
+- **THEN** normal restore refuses before publication
+- **AND** an absent marker store is accepted only for a proven pre-traffic cutover
 
-#### Scenario: Erasure after the snapshot
-- **WHEN** an owner is erased after a snapshot
-- **THEN** restore removes that owner's restored local data and shared credentials and preserves its deletion tombstones
+#### Scenario: Acknowledged disaster recovery on a fresh droplet
+- **WHEN** both disaster acknowledgement flags are supplied with the newest verified pair
+- **THEN** recovery completes with status 6 and rotation/fencing evidence
+- **AND** pre-restore API keys, sessions, hook tokens and external bearer credentials fail
+- **AND** pre-restore write, bash, broker outbound and receipt replays refuse
+- **AND** non-ULID IDs are fenced by epoch, never by lexical timestamp comparison
+- **AND** every owner's remaining daily cap is zero until the next day
+- **AND** the report names the backup-to-restore loss window and reverted classes
 
-#### Scenario: Write and bash replay after restore
-- **WHEN** a consumed write or bash operation ID is submitted after restore
-- **THEN** the journal refuses it without executing it and its epoch exceeds both prior epochs
+#### Scenario: Erasure survives loss of live stores
+- **WHEN** any readable tombstone source or WorkOS proves an owner deleted
+- **THEN** disaster restore unions that erasure and destroys the restored owner tree
+- **AND** an uncertain identity lookup refuses publication
 
-#### Scenario: Carry-forward failure
-- **WHEN** any monotonic fact cannot be reapplied
-- **THEN** restore fails loudly before publishing either volume and leaves the pre-restore state intact
-
-#### Scenario: Backup predates a completed write
-- **WHEN** an owner-box backup is restored after a later operation completed
-- **THEN** retrying that operation ID is refused without changing restored bytes
-- **AND** both snapshot and later operation IDs remain refused after restart
-- **AND** the restored owner's epoch exceeds both pre-restore epochs
-- **AND** a legacy pair is normalized through the forward cutover before facts
-  are applied, preserving one owner-local journal and no shared operation fence
-
-#### Scenario: Restore cannot resurrect a deleted owner
-- **WHEN** current router deletion receipts or owner-box revocations are newer than a staged backup
-- **THEN** restore carries the tombstone and repeats complete erasure before publishing either volume, including when broker retirement failed after the local sweep
+#### Scenario: Disaster preparation failure
+- **WHEN** credential reset, fencing, erasure or reconciliation cannot complete
+- **THEN** neither staged volume is published and original state remains intact
 
 ### Requirement: Cutover preserves knowledge bytes and removes rehearsal residue
 The migration SHALL copy admitted centers' vector directories and knowledge

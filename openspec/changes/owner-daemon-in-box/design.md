@@ -1,58 +1,89 @@
 # Design: the owner's daemon in the owner's box
 
-## Restore keeps monotonic facts
+## Restore: pre-traffic exact, post-traffic disaster
 
-Restore reads current live facts with every consumer stopped and both layouts
-locked. It carries them into the staged shared and owner volumes before publishing
-either volume or starting any daemon. Failure discards staging and preserves the
-pre-restore volumes. Snapshot contents never overrule these facts:
+NORMAL restore is the exact verified paired backup, with no authority projection.
+Before publishing either volume it checks the LIVE router traffic store, every
+registered live shared store, owner tree and owner `.owner-boxd/boxhost.db`.
+Missing or unreadable live state refuses; absence is never "never started".
+Any live `traffic_opened_at` refuses, including one newer than the pair;
+normal restore never reopens post-traffic state or a disaster generation. A missing traffic store
+is accepted only when the live layout proves an unfinished pre-traffic cutover.
+Legacy cutover-source pairs retain their exact original bytes and layout.
+Data-only restore and the pre-store override are removed; a missing owner store
+or paired member can never select a path around the live preflight.
+Pair integrity and identity checks, consumer exclusion and atomic publication
+remain mandatory. Failure preserves both original volumes.
 
-- Owner erasures: router `deleted_owners`, broker `owner_box_revocations`, custody
-  `deleted_principals`, and host `owner_destroys`. Restored erased owners follow
-  deletion's local sweep and complete tree destruction, with shared custody and
-  router credentials erased as well.
-- Shared revocations: API-key `revoked_at`; removed hook-owner mappings; removed
-  owner sessions, login flows/completions, approval handoffs, inline/hosted model
-  flows, OAuth codes/access/refresh tokens and sealed refresh-session files;
-  removed or replaced router credentials; broker connection/grant `revoked_at`,
-  removed connection capabilities, erased custody slots and their metadata,
-  revoked browser-vault records and deleted policy authority. A removed credential
-  is a revocation even when its writer retains no tombstone: snapshot authority
-  must intersect live authority, including its credential incarnation.
-- Consumed operation IDs and epochs in every owner's `.owner-boxd/boxhost.db`.
-  Restore unions IDs as refusals and advances epochs beyond both generations.
-  Every mutating tool, including bash, consumes its ID before execution.
+The cutover initializes router admission closed. The workflow starts the router
+and runs the public and owner-box acceptance canaries while ordinary traffic is
+held. After acceptance, a root-authenticated local RPC asks the router to open
+admission. The router writes and fsyncs `traffic_opened_at` in its backed-up
+`.router-traffic.sqlite3` transaction before the first ordinary request can pass.
+Canary admission cannot set that marker. Repeated acceptance never resets it.
+Closed admission also blocks anonymous token, sign-in, OAuth and billing callbacks.
+Only immutable app assets and the independently keyed canary sign-in bypass it.
 
-This single carry-forward mechanism replaces newer-deletion, identity-frontier,
-destruction-receipt and shared-manifest rollback refusals. Pair validation still
-rejects malformed archives and mismatched identities. Restore never calls remote
-billing or provider endpoints. Rehearsal proves post-snapshot key revocation and
-owner erasure survive, and pre-restore write and bash IDs cannot execute again.
+### Disaster restore
 
-### Disaster recovery when live facts are unavailable
+Both `--disaster-restore --acknowledge-unrecoverable-facts` are required. Restore
+selects the newest verified pair, records backup time -> restore time, prepares
+all safety changes in staging, and exits **6** after publication. It never starts
+services. A fresh droplet uses this path, including the scheduled DR drill.
 
-Normal restore refuses missing or unreadable live owner-box state. The sole
-operator exception requires both `--disaster-restore` and
-`--acknowledge-unrecoverable-facts`. It restores the newest available backup
-pair (local siblings or the configured remote destination); selecting an older
-timestamp is refused. Pair validation and the stopped-consumer/sandbox census
-remain mandatory. A lost volume must first have an empty replacement mounted at
-the usual paths, including the quota-enabled owner store.
+Credential roots and their reset:
+- Router `.connect/session_secret` and `.connect/client_secret`: replace with
+  fresh random secrets. `client_id` is an identifier, not a credential.
+- Router approval/login sessions in `.runtime/owner-sessions.db`, legacy
+  `.tinyassets.db:user_sessions`, hosted/inline OAuth flows, and sealed app
+  refresh files: remove all rows/files. Rotate the session seal root used by
+  the restored router; no restored handle or login flow survives.
+- `.api-keys.sqlite3:api_keys` and `.hook-owners.sqlite3:hook_owners` use plain
+  SHA-256, without a pepper: delete all rows; introduce no new crypto.
+- Local MCP OAuth `.auth.db` clients/codes/access/refresh rows use random tokens
+  and plain digests, not a signing key: delete them. WorkOS signs external JWTs;
+  enforce a durable restore-time issuance floor before accepting those tokens.
+- Operational wiki-canary bearer and canary sign-in door key: fresh replacements
+  in router-owned `.router-credentials.json` override the old environment values.
+  Recovery operators reconfigure acceptance clients from these replacements.
+- Broker `owner_box_secrets`: rotate every secret before startup.
+- Drop every broker custody, outbound connection, grant/capability and browser
+  vault row, including file credential vaults. Provider OAuth/refresh credentials
+  cannot be invalidated by rotating our keys; owners must reconnect.
+- Drop one-use policy approvals and router outside bearer families/grants. Provider signing keys
+  and billing webhook credentials are not user bearer credentials.
 
-The verified backup supplies the baseline facts. Each readable surviving shared
-authority store and owner journal contributes its proven revocations, erasures,
-consumed IDs and epochs through the existing carry-forward mechanism. Missing or
-unreadable stores retain the backup's facts; absence in a damaged volume is not
-proof of a revocation. Unsafe links, conflicting identities and projection errors
-still refuse before publication. Readable surviving deletion markers are applied
-even when their adjacent database is lost.
+Operation fences:
+- Each owner's `.owner-boxd/boxhost.db`: bump epoch to a fresh restore incarnation;
+  old write/edit/bash handles and epoch-bound operation IDs refuse. These IDs
+  are journal positions, not ULIDs, and MUST NOT be compared with a time cutoff.
+- `.broker/ops.db:meta.cutoff_ms`: advance to restore time; admission validates
+  the entire ULID and rejects old IDs before receipt lookup.
+- Owner `.remote-ta-receipts.sqlite3`: advance the execution epoch fence; opaque
+  request IDs are scoped to their epoch-bound execution, not timestamp-compared.
+- Per-center `.external_write_receipts.db`: advance the epoch fence; opaque run
+  and hint IDs are not ULIDs. Newly created run IDs carry their creation epoch;
+  admission refuses old epochs before reserving or activating any receipt.
 
-Every disaster run logs a `WARN` report naming each fact class whose post-backup
-history is unknown, with the backup timestamp, and exits **6** after successful
-publication (completed with unrecoverable facts). It never starts services. This
-operator path is excluded from normal rehearsal; one synthetic test proves
-default refusal, acknowledged recovery, surviving-record union, backup facts and
-the explicit unknown-class report.
+Erasure is the ONE carried fact class. Union tombstones from every readable
+router `deleted_owners`, broker `owner_box_revocations`, custody
+`deleted_principals`, and host `owner_destroys`, including the backup. Reconcile
+restored identities through the WorkOS adapter: an absent user is erased, an
+indeterminate response refuses. Destroy erased owner trees before publication.
+Tests inject the adapter seam and never call the network.
+
+Reconcile plan and billing suspension through the Stripe adapter where configured;
+report unavailable sources and abuse suspension explicitly. Block every owner's
+remaining daily spend through the end of the restore day, independent of policy
+caps or missing policy rows. There is no authoritative daily-spend reconstruction
+source today. Report owner consents/grants, effector consents, capability grants,
+graph receivers, outside grants, spend reservations, policies, schedules, content,
+turns, receipts and suspension history as reverted to backup time where not reset
+or reconciled above. This is acknowledged loss, never carry-forward.
+
+Rehearsal proves exact normal restore before traffic, normal refusal after traffic,
+and completed disaster recovery with stale key/session/hook rejection, erased
+owner destruction and write/bash/broker-outbound replay refusal.
 
 ## Shape check against the research (required for every slice)
 
@@ -578,22 +609,23 @@ fixed owner mount; gVisor isolation remains separate acceptance. Every admitted
 center reads history and pending requests, pauses/resumes, reads its broker plan
 and writes history. Reconnect confirmation uses the real shared model-connect
 door and model-use reconciliation on a disposable shared-store clone: a new
-connection changes shared custody authority, which the paired restore must continue to
-fence. Reconnect owner writes remain on the migrated XFS trees. The original
-serving generation is then paired-restored with explicit owner-write-loss
-acceptance and compared again. Reports expose only fixed step
-names, numeric counts and PASS/FAIL, one line per reached step:
+connection changes shared custody authority. The original serving generation is
+then disaster-restored with both acknowledgements after a normal restore has
+refused the live traffic marker. Reports expose only fixed step names, numeric
+counts and PASS/FAIL, one line per reached step:
 `<step> PASS [<counter>=<nonnegative integer> ...]` or `<step> FAIL`.
-The ten steps are setup, preflight, census, apply, verify,
-restore_before_write, crash_resume, serving, restore_after_write and cleanup.
+The eleven steps are setup, preflight, census, apply, verify,
+restore_before_write, crash_resume, serving, normal_restore_after_traffic_refuses,
+disaster_restore_after_traffic and cleanup.
 The synthetic run records 2 owners, 4 centers, 27 census rows, 3 manifests,
 2 interruptions and 2 resume comparisons; serving records 4 history reads,
 4 history turns, 4 pending reads, 4 saved requests, 8 controls, 8 plan reads,
-4 verified writes and 2 reconnect confirmations. Both restores record one
-byte comparison. The after-write step additionally records 2 fenced owners and
-6 refused write/bash replay IDs, one carried key revocation and one complete
-owner erasure after a same-layout restore. Tests scan stdout and the report for identifiers, paths and
-content, enforce numeric counters, and check the redacted failure report.
+4 verified writes and 2 reconnect confirmations. Normal rollback compares the
+exact original pair. Disaster recovery rejects old write/bash identities under
+fresh handles, the old broker outbound ULID and all three stale API-key, session
+and hook credentials. It also proves complete owner erasure. Tests scan stdout
+and the report for identifiers, paths and content, enforce numeric counters,
+and check the redacted failure report.
 
 Synthetic proof venue:
 `python scripts/linux_oracle.py --as-root --docker-engine -- -q --no-header -p no:cacheprovider tests/test_box_move_rehearsal.py`.
@@ -732,12 +764,9 @@ Synthetic Linux proof covers two owners with two centers each, every census
 class, legacy runs/checkpoints/transcripts, a never-admitted center, plans,
 custody, shared key/hook authentication, crash/resume and paired restoration.
 The restore uses the real shell/SQLite/tar implementation; only host service,
-mount/quota and absent sandbox-runtime queries are modeled. A completed cutover
-accepts only its verified source pair or a valid same-layout pair. A legacy
-source is normalized through the forward cutover in unpublished staging. The
-single monotonic-facts projection then carries current authority, erases deleted
-owners and fences owner journals. Only malformed/mismatched source receipts
-refuse; newer facts are applied, not compared for equality. Services remain stopped on return.
+mount/quota and absent sandbox-runtime queries are modeled. Normal restore returns the original pair exactly before traffic. After traffic,
+only acknowledged disaster recovery may reset credentials, fence operations and
+reconcile erasures. Services remain stopped on return.
 This is not real XFS quota, sandbox, deployment or production-data proof.
 
 The process rehearsal starts two real owner apps against the migrated roots
@@ -813,12 +842,9 @@ author's box and a published copy in commons. This matches runtime publication:
 local published definitions per owner separately from exclusive source placement.
 Apply verifies local workflow references before publishing its completed marker.
 
-Restore uses the single **Restore keeps monotonic facts** rule above. Legacy
-pairs are normalized through this forward migration before projection, so every
-consumed operation has its one owner-local journal destination. The shared
-`.boxhost` retains only host destruction authority. Rehearsal verifies restored
-content and refused snapshot/later write IDs and bash IDs, retained key
-revocation, and complete erasure in the same paired restore.
+Restore follows **Restore: pre-traffic exact, post-traffic disaster** above.
+Normal cutover rollback restores the original pair exactly. Disaster recovery
+resets credentials and fences operations before any box starts.
 
 The migration classifies every table of every shared root database:
 
@@ -862,9 +888,11 @@ explicit classes refuse. Shared tables are not split.
   today.
 - **Canary:** the canary account signs in through the router and runs one
   turn in its own box. That is the per-deploy acceptance.
-- **Cutover rollback:** after the first owner-box write, the old image can't
-  run on the split data. Rollback is restore-from-backup only, within the
-  cutover's maintenance window.
+- **Cutover rollback:** an old image cannot run on the isolated layout. Before
+  ordinary traffic opens, exact paired restore can roll back the maintenance
+  window. After router admission opens, only acknowledged disaster restore is
+  allowed, with the credential resets, operation fences and erasure reconciliation
+  specified above.
 
 ### D11 as built (slice 6b, 2026-10-17)
 
@@ -875,6 +903,11 @@ explicit classes refuse. Shared tables are not split.
   images remain available for individual rollback. The current harness link
   advances only after boxhostd accepts the target. No host service restart is
   part of a roll.
+- **Traffic acceptance.** After public acceptance and `roll_owner_boxes.py`'s
+  owner-box canary succeed, deploy-prod invokes `scripts.open_router_traffic` as
+  host root through the inspected data-volume socket. The router verifies the
+  kernel peer, commits `traffic_opened_at` to `.router-traffic.sqlite3`, and then
+  admits ordinary authenticated requests. Broker callers cannot open admission.
 - **Authority and metadata.** Kernel-authenticated `daemon.sock` accepts
   `roll(image[, uid])` only from root (the deploy caller) or broker UID 1002;
   router UID 1001 cannot roll. The no-UID call durably publishes the next-wake
@@ -912,8 +945,8 @@ explicit classes refuse. Shared tables are not split.
   prove `ACTIVE_BOX_LAYOUT = "owner-box"` before any launch or rollback.
   Missing or pre-cutover declarations refuse even before the first write;
   there is no override. The refusal directs the cutover operator to
-  `deploy/backup-restore.sh`; this slice does not implement restore or edit
-  migration/deploy fail-safe logic. Failed cleanup never advertises readiness.
+  `deploy/backup-restore.sh`: exact rollback only before traffic, acknowledged
+  disaster recovery afterwards. Failed cleanup never advertises readiness.
 - **Driver and receipt.** Root control calls have a 600-second socket bound;
   SSH has a 610-second bound and a ten-second connect bound. Static extraction
   bounds create/remove at 30 seconds each and export/tar at 180 seconds each.
@@ -1016,30 +1049,3 @@ without opening the source SQLite files. After the paired backup is verified,
 apply repairs exactly those indexes and verifies integrity again, recording
 `reindexed: <db>/<index>` in its durable report. Any other integrity error refuses;
 no table repair or blanket REINDEX is permitted.
-
-The complete shared revocation inventory is read by `restore_facts.carry_shared`
-from the stopped live volume and applied only to the unpublished restored volume:
-
-| Store | Revocation authority |
-| --- | --- |
-| `.api-keys.sqlite3` | `api_keys.revoked_at` |
-| `.hook-owners.sqlite3` | Removed `hook_owners` rows |
-| `.auth.db` | Removed/replaced `oauth_clients`, `authorization_codes`, `access_tokens`, `refresh_tokens` |
-| `.outside-client-authority.sqlite3` | `outside_switch` disabling outside access |
-| `.hosted-model-auth.db` | Consumed/removed `hosted_model_flows`, `connection_oauth_flows` |
-| `.runtime/owner-sessions.db` | `owner_sessions`, `owner_login_flows`, `owner_login_completions`, `owner_refresh_sessions`, `owner_approval_handoffs`, `canary_sign_in_attempts`, `approval_handoffs`, `inline_model_flows` |
-| `.tinyassets.db` | Legacy `user_sessions` |
-| `.broker/credential-custody.db` | `llm_credential_deposit_owners`, `llm_credential_custody`, `llm_credential_deposit_commits`, `llm_credential_refresh_state`; permanent `deleted_principals` |
-| `.broker/outbound.db` | `outbound_connections`, `outbound_connection_grants`, `connection_capabilities`, `browser_vault` |
-| `.broker/state/owner-identities.db` | `owner_box_secrets`; permanent `owner_box_revocations` |
-| `.broker/accounts/*/policy.db` | Latest `policy` generation/document and consumed `once_approvals`; `.deleted` markers |
-| Files | Removed/replaced `.runtime/app_refresh_sessions/*.json`, `.connect/*`, and credential records in `.platform/credential-vaults/*/.credential-vault.json` |
-
-Rows/files representing live authority are intersected by identity and credential
-incarnation; missing live authority is revoked, never restored. Explicit revocation
-fields remain revoked. Owner identity/admission/quota reservations, deletion
-receipts and checkout settlement mappings are also retained. Erasure uses the
-existing broker local sweep and descriptor-based owner-tree destruction. External
-browser-vault keys are outside the archive and remain untouched during staging.
-`box-store-quotas.fence_owner_journals` reads both owner stores, retains all consumed
-IDs as `unknown_after_restore` refusals and advances epoch, generation and incarnation.

@@ -479,7 +479,7 @@ CANDIDATE_LAYOUT_PY
 refuse_on_layout() {  # $1 = what was about to start; $2 = why (default: the marker)
   local why
   if [ $# -ge 2 ]; then why="$2"; else
-    why="the data layout marker is incompatible with $1, unstable, unreadable, or locked by a migration: NOT starting $1. Restore the pre-migration backup with deploy/backup-restore.sh, then deploy the image built for the restored layout"
+    why="the data layout marker is incompatible with $1, unstable, unreadable, or locked by a migration: NOT starting $1. Before traffic opens, restore the exact pre-migration pair with deploy/backup-restore.sh; after traffic opens use its acknowledged disaster path (deploy/RESTORE.md), then deploy the image built for the restored layout"
   fi
   err "$why"
   docker stop "$DAEMON_CONTAINER" >/dev/null 2>&1 || true

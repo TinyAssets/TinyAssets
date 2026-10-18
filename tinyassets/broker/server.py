@@ -1134,6 +1134,9 @@ class _Connection:
             if self._server._policy_store is not None:
                 try:
                     store = self._server._policy_store
+                    if store.spend_blocked() and doc.get("inference_usage") is not None:
+                        self._server._ops.finish(namespace, op_id, "refused")
+                        return "refused"
                     spend = store.read(principal).document["spend"]
                     if (doc.get("inference_usage") is not None
                             and (spend["source_ceilings"] or any(

@@ -95,8 +95,8 @@ def restore_replay_probe(mode: str) -> int:
                     raise RuntimeError("owner epoch did not advance")
                 if (tree / ".replay-proof").read_bytes() != b"snapshot":
                     raise RuntimeError("owner snapshot was not restored")
-                core.write(handle, "rehearsal-later", "/cc/.replay-proof", b"later work",
-                           max_bytes=100)
+                core.write(handle, f"{handle.epoch}:rehearsal-later", "/cc/.replay-proof",
+                           b"later work", max_bytes=100)
                 for op_id, content in (("rehearsal-before", b"snapshot"),
                                        ("rehearsal-after", b"after")):
                     try:
@@ -132,11 +132,22 @@ def restore_replay_probe(mode: str) -> int:
         erased_tree.mkdir(mode=0o700)
         (erased_tree / "private").write_bytes(b"synthetic erased content")
         os.chown(erased_tree, 399999, 399999)
-        from tinyassets.api_keys import ApiKeyStore
+        import hashlib
 
-        with ApiKeyStore(data).db() as db:
-            db.execute("INSERT INTO api_keys VALUES "
-                       "('restore-key',?,'synthetic','synthetic',1,NULL,NULL)", (owners[0][0],))
+        from tinyassets.api_keys import ApiKeyStore
+        from tinyassets.broker.ops import new_op_id
+        from tinyassets.onboarding import owner_sessions
+        from tinyassets.router_credentials import HookOwners
+
+        credential = ApiKeyStore(data).mint(owners[0][0], name="synthetic", scopes=[],
+                                            authority=None)["key"]
+        HookOwners(data).publish(hashlib.sha256(b"rehearsal-hook").hexdigest(), owners[0][0])
+        with owner_sessions.store() as db:
+            db.execute("INSERT INTO owner_sessions VALUES (?,?,?)",
+                       (owner_sessions.hashed("rehearsal-session"),
+                        json.dumps({"user_id": owners[0][0]}), 4000000000))
+        (backup / "credentials.json").write_text(json.dumps({
+            "key": credential, "op": new_op_id()}))
         proof.write_text(json.dumps(epochs))
         stamp = "2026-10-17T01-00-00Z"
         shared = backup / f"tinyassets-data-{stamp}.tar.gz"
@@ -155,15 +166,25 @@ def restore_replay_probe(mode: str) -> int:
         with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
             db.execute("INSERT INTO owner_box_revocations VALUES ('restore-erased',1)")
         destroy_tree(store, 399999, erase=True)
-        with sqlite3.connect(data / ".api-keys.sqlite3") as db:
-            db.execute("UPDATE api_keys SET revoked_at=42 WHERE key_id='restore-key'")
+        from tinyassets.router_traffic import open_traffic
+
+        open_traffic(data)
     elif mode == "verify":
         if (store / "399999").exists() or not DeletedOwners(data).contains("restore-erased"):
             raise RuntimeError("restored erased owner returned")
-        with sqlite3.connect(data / ".api-keys.sqlite3") as db:
-            if db.execute("SELECT revoked_at FROM api_keys WHERE key_id='restore-key'"
-                          ).fetchone() != (42,):
-                raise RuntimeError("restored key revocation was lost")
+        from tinyassets.api_keys import ApiKeyStore
+        from tinyassets.broker.ops import OpStore
+        from tinyassets.onboarding import owner_sessions
+        from tinyassets.router_credentials import HookOwners
+
+        credentials = json.loads((backup / "credentials.json").read_text())
+        if (ApiKeyStore(data).resolve(credentials["key"]) is not None
+                or HookOwners(data).resolve("rehearsal-hook") is not None
+                or owner_sessions.lookup("rehearsal-session") is not None):
+            raise RuntimeError("stale credential still verifies")
+        if OpStore(data / ".broker/ops.db").admit(
+                "rehearsal-outbound", credentials["op"], "digest").kind != "expired":
+            raise RuntimeError("pre-restore outbound operation admitted")
     return len(owners)
 
 

@@ -7,11 +7,9 @@ import argparse
 import hashlib
 import json
 import os
-import sqlite3
 import stat
 import subprocess
 import sys
-from contextlib import closing
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -84,163 +82,35 @@ def _cutover_manifest(root: Path, *, exclude=()) -> dict:
     return result
 
 
-def _restore_cutover_source(current: Path, staged: Path, restored_store: Path) -> None:
-    """Normalize the verified legacy pair through the one forward cutover."""
-    from dataclasses import asdict
-
-    from tinyassets.box_layout_migration import (
-        _build_cutover,
-        _owner_plan,
-        _publish_cutover,
-    )
-
-    path = current / ".owner-cutover.json"
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("verified cutover source receipt missing")
-    info = path.stat()
-    if info.st_uid != 0 or info.st_mode & 0o077:
-        raise ValueError("cutover receipt is not root-private")
-    receipt = json.loads(path.read_text())
-    if receipt.get("version") != 1 or receipt.get("phase") != "complete":
-        raise ValueError("cutover receipt is malformed")
-    if _cutover_manifest(staged, exclude=(".tinyassets.db.prebudgetrepair.bak",)) != receipt.get(
-            "source_manifest"):
-        raise ValueError("restore is not the verified cutover source")
-    journal = dict(receipt, phase="build", store=str(restored_store.resolve()),
-                   plan=[asdict(owner) for owner in _owner_plan(staged)])
-    _build_cutover(staged, restored_store, journal, apply_quotas=False)
-    _publish_cutover(staged, restored_store, journal)
-
-
 def fence_restore(current: Path, staged: Path, *, cutover_store: Path | None = None,
-                  restored_store: Path | None = None, disaster: bool = False) -> None:
-    """Fence rollback receipts; never roll back permanent identities or deletion."""
-    def layout(root):
-        marker = root / ".layout.json"
-        return json.loads(marker.read_text()).get("box_layout") if marker.exists() else None
-
-    staged_layout = layout(staged)
-    # Disaster recovery has no trustworthy live layout. Only a verified final
-    # backup can supply it; legacy normalization needs the live cutover receipt.
-    current_layout = staged_layout if disaster else layout(current)
-    if disaster and staged_layout != "owner-box":
-        raise ValueError("disaster restore requires a verified owner-box backup pair")
-    if "owner-box" not in (current_layout, staged_layout):
-        return
-    if current_layout == "owner-box" and staged_layout in (None, "owner-split"):
-        if restored_store is None:
-            raise ValueError("owner-box restore requires both owner stores")
-        _restore_cutover_source(current, staged, restored_store)
-    if current_layout != "owner-box" or layout(staged) != "owner-box":
-        raise ValueError("owner-box restore requires reviewed forward layout recovery")
-
-    from tinyassets.restore_facts import carry_shared, erase_trees
+                  restored_store: Path | None = None, disaster: bool = False,
+                  backup_time: float = 0) -> None:
+    """Prepare the one exact or disaster path before either volume is swapped."""
+    from tinyassets.restore_recovery import disaster_restore, normal_preflight
 
     if cutover_store is None or restored_store is None:
-        raise ValueError("owner-box restore requires both owner stores")
-    erased = carry_shared(current, staged, disaster=disaster)
-    fence_owner_journals(cutover_store, restored_store, erased=erased, disaster=disaster)
-    erase_trees(restored_store, erased)
-    receipt = staged / ".owner-cutover.json"
-    if receipt.exists():
-        from tinyassets.box_layout_migration import _atomic_json
-
-        journal = json.loads(receipt.read_text())
-        journal["store"] = str(cutover_store.resolve())
-        journal["plan"] = [owner for owner in journal["plan"] if owner["uid"] not in erased]
-        journal["owner_manifests"] = {
-            tree.name: _cutover_manifest(tree) for tree in restored_store.iterdir()
-            if tree.name.isdecimal() and tree.is_dir()}
-        journal["final_manifest"] = _cutover_manifest(staged, exclude=(".owner-cutover.json",))
-        _atomic_json(receipt, journal)
-
-
-def _owner_journals(root: Path, *, disaster: bool = False) -> dict:
-    if disaster and not root.exists() and not root.is_symlink():
-        return {}
-    if root.is_symlink() or not root.is_dir():
-        raise ValueError("restore owner store is not a directory")
-    result = {}
-    for tree in root.iterdir():
-        if not tree.name.isdecimal():
-            continue
-        if tree.is_symlink() or not tree.is_dir():
-            raise ValueError("unsafe restore owner tree")
-        directory = tree / ".owner-boxd"
-        if not directory.exists() and not directory.is_symlink():
-            continue  # This owner has never started its local tools.
-        if directory.is_symlink() or not directory.is_dir():
-            raise ValueError("unsafe owner journal directory")
-        path = directory / "boxhost.db"
-        for member in directory.iterdir():
-            if member.name in {"boxhost.db", "boxhost.db-wal", "boxhost.db-shm",
-                               "boxhost.db-journal", "boxhost.lock"}:
-                info = member.lstat()
-                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                    raise ValueError("unsafe owner journal member")
-        try:
-            with readonly_db(path) as db:
-                if db.execute("PRAGMA quick_check").fetchone() != ("ok",):
-                    if disaster:
-                        continue
-                    raise ValueError("owner journal failed integrity check")
-                result[tree.name] = {
-                    table: db.execute(f"SELECT * FROM {table}").fetchall()
-                    for table in ("host", "boxes", "ops")
-                }
-        except (OSError, sqlite3.DatabaseError):
-            if not disaster:
-                raise
-    return result
-
-
-def fence_owner_journals(current: Path, staged: Path, *, erased=frozenset(),
-                         disaster: bool = False) -> None:
-    """Offline only: preserve refusal authority in each restored owner's box."""
-    from tinyassets.boxes.state import _SCHEMA
-
-    live, restored = _owner_journals(current, disaster=disaster), _owner_journals(staged)
-    for uid in sorted(live.keys() | restored.keys()):
-        if int(uid) in erased:
-            continue
-        tree = staged / uid
-        tree.mkdir(mode=0o700, exist_ok=True)
-        if tree.is_symlink() or not tree.is_dir():
-            raise ValueError("unsafe restored owner tree")
-        directory = tree / ".owner-boxd"
-        directory.mkdir(mode=0o700, exist_ok=True)
-        path = directory / "boxhost.db"
-        with closing(sqlite3.connect(path)) as target, target:
-            target.execute("PRAGMA synchronous=FULL")
-            target.execute("BEGIN IMMEDIATE")
-            for statement in _SCHEMA:
-                target.execute(statement)
-            for row in live.get(uid, {}).get("ops", []):
-                previous = target.execute("SELECT kind,digest FROM ops WHERE "
-                                          "command_center_id=? AND op_id=?", row[:2]).fetchone()
-                if previous is not None and previous != row[2:4]:
-                    raise ValueError("restored operation id has conflicting arguments")
-                target.execute("INSERT OR IGNORE INTO ops VALUES (?,?,?,?,?,?,?)", row)
-            for owner, epoch, generation in live.get(uid, {}).get("boxes", []):
-                target.execute("INSERT INTO boxes VALUES (?,?,?) ON CONFLICT(command_center_id) "
-                               "DO UPDATE SET epoch=MAX(epoch,excluded.epoch), "
-                               "generation=MAX(generation,excluded.generation)",
-                               (owner, epoch, generation))
-            target.execute("UPDATE boxes SET epoch=epoch+1, generation=generation+1")
-            target.execute("UPDATE ops SET state='unknown_after_restore'")
-            incarnation = max((row[1] for journal in (live, restored)
-                               for row in journal.get(uid, {}).get("host", [])
-                               if row[0] == "incarnation"), default=0)
-            target.execute("INSERT INTO host VALUES ('incarnation',?) "
-                           "ON CONFLICT(k) DO UPDATE SET v=excluded.v", (incarnation + 1,))
-        # New journals may not have existed in the snapshot. They belong to the
-        # restored owner, including SQLite sidecars, never to the restore uid.
-        members = [directory / name for name in ("boxhost.db", "boxhost.db-wal",
-                   "boxhost.db-shm", "boxhost.db-journal", "boxhost.lock")
-                   if (directory / name).exists()]
-        for member in (tree, directory, *members):
-            os.chown(member, int(uid), int(uid))
-            os.chmod(member, 0o700 if member.is_dir() else 0o600)
+        raise ValueError("paired restore requires both owner stores")
+    if disaster:
+        layout = json.loads((staged / ".layout.json").read_text())
+        if layout.get("box_layout") != "owner-box":
+            raise ValueError("disaster restore requires a verified owner-box backup pair")
+        disaster_restore(current, staged, restored_store, backup_time=backup_time)
+    else:
+        live_layout = json.loads((current / ".layout.json").read_text())
+        saved_layout = json.loads((staged / ".layout.json").read_text())
+        if (live_layout.get("box_layout") == "owner-box"
+                and saved_layout.get("box_layout") != "owner-box"):
+            receipt = current / ".owner-cutover.json"
+            info = receipt.lstat()
+            if receipt.is_symlink() or info.st_uid != 0 or info.st_mode & 0o077:
+                raise ValueError("cutover receipt is not root-private")
+            journal = json.loads(receipt.read_text())
+            if (journal.get("phase") != "complete" or journal.get("version") != 1
+                    or _cutover_manifest(staged, exclude=(".tinyassets.db.prebudgetrepair.bak",))
+                    != journal.get("source_manifest")):
+                raise ValueError("restore is not the verified cutover source")
+        normal_preflight(current, staged, cutover_store, backup_time=backup_time,
+                         restored_owners=restored_store)
 
 
 def check_snapshot(data: Path, *, quiescent: bool = False) -> None:
@@ -307,14 +177,13 @@ if __name__ == "__main__":
             parser.error("snapshot verification does not accept quota mutation arguments")
         check_snapshot(args.snapshot_data.resolve(), quiescent=args.quiescent)
         if args.restore_from:
+            from datetime import datetime, timezone
+
+            stamp = datetime.strptime(args.backup_time, "%Y-%m-%dT%H-%M-%SZ").replace(
+                tzinfo=timezone.utc).timestamp() if args.backup_time else 0
             fence_restore(args.restore_from.resolve(), args.snapshot_data.resolve(),
                           cutover_store=args.cutover_store, restored_store=args.restored_store,
-                          disaster=args.disaster_restore)
-            if args.disaster_restore:
-                from tinyassets.restore_facts import disaster_unknowns
-
-                print("\n".join(disaster_unknowns(args.restore_from, args.snapshot_data,
-                                                  args.backup_time)))
+                          disaster=args.disaster_restore, backup_time=stamp)
     elif not all((args.store, args.trees, args.registry)) or args.quiescent or args.restore_from:
         parser.error("quota restoration requires store, trees, paired broker database")
     else:

@@ -28,14 +28,13 @@
 #   3  remote download failed
 #   4  archive validation, extraction, stop, or swap failed
 #   5  reserved legacy restart failure; never emitted
-#   6  disaster restore completed; post-backup monotonic facts are unrecoverable
+#   6  disaster restore completed; acknowledged backup-to-restore loss; credentials and operations fenced
 
 set -euo pipefail
 
 BACKUP_VOLUME="${BACKUP_VOLUME:-tinyassets-data}"
 BACKUP_FILE="${BACKUP_FILE:-}"
 BOX_BACKUP_FILE="${BOX_BACKUP_FILE:-}"
-ALLOW_PRE_STORE_BACKUP="${ALLOW_PRE_STORE_BACKUP:-0}"
 BOX_STORE_DIR="${BOX_STORE_DIR:-/var/lib/boxhostd/owners}"
 DRY_RUN="${DRY_RUN:-0}"
 BACKUP_LOG="${BACKUP_LOG:-/var/log/tinyassets-backup.log}"
@@ -266,26 +265,14 @@ if [[ -e "${BOX_STORE_DIR}" ]]; then
     if [[ -n "${BACKUP_FILE}" ]]; then
         BOX_TAR_PATH="${BOX_BACKUP_FILE:-$(dirname "${BACKUP_FILE}")/${BOX_NAME}}"
         if [[ "${BOX_TAR_PATH}" != /* || -L "${BOX_TAR_PATH}" || ! -f "${BOX_TAR_PATH}" ]]; then
-            if [[ "$ALLOW_PRE_STORE_BACKUP" == 1 && -z "$BOX_BACKUP_FILE" && ! -e "$BOX_TAR_PATH" ]]; then
-                log "ALLOW_PRE_STORE_BACKUP=1: pre-store data archive has no box member; retaining current box trees"
-                BOX_NAME=''
-                BOX_TAR_PATH=''
-            else
-                log "ERROR: paired box-store archive missing"
-                exit 2
-            fi
+            log "ERROR: paired box-store archive missing"
+            exit 2
         fi
     else
         BOX_REMOTE="${BACKUP_DEST}/${BOX_NAME}"
         if ! rclone ls "${BOX_REMOTE}" > /dev/null 2>&1; then
-            if [[ "$ALLOW_PRE_STORE_BACKUP" == 1 ]]; then
-                log "ALLOW_PRE_STORE_BACKUP=1: pre-store data archive has no box member; retaining current box trees"
-                BOX_NAME=''
-                BOX_REMOTE=''
-            else
-                log "ERROR: paired box-store archive missing"
-                exit 2
-            fi
+            log "ERROR: paired box-store archive missing"
+            exit 2
         fi
     fi
 fi
@@ -441,28 +428,9 @@ if [[ "$DISASTER_RESTORE" == 1 && "$staged_layout" != owner-box ]]; then
     exit 4
 fi
 
-if [[ -e "${BOX_STORE_DIR}" && -z "${BOX_NAME:-}" && "$ALLOW_PRE_STORE_BACKUP" == 1 ]]; then
-    if ! python3 - "${STAGE_DIR}/.layout.json" "${VOLUME_DIR}/.layout.json" <<'PY'
-import json
-import pathlib
-import sys
-
-for name in sys.argv[1:]:
-    marker = pathlib.Path(name)
-    if marker.exists():
-        try:
-            layout = json.loads(marker.read_text()).get("box_layout")
-        except (OSError, ValueError, AttributeError) as exc:
-            print(f"invalid layout marker {name}: {exc}", file=sys.stderr)
-            raise SystemExit(1)
-        if layout == "owner-box":
-            print(f"owner-box layout requires a paired box-store archive: {name}", file=sys.stderr)
-            raise SystemExit(1)
-PY
-    then
-        log "ERROR: pre-store data restore refused by staged or live layout marker"
-        exit 4
-    fi
+if [[ -z "${BOX_NAME:-}" ]]; then
+    log "ERROR: paired restore requires a readable live owner store and its backup member"
+    exit 4
 fi
 
 if [[ -n "${BOX_NAME:-}" ]]; then
@@ -553,7 +521,10 @@ if [[ -n "${BOX_STAGE}" ]]; then
         exit 4
     fi
     census_dir="$VOLUME_DIR"
-    disaster_args=()
+    pair_ts="${TAR_NAME#tinyassets-data-}"
+    pair_ts="${pair_ts#tinyassets-snapshot-}"
+    pair_ts="${pair_ts%.tar.gz}"
+    disaster_args=(--backup-time "$pair_ts")
     if [[ "$DISASTER_RESTORE" == 1 ]]; then
         census_dir="$STAGE_DIR"
         disaster_args=(--disaster-restore --acknowledge-unrecoverable-facts --backup-time "$pair_ts")
@@ -564,26 +535,30 @@ if [[ -n "${BOX_STAGE}" ]]; then
         exit 4
     fi
     if [[ "$DISASTER_RESTORE" == 1 ]]; then
-        log "WARN restoring newest backup with readable surviving facts; post-backup history is incomplete"
+        log "WARN restoring newest backup with credential reset, operation fences and erasure reconciliation"
     else
-        log "Restoring snapshot contents while retaining current monotonic facts"
+        log "Validating exact pre-traffic paired restore"
     fi
-    # Carry live monotonic facts into unpublished staging while both layouts
+    # Prepare exact restore or disaster safety changes while both layouts
     # are locked. Any failure leaves both pre-restore volumes intact.
     if ! fact_report="$(python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
             --snapshot-data "${STAGE_DIR}" --restore-from "${VOLUME_DIR}" \
             --cutover-store "${BOX_STORE_DIR}" --restored-store "${BOX_STAGE}" \
             "${disaster_args[@]}")"; then
-        log "ERROR: restore could not carry live monotonic facts"
+        log "ERROR: restore safety preparation refused"
         exit 4
     fi
     if [[ -n "$fact_report" ]]; then
         while IFS= read -r line; do log "$line"; done <<< "$fact_report"
     fi
-    # A legacy snapshot is normalized by the forward cutover before install.
+    # Exact legacy rollback retains its original layout; rerun cutover before serving.
     if [[ -f "${STAGE_DIR}/.boxhost/boxhost.db" ]]; then
         quota_restore=1
     fi
+    # Credential roots, receipt fences and the report must survive power loss
+    # before either prepared filesystem becomes live.
+    sync -f "$STAGE_DIR"
+    sync -f "$BOX_STAGE"
     BOX_OLD="$(mktemp -d "${BOX_STORE_DIR}/.tinyassets-box-restore-old.XXXXXX")"
     BOX_SWAP_ACTIVE=1
     for tree in "${BOX_STORE_DIR}"/[0-9]*; do
@@ -638,6 +613,8 @@ if ! mv -- "${STAGE_DIR}" "${VOLUME_DIR}"; then
     exit 4
 fi
 STAGE_DIR=""
+sync -f "$VOLUME_PARENT"
+if [[ -n "${BOX_NAME:-}" ]]; then sync -f "$BOX_STORE_DIR"; fi
 BOX_SWAP_ACTIVE=0
 BOX_STAGE=''
 

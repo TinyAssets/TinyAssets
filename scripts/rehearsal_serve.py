@@ -283,6 +283,9 @@ def smoke(confirm=False):
             uid = manager.ensure_awake(name)
             return BoxRoute(run / "apps" / str(uid) / "app.sock", manager.boxes[uid].secret)
 
+        from tinyassets.router_traffic import open_traffic
+
+        open_traffic(Path("/data"))  # Synthetic router acceptance before the user pass.
         router = OwnerRouter(Starlette(), resolver=resolve)
         try:
             if confirm:

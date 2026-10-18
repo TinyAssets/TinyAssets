@@ -417,6 +417,10 @@ class PolicyStore:
                 return True
         return False
 
+    def spend_blocked(self):
+        path = self._root / ".broker/restore-spend-until"
+        return path.exists() and time.time() < float(path.read_text())
+
     def decide(self, owner: str, *, center: str, action_class: str,
                connection: str = "", operation: str = "", destination: str = "",
                amount: int = 0, source: str = "", agent: str = "*",
@@ -428,6 +432,8 @@ class PolicyStore:
         Amounts are minor currency units; a nonzero amount is reserved only
         after all rules permit the request.
         """
+        if self.spend_blocked() and (amount or action_class == "spend"):
+            raise PolicyRefused("daily spend unavailable until the next day after restore")
         if center not in self._centers(owner, active=True):
             raise PolicyRefused("center is not admitted to this owner")
         if (type(amount) is not int or amount < 0

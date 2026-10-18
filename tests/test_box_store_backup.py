@@ -27,6 +27,11 @@ def test_box_store_archive_and_temp_restore(tmp_path: Path, remote_restore: bool
     bin_dir.mkdir()
     volume = tmp_path / "volume" / "_data"
     volume.mkdir(parents=True)
+    from tinyassets.router_traffic import initialize
+
+    layout = '{"box_layout":"owner-split","state":"stable"}'
+    (volume / ".layout.json").write_text(layout)
+    initialize(volume)
     broker = volume / ".broker"
     broker.mkdir()
     uid = 300001
@@ -227,8 +232,8 @@ else:
         ["bash", str(ROOT / "deploy/backup-restore.sh")],
         env=guard_env, capture_output=True, text=True,
     )
-    assert live_owner_box.returncode == 4, live_owner_box.stdout + live_owner_box.stderr
-    assert "layout marker" in live_owner_box.stdout
+    assert live_owner_box.returncode == 2, live_owner_box.stdout + live_owner_box.stderr
+    assert "paired box-store archive missing" in live_owner_box.stdout
     assert log.read_text().count("stop boxhostd.service") == stopped_before
     assert (volume / "record.txt").read_text() == "current"
 
@@ -242,10 +247,8 @@ else:
         env={**guard_env, "BACKUP_FILE": str(owner_box_data)},
         capture_output=True, text=True,
     )
-    assert staged_owner_box.returncode == 4, staged_owner_box.stdout + staged_owner_box.stderr
-    # A staged owner-box generation is refused before the pre-store fallback is
-    # considered: it is never restorable without its paired box member.
-    assert "owner-box generation has no box member" in staged_owner_box.stdout
+    assert staged_owner_box.returncode == 2, staged_owner_box.stdout + staged_owner_box.stderr
+    assert "paired box-store archive missing" in staged_owner_box.stdout
     assert log.read_text().count("stop boxhostd.service") == stopped_before
     assert (volume / "record.txt").read_text() == "current"
 
@@ -253,10 +256,11 @@ else:
         ["bash", str(ROOT / "deploy/backup-restore.sh"), *restore_args],
         env=env, capture_output=True, text=True,
     )
-    assert legacy.returncode == 0, legacy.stdout + legacy.stderr
-    assert "pre-store data archive" in legacy.stdout
-    assert (volume / "record.txt").read_text() == "data"
+    assert legacy.returncode == 2, legacy.stdout + legacy.stderr
+    assert "paired box-store archive missing" in legacy.stdout
+    assert (volume / "record.txt").read_text() == "current"
     assert (owner / "box.txt").read_text() == "current-box"
+    marker.write_text(layout)
     env.update(BACKUP_FILE=str(snapshot_data), BOX_BACKUP_FILE=str(snapshot_box))
     env.pop("ALLOW_PRE_STORE_BACKUP")
     restored_snapshot = subprocess.run(

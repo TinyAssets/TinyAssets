@@ -8186,6 +8186,7 @@
         if(!active||!box.isConnected)return;
         if(!$('request-rail').open){active=false;post('cancel').catch(fail);return;}
         try{await chain;const value=await post('frame');
+          if(!active||!box.isConnected)return;
           if(value.status==='connected'){clear();note.textContent='Session remembered. Password not stored by TinyAssets.';
             ApprovalHandoff.completed({request_id:req.request_id});refreshRail();return;}
           if(value.blocked){clear();note.textContent='This website blocked the browser. Your task is still waiting.';return;}
