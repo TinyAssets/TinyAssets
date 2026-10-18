@@ -40,6 +40,7 @@ def _drive(
     monkeypatch,
     upstream,
     data_dir: str = "",
+    provider=None,
 ):
     """Drive the token route with a scripted AuthKit token endpoint.
 
@@ -72,7 +73,7 @@ def _drive(
     from tinyassets.auth import middleware
     from tinyassets.auth.provider import Identity
 
-    monkeypatch.setattr(middleware, "_get_provider", lambda: SimpleNamespace(
+    monkeypatch.setattr(middleware, "_get_provider", lambda: provider or SimpleNamespace(
         resolve_token=lambda token: Identity(user_id="owner", username="owner")))
     calls: list[dict] = []
 

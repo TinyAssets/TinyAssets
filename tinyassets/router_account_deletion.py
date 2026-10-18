@@ -5,6 +5,7 @@ Billing cancellation belongs to billing.stripe_adapter.cancel_account_billing.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import urllib.error
@@ -18,6 +19,77 @@ _WORKOS_BASE_URL = "https://api.workos.com"
 
 class AccountDeletionError(RuntimeError):
     """Deletion refused. The message never carries a secret."""
+
+
+def workos_sessions(user_id: str, *, request=None) -> list[dict]:
+    """Read every active session; incomplete pagination is not an empty result."""
+    if _WORKOS_USER_ID.fullmatch(user_id) is None:
+        return []
+    key = os.environ.get("WORKOS_API_KEY", "").strip()
+    if not key:
+        raise AccountDeletionError("WorkOS session reconciliation is not configured")
+    sessions, seen = [], set()
+    after = ""
+    for _ in range(1000):
+        query = urllib.parse.urlencode({"limit": 100, **({"after": after} if after else {})})
+        req = urllib.request.Request(
+            f"{_WORKOS_BASE_URL}/user_management/users/{user_id}/sessions?{query}",
+            headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
+        try:
+            with (request or urllib.request.urlopen)(req, timeout=20) as response:
+                if response.status != 200:
+                    raise ValueError("unexpected status")
+                page = json.load(response)
+            if not isinstance(page["data"], list) or not isinstance(page["list_metadata"], dict):
+                raise ValueError("invalid session list")
+            for session in page["data"]:
+                sid = session["id"]
+                if not isinstance(sid, str) or not sid.startswith("session_") or sid in seen:
+                    raise ValueError("invalid session identity")
+                seen.add(sid)
+                sessions.append(session)
+            cursor = page["list_metadata"]["after"]
+            if cursor is None:
+                return sessions
+            if not isinstance(cursor, str) or not cursor or cursor == after or not page["data"]:
+                raise ValueError("invalid session cursor")
+            after = cursor
+        except (OSError, ValueError, KeyError, TypeError):
+            raise AccountDeletionError("WorkOS session reconciliation unavailable") from None
+    raise AccountDeletionError("WorkOS session reconciliation incomplete")
+
+
+def revoke_workos_sessions(user_id: str, *, request=None) -> None:
+    """Revoke upstream refresh authority for every surviving restored owner."""
+    for session in workos_sessions(user_id, request=request):
+        req = urllib.request.Request(
+            f"{_WORKOS_BASE_URL}/user_management/sessions/revoke",
+            data=json.dumps({"session_id": session["id"]}).encode(),
+            headers={"Authorization": f"Bearer {os.environ['WORKOS_API_KEY'].strip()}",
+                     "Content-Type": "application/json"}, method="POST")
+        try:
+            with (request or urllib.request.urlopen)(req, timeout=20) as response:
+                if response.status not in (200, 204):
+                    raise AccountDeletionError("WorkOS session revocation failed")
+        except (OSError, TimeoutError):
+            raise AccountDeletionError("WorkOS session revocation unavailable") from None
+
+
+def workos_session_created_at(user_id: str, session_id: str) -> float:
+    from datetime import datetime
+
+    if not isinstance(session_id, str) or not session_id.startswith("session_"):
+        raise AccountDeletionError("WorkOS session identity missing")
+    for session in workos_sessions(user_id):
+        if session["id"] == session_id:
+            try:
+                created = datetime.fromisoformat(session["created_at"].replace("Z", "+00:00"))
+                if created.tzinfo is None:
+                    raise ValueError("session creation must have timezone")
+                return created.timestamp()
+            except (KeyError, ValueError, TypeError, AttributeError):
+                raise AccountDeletionError("WorkOS session creation time unavailable") from None
+    raise AccountDeletionError("WorkOS session is not active")
 
 
 def workos_user_exists(user_id: str, *, request=None) -> bool:

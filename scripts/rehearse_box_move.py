@@ -148,6 +148,8 @@ def restore_replay_probe(mode: str) -> int:
                         json.dumps({"user_id": owners[0][0]}), 4000000000))
         (backup / "credentials.json").write_text(json.dumps({
             "key": credential, "op": new_op_id()}))
+        runpy.run_path("/support/rehearsal_restore_provider.py")["record"](
+            data, owners, backup / "provider.json")
         proof.write_text(json.dumps(epochs))
         stamp = "2026-10-17T01-00-00Z"
         shared = backup / f"tinyassets-data-{stamp}.tar.gz"
@@ -162,14 +164,15 @@ def restore_replay_probe(mode: str) -> int:
     elif mode == "write":
         from tinyassets.boxes.destroy import tree as destroy_tree
 
-        DeletedOwners(data).add("restore-erased", {"unfinished_phases": []})
-        with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
-            db.execute("INSERT INTO owner_box_revocations VALUES ('restore-erased',1)")
+        # No local tombstone: the recorded provider alone proves this erasure.
         destroy_tree(store, 399999, erase=True)
         from tinyassets.router_traffic import open_traffic
 
         open_traffic(data)
     elif mode == "verify":
+        report = json.loads((data / ".disaster-restore.json").read_text())
+        if report["owners_reconciled"] != len(owners):
+            raise RuntimeError("not every surviving owner was reconciled")
         if (store / "399999").exists() or not DeletedOwners(data).contains("restore-erased"):
             raise RuntimeError("restored erased owner returned")
         from tinyassets.api_keys import ApiKeyStore
@@ -186,6 +189,32 @@ def restore_replay_probe(mode: str) -> int:
                 "rehearsal-outbound", credentials["op"], "digest").kind != "expired":
             raise RuntimeError("pre-restore outbound operation admitted")
     return len(owners)
+
+
+def provider_failure_probe(mode):
+    """A failed provider must leave both live volumes byte-identical."""
+    import hashlib
+    import json
+
+    backup = Path("/backup/replay")
+    recording = backup / "provider.json"
+    provider = json.loads(recording.read_text())
+    fingerprints = {}
+    for root in (Path("/data"), Path("/box-store")):
+        fingerprints[str(root)] = {
+            str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in root.rglob("*") if path.is_file()}
+    proof = backup / "provider-failure-proof.json"
+    if mode == "before":
+        proof.write_text(json.dumps(fingerprints))
+        provider["unreachable"] = True
+    elif mode == "after":
+        if json.loads(proof.read_text()) != fingerprints:
+            raise RuntimeError("provider failure changed live volumes")
+        provider["unreachable"] = False
+    else:
+        raise ValueError("unknown provider failure phase")
+    recording.write_text(json.dumps(provider))
 
 
 def archive_rehearsal(image, archive, *, store_bytes):

@@ -357,3 +357,20 @@ def test_disaster_resync_reads_current_subscription_through_adapter(
     assert plan["tier"] == tier
     assert bool(plan["billing_suspended"]) is suspended
     assert plan["subscription_id"] == "sub_tinyassets"
+
+
+def test_disaster_resync_migrated_signed_universe_subscription(tmp_path, monkeypatch):
+    from tests.test_billing_boundary import _subscription_object
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_synthetic")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)
+    obj = _subscription_object(owner_id="legacy-center")
+    obj["metadata"]["universe_id"] = obj["metadata"].pop("owner_id")
+    obj["customer"] = "cus_migrated"
+    plans = Plans(tmp_path)
+    plans.set_plan("alice", "paid", event_created=1, customer_id="cus_migrated",
+                   subscription_id=obj["id"])
+    monkeypatch.setattr(stripe, "_get", lambda path: (
+        {"data": [obj], "has_more": False} if path.startswith("subscriptions?") else obj))
+    assert stripe.restore_billing(tmp_path, 100)["plans_synced"] == 1
+    assert plans.read("alice")["tier"] == "paid"

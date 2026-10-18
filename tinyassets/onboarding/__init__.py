@@ -530,16 +530,16 @@ async def _handle_token(request: Any) -> Any:
     # it -- the handle the page gets back is one only the server has seen. Even when
     # carrying forward, the store rotates to a fresh handle; nothing is ever written
     # under a value that arrived in the request body.
+    from starlette.concurrency import run_in_threadpool
+
+    from tinyassets.auth.middleware import _get_provider
+
+    identity = await run_in_threadpool(_get_provider().resolve_token, access)
+    if identity is None or not identity.user_id:
+        return JSONResponse({"error": "identity_unresolved"}, status_code=401,
+                            headers=_NO_STORE)
     may_reuse_handle = bool(current_handle) and refresh_came_from_handle
     if refresh_token and len(refresh_token) <= 4096:
-        from starlette.concurrency import run_in_threadpool
-
-        from tinyassets.auth.middleware import _get_provider
-
-        identity = await run_in_threadpool(_get_provider().resolve_token, access)
-        if identity is None or not identity.user_id:
-            return JSONResponse({"error": "identity_unresolved"}, status_code=401,
-                                headers=_NO_STORE)
         if may_reuse_handle:
             # Rotate to a NEW handle rather than rewriting the presented one. The
             # old handle keeps resolving for a short grace (multi-tab race), so a

@@ -120,10 +120,9 @@ cd /work
 # a path this container does not have. History is irrelevant to the suite; a
 # valid HEAD is not.
 git init -q .
-git config user.email oracle@localhost
-git config user.name "linux oracle"
 git add -A >/dev/null 2>&1 || true
-git commit -q -m "linux oracle snapshot" >/dev/null 2>&1 || true
+git -c user.email=oracle@localhost -c user.name="linux oracle" \
+    commit -q -m "linux oracle snapshot" >/dev/null 2>&1 || true
 _py=$(python -V 2>&1 | cut -d' ' -f2)
 _git=$(git --version | cut -d' ' -f3)
 _bwrap=$(bwrap --version 2>/dev/null | cut -d' ' -f2 || echo absent)
@@ -479,8 +478,8 @@ def docker_command(args: argparse.Namespace, root: Path, tag: str) -> list[str]:
         # explicit real-inode proofs into the same required shard receipt.
         script = _USER_SCRIPT.format(excludes=excludes, uid=ORACLE_UID).replace(
             "exec runuser", "runuser")
-        script += '\ngit config --global --add safe.directory /work\nexec ' + command + '\n'
-        script = script.replace('\ngit config --global', '\ncd /work\ngit config --global')
+        script += ('\ncd /work\nexport GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory '
+                   'GIT_CONFIG_VALUE_0=/work\nexec ' + command + '\n')
         user_script = JAIL_PROBE + _REPO_AND_RUN_SCRIPT.format(command="true")
         run += ["-e", "ORACLE_USER_SCRIPT=" + user_script]
     elif args.as_root:

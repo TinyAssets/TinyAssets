@@ -6,6 +6,21 @@ from tinyassets.billing.plan_store import BillingPlans
 from tinyassets.broker.owner_reads import PlanMissing
 
 
+def subscription_owner(plans, obj, claimed_owner):
+    """Resolve a verified signed identity through its permanent billing mapping."""
+    try:
+        owner = plans.owner_for(customer_id=str(obj.get("customer") or ""),
+                                subscription_id=str(obj.get("id") or ""))
+    except PlanMissing:
+        if not (obj.get("metadata") or {}).get("owner_id"):
+            raise PlanMissing("legacy billing delivery requires its cutover mapping")
+        plans.read(claimed_owner)
+        owner = claimed_owner
+    if (obj.get("metadata") or {}).get("owner_id") and owner != claimed_owner:
+        raise PermissionError("billing mapping disagrees with signed account")
+    return owner
+
+
 @serialized
 def apply_event(root, event):
     from tinyassets.billing.stripe_adapter import (
@@ -41,17 +56,7 @@ def apply_event(root, event):
     claimed_owner, tier = mapped
     customer = str(obj.get("customer") or "")
     subscription = str(obj.get("id") or "")
-    try:
-        owner = plans.owner_for(customer_id=customer, subscription_id=subscription)
-    except PlanMissing:
-        # The first service-signed subscription establishes the durable mapping.
-        # The signed owner is an account, never a path or a home reference.
-        if not (obj.get("metadata") or {}).get("owner_id"):
-            raise PlanMissing("legacy billing delivery requires its cutover mapping")
-        plans.read(claimed_owner)
-        owner = claimed_owner
-    if (obj.get("metadata") or {}).get("owner_id") and owner != claimed_owner:
-        raise PermissionError("billing mapping disagrees with signed account")
+    owner = subscription_owner(plans, obj, claimed_owner)
     if DeletedOwners(root).contains(owner):
         cancel_deleted_subscription(root, owner, subscription)
         plan = plans.read(owner)

@@ -4,7 +4,8 @@
 Normal restore SHALL restore a verified backup pair exactly. It SHALL refuse
 before publication if the LIVE router `traffic_opened_at` exists (including when
 newer than the pair), a disaster credential generation exists, or any registered
-live store, owner tree or owner journal is absent or unreadable.
+live store, owner tree or owner journal is absent or unreadable. Completeness
+SHALL include the LIVE owner store catalog, even for stores absent from the pair.
 Data-only restore and pre-store overrides SHALL NOT bypass paired validation.
 The router SHALL durably record its backed-up traffic marker before admitting
 ordinary traffic after deploy canary acceptance. Closed admission SHALL also
@@ -15,12 +16,22 @@ Disaster recovery SHALL require both existing acknowledgement flags, select the
 newest verified pair, reset every bearer credential root or delete unkeyed digest
 rows, drop external credential custody and outbound grants/vaults, fence every
 operation/receipt authority, and block remaining daily spend until the next day.
+WorkOS SHALL revoke all surviving owners' sessions and refuse uncertain results;
+the router SHALL compare original session creation time resolved by signed `sid`
+to the restore epoch, including cookie refresh. Broker cutoffs SHALL exceed the
+restore time plus the shared maximum future skew. Billing reconciliation SHALL
+use the webhook resolver for signed legacy universe subscription mappings.
 It SHALL reconcile identity erasure through WorkOS and billing through Stripe
 adapter seams, report unavailable billing/suspension sources, loss window and
 classes reverting to backup time, and exit 6 on completed recovery.
 Only erasure tombstones SHALL be carried from readable sources. Erased trees
 SHALL be destroyed before publication. Unsafe paths, invalid pairs, uncertain
 identity reconciliation and preparation failures SHALL preserve original volumes.
+The DR drill SHALL fetch, verify and transfer both archives and their manifest.
+Rehearsal provider injection SHALL require an explicit harness argument and a
+fixed mounted module absent from production images; no environment selector.
+Rehearsal SHALL prove survivor reconciliation, provider-only erasure before box
+startup, and unreachable-provider exit 4 without changing either live volume.
 
 #### Scenario: Exact maintenance-window rollback
 - **WHEN** a verified pair is restored before ordinary traffic has opened

@@ -43,6 +43,7 @@ TIMESTAMP_ARG=""
 LIST_MODE=0
 DISASTER_RESTORE=0
 ACKNOWLEDGE_FACTS=0
+REHEARSAL_PROVIDER=0
 DOWNLOAD_DIR=""
 STAGE_DIR=""
 BOX_STAGE=""
@@ -58,9 +59,17 @@ for arg in "$@"; do
         --list)        LIST_MODE=1 ;;
         --disaster-restore) DISASTER_RESTORE=1 ;;
         --acknowledge-unrecoverable-facts) ACKNOWLEDGE_FACTS=1 ;;
+        --rehearsal-provider) REHEARSAL_PROVIDER=1 ;;
         *) echo "Unknown argument: ${arg}" >&2; exit 1 ;;
     esac
 done
+
+if [[ "$REHEARSAL_PROVIDER" == 1 && ( "$DISASTER_RESTORE" != 1 ||
+        ! -f /run/tinyassets-rehearsal/rehearsal_restore_provider.py ||
+        -L /run/tinyassets-rehearsal/rehearsal_restore_provider.py ) ]]; then
+    echo "Recorded providers require the harness-only mount and disaster restore" >&2
+    exit 1
+fi
 
 if [[ "$DISASTER_RESTORE" != "$ACKNOWLEDGE_FACTS" ]]; then
     echo "Disaster restore requires both --disaster-restore and --acknowledge-unrecoverable-facts" >&2
@@ -528,6 +537,9 @@ if [[ -n "${BOX_STAGE}" ]]; then
     if [[ "$DISASTER_RESTORE" == 1 ]]; then
         census_dir="$STAGE_DIR"
         disaster_args=(--disaster-restore --acknowledge-unrecoverable-facts --backup-time "$pair_ts")
+        if [[ "$REHEARSAL_PROVIDER" == 1 ]]; then
+            disaster_args+=(--rehearsal-provider)
+        fi
     fi
     if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
             --snapshot-data "$census_dir" --quiescent; then

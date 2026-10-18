@@ -311,6 +311,15 @@ jobs:
             fi
             rclone --config "${rclone_conf}" copyto \
                 "${OFFREGION_BACKUP_REMOTE%/}/${name}" "${backup_root}/${name}"
+            pair_stamp="${name#tinyassets-data-}"
+            pair_stamp="${pair_stamp%.tar.gz}"
+            for member in "tinyassets-box-store-${pair_stamp}.tar.gz" "tinyassets-pair-${pair_stamp}.json"; do
+              rclone --config "${rclone_conf}" copyto \
+                  "${OFFREGION_BACKUP_REMOTE%/}/${member}" "${backup_root}/${member}"
+            done
+            python3 deploy/backup-pair.py verify "${backup_root}/${name}" \
+                "${backup_root}/tinyassets-box-store-${pair_stamp}.tar.gz" \
+                "${backup_root}/tinyassets-pair-${pair_stamp}.json"
             rm -f "${rclone_conf}"
             candidate="${backup_root}/${name}"
           else
@@ -430,6 +439,17 @@ jobs:
           ):
               print(f"{key}={metadata[key]}")
           PY
+          if [ "${BACKUP_ORIGIN}" != "offregion" ]; then
+            pair_name="${candidate##*/}"
+            pair_stamp="${pair_name#tinyassets-data-}"
+            pair_stamp="${pair_stamp%.tar.gz}"
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "python3 - verify $(printf '%q' "${candidate}") \
+                 $(printf '%q' "${backup_root}/tinyassets-box-store-${pair_stamp}.tar.gz") \
+                 $(printf '%q' "${backup_root}/tinyassets-pair-${pair_stamp}.json")" \
+                < deploy/backup-pair.py
+          fi
           echo "origin=${BACKUP_ORIGIN}" >> "$GITHUB_OUTPUT"
           echo "Validated backup: $(python3 -c \
             'import base64,json,sys; print(base64.b64decode(json.loads(sys.argv[1])["tarball_b64"]).decode())' \
@@ -710,6 +730,25 @@ jobs:
             echo "::error::Backup checksum mismatch after transfer"
             exit 1
           fi
+          pair_stamp="${TARBALL#tinyassets-data-}"
+          pair_stamp="${pair_stamp%.tar.gz}"
+          for member in "tinyassets-box-store-${pair_stamp}.tar.gz" "tinyassets-pair-${pair_stamp}.json"; do
+            member_source="${BACKUP_PATH%/*}/${member}"
+            member_destination=$(printf '%q' "/var/backups/tinyassets/${member}")
+            if [ "${BACKUP_ORIGIN}" = "offregion" ]; then
+              ssh -i ~/.ssh/do_deploy -o BatchMode=yes "root@${DRILL_IP}" \
+                  "cat > ${member_destination}" < "${member_source}"
+            else
+              ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                  "${DO_SSH_USER}@${DO_DROPLET_HOST}" "cat $(printf '%q' "${member_source}")" \
+                  | ssh -i ~/.ssh/do_deploy -o BatchMode=yes "root@${DRILL_IP}" \
+                      "cat > ${member_destination}"
+            fi
+          done
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "root@${DRILL_IP}" \
+              "python3 - verify ${quoted_destination} \
+               /var/backups/tinyassets/tinyassets-box-store-${pair_stamp}.tar.gz \
+               /var/backups/tinyassets/tinyassets-pair-${pair_stamp}.json" < deploy/backup-pair.py
           echo "Transferred and verified: ${TARBALL} (${destination_sha256})"
 
       - name: Disaster restore on drill Droplet
@@ -726,9 +765,13 @@ jobs:
               deploy/backup-restore.sh \
               "root@${DRILL_IP}:/opt/tinyassets/deploy/backup-restore.sh"
           backup_file=$(printf '%q' "/var/backups/tinyassets/${TARBALL}")
+          pair_stamp="${TARBALL#tinyassets-data-}"
+          pair_stamp="${pair_stamp%.tar.gz}"
+          box_file=$(printf '%q' "/var/backups/tinyassets/tinyassets-box-store-${pair_stamp}.tar.gz")
+          pair_file=$(printf '%q' "/var/backups/tinyassets/tinyassets-pair-${pair_stamp}.json")
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "root@${DRILL_IP}" \
-              "BACKUP_FILE=${backup_file} DRY_RUN=0 \
+              "BACKUP_FILE=${backup_file} BOX_BACKUP_FILE=${box_file} PAIR_MANIFEST_FILE=${pair_file} DRY_RUN=0 \
                bash /opt/tinyassets/deploy/backup-restore.sh \
                  --disaster-restore --acknowledge-unrecoverable-facts" \
                  > "${RUNNER_TEMP}/disaster-restore.log" 2>&1 && rc=0 || rc=$?

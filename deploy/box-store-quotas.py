@@ -84,7 +84,7 @@ def _cutover_manifest(root: Path, *, exclude=()) -> dict:
 
 def fence_restore(current: Path, staged: Path, *, cutover_store: Path | None = None,
                   restored_store: Path | None = None, disaster: bool = False,
-                  backup_time: float = 0) -> None:
+                  backup_time: float = 0, restore_adapters=None) -> None:
     """Prepare the one exact or disaster path before either volume is swapped."""
     from tinyassets.restore_recovery import disaster_restore, normal_preflight
 
@@ -94,7 +94,8 @@ def fence_restore(current: Path, staged: Path, *, cutover_store: Path | None = N
         layout = json.loads((staged / ".layout.json").read_text())
         if layout.get("box_layout") != "owner-box":
             raise ValueError("disaster restore requires a verified owner-box backup pair")
-        disaster_restore(current, staged, restored_store, backup_time=backup_time)
+        disaster_restore(current, staged, restored_store, backup_time=backup_time,
+                         **(restore_adapters or {}))
     else:
         live_layout = json.loads((current / ".layout.json").read_text())
         saved_layout = json.loads((staged / ".layout.json").read_text())
@@ -152,6 +153,16 @@ def check_snapshot(data: Path, *, quiescent: bool = False) -> None:
             raise ValueError("surviving owner sandbox prevents coherent snapshot/restore")
 
 
+def rehearsal_adapters():
+    """Only the harness mounts this file; production images never contain it."""
+    import runpy
+
+    module = Path("/run/tinyassets-rehearsal/rehearsal_restore_provider.py")
+    if module.is_symlink() or not module.is_file():
+        raise ValueError("recorded providers require the harness-only mount")
+    return runpy.run_path(str(module))["adapters"]()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("store", type=Path, nargs="?")
@@ -166,9 +177,12 @@ if __name__ == "__main__":
     parser.add_argument("--disaster-restore", action="store_true")
     parser.add_argument("--acknowledge-unrecoverable-facts", action="store_true")
     parser.add_argument("--backup-time")
+    parser.add_argument("--rehearsal-provider", action="store_true")
     args = parser.parse_args()
     if args.disaster_restore != args.acknowledge_unrecoverable_facts:
         parser.error("disaster restore requires --acknowledge-unrecoverable-facts")
+    if args.rehearsal_provider and not args.disaster_restore:
+        parser.error("recorded providers require disaster restore")
     if args.disaster_restore and not (args.snapshot_data and args.restore_from
                                       and args.backup_time):
         parser.error("disaster restore requires a staged backup, live path and backup time")
@@ -183,7 +197,9 @@ if __name__ == "__main__":
                 tzinfo=timezone.utc).timestamp() if args.backup_time else 0
             fence_restore(args.restore_from.resolve(), args.snapshot_data.resolve(),
                           cutover_store=args.cutover_store, restored_store=args.restored_store,
-                          disaster=args.disaster_restore, backup_time=stamp)
+                          disaster=args.disaster_restore, backup_time=stamp,
+                          restore_adapters=(rehearsal_adapters()
+                                            if args.rehearsal_provider else None))
     elif not all((args.store, args.trees, args.registry)) or args.quiescent or args.restore_from:
         parser.error("quota restoration requires store, trees, paired broker database")
     else:

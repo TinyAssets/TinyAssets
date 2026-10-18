@@ -161,7 +161,134 @@ def test_disaster_refuses_write_bash_and_broker_outbound_replay(tmp_path, monkey
         core.close()
     ops = OpStore(staged / ".broker/ops.db", clock=lambda: 2000000001)
     assert ops.admit("outbound", old_outbound, "digest").kind == "expired"
-    assert ops.admit("outbound", new_op_id(lambda: 2000000001), "digest").kind == "new"
+    assert ops.admit("outbound", new_op_id(lambda: 2000000301), "digest").kind == "new"
+
+
+def test_future_dated_consumed_operation_cannot_replay_after_restore(tmp_path, monkeypatch):
+    from tinyassets.broker.ops import MAX_FUTURE_SKEW_S, OpStore, new_op_id
+    from tinyassets.restore_recovery import fence_ops
+
+    current, staged, live, trees = paired(tmp_path)
+    monkeypatch.setattr("os.chown", lambda *args: None)
+    start = 2000000000
+    op_id = new_op_id(lambda: start + 240)
+    live_ops = OpStore(current / ".broker/ops.db", clock=lambda: start)
+    assert live_ops.admit("outbound", op_id, "digest").kind == "new"
+    live_ops.mark_may_have_sent("outbound", op_id)
+    live_ops.finish("outbound", op_id, "completed")
+    # The snapshot predates the receipt, so only the restored cutoff can refuse it.
+    fence_ops(staged, trees, start + 60)
+    restored = OpStore(staged / ".broker/ops.db", clock=lambda: start + 60)
+    assert restored.admit("outbound", op_id, "digest").kind == "expired"
+    boundary = new_op_id(lambda: start + 60 + MAX_FUTURE_SKEW_S)
+    assert restored.admit("outbound", boundary, "digest").kind == "expired"
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt", "empty", "integrity"])
+@pytest.mark.parametrize("placement", ["router", "owner"])
+def test_normal_checks_live_catalog_stores_absent_from_backup(tmp_path, damage, placement):
+    from tinyassets.owner_lease import register_store
+
+    current, staged, live, trees = paired(tmp_path)
+    root = current if placement == "router" else live / "300001"
+    path = root / "new.db"
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE records (value TEXT CHECK(length(value)>0))")
+        db.execute("INSERT INTO records VALUES ('valid')")
+    register_store(root, path, "agent_turn_journal")
+    if damage == "missing":
+        path.unlink()
+    elif damage == "corrupt":
+        path.write_bytes(b"corrupt")
+    elif damage == "empty":
+        path.write_bytes(b"")
+    else:
+        with sqlite3.connect(path) as db:
+            db.execute("CREATE INDEX drift ON records(value) WHERE 0")
+            db.execute("PRAGMA writable_schema=ON")
+            db.execute("UPDATE sqlite_master SET sql='CREATE INDEX drift ON records(value)' "
+                       "WHERE name='drift'")
+    before = fingerprint(staged), fingerprint(trees)
+    with pytest.raises((ValueError, sqlite3.DatabaseError)):
+        restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)
+    assert (fingerprint(staged), fingerprint(trees)) == before
+
+
+@pytest.mark.parametrize("placement", ["router", "owner"])
+def test_normal_resolves_registered_runtime_mount_paths(tmp_path, placement):
+    from tinyassets.owner_lease import lease_db
+
+    current, staged, live, trees = paired(tmp_path)
+    root = current if placement == "router" else live / "300001"
+    with sqlite3.connect(root / "new.db") as db:
+        db.execute("CREATE TABLE records (value TEXT)")
+    mount = "/data" if placement == "router" else "/home/owner"
+    with lease_db(root) as db:
+        db.execute("INSERT INTO owner_store_catalog VALUES (?,?,?)",
+                   (mount + "/new.db", "agent_turn_journal", "now"))
+    before = fingerprint(staged), fingerprint(trees)
+    restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)
+    assert (fingerprint(staged), fingerprint(trees)) == before
+
+
+def test_normal_preserves_uploaded_files_with_database_suffixes(tmp_path):
+    current, staged, live, trees = paired(tmp_path)
+    for root in (live, trees):
+        (root / "300001/upload.db").write_bytes(b"verbatim uploaded file")
+    before = fingerprint(staged), fingerprint(trees)
+    restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)
+    assert (fingerprint(staged), fingerprint(trees)) == before
+
+
+def test_disaster_revokes_every_surviving_owner_and_fails_closed(tmp_path, monkeypatch):
+    from tinyassets.router_account_deletion import AccountDeletionError
+
+    current, staged, live, trees = paired(tmp_path)
+    calls = []
+    def revoke(owner):
+        calls.append(owner)
+        raise AccountDeletionError("provider unavailable")
+    with pytest.raises(AccountDeletionError):
+        disaster(current, staged, trees, monkeypatch, revoke_sessions=revoke)
+    assert calls == ["alice"]
+    assert not (staged / ".disaster-restore.json").exists()
+    report = disaster(current, staged, trees, monkeypatch, revoke_sessions=calls.append)
+    assert calls == ["alice", "alice"]
+    assert report["owners_reconciled"] == 1
+
+
+@pytest.mark.parametrize("failure", [None, "list", "revoke"])
+def test_workos_revokes_all_sessions_through_paginated_provider_api(monkeypatch, failure):
+    import io
+    import urllib.error
+
+    from tinyassets.router_account_deletion import AccountDeletionError, revoke_workos_sessions
+
+    monkeypatch.setenv("WORKOS_API_KEY", "synthetic")
+    revoked = []
+    def request(req, timeout):
+        assert timeout == 20
+        if (failure == "list" and req.get_method() == "GET"
+                or failure == "revoke" and req.get_method() == "POST"):
+            raise urllib.error.URLError("unavailable")
+        if req.get_method() == "POST":
+            revoked.append(json.loads(req.data)["session_id"])
+            response = io.BytesIO(b"")
+            response.status = 204
+        else:
+            assert "/users/user_fixture/sessions?" in req.full_url
+            last = "after=session_first" in req.full_url
+            response = io.BytesIO(json.dumps({
+                "data": [{"id": "session_second" if last else "session_first"}],
+                "list_metadata": {"after": None if last else "session_first"}}).encode())
+            response.status = 200
+        return response
+    if failure:
+        with pytest.raises(AccountDeletionError):
+            revoke_workos_sessions("user_fixture", request=request)
+    else:
+        revoke_workos_sessions("user_fixture", request=request)
+        assert revoked == ["session_first", "session_second"]
 
 
 @pytest.mark.parametrize("source", ["router", "broker", "custody", "host", "workos"])

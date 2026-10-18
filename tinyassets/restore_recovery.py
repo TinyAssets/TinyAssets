@@ -54,11 +54,37 @@ def _read(root, relative):
         return result
 
 
+def _check_catalog(root, *, owner_tree=False):
+    """Read the LIVE catalog without creating or repairing its database."""
+    from tinyassets.owner_lease import LEASE_DB_NAME
+
+    for catalog in root.rglob(LEASE_DB_NAME):
+        tables = _read(root, catalog.relative_to(root))
+        if "owner_store_catalog" not in tables:
+            raise ValueError("live owner store catalog unreadable")
+        for row in tables["owner_store_catalog"][3]:
+            path = Path(row["store_path"])
+            # Box processes register their private, fixed /home/owner mount.
+            if owner_tree and path.is_relative_to("/home/owner"):
+                relative = path.relative_to("/home/owner")
+            elif not owner_tree and path.is_relative_to("/data"):
+                relative = path.relative_to("/data")
+            elif path.is_absolute() and path.is_relative_to(root):
+                relative = path.relative_to(root)
+            else:
+                raise ValueError("registered live store escapes its root")
+            if ".." in relative.parts or not _safe(root, relative).is_file():
+                raise ValueError("registered live owner store missing")
+            if not _read(root, relative):
+                raise ValueError("registered live owner store unreadable")
+
+
 def normal_preflight(current, staged, owners, *, backup_time, restored_owners=None):
     """Read LIVE evidence before mutating staging or publishing either member."""
     from tinyassets.router_traffic import NAME
 
     layout = json.loads((current / ".layout.json").read_text())
+    _check_catalog(current)
     if not (current / NAME).exists():
         if (layout.get("box_layout") == "owner-box" or layout.get("state") != "migrating"
                 or layout.get("migration") != "owner-box"):
@@ -118,6 +144,7 @@ def normal_preflight(current, staged, owners, *, backup_time, restored_owners=No
         tree = owners / str(row["machine_id"])
         if tree.is_symlink() or not tree.is_dir():
             raise ValueError("registered live owner tree missing")
+        _check_catalog(tree, owner_tree=True)
         def unreadable(error):
             raise error
 
@@ -126,8 +153,11 @@ def normal_preflight(current, staged, owners, *, backup_time, restored_owners=No
                 path = Path(directory) / name
                 if not path.is_symlink():
                     with path.open("rb") as stream:
+                        sqlite = stream.read(16) == b"SQLite format 3\x00"
                         while stream.read(1024 * 1024):
                             pass
+                    if sqlite:
+                        _read(tree, path.relative_to(tree))
         if not (tree / ".owner-boxd/boxhost.db").is_file():
             raise ValueError("live owner journal missing")
         journal = _read(tree, ".owner-boxd/boxhost.db")
@@ -136,7 +166,11 @@ def normal_preflight(current, staged, owners, *, backup_time, restored_owners=No
         if restored_owners is not None:
             saved_tree = restored_owners / tree.name
             for path in saved_tree.rglob("*"):
-                if path.suffix in {".db", ".sqlite3"}:
+                if not path.is_file():
+                    continue
+                with path.open("rb") as stream:
+                    sqlite = stream.read(16) == b"SQLite format 3\x00"
+                if sqlite:
                     relative = path.relative_to(saved_tree)
                     if not (tree / relative).is_file():
                         raise ValueError("registered live owner store missing")
@@ -285,8 +319,10 @@ def reset_credentials(staged, now):
 
 def fence_ops(staged, trees, now):
     from tinyassets.boxes.state import _SCHEMA
+    from tinyassets.broker.ops import MAX_FUTURE_SKEW_S
 
-    cutoff = int(now * 1000) + 1
+    cutoff = int(now * 1000) + MAX_FUTURE_SKEW_S * 1000 + 1
+    restore_epoch = int(now * 1000) + 1
     _read(staged, ".broker/ops.db")
     path = _safe(staged, ".broker/ops.db")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -307,9 +343,9 @@ def fence_ops(staged, trees, now):
                 db.execute(statement)
             db.execute("INSERT OR IGNORE INTO boxes VALUES (?,1,0)", (owners[int(tree.name)],))
             db.execute("UPDATE boxes SET epoch=MAX(epoch+1,?), generation=generation+1",
-                       (cutoff,))
+                       (restore_epoch,))
             db.execute("INSERT INTO host VALUES ('restore_epoch',?) ON CONFLICT(k) "
-                       "DO UPDATE SET v=MAX(v+1,excluded.v)", (cutoff,))
+                       "DO UPDATE SET v=MAX(v+1,excluded.v)", (restore_epoch,))
             db.execute("UPDATE ops SET state='unknown_after_restore'")
             epoch = db.execute("SELECT epoch FROM boxes WHERE command_center_id=?",
                                (owners[int(tree.name)],)).fetchone()[0]
@@ -328,16 +364,21 @@ def fence_ops(staged, trees, now):
 
 
 def disaster_restore(current, staged, trees, *, backup_time, now=None,
-                     identity_exists=None, billing_sync=None):
+                     identity_exists=None, billing_sync=None, revoke_sessions=None):
     from tinyassets.billing.stripe_adapter import restore_billing
     from tinyassets.boxes.destroy import tree as destroy
-    from tinyassets.router_account_deletion import workos_user_exists
+    from tinyassets.router_account_deletion import revoke_workos_sessions, workos_user_exists
 
     now = time.time() if now is None else now
     erased = erasures(current, staged, identity_exists=identity_exists or workos_user_exists)
     for uid in sorted(erased):
         destroy(trees, uid, erase=False)
         destroy(trees, uid, erase=True)
+    reconciled = 0
+    for row in _rows(staged, ".broker/state/owner-identities.db", "owner_identities"):
+        if row["machine_id"] not in erased:
+            (revoke_sessions or revoke_workos_sessions)(row["principal"])
+            reconciled += 1
     reset_credentials(staged, now)
     fence_ops(staged, trees, now)
     _read(staged, ".broker/plans.db")
@@ -349,6 +390,7 @@ def disaster_restore(current, staged, trees, *, backup_time, now=None,
     report = {"backup_time": backup_time, "restore_time": now,
               "credential_roots_reset": True, "operation_fences_reset": True,
               "erased_owners": len(erased), "billing": billing,
+              "owners_reconciled": reconciled,
               "spend_blocked_until": int(fence.read_text()),
               "reverted_classes": ["owner consents and grants", "effector consents",
                   "capability grants", "graph receivers", "outside grants",

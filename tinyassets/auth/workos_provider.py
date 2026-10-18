@@ -326,9 +326,20 @@ class WorkOSAuthProvider(AuthProvider):
         from tinyassets.router_traffic import accepts_issued_at
         from tinyassets.storage import data_dir
 
-        if not accepts_issued_at(data_dir(), claims.get("iat")):
-            _log_token_rejection("expired")
-            return None
+        # Refresh changes iat but retains sid: use the original session time.
+        if not accepts_issued_at(data_dir(), None):
+            from tinyassets.router_account_deletion import (
+                AccountDeletionError,
+                workos_session_created_at,
+            )
+
+            try:
+                created = workos_session_created_at(sub, claims.get("sid"))
+                if not accepts_issued_at(data_dir(), created):
+                    raise AccountDeletionError("session predates restore")
+            except AccountDeletionError:
+                _log_token_rejection("expired")
+                return None
         return claims
 
     def resolve_token(self, token: str) -> Identity | None:

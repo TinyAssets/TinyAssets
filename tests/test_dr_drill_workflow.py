@@ -303,6 +303,21 @@ def test_restore_uses_backup_restore_sh():
     assert "backup-restore.sh" in _text()
 
 
+def test_drill_fetches_verifies_and_transfers_complete_pair():
+    fetch = _step("Validate selected backup")["run"]
+    transfer = _step("Transfer verified backup to drill Droplet")["run"]
+    for run in (fetch, transfer):
+        assert "tinyassets-box-store-${pair_stamp}.tar.gz" in run
+        assert "tinyassets-pair-${pair_stamp}.json" in run
+        assert "deploy/backup-pair.py" in run
+        assert " verify " in run
+    restore = _step("Disaster restore on drill Droplet")["run"]
+    assert "BOX_BACKUP_FILE=${box_file}" in restore
+    assert "PAIR_MANIFEST_FILE=${pair_file}" in restore
+    assert 'test "$rc" -eq 6' in restore
+    assert "--rehearsal-provider" not in _text()
+
+
 # ---------------------------------------------------------------------------
 # (h) Probe uses direct IP:8001 (not tunnel URL)
 # ---------------------------------------------------------------------------

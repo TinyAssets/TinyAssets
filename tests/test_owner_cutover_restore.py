@@ -21,6 +21,46 @@ from tests.test_owner_cutover_census import source as source
 REPO = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize("damage", ["missing", "unreadable", "integrity"])
+def test_normal_restore_live_catalog_failure_exits_four(tmp_path, damage):
+    import runpy
+
+    from tests.test_box_restore_authority import paired
+    from tests.test_owner_cutover_apply import _restore_paired
+    from tinyassets.owner_lease import lease_db
+
+    current, staged, live, trees = paired(tmp_path)
+    (tmp_path / "volume").mkdir()
+    current = current.rename(tmp_path / "volume/_data")
+    (current / ".boxhost/boxhost.db").chmod(0o600)
+    stamp = "2026-10-17T00-00-00Z"
+    shared = tmp_path / f"tinyassets-data-{stamp}.tar.gz"
+    boxes = tmp_path / f"tinyassets-box-store-{stamp}.tar.gz"
+    for path, root, name in ((shared, current, "_data"), (boxes, live, "owners")):
+        with tarfile.open(path, "w:gz") as archive:
+            archive.add(root, arcname=name)
+    runpy.run_path(str(REPO / "deploy/backup-pair.py"))["create"](
+        shared, boxes, tmp_path / f"tinyassets-pair-{stamp}.json")
+    tree = live / "300001"
+    with lease_db(tree) as db:
+        db.execute("INSERT INTO owner_store_catalog VALUES (?,?,?)",
+                   ("/home/owner/new.db", "agent_turn_journal", "now"))
+    path = tree / "new.db"
+    if damage == "unreadable":
+        path.write_bytes(b"not a readable database")
+    elif damage == "integrity":
+        _sql(path, "CREATE TABLE records (value TEXT); INSERT INTO records VALUES ('x'); "
+             "CREATE INDEX drift ON records(value) WHERE 0; PRAGMA writable_schema=ON; "
+             "UPDATE sqlite_master SET sql='CREATE INDEX drift ON records(value)' "
+             "WHERE name='drift';")
+    before = _fingerprint(current), _fingerprint(live)
+    result = _restore_paired((current, live, shared, boxes), tmp_path)
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert "restore safety preparation refused" in result.stdout
+    assert {k: v for k, v in _fingerprint(current).items() if k != ".layout.lock"} == before[0]
+    assert _fingerprint(live) == before[1]
+
+
 def _shim(directory, name, body):
     path = directory / name
     path.write_text("#!/usr/bin/env bash\nset -eu\n" + body)

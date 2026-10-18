@@ -32,6 +32,7 @@ from pathlib import Path
 RESERVED = "reserved"
 MAY_HAVE_SENT = "may_have_sent"
 TERMINAL = frozenset({"completed", "failed", "cancelled", "refused"})
+MAX_FUTURE_SKEW_S = 300
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 _VALUES = {c: i for i, c in enumerate(_CROCKFORD)}
@@ -110,9 +111,12 @@ class Admission:
 class OpStore:
     """SQLite-backed operation records; one per broker state directory."""
 
-    def __init__(self, path: Path, *, retention_s: float = 24 * 3600, max_skew_s: float = 300,
+    def __init__(self, path: Path, *, retention_s: float = 24 * 3600,
+                 max_skew_s: float = MAX_FUTURE_SKEW_S,
                  capacity: int = 1_000_000, clock: Callable[[], float] = time.time) -> None:
         self._path = Path(path)
+        if not 0 <= max_skew_s <= MAX_FUTURE_SKEW_S:
+            raise ValueError("operation future skew exceeds restore fence bound")
         self._retention_ms = int(retention_s * 1000)
         self._skew_ms = int(max_skew_s * 1000)
         self._capacity = capacity

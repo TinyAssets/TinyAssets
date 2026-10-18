@@ -6,6 +6,8 @@ NORMAL restore is the exact verified paired backup, with no authority projection
 Before publishing either volume it checks the LIVE router traffic store, every
 registered live shared store, owner tree and owner `.owner-boxd/boxhost.db`.
 Missing or unreadable live state refuses; absence is never "never started".
+The LIVE `owner_store_catalog` supplies completeness, including stores created
+after the backup; every registered store must exist and pass integrity.
 Any live `traffic_opened_at` refuses, including one newer than the pair;
 normal restore never reopens post-traffic state or a disaster generation. A missing traffic store
 is accepted only when the live layout proves an unfinished pre-traffic cutover.
@@ -42,7 +44,9 @@ Credential roots and their reset:
   SHA-256, without a pepper: delete all rows; introduce no new crypto.
 - Local MCP OAuth `.auth.db` clients/codes/access/refresh rows use random tokens
   and plain digests, not a signing key: delete them. WorkOS signs external JWTs;
-  enforce a durable restore-time issuance floor before accepting those tokens.
+  revoke every surviving owner's sessions through the provider API, failing closed
+  on unavailability. Enforce the restore epoch against the signed `sid` and its
+  provider-recorded creation time, never the refreshed JWT `iat`.
 - Operational wiki-canary bearer and canary sign-in door key: fresh replacements
   in router-owned `.router-credentials.json` override the old environment values.
   Recovery operators reconfigure acceptance clients from these replacements.
@@ -57,7 +61,8 @@ Operation fences:
 - Each owner's `.owner-boxd/boxhost.db`: bump epoch to a fresh restore incarnation;
   old write/edit/bash handles and epoch-bound operation IDs refuse. These IDs
   are journal positions, not ULIDs, and MUST NOT be compared with a time cutoff.
-- `.broker/ops.db:meta.cutoff_ms`: advance to restore time; admission validates
+- `.broker/ops.db:meta.cutoff_ms`: advance past restore time plus the broker's maximum admitted future skew (one
+  shared constant, inclusive boundary); admission validates
   the entire ULID and rejects old IDs before receipt lookup.
 - Owner `.remote-ta-receipts.sqlite3`: advance the execution epoch fence; opaque
   request IDs are scoped to their epoch-bound execution, not timestamp-compared.
@@ -72,7 +77,9 @@ restored identities through the WorkOS adapter: an absent user is erased, an
 indeterminate response refuses. Destroy erased owner trees before publication.
 Tests inject the adapter seam and never call the network.
 
-Reconcile plan and billing suspension through the Stripe adapter where configured;
+Reconcile plan and billing suspension through the Stripe adapter where configured,
+using the webhook's permanent subscription/customer-to-owner resolver for signed
+legacy universe identities;
 report unavailable sources and abuse suspension explicitly. Block every owner's
 remaining daily spend through the end of the restore day, independent of policy
 caps or missing policy rows. There is no authoritative daily-spend reconstruction
@@ -83,7 +90,12 @@ or reconciled above. This is acknowledged loss, never carry-forward.
 
 Rehearsal proves exact normal restore before traffic, normal refusal after traffic,
 and completed disaster recovery with stale key/session/hook rejection, erased
-owner destruction and write/bash/broker-outbound replay refusal.
+owner destruction and write/bash/broker-outbound replay refusal. Network-less
+rehearsal mounts a recorded provider module at its own fixed venue path, selected
+only by an explicit harness argument refused without that mount. Production
+images contain no such module and deploy never passes the argument. Rehearsal
+proves every survivor reconciled, provider-absent identity erased before boxes
+start, and unreachable provider exit 4 with both live volumes unchanged.
 
 ## Shape check against the research (required for every slice)
 

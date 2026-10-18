@@ -98,6 +98,53 @@ def _sign(keypair: rsa.RSAPrivateKey, **claims: object) -> str:
     return jwt.encode(payload, keypair, algorithm="RS256", headers={"kid": "test"})
 
 
+@pytest.mark.parametrize("created,accepted", [(1, False), (100, False), (101, True),
+                                             (None, False)])
+def test_restore_checks_original_session_not_refreshed_iat(
+        tmp_path, monkeypatch, keypair, created, accepted):
+    import sqlite3
+
+    from tinyassets.router_account_deletion import AccountDeletionError
+    from tinyassets.router_traffic import initialize
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    initialize(tmp_path)
+    with sqlite3.connect(tmp_path / ".router-traffic.sqlite3") as db:
+        db.execute("UPDATE traffic SET credentials_after=100")
+    def session_time(owner, sid):
+        assert (owner, sid) == ("user_123", "session_original")
+        if created is None:
+            raise AccountDeletionError("unreachable")
+        return created
+    monkeypatch.setattr("tinyassets.router_account_deletion.workos_session_created_at",
+                        session_time)
+    token = _sign(keypair, sub="user_123", sid="session_original")
+    assert (_provider(keypair).verified_claims(token) is not None) is accepted
+
+
+@pytest.mark.parametrize("rotated", ["rotated-refresh", ""])
+def test_pre_restore_raw_cookie_refresh_is_refused(tmp_path, monkeypatch, keypair, rotated):
+    import sqlite3
+
+    from tests.test_onboarding_session_refresh import _drive, _ok
+    from tinyassets.router_traffic import initialize
+
+    initialize(tmp_path)
+    with sqlite3.connect(tmp_path / ".router-traffic.sqlite3") as db:
+        db.execute("UPDATE traffic SET credentials_after=100")
+    monkeypatch.setattr("tinyassets.router_account_deletion.workos_sessions", lambda owner: [
+        {"id": "session_original", "created_at": "1970-01-01T00:00:01Z"}])
+    access = _sign(keypair, sub="user_123", sid="session_original")
+    status, body, cookies, calls = _drive(
+        {"grant_type": "refresh_token"}, cookie="ta_rt=pre-restore-refresh",
+        data_dir=str(tmp_path), monkeypatch=monkeypatch,
+        upstream=lambda form: _ok(access, rotated), provider=_provider(keypair))
+    assert calls[0]["refresh_token"] == "pre-restore-refresh"
+    assert status == 401
+    assert body == {"error": "identity_unresolved"}
+    assert not cookies
+
+
 # --- derive_endpoints ------------------------------------------------------
 
 

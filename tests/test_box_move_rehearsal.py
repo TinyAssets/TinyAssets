@@ -317,6 +317,24 @@ def test_migration_container_overrides_image_fault_default(tmp_path):
     assert args[-5:] == ["-B", "-m", "tinyassets.box_layout_migration", "check", "/data"]
 
 
+def test_production_restore_cannot_load_recorded_provider(tmp_path):
+    import runpy
+
+    loader = runpy.run_path(str(ROOT / "deploy/box-store-quotas.py"))["rehearsal_adapters"]
+    with pytest.raises(ValueError, match="harness-only mount"):
+        loader()
+    result = subprocess.run([
+        "bash", str(ROOT / "deploy/backup-restore.sh"), "--disaster-restore",
+        "--acknowledge-unrecoverable-facts", "--rehearsal-provider"],
+        capture_output=True, text=True)
+    assert result.returncode == 1
+    assert "harness-only mount" in result.stderr
+    dockerfile = (ROOT / "Dockerfile").read_text()
+    assert "rehearsal_restore_provider" not in dockerfile
+    assert "COPY scripts/ " not in dockerfile
+    assert "COPY . " not in dockerfile
+
+
 def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch, capsys):
     if not hasattr(os, "geteuid") or os.geteuid() != 0:
         pytest.skip(
@@ -487,6 +505,7 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
             "crash_resume",
             "serving",
             "normal_restore_after_traffic_refuses",
+            "disaster_provider_unreachable_refuses",
             "disaster_restore_after_traffic",
             "cleanup",
         }
@@ -505,9 +524,10 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
         }
         assert result["restore_before_write"]["comparisons"] == 1
         assert result["normal_restore_after_traffic_refuses"] == {"status": "PASS", "refusals": 1}
+        assert result["disaster_provider_unreachable_refuses"] == {"status": "PASS", "refusals": 1}
         assert result["disaster_restore_after_traffic"] == {
             "status": "PASS", "comparisons": 1, "replay_refusals": 7, "fenced_owners": 2,
-            "stale_credentials": 3, "erased_owners": 1,
+            "stale_credentials": 3, "erased_owners": 1, "reconciled_owners": 2,
         }
         captured = capsys.readouterr()
         assert captured.err == ""

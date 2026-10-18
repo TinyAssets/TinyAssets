@@ -224,11 +224,16 @@ sudo systemctl start tinyassets-watchdog.timer
 
 Use `deploy/RESTORE.md` or `docs/ops/backup-restore-runbook.md`.
 
-Quick path (restore latest backup on existing Droplet):
+Post-traffic data loss requires the newest verified pair and acknowledged disaster
+restore. Normal restore is only for pre-traffic cutover rollback:
 ```bash
 sudo systemctl stop tinyassets-daemon
-source /etc/tinyassets/env
-sudo -E bash /opt/tinyassets/deploy/backup-restore.sh
+set -a; source /etc/tinyassets/env; set +a
+sudo -E bash /opt/tinyassets/deploy/backup-restore.sh \
+  --disaster-restore --acknowledge-unrecoverable-facts
+rc=$?
+test "$rc" -eq 6 || exit 1
+# Reconfigure acceptance credentials from the restored router before startup.
 sudo systemctl start tinyassets-daemon
 python3 /opt/tinyassets/scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --verbose
 ```

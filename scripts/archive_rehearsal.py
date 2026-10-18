@@ -131,6 +131,8 @@ class Venue:
         )
         docker("cp", str(ROOT / "scripts/rehearse_box_move.py"),
                name + ":/support/rehearse_box_move.py")
+        docker("cp", str(ROOT / "scripts/rehearsal_restore_provider.py"),
+               name + ":/support/rehearsal_restore_provider.py")
         self.container(
             "--rm",
             "--user",
@@ -283,8 +285,8 @@ class Venue:
         )
 
     def restore(self, *, replay=False, disaster=False, refuse=False):
-        # Only the absent host service manager and sandbox inventory are
-        # represented locally. Extraction, fencing, quotas and swap are real.
+        # Provider responses and absent host services are recorded at this
+        # venue boundary. Extraction, fencing, quotas and swap are real.
         script = r"""set -eu
 mkdir -p /tmp/bin /opt/tinyassets/boxhostd/current
 cat > /tmp/bin/docker <<'SH'
@@ -304,7 +306,8 @@ bash /support/deploy/backup-restore.sh
         if disaster:
             script = script.replace("bash /support/deploy/backup-restore.sh",
                                     "bash /support/deploy/backup-restore.sh "
-                                    "--disaster-restore --acknowledge-unrecoverable-facts")
+                                    "--disaster-restore --acknowledge-unrecoverable-facts "
+                                    "--rehearsal-provider")
         result = self.container(
             "--rm",
             "--privileged",
@@ -316,6 +319,8 @@ bash /support/deploy/backup-restore.sh
             self.names["backup"] + ":/backup:ro",
             "-v",
             self.names["support"] + ":/support:ro",
+            "-v",
+            self.names["support"] + ":/run/tinyassets-rehearsal:ro",
             "--device",
             self.device + ":" + self.device,
             "--mount",
@@ -547,6 +552,13 @@ def archive_rehearsal(image, archive, *, store_bytes):
         step = "normal_restore_after_traffic_refuses"
         venue.restore(replay=True, refuse=True)
         passed(step, refusals=1)
+        step = "disaster_provider_unreachable_refuses"
+        venue.helper("import runpy; runpy.run_path('/support/rehearse_box_move.py')"
+                     "['provider_failure_probe']('before')")
+        venue.restore(replay=True, disaster=True, refuse=True)
+        venue.helper("import runpy; runpy.run_path('/support/rehearse_box_move.py')"
+                     "['provider_failure_probe']('after')")
+        passed(step, refusals=1)
         step = "disaster_restore_after_traffic"
         venue.restore(replay=True, disaster=True)
         replayed = json.loads(venue.helper(
@@ -555,7 +567,7 @@ def archive_rehearsal(image, archive, *, store_bytes):
         if replayed != census["owners"] or replayed < 1:
             raise RuntimeError("incomplete replay proof")
         passed(step, comparisons=1, replay_refusals=3 * replayed + 1, fenced_owners=replayed,
-               stale_credentials=3, erased_owners=1)
+               stale_credentials=3, erased_owners=1, reconciled_owners=replayed)
     except BaseException:
         report[step] = {"status": "FAIL"}
         print(step + " FAIL", flush=True)

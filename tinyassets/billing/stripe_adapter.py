@@ -435,6 +435,7 @@ def restore_billing(root, now):
     """Offline staging writer; remote reads use the ordinary Stripe adapter seam."""
     from contextlib import closing
 
+    from tinyassets.billing.events import subscription_owner
     from tinyassets.broker.owner_reads import Plans
 
     plans = Plans(root)
@@ -456,7 +457,8 @@ def restore_billing(root, now):
         obj = _get("subscriptions/" + urllib.parse.quote(subscription, safe=""))
         event = {"type": "customer.subscription.updated", "data": {"object": obj}}
         state = subscription_state_from_event(event)
-        if obj.get("id") != subscription or state is None or state[0] != row["owner"]:
+        if (obj.get("id") != subscription or state is None
+                or subscription_owner(plans, obj, state[0]) != row["owner"]):
             raise BillingUnavailable("restore billing identity mismatch")
         plans.set_plan(row["owner"], state[1], event_created=max(now, row["event_created"] + 1),
                        ends_at=subscription_end_from_event(event),
