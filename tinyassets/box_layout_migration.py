@@ -800,7 +800,8 @@ def census(data: Path, *, _inventory: dict | None = None,
                     "per_owner", {}).get(label, 0)
                         for table, unit in (("branch_versions", "versions"),
                                             ("branch_schedules", "schedules"))},
-                        **({"retired automations kept as history": retired_automations[label]}
+                        **({"automations with non-empty retired_at kept as history":
+                            retired_automations[label]}
                            if retired_automations[label] else {})}
                 for label in labels.values()},
             "accepted_user_costs": [
@@ -1911,8 +1912,9 @@ def _build_databases(data: Path, store: Path, shared: Path, inventory: dict) -> 
 def _workflow_resolution(tables: dict) -> tuple[dict[str, int], int]:
     """The census and built tree use the same live-instance resolution predicate.
 
-    Missing columns, NULL/empty definitions and retired rows are not instances.
-    Retirement is presence, not truthiness: even an empty retired_at is history.
+    Missing columns and snapshot forks without definitions are not instances.
+    Automations, background bindings and queued tasks require definitions.
+    Retirement follows the automation store's truthiness check.
     """
     definitions = {row.get("branch_def_id") for row in
                    tables.get((".tinyassets.db", "branch_definitions"), [])}
@@ -1920,14 +1922,15 @@ def _workflow_resolution(tables: dict) -> tuple[dict[str, int], int]:
     history = 0
     for key in WORKFLOW_INSTANCE_TABLES:
         for row in tables.get(key, []):
-            if row.get("retired_at") is not None:
+            if row.get("retired_at"):
                 history += int(key == (".automations.db", "automations"))
                 continue
             definition = row.get("branch_def_id")
-            if definition is None or definition == "":
+            if "branch_def_id" not in row or (
+                    not definition and key == (".tinyassets.db", "branches")):
                 continue
             counts["instances"] += 1
-            counts["resolved"] += int(definition in definitions)
+            counts["resolved"] += int(bool(definition) and definition in definitions)
     return counts, history
 
 

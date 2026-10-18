@@ -164,8 +164,10 @@ def test_apply_refuses_workflow_instance_without_local_definition(cutover, monke
     assert (data / "a1/notes.txt").is_file()
 
 
-@pytest.mark.parametrize("retired", [True, False])
-def test_automation_missing_definition_is_history_only_when_retired(cutover, retired):
+@pytest.mark.parametrize("retired_at", ["2026-09-01T00:00:00Z", "", None])
+@pytest.mark.parametrize("definition", ["missing", None, ""])
+def test_automation_missing_definition_is_history_only_when_retired(
+        cutover, retired_at, definition):
     data, store, *_ = cutover
     _sql(data / ".automations.db", """
         CREATE TABLE automations (automation_id TEXT, universe_id TEXT,
@@ -174,8 +176,9 @@ def test_automation_missing_definition_is_history_only_when_retired(cutover, ret
         INSERT INTO automation_attempts VALUES ('old', 'synthetic run history');
     """)
     with sqlite3.connect(data / ".automations.db") as db:
-        db.execute("INSERT INTO automations VALUES ('old','a1','missing',?)",
-                   ("then" if retired else None,))
+        db.execute("INSERT INTO automations VALUES ('old','a1',?,?)",
+                   (definition, retired_at))
+    retired = bool(retired_at)
     report = migration.census(data)
     assert report["ready"] is retired
     if not retired:
@@ -184,12 +187,12 @@ def test_automation_missing_definition_is_history_only_when_retired(cutover, ret
             migration.apply(*cutover)
         return
     assert report["workflow_history"]["account-0001"][
-        "retired automations kept as history"] == 1
+        "automations with non-empty retired_at kept as history"] == 1
     migration.apply(*cutover)
     migration.verify(data, store)
     with sqlite3.connect(store / "300001/.automations.db") as db:
         assert db.execute("SELECT * FROM automations").fetchall() == [
-            ("old", "a1", "missing", "then")]
+            ("old", "a1", definition, retired_at)]
         assert db.execute("SELECT * FROM automation_attempts").fetchall() == [
             ("old", "synthetic run history")]
 

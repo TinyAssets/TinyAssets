@@ -117,7 +117,7 @@ def test_two_owner_census_preserves_totals_and_source_bytes(source):
 ])
 @pytest.mark.parametrize("case", [
     "missing", "other_owner", "public_other_owner", "private", "published_copy",
-    "retired", "empty_retired_at", "null", "empty", "no_column",
+    "retired", "empty_retired_at", "active_resolved", "null", "empty", "no_column",
 ])
 def test_census_predicts_apply_workflow_resolution(source, tmp_path, database, table, case):
     from tinyassets.box_layout_migration import _build_databases, _verify_workflow_definitions
@@ -126,7 +126,8 @@ def test_census_predicts_apply_workflow_resolution(source, tmp_path, database, t
         CREATE TABLE branch_definitions
             (branch_def_id TEXT, author TEXT, published INTEGER, visibility TEXT);
     """)
-    if case in {"other_owner", "public_other_owner", "private", "published_copy"}:
+    if case in {"other_owner", "public_other_owner", "private", "published_copy",
+                "active_resolved"}:
         author = "bob" if case in {"other_owner", "public_other_owner"} else "alice"
         published = int(case in {"published_copy", "public_other_owner"})
         visibility = "public" if published else "private"
@@ -137,14 +138,17 @@ def test_census_predicts_apply_workflow_resolution(source, tmp_path, database, t
     definition_column = "" if case == "no_column" else ", branch_def_id TEXT"
     _sql(source / database, f"CREATE TABLE {table} (universe_id TEXT, retired_at TEXT"
          f"{definition_column})")
-    retired = "'then'" if case == "retired" else "''" if case == "empty_retired_at" else "NULL"
+    retired = ("'2026-09-01T00:00:00Z'" if case == "retired" else
+               "''" if case in {"empty_retired_at", "active_resolved", "null", "empty"}
+               else "NULL")
     definition = "NULL" if case == "null" else "''" if case == "empty" else "'definition'"
     values = f"'a1',{retired}" + ("" if case == "no_column" else f",{definition}")
     _sql(source / database, f"INSERT INTO {table} VALUES ({values})")
     before = _fingerprint(source)
     inventory = {}
     report = census(source, _inventory=inventory)
-    unresolved = case in {"missing", "other_owner", "public_other_owner"}
+    unresolved = (case in {"missing", "other_owner", "public_other_owner", "empty_retired_at"}
+                  or (case in {"null", "empty"} and table != "branches"))
     assert report["ready"] is not unresolved, report["refusals"]
     assert report["workflow_instances"]["account-0001"][
         "unresolved_workflow_instance"] == int(unresolved)
@@ -159,9 +163,11 @@ def test_census_predicts_apply_workflow_resolution(source, tmp_path, database, t
     _verify_workflow_definitions(store / "300002")
     with closing(sqlite3.connect(store / "300001" / database)) as db:
         assert db.execute(f"SELECT COUNT(*) FROM {table}").fetchone() == (1,)
-    if table == "automations" and case in {"retired", "empty_retired_at"}:
-        assert report["workflow_history"]["account-0001"][
-            "retired automations kept as history"] == 1
+    assert report["workflow_history"]["account-0001"].get(
+        "automations with non-empty retired_at kept as history", 0) == int(
+            table == "automations" and case == "retired")
+    if case == "active_resolved":
+        assert report["workflow_instances"]["account-0001"]["resolved"] == 1
     assert _fingerprint(source) == before
 
 
