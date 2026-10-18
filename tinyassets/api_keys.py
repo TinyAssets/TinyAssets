@@ -196,6 +196,10 @@ class ApiKeyStore:
         if (row is None or row["revoked_at"] is not None
                 or not hmac.compare_digest(row["secret_sha256"], _digest(secret))):
             return None
+        from tinyassets.router_credentials import active_owner
+
+        if not active_owner(row["owner"], self.path.parent):
+            return None
         if touch:
             self._touch(key_id, row["last_used_at"])
         return row["owner"], {"client": _client(key_id), "family": _family(key_id),

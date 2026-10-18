@@ -468,6 +468,24 @@ def set_provider(provider: AuthProvider) -> None:
     _provider = provider
 
 
+def resolve_token(token):
+    """Authenticate through any configured provider against the deletion fence."""
+    from tinyassets.auth.workos_provider import clear_rejection_category
+    from tinyassets.router_credentials import active_owner
+
+    clear_rejection_category()
+    identity = _get_provider().resolve_token(token)
+    return identity if identity is not None and active_owner(identity.user_id) else None
+
+
+def resolve_token_result(token):
+    # Carry the refusal out of the worker thread alongside its identity.
+    from tinyassets.auth.workos_provider import rejection_category
+
+    identity = resolve_token(token)
+    return identity, rejection_category()
+
+
 def auth_middleware(token: str | None) -> Identity | None:
     """Resolve a Bearer token to an Identity, or to nothing.
 
@@ -482,8 +500,6 @@ def auth_middleware(token: str | None) -> Identity | None:
     from tinyassets.auth.workos_provider import clear_rejection_category
 
     clear_rejection_category()
-    provider = _get_provider()
-
     identity: Identity | None = None
     from tinyassets.api_keys import looks_like_key
 
@@ -495,7 +511,7 @@ def auth_middleware(token: str | None) -> Identity | None:
     # An API key is a REST credential only: it never reaches the OAuth provider
     # (or its logs), so it can never become an MCP or app session.
     if token and not looks_like_key(token):
-        identity = provider.resolve_token(token)
+        identity = resolve_token(token)
     _current_identity.set(identity)
     if identity is not None:
         _current_request_boundary_id.set(f"request_boundary_{secrets.token_hex(32)}")
@@ -1146,7 +1162,7 @@ def current_mcp_message_identity() -> Identity | None:
         return None
     if wiki_canary_token_matches(credential.strip()):
         return None
-    identity = _get_provider().resolve_token(credential.strip())
+    identity = resolve_token(credential.strip())
     if identity is None or not (identity.user_id or "").strip():
         return None
     return identity

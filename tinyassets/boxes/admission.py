@@ -20,6 +20,10 @@ class OwnerRegistry:
 
     def owner(self, owner: str, *, rotate: bool = False, deletion_only=False) -> dict:
         validate_principal(owner)
+        from tinyassets.router_credentials import DeletedOwners
+
+        if DeletedOwners(self.data_root).contains(owner):
+            raise BoxAuthError("Account deleted.")
         from tinyassets.boxes.bootstrap import peer
 
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:

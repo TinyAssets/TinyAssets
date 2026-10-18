@@ -87,7 +87,10 @@ def lookup(cookie):
             "SELECT * FROM owner_sessions WHERE session_hash=? AND expires_at>?",
             (hashed(cookie), time.time()),
         ).fetchone()
-        return dict(row) if row else None
+        from tinyassets.router_credentials import active_owner
+
+        return (dict(row) if row and active_owner(
+            json.loads(row["identity_json"])["user_id"]) else None)
 
 
 def router_owner_session():
@@ -228,7 +231,7 @@ async def callback(request, *, completion=False):
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-    from tinyassets.auth.middleware import _get_provider, current_identity_or_none
+    from tinyassets.auth.middleware import current_identity_or_none, resolve_token_result
     from tinyassets.onboarding import _read_small_json, app_config, onboarding_enabled
     from tinyassets.onboarding.session_store import seal_key
 
@@ -268,7 +271,9 @@ async def callback(request, *, completion=False):
             reason, upstream_status, json.dumps(diagnostics, ensure_ascii=True),
             extra={"refusal_reason": reason, "upstream_status": upstream_status, **diagnostics},
         )
-        message = ("This sign-in link expired. Start sign-in again."
+        message = ("Account deleted. This account can no longer sign in."
+                   if reason == "account_deleted" else
+                   "This sign-in link expired. Start sign-in again."
                    if reason == "flow_expired" else
                    "Sign-in could not finish. Start sign-in again.")
         response = (JSONResponse({"error": reason, "message": message},
@@ -360,9 +365,10 @@ async def callback(request, *, completion=False):
             )
         result.raise_for_status()
         tokens = result.json()
-        identity = await run_in_threadpool(_get_provider().resolve_token, tokens["access_token"])
+        identity, reason = await run_in_threadpool(resolve_token_result, tokens["access_token"])
         if identity is None or not identity.user_id:
-            return refused("identity_unresolved")
+            return refused("account_deleted" if reason == "account_deleted"
+                           else "identity_unresolved")
         if completion and identity.user_id != bearer_identity.user_id:
             return refused("identity_mismatch")
         refresh = tokens.get("refresh_token")
@@ -378,11 +384,16 @@ async def callback(request, *, completion=False):
         return refused("invalid_token_response")
     revoke(request.cookies.get(COOKIE, ""))
     session_cookie = secrets.token_urlsafe(32)
-    with store() as conn:
-        conn.execute(
-            "INSERT INTO owner_sessions VALUES (?,?,?)",
-            (hashed(session_cookie), json.dumps(identity.to_dict()), time.time() + 28800),
-        )
+    from tinyassets.router_credentials import _DISPATCH, active_owner
+
+    with _DISPATCH:
+        if not active_owner(identity.user_id):
+            return refused("account_deleted")
+        with store() as conn:
+            conn.execute(
+                "INSERT INTO owner_sessions VALUES (?,?,?)",
+                (hashed(session_cookie), json.dumps(identity.to_dict()), time.time() + 28800),
+            )
     # No tokens/codes in callback output or browser scripts. Strip the query.
     from tinyassets.onboarding.inline_model_connect import RETURN_COOKIE, return_path
 

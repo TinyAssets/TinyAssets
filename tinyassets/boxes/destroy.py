@@ -71,10 +71,9 @@ def _walk(fd: int, device: int, mount: str, *, erase: bool) -> int:
 
 def quarantine(store: Path, uid: int, *, destination_root: Path) -> Path:
     """Detach an unerased tree into root-private storage on the same filesystem."""
-    import tempfile
-
     GvisorRuntime.box_id(uid)
-    target = Path(tempfile.mkdtemp(prefix=".tinyassets-erasure-quarantine.", dir=destination_root))
+    target = destination_root
+    target.mkdir(mode=0o700, exist_ok=True)
     os.chown(target, 0, 0)
     target.chmod(0o700)
     parent = os.open(store, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -83,6 +82,11 @@ def quarantine(store: Path, uid: int, *, destination_root: Path) -> Path:
         os.rename(str(uid), str(uid), src_dir_fd=parent, dst_dir_fd=destination)
         os.fsync(parent)
         os.fsync(destination)
+        outer = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(outer)
+        finally:
+            os.close(outer)
     finally:
         os.close(destination)
         os.close(parent)

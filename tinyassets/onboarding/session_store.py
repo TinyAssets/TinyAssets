@@ -453,7 +453,9 @@ def _open(handle: str, record: dict, now: int | None = None) -> dict | None:
     until = _int(decoded.get("until"))
     if until is None or (now is not None and until < now):
         return None
-    return decoded
+    from tinyassets.router_credentials import active_owner
+
+    return decoded if active_owner(owner) else None
 
 
 def _open_token(handle: str, record: dict, now: int) -> str:
@@ -492,12 +494,17 @@ def mint(refresh_token: str, *, owner: str) -> str:
         return ""
     if not isinstance(owner, str) or not owner:
         raise ValueError("refresh session requires a verified owner")
-    handle = secrets.token_urlsafe(32)
-    _write_record(
-        handle,
-        _seal(handle, _KIND_SESSION, {"rt": refresh_token}, REFRESH_SESSION_TTL, owner=owner),
-    )
-    return handle
+    from tinyassets.router_credentials import _DISPATCH, active_owner
+
+    with _DISPATCH:
+        if not active_owner(owner):
+            raise PermissionError("Account deleted.")
+        handle = secrets.token_urlsafe(32)
+        _write_record(
+            handle,
+            _seal(handle, _KIND_SESSION, {"rt": refresh_token}, REFRESH_SESSION_TTL, owner=owner),
+        )
+        return handle
 
 
 def read(handle: str) -> tuple[str, str]:

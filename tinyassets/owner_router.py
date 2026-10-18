@@ -216,6 +216,15 @@ async def forward(scope, receive, send, identity, route: BoxRoute):
                 await run_in_threadpool(release_route, route)
 
 
+async def resume_deleted_accounts(root):
+    """Retry durable deletions without requiring the deleted owner to sign in."""
+    from tinyassets.auth.provider import Identity
+    from tinyassets.router_credentials import DeletedOwners
+
+    for owner in await run_in_threadpool(DeletedOwners(root).pending):
+        await delete_owner_account(Identity(user_id=owner, username=owner))
+
+
 async def delete_owner_account(identity):
     # One router writer serializes receipt updates and concurrent deletion
     # retries. Never hold the credential dispatch lock across network calls.
@@ -255,6 +264,8 @@ async def _delete_owner_account(identity):
                 "owner_tree", "broker_egress", "billing", "credentials", "identity"]
             await run_in_threadpool(tombstone, root, owner, receipt)
 
+        receipt.setdefault("billing", "pending")
+        receipt.setdefault("identity", "pending")
         done = receipt.setdefault("completed_phases", [])
         failures = []
 
@@ -282,7 +293,8 @@ async def _delete_owner_account(identity):
 
         # The sweep is best-effort; destruction after a proven stop removes
         # every remaining local byte, including failed sweep phases and execs.
-        await phase("owner_tree", lambda: retire_owner(root, principal=owner))
+        if not receipt.get("quarantines"):
+            await phase("owner_tree", lambda: retire_owner(root, principal=owner))
         if "owner_tree" in done:
             receipt["home_removed"] = True
             receipt["local_unfinished"] = []
@@ -292,8 +304,7 @@ async def _delete_owner_account(identity):
         await phase("billing", lambda: cancel_account_billing(root, owner))
         if "owner_tree" in done:
             await phase("credentials", lambda: revoke_account(root, owner))
-        # Keep sign-in available until every other phase is confirmed, so the
-        # authenticated owner can retry any unfinished cleanup.
+        # Durable router retries finish cleanup even though sign-in is fenced.
         if all(step in done for step in ("owner_tree", "broker_egress", "billing", "credentials")):
             await phase("identity", lambda: delete_workos_user(owner))
         receipt["unfinished_phases"] = [step for step in (

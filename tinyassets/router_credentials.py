@@ -56,6 +56,15 @@ class DeletedOwners:
             return db.execute("SELECT 1 FROM deleted_owners WHERE owner=?",
                               (owner,)).fetchone() is not None
 
+    def pending(self) -> list[str]:
+        if not self.path.exists():
+            return []
+        with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)) as db:
+            rows = db.execute("SELECT owner,receipt FROM deleted_owners").fetchall()
+        return [owner for owner, raw in rows
+                if isinstance(receipt := json.loads(raw or "null"), dict)
+                and receipt.get("unfinished_phases") and not receipt.get("restore_pending")]
+
     def receipt(self, owner: str) -> dict:
         with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)) as db:
             row = db.execute("SELECT receipt FROM deleted_owners WHERE owner=?",
@@ -77,6 +86,18 @@ class DeletedOwners:
             if db.execute("UPDATE deleted_owners SET receipt=? WHERE owner=?",
                           (json.dumps(receipt), owner)).rowcount != 1:
                 raise RuntimeError("account deletion tombstone missing")
+
+
+def active_owner(owner: str, root: Path | None = None) -> bool:
+    """One identity fence shared by every router authentication entry point."""
+    from tinyassets.storage import data_dir
+
+    if DeletedOwners(root if root is not None else data_dir()).contains(owner):
+        from tinyassets.auth.workos_provider import _log_token_rejection
+
+        _log_token_rejection("account_deleted")
+        return False
+    return True
 
 
 class HookOwners:
@@ -115,7 +136,7 @@ class HookOwners:
         with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)) as db:
             row = db.execute("SELECT owner FROM hook_owners WHERE token_hash=?",
                              (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
-        return row[0] if row else None
+        return row[0] if row and active_owner(row[0], self.path.parent) else None
 
 
 def hook_identity(root: Path, token: str):
@@ -281,8 +302,30 @@ async def serving(root: Path):
         if BROKER_READ_GID in os.getgroups():
             os.chown(path, -1, BROKER_READ_GID)
         os.chmod(path, 0o660)
-        async with server:
-            yield
+        from tinyassets.owner_router import resume_deleted_accounts
+
+        stopped = asyncio.Event()
+
+        async def retry_deletions():
+            while not stopped.is_set():
+                try:
+                    await resume_deleted_accounts(root)
+                except Exception:
+                    import logging
+
+                    logging.getLogger(__name__).exception("account deletion retry failed")
+                try:
+                    await asyncio.wait_for(stopped.wait(), timeout=60)
+                except TimeoutError:
+                    pass
+
+        retry_task = asyncio.create_task(retry_deletions())
+        try:
+            async with server:
+                yield
+        finally:
+            stopped.set()
+            await retry_task
     finally:
         server.close()
         await server.wait_closed()

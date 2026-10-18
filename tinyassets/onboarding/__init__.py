@@ -410,9 +410,15 @@ async def _handle_token(request: Any) -> Any:
         # server-side store keyed by the localStorage handle. Web browser: from
         # the HttpOnly cookie. The handle wins when present (the WebView cookie is
         # unreliable — see _REFRESH_SESSION_TTL note).
+        from tinyassets.auth.workos_provider import clear_rejection_category, rejection_category
+
+        clear_rejection_category()
         refresh, current_handle = (
             _session_store.read(session_ref) if session_ref else ("", "")
         )
+        if rejection_category() == "account_deleted":
+            return JSONResponse({"error": "account_deleted", "message": "Account deleted."},
+                                status_code=401, headers=_NO_STORE)
         # WHICH credential actually worked is the only thing that licenses reusing
         # the handle later. Gating on the grant NAME was not enough: a caller can
         # present a valid-shaped handle that resolves to nothing, fall through to
@@ -532,12 +538,13 @@ async def _handle_token(request: Any) -> Any:
     # under a value that arrived in the request body.
     from starlette.concurrency import run_in_threadpool
 
-    from tinyassets.auth.middleware import _get_provider
+    from tinyassets.auth.middleware import resolve_token_result
 
-    identity = await run_in_threadpool(_get_provider().resolve_token, access)
+    identity, reason = await run_in_threadpool(resolve_token_result, access)
     if identity is None or not identity.user_id:
-        return JSONResponse({"error": "identity_unresolved"}, status_code=401,
-                            headers=_NO_STORE)
+        body = ({"error": "account_deleted", "message": "Account deleted."}
+                if reason == "account_deleted" else {"error": "identity_unresolved"})
+        return JSONResponse(body, status_code=401, headers=_NO_STORE)
     may_reuse_handle = bool(current_handle) and refresh_came_from_handle
     if refresh_token and len(refresh_token) <= 4096:
         if may_reuse_handle:

@@ -40,13 +40,17 @@ test "$rc" -eq 6
 ```
 
 Status **6** means completed disaster recovery, with acknowledged loss from backup
-time to restore time. Every other nonzero status is failure. Inspect the durable
+time to restore time. Status **5** means publication succeeded but erasure is
+pending; boxhostd resumes the durable cleanup list before admitting any box.
+Preparation failures return **4** with both original volumes intact. Inspect the durable
 `.disaster-restore.json` and logged report for credential reset, operation fences,
 erased owners, billing reconciliation and the daily-spend hold. All owners must
 sign in and reconnect external credentials. Pre-restore bearer credentials and
 operations are refused. Consents, grants, content and other listed classes revert
 to backup time. Erasure alone is carried from readable tombstones and WorkOS;
-erased trees are destroyed before publication.
+preparation records erasures without touching live trees. Only after publication
+are listed trees erased or moved into root-private quarantine. Deleted accounts
+cannot sign in, refresh, or authenticate with API keys or hook tokens.
 
 Start only an image compatible with the restored layout. Run the acceptance
 canaries while ordinary traffic remains closed, then use the router's local

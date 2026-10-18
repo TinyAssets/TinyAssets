@@ -109,6 +109,40 @@ def test_disaster_erases_post_backup_identity(tmp_path, monkeypatch):
                           ).fetchone() == (300002,)
 
 
+def test_completed_restore_never_rewrites_later_deletion_receipts(tmp_path, monkeypatch):
+    from tinyassets.restore_recovery import finish_erasures
+    from tinyassets.router_credentials import DeletedOwners
+
+    current, staged, live, trees = paired(tmp_path)
+    disaster(current, staged, trees, monkeypatch)
+    finish_erasures(staged)
+    deleted = DeletedOwners(staged)
+    receipt = {"home_removed": False, "unfinished_phases": ["owner_tree"],
+               "completed_phases": ["billing", "identity"]}
+    deleted.add("alice", receipt)
+    before = fingerprint(staged)
+    finish_erasures(staged)
+    assert deleted.receipt("alice") == receipt
+    assert fingerprint(staged) == before
+
+
+def test_missing_owner_store_does_not_complete_published_erasures(tmp_path, monkeypatch):
+    from tinyassets.restore_recovery import finish_erasures
+    from tinyassets.router_credentials import DeletedOwners
+
+    current, staged, live, trees = paired(tmp_path)
+    DeletedOwners(current).add("alice", {})
+    disaster(current, staged, trees, monkeypatch)
+    detached = tmp_path / "detached-store"
+    live.rename(detached)
+    before = fingerprint(staged), fingerprint(detached)
+    with pytest.raises(FileNotFoundError):
+        finish_erasures(staged)
+    assert not live.exists()
+    assert (fingerprint(staged), fingerprint(detached)) == before
+    assert json.loads((staged / ".disaster-restore.json").read_text())["pending_erasures"]
+
+
 def test_disaster_reports_unreadable_live_identity_source(tmp_path, monkeypatch):
     current, staged, live, trees = paired(tmp_path)
     (current / ".broker/state/owner-identities.db").write_bytes(b"damaged platform registry")
@@ -234,6 +268,7 @@ def disaster(current, staged, trees, monkeypatch, **kwargs):
     from tinyassets.restore_recovery import disaster_restore
     monkeypatch.setattr("os.chown", lambda *a, **k: None)
     return disaster_restore(current, staged, trees, backup_time=1, now=2000000000,
+                            live_trees=trees.parent / "live",
                             identity_exists=lambda owner: True,
                             billing_sync=lambda root, now: {"fixture": True}, **kwargs)
 

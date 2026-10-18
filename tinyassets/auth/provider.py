@@ -950,6 +950,10 @@ class OAuthProvider(AuthProvider):
 
             # Resolve user identity
             user_id = row["user_id"]
+            from tinyassets.router_credentials import active_owner
+
+            if not active_owner(user_id, self._db_path.parent):
+                return None
             scope = row["scope"]
             capabilities = scope.split() if scope else ["read"]
 
@@ -1037,6 +1041,10 @@ class OAuthProvider(AuthProvider):
             if not subject:
                 raise ValueError("UNIVERSE_SERVER_OAUTH_SUBJECT is not set")
 
+            from tinyassets.router_credentials import active_owner
+
+            if not active_owner(subject, self._db_path.parent):
+                raise ValueError("Account deleted.")
             code = secrets.token_urlsafe(48)
             conn.execute(
                 "INSERT INTO authorization_codes "
@@ -1083,6 +1091,11 @@ class OAuthProvider(AuthProvider):
                 code_verifier, row["code_challenge"], row["code_challenge_method"],
             ):
                 logger.warning("PKCE verification failed for client %s", client_id)
+                return None
+
+            from tinyassets.router_credentials import active_owner
+
+            if not active_owner(row["user_id"], self._db_path.parent):
                 return None
 
             # Mark code as used

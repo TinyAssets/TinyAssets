@@ -9,6 +9,7 @@ import sqlite3
 import stat
 import time
 from contextlib import closing
+from pathlib import Path
 
 from tinyassets.boxes.layout import OWNER_BOX_MIGRATION
 from tinyassets.sqlite_readonly import readonly_db
@@ -138,10 +139,14 @@ def erasures(current, staged, *, identity_exists, unavailable_sources=None):
         checked.add(owner)
     from tinyassets.router_credentials import DeletedOwners
 
+    deleted = DeletedOwners(staged)
     for owner in sorted(erased):
-        DeletedOwners(staged).add(owner, {
-            "unfinished_phases": ["billing", "identity"], "home_removed": True,
-            "source": "disaster erasure reconciliation"})
+        receipt = {"unfinished_phases": [
+            "owner_tree", "broker_egress", "billing", "credentials", "identity"],
+            "completed_phases": [], "home_removed": False, "restore_pending": True,
+            "source": "disaster erasure reconciliation"}
+        deleted.add(owner, receipt)
+        deleted.save_receipt(owner, receipt)
     if erased:
         tombstones = staged / ".router-deleted-owners.sqlite3"
         os.chown(tombstones, 1001, 1001)
@@ -266,11 +271,8 @@ def fence_ops(staged, trees, now):
 
 def disaster_restore(current, staged, trees, *, backup_time, now=None,
                      identity_exists=None, billing_sync=None, revoke_sessions=None,
-                     live_trees=None):
+                     live_trees, retained_trees=None):
     from tinyassets.billing.stripe_adapter import restore_billing
-    from tinyassets.boxes.destroy import quarantine
-    from tinyassets.boxes.destroy import tree as destroy
-    from tinyassets.boxes.provider import BoxError
     from tinyassets.router_account_deletion import revoke_workos_sessions, workos_user_exists
 
     now = time.time() if now is None else now
@@ -291,30 +293,21 @@ def disaster_restore(current, staged, trees, *, backup_time, now=None,
     fence.write_text(str((int(now) // 86400 + 1) * 86400))
     os.chown(fence, 1002, 1002)
     report_path = _safe(staged, ".disaster-restore.json")
-    failures = []
-    for store in (trees, *([live_trees] if live_trees is not None else [])):
-        for uid in sorted(erased):
-            try:
-                destroy(store, uid, erase=False)
-                destroy(store, uid, erase=True)
-            except (OSError, BoxError) as error:
-                path = quarantine(store, uid, destination_root=live_trees or trees.parent)
-                failures.append({"uid": uid, "quarantine": str(path),
-                                 "error": type(error).__name__})
-    if failures:
-        from tinyassets.router_credentials import DeletedOwners
-
-        deleted = DeletedOwners(staged)
-        identities = _rows(staged, ".broker/state/owner-identities.db", "owner_identities")
-        for row in identities:
-            if row["machine_id"] in {item["uid"] for item in failures}:
-                deleted.save_receipt(row["principal"], {
-                    "unfinished_phases": ["owner_tree", "billing", "identity"],
-                    "home_removed": False, "source": "disaster erasure quarantine"})
+    # Paths describe the published pair, never staging. The shell reserves the
+    # retained destination before preparation and creates it only during swap.
+    stores = [live_trees]
+    if retained_trees is not None:
+        stores.append(retained_trees)
+    pending = [{"uid": uid, "store": str(store),
+                "quarantine": str(stores[0] / (
+                    ".tinyassets-erasure-quarantine." +
+                    (staged / ".restore-epoch").read_text() + f"-{index}-{uid}") / str(uid))}
+               for index, store in enumerate(stores) for uid in sorted(erased)]
     report = {"backup_time": backup_time, "restore_time": now,
               "credential_roots_reset": True, "operation_fences_reset": True,
-              "erased_owners": len(erased), "billing": billing,
-              "erasure_failures": failures,
+              "erased_owners": len(erased), "erased_uids": sorted(erased), "billing": billing,
+              "cleanup_complete": False,
+              "erasure_failures": [], "pending_erasures": pending,
               "unavailable_erasure_sources": unavailable_sources,
               "owners_reconciled": reconciled,
               "spend_blocked_until": int(fence.read_text()),
@@ -323,5 +316,78 @@ def disaster_restore(current, staged, trees, *, backup_time, now=None,
                   "spend reservations", "policies", "content", "turns", "schedules",
                   "receipts", "abuse suspension history"]}
     report_path.write_text(json.dumps(report, sort_keys=True))
+    os.chown(report_path, 0, 0)
+    report_path.chmod(0o600)
     print("WARN disaster restore: " + json.dumps(report, sort_keys=True))
     return report
+
+
+def _save_report(path, report):
+    temporary = path.with_suffix(".tmp")
+    _safe(path.parent, temporary.name)
+    with temporary.open("w") as stream:
+        os.fchown(stream.fileno(), 0, 0)
+        os.fchmod(stream.fileno(), 0o600)
+        json.dump(report, stream, sort_keys=True)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def finish_erasures(root):
+    """Under the layout lock, resume published cleanup before any box starts."""
+    from tinyassets.boxes.destroy import quarantine, tree
+    from tinyassets.boxes.provider import BoxError
+    from tinyassets.router_credentials import DeletedOwners
+
+    path = _safe(root, ".disaster-restore.json")
+    if not path.exists():
+        return
+    info = path.stat()
+    if info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600:
+        raise ValueError("recovery cleanup requires a root-private report")
+    report = json.loads(path.read_text())
+    if report.get("cleanup_complete"):
+        return
+    while report.get("pending_erasures"):
+        item = report["pending_erasures"][0]
+        uid, store, destination = item["uid"], Path(item["store"]), Path(item["quarantine"])
+        # The fixed destination is recorded BEFORE moving: a crash after rename
+        # can recover its receipt without losing track of the quarantined tree.
+        if not destination.exists():
+            try:
+                tree(store, uid, erase=False)
+                tree(store, uid, erase=True)
+            except (OSError, BoxError):
+                quarantine(store, uid, destination_root=destination.parent)
+        if destination.exists():
+            report["erasure_failures"].append({
+                "uid": uid, "quarantine": str(destination), "error": "erasure refused"})
+        report["pending_erasures"].pop(0)
+        _save_report(path, report)
+    failed = {item["uid"] for item in report["erasure_failures"]}
+    deleted = DeletedOwners(root)
+    for row in _rows(root, ".broker/state/owner-identities.db", "owner_identities"):
+        if row["machine_id"] in report.get("erased_uids", []):
+            receipt = deleted.receipt(row["principal"])
+            removed = row["machine_id"] not in failed
+            done = list(receipt.get("completed_phases", []))
+            if removed and "owner_tree" not in done:
+                done.append("owner_tree")
+            updated = {**receipt, "home_removed": removed, "completed_phases": done,
+                       "restore_pending": False,
+                       "quarantines": [item["quarantine"] for item in report["erasure_failures"]
+                                       if item["uid"] == row["machine_id"]],
+                       "unfinished_phases": [step for step in (
+                           "owner_tree", "broker_egress", "billing", "credentials", "identity")
+                           if step not in done]}
+            if updated != receipt:
+                deleted.save_receipt(row["principal"], updated)
+    report["cleanup_complete"] = True
+    _save_report(path, report)
+    print("WARN disaster restore: " + json.dumps(report, sort_keys=True))

@@ -89,7 +89,7 @@ def _cutover_manifest(root: Path, *, exclude=()) -> dict:
 
 def fence_restore(current: Path, staged: Path, *, cutover_store: Path | None = None,
                   restored_store: Path | None = None, disaster: bool = False,
-                  backup_time: float = 0, restore_adapters=None) -> None:
+                  backup_time: float = 0, restore_adapters=None, retained_store=None) -> None:
     """Prepare the one exact or disaster path before either volume is swapped."""
     from tinyassets.restore_recovery import disaster_restore, normal_preflight
 
@@ -102,7 +102,7 @@ def fence_restore(current: Path, staged: Path, *, cutover_store: Path | None = N
             raise ValueError("pre-cutover backup cannot be a disaster source after traffic: "
                              "it requires forward migration; select a verified owner-box pair")
         disaster_restore(current, staged, restored_store, backup_time=backup_time,
-                         live_trees=cutover_store,
+                         live_trees=cutover_store, retained_trees=retained_store,
                          **(restore_adapters or {}))
     else:
         normal_preflight(current, staged, cutover_store, backup_time=backup_time,
@@ -169,6 +169,8 @@ if __name__ == "__main__":
     parser.add_argument("--restore-from", type=Path)
     parser.add_argument("--cutover-store", type=Path)
     parser.add_argument("--restored-store", type=Path)
+    parser.add_argument("--retained-store", type=Path)
+    parser.add_argument("--finish-erasures", type=Path)
     parser.add_argument("--disaster-restore", action="store_true")
     parser.add_argument("--acknowledge-unrecoverable-facts", action="store_true")
     parser.add_argument("--backup-time")
@@ -181,7 +183,11 @@ if __name__ == "__main__":
     if args.disaster_restore and not (args.snapshot_data and args.restore_from
                                       and args.backup_time):
         parser.error("disaster restore requires a staged backup, live path and backup time")
-    if args.snapshot_data:
+    if args.finish_erasures:
+        from tinyassets.restore_recovery import finish_erasures
+
+        finish_erasures(args.finish_erasures.resolve())
+    elif args.snapshot_data:
         if args.store or args.trees or args.registry or args.clear:
             parser.error("snapshot verification does not accept quota mutation arguments")
         check_snapshot(args.snapshot_data.resolve(), quiescent=args.quiescent)
@@ -193,6 +199,7 @@ if __name__ == "__main__":
             fence_restore(args.restore_from.resolve(), args.snapshot_data.resolve(),
                           cutover_store=args.cutover_store, restored_store=args.restored_store,
                           disaster=args.disaster_restore, backup_time=stamp,
+                          retained_store=args.retained_store,
                           restore_adapters=(rehearsal_adapters()
                                             if args.rehearsal_provider else None))
     elif not all((args.store, args.trees, args.registry)) or args.quiescent or args.restore_from:

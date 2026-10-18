@@ -256,6 +256,9 @@ def _serve(*, rootfs: Path, data_root: Path) -> None:
         restore_epoch_file=data_root / ".restore-epoch",
         cgroup_parent=Path("/sys/fs/cgroup/system.slice/boxhostd.service"))
     recover_daemons(runtime)
+    from tinyassets.restore_recovery import finish_erasures
+
+    finish_erasures(data_root)
     quota = OwnerQuota(runtime.owner_store)
     daemons = OwnerDaemons(
         runtime, admission, quota, relays, RUNTIME,

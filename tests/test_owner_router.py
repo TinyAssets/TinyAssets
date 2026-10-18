@@ -836,7 +836,7 @@ def test_a_failed_account_revoke_can_be_retried_to_completion(
             assert router_credentials.DeletedOwners(tmp_path).contains("alice")
             receipt = router_credentials.DeletedOwners(tmp_path).receipt("alice")
             assert receipt["home_removed"]
-            assert HookOwners(tmp_path).resolve(token) == "alice"
+            assert HookOwners(tmp_path).resolve(token) is None
             with pytest.raises(PermissionError, match="deleted"):
                 dispatch(tmp_path, "alice", {"operation": "hook_mint"})
 
@@ -844,10 +844,12 @@ def test_a_failed_account_revoke_can_be_retried_to_completion(
                 raise AssertionError("tombstoned retry must not resolve or wake the box")
 
             monkeypatch.setattr(owner_router, "resolve_box", forbidden)
-            retry = await delete()
-            assert retry.status_code == 200, retry.text
-            assert retry.json()["home_removed"] == receipt["home_removed"]
-            assert (await delete()).json() == retry.json()
+            assert (await delete()).status_code == 401
+            await owner_router.resume_deleted_accounts(tmp_path)
+            retried = router_credentials.DeletedOwners(tmp_path).receipt("alice")
+            assert retried["home_removed"] == receipt["home_removed"]
+            assert retried["unfinished_phases"] == []
+            assert (await delete()).status_code == 401
 
     asyncio.run(exercise())
     assert not boxes.runtime.alive(admitted.owner_machine("alice"))
@@ -1093,14 +1095,18 @@ def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
                 assert "identity" not in calls
                 if failure not in {"billing", "plan"}:
                     assert subscription["status"] == "canceled"
-                result = await delete()
+                assert (await delete()).status_code == 401
+                from tinyassets.owner_router import resume_deleted_accounts
+
+                await resume_deleted_accounts(tmp_path)
             else:
-                result = first
-            assert result.status_code == 200, result.text
-            assert result.json()["billing"] == "cancelled"
-            assert result.json()["identity"] == "deleted"
-            assert result.json()["unfinished"] == []
-            assert (await delete()).json() == result.json()
+                assert first.status_code == 200, first.text
+                assert first.json()["unfinished"] == []
+            receipt = router_credentials.DeletedOwners(tmp_path).receipt("alice")
+            assert receipt["billing"] == "cancelled"
+            assert receipt["identity"] == "deleted"
+            assert receipt["unfinished_phases"] == []
+            assert (await delete()).status_code == 401
 
     asyncio.run(exercise())
     assert calls == ["stripe", "identity"]

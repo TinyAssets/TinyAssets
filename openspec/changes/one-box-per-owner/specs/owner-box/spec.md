@@ -1,5 +1,18 @@
 ## ADDED Requirements
 
+### Requirement: Disaster recovery publishes before erasure
+Preparation SHALL only read live volumes and write staging. A preparation
+failure SHALL leave both original volumes intact. The published recovery report
+SHALL retain the permanent UIDs, published and retained tree locations, and
+quarantine destinations until idempotent post-publication cleanup completes.
+Box-host restart SHALL resume that cleanup before opening lifecycle admission.
+Deleted or quarantined principals SHALL be refused at every sign-in, bearer,
+refresh, API-key and hook-token authentication entry using the router deletion
+tombstones, with an account-deleted error and no new authenticated session.
+The router SHALL retry unfinished deletion phases from those tombstones without
+requiring the deleted owner to authenticate. Quarantined bytes SHALL remain
+reported as unerased until root cleanup confirms their removal.
+
 ### Requirement: Each owner has exactly one box that runs the work
 Each owner account SHALL have exactly one box: an isolated sandbox with its
 own kernel boundary, behind `BoxProvider`, run by a box host service outside

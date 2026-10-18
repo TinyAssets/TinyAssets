@@ -151,10 +151,10 @@ async def _accepted(token: str, canary_user: str) -> bool:
     returns."""
     from starlette.concurrency import run_in_threadpool
 
-    from tinyassets.auth.middleware import _get_provider
+    from tinyassets.auth.middleware import resolve_token
 
     try:
-        identity = await run_in_threadpool(_get_provider().resolve_token, token)
+        identity = await run_in_threadpool(resolve_token, token)
     except Exception:  # noqa: BLE001 - an unusable provider refuses, loudly
         logger.exception("canary_sign_in could not validate the upstream session")
         return False

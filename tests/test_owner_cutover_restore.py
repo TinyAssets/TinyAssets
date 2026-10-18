@@ -95,12 +95,15 @@ fi
 @pytest.mark.skipif(os.name != "posix" or os.geteuid() != 0,
                     reason="root-private restore journals; owner=c6-owner-box "
                            "runs-in=linux_oracle.py--as-root")
-@pytest.mark.parametrize("erasure_failure", [False, True])
+@pytest.mark.parametrize("erasure_failure", [False, True, "prepare", "crash", "quarantine_crash"])
 def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(
     tmp_path, erasure_failure, monkeypatch,
 ):
     import runpy
     import sqlite3
+
+    fault = erasure_failure
+    erasure_failure = fault is True
 
     from tests.test_box_restore_authority import seed
     from tests.test_owner_cutover_apply import _restore_paired
@@ -196,6 +199,37 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(
     destruction.tree = destroy
     sys.argv = sys.argv[1:]"""))
 
+    wrapper = tmp_path / "bin/python3"
+    if fault == "prepare":
+        wrapper.write_text(wrapper.read_text().replace(
+            "    sys.argv = sys.argv[1:]", """    from pathlib import Path
+    original_write = Path.write_text
+    def write(path, *args, **kwargs):
+        if path.name == '.disaster-restore.json':
+            raise OSError('forced failure after preparation would have erased owners')
+        return original_write(path, *args, **kwargs)
+    Path.write_text = write
+    sys.argv = sys.argv[1:]"""))
+    elif fault in ("crash", "quarantine_crash"):
+        wrapper.write_text(wrapper.read_text().replace(
+            "    sys.argv = sys.argv[1:]", """    import tinyassets.boxes.destroy as destruction
+    original = destruction.tree
+    def destroy(store, uid, **kwargs):
+        if os.environ['TEST_FAULT'] == 'quarantine_crash' and uid == 300002:
+            raise OSError('force quarantine')
+        result = original(store, uid, **kwargs)
+        if uid == 300002 and kwargs['erase']:
+            os._exit(77)
+        return result
+    destruction.tree = destroy
+    original_quarantine = destruction.quarantine
+    def quarantine(*args, **kwargs):
+        original_quarantine(*args, **kwargs)
+        os._exit(77)
+    destruction.quarantine = quarantine
+    sys.argv = sys.argv[1:]"""))
+        env["TEST_FAULT"] = fault
+
     flags = ("--disaster-restore", "--acknowledge-unrecoverable-facts")
     for flag in flags:
         assert run(flag).returncode == 1
@@ -204,7 +238,63 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(
     assert run(*flags).returncode == 2
     newer.unlink()
     completed = run(*flags)
-    assert completed.returncode == 6, completed.stdout + completed.stderr
+    if fault == "prepare":
+        assert completed.returncode == 4, completed.stdout + completed.stderr
+        assert {k: v for k, v in _fingerprint(data).items() if k != ".layout.lock"} == before[0]
+        assert _fingerprint(store) == before[1]
+        return
+    assert completed.returncode == (5 if fault in ("crash", "quarantine_crash") else 6), (
+        completed.stdout + completed.stderr)
+    if fault in ("crash", "quarantine_crash"):
+        from tinyassets.boxes.admission import OwnerRegistry
+        from tinyassets.boxes.provider import BoxAuthError
+        from tinyassets.restore_recovery import finish_erasures
+
+        report = json.loads((data / ".disaster-restore.json").read_text())
+        assert report["pending_erasures"]
+        assert (store / "300003").exists()  # interrupted before the second owner
+        registry = OwnerRegistry(data, tmp_path / "must-not-connect.sock")
+        for owner in ("bob", "carol", "later"):
+            with pytest.raises(BoxAuthError, match="Account deleted"):
+                registry.owner(owner)
+        # Exercise the actual host startup boundary: recovery must finish before
+        # quota/daemon construction can make any lifecycle listener reachable.
+        from types import SimpleNamespace
+
+        from tinyassets.boxes import host_service
+
+        def ready(owner_store):
+            assert owner_store == store
+            assert not json.loads((data / ".disaster-restore.json").read_text())["pending_erasures"]
+            raise StopIteration("startup reached admission after cleanup")
+
+        with monkeypatch.context() as startup:
+            startup.setattr(host_service, "RUNTIME", tmp_path / "runtime")
+            startup.setattr(host_service, "Path", lambda path: (
+                tmp_path / "host-state" if path == "/var/lib/boxhostd/state" else Path(path)))
+            startup.setattr(host_service, "OwnerRelays", lambda *args: None)
+            startup.setattr(host_service, "GvisorRuntime", lambda **kwargs: SimpleNamespace(
+                owner_store=store, bundle_root=tmp_path / "bundles",
+                _command=lambda *args: SimpleNamespace(stdout="[]")))
+            (tmp_path / "bundles").mkdir()
+            startup.setattr(host_service, "OwnerQuota", ready)
+            previous_umask = os.umask(0o077)
+            try:
+                with pytest.raises(StopIteration, match="after cleanup"):
+                    host_service._serve(rootfs=tmp_path / "rootfs", data_root=data)
+            finally:
+                os.umask(previous_umask)
+        finished = _fingerprint(data), _fingerprint(store)
+        finish_erasures(data)
+        assert (_fingerprint(data), _fingerprint(store)) == finished
+        assert not json.loads((data / ".disaster-restore.json").read_text())["pending_erasures"]
+        for uid in (300002, 300003, 300004):
+            assert not (store / str(uid)).exists()
+            assert not list(store.glob(f".tinyassets-box-restore-old.*/{uid}"))
+        if fault == "quarantine_crash":
+            assert list(store.glob(".tinyassets-erasure-quarantine.*/300002/note"))
+            assert not DeletedOwners(data).receipt("bob")["home_removed"]
+        return
     assert "restore complete. Data installed" in completed.stdout
     assert not (store / "300002").exists()  # backup erasure
     assert not (store / "300003").exists()  # surviving erasure

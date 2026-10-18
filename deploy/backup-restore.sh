@@ -549,11 +549,13 @@ if [[ -n "${BOX_STAGE}" ]]; then
     else
         log "Validating exact pre-traffic paired restore"
     fi
+    BOX_OLD="${BOX_STORE_DIR}/.tinyassets-box-restore-old.${BOX_STAGE##*.}"
     # Prepare exact restore or disaster safety changes while both layouts
     # are locked. Any failure leaves both pre-restore volumes intact.
     if ! fact_report="$(python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
             --snapshot-data "${STAGE_DIR}" --restore-from "${VOLUME_DIR}" \
             --cutover-store "${BOX_STORE_DIR}" --restored-store "${BOX_STAGE}" \
+            --retained-store "${BOX_OLD}" \
             "${disaster_args[@]}")"; then
         log "ERROR: restore safety preparation refused"
         exit 4
@@ -569,7 +571,7 @@ if [[ -n "${BOX_STAGE}" ]]; then
     # before either prepared filesystem becomes live.
     sync -f "$STAGE_DIR"
     sync -f "$BOX_STAGE"
-    BOX_OLD="$(mktemp -d "${BOX_STORE_DIR}/.tinyassets-box-restore-old.XXXXXX")"
+    mkdir -m 700 -- "$BOX_OLD"
     BOX_SWAP_ACTIVE=1
     for tree in "${BOX_STORE_DIR}"/[0-9]*; do
         [[ -d "$tree" && ! -L "$tree" ]] || continue
@@ -619,10 +621,18 @@ if ! mv -- "${STAGE_DIR}" "${VOLUME_DIR}"; then
     exit 4
 fi
 STAGE_DIR=""
-sync -f "$VOLUME_PARENT"
-if [[ -n "${BOX_NAME:-}" ]]; then sync -f "$BOX_STORE_DIR"; fi
 BOX_SWAP_ACTIVE=0
 BOX_STAGE=''
+sync -f "$VOLUME_PARENT"
+if [[ -n "${BOX_NAME:-}" ]]; then sync -f "$BOX_STORE_DIR"; fi
+
+if [[ "$DISASTER_RESTORE" == 1 ]]; then
+    if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
+            --finish-erasures "$VOLUME_DIR"; then
+        log "ERROR: published recovery cleanup pending; boxhostd will resume before admission"
+        exit 5
+    fi
+fi
 
 # ----- 5. done — caller verifies, starts, and later removes old data ----
 
