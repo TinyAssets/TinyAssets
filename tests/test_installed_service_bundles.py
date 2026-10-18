@@ -126,7 +126,8 @@ def test_every_installed_unit_execstart_has_closed_imports(tmp_path, pulse_serve
         "tinyassets-watchdog.service": [(0, "")],
         "daemon-watchdog.service": [(0, "synthetic docker: restart")],
         "tinyassets-ship-logs.service": [(0, "dry-run")],
-        "boxhostd.service": [(1, "delegated systemd service cgroup")],
+        "boxhostd.service": [(1, "delegated systemd service cgroup" if os.geteuid() == 0
+                             else "needs root for delegated cgroups and XFS quotas")],
         "box-store-device.service": [(1, "root-owned box-store.conf required")],
         "tinyassets-daemon.service": [(0, "synthetic docker:")],
     }
@@ -137,12 +138,12 @@ def test_every_installed_unit_execstart_has_closed_imports(tmp_path, pulse_serve
         commands = re.findall(r"^ExecStart=(.*)$", text, re.M)
         assert commands and all(not command.startswith("-") for command in commands)
         if name == "tinyassets-backup.service":
-            # Real installed ExecStart, live SQLite, erased-owner ledger, paired archives.
-            from tests.test_backup_owner_box import OwnerBoxLiveBackupTest
+            # Its real installed ExecStart (live SQLite, erasure ledger, paired
+            # archives) runs in test_backup_owner_box's root venue. Calling the
+            # unittest method here bypasses that venue and its root-only guard.
+            from scripts.ci_required_tests import ROOT_TEST_FILES
 
-            OwnerBoxLiveBackupTest(
-                "test_installed_service_publishes_live_pair_without_stopping_writers"
-            ).test_installed_service_publishes_live_pair_without_stopping_writers()
+            assert "tests/test_backup_owner_box.py" in ROOT_TEST_FILES
             continue
         assert len(commands) == len(expected[name]), name
         for command, (code, evidence) in zip(commands, expected[name], strict=True):
