@@ -517,7 +517,8 @@ The synthetic run records 2 owners, 4 centers, 27 census rows, 3 manifests,
 2 interruptions and 2 resume comparisons; serving records 4 history reads,
 4 history turns, 4 pending reads, 4 saved requests, 8 controls, 8 plan reads,
 4 verified writes and 2 reconnect confirmations. Both restores record one
-byte comparison. Tests scan stdout and the report for identifiers, paths and
+byte comparison. The after-write step additionally records 2 fenced owners and
+4 refused replay IDs after a same-layout restore. Tests scan stdout and the report for identifiers, paths and
 content, enforce numeric counters, and check the redacted failure report.
 
 Synthetic proof venue:
@@ -733,6 +734,25 @@ refusal counts without that rerun.
   filters; multi-owner tick loop.
 
 ## D8. Shared stores stay shared, owner stores move (review gap 1)
+
+Published workflow definitions retain their authoritative row in the admitted
+author's box and a published copy in commons. This matches runtime publication:
+`publish_requests._flip_if_unchanged` updates the local definition, then
+`_publish_snapshot` sends the frozen publication through the broker. Census counts these
+local published definitions per owner separately from exclusive source placement.
+Apply verifies local workflow references before publishing its completed marker.
+
+Same-layout owner-box restore fences `.owner-boxd/boxhost.db` in each staged
+owner tree before either volume swaps or any box starts. It retains the union
+of operation IDs as refusals and advances epochs, generations and incarnations
+beyond both journals. A snapshot predating a journal still receives its refusal
+records. The shared `.boxhost` keeps destruction authority only; its dead owner
+operation merge is removed. Identity and deletion frontiers still refuse rollback.
+A pre-cutover-layout rollback has no owner journal destination: once owner
+operations exist it refuses and requires forward recovery, even with owner-write-loss consent.
+The rehearsal retains its pre-cutover byte comparison, reapplies the cutover,
+then restores a same-layout paired snapshot and proves both snapshot and newer
+operation IDs refuse without overwriting subsequent work for every owner.
 
 The migration classifies every table of every shared root database:
 

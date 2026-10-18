@@ -1,5 +1,77 @@
 # Main vs the clean per-user-instance shape: read-only audit
 
+## Owner restore replay and published workflow corrections (2026-10-18)
+
+Starting head `9c8f0db0268`, base `conv/c6-owner-daemon-s3c`; this is the
+single cutover branch. Synthetic fixtures and disposable local volumes only.
+Receipts: `C:/Users/Jonathan/AppData/Local/Temp/c6-owner-replay-publish/`.
+
+- **A ? owner-local restore authority.** `owner_runtime.start` selects
+  `.owner-boxd`; the old restore merged `.boxhost` instead. The offline restore
+  now receives both live and staged owner stores while services are stopped
+  and both layouts are locked. It merges each journal's operation IDs as
+  `unknown_after_restore`, advances epoch/generation/incarnation beyond both
+  copies, and restores owner ownership before swapping trees. A backup made
+  before first tool use receives a journal containing the later refusals.
+  Conflicting arguments, linked journals and invalid SQLite refuse. The dead
+  shared owner-operation/exec/CLI receipt merge is removed; shared identity,
+  deletion and destruction frontiers still fence rollback. Pre-cutover rollback
+  refuses once owner operations exist, even with owner-write-loss consent:
+  that old layout has nowhere to preserve their refusal authority.
+- **A ? proof.** Two owners deliberately reuse the same operation IDs with
+  different contents. Snapshot and post-snapshot IDs refuse, old handles are
+  stale, fresh writes work, later work survives retries and a second restart,
+  and the shared host journal remains byte-identical. Conflicts and journal
+  symlinks refuse without changing the target. `restore_after_write` keeps the
+  original pre-cutover tar comparison, reapplies, then makes and restores a
+  same-layout paired archive through the real restore shell. Its counts are
+  `comparisons=1 replay_refusals=4 fenced_owners=2`; both IDs refuse for each owner.
+- **B ? runtime shape and migration.** `api/publish_requests.py:759` retains
+  and marks the local definition; `_publish_snapshot` at line 882 marks local
+  versions and publishes the frozen definition. `broker/owner_reads.py:225`
+  writes that publication in `.published`. `daemon_server.py:2783` resolves
+  definitions only from the owner's database. Migration now copies admitted
+  authors' public definitions locally as well as preserving the commons copy.
+  The census's `published_per_owner` counts these copies without double-counting
+  source rows. Apply records per-owner `instances` and `resolved` counts and
+  requires equality before publication; verify repeats local resolution.
+  Definition-bearing branches, background bindings, branch tasks and automations
+  participate. The current `branches` schema also represents universe snapshot
+  forks without a definition reference (`daemon_server.py:1048`); snapshot IDs
+  are not misinterpreted as workflow definitions. Immutable run/version history
+  retains its existing census and preservation rules.
+- **B ? proof.** A migrated workflow binding resolves through the real local
+  definition reader, and its commons publication is readable through `BOX_READ`.
+  Missing source definitions and deliberately lost extracted definitions both
+  stop apply before the completed marker or source cleanup.
+
+Validation receipts:
+
+- Requested patterns, touched tests and structural guards: **95 files,
+  2,475 passed, zero failures/errors**, with 37 root-only skips under the existing venue requirement in
+  `targeted.xml`. All 37 have exact matching root passes; `coverage.json`
+  reconciles **2,513 distinct passing cases, zero unresolved cases**.
+- Final root cutover/restore/layout/rehearsal selection: **84 passed, no skips**,
+  `root-final.xml`. The exact requested single-file Docker-engine command also
+  passed **6/6 tests**, all ten rehearsal steps (`rehearsal-exact.log`).
+- All **35 structural guard files, 961 cases**, passed without skips
+  (`guards.json`); no shape probe changed.
+- All **34 affected heavy files, 1,358 cases**, passed without skips (`heavy.xml`).
+- Touched-file Ruff, strict OpenSpec validation, `check_shapes.py` and whitespace
+  checks pass. Whole-repository Ruff retains **32 findings in six files**, each
+  verified unchanged from the starting head (`ruff-all.json`).
+
+The four final CI shards are recorded below after completion. Eight changed
+Python/shell files are frozen in `validated-source.json`; the final shard run
+uses that source. Earlier interrupted shard receipts are named `pre-final-*`
+and are not credited.
+
+No test, assertion or shape probe was removed, skipped, weakened or quarantined
+by this change.
+No delegated work, host configuration edit, branch switch, push, merge,
+production access or deployment was performed.
+
+
 ## Six cutover review corrections (2026-10-18)
 
 Starting head `a6374321c2e`, base `conv/c6-owner-daemon-s3c`. All six supplied

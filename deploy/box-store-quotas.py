@@ -11,6 +11,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -125,11 +126,17 @@ def _pristine_cutover_restore(current: Path, staged: Path, store: Path | None, *
             raise ValueError("unsafe cutover owner tree")
         if not accept_owner_write_loss and _cutover_manifest(store / uid) != manifest:
             raise ValueError("post-cutover owner writes require forward recovery")
+    if accept_owner_write_loss and any(
+            journal["ops"] for journal in _owner_journals(store).values()):
+        # The old layout has no owner journal to carry these refusal records.
+        # Explicit content loss cannot authorize forgetting operation authority.
+        raise ValueError("post-cutover owner operation authority requires forward recovery")
     return True
 
 
 def fence_restore(current: Path, staged: Path, *, cutover_store: Path | None = None,
-                  accept_owner_write_loss: bool = False) -> None:
+                  accept_owner_write_loss: bool = False,
+                  restored_store: Path | None = None) -> None:
     """Fence rollback receipts; never roll back permanent identities or deletion."""
     def layout(root):
         marker = root / ".layout.json"
@@ -174,41 +181,86 @@ def fence_restore(current: Path, staged: Path, *, cutover_store: Path | None = N
     relative = ".boxhost/boxhost.db"
     if rows(current, relative, "owner_destroys") != rows(staged, relative, "owner_destroys"):
         raise ValueError("owner destruction frontier differs; forward recovery needed")
-    with sqlite3.connect((current / relative).as_uri() + "?mode=ro", uri=True) as live:
-        with sqlite3.connect(staged / relative) as target:
+    if cutover_store is None or restored_store is None:
+        raise ValueError("owner-box restore requires both owner stores")
+    fence_owner_journals(cutover_store, restored_store)
+
+
+def _owner_journals(root: Path) -> dict:
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("restore owner store is not a directory")
+    result = {}
+    for tree in root.iterdir():
+        if not tree.name.isdecimal():
+            continue
+        if tree.is_symlink() or not tree.is_dir():
+            raise ValueError("unsafe restore owner tree")
+        directory = tree / ".owner-boxd"
+        if not directory.exists() and not directory.is_symlink():
+            continue  # This owner has never started its local tools.
+        if directory.is_symlink() or not directory.is_dir():
+            raise ValueError("unsafe owner journal directory")
+        path = directory / "boxhost.db"
+        for member in directory.iterdir():
+            if member.name in {"boxhost.db", "boxhost.db-wal", "boxhost.db-shm",
+                               "boxhost.db-journal", "boxhost.lock"}:
+                info = member.lstat()
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    raise ValueError("unsafe owner journal member")
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+            if db.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                raise ValueError("owner journal failed integrity check")
+            result[tree.name] = {
+                table: db.execute(f"SELECT * FROM {table}").fetchall()
+                for table in ("host", "boxes", "ops")
+            }
+    return result
+
+
+def fence_owner_journals(current: Path, staged: Path) -> None:
+    """Offline only: preserve refusal authority in each restored owner's box."""
+    from tinyassets.boxes.state import _SCHEMA
+
+    live, restored = _owner_journals(current), _owner_journals(staged)
+    for uid in sorted(live.keys() | restored.keys()):
+        tree = staged / uid
+        tree.mkdir(mode=0o700, exist_ok=True)
+        if tree.is_symlink() or not tree.is_dir():
+            raise ValueError("unsafe restored owner tree")
+        directory = tree / ".owner-boxd"
+        directory.mkdir(mode=0o700, exist_ok=True)
+        path = directory / "boxhost.db"
+        with closing(sqlite3.connect(path)) as target, target:
             target.execute("PRAGMA synchronous=FULL")
-            page = target.execute("PRAGMA page_size").fetchone()[0]
-            if target.execute(f"PRAGMA max_page_count={16 * 1024 * 1024 // page}").fetchone()[0] \
-                    > 16 * 1024 * 1024 // page:
-                raise ValueError("restored receipt journal exceeds its bound")
             target.execute("BEGIN IMMEDIATE")
-            for row in live.execute("SELECT * FROM ops"):
+            for statement in _SCHEMA:
+                target.execute(statement)
+            for row in live.get(uid, {}).get("ops", []):
                 previous = target.execute("SELECT kind,digest FROM ops WHERE "
                                           "command_center_id=? AND op_id=?", row[:2]).fetchone()
                 if previous is not None and previous != row[2:4]:
                     raise ValueError("restored operation id has conflicting arguments")
                 target.execute("INSERT OR IGNORE INTO ops VALUES (?,?,?,?,?,?,?)", row)
-            for row in live.execute("SELECT * FROM execs"):
-                previous = target.execute("SELECT * FROM execs WHERE exec_id=?", row[:1]).fetchone()
-                if previous is not None and previous != row:
-                    raise ValueError("restored execution id has conflicting ownership")
-                target.execute("INSERT OR IGNORE INTO execs VALUES (?,?,?)", row)
-            for owner, epoch, generation in live.execute("SELECT * FROM boxes"):
+            for owner, epoch, generation in live.get(uid, {}).get("boxes", []):
                 target.execute("INSERT INTO boxes VALUES (?,?,?) ON CONFLICT(command_center_id) "
                                "DO UPDATE SET epoch=MAX(epoch,excluded.epoch), "
                                "generation=MAX(generation,excluded.generation)",
                                (owner, epoch, generation))
             target.execute("UPDATE boxes SET epoch=epoch+1, generation=generation+1")
-            # A pre-restore 'done' receipt no longer describes restored bytes.
-            # Preserve every seen operation ID, but never report or replay it.
             target.execute("UPDATE ops SET state='unknown_after_restore'")
-            # A newer CLI CAS may not exist in the restored credential store.
-            # Never spend that custody pin again based on its old acknowledgement.
-            target.execute("UPDATE ops SET outcome=json_set(outcome, '$.cli_ack', json('false'), "
-                           "'$.cli_restore_hold', json('true')) "
-                           "WHERE json_extract(outcome, '$.cli_lease') IS NOT NULL")
-            incarnation = live.execute("SELECT v FROM host WHERE k='incarnation'").fetchone()[0]
-            target.execute("UPDATE host SET v=MAX(v,?)+1 WHERE k='incarnation'", (incarnation,))
+            incarnation = max((row[1] for journal in (live, restored)
+                               for row in journal.get(uid, {}).get("host", [])
+                               if row[0] == "incarnation"), default=0)
+            target.execute("INSERT INTO host VALUES ('incarnation',?) "
+                           "ON CONFLICT(k) DO UPDATE SET v=excluded.v", (incarnation + 1,))
+        # New journals may not have existed in the snapshot. They belong to the
+        # restored owner, including SQLite sidecars, never to the restore uid.
+        members = [directory / name for name in ("boxhost.db", "boxhost.db-wal",
+                   "boxhost.db-shm", "boxhost.db-journal", "boxhost.lock")
+                   if (directory / name).exists()]
+        for member in (tree, directory, *members):
+            os.chown(member, int(uid), int(uid))
+            os.chmod(member, 0o700 if member.is_dir() else 0o600)
 
 
 def check_snapshot(data: Path, *, quiescent: bool = False) -> None:
@@ -260,6 +312,7 @@ if __name__ == "__main__":
     parser.add_argument("--quiescent", action="store_true")
     parser.add_argument("--restore-from", type=Path)
     parser.add_argument("--cutover-store", type=Path)
+    parser.add_argument("--restored-store", type=Path)
     parser.add_argument("--accept-owner-write-loss", action="store_true")
     args = parser.parse_args()
     if args.snapshot_data:
@@ -268,7 +321,7 @@ if __name__ == "__main__":
         check_snapshot(args.snapshot_data.resolve(), quiescent=args.quiescent)
         if args.restore_from:
             fence_restore(args.restore_from.resolve(), args.snapshot_data.resolve(),
-                          cutover_store=args.cutover_store,
+                          cutover_store=args.cutover_store, restored_store=args.restored_store,
                           accept_owner_write_loss=args.accept_owner_write_loss)
     elif not all((args.store, args.trees, args.registry)) or args.quiescent or args.restore_from:
         parser.error("quota restoration requires store, trees, paired broker database")

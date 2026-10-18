@@ -527,7 +527,8 @@ if [[ -n "${BOX_STAGE}" ]]; then
     # are locked, before moving ANY owner tree or the shared volume.
     if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
             --snapshot-data "${STAGE_DIR}" --restore-from "${VOLUME_DIR}" \
-            --cutover-store "${BOX_STORE_DIR}" "${CUTOVER_RESTORE_ARGS[@]}"; then
+            --cutover-store "${BOX_STORE_DIR}" --restored-store "${BOX_STAGE}" \
+            "${CUTOVER_RESTORE_ARGS[@]}"; then
         log "ERROR: restore would roll back authority or replay an operation"
         exit 4
     fi

@@ -1,5 +1,30 @@
 ## ADDED Requirements
 
+### Requirement: Restore fences owner-local operations
+Same-layout owner-box restore SHALL preserve all operation IDs seen in either
+owner-local journal as refusals and advance that journal's epoch before startup.
+The shared host journal SHALL NOT act as a second owner-operation fence.
+
+#### Scenario: Backup predates a completed write
+- **WHEN** an owner-box backup is restored after a later operation completed
+- **THEN** retrying that operation ID is refused without changing restored bytes
+- **AND** both snapshot and later operation IDs remain refused after restart
+- **AND** the restored owner's epoch exceeds both pre-restore epochs
+- **AND** rollback to a pre-cutover layout refuses if it would discard owner
+  operation authority, even when ordinary owner-write loss was accepted
+
+### Requirement: Published workflows remain locally authoritative
+Migration SHALL retain an admitted author's published definition in that owner's
+box and its published snapshot in commons, matching runtime publishing. Census
+SHALL count published definitions copied locally per owner. Apply SHALL verify
+that migrated workflow references resolve locally before declaring completion.
+
+#### Scenario: Existing published workflow survives cutover
+- **WHEN** an admitted owner's published workflow is migrated
+- **THEN** its definition resolves from that owner's database
+- **AND** its published snapshot remains readable through the published read
+- **AND** a missing local definition causes apply verification to fail loudly
+
 ### Requirement: Shared billing and deletion authority survive cutover
 
 The cutover SHALL preserve verified paid subscription mappings and unexpired

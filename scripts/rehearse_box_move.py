@@ -54,6 +54,70 @@ def validate_archive(path: Path) -> int:
     return total
 
 
+def restore_replay_probe(mode: str) -> int:
+    """Synthetic operations in the disposable venue, through real owner tools."""
+    import json
+    import runpy
+    import sqlite3
+    import subprocess
+
+    from tinyassets.boxes.boxd import OwnerBoxd
+    from tinyassets.boxes.provider import BoxError
+
+    data, store, backup = Path("/data"), Path("/box-store"), Path("/backup/replay")
+    backup.mkdir(exist_ok=True)
+    with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
+        owners = db.execute("SELECT principal,machine FROM box_records").fetchall()
+    proof = backup / "proof.json"
+    epochs = json.loads(proof.read_text()) if mode == "verify" else {}
+    for owner, uid in owners:
+        tree = store / str(uid)
+        core = OwnerBoxd(owner_id=owner, owner_root=tree, state_dir=tree / ".owner-boxd")
+        try:
+            handle = core.bind(owner)
+            if mode == "snapshot":
+                core.write(handle, "rehearsal-before", "/cc/.replay-proof", b"snapshot",
+                           max_bytes=100)
+                epochs[owner] = handle.epoch
+            elif mode == "write":
+                core.write(handle, "rehearsal-after", "/cc/.replay-proof", b"after", max_bytes=100)
+            elif mode == "verify":
+                if handle.epoch <= epochs[owner]:
+                    raise RuntimeError("owner epoch did not advance")
+                if (tree / ".replay-proof").read_bytes() != b"snapshot":
+                    raise RuntimeError("owner snapshot was not restored")
+                core.write(handle, "rehearsal-later", "/cc/.replay-proof", b"later work",
+                           max_bytes=100)
+                for op_id, content in (("rehearsal-before", b"snapshot"),
+                                       ("rehearsal-after", b"after")):
+                    try:
+                        core.write(handle, op_id, "/cc/.replay-proof", content, max_bytes=100)
+                    except BoxError as exc:
+                        if "not re-run" not in str(exc):
+                            raise
+                    else:
+                        raise RuntimeError("restored operation was admitted again")
+                if (tree / ".replay-proof").read_bytes() != b"later work":
+                    raise RuntimeError("replayed operation changed later work")
+            else:
+                raise ValueError("unknown replay proof phase")
+        finally:
+            core.close()
+    if mode == "snapshot":
+        proof.write_text(json.dumps(epochs))
+        stamp = "2026-10-17T01-00-00Z"
+        shared = backup / f"tinyassets-data-{stamp}.tar.gz"
+        boxes = backup / f"tinyassets-box-store-{stamp}.tar.gz"
+        subprocess.run(["tar", "-czf", str(shared), "--transform=s,^data,_data,",
+                        "-C", "/", "--numeric-owner", "--acls", "--xattrs", "data"], check=True)
+        subprocess.run(["tar", "-czf", str(boxes), "--transform=s,^,owners/,",
+                        "-C", str(store), "--numeric-owner", "--acls", "--xattrs",
+                        *(str(uid) for _, uid in owners)], check=True)
+        runpy.run_path("/support/deploy/backup-pair.py")["create"](
+            shared, boxes, backup / f"tinyassets-pair-{stamp}.json")
+    return len(owners)
+
+
 def archive_rehearsal(image, archive, *, store_bytes):
     from scripts.archive_rehearsal import archive_rehearsal as rehearse
 

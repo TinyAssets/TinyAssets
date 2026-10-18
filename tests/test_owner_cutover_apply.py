@@ -39,6 +39,91 @@ def test_cutover_preserves_cancellation_mapping_and_resumes_payable_checkout(cut
         "url": original["url"], "resumed": True}
 
 
+def _published_workflow(data):
+    # Full production definition schema, including all current migrated columns.
+    import tempfile
+    from pathlib import Path
+
+    from tinyassets import commons_catalog, daemon_server
+    from tinyassets.branches import BranchDefinition
+
+    with tempfile.TemporaryDirectory() as directory:
+        daemon_server.initialize_author_server(directory)
+        with sqlite3.connect(Path(directory) / ".tinyassets.db") as db:
+            ddl = db.execute("SELECT sql FROM sqlite_master WHERE "
+                             "name='branch_definitions'").fetchone()[0]
+        with sqlite3.connect(data / ".tinyassets.db") as db:
+            db.execute(ddl)
+    definition = BranchDefinition(branch_def_id="workflow", name="Published workflow",
+                                  author="alice", visibility="public", published=True).to_dict()
+    # The fixture's unrelated legacy tables are intentionally minimal; avoid
+    # schema initialization of those tables while using the actual row encoder.
+    _, values = daemon_server._branch_definition_insert(definition)
+    with sqlite3.connect(data / ".tinyassets.db") as db:
+        db.execute(daemon_server._BRANCH_DEFINITION_INSERT_SQL, values)
+        db.execute("CREATE TABLE background_branch_bindings (binding_id TEXT, "
+                   "universe_id TEXT, branch_def_id TEXT)")
+        db.execute("INSERT INTO background_branch_bindings VALUES ('instance','a1','workflow')")
+    published = commons_catalog.publish_definition(data, author_id="alice", payload={
+        "schema_version": 1, "name": "Published workflow", "bundle_id": "bundle_" + "a" * 32,
+        "components": {"identity": {"kind": "soul", "config": {"workflow": definition}}}})
+    return published
+
+
+def test_published_workflow_keeps_local_definition_and_readable_commons(cutover):
+    from tinyassets import daemon_server
+    from tinyassets.broker.owner_reads import read
+
+    data, store, *_ = cutover
+    published = _published_workflow(data)
+    report = migration.census(data)
+    assert report["ready"], report["refusals"]
+    assert report["tables"][".tinyassets.db/branch_definitions"]["published_per_owner"] == {
+        "account-0001": 1}
+    migration.apply(*cutover)
+    migration.verify(data, store)
+    tree = store / "300001"
+    with sqlite3.connect(tree / ".tinyassets.db") as db:
+        definition_id = db.execute(
+            "SELECT branch_def_id FROM background_branch_bindings").fetchone()[0]
+        assert db.execute("SELECT COUNT(*) FROM branch_definitions").fetchone() == (1,)
+    local = daemon_server.get_branch_definition(tree, branch_def_id=definition_id)
+    assert local["name"] == "Published workflow" and local["published"]
+    public = read(data, "bob", {"op": "BOX_READ", "query": "definition", "args": {
+        "definition_id": published["agent_definition_id"], "include_catalogue": False}})
+    assert public["components"]["identity"]["config"]["workflow"]["branch_def_id"] == definition_id
+    with sqlite3.connect(data / ".published/.tinyassets.db") as db:
+        assert db.execute("SELECT branch_def_id FROM branch_definitions").fetchall() == [
+            (definition_id,)]
+    receipt = json.loads((data / ".owner-cutover.json").read_text())
+    assert receipt["report"]["workflow_definitions"] == {
+        "account-0001": {"instances": 1, "resolved": 1},
+        "account-0002": {"instances": 0, "resolved": 0}}
+
+
+@pytest.mark.parametrize("missing", ["source", "extracted"])
+def test_apply_refuses_workflow_instance_without_local_definition(cutover, monkeypatch, missing):
+    data, store, *_ = cutover
+    _published_workflow(data)
+    if missing == "source":
+        with sqlite3.connect(data / ".tinyassets.db") as db:
+            db.execute("DELETE FROM branch_definitions")
+    else:
+        original = migration._build_databases
+
+        def lose_definition(*args):
+            result = original(*args)
+            with sqlite3.connect(store / "300001/.tinyassets.db") as db:
+                db.execute("DELETE FROM branch_definitions")
+            return result
+
+        monkeypatch.setattr(migration, "_build_databases", lose_definition)
+    with pytest.raises(RuntimeError, match="instance has no local definition"):
+        migration.apply(*cutover)
+    assert json.loads((data / ".owner-cutover.json").read_text())["phase"] == "build"
+    assert (data / "a1/notes.txt").is_file()
+
+
 @pytest.fixture
 def cutover(source, tmp_path, monkeypatch):
     if not hasattr(os, "geteuid") or os.geteuid() != 0:
@@ -517,7 +602,8 @@ def test_seeded_tombstones_block_broker_custody_without_old_metadata(cutover):
 
 
 @pytest.mark.parametrize('mutation', ['identity', 'admission', 'deletion', 'billing',
-                                     'destruction', 'receipt', 'source', 'new_owner'])
+                                     'destruction', 'receipt', 'source', 'new_owner',
+                                     'owner_operation'])
 def test_accepting_owner_write_loss_still_fences_shared_authority(cutover, tmp_path, mutation):
     import runpy
 
@@ -547,6 +633,13 @@ def test_accepting_owner_write_loss_still_fences_shared_authority(cutover, tmp_p
 
         state = BoxHostState(data / '.boxhost/boxhost.db')
         state.begin_owner_destroy('alice', 'erase', 300001, 'a')
+        state.close()
+    elif mutation == 'owner_operation':
+        from tinyassets.boxes.state import BoxHostState
+
+        state = BoxHostState(store / '300001/.owner-boxd/boxhost.db')
+        state.begin('alice', 'write-after-cutover', 'write', 'digest')
+        state.finish('alice', 'write-after-cutover', {'response': 'done'})
         state.close()
     elif mutation == 'receipt':
         (data / '.owner-cutover.json').chmod(0o644)

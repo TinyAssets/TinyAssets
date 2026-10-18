@@ -78,6 +78,8 @@ class Venue:
         docker(
             "cp", str(ROOT / "scripts/rehearsal_serve.py"), name + ":/support/rehearsal_serve.py"
         )
+        docker("cp", str(ROOT / "scripts/rehearse_box_move.py"),
+               name + ":/support/rehearse_box_move.py")
         self.container(
             "--rm",
             "--user",
@@ -205,6 +207,10 @@ class Venue:
             self.names["data"] + ":/data",
             "--mount",
             "type=bind,src=" + self.store + ",dst=/box-store",
+            "-v",
+            self.names["support"] + ":/support:ro",
+            "-v",
+            self.names["backup"] + ":/backup",
             "--entrypoint",
             "python",
             self.image,
@@ -223,7 +229,7 @@ class Venue:
             ).stdout
         )
 
-    def restore(self, accept_writes):
+    def restore(self, accept_writes, *, replay=False):
         # Only the absent host service manager and sandbox inventory are
         # represented locally. Extraction, fencing, quotas and swap are real.
         script = r"""set -eu
@@ -258,9 +264,11 @@ bash /support/deploy/backup-restore.sh
             "--mount",
             "type=bind,src=" + self.store + ",dst=/box-store",
             "-e",
-            "BACKUP_FILE=/backup/" + DATA_ARCHIVE,
+            "BACKUP_FILE=/backup/" + ("replay/tinyassets-data-2026-10-17T01-00-00Z.tar.gz"
+                                       if replay else DATA_ARCHIVE),
             "-e",
-            "BOX_BACKUP_FILE=/backup/" + BOX_ARCHIVE,
+            "BOX_BACKUP_FILE=/backup/" + ("replay/tinyassets-box-store-2026-10-17T01-00-00Z.tar.gz"
+                                           if replay else BOX_ARCHIVE),
             "-e",
             "BACKUP_VOLUME=disposable",
             "-e",
@@ -278,6 +286,8 @@ bash /support/deploy/backup-restore.sh
         )
         if result.returncode:
             raise RuntimeError("restore failed")
+        if replay:
+            return
         compared = self.container(
             "--rm",
             "--user",
@@ -454,7 +464,17 @@ def archive_rehearsal(image, archive, *, store_bytes):
         passed(step, **counts)
         step = "restore_after_write"
         venue.restore(True)
-        passed(step, comparisons=1)
+        required(venue.migration("apply"))
+        for phase in ("snapshot", "write"):
+            venue.helper("import runpy; runpy.run_path('/support/rehearse_box_move.py')"
+                         "['restore_replay_probe'](" + repr(phase) + ")")
+        venue.restore(False, replay=True)
+        replayed = json.loads(venue.helper(
+            "import runpy; print(runpy.run_path('/support/rehearse_box_move.py')"
+            "['restore_replay_probe']('verify'))").stdout)
+        if replayed != census["owners"] or replayed < 1:
+            raise RuntimeError("incomplete per-owner replay proof")
+        passed(step, comparisons=1, replay_refusals=2 * replayed, fenced_owners=replayed)
     except BaseException:
         report[step] = {"status": "FAIL"}
         print(step + " FAIL", flush=True)

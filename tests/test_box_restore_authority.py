@@ -38,28 +38,103 @@ def seed(root):
     state.close()
 
 
-def test_restore_retains_all_seen_operations_as_unknown_and_advances_epochs(tmp_path):
+@pytest.mark.parametrize("snapshot_has_journal", [True, False])
+def test_restore_retains_all_seen_operations_as_unknown_and_advances_epochs(
+        tmp_path, monkeypatch, snapshot_has_journal):
+    from tinyassets.boxes.boxd import OwnerBoxd
+    from tinyassets.boxes.provider import BoxError, StaleHandle
+
+    # Ownership is exercised by the real root/XFS rehearsal; this synthetic
+    # receipt proof also runs as CI's unprivileged user.
+    ownership = []
+    monkeypatch.setattr(restore.os, "chown", lambda path, uid, gid: ownership.append((uid, gid)))
     current, staged = tmp_path / "current", tmp_path / "staged"
+    live_trees, restored_trees = tmp_path / "live", tmp_path / "restored"
     seed(current)
     shutil.copytree(current, staged)
-    state = BoxHostState(current / ".boxhost/boxhost.db")
-    state.begin("alice", "after-snapshot", "write", "digest2")
-    state.finish("alice", "after-snapshot", {"response": "after"})
-    old_generation = state.bump_generation("alice")
-    old_epoch = state.epoch("alice")
+    for uid, owner in ((300001, "alice"), (300002, "bob")):
+        tree = live_trees / str(uid)
+        tree.mkdir(parents=True)
+        (tree / "note").write_bytes(b"snapshot")
+        if snapshot_has_journal:
+            core = OwnerBoxd(owner_id=owner, owner_root=tree, state_dir=tree / ".owner-boxd")
+            handle = core.bind(owner)
+            core.write(handle, "before-snapshot", "/cc/note", b"snapshot", max_bytes=100)
+            core.close()
+    shutil.copytree(live_trees, restored_trees)
+    old = {}
+    for uid, owner in ((300001, "alice"), (300002, "bob")):
+        tree = live_trees / str(uid)
+        core = OwnerBoxd(owner_id=owner, owner_root=tree, state_dir=tree / ".owner-boxd")
+        handle = core.bind(owner)
+        core.write(handle, "after-snapshot", "/cc/note", owner.encode(), max_bytes=100)
+        old[owner] = (handle, core._state.epoch(owner), core._state.generation(owner))
+        core.close()
+    shared_before = (staged / ".boxhost/boxhost.db").read_bytes()
+    restore.fence_restore(current, staged, cutover_store=live_trees, restored_store=restored_trees)
+    assert (staged / ".boxhost/boxhost.db").read_bytes() == shared_before
+    assert {(300001, 300001), (300002, 300002)} <= set(ownership)
+    for uid, owner in ((300001, "alice"), (300002, "bob")):
+        tree = restored_trees / str(uid)
+        for restart in range(2):
+            core = OwnerBoxd(owner_id=owner, owner_root=tree, state_dir=tree / ".owner-boxd")
+            try:
+                assert core._state.epoch(owner) > old[owner][1]
+                assert core._state.generation(owner) > old[owner][2]
+                with pytest.raises(StaleHandle):
+                    core.write(old[owner][0], "stale", "/cc/note", b"bad", max_bytes=100)
+                handle = core.bind(owner)
+                expected = b"snapshot" if restart == 0 else b"later work"
+                assert (tree / "note").read_bytes() == expected
+                for op_id, body in [("after-snapshot", owner.encode())] + (
+                        [("before-snapshot", b"snapshot")] if snapshot_has_journal else []):
+                    with pytest.raises(BoxError, match="not re-run"):
+                        core.write(handle, op_id, "/cc/note", body, max_bytes=100)
+                    with sqlite3.connect(tree / ".owner-boxd/boxhost.db") as db:
+                        assert db.execute("SELECT state FROM ops WHERE op_id=?", (op_id,)
+                                          ).fetchone() == ("unknown_after_restore",)
+                    assert (tree / "note").read_bytes() == expected
+                with pytest.raises(OpIdReuse):
+                    core.write(handle, "after-snapshot", "/cc/note", b"changed", max_bytes=100)
+                if restart == 0:
+                    core.write(handle, "fresh-write", "/cc/note", b"later work", max_bytes=100)
+            finally:
+                core.close()
+
+
+def test_restore_refuses_conflicting_owner_receipts_without_changing_target(tmp_path):
+    current, staged = tmp_path / "current", tmp_path / "staged"
+    for root, digest in ((current, "live"), (staged, "snapshot")):
+        state = BoxHostState(root / "300001/.owner-boxd/boxhost.db")
+        state.begin("alice", "same-id", "write", digest)
+        state.finish("alice", "same-id", {"response": digest})
+        state.close()
+    target = staged / "300001/.owner-boxd/boxhost.db"
+    before = target.read_bytes()
+    with pytest.raises(ValueError, match="conflicting arguments"):
+        restore.fence_owner_journals(current, staged)
+    assert target.read_bytes() == before
+
+
+@pytest.mark.parametrize("member", ["directory", "database", "sidecar"])
+def test_restore_refuses_linked_owner_journals(tmp_path, member):
+    current, staged = tmp_path / "current", tmp_path / "staged"
+    journal = current / "300001/.owner-boxd"
+    state = BoxHostState(journal / "boxhost.db")
     state.close()
-    restore.fence_restore(current, staged)
-    restored = BoxHostState(staged / ".boxhost/boxhost.db")
-    try:
-        assert restored.epoch("alice") > old_epoch
-        assert restored.generation("alice") > old_generation
-        for op_id, digest in (("before-snapshot", "digest1"), ("after-snapshot", "digest2")):
-            receipt = restored.begin("alice", op_id, "write", digest)
-            assert receipt["state"] == "unknown_after_restore"
-        with pytest.raises(OpIdReuse):
-            restored.begin("alice", "after-snapshot", "write", "changed")
-    finally:
-        restored.close()
+    staged.mkdir()
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"unchanged")
+    if member == "directory":
+        journal.rename(journal.with_name("saved"))
+        journal.symlink_to(journal.with_name("saved"), target_is_directory=True)
+    else:
+        path = journal / ("boxhost.db" if member == "database" else "boxhost.db-wal")
+        path.unlink(missing_ok=True)
+        path.symlink_to(outside)
+    with pytest.raises(ValueError, match="unsafe owner journal"):
+        restore.fence_owner_journals(current, staged)
+    assert outside.read_bytes() == b"unchanged"
 
 
 @pytest.mark.parametrize("authority", ["identity", "admission", "deletion", "destruction",

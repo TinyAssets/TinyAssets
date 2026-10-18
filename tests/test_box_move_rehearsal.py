@@ -265,7 +265,9 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
             "controls": 8, "plans": 8, "writes": 4, "reconnect": 2,
         }
         assert result["restore_before_write"]["comparisons"] == 1
-        assert result["restore_after_write"]["comparisons"] == 1
+        assert result["restore_after_write"] == {
+            "status": "PASS", "comparisons": 1, "replay_refusals": 4, "fenced_owners": 2,
+        }
         captured = capsys.readouterr()
         assert captured.err == ""
         assert len(captured.out.splitlines()) == len(result)
