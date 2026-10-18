@@ -28,7 +28,10 @@ ledger files; all ledger SQLite sidecars SHALL be root-private. Cutover SHALL se
 tombstones, custody digests, boxhost owner_destroys and broker revocations, then
 remove the router tombstone store and shared host journal. Plaintext required for phases SHALL
 remain only in root-owned state. Local custody fences are not retry authority.
-Both restore paths SHALL union readable live and staged ledger events. Every new
+Both restore paths SHALL union readable live and staged ledger events; owner-box
+restores SHALL NOT read legacy erasure stores or diagnostic reports as authority.
+Cutover and NORMAL rollback to a pre-cutover pair SHALL import legacy facts,
+including report-only quarantine obligations, before retiring those formats. Every new
 restored home SHALL create new work; prior completion receipts cannot hide it.
 Post-publication cleanup and every start SHALL retry all unfinished home and
 quarantine targets across any number of restores. A quarantine destination SHALL
@@ -83,7 +86,7 @@ startup, and unreachable-provider exit 4 without changing either live volume.
 - **AND** the report names the backup-to-restore loss window and reverted classes
 
 #### Scenario: Erasure survives loss of live stores
-- **WHEN** any readable tombstone source or WorkOS proves an owner deleted
+- **WHEN** a readable erasure ledger or WorkOS proves an owner deleted
 - **THEN** disaster restore unions that erasure and destroys the restored owner tree
 - **AND** an uncertain identity lookup refuses publication
 

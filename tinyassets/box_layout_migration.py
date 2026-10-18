@@ -457,7 +457,8 @@ def census(data: Path, *, _inventory: dict | None = None,
         # Enumerate actual shared files, including SQLite with an unfamiliar
         # filename. A suffix-only scan would silently miss a renamed store.
         shared_roots = [data]
-        for directory in (".broker", ".runtime", ".published", ".command-center-packages", ".boxhost"):
+        for directory in (".broker", ".runtime", ".published",
+                          ".command-center-packages", ".boxhost"):
             root = data / directory
             if root.is_dir() and not root.is_symlink():
                 shared_roots.extend(p for p in root.rglob("*") if p.is_dir() and not p.is_symlink())
@@ -2239,14 +2240,15 @@ def _build_cutover(data: Path, store: Path, journal: dict, *, apply_quotas=True)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
     _seed_shared(data, shared, inventory, report, plan)
-    from tinyassets.erasure_ledger import NAME, carry_forward
-    from tinyassets.restore_recovery import _identify_erased, _reserve_erasures, _schedule_trees
+    from tinyassets.erasure_ledger import NAME, ErasureLedger, carry_forward, seed_legacy
+    from tinyassets.restore_recovery import _reserve_erasures, _schedule_trees
 
     if (shared / NAME).exists():
         os.chown(shared / NAME, 0, 0)
         (shared / NAME).chmod(0o600)
-    ledger = carry_forward(data, shared, store_root=store)
-    _identify_erased(ledger, data, shared)
+    ErasureLedger(shared).initialize()
+    ledger = carry_forward(data, shared)
+    seed_legacy(data, ledger, store_root=store)
     _reserve_erasures(ledger, shared)
     _schedule_trees(ledger, [store])
     _crash_at("after_seeding")

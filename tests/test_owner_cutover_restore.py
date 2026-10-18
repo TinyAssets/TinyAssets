@@ -115,7 +115,6 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(
     monkeypatch.setattr("tinyassets.boxes.destroy.verify_store", lambda *a: None)
     data, store = tmp_path / "volume/_data", tmp_path / "owners"
     seed(data)
-    (data / ".boxhost/boxhost.db").chmod(0o600)
     for uid in (300001, 300002, 300003):
         owner = {300001: "alice", 300002: "bob", 300003: "carol"}[uid]
         if uid != 300001:
@@ -303,10 +302,13 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(
     log = (tmp_path / "restore.log").read_text()
     report = json.loads((data / ".disaster-restore.json").read_text())
     assert report["credential_roots_reset"] and report["operation_fences_reset"]
-    assert bool(report["erasure_failures"]) == erasure_failure
+    assert "erasure_failures" not in report and "cleanup_complete" not in report
+    failures = [item for entry in ErasureLedger(data).entries()
+                for item in entry["work"].values() if (store / item["quarantine"]).exists()]
+    assert bool(failures) == erasure_failure
     if erasure_failure:
-        assert len(report["erasure_failures"]) == 3  # Bob twice, post-backup owner once
-        for failure in report["erasure_failures"]:
+        assert len(failures) == 3  # Bob twice, post-backup owner once
+        for failure in failures:
             quarantine = store / failure["quarantine"]
             assert failure["uid"] in (300002, 300004)
             assert quarantine.is_dir()
@@ -315,8 +317,8 @@ def test_disaster_restore_requires_acknowledgement_and_reports_unknown_facts(
         assert not ErasureLedger(data).receipt("bob")["home_removed"]
         assert not ErasureLedger(data).receipt("later")["home_removed"]
         assert all(not Path(item["quarantine"]).is_absolute()
-                   for item in report["erasure_failures"])
-        assert '"erasure_failures": [{' in completed.stdout
+                   for item in failures)
+        assert "WARN erasure cleanup:" in completed.stdout
     assert "owner consents and grants" in report["reverted_classes"]
     assert report["backup_time"] < report["restore_time"]
     assert "WARN disaster restore:" in completed.stdout

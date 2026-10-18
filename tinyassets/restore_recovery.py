@@ -88,10 +88,20 @@ def normal_preflight(current, staged, owners, *, backup_time, restored_owners=No
 
 
 def _carry_rollback(current, staged, owners, retained_owners):
-    from tinyassets.erasure_ledger import carry_forward
+    from tinyassets.erasure_ledger import ErasureLedger, carry_forward, seed_legacy
 
-    ledger = carry_forward(current, staged, store_root=owners)
-    _identify_erased(ledger, current, staged)
+    marker = _safe(staged, ".layout.json")
+    legacy = not marker.exists() or json.loads(marker.read_text()).get("box_layout") != "owner-box"
+    if legacy:
+        ErasureLedger(staged).initialize()
+    ledger = carry_forward(current, staged)
+    if legacy:
+        seed_legacy(staged, ledger, store_root=owners)
+        marker = _safe(current, ".layout.json")
+        if marker.exists() and json.loads(marker.read_text()).get("box_layout") != "owner-box":
+            seed_legacy(current, ledger, store_root=owners)
+    else:
+        _identify_erased(ledger, current, staged)
     _reserve_erasures(ledger, staged)
     _schedule_trees(ledger, [owners, retained_owners] if retained_owners else [owners])
 
@@ -125,7 +135,7 @@ def erasures(current, staged, *, identity_exists, unavailable_sources=None,
     """Carry only ledger authority; import pre-ledger facts during the cutover."""
     from tinyassets.erasure_ledger import carry_forward
 
-    ledger = carry_forward(current, staged, unavailable_sources, store_root=store_root)
+    ledger = carry_forward(current, staged, unavailable_sources)
     _identify_erased(ledger, current, staged, identity_exists, unavailable_sources)
     entries = ledger.entries()
     erased = {entry["principal"] for entry in entries if entry["principal"]}

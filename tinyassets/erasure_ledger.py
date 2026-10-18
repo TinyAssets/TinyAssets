@@ -279,86 +279,58 @@ def relative_target(target, store_root):
     return result
 
 
-def carry_forward(current, staged, unavailable_sources=None, *,
-                  store_root=Path("/var/lib/boxhostd/owners")):
-    """Offline cutover/restore union, including every pre-ledger erasure fact."""
-    from tinyassets.restore_recovery import UnreadableFacts, _rows
+def carry_forward(current, staged, unavailable_sources=None):
+    """Union immutable ledger events only; owner-box restores read no legacy queues."""
+    from tinyassets.restore_recovery import UnreadableFacts
 
-    if (staged / NAME).exists():
-        protect_root(staged)
     ledger = ErasureLedger(staged)
-    ledger.initialize()
-    unavailable = [] if unavailable_sources is None else unavailable_sources
+    protect_root(staged)
+    ledger.entries()  # A supported pair must already contain valid authority.
+    if current != staged:
+        try:
+            events = ErasureLedger(current).execute("export", {})
+            ledger.execute("union", {"events": events})
+        except (OSError, sqlite3.DatabaseError, UnreadableFacts, RuntimeError):
+            if unavailable_sources is not None:
+                unavailable_sources.append("live " + NAME)
+    return ledger
+
+
+def seed_legacy(source, ledger, *, store_root):
+    """Offline import of genuine pre-cutover facts, including rollback to that pair."""
+    from tinyassets.restore_recovery import _rows, _safe
+
     sources = ((".router-deleted-owners.sqlite3", "deleted_owners"),
                (".broker/credential-custody.db", "deleted_principals"),
                (".boxhost/boxhost.db", "owner_destroys"),
                (".broker/state/owner-identities.db", "owner_box_revocations"))
-    for root in dict.fromkeys((staged, current)):
-        try:
-            private_file(root / NAME)
-            for suffix in ("-journal", "-wal", "-shm"):
-                private_file(root / (NAME + suffix))
-            if (root / NAME).exists():
-                events = ErasureLedger(root).execute("export", {})
-                ledger.execute("union", {"events": events})
-        except (OSError, sqlite3.DatabaseError, UnreadableFacts, RuntimeError):
-            if root == staged:
-                raise
-            unavailable.append("live " + NAME)
-        for relative, table in sources:
-            try:
-                rows = _rows(root, relative, table)
-            except (OSError, sqlite3.DatabaseError, UnreadableFacts, RuntimeError):
-                if root == staged:
-                    raise
-                unavailable.append("live " + relative)
+    for relative, table in sources:
+        for row in _rows(source, relative, table):
+            if table == "owner_box_revocations" and not row["deleted"]:
                 continue
-            for row in rows:
-                if table == "owner_box_revocations" and not row["deleted"]:
-                    continue
-                owner = row.get("owner", row.get("owner_id", row.get("principal")))
-                digest = row["digest"] if table == "deleted_principals" else principal_digest(owner)
-                receipt = json.loads(row.get("receipt") or "null") or {}
-                ledger.execute("add", {"digest": digest, "principal": owner, "receipt": receipt,
-                                       "uids": [row["uid"]] if table == "owner_destroys" else []})
-                for path in receipt.get("quarantines", []):
-                    destination = Path(path)
-                    ledger.execute("work", {"digest": digest, "target": relative_target({
-                        "uid": int(destination.name), "store": str(destination.parent),
-                        "quarantine": str(destination)}, store_root)})
-    # Older restore reports carried paths separately. Absorb that last legacy
-    # fact before replacing reports with diagnostics; never discard unknown work.
-    for root in dict.fromkeys((staged, current)):
-        from tinyassets.restore_recovery import _safe
-
-        try:
-            identities = _rows(root, ".broker/state/owner-identities.db", "owner_identities")
-            for row in identities:
-                if ledger.contains(row["principal"]):
-                    ledger.execute("add", {"digest": principal_digest(row["principal"]),
-                                           "principal": row["principal"],
-                                           "uids": [row["machine_id"]]})
-        except (OSError, sqlite3.DatabaseError, UnreadableFacts, RuntimeError):
-            if root == staged:
-                raise
-            unavailable.append("live legacy erasure identities")
-        try:
-            report_path = _safe(root, ".disaster-restore.json")
-            report = json.loads(report_path.read_text()) if report_path.exists() else {}
-        except (OSError, json.JSONDecodeError):
-            if root == staged:
-                raise
-            unavailable.append("live legacy erasure cleanup")
-            continue
-        if "pending_erasures" in report:
-            for target in report["pending_erasures"] + report.get("erasure_failures", []):
-                matches = [entry for entry in ledger.entries() if target["uid"] in entry["uids"]]
-                if len(matches) != 1:
-                    raise ValueError("legacy quarantine has no unique erased UID reservation")
-                ledger.execute("work", {"digest": matches[0]["digest"], "target": relative_target({
-                    "uid": target["uid"], "quarantine": target["quarantine"],
-                    "store": target.get("store", str(Path(target["quarantine"]).parent))},
-                    store_root)})
+            owner = row.get("owner", row.get("owner_id", row.get("principal")))
+            digest = row["digest"] if table == "deleted_principals" else principal_digest(owner)
+            receipt = json.loads(row.get("receipt") or "null") or {}
+            ledger.execute("add", {"digest": digest, "principal": owner, "receipt": receipt,
+                                   "uids": [row["uid"]] if table == "owner_destroys" else []})
+            for path in receipt.get("quarantines", []):
+                destination = Path(path)
+                ledger.execute("work", {"digest": digest, "target": relative_target({
+                    "uid": int(destination.name), "store": str(destination.parent),
+                    "quarantine": str(destination)}, store_root)})
+    for row in _rows(source, ".broker/state/owner-identities.db", "owner_identities"):
+        if ledger.contains(row["principal"]):
+            ledger.execute("add", {"digest": principal_digest(row["principal"]),
+                                   "principal": row["principal"], "uids": [row["machine_id"]]})
+    report_path = _safe(source, ".disaster-restore.json")
+    report = json.loads(report_path.read_text()) if report_path.exists() else {}
+    for target in report.get("pending_erasures", []) + report.get("erasure_failures", []):
+        matches = [entry for entry in ledger.entries() if target["uid"] in entry["uids"]]
+        if len(matches) != 1:
+            raise ValueError("legacy quarantine has no unique erased UID reservation")
+        ledger.execute("work", {"digest": matches[0]["digest"], "target": relative_target({
+            "uid": target["uid"], "quarantine": target["quarantine"],
+            "store": target.get("store", str(Path(target["quarantine"]).parent))}, store_root)})
     for entry in ledger.entries():
         for key, target in entry["work"].items():
             relative = relative_target(target, store_root)
@@ -366,8 +338,7 @@ def carry_forward(current, staged, unavailable_sources=None, *,
                 ledger.execute("work", {"digest": entry["digest"], "target": relative})
                 ledger.execute("finish", {"digest": entry["digest"], "ids": [key]})
     for suffix in ("", "-journal", "-wal", "-shm"):
-        (staged / (".router-deleted-owners.sqlite3" + suffix)).unlink(missing_ok=True)
-    return ledger
+        (ledger.root / (".router-deleted-owners.sqlite3" + suffix)).unlink(missing_ok=True)
 
 
 def require_active(root, owner):

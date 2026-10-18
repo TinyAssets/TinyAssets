@@ -19,7 +19,6 @@ SPEC.loader.exec_module(restore)
 
 def seed(root):
     (root / ".broker/state").mkdir(parents=True)
-    (root / ".boxhost").mkdir(mode=0o700)
     from tinyassets.erasure_ledger import ErasureLedger
 
     ErasureLedger(root).initialize()
@@ -34,11 +33,7 @@ def seed(root):
         db.execute("CREATE TABLE owner_box_revocations (principal TEXT PRIMARY KEY, deleted INT)")
     with sqlite3.connect(root / ".broker/credential-custody.db") as db:
         db.execute("CREATE TABLE deleted_principals (digest TEXT PRIMARY KEY)")
-    state = BoxHostState(root / ".boxhost/boxhost.db")
-    state.begin("alice", "before-snapshot", "write", "digest1")
-    state.finish("alice", "before-snapshot", {"response": "before"})
-    state.bump_generation("alice")
-    state.close()
+
 
 
 
@@ -69,8 +64,9 @@ def fingerprint(root):
 
 def test_normal_restore_carries_erasure_only(tmp_path):
     current, staged, live, trees = paired(tmp_path)
-    with sqlite3.connect(current / ".broker/state/owner-identities.db") as db:
-        db.execute("INSERT INTO owner_box_revocations VALUES ('alice',1)")
+    from tinyassets.erasure_ledger import ErasureLedger
+
+    ErasureLedger(current).add("alice")
     before = fingerprint(staged), fingerprint(trees)
     restore.fence_restore(current, staged, cutover_store=live, restored_store=trees)
     from tinyassets.erasure_ledger import NAME, ErasureLedger
@@ -420,28 +416,14 @@ def test_workos_revokes_all_sessions_through_paginated_provider_api(monkeypatch,
         assert revoked == ["session_first", "session_second"]
 
 
-@pytest.mark.parametrize("source", ["router", "broker", "custody", "host", "workos"])
-def test_disaster_erasure_union_and_identity_reconciliation(tmp_path, monkeypatch, source):
-    monkeypatch.setattr("os.chown", lambda *args, **kwargs: None)
-    import hashlib
-
+@pytest.mark.parametrize("source", ["ledger", "workos"])
+def test_disaster_erasure_union_and_identity_reconciliation(tmp_path, source):
     from tinyassets.erasure_ledger import ErasureLedger
     from tinyassets.restore_recovery import erasures
+
     current, staged, live, trees = paired(tmp_path)
-    if source == "router":
-        ErasureLedger(current).add("alice", {})
-    elif source == "broker":
-        with sqlite3.connect(current / ".broker/state/owner-identities.db") as db:
-            db.execute("INSERT INTO owner_box_revocations VALUES ('alice',1)")
-    elif source == "custody":
-        with sqlite3.connect(current / ".broker/credential-custody.db") as db:
-            db.execute("INSERT INTO deleted_principals VALUES (?)",
-                       (hashlib.sha256(b"alice").hexdigest(),))
-    elif source == "host":
-        (current / ".boxhost").mkdir(exist_ok=True)
-        with sqlite3.connect(current / ".boxhost/boxhost.db") as db:
-            db.execute("CREATE TABLE owner_destroys (owner_id TEXT, uid INTEGER)")
-            db.execute("INSERT INTO owner_destroys VALUES (?,?)", ("alice", 300001))
+    if source == "ledger":
+        ErasureLedger(current).add("alice")
     assert erasures(current, staged, identity_exists=lambda owner: source != "workos") == {300001}
     assert ErasureLedger(staged).contains("alice")
 
@@ -468,8 +450,9 @@ def test_disaster_retains_unmapped_erasure_digests_despite_unreadable_live_sourc
     from tinyassets.restore_recovery import erasures
     current, staged, live, trees = paired(tmp_path)
     digest = hashlib.sha256(b"owner-created-after-backup").hexdigest()
-    with sqlite3.connect(current / ".broker/credential-custody.db") as db:
-        db.execute("INSERT INTO deleted_principals VALUES (?)", (digest,))
+    from tinyassets.erasure_ledger import ErasureLedger
+
+    ErasureLedger(current).execute("add", {"digest": digest})
     (current / ".router-deleted-owners.sqlite3").write_bytes(b"damaged")
     monkeypatch.setattr("os.chown", lambda *args: None)
     assert erasures(current, staged, identity_exists=lambda owner: True) == set()

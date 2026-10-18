@@ -598,10 +598,7 @@ def test_completed_apply_restores_paired_owner_split(cutover, tmp_path, journal)
     assert list(store.glob('.tinyassets-box-restore-old.*/300001/a1/notes.txt'))
 
 
-@pytest.mark.parametrize("authority", ["router", "revocation"])
-def test_disaster_restore_keeps_erasure_and_destroys_restored_tree(
-    cutover, tmp_path, authority,
-):
+def test_disaster_restore_keeps_erasure_and_destroys_restored_tree(cutover, tmp_path):
     import runpy
 
     from tests.test_owner_cutover_restore import REPO
@@ -617,12 +614,7 @@ def test_disaster_restore_keeps_erasure_and_destroys_restored_tree(
         data_archive, box_archive, tmp_path / "tinyassets-pair-2026-10-17T00-00-00Z.json")
     # Local sweep succeeded, broker retirement/custody is still unavailable.
     (store / "300001/a1/notes.txt").unlink()
-    if authority == "router":
-        ErasureLedger(data).initialize()
-        ErasureLedger(data).add("alice", {"unfinished_phases": ["owner_tree", "broker_egress"]})
-    else:
-        _sql(data / ".broker/state/owner-identities.db",
-             "INSERT INTO owner_box_revocations VALUES ('alice',1)")
+    ErasureLedger(data).add("alice", {"unfinished_phases": ["owner_tree", "broker_egress"]})
     result = _restore_paired(cutover, tmp_path, disaster=True)
     assert result.returncode == 6, result.stdout + result.stderr
     assert not (store / "300001").exists()
@@ -630,8 +622,7 @@ def test_disaster_restore_keeps_erasure_and_destroys_restored_tree(
     with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
         assert db.execute("SELECT deleted FROM owner_box_revocations WHERE principal='alice'"
                           ).fetchone() == (1,)
-    if authority == "router":
-        assert ErasureLedger(data).contains("alice")
+    assert ErasureLedger(data).contains("alice")
     assert list(store.glob(".tinyassets-box-restore-old.*"))
 
 

@@ -11,7 +11,14 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from tests.support.recovery_daemons import recovery_daemons
 from tests.test_box_restore_authority import disaster, paired
 from tests.test_workos_provider import _provider, _sign
-from tinyassets.erasure_ledger import NAME, PHASES, ErasureLedger, carry_forward, principal_digest
+from tinyassets.erasure_ledger import (
+    NAME,
+    PHASES,
+    ErasureLedger,
+    carry_forward,
+    principal_digest,
+    seed_legacy,
+)
 from tinyassets.restore_recovery import erasures, finish_erasures, normal_preflight
 
 
@@ -63,11 +70,10 @@ def test_two_disaster_restores_keep_earlier_quarantine(tmp_path, monkeypatch):
     assert all(not entry["work"] for entry in ErasureLedger(backup).entries())
 
 
-def test_unmapped_custody_digest_refuses_fresh_workos_login(tmp_path, monkeypatch):
+def test_unmapped_ledger_digest_refuses_fresh_workos_login(tmp_path, monkeypatch):
     current, staged, _, _ = paired(tmp_path)
     owner = "post-backup-owner"
-    with sqlite3.connect(current / ".broker/credential-custody.db") as db:
-        db.execute("INSERT INTO deleted_principals VALUES (?)", (principal_digest(owner),))
+    ErasureLedger(current).execute("add", {"digest": principal_digest(owner)})
     (current / ".broker/state/owner-identities.db").write_bytes(b"damaged")
     (current / ".router-deleted-owners.sqlite3").write_bytes(b"damaged")
     erasures(current, staged, identity_exists=lambda _: True)
@@ -122,6 +128,7 @@ def test_cutover_seeds_all_legacy_sources(tmp_path):
         db.execute("CREATE TABLE owner_destroys (owner_id TEXT, uid INTEGER)")
         db.execute("INSERT INTO owner_destroys VALUES (?,?)", ("host-only", 300002))
     ledger = carry_forward(current, staged)
+    seed_legacy(current, ledger, store_root=tmp_path)
     assert all(ledger.contains(owner) for owner in ("router-only", "custody-only", "host-only"))
     assert {entry["digest"] for entry in ledger.pending()} == {
         principal_digest(owner) for owner in ("router-only", "custody-only", "host-only")}
@@ -232,11 +239,12 @@ def test_legacy_report_quarantine_is_seeded_without_identity_store(tmp_path):
     with sqlite3.connect(current / ".boxhost/boxhost.db") as db:
         db.execute("CREATE TABLE owner_destroys (owner_id TEXT, uid INTEGER)")
         db.execute("INSERT INTO owner_destroys VALUES (?,?)", ("later", 300002))
-    (current / ".broker/state/owner-identities.db").write_bytes(b"damaged")
+    (current / ".broker/state/owner-identities.db").unlink()
     path = tmp_path / "old-quarantine" / "300002"
     (current / ".disaster-restore.json").write_text(json.dumps({
         "pending_erasures": [], "erasure_failures": [{"uid": 300002, "quarantine": str(path)}]}))
-    ledger = carry_forward(current, staged, store_root=tmp_path)
+    ledger = carry_forward(current, staged)
+    seed_legacy(current, ledger, store_root=tmp_path)
     assert any(work["quarantine"] == str(path.relative_to(tmp_path)) for entry in ledger.entries()
                for work in entry["work"].values())
 
@@ -286,3 +294,32 @@ assert len(ledger.pending()) == 130
             stop.set()
             server.join(5)
     assert ledger.contains("router-new")
+
+
+def test_owner_box_restore_ignores_retired_stores_and_reports(tmp_path):
+    current, staged, live, _ = paired(tmp_path)
+    ledger = ErasureLedger(current)
+    ledger.execute("add", {"digest": principal_digest("alice"), "principal": "alice",
+                           "uids": [300001]})
+    for root in (current, staged):
+        (root / ".boxhost").mkdir(exist_ok=True)
+        for name in (".boxhost/boxhost.db", ".router-deleted-owners.sqlite3",
+                     ".disaster-restore.json", ".broker/credential-custody.db"):
+            (root / name).write_bytes(b"retired format must never be consulted")
+    normal_preflight(current, staged, live, backup_time=1)
+    assert ErasureLedger(staged).contains("alice")
+
+
+def test_normal_legacy_pair_seeds_erasure_before_forward_migration(tmp_path):
+    import json
+
+    current, staged, live, _ = paired(tmp_path)
+    (staged / NAME).unlink()
+    (staged / ".layout.json").write_text(json.dumps({"split": "owner-split", "state": "stable"}))
+    with sqlite3.connect(staged / ".router-deleted-owners.sqlite3") as db:
+        db.execute("CREATE TABLE deleted_owners (owner TEXT, receipt TEXT)")
+        db.execute("INSERT INTO deleted_owners VALUES ('alice',NULL)")
+    normal_preflight(current, staged, live, backup_time=1)
+    entry, = ErasureLedger(staged).entries()
+    assert entry["uids"] == [300001] and entry["work"]
+    assert not (staged / ".router-deleted-owners.sqlite3").exists()
