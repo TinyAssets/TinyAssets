@@ -443,7 +443,13 @@ layout_allows_candidate() {  # $1 = marker path; $2 = immutable candidate image;
       --entrypoint python "$candidate" -m tinyassets.erasure_ledger /data || return 1
   fi
   (
-    exec 8>>"$dir/.layout.lock" || exit 1
+    # Avoid O_CREAT on a service-owned lock under the root-sticky data root
+    # (fs.protected_regular); create only absent legacy/fresh-install locks.
+    if [[ ! -e "$dir/.layout.lock" ]]; then
+      (set -o noclobber; : > "$dir/.layout.lock") || exit 1
+    fi
+    [[ -f "$dir/.layout.lock" && ! -L "$dir/.layout.lock" ]] || exit 1
+    exec 8<"$dir/.layout.lock" || exit 1
     flock -s -n 8 || exit 1
     python3 - "$marker" "$supported" "$cutover" <<'CANDIDATE_LAYOUT_PY'
 import json

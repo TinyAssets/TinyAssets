@@ -335,6 +335,59 @@ def test_production_restore_cannot_load_recorded_provider(tmp_path):
     assert "COPY . " not in dockerfile
 
 
+@pytest.mark.parametrize("held", [None, "live", "staged", "missing", "fifo", "symlink"])
+def test_restore_layout_locks_preserve_inodes_and_exclude_writers(tmp_path, held):
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        pytest.skip("requires linux_oracle.py --as-root; owner=c6-owner-box "
+                    "runs-in=linux_oracle.py")
+    import fcntl
+
+    assert Path("/proc/sys/fs/protected_regular").read_text().strip() == "2"
+    roots = {name: tmp_path / name for name in ("live", "staged")}
+    for root in roots.values():
+        root.mkdir(mode=0o1775)
+        root.chmod(0o1775)
+        if held != "missing":
+            lock = root / ".layout.lock"
+            lock.write_bytes(b"existing lock inode")
+            os.chown(lock, 1001, 1001)
+    if held in {"fifo", "symlink"}:
+        lock = roots["live"] / ".layout.lock"
+        lock.unlink()
+        if held == "fifo":
+            os.mkfifo(lock)
+        else:
+            lock.symlink_to(roots["staged"] / ".layout.lock")
+    before = {name: (root / ".layout.lock").stat().st_ino
+              for name, root in roots.items() if held != "missing"}
+    script = (ROOT / "deploy/backup-restore.sh").read_text()
+    start = script.index("    # Exclude service restarts")
+    program = script[start:script.index('    pair_ts="${TAR_NAME#tinyassets-data-}"', start)]
+    fd = os.open(roots[held] / ".layout.lock", os.O_RDWR) if held in roots else None
+    try:
+        if fd is not None:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        result = subprocess.run(
+            ["bash", "-ec", 'log() { echo "$*"; };\n' + program],
+            env={**os.environ, "VOLUME_DIR": str(roots["live"]),
+                 "STAGE_DIR": str(roots["staged"])}, capture_output=True, text=True, timeout=10)
+        refused = fd is not None or held in {"fifo", "symlink"}
+        assert result.returncode == (4 if refused else 0), result.stdout + result.stderr
+        if held in {"fifo", "symlink"}:
+            assert "not a regular file" in result.stdout
+            return
+        if fd is not None:
+            assert "storage writer still owns" in result.stdout
+        for name, root in roots.items():
+            lock = root / ".layout.lock"
+            assert lock.read_bytes() == (b"" if held == "missing" else b"existing lock inode")
+            if name in before:
+                assert lock.stat().st_ino == before[name]
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch, capsys):
     if not hasattr(os, "geteuid") or os.geteuid() != 0:
         pytest.skip(
@@ -434,6 +487,9 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
     import gc
 
     gc.collect()
+    # Real pre-cutover volumes have a service-created lock. Keeping it root-owned
+    # hides fs.protected_regular failures once apply installs the sticky root.
+    os.chown(source / ".layout.lock", 1001, 1001)
     archive = tmp_path / "tinyassets-data-2026-10-17T00-00-00Z.tar.gz"
     with tarfile.open(archive, "w:gz") as stream:
         stream.add(source, arcname="_data")
@@ -486,6 +542,29 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
 
     def tracked_venue(*args):
         venue = original_venue(*args)
+        original_migration = venue.migration
+
+        def checked_migration(mode, **kwargs):
+            result = original_migration(mode, **kwargs)
+            if mode in {"apply", "verify"} and result.returncode == 0:
+                venue.helper("""
+import fcntl, os, stat
+root = Path('/data')
+lock = root / '.layout.lock'
+assert os.geteuid() == 0
+assert Path('/proc/sys/fs/protected_regular').read_text().strip() == '2'
+assert root.stat().st_uid == 0 and stat.S_IMODE(root.stat().st_mode) == 0o1775
+assert lock.stat().st_uid == 1001
+fd = os.open(lock, os.O_RDWR | os.O_NOFOLLOW)
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    assert os.fstat(fd).st_ino == lock.stat().st_ino
+finally:
+    os.close(fd)
+""")
+            return result
+
+        venue.migration = checked_migration
         venues.append(venue)
         return venue
 

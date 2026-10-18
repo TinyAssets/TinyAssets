@@ -31,6 +31,11 @@ owners fenced, and open control listeners for the remaining owners.
 - **WHEN** a fenced owner requests any broker box operation
 - **THEN** admission is refused through the authentication ledger check
 
+#### Scenario: Restore follows cutover of a service-owned layout lock
+- **WHEN** cutover protects the data root with sticky permissions and retains a service-owned `.layout.lock`
+- **THEN** root can open that inode read-write and restore can exclusively lock both live and staged layouts with Linux protected-regular checks enabled
+- **AND** restore keeps both lock inodes and holds both locks through the swap; a competing writer refuses the restore
+
 #### Scenario: Cleanup cannot reach the box or its filesystem
 - **WHEN** resolving the box fails or the owner store is unmounted
 - **THEN** billing, custody and router credential deletion still run and record their results

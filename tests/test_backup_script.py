@@ -205,6 +205,12 @@ def test_snapshot_reads_broker_only_tree_as_root(tmp_path):
     volume = tmp_path / 'volume' / '_data'
     broker = volume / '.broker'
     broker.mkdir(parents=True)
+    assert Path('/proc/sys/fs/protected_regular').read_text().strip() == '2'
+    volume.chmod(0o1775)
+    lock = volume / '.layout.lock'
+    lock.write_bytes(b'service-owned lock')
+    os.chown(lock, 1001, 1001)
+    lock_inode = lock.stat().st_ino
     secret = broker / '.runs.db'
     secret.write_bytes(b'broker-only state')
     os.chown(broker, 2101, 2101)
@@ -222,6 +228,8 @@ def test_snapshot_reads_broker_only_tree_as_root(tmp_path):
         'BACKUP_SNAPSHOT_DIR': str(tmp_path / 'snapshots'),
     })
     assert result.returncode == 0, result.stdout + result.stderr
+    assert lock.stat().st_ino == lock_inode
+    assert lock.read_bytes() == b'service-owned lock'
     archive = next((tmp_path / 'snapshots').glob('*.tar.gz'))
     with tarfile.open(archive) as handle:
         member = handle.getmember('_data/.broker/.runs.db')
@@ -586,7 +594,10 @@ def test_restore_round_trip_from_backup_archive_preserves_dotfiles(tmp_path):
     assert not (target_dir / "obsolete.txt").exists()
     assert archive.exists(), "caller-owned BACKUP_FILE must not be deleted"
     if not _is_wsl_bash():
-        assert stat.S_IMODE(target_dir.stat().st_mode) == 0o750
+        # Restore initializes root erasure authority, which protects the shared
+        # directory even when the old snapshot had no ledger.
+        assert stat.S_IMODE(target_dir.stat().st_mode) == 0o1775
+        assert (target_dir.stat().st_uid, target_dir.stat().st_gid) == (0, 1001)
     assert list(target_dir.parent.glob(".tinyassets-restore-old.*")), (
         "successful swap must retain the previous volume for post-canary rollback"
     )

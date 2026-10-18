@@ -240,6 +240,10 @@ def test_the_fail_safe_refuses_while_a_migration_holds_the_lock(tmp_path):
     marker.write_text('{"layout": 1, "state": "stable"}', encoding="utf-8")
     program = _previous_image_guard(marker)
     with open(tmp_path / layout.LOCK, "a+") as migration:
+        if os.geteuid() == 0:
+            assert Path('/proc/sys/fs/protected_regular').read_text().strip() == '2'
+            tmp_path.chmod(0o1775)
+            os.chown(tmp_path / layout.LOCK, 1001, 1001)
         fcntl.flock(migration.fileno(), fcntl.LOCK_EX)
         held = subprocess.run([_BASH, "-c", program], capture_output=True, text=True,
                               env=_previous_image_env(tmp_path))

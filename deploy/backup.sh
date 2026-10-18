@@ -123,7 +123,16 @@ if ! command -v flock >/dev/null 2>&1; then
     log "ERROR: flock not found; refusing to read the volume without the layout lock"
     exit 2
 fi
-exec 9>>"${VOLUME_DIR}/.layout.lock"
+# O_CREAT on a service-owned lock in the sticky data root is denied even to
+# root by fs.protected_regular. Preserve existing inodes and lock read-only.
+if [[ ! -e "${VOLUME_DIR}/.layout.lock" ]]; then
+    (set -o noclobber; : > "${VOLUME_DIR}/.layout.lock")
+fi
+if [[ ! -f "${VOLUME_DIR}/.layout.lock" || -L "${VOLUME_DIR}/.layout.lock" ]]; then
+    log "ERROR: layout lock is not a regular file"
+    exit 2
+fi
+exec 9<"${VOLUME_DIR}/.layout.lock"
 # Root creates it on a fresh volume; the non-root server must still open it.
 chmod 0666 "${VOLUME_DIR}/.layout.lock" 2>/dev/null || true
 if ! flock -s -w 600 9; then

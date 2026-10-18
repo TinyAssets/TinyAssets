@@ -523,8 +523,21 @@ if [[ -n "${BOX_STAGE}" ]]; then
     fi
     # Exclude service restarts on both sides of the volume rename. The staged
     # lock becomes the live lock; keep both descriptors until restore exits.
-    exec 8<>"${VOLUME_DIR}/.layout.lock"
-    exec 7<>"${STAGE_DIR}/.layout.lock"
+    # Bash <> includes O_CREAT: fs.protected_regular=2 rejects even root when
+    # the sticky data root contains a service-owned lock. flock needs no write
+    # access. Open existing inodes without O_CREAT; only create missing legacy
+    # locks, exclusively, so we never truncate or replace a writer's lock.
+    for layout_lock in "${VOLUME_DIR}/.layout.lock" "${STAGE_DIR}/.layout.lock"; do
+        if [[ ! -e "$layout_lock" ]]; then
+            (set -o noclobber; : > "$layout_lock")
+        fi
+        if [[ ! -f "$layout_lock" || -L "$layout_lock" ]]; then
+            log "ERROR: layout lock is not a regular file"
+            exit 4
+        fi
+    done
+    exec 8<"${VOLUME_DIR}/.layout.lock"
+    exec 7<"${STAGE_DIR}/.layout.lock"
     if ! flock -n -x 8 || ! flock -n -x 7; then
         log "ERROR: a storage writer still owns the live or staged layout"
         exit 4
