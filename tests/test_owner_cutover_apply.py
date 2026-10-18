@@ -1030,6 +1030,9 @@ def test_cutover_imports_router_custody_and_host_erasure_facts(cutover):
     with sqlite3.connect(data / ".boxhost/boxhost.db") as db:
         db.execute("CREATE TABLE owner_destroys (owner_id TEXT, uid INTEGER)")
         db.execute("INSERT INTO owner_destroys VALUES (?,?)", ("host-only", 300003))
+    (data / ".disaster-restore.json").write_text(json.dumps({
+        "erasure_failures": [{"uid": 300003, "store": "/box-store",
+                              "quarantine": "/box-store/.old/300003"}]}))
     report = migration.census(data)
     assert report["ready"], report["refusals"]
     migration.apply(*cutover)
@@ -1037,3 +1040,6 @@ def test_cutover_imports_router_custody_and_host_erasure_facts(cutover):
     assert all(ledger.contains(owner) for owner in ("router-only", "custody-only", "host-only"))
     assert not (data / ".router-deleted-owners.sqlite3").exists()
     assert not (data / ".boxhost").exists()
+    assert not (data / ".disaster-restore.json").exists()
+    assert any(work["quarantine"] == ".old/300003" for entry in ledger.entries()
+               for work in entry["work"].values())

@@ -1157,7 +1157,7 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
     shared = {
         ".layout.json": "broker", ".layout.lock": "broker",
         ".owner-cutover.json": "broker", ".router-traffic.sqlite3": "router",
-        ".router-credentials.json": "router",
+        ".router-credentials.json": "router", ".disaster-restore.json": "dropped",
         "platform-expected-instance.json": "router", "release-state.json": "router",
         ".billing_webhook_verified.json": "router",
         ".broker/state/fence.json": "broker",
