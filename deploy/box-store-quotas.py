@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import stat
@@ -69,22 +68,6 @@ def reapply(store: Path, trees: Path, registry: Path, *, clear: bool = False) ->
             check=True,
         )
         verify_owner(store, tree, project, limit)
-
-
-def _cutover_manifest(root: Path, *, exclude=()) -> dict:
-    result = {}
-    for directory, dirs, files in os.walk(root, followlinks=False):
-        for name in files + [n for n in dirs if (Path(directory) / n).is_symlink()]:
-            path = Path(directory) / name
-            relative = path.relative_to(root).as_posix()
-            if relative in exclude:
-                continue
-            if path.is_symlink():
-                result[relative] = "link:" + os.readlink(path)
-            else:
-                with path.open("rb") as stream:
-                    result[relative] = hashlib.file_digest(stream, "sha256").hexdigest()
-    return result
 
 
 def fence_restore(current: Path, staged: Path, *, cutover_store: Path | None = None,
