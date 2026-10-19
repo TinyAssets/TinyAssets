@@ -156,9 +156,9 @@ Nothing deploys until slice 7.
       "Corrections", 2026-10-19). Each lane names the shared code it deletes and
       gets one review round scoped to the router/map, egress proxy and waker.
       - [ ] Step 0: spec reviewed against research.md by the lead and one reviewer.
-      - [ ] Step 1: per-owner volume proof on real mounts (loop image in the box
-            store, mounted into runsc, reflink snapshot, Spaces upload, restore by
-            snapshot ID, destroy by deletion).
+      - [ ] Step 1: the per-owner volume proof described in design.md "Step 1 proof"
+            (deployment kernel, outer filesystem and runsc; six boxes, interruption,
+            growth and exhaustion; capacity and timing recorded).
       - [ ] Lane a: C1–C4, volumes, per-owner snapshots, separate platform DR,
             and cutover rollback as the old system's restore; the migration writes
             each owner into their own volume.

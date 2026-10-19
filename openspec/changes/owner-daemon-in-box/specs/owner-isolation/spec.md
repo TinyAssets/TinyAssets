@@ -1,90 +1,126 @@
 ## ADDED Requirements
 
 ### Requirement: Owner data is one opaque volume per owner
-Each owner's data SHALL live in one volume sized to the owner's plan quota.
-Shared processes (router, broker, waker and boxhostd lifecycle) SHALL handle owner
-data only as whole volumes identified by owner UID: create, attach, detach,
-snapshot, restore and delete. They SHALL NOT open, list, stat or walk any path
-inside a volume. The one-shot cutover migration is the only exception, and it
-SHALL be deleted after cutover.
+Each owner's data SHALL live in one volume, sized to the owner's plan allowance,
+that is never shrunk. Shared application services SHALL have no mounted
+owner-content path. Lifecycle code SHALL handle owner data only as whole volumes
+identified by owner UID: create, attach, detach, snapshot, restore and delete. It
+SHALL NOT open, list, stat or walk a path inside a volume. A running box's volume
+SHALL be exposed only to that owner's sandbox. Each owner SHALL have one
+lifecycle operation at a time. The one-shot cutover migration is the only
+exception to these rules, and it SHALL be deleted after cutover.
 
 #### Scenario: Destroying an owner deletes the volume without a walk
-- **WHEN** an owner's account deletion reaches the destroy step
-- **THEN** boxhostd detaches and deletes that owner's volume
+- **WHEN** an owner's deletion job reaches the destroy step
+- **THEN** the runtime stops, the volume is fully unmounted and detached, and the image is deleted
 - **AND** no shared code lists, stats or opens a path inside it
 
-#### Scenario: Structural proof of zero owner paths
-- **WHEN** the structural guard scans the shared-layer modules
-- **THEN** it finds no open, listing, stat or tree walk under the volume mount root
+#### Scenario: Lifecycle never traverses owner content
+- **WHEN** create, start, sleep, snapshot, restore and delete run for an owner
+- **THEN** no shared process or subprocess opens, lists or walks owner content
+- **AND** writes to `/home/owner` land in that owner's volume
 
 ### Requirement: Owner durability is off-host snapshots referenced in the map
-The map SHALL record, per owner, the volume generation and the latest verified
-off-host snapshot (identifier and SHA-256). A snapshot SHALL be taken only while
-the volume is detached. Restoring an owner SHALL replace only that owner's volume
-from a verified snapshot and SHALL advance its volume generation. It SHALL NOT
-modify identity, credentials, the map's admission state, billing or custody.
+The map SHALL record, per owner, the permanent UID and volume binding, the volume
+generation and the latest verified off-host snapshot. The map and its bindings
+SHALL be recoverable independently of owner volumes, and a historical map SHALL
+NOT authorize reassigning an existing owner's UID or volume. A snapshot SHALL be
+taken only after work admission closes, the box flushes, every filesystem
+reference is released, XFS is unmounted without a lazy unmount and loop
+detachment completes. A snapshot SHALL be taken on every completed sleep, and
+failures SHALL be retried. A snapshot reference SHALL be published only after
+the bytes read back from off-host storage are verified. Restoring an owner SHALL
+replace only that owner's volume and SHALL commit its new volume generation
+before the box starts. It SHALL NOT modify identity, credentials, admission
+state, billing or custody.
 
 #### Scenario: Restoring an owner cannot revive platform authority
-- **WHEN** an owner's API key is revoked after their latest snapshot and the owner is then restored from that snapshot
+- **WHEN** an owner's API key is revoked after their latest snapshot, and the owner is restored from that snapshot
 - **THEN** the key stays revoked
 - **AND** the box refuses operation IDs from the earlier volume generation
 
-#### Scenario: Snapshots are consistent and verified
-- **WHEN** a box sleeps and its last snapshot is older than 24 hours
-- **THEN** boxhostd snapshots the detached volume, uploads it, verifies its SHA-256 and records it in the map
-- **AND** a snapshot that fails verification is not recorded
+#### Scenario: Only verified snapshots are published
+- **WHEN** a snapshot upload is interrupted or its read-back verification fails
+- **THEN** the previous verified reference stays authoritative
+- **AND** the snapshot stays pending and is retried without waking the owner's agent
+
+#### Scenario: An interrupted restore never starts a mismatched box
+- **WHEN** a restore is interrupted between installing the image and committing the generation
+- **THEN** the restore resumes, and the box does not start until image and generation match
 
 ### Requirement: The router only authenticates, maps and forwards
-The router SHALL authenticate the caller, resolve the owner from a cached copy of
-the map, wake a sleeping box and forward with the per-box secret. It SHALL hold
-no billing, deletion, erasure or custody logic. It SHALL keep forwarding to
-admitted owners while the broker is unavailable.
+The router SHALL authenticate the caller, select the owner's box from its
+installed routing snapshot and forward with the per-box secret. It SHALL hold no
+billing, deletion, erasure or custody logic. Forwarding to a box that is already
+running SHALL need no synchronous control-plane lookup. The box SHALL
+authenticate every incoming request with its own per-box credential.
 
-#### Scenario: Routing survives a broker outage
-- **WHEN** the broker is down and an admitted owner's box is awake
-- **THEN** the router forwards the owner's request from its cached map
+#### Scenario: Routing survives a control-plane outage
+- **WHEN** the routing snapshot is installed, the owner's box is awake, and control-plane lookups and lifecycle calls are unavailable
+- **THEN** the router still forwards the owner's request
 
-#### Scenario: Account deletion is handed to the control plane
-- **WHEN** an owner requests account deletion
-- **THEN** the router enqueues a deletion job in the control plane and returns 202 with a status URL
+#### Scenario: A forged caller is refused at the box
+- **WHEN** a request reaches a box with a missing, wrong-box or forged caller credential
+- **THEN** the box refuses it
 
-### Requirement: Admission is one map record and deletion is one control-plane job
-Each owner SHALL have one admission record with the state `admitted`,
-`suspended` or `erased`. The router, waker and egress proxy SHALL decide on that
-record alone. Account deletion SHALL be one resumable control-plane job. Its
-first step SHALL set the record to `erased`; it then deletes the volume and its
-snapshots, erases custody, cancels billing, revokes router credentials, deletes
-the identity and writes a receipt.
+### Requirement: Admission is one record and deletion is one resumable job
+Each owner SHALL have one admission record with one writer. The router, waker
+and egress proxy SHALL decide on that record alone, with the authenticated
+identity or bound channel selecting the box. A caller-supplied owner or box SHALL
+be refused, and an absent record SHALL deny. Billing and abuse suspension SHALL be
+separate reasons: clearing one SHALL NOT clear the other, and `erased` SHALL be
+terminal. Account deletion SHALL be one resumable control-plane job. It SHALL
+first record the job durably off-host, then withdraw admission, serialized with
+wake and open, and close the owner's existing ingress and egress before erasure
+is acknowledged. It then deletes the volume and snapshots, erases custody,
+cancels billing, revokes router credentials, deletes the identity and writes a
+receipt. Snapshot publication, restore and deletion SHALL be serialized per owner.
 
-#### Scenario: Erasure takes effect at the first step
-- **WHEN** the deletion job sets an owner's record to `erased`
-- **THEN** the router, waker and proxy refuse that owner
-- **AND** the broker closes the owner's open channels
+#### Scenario: Erasure takes effect before acknowledgement
+- **WHEN** the deletion job withdraws an owner's admission
+- **THEN** cached routes are invalidated, and concurrent wake or open operations cannot complete
+- **AND** existing ingress and egress for the owner are closed before erasure is acknowledged
 
-#### Scenario: A deleted owner's data cannot return through recovery
-- **WHEN** the shared layer is restored from a backup taken before an owner's deletion
-- **THEN** the owner's volume and snapshots no longer exist, so no data returns
-- **AND** identity reconciliation marks the owner `erased`
+#### Scenario: A deletion survives an older platform backup
+- **WHEN** the shared layer is restored from a backup taken before an unfinished deletion job
+- **THEN** recovery loads the job from its off-host record and resumes it before admitting any owner
+- **AND** the owner's admission stays withdrawn
 
 ### Requirement: Every egress path checks the owner's allowlist at the proxy
-Every outbound connection from a box SHALL pass one proxy check against the
-owner's allowlist: model HTTP, connector HTTP, public HTTP and CONNECT, and git.
-A missing allowlist SHALL deny.
+Every outbound connection from a box SHALL pass one proxy allowlist check
+before the upstream is opened. That covers model HTTP, connector HTTP, public
+HTTP and CONNECT, git and destinations reached by redirect. A missing allowlist
+SHALL deny. Provider credentials SHALL stay in proxy custody, and direct
+external connections from a box SHALL be impossible.
 
 #### Scenario: Public CONNECT outside the allowlist is refused
 - **WHEN** an admitted box issues CONNECT to a public destination outside its owner's allowlist
 - **THEN** the proxy refuses before opening an upstream connection
 
-### Requirement: Platform disaster recovery is separate from owner restore
-Restoring the shared layer SHALL leave owner volumes untouched. It SHALL rotate
-every credential root, advance the broker operation cutoff and reconcile
-identities against the identity provider. It SHALL fail closed when the provider
-is unavailable.
+### Requirement: Platform recovery is separate from owner restore
+Restoring the shared layer SHALL leave owner volumes untouched. Before
+admission reopens, it SHALL resume every unfinished deletion job and reconcile
+billing, spend, suspension and identities. It SHALL also invalidate every
+pre-restore bearer credential (sessions, API keys, hooks, identity-provider
+sessions, operational credentials and box secrets), drop custody and advance
+the broker replay cutoff. It SHALL install one current credential source with
+no fallback to old values. Unavailable authority SHALL keep the affected
+admission closed.
 
 #### Scenario: Shared-layer restore invalidates old bearer credentials
 - **WHEN** the shared layer is restored from a backup
-- **THEN** no session, API key or hook token issued before the restore is accepted
+- **THEN** no session, API key, hook token or operational credential issued before the restore is accepted
 - **AND** owners reconnect their model sources
+
+### Requirement: Cutover rollback requires durable pre-traffic eligibility
+Old-layout rollback SHALL be possible only while ordinary writable admission has
+never opened. Deployment control SHALL consume rollback eligibility durably and
+permanently before opening admission. Missing or unreadable deployment state
+SHALL permit neither rollback nor opening traffic.
+
+#### Scenario: A restarted workflow cannot roll back after traffic opened
+- **WHEN** a deploy workflow is re-run after ordinary admission has opened
+- **THEN** old-layout rollback is refused
 
 ### Requirement: Cutover preserves knowledge bytes and removes rehearsal residue
 The migration SHALL copy admitted centers' vector directories and knowledge
@@ -217,7 +253,7 @@ custody and its platform vault directory.
 - **AND** kills between owner trees and after seeding resume to the uninterrupted generation's manifests
 - **AND** every migrated owner serves history, pending requests, pause/resume and broker plan reads through owner processes and router forwarding
 - **AND** an owner without a model source can complete shared-door connect and model-use confirmation on a disposable clone without changing the restore generation's shared authority
-- **AND** paired restores validate original source bytes and verify normalized owner-box state; the after-write restore proves key revocation, owner erasure and write/bash replay refusals
+- **AND** pre-traffic rollback verifies the original layout; owner restore verifies isolated data recovery without rewinding platform authority; platform recovery verifies credential invalidation and preservation of deletion and admission authority
 - **AND** reports contain fixed step names, counts and PASS/FAIL without identities, paths or content
 - **AND** a generated two-owner, four-center archive with rows in all six census classes and all non-conflicting drop reasons exercises the entire harness in the root Linux oracle venue
 
@@ -361,14 +397,11 @@ reported next-wake time.
 - **AND** a forward resolved beforehand fails at revoked ingress or the stopped socket
 - **AND** another retained center starts with a fresh secret; a deleted account can never wake or admit again
 
-#### Scenario: The shared door orchestrates account deletion
+#### Scenario: The door hands account deletion to the control plane
 - **WHEN** an authenticated owner submits same-origin JSON with `confirm == "DELETE"` to `/app/account/delete`
-- **THEN** the router first appends the ledger entry, then forwards deletion to the owner's secret-authenticated internal route for local cleanup
-- **AND** a blocked or refused deletion returns 409 with the fence and unfinished ledger work retained; automatic retries need no sign-in
-- **AND** ingress drains new work and waits at most twenty seconds for active turns before the local sweep; a timeout reports drain unfinished
-- **AND** the router first persists a root-owned ledger entry, then retires every owner admission, requires confirmed volume/quota/socket/secret destruction, erases broker custody, cancels shared owner billing, clears router credentials and deletes the external identity before returning 200
-- **AND** every failed step is recorded as unfinished; a tombstoned retry completes destruction, custody, billing, credentials and identity from the saved receipt
-- **AND** billing cancellation runs despite destruction failure, and identity survives until earlier phases complete while automatic ledger retries continue
+- **THEN** the door durably enqueues the control-plane deletion job and returns 202 with a status URL
+- **AND** the job withdraws admission first, then completes volume, snapshot, custody, billing, credential and identity cleanup, exposing durable progress through the status URL
+- **AND** every step is idempotent, and an interrupted job resumes after a restart or platform recovery
 - **AND** the box exposes no operation that revokes router account state
 
 #### Scenario: A scheduled run in a sleeping box
@@ -383,15 +416,15 @@ reported next-wake time.
 - **AND** owner, principal and UID request fields are refused
 - **AND** schedule definitions, pending work and retry rows stay inside the box
 
-#### Scenario: The daily floor survives absent or stale reports
-- **WHEN** an admitted owner has never been woken or its last successful wake is 24 hours old
-- **THEN** the shared waker offers a scheduled wake even if the owner never reported or reported null
-- **AND** reports remain stored until replaced, including after failed or duplicate delivery
-- **AND** the broker's 30-second scan remains responsive while bounded control calls wait for capacity
+#### Scenario: Paused or idle boxes are not woken periodically
+- **WHEN** a box reports null because it is paused or has no scheduled work
+- **THEN** the waker does not wake it
+- **AND** a missing index row triggers one reconstruction wake, after which the box reports again
+- **AND** a failed wake or report is retried, and duplicate delivery never runs the same occurrence twice
 
 #### Scenario: Suspension and retirement prevent scheduled wakes
 - **WHEN** an owner is billing-suspended, abuse-suspended or has no live admission
-- **THEN** neither a due report nor the daily floor wakes it
+- **THEN** a due report does not wake it
 - **AND** boxhostd rechecks broker plan suspension and admission after capacity waits
 - **AND** a missing plan is a loud error, never an unsuspended default
 - **AND** plan suspension is written only through the broker's fenced shared-door operation
