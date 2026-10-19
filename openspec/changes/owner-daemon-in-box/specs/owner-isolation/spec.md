@@ -122,6 +122,37 @@ SHALL permit neither rollback nor opening traffic.
 - **WHEN** a deploy workflow is re-run after ordinary admission has opened
 - **THEN** old-layout rollback is refused
 
+### Requirement: The shared layer is keyed by owner, not center
+Admission, credential custody, grants, egress policy and relay channels in the
+shared layer SHALL be keyed by owner. An owner's centers SHALL be a table inside
+the owner's box, and creating or retiring a center SHALL be a box operation. The
+shared layer SHALL hold no center admission table and no per-center store.
+
+#### Scenario: Creating a center touches no shared store
+- **WHEN** an owner creates a new center
+- **THEN** the center is recorded inside the owner's box
+- **AND** no shared admission, custody or policy row is created for the center
+
+### Requirement: Deploys start each box on the published image at wake
+A deploy SHALL publish the new image and drain awake boxes to sleep between turns.
+Each box SHALL start the published image on its next wake. Rolling back an image
+SHALL be republishing the previous image. There SHALL be no per-box roll or
+per-box rollback.
+
+#### Scenario: A sleeping box wakes on the new image
+- **WHEN** a new image is published and a sleeping owner's box next wakes
+- **THEN** the box starts on the new image, and the canary acceptance runs on that path
+
+### Requirement: The router forwards from an in-memory routing snapshot
+The broker SHALL push each owner's admission state, box socket and per-box secret
+to the router. The router SHALL forward from that snapshot without any
+control-plane call, except asking boxhostd to wake a sleeping box. The per-box
+secret SHALL rotate only on platform recovery or explicit revocation.
+
+#### Scenario: A box wakes without invalidating the route
+- **WHEN** a sleeping owner's box is woken
+- **THEN** the router forwards with the same per-box secret from its snapshot
+
 ### Requirement: Cutover preserves knowledge bytes and removes rehearsal residue
 The migration SHALL copy admitted centers' vector directories and knowledge
 SQLite files verbatim into their owner's box. Census SHALL report knowledge

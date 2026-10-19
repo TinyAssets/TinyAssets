@@ -260,24 +260,54 @@ each opaque snapshot's digest and map binding before comparing logical map rows;
 all owner-content manifests and other shared authority remain compared unchanged.
 
 ### C5. The router only routes (T1)
-**Deleted from `owner_router.py:225–378`:** the account-deletion orchestration
-(billing cancellation, broker channel closure, drain, retirement, credential and
-identity deletion), plus the router-process deletion retries in
-`router_credentials.py:245`. `POST /app/account/delete` authenticates, enqueues a
-deletion job in the control plane, and returns 202 with a status URL. The router
-forwards awake traffic from its installed routing snapshot; lifecycle
-transitions refresh that snapshot. Lifecycle calls stay available for waking and
-coordinating box transitions. Forwarding to a box that is already running never
-needs a synchronous control-plane lookup, and the outage proof covers the
-existing lease arrangement.
+The router authenticates, looks the owner up in its **in-memory routing snapshot**
+(owner → admission state, box socket, per-box secret), and forwards. The broker
+pushes that snapshot to the router and updates it on admission changes. On a
+miss (box asleep), the router asks boxhostd to wake the box and forwards when it
+is up. A request makes no other control-plane call. The per-box secret rotates
+only on platform recovery or an explicit revocation, never on every start. That
+keeps the snapshot valid across sleep and wake, and the box still authenticates
+every request with it.
 
-### C6. Deletion is one control-plane job; admission is one record (T5, T9)
-The broker's admission authority runs one resumable deletion job, and each step
-is idempotent:
-1. Durably record the job off-host (C3) and withdraw the owner's admission.
-   Publish the withdrawal to routing, serialized with wake and open, so no
-   withdrawn route can admit new work. Close the owner's existing ingress and
-   egress before acknowledging that erasure has taken effect.
+**Deleted:**
+- the account-deletion orchestration in `owner_router.py` (~228–350);
+- the router-process deletion retry loop in `router_credentials.py` (~240–258);
+- the per-request erasure-ledger read and `OWNER_BOX_ROUTE` call in `resolve_box`;
+- rotating the secret on every start (`volume_lifecycle.py:33`, `owner_identities.py:230–236`).
+
+`POST /app/account/delete` authenticates, enqueues the broker's deletion job and
+returns 202 with a status URL.
+
+### C6. Admission is one record; deletion is one control-plane job (T5, T9)
+**One admission record per owner,** in the broker's identity database, with one
+writer (the broker's admission authority). Its state is `admitted`, or
+`suspended` with a set of reasons (`billing`, `abuse`; each submitted by its
+source and cleared only by that source), or terminal `erased`. The router's
+snapshot, the proxy at channel admission and the waker all read only this
+record. The research permits exactly one positive mapping (research.md:69).
+
+**It replaces these six "is this owner gone or suspended" authorities, all deleted:**
+- the root erasure ledger (`erasure_ledger.py`, the whole file), its
+  `erasure.sock` listener in boxhostd (`host_service.py` ~115–134, ~638–640),
+  and its 32 call sites, including every authentication door
+  (`router_credentials.py:31` and callers) and every broker box operation
+  (`server.py` ~381–388, ~637–650, ~1336–1340);
+- `owner_box_revocations` and `revoke_box` (`owner_identities.py` ~95–96,
+  ~165–170, ~237–249);
+- deletion of the `box_records` row as a signal;
+- the suspension flags in `plans.db` (`broker/owner_reads.py` ~45–55), now
+  reasons on the admission record. `plans.db` keeps tier, Stripe IDs and checkout;
+- the policy `.deleted` marker and the vault tombstones as authorities;
+- the open-stream erasure watcher (`public_egress.py` ~14–30, `server.py`
+  ~200–213, ~244–248).
+
+The four overlapping admission predicates (`box_route`, `owner_record`,
+`resolve_owner`, `_box_scope`) become one.
+
+**The deletion job** runs in the broker, resumable, each step idempotent:
+1. Durably record the job off-host (C3). Set the record to `erased`, which
+   updates the router's snapshot. Serialize with wake and open, and close the
+   owner's existing ingress and egress before acknowledging.
 2. boxhostd stops the box and deletes the volume (C1).
 3. Delete the owner's snapshots off-host.
 4. Erase custody.
@@ -286,28 +316,31 @@ is idempotent:
 7. Delete the identity-provider user.
 8. Write the receipt.
 
-The same per-owner lifecycle operation serializes snapshot publication, restore
-and deletion, so an upload already in flight cannot publish a snapshot or map
-reference after deletion. Job progress survives a service restart and a platform
-recovery until every step completes.
+The per-owner lifecycle serialization prevents a snapshot being published after
+`erased`. Deletion history is the job's records and receipts. Billing's own
+refusal of a deleted account's checkout stays.
 
-**Deleted:**
-- the separate erasure checks spread across authentication doors, worker commit,
-  stream open, network send and host admission (`router_credentials.py:31` and
-  its callers, `broker/server.py`'s erasure checks, `http_connect.py:110`,
-  `boxes/admission.py:42`);
-- the vault tombstone and policy deletion markers as independent authorities;
-- the host-path work records in `erasure_ledger.py:258–406`.
+**Platform recovery (C3)** resumes unfinished jobs from their off-host records and
+reconciles the admission record's suspension reasons from their sources. If an
+authority it needs is unavailable, admission stays closed. **There is no
+restore-day spend fence:** it was deleted by C2, and its remaining reader goes
+too (`broker/policy.py` ~420–423, `server.py` ~1261–1263).
 
-Deletion history is the job's records and receipts. Billing's own refusal of a
-deleted account's checkout stays, because billing is a retained responsibility.
+### C7. One per-box egress allowlist at the proxy (T6)
+Each owner has one egress allowlist. Its default is derived from the owner's
+connected sources (the endpoints of their admitted connections and model
+sources), and the owner can add to it. There is no `open` mode
+(`policy.py:124`). Every connection-opening path calls one proxy function that
+checks the actual destination, including destinations reached by redirect,
+before opening the upstream:
+- model HTTP;
+- connector HTTP;
+- public HTTP and CONNECT, which has no allowlist today (`broker/public_egress.py:40`);
+- git.
 
-### C7. One egress allowlist check at the proxy (T6)
-`broker/public_egress.py:40` connects without consulting the owner's allowlist,
-which the audit flagged as a blocker. Every connection-opening path uses the same
-allowlist check before opening the actual upstream, including destinations
-reached by redirect. No alternate public-egress opener bypasses it. The duplicate
-allowlist logic at `broker/policy.py:478` becomes that single function.
+A missing allowlist denies. **Deleted:** the three separate mechanisms (policy
+egress mode, per-connection endpoint allowlist and git scope matching as
+independent allowlists). Git scope stays as credential scoping only.
 
 ### C8. The owner's own action policy moves into the box (T8)
 `broker/policy.py:29` decides `workspace.files`, `workspace.shell`, workflows and
@@ -366,17 +399,55 @@ successfully. Record usable capacity, filesystem overhead, snapshot time, upload
 time and peak physical storage. If any point fails, the founder decides the
 next step before any build.
 
+### C11. The owner, not the center, is the shared layer's unit (T2, T5)
+The research isolates the box. Inside the box, an owner's centers are the owner's
+own data (research.md:63). Today the shared layer admits, keys custody, scopes
+policy and namespaces the relay by center: `center_admissions`, `ADMIT_CENTER`
+and `RETIRE_CENTER`, per-center vault directories, `_namespace`,
+`TINYASSETS_ADMITTED_CENTERS`, and `BOX_CONNECT` requiring a center. Target:
+- the shared layer keys admission, custody, grants, egress policy and relay
+  channels by **owner**;
+- centers are a table inside the box, so creating and retiring a center are box
+  operations;
+- the cutover migration re-keys broker custody and grants from center to owner
+  (the one-shot exception).
+
+**Deleted:** the shared center tables, ops, environment and per-center
+directories listed above.
+
+### C12. Deploys are image-at-wake (T2)
+The research has no per-box rolling deploy. A deploy publishes the new image,
+then drains awake boxes to sleep between turns, and every box starts the newly
+published image on its next wake. The canary owner wakes on the new image as the
+acceptance check. Rolling back an image means republishing the previous one and
+draining again; it is never a per-box operation. **Deleted:** the per-box roll
+and roll-back (`owner_daemons.py` ~385–475), the last-launch tracking in
+`images.py`, and the per-UID loop in `scripts/roll_owner_boxes.py`. Cutover
+rollback (C4) is unchanged.
+
+### C13. Fewer shared mechanisms (T2)
+- **One call direction.** The broker calls boxhostd; boxhostd is a pure executor.
+  The broker passes the state an operation needs, and boxhostd never calls back
+  into the broker for lifecycle or volume state (`boxes/admission.py` ~20–32,
+  ~63–84; `destroy` → `BOX_RETIRE_ADMISSION`).
+- **One hop for credential mints.** The relay forwards key and hook mints straight
+  to identity (the router's credential socket), not via the broker.
+- **Shared clocks.** The deletions in C5, C6 and the spend fence leave two:
+  boxhostd's maintain loop and the waker.
+
 ### Build order and lanes
-After step 1, three lanes run one after another on `conv/c6-research-shape`, each
-after the previous lane has merged:
-- **(a) C1–C4, storage and durability.** This includes the migration writing each
-  owner into their own volume.
-- **(b) C5–C6, the router and deletion.**
-- **(c) C7–C9, egress, policy and wake.**
+Lane a (C1–C4) and step 1 are complete. The remaining lanes run one after
+another on `conv/c6-research-shape`, each after the previous lane has merged:
+- **(a2b) C10 storage scaling,** plus the remnants of the paired model.
+- **(b) C5, C6:** the routing-only router, one admission record, the deletion job.
+- **(d) C11–C13:** an owner-keyed shared layer, image-at-wake deploys, fewer mechanisms.
+- **(c) C7–C9:** the egress allowlist, owner policy in the box, the wake index.
+  It runs after d, because policy and allowlists are keyed by owner.
 
 Each lane's brief cites this section and research.md, names the shared code it
 deletes, and replaces the superseded as-built text and spec scenarios it touches.
-Each lane gets one review round, scoped as above.
+Each lane gets one structural review (component, data, authority and quality,
+against the research), not just a test review.
 
 ## D1. The owner daemon
 
@@ -1184,6 +1255,8 @@ explicit classes refuse. Shared tables are not split.
   window. After router admission opens, only acknowledged disaster restore is
   allowed, with the credential resets, operation fences and erasure reconciliation
   specified above.
+
+> **Superseded by C12.** Deploys are image-at-wake: publish, drain awake boxes, and each box starts the new image on its next wake. There is no per-box roll or per-box rollback.
 
 ### D11 as built (slice 6b, 2026-10-17)
 
