@@ -444,10 +444,7 @@ def metadata_connection(data_root):
 def check_not_deleted(data_root, owner):
     from tinyassets.broker.admission import local_read
 
-    record = local_read(data_root, owner)
-    if record.state == "erased":
-        raise PermissionError("credential owner has been deleted")
-    record.require_work()
+    local_read(data_root, owner).require_work()
 
 
 def erase_owner(data_root, principal):

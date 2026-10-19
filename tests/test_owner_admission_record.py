@@ -14,6 +14,7 @@ from tinyassets.broker.owner_reads import Plans
 def authority(tmp_path):
     state = tmp_path / ".broker/state"
     state.mkdir(parents=True, mode=0o700)
+    state.parent.chmod(0o700)
     identities = OwnerIdentities(state / "owner-identities.db", initialize=True,
                                  plans=Plans(tmp_path))
     uid = identities.resolve("alice", allocate=True).uid
@@ -39,7 +40,7 @@ def allowed(call):
 # lane-b2: delete with the old authority; replace with record-only tests.
 @pytest.mark.parametrize("state", [
     "admitted", "billing", "abuse", "both", "center-retired", "account-retired",
-    "erased", "revoked", "absent",
+    "erased", "policy-erased", "vault-erased", "revoked", "absent",
 ])
 def test_old_writer_equivalence_for_every_work_reader(authority, state, tmp_path):
     identities = authority
@@ -60,6 +61,15 @@ def test_old_writer_equivalence_for_every_work_reader(authority, state, tmp_path
         ledger = ErasureLedger(tmp_path)
         ledger.initialize()
         ledger.add(owner)
+    if state == "policy-erased":
+        from tinyassets.broker.policy import PolicyStore
+
+        PolicyStore(tmp_path, identities).erase(owner)
+    if state == "vault-erased":
+        from tinyassets.broker.vault import erase_owner
+
+        erase_owner(tmp_path, owner)
+    terminal = state in {"account-retired", "erased", "policy-erased", "vault-erased", "revoked"}
     # Old combined authority, with C6's explicit center-retirement correction.
     with sqlite3.connect(identities.path) as db:
         reserved = db.execute("SELECT 1 FROM owner_identities WHERE principal=?",
@@ -68,7 +78,7 @@ def test_old_writer_equivalence_for_every_work_reader(authority, state, tmp_path
                              (owner,)).fetchone() is not None
     plan = identities.plans.read("alice")
     old = reserved and not (revoked or plan["billing_suspended"] or plan["abuse_suspended"]
-                           or state == "erased")
+                           or terminal)
     readers = {
         "admission": lambda: require_admitted(identities, owner),
         "router": lambda: identities.box_route(owner),
@@ -105,7 +115,7 @@ def test_old_writer_equivalence_for_every_work_reader(authority, state, tmp_path
     record = read(identities, owner)
     assert active_owner(owner, tmp_path) == (record.state != "erased")
     assert (record.state == "admitted") == bool(old)
-    assert (record.state == "erased") == (state in {"account-retired", "erased", "revoked"})
+    assert (record.state == "erased") == terminal
 
 
 def test_sources_cannot_clear_each_other_or_terminal_erasure(authority):
