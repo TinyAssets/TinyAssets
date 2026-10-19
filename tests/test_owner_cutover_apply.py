@@ -19,6 +19,41 @@ from tests.test_owner_cutover_census import source as source
 from tinyassets import box_layout_migration as migration
 
 
+def test_only_deployment_can_change_the_published_admission_gate(cutover):
+    from tinyassets.router_traffic import NAME
+
+    data, *_ = cutover
+    migration.apply(*cutover)
+    gate = data / NAME
+    assert not (data / '.restore-epoch').exists()
+    assert gate.stat().st_uid == 0
+    assert gate.stat().st_mode & 0o777 == 0o644
+    assert data.stat().st_uid == 0 and data.stat().st_mode & 0o1000
+    descriptor = os.open(data, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for uid in (1001, 1002):
+            result = subprocess.run([sys.executable, '-c', """
+import os, sys
+directory, name = int(sys.argv[1]), sys.argv[2]
+fd = os.open('.service-test', os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600, dir_fd=directory)
+os.close(fd)
+os.unlink('.service-test', dir_fd=directory)
+for operation in (lambda: os.open(name, os.O_WRONLY | os.O_TRUNC, dir_fd=directory),
+                  lambda: os.unlink(name, dir_fd=directory)):
+    try:
+        operation()
+    except PermissionError:
+        pass
+    else:
+        raise AssertionError('service changed deployment admission')
+""", str(descriptor), NAME], user=uid, group=uid, extra_groups=[1001],
+                                    pass_fds=(descriptor,), capture_output=True, text=True)
+            assert result.returncode == 0, result.stderr
+    finally:
+        os.close(descriptor)
+    assert json.loads(gate.read_text()) == {"ordinary": False}
+
+
 def test_cutover_preserves_cancellation_mapping_and_resumes_payable_checkout(cutover, monkeypatch):
     from tests.test_cutover_billing_deletion import attempt, legacy_attempt
     from tinyassets.billing.plan_action import _start_checkout

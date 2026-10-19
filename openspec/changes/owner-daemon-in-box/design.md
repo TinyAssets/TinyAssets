@@ -156,6 +156,8 @@ Real-runtime tests prove ordinary writes/bash, snapshot rewind with old write/ba
 refusal, and fresh tools/preview after restore. Production startup already supplied
 the generation; the observed bare IDs came from incomplete fixture admission and
 direct test IDs. No replay check was relaxed.
+The unused shared `.restore-epoch` marker and its storage inventory entry are
+deleted; only the box-local generation journal remains.
 
 ### C3. Platform recovery is separate, and it keeps lifecycle authority
 The shared layer (identity, map, billing, broker custody, published data) has its
@@ -201,13 +203,13 @@ The owner carry/union/tree scheduling, project-quota restore, fleet restore epoc
 and next-day spend fence are deleted from recovery. Old-layout database validation
 is confined to the one-shot cutover; `restore_old_layout` only extracts a verified
 pre-cutover archive into private staging. Durable rollback eligibility and live
-installation remain a2a-3. The backup producer is now split (a2a-3): platform publication uses a verified
+installation are implemented by C4's deployment control. The backup producer is now split (a2a-3): platform publication uses a verified
 manifest and excludes owner volumes. Shared restore preserves the archived root's
 ownership and mode. Recovery atomically replaces and fsyncs the shared layout
 marker before changing authority, including when the service-owned marker is
 under a sticky shared root. The root Linux proof reaches the pending deletion-job
 refusal with admission closed and local credentials invalidated.
-Rehearsal steps and durable rollback control remain a2a-3. This is not end-to-end platform recovery acceptance until the named current
+The archive rehearsal is being ported to the separate C2/C3/C4 operations. This is not end-to-end platform recovery acceptance until the named current
 authorities are available.
 
 ### C4. Cutover rollback is the old system's restore, gated by durable eligibility
@@ -234,7 +236,10 @@ router OPEN_TRAFFIC RPC, credential timestamp predicate and their writer invento
 are deleted. C3's signed WorkOS tokens must resolve to an active provider session;
 revoked sessions cannot acquire authority from a refreshed token's `iat`.
 Root tests prove pre-traffic restore, durable consumption ordering, restart and
-missing-state refusal; deploy-shell tests pin the integration. The full archive
+missing-state refusal; deploy-shell tests pin the integration. Migration publishes
+the root-owned 0644 admission decision after assigning service custody, under the
+sticky root-owned shared directory. Root tests give both service UIDs directory
+access and prove neither can overwrite or unlink that decision. The full archive
 rehearsal remains pending and these unit/integration proofs do not claim its result.
 
 ### C5. The router only routes (T1)

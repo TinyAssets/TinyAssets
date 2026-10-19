@@ -105,6 +105,7 @@ def door(monkeypatch, root, owner):
     from tinyassets.auth import middleware
     from tinyassets.owner_router import OwnerRouter
 
+    (root / ".ordinary-admission.json").write_text('{"ordinary":true}\n')
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")

@@ -21,6 +21,8 @@ def door(discovery, tmp_path, monkeypatch):  # noqa: F811
 
     root = tmp_path / "router"
     root.mkdir()
+    admission = root / ".ordinary-admission.json"
+    admission.write_text('{"ordinary":true}\n')
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
     monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
     monkeypatch.setattr(onboarding, "app_config", lambda: {"resource": "https://tinyassets.io/mcp"})
@@ -50,7 +52,9 @@ def door(discovery, tmp_path, monkeypatch):  # noqa: F811
                     return await client.post(path, json=body,
                                              headers={"Origin": "https://tinyassets.io"})
         result = asyncio.run(run())
-        assert {p.name for p in root.iterdir()} <= {".runtime"}, "router created owner state"
+        assert {p.name for p in root.iterdir()} <= {
+            ".runtime", ".ordinary-admission.json"}, "router created owner state"
+        assert admission.read_text() == '{"ordinary":true}\n'
         return result
 
     return call, identities, discovery

@@ -37,9 +37,12 @@ def keypair():
     return rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
 
-def test_fresh_workos_bearer_and_claims_refuse_deleted_owner(deleted, keypair):
+def test_fresh_workos_bearer_and_claims_refuse_deleted_owner(deleted, keypair, monkeypatch):
+    from tinyassets import router_account_deletion
     from tinyassets.auth.workos_provider import rejection_category, rejection_description
 
+    monkeypatch.setattr(router_account_deletion, "workos_sessions", lambda owner: (
+        [{"id": "session_test"}] if owner == "bob" else []))
     provider = _provider(keypair)
     token = _sign(keypair, sub="alice", sid="brand-new-session")
     assert provider.verified_claims(token) is None

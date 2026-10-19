@@ -1188,7 +1188,7 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
     legacy_owner, legacy_reason = _legacy_knowledge_owner(data / "knowledge.db", centers)
     shared = {
         ".layout.json": "broker", ".layout.lock": "broker",
-        ".owner-cutover.json": "broker", ".ordinary-admission.json": "router",
+        ".owner-cutover.json": "broker", ".ordinary-admission.json": "regenerated",
         ".router-credentials.json": "router", ".disaster-restore.json": "dropped",
         "platform-expected-instance.json": "router", "release-state.json": "router",
         ".billing_webhook_verified.json": "router",
@@ -2271,9 +2271,6 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
                         destination.unlink()
         _build_databases(data, mounts, shared, inventory)
         _split_histories(data, mounts, inventory)
-        from tinyassets.cutover_control import close_admission
-
-        close_admission(shared)
         # File-only shared state stays in its authority's custody and is included
         # in the same verified publication as the extracted databases.
         for relative, target in inventory["file_targets"].items():
@@ -2360,10 +2357,11 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
         protect_root(shared)
         os.chown(ledger, 0, 0)
         ledger.chmod(0o600)
-    fence = shared / ".restore-epoch"
-    fence.write_text("")
-    os.chown(fence, 0, 0)
-    fence.chmod(0o444)
+    # C4: deployment owns admission. Publish after service-custody assignment
+    # so neither the router nor broker can reopen the closed cutover gate.
+    from tinyassets.cutover_control import close_admission
+
+    close_admission(shared)
     _repair_staged_databases(shared)
     report["workflow_definitions"] = workflow_counts
     journal.update(phase="publish", report=report, shared=_durable_tree(shared),

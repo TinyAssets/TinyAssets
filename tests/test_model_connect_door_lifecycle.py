@@ -192,6 +192,7 @@ def lifecycle(tmp_path, monkeypatch, request):
     kind = request.param
     router = tmp_path / "router"
     router.mkdir()
+    (router / ".ordinary-admission.json").write_text('{"ordinary":true}\n')
     custody = tmp_path / "custody"
     custody.mkdir()
     from tinyassets.erasure_ledger import ErasureLedger
@@ -441,7 +442,8 @@ def test_door_exchange_box_call_refresh_disconnect(lifecycle):
     assert not (rig.router / ".platform").exists()
     assert {p.name for p in rig.router.iterdir()} <= {
         ".runtime", ".hosted-model-auth.db", ".hosted-model-auth.db-wal",
-        ".hosted-model-auth.db-shm", ".erasure-ledger.sqlite3"}
+        ".hosted-model-auth.db-shm", ".erasure-ledger.sqlite3", ".ordinary-admission.json"}
+    assert (rig.router / ".ordinary-admission.json").read_text() == '{"ordinary":true}\n'
 
 
 @pytest.mark.parametrize("lifecycle", ["dcr"], indirect=True)
