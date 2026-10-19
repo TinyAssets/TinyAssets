@@ -31,7 +31,7 @@ def seed(root):
             for table in tables:
                 db.execute(f'CREATE TABLE "{table}" (value TEXT)')
                 db.execute(f'INSERT INTO "{table}" VALUES (?)', ("old-authority",))
-    from tinyassets.router_traffic import initialize
+    from tinyassets.cutover_control import close_admission as initialize
 
     initialize(root)
 
@@ -277,13 +277,14 @@ def test_workos_seam_distinguishes_absent_from_unavailable(monkeypatch):
         workos_user_exists("user_fixture", request=unavailable)
 
 
-def test_only_root_can_open_router_traffic(tmp_path, monkeypatch):
+def test_router_rpc_cannot_open_admission_even_for_root(tmp_path, monkeypatch):
     import asyncio
 
     from tinyassets import router_credentials, rpc_frames
-    from tinyassets.router_traffic import initialize, state
+    from tinyassets.cutover_control import close_admission
+    from tinyassets.router_traffic import admits
 
-    initialize(tmp_path)
+    close_admission(tmp_path)
     caller = [1002]
     monkeypatch.setattr("tinyassets.broker.server.peer_uid", lambda sock: caller[0])
 
@@ -292,41 +293,45 @@ def test_only_root_can_open_router_traffic(tmp_path, monkeypatch):
             for uid in (1002, 0):
                 caller[0] = uid
                 reader, writer = await asyncio.open_unix_connection(
-                    str(router_credentials.credential_socket(tmp_path))
-                )
+                    str(router_credentials.credential_socket(tmp_path)))
                 writer.write(rpc_frames.control(rpc_frames.CONNECTION, {"op": "OPEN_TRAFFIC"}))
                 await writer.drain()
-                answer = (await rpc_frames.read_frame(reader)).control()
-                if uid:
-                    assert answer == {"op": "ROUTER_CREDENTIAL_REFUSED"}
-                    assert state(tmp_path)[0] is None
-                else:
-                    assert answer == {"op": "TRAFFIC_OPENED", "traffic_opened": True}
-                    assert state(tmp_path)[0] is not None
+                try:
+                    answer = await rpc_frames.read_frame(reader)
+                except ConnectionResetError:
+                    assert uid == 0
+                    answer = None
+                assert answer is None or answer.control() == {"op": "ROUTER_CREDENTIAL_REFUSED"}
+                assert not admits(tmp_path, "alice")
                 writer.close()
-                await writer.wait_closed()
+                try:
+                    await writer.wait_closed()
+                except ConnectionResetError:
+                    assert uid == 0
 
     asyncio.run(run())
 
 
-def test_router_cutover_gate_and_external_token_floor(tmp_path, monkeypatch):
-    from tinyassets.router_traffic import accepts_issued_at, admits, initialize, open_traffic, state
+def test_router_admission_is_positive_and_has_no_restore_predicates(tmp_path, monkeypatch):
+    from tinyassets.cutover_control import close_admission
+    from tinyassets.router_traffic import NAME, admits
 
-    initialize(tmp_path)
-    monkeypatch.setenv("TINYASSETS_CANARY_USER_ID", "canary")
-    assert admits(tmp_path, "canary")
+    monkeypatch.setenv("TINYASSETS_CANARY_USER_ID", "probe-owner")
     assert not admits(tmp_path, "alice")
-    assert state(tmp_path)[0] is None
-    open_traffic(tmp_path)
-    first = state(tmp_path)[0]
+    assert not admits(tmp_path, "canary")
+    close_admission(tmp_path)
+    assert admits(tmp_path, "canary")
+    assert admits(tmp_path, "probe-owner")
+    assert not admits(tmp_path, "alice")
+    assert not admits(tmp_path, None)
+    (tmp_path / NAME).write_text(json.dumps({"ordinary": True}))
     assert admits(tmp_path, "alice")
-    open_traffic(tmp_path)
-    assert state(tmp_path)[0] == first
-    with sqlite3.connect(tmp_path / ".router-traffic.sqlite3") as db:
-        db.execute("UPDATE traffic SET credentials_after=100")
-    assert not accepts_issued_at(tmp_path, 99)
-    assert not accepts_issued_at(tmp_path, None)
-    assert accepts_issued_at(tmp_path, 101)
+    (tmp_path / NAME).write_text("unreadable")
+    assert not admits(tmp_path, "alice")
+    for damaged in ({"ordinary": 1}, {"ordinary": 0}, {}, None, {"ordinary": "true"}):
+        (tmp_path / NAME).write_text(json.dumps(damaged))
+        assert not admits(tmp_path, "alice")
+        assert not admits(tmp_path, "canary")
 
 
 @pytest.mark.parametrize(
@@ -349,8 +354,9 @@ def test_closed_admission_blocks_anonymous_writers(tmp_path, monkeypatch, path, 
     import httpx
     from starlette.responses import JSONResponse
 
+    from tinyassets.cutover_control import close_admission as initialize
     from tinyassets.owner_router import OwnerRouter
-    from tinyassets.router_traffic import initialize, open_traffic, state
+    from tinyassets.router_traffic import NAME
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("TINYASSETS_CANARY_USER_ID", raising=False)
@@ -368,8 +374,8 @@ def test_closed_admission_blocks_anonymous_writers(tmp_path, monkeypatch, path, 
             response = await client.request(method, path)
             assert response.status_code == status
             assert entered == ([path] if status == 200 else [])
-            assert state(tmp_path)[0] is None
-            open_traffic(tmp_path)
+            assert json.loads((tmp_path / NAME).read_text()) == {"ordinary": False}
+            (tmp_path / NAME).write_text(json.dumps({"ordinary": True}))
             assert (await client.request(method, path)).status_code == 200
 
     asyncio.run(exercise())
@@ -576,7 +582,7 @@ def test_disaster_drops_provider_custody_and_outbound_authority(platform, monkey
 @pytest.mark.parametrize(
     "relative",
     [
-        ".router-traffic.sqlite3",
+        ".ordinary-admission.json",
         ".broker/ops.db",
         ".broker/plans.db",
         ".platform-recovery.json",

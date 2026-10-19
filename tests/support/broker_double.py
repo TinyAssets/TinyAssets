@@ -331,6 +331,36 @@ def owner_protocol_transport(request, monkeypatch, in_process_broker):
     )
 
 
+@pytest.fixture(autouse=True)
+def deployed_router_app(monkeypatch, in_process_broker):
+    """Provision the synthetic platform's gate before constructing its router.
+
+    Process-boundary proofs opt out with role_split. Existing closed or damaged
+    gates are never replaced, and requests use the production reader unchanged.
+    """
+    if in_process_broker is None:
+        return
+    import json
+
+    from tinyassets import universe_server
+    from tinyassets.router_traffic import NAME
+    from tinyassets.storage import data_dir
+
+    create = universe_server.create_streamable_http_app
+
+    def deployed(*args, **kwargs):
+        root = data_dir()
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            with (root / NAME).open("x") as stream:
+                json.dump({"ordinary": True}, stream)
+        except FileExistsError:
+            pass
+        return create(*args, **kwargs)
+
+    monkeypatch.setattr(universe_server, "create_streamable_http_app", deployed)
+
+
 def install_owner_transport(monkeypatch, in_process_broker, *, patch_egress=True):
     """Install the same broker protocol fixture in pytest and spawned probes."""
     from tinyassets import owner_runtime

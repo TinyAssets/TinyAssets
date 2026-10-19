@@ -168,7 +168,8 @@ def test_both_shard_paths_hand_the_runner_its_unchanged_command_in_one_venue():
     sel_flags, sel_args = _runner_argv(selective)
     # ONE venue for both paths: identical oracle flags.
     assert whole_flags == sel_flags == [
-        "--out", "shard-out", "--apparmor", "ta-jail-userns",
+        "--docker-engine", "--out", "shard-out",
+        "--env", "TA_REHEARSAL_RUNSC_DIR=/out/gvisor", "--apparmor", "ta-jail-userns",
         "--env", "TINYASSETS_DATA_DIR=/tmp/ta-data",
         "--env", "CI=true", "--env", "GITHUB_ACTIONS=true",
         "--env", "MERGE_GROUP_BASE_SHA=<github.event.merge_group.base_sha>",

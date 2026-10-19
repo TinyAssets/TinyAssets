@@ -28,6 +28,7 @@ def initialized_ledger(tmp_path):
     from tinyassets.erasure_ledger import ErasureLedger
 
     ErasureLedger(tmp_path).initialize()
+    (tmp_path / ".ordinary-admission.json").write_text(json.dumps({"ordinary": True}))
 
 
 @pytest.fixture

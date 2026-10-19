@@ -895,9 +895,10 @@ def test_migrated_owner_processes_serve_history_requests_and_pause(
             relays.close()
     assert _fingerprint(contents(store) / '300001') != json.loads(
         (data / '.owner-cutover.json').read_text())['owner_manifests']['300001']
-    from tinyassets.router_traffic import open_traffic
+    from tinyassets.cutover_control import admit, initialize
 
-    open_traffic(data)
+    initialize(tmp_path / "deployment", backup=cutover[2], old_image="old-image")
+    admit(tmp_path / "deployment", data)
     live_before = _fingerprint(data), _fingerprint(store)
     from tinyassets.cutover_restore import restore_old_layout
     from tinyassets.restore_recovery import RecoveryUnavailable, platform_recovery

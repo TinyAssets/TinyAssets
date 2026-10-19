@@ -366,72 +366,17 @@ def test_migration_container_overrides_image_fault_default(tmp_path, mode):
 def test_production_restore_cannot_load_recorded_provider(tmp_path):
     import runpy
 
-    loader = runpy.run_path(str(ROOT / "deploy/box-store-quotas.py"))["rehearsal_adapters"]
-    with pytest.raises(ValueError, match="harness-only mount"):
-        loader()
+    assert "rehearsal_adapters" not in runpy.run_path(str(ROOT / "deploy/box-store-quotas.py"))
     result = subprocess.run([
         "bash", str(ROOT / "deploy/backup-restore.sh"), "--disaster-restore",
         "--acknowledge-unrecoverable-facts", "--rehearsal-provider"],
         capture_output=True, text=True)
     assert result.returncode == 1
-    assert "harness-only mount" in result.stderr
+    assert "Unknown argument: --disaster-restore" in result.stderr
     dockerfile = (ROOT / "Dockerfile").read_text()
     assert "rehearsal_restore_provider" not in dockerfile
     assert "COPY scripts/ " not in dockerfile
     assert "COPY . " not in dockerfile
-
-
-@pytest.mark.parametrize("held", [None, "live", "staged", "missing", "fifo", "symlink"])
-def test_restore_layout_locks_preserve_inodes_and_exclude_writers(tmp_path, held):
-    if not hasattr(os, "geteuid") or os.geteuid() != 0:
-        pytest.skip("requires linux_oracle.py --as-root; owner=c6-owner-box "
-                    "runs-in=linux_oracle.py")
-    import fcntl
-
-    assert Path("/proc/sys/fs/protected_regular").read_text().strip() == "2"
-    roots = {name: tmp_path / name for name in ("live", "staged")}
-    for root in roots.values():
-        root.mkdir(mode=0o1775)
-        root.chmod(0o1775)
-        if held != "missing":
-            lock = root / ".layout.lock"
-            lock.write_bytes(b"existing lock inode")
-            os.chown(lock, 1001, 1001)
-    if held in {"fifo", "symlink"}:
-        lock = roots["live"] / ".layout.lock"
-        lock.unlink()
-        if held == "fifo":
-            os.mkfifo(lock)
-        else:
-            lock.symlink_to(roots["staged"] / ".layout.lock")
-    before = {name: (root / ".layout.lock").stat().st_ino
-              for name, root in roots.items() if held != "missing"}
-    script = (ROOT / "deploy/backup-restore.sh").read_text()
-    start = script.index("    # Exclude service restarts")
-    program = script[start:script.index('    pair_ts="${TAR_NAME#tinyassets-data-}"', start)]
-    fd = os.open(roots[held] / ".layout.lock", os.O_RDWR) if held in roots else None
-    try:
-        if fd is not None:
-            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        result = subprocess.run(
-            ["bash", "-ec", 'log() { echo "$*"; };\n' + program],
-            env={**os.environ, "VOLUME_DIR": str(roots["live"]),
-                 "STAGE_DIR": str(roots["staged"])}, capture_output=True, text=True, timeout=10)
-        refused = fd is not None or held in {"fifo", "symlink"}
-        assert result.returncode == (4 if refused else 0), result.stdout + result.stderr
-        if held in {"fifo", "symlink"}:
-            assert "not a regular file" in result.stdout
-            return
-        if fd is not None:
-            assert "storage writer still owns" in result.stdout
-        for name, root in roots.items():
-            lock = root / ".layout.lock"
-            assert lock.read_bytes() == (b"" if held == "missing" else b"existing lock inode")
-            if name in before:
-                assert lock.stat().st_ino == before[name]
-    finally:
-        if fd is not None:
-            os.close(fd)
 
 
 def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch, capsys):

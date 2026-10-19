@@ -494,8 +494,8 @@ def docker_command(args: argparse.Namespace, root: Path, tag: str) -> list[str]:
         if (shallow := objects.parent / "shallow").is_file():
             run += ["-v", f"{_docker_path(shallow)}:/oracle-shallow:ro"]
     if getattr(args, "docker_engine", False):
-        if not args.as_root or getattr(args, "required_runner", False):
-            raise SystemExit("--docker-engine requires --as-root")
+        if not args.as_root and not getattr(args, "required_runner", False):
+            raise SystemExit("--docker-engine requires root or the required-runner coordinator")
         run += ["-v", "/var/run/docker.sock:/var/run/docker.sock",
                 "-e", "TA_REHEARSAL_BASE_IMAGE=" + tag]
     for pair in args.env:

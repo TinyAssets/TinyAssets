@@ -2133,6 +2133,14 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
           # The shared integrity policy reports repairable index drift in census.
           # Apply repairs only named indexes after this stopped, verified pair,
           # rechecks integrity and records each repair in the cutover report.
+          # C4: only this stopped, verified cutover may create eligibility.
+          # An existing directory (including an interrupted initialization)
+          # refuses: a workflow restart never recreates pre_traffic.
+          PYTHONPATH="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}/harness-current/app" \
+            python3 -m tinyassets.cutover_control initialize \
+            --state "${BUNDLE_STATE_DIR}/cutover" \
+            --backup "${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}" \
+            --old-image "$PREV_IMAGE" || migration_refused "check=cutover_eligibility"
           box_apply="$(box_migration_container apply /data --store /box-store \
             --backup "/backup/${MIGRATION_SNAPSHOT}" \
             --box-backup "/backup/${box_backup}" 2>&1)"
@@ -2145,6 +2153,7 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$MIGRATION_OK" = "1" ]; then
           if [ "$box_apply_rc" -eq 0 ]; then
             MIGRATION_COMMITTED=1
             log "box layout committed; rollback point ${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}"
+            echo "cutover_admission_pending=true"
             if ! systemctl restart boxhostd.service || ! systemctl is-active --quiet boxhostd.service; then
               MIGRATION_OK=0
               err "boxhostd could not start on the committed layout; $(migration_restore_command)"

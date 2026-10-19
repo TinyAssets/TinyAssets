@@ -144,14 +144,11 @@ def reset_credentials(staged, now):
     )
     operational.chmod(0o600)
     os.chown(operational, 1001, 1001)
-    from tinyassets.router_traffic import NAME, initialize
+    from tinyassets.cutover_control import close_admission
+    from tinyassets.router_traffic import NAME
 
-    _read(staged, NAME)
-    initialize(staged)
-    with closing(sqlite3.connect(staged / NAME)) as db, db:
-        db.execute("UPDATE traffic SET traffic_opened_at=NULL, credentials_after=?", (now,))
-    os.chown(staged / NAME, 0, 1001)
-    (staged / NAME).chmod(0o660)
+    _safe(staged, NAME)
+    close_admission(staged)
 
 
 def rotate_box_secrets(staged):

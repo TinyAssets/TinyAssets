@@ -377,7 +377,9 @@ jobs:
           # land where they always did. TINYASSETS_DATA_DIR keeps the suite off
           # the tree and off any host state, as before (the conftest already
           # forces mock providers and sqlite_only storage).
-          python scripts/linux_oracle.py --required-runner --out shard-out \
+          python scripts/prepare_oracle_runsc.py shard-out/gvisor
+          python scripts/linux_oracle.py --required-runner --docker-engine --out shard-out \
+            --env TA_REHEARSAL_RUNSC_DIR=/out/gvisor \
             --apparmor ta-jail-userns \
             --env TINYASSETS_DATA_DIR=/tmp/ta-data \
             --env CI=true --env GITHUB_ACTIONS=true \
@@ -399,7 +401,9 @@ jobs:
           mkdir -p shard-out
           # affected.txt sits in the checkout, so the oracle's tree copy carries
           # it to /work beside the runner.
-          python scripts/linux_oracle.py --required-runner --out shard-out \
+          python scripts/prepare_oracle_runsc.py shard-out/gvisor
+          python scripts/linux_oracle.py --required-runner --docker-engine --out shard-out \
+            --env TA_REHEARSAL_RUNSC_DIR=/out/gvisor \
             --apparmor ta-jail-userns \
             --env TINYASSETS_DATA_DIR=/tmp/ta-data \
             --env CI=true --env GITHUB_ACTIONS=true \
@@ -494,7 +498,9 @@ jobs:
           set -euo pipefail
           mkdir -p shard-out
           # The oracle invokes scripts/ci_required_tests.py inside the container.
-          python scripts/linux_oracle.py --required-runner --out shard-out \
+          python scripts/prepare_oracle_runsc.py shard-out/gvisor
+          python scripts/linux_oracle.py --required-runner --docker-engine --out shard-out \
+            --env TA_REHEARSAL_RUNSC_DIR=/out/gvisor \
             --apparmor ta-jail-userns \
             --env TINYASSETS_DATA_DIR=/tmp/ta-data \
             --env CI=true --env GITHUB_ACTIONS=true \

@@ -76,7 +76,6 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
 
     main = ".tinyassets.db"
     add(main, "user_accounts user_sessions", "router")
-    add(".router-traffic.sqlite3", "traffic", "router")
     add(main, "deleted_principals llm_credential_deposit_owners llm_credential_custody "
         "llm_credential_deposit_commits llm_credential_refresh_state", "broker")
     add(main, "author_definitions author_forks agent_definitions agent_component_lineage "
@@ -1189,7 +1188,7 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
     legacy_owner, legacy_reason = _legacy_knowledge_owner(data / "knowledge.db", centers)
     shared = {
         ".layout.json": "broker", ".layout.lock": "broker",
-        ".owner-cutover.json": "broker", ".router-traffic.sqlite3": "router",
+        ".owner-cutover.json": "broker", ".ordinary-admission.json": "router",
         ".router-credentials.json": "router", ".disaster-restore.json": "dropped",
         "platform-expected-instance.json": "router", "release-state.json": "router",
         ".billing_webhook_verified.json": "router",
@@ -2272,9 +2271,9 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
                         destination.unlink()
         _build_databases(data, mounts, shared, inventory)
         _split_histories(data, mounts, inventory)
-        from tinyassets.router_traffic import initialize as initialize_traffic
+        from tinyassets.cutover_control import close_admission
 
-        initialize_traffic(shared)
+        close_admission(shared)
         # File-only shared state stays in its authority's custody and is included
         # in the same verified publication as the extracted databases.
         for relative, target in inventory["file_targets"].items():
@@ -2365,9 +2364,6 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
     fence.write_text("")
     os.chown(fence, 0, 0)
     fence.chmod(0o444)
-    traffic = shared / ".router-traffic.sqlite3"
-    os.chown(traffic, 0, DAEMON_UID)
-    traffic.chmod(0o660)  # root-owned authority; the router records traffic admission
     _repair_staged_databases(shared)
     report["workflow_definitions"] = workflow_counts
     journal.update(phase="publish", report=report, shared=_durable_tree(shared),

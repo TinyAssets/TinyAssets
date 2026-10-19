@@ -200,19 +200,12 @@ async def serving(root: Path):
         answer = None
         try:
             caller = peer_uid(writer.get_extra_info("socket"))
-            if caller not in (0, BROKER_UID):
+            if caller != BROKER_UID:
                 return
             frame = await asyncio.wait_for(rf.read_frame(reader), 30)
             if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
                 return
             doc = frame.control()
-            if caller == 0 and doc == {"op": "OPEN_TRAFFIC"}:
-                from tinyassets.router_traffic import open_traffic
-
-                answer = {"op": "TRAFFIC_OPENED", **await asyncio.to_thread(open_traffic, root)}
-                return
-            if caller != BROKER_UID:
-                return
             if (set(doc) != {"op", "owner", "request"}
                     or doc["op"] != "ROUTER_CREDENTIAL"):
                 raise ValueError("invalid router request")

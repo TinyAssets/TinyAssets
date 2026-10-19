@@ -6,6 +6,7 @@ It is never a platform or owner-volume recovery path.
 """
 
 import json
+import os
 import subprocess
 import tarfile
 from pathlib import PurePosixPath
@@ -18,6 +19,7 @@ def restore_old_layout(archive, destination):
     _verified_archive(archive, fresh=False)
     with tarfile.open(archive, "r:gz") as source:
         members = source.getmembers()
+        root_metadata = source.getmember("_data")
         symlinks = {member.name.rstrip("/") for member in members if member.issym()}
         if not members:
             raise ValueError("empty old-layout backup")
@@ -63,4 +65,6 @@ def restore_old_layout(archive, destination):
     if layout.get("box_layout", layout.get("split")) != "owner-split":
         raise ValueError("rollback requires the pre-cutover old layout")
     _repair_staged_databases(destination)
+    os.chown(destination, root_metadata.uid, root_metadata.gid)
+    destination.chmod(root_metadata.mode)
     return destination

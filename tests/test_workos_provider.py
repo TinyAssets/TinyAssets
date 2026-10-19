@@ -89,6 +89,7 @@ def _sign(keypair: rsa.RSAPrivateKey, **claims: object) -> str:
     now = int(time.time())
     payload = {
         "sub": "user_workos_123",
+        "sid": "session_test",
         "iss": ISSUER,
         "iat": now,
         "exp": now + 3600,
@@ -98,42 +99,33 @@ def _sign(keypair: rsa.RSAPrivateKey, **claims: object) -> str:
     return jwt.encode(payload, keypair, algorithm="RS256", headers={"kid": "test"})
 
 
-@pytest.mark.parametrize("created,accepted", [(1, False), (100, False), (101, True),
-                                             (None, False)])
-def test_restore_checks_original_session_not_refreshed_iat(
-        tmp_path, monkeypatch, keypair, created, accepted):
-    import sqlite3
+@pytest.fixture(autouse=True)
+def current_provider_sessions(monkeypatch):
+    monkeypatch.setattr("tinyassets.router_account_deletion.workos_sessions", lambda owner: [
+        {"id": "session_test"}, {"id": "session_fixture"}])
 
+
+@pytest.mark.parametrize("active,accepted", [(True, True), (False, False), (None, False)])
+def test_revoked_original_session_refuses_even_a_fresh_access_token(
+        monkeypatch, keypair, active, accepted):
     from tinyassets.router_account_deletion import AccountDeletionError
-    from tinyassets.router_traffic import initialize
 
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    initialize(tmp_path)
-    with sqlite3.connect(tmp_path / ".router-traffic.sqlite3") as db:
-        db.execute("UPDATE traffic SET credentials_after=100")
-    def session_time(owner, sid):
-        assert (owner, sid) == ("user_123", "session_original")
-        if created is None:
+    def sessions(owner):
+        assert owner == "user_123"
+        if active is None:
             raise AccountDeletionError("unreachable")
-        return created
-    monkeypatch.setattr("tinyassets.router_account_deletion.workos_session_created_at",
-                        session_time)
+        return [{"id": "session_original"}] if active else []
+
+    monkeypatch.setattr("tinyassets.router_account_deletion.workos_sessions", sessions)
     token = _sign(keypair, sub="user_123", sid="session_original")
-    assert (_provider(keypair).verified_claims(token) is not None) is accepted
+    assert (_provider(keypair).resolve_token(token) is not None) is accepted
 
 
 @pytest.mark.parametrize("rotated", ["rotated-refresh", ""])
 def test_pre_restore_raw_cookie_refresh_is_refused(tmp_path, monkeypatch, keypair, rotated):
-    import sqlite3
-
     from tests.test_onboarding_session_refresh import _drive, _ok
-    from tinyassets.router_traffic import initialize
 
-    initialize(tmp_path)
-    with sqlite3.connect(tmp_path / ".router-traffic.sqlite3") as db:
-        db.execute("UPDATE traffic SET credentials_after=100")
-    monkeypatch.setattr("tinyassets.router_account_deletion.workos_sessions", lambda owner: [
-        {"id": "session_original", "created_at": "1970-01-01T00:00:01Z"}])
+    monkeypatch.setattr("tinyassets.router_account_deletion.workos_sessions", lambda owner: [])
     access = _sign(keypair, sub="user_123", sid="session_original")
     status, body, cookies, calls = _drive(
         {"grant_type": "refresh_token"}, cookie="ta_rt=pre-restore-refresh",
@@ -143,6 +135,11 @@ def test_pre_restore_raw_cookie_refresh_is_refused(tmp_path, monkeypatch, keypai
     assert status == 401
     assert body == {"error": "identity_unresolved"}
     assert not cookies
+
+
+@pytest.mark.parametrize("sid", [None, "", "unknown", "session_absent"])
+def test_missing_current_provider_session_denies(keypair, sid):
+    assert _provider(keypair).resolve_token(_sign(keypair, sid=sid)) is None
 
 
 # --- derive_endpoints ------------------------------------------------------
@@ -186,12 +183,12 @@ def test_valid_token_resolves_to_founder_identity(keypair) -> None:
 
 
 def test_only_verified_tokens_supply_opaque_connection_metadata(keypair):
-    token = _sign(keypair, sid="fixture-session")
+    token = _sign(keypair, sid="session_fixture")
     ident = _provider(keypair).resolve_token(token)
     connection = ident.metadata["oauth_connection"]
     assert connection["identity_source"] == "verified_session"
     assert len(connection["id"]) == 64
-    assert "fixture-session" not in str(connection) and token not in str(ident.metadata)
+    assert "session_fixture" not in str(connection) and token not in str(ident.metadata)
     assert _provider(keypair).resolve_token(token + "invalid") is None
 
 
@@ -510,7 +507,7 @@ def test_outside_store_failure_is_logged_not_swallowed(
         keypair,
         aud=RESOURCE,
         client_id="external-client",
-        sid="session-1",
+        sid="session_test",
         auth_time=100,
     )
     caplog.set_level(logging.WARNING, logger="universe_server.auth.workos")
@@ -541,7 +538,7 @@ def test_first_party_sign_in_does_not_consult_the_outside_store(
         "tinyassets.outside_authority.current_store",
         lambda: _Boom(),
     )
-    token = _sign(keypair, aud=RESOURCE, client_id="claude", sid="session-1", auth_time=100)
+    token = _sign(keypair, aud=RESOURCE, client_id="claude", sid="session_test", auth_time=100)
     ident = _provider(keypair, audience=RESOURCE).resolve_token(token)
     assert ident is not None
     assert ident.user_id == "user_workos_123"

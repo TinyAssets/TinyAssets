@@ -15,7 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SHARED = ("tinyassets/boxes", "tinyassets/broker", "deploy")
 SHARED_FILES = ("tinyassets/owner_router.py", "tinyassets/router_credentials.py",
                 "tinyassets/router_traffic.py", "tinyassets/router_account_deletion.py",
-                "tinyassets/restore_recovery.py", "scripts/roll_owner_boxes.py",
+                "tinyassets/restore_recovery.py", "tinyassets/cutover_control.py",
+                "scripts/roll_owner_boxes.py",
                 "scripts/open_router_traffic.py")
 ROOT_NAMES = {"mount_root", "mountpoint", "volume_mount_root", "owner_mount_root", "volume_mount"}
 LIFECYCLE = {"owner_daemons.py", "gvisor_runtime.py", "host_service.py", "admission.py",

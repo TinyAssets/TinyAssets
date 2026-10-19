@@ -2634,6 +2634,8 @@ def _daemon_starts(box: Box) -> list[str]:
 
 def _owner_box_cutover(box: Box, *, device_present: bool = True):
     volume, env = _cutover(box)
+    with box.env_file.open("a") as stream:
+        stream.write("BACKUP_DEST=:local:/synthetic-snapshots\n")
     box.set_docker_state(
         migration_pending=False,
         active_box_layout={NEW_IMAGE: "owner-box"},
@@ -2681,6 +2683,7 @@ def test_owner_box_move_commits_once_or_requires_snapshot_restore(box: Box, outc
     box.stage_bundle()
     completed = box.run(NEW_IMAGE, **env)
     calls = box.docker_calls_text()
+    assert "tinyassets.box_layout_migration preflight" in calls, completed.stdout + completed.stderr
     preflight_call = next(line for line in calls.splitlines()
                           if "tinyassets.box_layout_migration preflight" in line)
     assert "tinyassets-data:/data:ro" in preflight_call
@@ -2689,12 +2692,12 @@ def test_owner_box_move_commits_once_or_requires_snapshot_restore(box: Box, outc
     apply_call = next(line for line in calls.splitlines()
                       if "tinyassets.box_layout_migration apply" in line)
     assert "apply /data --store /box-store" in apply_call
-    assert "--cap-drop ALL --user 0" in apply_call
-    for flag in ("CHOWN", "FOWNER", "FSETID", "DAC_OVERRIDE", "SYS_ADMIN"):
-        assert f"--cap-add {flag}" in apply_call
+    assert "--cap-drop ALL --user 0 --privileged" in apply_call
     assert f"--device {device}:{device}:r" in apply_call
     assert "--mount type=bind,src=/var/lib/boxhostd/owners,dst=/box-store" in apply_call
-    assert "--security-opt no-new-privileges=true --network none" in apply_call
+    assert "--security-opt no-new-privileges=true --network bridge" in apply_call
+    assert "BACKUP_DEST=:local:/synthetic-snapshots" in apply_call
+    assert "/root/.config/rclone:/root/.config/rclone:ro" in apply_call
     assert "--box-backup /backup/tinyassets-box-store-" in calls
     detail_call = next(line for line in calls.splitlines()
                        if "tinyassets.box_layout_migration census" in line)
@@ -2704,7 +2707,9 @@ def test_owner_box_move_commits_once_or_requires_snapshot_restore(box: Box, outc
         verify_call = next(line for line in calls.splitlines()
                            if "tinyassets.box_layout_migration verify" in line)
         assert "tinyassets-data:/data:ro" in verify_call
-        assert "dst=/box-store,readonly" in verify_call
+        assert "--mount type=bind,src=/var/lib/boxhostd/owners,dst=/box-store " in verify_call
+        assert "--cap-drop ALL --user 0 --privileged" in verify_call
+        assert "--network none" in verify_call
         assert calls.index(apply_call) < calls.index(verify_call)
     harness = (harness_root / "harness-current").resolve()
     assert (harness / "app" / "tinyassets" / "boxd.py").is_file()

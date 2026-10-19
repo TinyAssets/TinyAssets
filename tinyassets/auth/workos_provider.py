@@ -311,26 +311,10 @@ class WorkOSAuthProvider(AuthProvider):
             return None
 
         from tinyassets.router_credentials import active_owner
-        from tinyassets.router_traffic import accepts_issued_at
-        from tinyassets.storage import data_dir
 
         if not active_owner(sub):
             return None
 
-        # Refresh changes iat but retains sid: use the original session time.
-        if not accepts_issued_at(data_dir(), None):
-            from tinyassets.router_account_deletion import (
-                AccountDeletionError,
-                workos_session_created_at,
-            )
-
-            try:
-                created = workos_session_created_at(sub, claims.get("sid"))
-                if not accepts_issued_at(data_dir(), created):
-                    raise AccountDeletionError("session predates restore")
-            except AccountDeletionError:
-                _log_token_rejection("expired")
-                return None
         return claims
 
     def resolve_token(self, token: str) -> Identity | None:
@@ -338,6 +322,20 @@ class WorkOSAuthProvider(AuthProvider):
         if claims is None:
             return None
         sub = named_principal(claims.get("sub"))
+
+        # C3: revoked provider sessions must deny even a still-signed access
+        # token. Authenticate against positive current session authority, with
+        # no restore timestamp or refresh-token exception.
+        from tinyassets.router_account_deletion import (
+            AccountDeletionError,
+            require_workos_session,
+        )
+
+        try:
+            require_workos_session(sub, claims.get("sid"))
+        except AccountDeletionError:
+            _log_token_rejection("expired")
+            return None
 
         email = str(claims.get("email", "")).strip()
         username = email or sub

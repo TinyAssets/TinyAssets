@@ -220,8 +220,22 @@ it. Missing or unreadable deployment state permits neither rollback nor opening
 traffic. This state belongs to deployment control, not the router. **Deleted:**
 the router's `traffic_opened_at` and `credentials_after` restore authority.
 
-**Implementation status (a2a):** deployment-owned durable eligibility is still
-pending. Router timestamps remain in the current implementation and do not satisfy C4.
+**As built (a2a-4):** `cutover_control.py` owns an exclusive root-owned 0700
+deployment directory and 0600 state record outside shared application data.
+The stopped, verified backup and old image are recorded once as `pre_traffic`;
+state-file and directory fsync precede admission publication. `consumed` cannot
+be reinitialized. Missing, unreadable, incorrectly owned or consumed state
+refuses both rollback and opening. Rollback verifies the recorded backup,
+stops the new services, installs the old layout and consumes eligibility before
+starting the recorded old image. It never takes an owner volume as input.
+The deploy workflow's post-acceptance step consumes this authority and publishes
+ordinary admission; the router only reads that decision. The timestamp database,
+router OPEN_TRAFFIC RPC, credential timestamp predicate and their writer inventory
+are deleted. C3's signed WorkOS tokens must resolve to an active provider session;
+revoked sessions cannot acquire authority from a refreshed token's `iat`.
+Root tests prove pre-traffic restore, durable consumption ordering, restart and
+missing-state refusal; deploy-shell tests pin the integration. The full archive
+rehearsal remains pending and these unit/integration proofs do not claim its result.
 
 ### C5. The router only routes (T1)
 **Deleted from `owner_router.py:225–378`:** the account-deletion orchestration

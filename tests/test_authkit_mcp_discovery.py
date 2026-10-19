@@ -63,6 +63,8 @@ class _FakeJWKSClient:
 def authkit_client(monkeypatch, tmp_path):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("TINYASSETS_OUTSIDE_CLIENT_CLAIM", raising=False)
+    monkeypatch.setattr("tinyassets.router_account_deletion.workos_sessions",
+                        lambda owner: [{"id": "session_01consent"}])
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     set_provider(
         WorkOSAuthProvider(
@@ -87,7 +89,7 @@ def _access_token(key: rsa.RSAPrivateKey, **claims: object) -> str:
         "aud": RESOURCE,
         "client_id": CLIENT_ID,
         "scope": "openid profile email",
-        "sid": "sid_01consent",
+        "sid": "session_01consent",
         "jti": "jti_01access",
         "iat": now,
         "exp": now + 3600,

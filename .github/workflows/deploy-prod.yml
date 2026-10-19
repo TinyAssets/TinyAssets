@@ -678,6 +678,8 @@ jobs:
           echo "rc=${rc}" >> "$GITHUB_OUTPUT"
           echo "result=${result}" >> "$GITHUB_OUTPUT"
           echo "deployed_image=${deployed}" >> "$GITHUB_OUTPUT"
+          pending="$(printf '%s\n' "${out}" | awk -F= '/^cutover_admission_pending=/{print $2}' | tail -1)"
+          echo "cutover_admission_pending=${pending}" >> "$GITHUB_OUTPUT"
           # rc 0 = deployed new, 2 = rolled back to previous (prod still up), 1/3 = hard fail.
           if [ "${rc}" -eq 0 ]; then
             echo "::notice::deployed ${deployed}"
@@ -740,7 +742,8 @@ jobs:
             --ssh-target "${DO_SSH_USER}@${DO_DROPLET_HOST}" --ssh-key ~/.ssh/do_deploy \
             --expected-sha "${EXPECTED_SHA}" --receipt "${RUNNER_TEMP}/owner-box-roll.json"
 
-      - name: Open router user traffic after acceptance
+      - name: Consume cutover eligibility and open ordinary admission after acceptance
+        if: steps.deploy.outputs.cutover_admission_pending == 'true'
         run: |
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
             "sudo python3 -" < scripts/open_router_traffic.py

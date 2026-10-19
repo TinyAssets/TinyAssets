@@ -75,20 +75,12 @@ def revoke_workos_sessions(user_id: str, *, request=None) -> None:
             raise AccountDeletionError("WorkOS session revocation unavailable") from None
 
 
-def workos_session_created_at(user_id: str, session_id: str) -> float:
-    from datetime import datetime
-
+def require_workos_session(user_id: str, session_id: str) -> None:
+    """C3 positive current provider authority; signed revoked tokens still deny."""
     if not isinstance(session_id, str) or not session_id.startswith("session_"):
         raise AccountDeletionError("WorkOS session identity missing")
-    for session in workos_sessions(user_id):
-        if session["id"] == session_id:
-            try:
-                created = datetime.fromisoformat(session["created_at"].replace("Z", "+00:00"))
-                if created.tzinfo is None:
-                    raise ValueError("session creation must have timezone")
-                return created.timestamp()
-            except (KeyError, ValueError, TypeError, AttributeError):
-                raise AccountDeletionError("WorkOS session creation time unavailable") from None
+    if any(session["id"] == session_id for session in workos_sessions(user_id)):
+        return
     raise AccountDeletionError("WorkOS session is not active")
 
 

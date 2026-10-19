@@ -616,7 +616,7 @@ def test_restore_round_trip_from_backup_archive_preserves_dotfiles(tmp_path, sha
 
 @pytest.mark.parametrize("opened", [False, True])
 def test_platform_restore_without_deletion_authority_refuses_before_swap(tmp_path, opened):
-    from tinyassets.router_traffic import initialize, open_traffic
+    from tinyassets.router_traffic import NAME
 
     target = tmp_path / "volume/_data"
     target.mkdir(parents=True)
@@ -625,8 +625,7 @@ def test_platform_restore_without_deletion_authority_refuses_before_swap(tmp_pat
     binary = _fake_restore_bin(tmp_path, target)
     env = _restore_env(tmp_path, target, archive, binary)
     if opened:
-        initialize(target)
-        open_traffic(target)
+        (target / NAME).write_text(json.dumps({"ordinary": True}))
     env["BOX_STORE_DIR"] = _bash_path(tmp_path / "absent-owners")
     env["TEST_RECOVERY_PENDING"] = "1"
     result = _run(RESTORE_SH, env)

@@ -41,7 +41,6 @@ INFRASTRUCTURE: frozenset[str] = frozenset({
     "tinyassets/restore_recovery.py",
     # C1/T4 one-shot cutover verifies old-layout databases inside its attachments.
     "tinyassets/cutover_sqlite.py",
-    "tinyassets/router_traffic.py",
 })
 
 #: Owner-written stores not fenced yet. Safe while exactly one owner tree runs

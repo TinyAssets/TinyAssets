@@ -188,8 +188,29 @@ def test_disposable_engine_venue_is_explicit_and_requires_root():
     assert "TA_REHEARSAL_BASE_IMAGE=img:tag" in cmd
     assert "/var/run/docker.sock:/var/run/docker.sock" not in _command("--as-root", "-q")
     import pytest
-    with pytest.raises(SystemExit, match='requires --as-root'):
+    with pytest.raises(SystemExit, match='requires root or the required-runner coordinator'):
         _command("--docker-engine", "-q")
+
+
+def test_required_coordinator_can_run_root_volume_proof_without_promoting_ordinary_tests():
+    cmd = _runner_command("--docker-engine", "--out", "/out")
+    assert "/var/run/docker.sock:/var/run/docker.sock" in cmd
+    assert "TA_REHEARSAL_BASE_IMAGE=img:tag" in cmd
+    assert "runuser" in cmd[-1]
+    assert "ci_required_tests.py" in cmd[-1]
+
+
+def test_oracle_runtime_download_rejects_unpinned_bytes_before_extraction(tmp_path):
+    import io
+
+    import pytest
+
+    from scripts.prepare_oracle_runsc import prepare
+
+    target = tmp_path / "gvisor"
+    with pytest.raises(ValueError, match="archive digest mismatch"):
+        prepare(target, fetch=lambda *args, **kwargs: io.BytesIO(b"untrusted runtime"))
+    assert not target.exists()
 
 
 def test_no_bwrap_drops_every_relaxation_in_both_modes():
