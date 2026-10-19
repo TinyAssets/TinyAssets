@@ -441,7 +441,7 @@ reported next-wake time.
 #### Scenario: An interactive request wakes its persistent daemon
 - **WHEN** the authenticated router resolves an admitted owner
 - **THEN** it asks boxhostd to ensure that owner's broker-derived UID is awake
-- **AND** boxhostd starts one gVisor sandbox with the quota-bound owner mount, relay, read-only freshly rotated secret, static environment, null network and memory cap
+- **AND** boxhostd starts one gVisor sandbox with the quota-bound owner mount, relay, read-only persistent per-box secret, static environment, null network and memory cap
 - **AND** it waits for the authenticated app socket to respond before acknowledging and atomically leases the box against eviction until forwarding is admitted or a ten-second bound expires
 - **AND** startup or capacity timeout returns a loud 503 at the router
 
@@ -453,17 +453,17 @@ reported next-wake time.
 
 #### Scenario: Crash restart and capacity
 - **WHEN** a wanted daemon crashes
-- **THEN** boxhostd restarts it with exponential backoff capped at 60 seconds and rotates its secret
+- **THEN** boxhostd restarts it with exponential backoff capped at 60 seconds and preserves its persistent ingress secret
 - **AND** five consecutive failures produce a loud status while automatic retries continue
 - **WHEN** the awake cap (six by default) is reached
 - **THEN** an interactive wake may evict the least recently used idle box
 - **AND** scheduled wakes queue without eviction and behind interactive wakes
 
-#### Scenario: Retirement fences stale forwards
-- **WHEN** a center is retired or the shared door retires an account after persisting its deletion tombstone
-- **THEN** the broker durably revokes its box secret and requires boxhostd to stop the box before router credentials are cleared
+#### Scenario: Center retirement stops its running owner daemon
+- **WHEN** a center is retired
+- **THEN** the broker requires boxhostd to stop the box before acknowledging retirement
 - **AND** a forward resolved beforehand fails at revoked ingress or the stopped socket
-- **AND** another retained center starts with a fresh secret; a deleted account can never wake or admit again
+- **AND** another retained center starts with the same owner-bound secret
 
 #### Scenario: The door hands account deletion to the control plane
 - **WHEN** an authenticated owner submits same-origin JSON with `confirm == "DELETE"` to `/app/account/delete`
@@ -636,3 +636,22 @@ before publishing the staged database.
 - **AND** stopped apply takes root custody of existing single-link regular WAL/SHM files without discarding their bytes or relaxing modes, and refuses aliases before changing custody
 - **AND** interruption after an owner tree or shared seeding can resume on the same host
 - **AND** independent archive rehearsal trials restore the archived data-root ownership and mode as well as its contents
+
+### Requirement: Ordinary owner starts preserve ingress credentials
+Each admitted owner SHALL have a unique ingress credential held in the private
+broker identity store. First admission or stopped cutover SHALL seed it.
+Ordinary starts and owner-volume restores SHALL reuse that credential through
+a separate read-only runtime file, outside the owner volume. A missing stored
+credential SHALL deny launch; route lookup or another center admission SHALL
+NOT recreate it.
+
+#### Scenario: Sleep and wake retain the admitted credential
+- **WHEN** an owner completes sleep and wakes again
+- **THEN** the actual owner process accepts its original per-box credential
+- **AND** another owner's credential, a forged credential and a missing credential are refused
+
+#### Scenario: Missing custody never becomes a new credential
+- **WHEN** the owner's stored ingress credential is absent
+- **THEN** launch refuses before attaching the owner volume
+- **AND** adding another center cannot recreate the credential
+- **AND** another owner's credential is unchanged

@@ -283,8 +283,8 @@ def integrated_lifecycle(root, volumes, rootfs, size):
     box_admission.provision(identities, data, "proof-owner", "proof-center")
 
     class Admission:
-        def owner(self, owner, *, rotate=False):
-            return box_admission.owner_record(identities, owner, rotate=rotate)
+        def owner(self, owner, *, include_secret=False):
+            return box_admission.owner_record(identities, owner, include_secret=include_secret)
 
         def volume(self, owner, action="binding", **arguments):
             return owner_volumes.dispatch(identities, {"op": "BOX_VOLUME", "principal": owner,

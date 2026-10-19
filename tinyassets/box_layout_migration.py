@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import stat
@@ -2056,6 +2057,8 @@ def _seed_shared(data: Path, shared: Path, inventory: dict, report: dict, plan) 
         for owner in plan:
             db.execute("INSERT OR IGNORE INTO box_records VALUES (?,?,?,?)",
                        (owner.principal, owner.uid, owner.uid, owner.quota))
+            db.execute("INSERT OR IGNORE INTO owner_box_secrets VALUES (?,?)",
+                       (owner.principal, secrets.token_urlsafe(32)))
             from tinyassets.broker.owner_volumes import provision
 
             provision(db, owner.principal, owner.uid)

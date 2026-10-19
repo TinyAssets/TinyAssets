@@ -50,3 +50,22 @@ SHALL refuse wake without creating an empty volume.
 - **AND** the default maximum is 100 GiB, a larger cap is refused, and no shrink is possible
 - **AND** a step exceeding the cap or a failed API call alerts and stops without growing the filesystem
 - **AND** no log contains the token
+
+### Requirement: Ordinary owner starts preserve ingress credentials
+Each admitted owner SHALL have a unique ingress credential held in the private
+broker identity store. First admission or stopped cutover SHALL seed it.
+Ordinary starts and owner-volume restores SHALL reuse that credential through
+a separate read-only runtime file, outside the owner volume. A missing stored
+credential SHALL deny launch; route lookup or another center admission SHALL
+NOT recreate it.
+
+#### Scenario: Sleep and wake retain the admitted credential
+- **WHEN** an owner completes sleep and wakes again
+- **THEN** the actual owner process accepts its original per-box credential
+- **AND** another owner's credential, a forged credential and a missing credential are refused
+
+#### Scenario: Missing custody never becomes a new credential
+- **WHEN** the owner's stored ingress credential is absent
+- **THEN** launch refuses before attaching the owner volume
+- **AND** adding another center cannot recreate the credential
+- **AND** another owner's credential is unchanged

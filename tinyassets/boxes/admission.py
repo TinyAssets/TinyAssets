@@ -61,7 +61,7 @@ class OwnerRegistry:
                 or frame.control() != {"op": "BOX_ADMISSION_RETIRED"}):
             raise BoxAuthError("broker refused admission retirement")
 
-    def owner(self, owner: str, *, rotate: bool = False) -> dict:
+    def owner(self, owner: str, *, include_secret: bool = False) -> dict:
         validate_principal(owner)
         from tinyassets.erasure_ledger import ErasureLedger
 
@@ -74,7 +74,7 @@ class OwnerRegistry:
             sock.connect(str(self.broker_socket))
             if peer(sock)[1:] != (1002, 1002):
                 raise BoxAuthError("lifecycle peer is not the credential broker")
-            doc = {"op": "BOX_LIFECYCLE", "principal": owner, "rotate": rotate}
+            doc = {"op": "BOX_LIFECYCLE", "principal": owner, "include_secret": include_secret}
             sock.sendall(rf.control(rf.CONNECTION, doc))
             frame = rf.read_frame_blocking(sock)
         if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
@@ -85,7 +85,7 @@ class OwnerRegistry:
         if result == {"op": "BOX_SUSPENDED"}:
             raise BoxSuspended("suspended")
         expected = {"op", "uid", "quota", "centers", "volume_generation", "snapshot_id",
-                    "snapshot_sha256"} | ({"secret"} if rotate else set())
+                    "snapshot_sha256"} | ({"secret"} if include_secret else set())
         if (set(result) != expected or result["op"] != "BOX_LIFECYCLE_IS"
                 or type(result["uid"]) is not int or not 300001 <= result["uid"] <= 399999
                 or type(result["quota"]) is not int or result["quota"] <= 0
@@ -94,7 +94,7 @@ class OwnerRegistry:
             raise BoxAuthError("broker refused owner lifecycle")
         for center in result["centers"]:
             validate_center(center)
-        if rotate:
+        if include_secret:
             import re
 
             if not isinstance(result["secret"], str) or not re.fullmatch(

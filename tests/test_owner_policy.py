@@ -146,6 +146,10 @@ def test_owner_policy_actions_cross_the_real_broker_socket(broker, tmp_path):  #
     _session(tmp_path, "alice", cookie)
     broker.server._policy_store = PolicyStore(tmp_path, Admissions())
     broker.server._policy_store.bootstrap()
+    # C6: a historical restore-day marker has no authority. Exercise the real
+    # policy RPC with unreadable-as-a-timestamp bytes; current policy still
+    # permits the first reservation and refuses the over-cap reservation.
+    (tmp_path / ".broker/restore-spend-until").write_text("retired authority")
     current = broker.client.owner_policy("read")
     proposed = broker.client.owner_policy("proposal", center="alpha", change={
         "expected_generation": current["generation"], "policy": current["policy"]})
@@ -186,6 +190,9 @@ def test_unpriced_model_call_with_a_spend_cap_is_denied_at_broker(broker, tmp_pa
         Admission("cc-alice", "alice")])
     store = PolicyStore(tmp_path, admissions)
     store.bootstrap()
+    # The inference OPEN must reach the current spend policy even when an old
+    # restore artifact is present. The receipt below proves that real path.
+    (tmp_path / ".broker/restore-spend-until").write_text("retired authority")
     current = store.read("alice")
     capped = json.loads(json.dumps(current.document))
     capped["spend"]["source_ceilings"] = {"conn-a": 10}

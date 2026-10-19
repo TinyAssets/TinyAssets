@@ -184,14 +184,12 @@ class OwnerIdentities:
                     "SELECT 1 FROM center_admissions WHERE principal=? AND event='admit'",
                     (principal,)).fetchone() is None
                 plans.admit_free(db, principal, first_admission=first_admission)
-                db.execute("INSERT OR IGNORE INTO owner_box_secrets VALUES (?, ?)",
-                           (principal, secrets.token_urlsafe(32)))
+                if first_admission:
+                    db.execute("INSERT INTO owner_box_secrets VALUES (?, ?)",
+                               (principal, secrets.token_urlsafe(32)))
             else:
                 if admitted is None:
                     raise CenterUnadmitted("retire requires a prior admit")
-                db.execute("INSERT OR IGNORE INTO owner_box_revocations VALUES (?, 0)",
-                           (principal,))
-                db.execute("DELETE FROM owner_box_secrets WHERE principal=?", (principal,))
                 if "retire" in rows:
                     return _row(rows["retire"])
                 machine = admitted[4]
@@ -232,14 +230,15 @@ class OwnerIdentities:
             ).fetchone()
             if row is None:
                 raise LookupError("owner has no live admission")
-            # Existing admissions receive their first secret on the first lookup.
-            db.execute("INSERT OR IGNORE INTO owner_box_secrets VALUES (?, ?)",
-                       (principal, secrets.token_urlsafe(32)))
+            found = db.execute("SELECT secret FROM owner_box_secrets WHERE principal=?",
+                               (principal,)).fetchone()
+            if found is None:
+                raise LookupError("owner ingress credential is missing")
+            secret = found[0]
             if rotate:
+                secret = secrets.token_urlsafe(32)
                 db.execute("UPDATE owner_box_secrets SET secret=? WHERE principal=?",
-                           (secrets.token_urlsafe(32), principal))
-            secret = db.execute("SELECT secret FROM owner_box_secrets WHERE principal=?",
-                                (principal,)).fetchone()[0]
+                           (secret, principal))
             return row[0], secret
 
     def revoke_box(self, principal: str, *, deleted: bool = False) -> int:

@@ -84,9 +84,9 @@ async def probe():
                     "op": "BOX_VOLUME", "principal": owner,
                     "action": action, "arguments": arguments})
 
-            def owner(self, owner, *, rotate=False):
+            def owner(self, owner, *, include_secret=False):
                 require_active(shared, owner)
-                return owner_record(identities, owner, rotate=rotate)
+                return owner_record(identities, owner, include_secret=include_secret)
 
             def retire(self, owner, uid):
                 assert channel._retire_box_admission({
