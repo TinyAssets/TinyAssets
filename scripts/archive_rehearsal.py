@@ -137,7 +137,7 @@ class Venue:
         self.prefix = "ta-s6-" + uuid.uuid4().hex[:12]
         self.names = {
             k: self.prefix + "-" + k
-            for k in ("image", "store", "parent", "data", "backup", "support", "harness")
+            for k in ("image", "store", "parent", "data", "backup", "support", "harness", "control")
         }
         self.volumes, self.containers = [], []
         self.device = ""
@@ -151,7 +151,7 @@ class Venue:
     def setup(self, archive):
         if docker("image", "inspect", self.image, check=False).returncode:
             raise ImageNotFound(f"image not found: {self.image}")
-        for key in ("image", "store", "parent", "backup", "support", "harness"):
+        for key in ("image", "store", "parent", "backup", "support", "harness", "control"):
             docker("volume", "create", self.names[key])
             self.volumes.append(self.names[key])
 
@@ -184,8 +184,6 @@ class Venue:
         )
         docker("cp", str(ROOT / "scripts/rehearse_box_move.py"),
                name + ":/support/rehearse_box_move.py")
-        docker("cp", str(ROOT / "scripts/rehearsal_restore_provider.py"),
-               name + ":/support/rehearsal_restore_provider.py")
         docker("cp", str(ROOT / "scripts/rehearsal_launch.py"),
                name + ":/support/rehearsal_launch.py")
         # Export the candidate image once. The extraction function below is the
@@ -288,6 +286,11 @@ class Venue:
             BOX_ARCHIVE,
         )
 
+    def initialize_cutover(self):
+        self.helper("from tinyassets.cutover_control import initialize; "
+                    "initialize(Path('/deployment/cutover'), "
+                    "backup=Path('/backup/" + DATA_ARCHIVE + "'), old_image='synthetic-old-image')")
+
     def migration(self, mode, *, interrupt=""):
         bash = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash")
         if not bash:
@@ -347,6 +350,7 @@ class Venue:
             self.names["support"] + ":/support:ro",
             "-v",
             self.names["backup"] + ":/backup",
+            "-v", self.names["control"] + ":/deployment",
             "--entrypoint",
             "python",
             self.image,
@@ -357,104 +361,46 @@ class Venue:
         )
 
     def manifests(self):
-        return json.loads(
-            self.helper(
-                "import json; from pathlib import Path; "
-                'j=json.loads(Path("/data/.owner-cutover.json").read_text()); '
-                'print(json.dumps([j["final_manifest"],j["owner_manifests"]],sort_keys=True))'
-            ).stdout
-        )
+        return json.loads(self.helper(
+            "import json, runpy; print(json.dumps(runpy.run_path('/support/rehearse_box_move.py')"
+            "['rehearsal_manifests'](), sort_keys=True))").stdout)
 
-    def restore(self, *, replay=False, disaster=False, refuse=False, refusal_reason=None):
-        def live_bytes():
-            return self.helper(
-                "import json; from pathlib import Path; "
-                "from tinyassets.box_layout_migration import _durable_tree; "
-                "print(json.dumps([_durable_tree(Path('/data')), "
-                "{p.name:_durable_tree(p) for p in Path('/box-store').iterdir() "
-                "if p.name.isdecimal()}], sort_keys=True))"
-            ).stdout
-
-        before = live_bytes() if refuse and not replay else None
-        # Provider responses and absent host services are recorded at this
-        # venue boundary. Extraction, fencing, quotas and swap are real.
-        script = r"""set -eu
-printf 'xfs %s\n' "$(findmnt --mountpoint /box-store -no UUID)" > /.box-store-identity
-chmod 600 /.box-store-identity
-mkdir -p /tmp/bin /opt/tinyassets/boxhostd/current
-cat > /tmp/bin/docker <<'SH'
-#!/bin/sh
-case "$1 $2" in
-"volume inspect") echo /parent/_data;;
-"ps -q") exit 0;;
-*) exit 79;;
-esac
-SH
-printf '#!/bin/sh\nexit 0\n' > /tmp/bin/systemctl
-printf '#!/bin/sh\nprintf "[]\\n"\n' > /opt/tinyassets/boxhostd/current/runsc
-chmod +x /tmp/bin/* /opt/tinyassets/boxhostd/current/runsc
-export PATH=/tmp/bin:$PATH
-bash /support/deploy/backup-restore.sh
+    def restore(self, *, refuse=False, refusal_reason=None):
+        # Only the old-layout one-shot exception. Owner image objects are not
+        # attached, read or restored by this deployment operation.
+        code = r"""
+import json, os, shutil, subprocess, tempfile
+from pathlib import Path
+from tinyassets.cutover_control import rollback_live
+with tempfile.TemporaryDirectory() as temporary:
+    binaries = Path(temporary)
+    (binaries / 'systemctl').write_text('#!/bin/sh\nexit 0\n')
+    (binaries / 'docker').write_text('#!/bin/sh\n'
+        '[ "$*" = "ps -q --filter volume=tinyassets-data" ]\n')
+    (binaries / 'old-deploy').write_text('#!/bin/sh\n'
+        '[ "$*" = "--restore-bundle synthetic-old-image" ] || exit 90\n'
+        'test -f /parent/_data/.layout.json\n')
+    for path in binaries.iterdir():
+        path.chmod(0o700)
+    os.environ['PATH'] = str(binaries) + os.pathsep + os.environ['PATH']
+    rollback_live(Path('/deployment/cutover'), Path('/parent/_data'),
+                  deploy_script=binaries / 'old-deploy')
 """
-        if disaster:
-            script = script.replace("bash /support/deploy/backup-restore.sh",
-                                    "bash /support/deploy/backup-restore.sh "
-                                    "--disaster-restore --acknowledge-unrecoverable-facts "
-                                    "--rehearsal-provider")
         result = self.container(
-            "--rm",
-            "--privileged",
-            "--user",
-            "0",
-            "-v",
-            self.names["parent"] + ":/parent",
-            "-v",
-            self.names["backup"] + ":/backup:ro",
-            "-v",
-            self.names["support"] + ":/support:ro",
-            "-v",
-            self.names["support"] + ":/run/tinyassets-rehearsal:ro",
-            "--device",
-            self.device + ":" + self.device,
-            "--mount",
-            "type=bind,src=" + self.store + ",dst=/box-store",
-            "-e",
-            "BACKUP_FILE=/backup/" + ("replay/tinyassets-data-2026-10-17T01-00-00Z.tar.gz"
-                                       if replay else DATA_ARCHIVE),
-            "-e",
-            "BOX_BACKUP_FILE=/backup/" + ("replay/tinyassets-box-store-2026-10-17T01-00-00Z.tar.gz"
-                                           if replay else BOX_ARCHIVE),
-            "-e",
-            "BACKUP_VOLUME=disposable",
-            "-e",
-            "BOX_STORE_DIR=/box-store",
-            "-e",
-            "BACKUP_LOG=/tmp/restore.log",
-            "--entrypoint",
-            "sh",
-            self.image,
-            "-ec",
-            script,
-            check=False,
-        )
-        expected = 4 if refuse else 6 if disaster else 0
-        if result.returncode != expected:
-            raise RuntimeError("restore failed: " + str(result.returncode))
-        if refusal_reason is not None and refusal_reason not in result.stderr + result.stdout:
-            raise RuntimeError("restore refused for an unexpected reason")
-        if before is not None and live_bytes() != before:
-            raise RuntimeError("refused rollback changed live data or owner trees")
-        if replay or refuse:
+            "--rm", "--user", "0",
+            "-v", self.names["parent"] + ":/parent",
+            "-v", self.names["backup"] + ":/backup:ro",
+            "-v", self.names["control"] + ":/deployment",
+            "--entrypoint", "python", self.image, "-B", "-c", code, check=False)
+        if refuse:
+            if result.returncode == 0 or (refusal_reason and refusal_reason not in result.stderr):
+                raise RuntimeError("cutover rollback did not refuse for the required reason")
             return
+        if result.returncode:
+            raise RuntimeError("cutover rollback failed: " + result.stderr)
         self.helper(
             "import tempfile\n" + inspect.getsource(compare_restored_archive) +
-            "\ncompare_restored_archive(Path('/data'), Path('/backup/original.tar.gz'))\n"
-            "assert not any(p.name.isdecimal() for p in Path('/box-store').iterdir())"
-        )
-        self.helper(
-            "from pathlib import Path; import shutil; "
-            '[shutil.rmtree(p) for p in Path("/box-store").glob(".tinyassets-box-restore-old.*")]'
-        )
+            "\ncompare_restored_archive(Path('/data'), Path('/backup/original.tar.gz'))\n")
 
     def reset_fixture(self):
         """Reset disposable inputs between independent crash trials, never restore."""
@@ -476,7 +422,8 @@ bash /support/deploy/backup-restore.sh
             # An independent trial needs the archived uid/gid/mode, not 0:1001/1775.
             "[(setattr(m,'name','.')) for m in members if m.name.rstrip('/')=='_data']; "
             "archive.extractall(root,members=members, "
-            "filter='fully_trusted'); archive.close()")
+            "filter='fully_trusted'); archive.close(); "
+            "shutil.rmtree('/deployment/cutover', ignore_errors=True)")
 
     def close(self):
         interrupted = []
@@ -548,6 +495,7 @@ def archive_rehearsal(image, archive, *, store_bytes):
 
     try:
         venue.setup(archive)
+        venue.initialize_cutover()
         passed(step, mounts=1)
         step = "preflight"
         required(venue.migration(step))
@@ -576,6 +524,7 @@ def archive_rehearsal(image, archive, *, store_bytes):
         passed(step, comparisons=1)
         step = "crash_resume"
         venue.reset_fixture()
+        venue.initialize_cutover()
         required(venue.migration("preflight"))
         required(venue.migration("census"))
         plan = json.loads(
@@ -600,30 +549,11 @@ def archive_rehearsal(image, archive, *, store_bytes):
             if boundary == "after_owner_tree:1":
                 venue.restore()
                 venue.reset_fixture()
+                venue.initialize_cutover()
                 required(venue.migration("preflight"))
                 required(venue.migration("census"))
         passed(step, interruptions=2, comparisons=2)
         step = "host_startup"
-        required(venue.helper("""
-import os
-from pathlib import Path
-from tinyassets.erasure_ledger import ErasureLedger, principal_digest
-from tinyassets.restore_recovery import _schedule_trees
-ledger = ErasureLedger(Path('/data'))
-ledger.execute('add', {'digest': principal_digest('rehearsal-erased'),
-                      'principal': 'rehearsal-erased', 'uids': [399997]})
-tree = Path('/box-store/399997')
-tree.mkdir(mode=0o700)
-os.chown(tree, 399997, 399997)
-(tree / 'note').write_text('synthetic erased bytes')
-ledger.execute('add', {'digest': principal_digest('rehearsal-failed'),
-                      'principal': 'rehearsal-failed', 'uids': [399998]})
-# Wrong UID must fail destruction, retain the fence, and not prevent listeners.
-Path('/box-store/399998').mkdir(mode=0o700)
-_schedule_trees(ledger, [Path('/box-store')])
-assert all(not Path(work['store']).is_absolute() and not Path(work['quarantine']).is_absolute()
-           for entry in ledger.entries() for work in entry['work'].values())
-"""))
         result = venue.container(
             "--rm", "--privileged", "--user", "0",
             "--cgroupns=host", "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
@@ -632,11 +562,13 @@ assert all(not Path(work['store']).is_absolute() and not Path(work['quarantine']
             "-v", venue.names["support"] + ":/support:ro",
             "-v", venue.names["harness"] + ":/harness:ro",
             "-v", venue.names["harness"] + ":/opt/tinyassets/boxhostd",
+            "-v", venue.names["backup"] + ":/snapshots",
+            "-v", venue.names["control"] + ":/deployment",
             "--entrypoint", "python", image, "-B", "/support/rehearsal_serve.py", "host-startup",
             check=False)
         required(result)
         startup = json.loads(result.stdout)
-        if startup != {"owners": census["owners"], "erased": 1, "failed": 1, "mount_checks": 4}:
+        if startup != {"owners": census["owners"]}:
             raise RuntimeError("incomplete host startup proof")
         passed(step, **startup)
         step = "serving"
@@ -658,6 +590,8 @@ assert all(not Path(work['store']).is_absolute() and not Path(work['quarantine']
             # the OCI root remains readonly to the owner inside the sandbox.
             "-v", venue.names["harness"] + ":/harness",
             "-v", venue.names["harness"] + ":/opt/tinyassets/boxhostd",
+            "-v", venue.names["backup"] + ":/snapshots",
+            "-v", venue.names["control"] + ":/deployment",
             "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
             "--entrypoint",
             "python",
@@ -680,6 +614,7 @@ assert all(not Path(work['store']).is_absolute() and not Path(work['quarantine']
             "writes",
             "reconnect",
             "production_launch",
+            "restore_replay_refusals", "restore_new_operations", "restore_revoked_keys",
         }
         if (
             set(counts) != expected
@@ -689,29 +624,21 @@ assert all(not Path(work['store']).is_absolute() and not Path(work['quarantine']
             or counts["reconnect"] < 1
         ):
             raise RuntimeError("incomplete serving proof")
+        restored = {key.removeprefix('restore_'): counts.pop(key) for key in (
+            'restore_replay_refusals', 'restore_new_operations', 'restore_revoked_keys')}
         passed(step, **counts)
-        for phase in ("snapshot", "write"):
-            venue.helper("import runpy; runpy.run_path('/support/rehearse_box_move.py')"
-                         "['restore_replay_probe'](" + repr(phase) + ")")
-        step = "normal_restore_after_traffic_refuses"
-        venue.restore(replay=True, refuse=True)
+        passed('single_owner_restore', **restored)
+        step = 'normal_restore_after_traffic_refuses'
+        venue.restore(refuse=True, refusal_reason='consumed')
         passed(step, refusals=1)
-        step = "disaster_provider_unreachable_refuses"
-        venue.helper("import runpy; runpy.run_path('/support/rehearse_box_move.py')"
-                     "['provider_failure_probe']('before')")
-        venue.restore(replay=True, disaster=True, refuse=True)
-        venue.helper("import runpy; runpy.run_path('/support/rehearse_box_move.py')"
-                     "['provider_failure_probe']('after')")
-        passed(step, refusals=1)
-        step = "disaster_restore_after_traffic"
-        venue.restore(replay=True, disaster=True)
-        replayed = json.loads(venue.helper(
-            "import runpy; print(runpy.run_path('/support/rehearse_box_move.py')"
-            "['restore_replay_probe']('verify'))").stdout)
-        if replayed != census["owners"] or replayed < 1:
-            raise RuntimeError("incomplete replay proof")
-        passed(step, comparisons=1, replay_refusals=3 * replayed + 1, fenced_owners=replayed,
-               stale_credentials=3, erased_owners=1, reconciled_owners=replayed)
+        step = 'platform_recovery_lane_b_pending'
+        result = json.loads(venue.helper(
+            "import json, runpy; print(json.dumps(runpy.run_path('/support/rehearse_box_move.py')"
+            "['platform_recovery_probe']()))").stdout)
+        if result != {'unchanged_volumes': census['owners'], 'stale_credentials': 3,
+                      'admission_closed': 1, 'lane_b_pending_refusals': 1}:
+            raise RuntimeError('incomplete platform recovery refusal proof')
+        passed(step, **result)
     except BaseException:
         report[step] = {"status": "FAIL"}
         print(step + " FAIL", flush=True)

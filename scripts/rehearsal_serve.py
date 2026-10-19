@@ -16,12 +16,11 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from types import SimpleNamespace
 
 sys.path.insert(0, "/app")
 
 
-def owner(root, relay, secret, socket):
+def owner(root, relay, secret, socket, uid, generation, centers):
     import fcntl
     import socket as sockets
     import struct
@@ -37,12 +36,9 @@ def owner(root, relay, secret, socket):
     for original, mounted in ((relay, "/run/owner-relay"), (secret, "/run/owner-secret")):
         Path(mounted).touch()
         subprocess.run(["mount", "--bind", original, mounted], check=True)
-    fence = Path("/run/boxhostd/restore-epoch")
-    fence.parent.mkdir(exist_ok=True)
-    fence.touch()
-    subprocess.run(["mount", "--bind", "/data/.restore-epoch", str(fence)], check=True)
-    subprocess.run(["mount", "-o", "remount,bind,ro", str(fence)], check=True)
-    uid = Path(root).stat().st_uid
+    uid = int(uid)
+    os.environ["TINYASSETS_VOLUME_GENERATION"] = generation
+    os.environ["TINYASSETS_ADMITTED_CENTERS"] = centers
     os.setgroups([])
     os.setgid(uid)
     os.setuid(uid)
@@ -58,6 +54,49 @@ def owner(root, relay, secret, socket):
         from tinyassets.conversation_store import record_turn
 
         doc = await request.json()
+        if doc['action'].startswith('restore_'):
+            import uuid
+
+            from tinyassets.agent_loop.owner_tools import OwnerTools
+            from tinyassets.boxes.provider import BoxOperationRefused
+            from tinyassets.owner_runtime import current
+
+            runtime = current()
+            core = runtime.tools
+            handle = core.bind(runtime.principal)
+            logical = '/cc/' + doc['center'] + '/.restore-proof'
+            tools = OwnerTools(runtime.root / doc['center'])
+            if doc['action'] == 'restore_prepare':
+                core.write(handle, core.new_operation(uuid.uuid4().hex), logical,
+                           b'snapshot', max_bytes=100)
+                return JSONResponse({key: core.new_operation(uuid.uuid4().hex)
+                                     for key in ('write', 'bash', 'unseen')})
+            operations = doc['operations']
+            if doc['action'] == 'restore_mutate':
+                core.write(handle, operations['write'], logical, b'after', max_bytes=100)
+                await tools.bash(operations['bash'], 'printf once > .restore-bash')
+                return JSONResponse({'mutated': True})
+            assert (runtime.root / doc['center'] / '.restore-proof').read_bytes() == b'snapshot'
+            refused = 0
+            for operation in (operations['write'], operations['unseen']):
+                try:
+                    core.write(handle, operation, logical, b'replay', max_bytes=100)
+                except BoxOperationRefused:
+                    refused += 1
+                else:
+                    raise AssertionError('old-generation write replayed')
+            try:
+                await tools.bash(operations['bash'], 'printf replay > .restore-bash')
+            except BoxOperationRefused:
+                refused += 1
+            else:
+                raise AssertionError('old-generation bash replayed')
+            assert not (runtime.root / doc['center'] / '.restore-bash').exists()
+            core.write(handle, core.new_operation(uuid.uuid4().hex), logical,
+                       b'new work', max_bytes=100)
+            await tools.bash(core.new_operation(uuid.uuid4().hex), 'printf fresh > .restore-bash')
+            assert (runtime.root / doc['center'] / '.restore-bash').read_text() == 'fresh'
+            return JSONResponse({'replay_refusals': refused, 'new_operations': 2})
         if doc["action"] == "model_ask":
             from tinyassets.api.pending_requests import request_from_user
             from tinyassets.daemon_server import get_founder_home
@@ -240,7 +279,8 @@ def smoke(confirm=False):
             def __init__(self):
                 self.processes = {}
 
-            def start(self, uid, gid, *, relay, app_dir, secret_file, memory_bytes):
+            def start(self, uid, gid, *, relay, app_dir, secret_file, memory_bytes,
+                      volume_mount, volume_generation, centers):
                 log = tempfile.TemporaryFile()
                 logs.append(log)
                 process = subprocess.Popen(
@@ -253,10 +293,11 @@ def smoke(confirm=False):
                         sys.executable,
                         __file__,
                         "owner",
-                        "/box-store/" + str(uid),
+                        volume_mount["source"],
                         str(relay),
                         str(secret_file),
                         str(app_dir / "app.sock"),
+                        str(uid), str(volume_generation), json.dumps(centers),
                     ],
                     stdout=log,
                     stderr=log,
@@ -272,7 +313,11 @@ def smoke(confirm=False):
                     self.processes[uid].kill()
                     self.processes[uid].wait(20)
 
-            shutdown = stop
+            def shutdown(self, uid):
+                if self.alive(uid):
+                    self.processes[uid].terminate()
+                    if self.processes[uid].wait(30) != 0:
+                        raise RuntimeError("owner did not finish graceful shutdown")
 
         runtime = Runtime()
         log = tempfile.TemporaryFile()
@@ -289,18 +334,16 @@ def smoke(confirm=False):
         admission = OwnerRegistry(Path("/data"), state / "broker.sock")
         relays = OwnerRelays(run / "relay", admission)
 
-        # Migration already provisioned and verified every quota. The lifecycle
-        # read checks that exact record instead of creating a second box tree.
-        def provision(uid, quota, center):
-            from deploy.box_project_readback import verify_owner
+        from tinyassets.boxes.volumes import OwnerVolumes
 
-            verify_owner(Path("/box-store"), Path("/box-store") / str(uid), uid, quota)
+        volumes = OwnerVolumes(Path('/box-store'), run / 'mounts',
+                               ':local:/snapshots/owner-snapshots')
 
         (run / "apps").mkdir(mode=0o755)
         manager = OwnerDaemons(
             runtime,
             admission,
-            SimpleNamespace(provision=provision),
+            volumes,
             relays,
             run / "apps",
             awake_cap=max(1, len(journal["plan"])),
@@ -323,9 +366,12 @@ def smoke(confirm=False):
             uid = manager.ensure_awake(name)
             return BoxRoute(run / "apps" / str(uid) / "app.sock", manager.boxes[uid].secret)
 
-        from tinyassets.router_traffic import open_traffic
+        from tinyassets.cutover_control import admit
+        from tinyassets.router_traffic import admits
 
-        open_traffic(Path("/data"))  # Synthetic router acceptance before the user pass.
+        if not confirm:
+            admit(Path('/deployment/cutover'), Path('/data'))
+        assert admits(Path('/data'), journal['plan'][0]['principal'])
         router = OwnerRouter(Starlette(), resolver=resolve)
         try:
             if confirm:
@@ -491,6 +537,36 @@ def smoke(confirm=False):
                                                  f"serving={connected.text}\n")
                                 raise RuntimeError("confirmed source did not become serving")
                             counts["reconnect"] += 1
+                if not confirm:
+                    from tinyassets.api_keys import ApiKeyStore
+
+                    item = journal['plan'][0]
+                    owner_name, center = item['principal'], item['centers'][0]
+                    keys = ApiKeyStore(Path('/data'))
+                    key = keys.mint(owner_name, name='synthetic restore proof', scopes=[],
+                                    authority=None)
+                    with identity_context(Identity(user_id=owner_name, username=owner_name,
+                                                   capabilities=['tinyassets.universe.write'])):
+                        def proof(action, **values):
+                            answer = client.post('/app/rehearsal-probe', json={
+                                'center': center, 'action': action, **values})
+                            assert answer.status_code == 200, answer.text
+                            return answer.json()
+
+                        operations = proof('restore_prepare')
+                        uid = admission.owner(owner_name)['uid']
+                        assert manager._drain(manager.boxes[uid], idle=0, stop=True)
+                        snapshot = admission.volume(owner_name)['snapshot_id']
+                        proof('restore_mutate', operations=operations)
+                        keys.revoke(owner_name, key['key_id'], authority=None)
+                        assert keys.resolve(key['key']) is None
+                        assert manager._drain(manager.boxes[uid], idle=0, stop=True)
+                        manager.storage.restore(owner_name, snapshot, lambda: runtime.stop(uid))
+                        restored = proof('restore_verify', operations=operations)
+                        assert keys.resolve(key['key']) is None
+                        counts['restore_replay_refusals'] = restored['replay_refusals']
+                        counts['restore_new_operations'] = restored['new_operations']
+                        counts['restore_revoked_keys'] = 1
         except BaseException:
             # Captured by the parent harness, never included in its report.
             # Synthetic tests retain this evidence when a child fails startup.
@@ -503,16 +579,17 @@ def smoke(confirm=False):
                 if child.poll() is None:
                     child.kill()
                 child.wait(20)
+            for uid in runtime.processes:
+                volumes.detach(uid)
             relays.close()
             stop.set()
             erasure.join(5)
             for stream in logs:
                 stream.close()
         if not confirm:
-            # Connecting a source changes shared authority. Exercise that gesture
-            # on a disposable shared-store clone so paired restore still proves
-            # the original authority fence. Owner writes stay on the migrated
-            # XFS trees and are covered by explicit owner-write-loss acceptance.
+            # Exercise reconnect on a disposable shared-store clone. The separate
+            # platform recovery proof invalidates the original shared credentials;
+            # owner writes remain on their opaque volumes.
             with tempfile.TemporaryDirectory(prefix="/tmp/s6-connect-") as clone:
                 subprocess.run(["cp", "-a", "/data", clone + "/data"], check=True)
                 result = subprocess.run(
@@ -538,100 +615,41 @@ def smoke(confirm=False):
 
 
 def host_startup():
-    """Exercise real host listeners after container-path erasure scheduling.
-
-    The disposable runsc census has no sandboxes; owner execution is exercised
-    separately by smoke(). No production service, data or executable is used.
-    """
-    from tinyassets.boxes import destroy
-    from tinyassets.boxes.provider import BoxError
-    from tinyassets.erasure_ledger import ErasureLedger
-
-    store = Path("/var/lib/boxhostd/owners")
-    ledger = ErasureLedger(Path("/data"))
-    subprocess.run(["bash", "/support/deploy/box-store-check.sh", str(store), "--initialize"],
-                   check=True)
-    # A real empty-subdirectory bind has the same device and UUID. It must
-    # never prove absence, including when stacked above the configured root.
-    empty = store / ".rehearsal-empty"
-    empty.mkdir()
-    fd = os.open(store, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        destroy.verify_store(store, fd)
-        subprocess.run(["mount", "--bind", str(empty), str(store)], check=True)
-        try:
-            for descriptor in (fd, os.open(store, os.O_RDONLY | os.O_DIRECTORY)):
-                try:
-                    try:
-                        destroy.verify_store(store, descriptor)
-                    except BoxError:
-                        pass
-                    else:
-                        raise AssertionError("subtree/covered mount accepted")
-                finally:
-                    if descriptor != fd:
-                        os.close(descriptor)
-        finally:
-            subprocess.run(["umount", str(store)], check=True)
-        destroy.verify_store(store, fd)
-    finally:
-        os.close(fd)
-        empty.rmdir()
-
-    binary = Path("/tmp/recovery-only-runsc")
-    binary.write_text('#!/bin/sh\n'
-                      'case "$*" in *"list --format=json") echo "[]";; '
-                      '*"kill "*|*"delete "*) exit 0;; *) exit 97;; esac\n')
-    binary.chmod(0o700)
+    """Production listeners with current opaque volume admission and pinned runsc."""
     from rehearsal_launch import production_host
 
-    runtime = Path("/run/tinyassets-boxhostd")
-    state = runtime / "broker"
-    children = []
-    with tempfile.TemporaryFile() as output, production_host(output, runsc=binary):
+    runtime = Path('/run/tinyassets-boxhostd')
+    state = runtime / 'broker'
+    with tempfile.TemporaryFile() as output, production_host(output):
+        process = subprocess.Popen([sys.executable, __file__, 'registered-broker', str(state)],
+                                   stdout=output, stderr=output)
         try:
-            children.append(subprocess.Popen([
-                sys.executable, __file__, "registered-broker", str(state)],
-                stdout=output, stderr=output))
-            deadline = time.monotonic() + 30
-            while not (ledger.receipt("rehearsal-erased")["home_removed"]
-                       and ledger.receipt("rehearsal-failed").get("erasure_failures")):
-                if (any(child.poll() is not None for child in children)
-                        or time.monotonic() > deadline):
-                    output.seek(0)
-                    raise RuntimeError("host startup failed: " +
-                                       output.read().decode(errors="replace"))
-                time.sleep(.05)
-            assert not (store / "399997").exists()
-            assert ledger.receipt("rehearsal-erased")["home_removed"]
-            assert ledger.receipt("rehearsal-failed")["erasure_failures"]
-            assert not ledger.receipt("rehearsal-failed")["home_removed"]
-            owners = [row["principal"] for row in json.loads(
-                Path("/data/.owner-cutover.json").read_text())["plan"]]
+            owners = [row['principal'] for row in json.loads(
+                Path('/data/.owner-cutover.json').read_text())['plan']]
             code = """
-import json, sys
+import json, sys, time
 from tinyassets.boxes.daemon_control import request
 for owner in json.loads(sys.argv[1]):
-    assert request('status', owner)['uid'] >= 300001
-try:
-    request('ensure_awake', 'rehearsal-failed', scheduled=False)
-except RuntimeError:
-    pass
-else:
-    raise AssertionError('erased owner admitted')
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            assert request('status', owner)['uid'] >= 300001
+            break
+        except (RuntimeError, OSError):
+            if time.monotonic() > deadline: raise
+            time.sleep(.05)
 """
-            result = subprocess.run([sys.executable, "-c", code, json.dumps(owners)],
+            result = subprocess.run([sys.executable, '-c', code, json.dumps(owners)],
                                     user=1001, group=1001, extra_groups=[1102],
-                                    capture_output=True, text=True, timeout=30)
+                                    capture_output=True, text=True, timeout=45)
             if result.returncode:
                 output.seek(0)
-                raise RuntimeError("host listener proof failed: " + result.stderr
-                                   + output.read().decode(errors="replace"))
-            print(json.dumps({"owners": len(owners), "erased": 1, "failed": 1, "mount_checks": 4}))
+                raise RuntimeError('host startup failed: ' + result.stderr +
+                                   output.read().decode(errors='replace'))
+            print(json.dumps({'owners': len(owners)}))
         finally:
-            for child in reversed(children):
-                child.terminate()
-                child.wait(15)
+            process.terminate()
+            process.wait(15)
 
 
 def reconnect(clone):

@@ -47,7 +47,7 @@ def production_host(output, *, runsc=Path("/support/gvisor/runsc")):
                         ("cpu.max", "300000 100000")):
         (cgroup / name).write_text(value)
     env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-           "HOME": "/root"}
+           "HOME": "/root", "BACKUP_DEST": ":local:/snapshots/owner-snapshots"}
     code = """
 import os, sys
 from pathlib import Path
@@ -64,7 +64,8 @@ os.execve(sys.executable, [sys.executable, '-B', '/support/deploy/boxhostd.py',
                        env=env, stdout=output, stderr=output, check=True)
         # Match ExecStart's host interpreter. Application site-packages must
         # not hide an import dependency unavailable to the production host.
-        process = subprocess.Popen(["/usr/bin/python3", "-B", "-c", code, str(cgroup)],
+        process = subprocess.Popen(["unshare", "--mount", "--propagation", "private",
+                                    "/usr/bin/python3", "-B", "-c", code, str(cgroup)],
                                    env=env, stdout=output, stderr=output)
         socket = Path("/run/tinyassets-boxhostd/broker-registration.sock")
         deadline = time.monotonic() + 30
@@ -83,10 +84,14 @@ os.execve(sys.executable, [sys.executable, '-B', '/support/deploy/boxhostd.py',
         if process is not None:
             process.terminate()
             try:
-                process.wait(30)
+                # C2 shutdown includes compression, upload and readback. Do not
+                # silently kill that work and hand a pending snapshot to serving.
+                if process.wait(180) != 0:
+                    raise RuntimeError("production host did not finish shutdown")
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(10)
+                raise RuntimeError("production host snapshot shutdown timed out") from None
         try:
             # Include failed launches; none may leave a sandbox in the engine.
             # This is the unit's default KillMode=control-group teardown.
@@ -109,6 +114,15 @@ os.execve(sys.executable, [sys.executable, '-B', '/support/deploy/boxhostd.py',
 
 def production_launch(owner_name):
     """Wake through the UID1001 socket using production quota, relay and runsc."""
+    import sqlite3
+    from contextlib import closing
+
+    def snapshot():
+        with closing(sqlite3.connect('/data/.broker/state/owner-identities.db')) as db:
+            return db.execute('SELECT snapshot_id,work FROM owner_volumes WHERE principal=?',
+                              (owner_name,)).fetchone()
+
+    previous_snapshot = snapshot()[0]
     with tempfile.TemporaryFile() as output:
         broker = None
         try:
@@ -146,6 +160,9 @@ print(json.dumps({'uid': uid}))
                     "import os; os.chdir('/'); os.listdir('/'); os.chdir('/app'); "
                     "import tinyassets; assert os.getuid() >= 300001"],
                     check=True, stdout=output, stderr=output, timeout=30)
+            current_snapshot, pending = snapshot()
+            assert current_snapshot != previous_snapshot and pending is None, (
+                "production shutdown did not publish its completed owner snapshot")
         except BaseException as exc:
             output.seek(0)
             detail = getattr(exc, "stderr", "") or ""

@@ -209,7 +209,10 @@ ownership and mode. Recovery atomically replaces and fsyncs the shared layout
 marker before changing authority, including when the service-owned marker is
 under a sticky shared root. The root Linux proof reaches the pending deletion-job
 refusal with admission closed and local credentials invalidated.
-The archive rehearsal is being ported to the separate C2/C3/C4 operations. This is not end-to-end platform recovery acceptance until the named current
+The archive rehearsal now invokes separate C2/C3/C4 operations. Its C3 step
+requires the labelled lane-b-pending refusal, invalidated local credentials,
+unchanged opaque image bytes and closed admission. Its complete serving receipt
+is still pending. This is not end-to-end platform recovery acceptance until the named current
 authorities are available.
 
 ### C4. Cutover rollback is the old system's restore, gated by durable eligibility
@@ -240,7 +243,11 @@ missing-state refusal; deploy-shell tests pin the integration. Migration publish
 the root-owned 0644 admission decision after assigning service custody, under the
 sticky root-owned shared directory. Root tests give both service UIDs directory
 access and prove neither can overwrite or unlink that decision. The full archive
-rehearsal remains pending and these unit/integration proofs do not claim its result.
+rehearsal has passed pre-traffic restore and both crash-resume trials; its complete
+serving receipt remains pending. The harness uses deployment eligibility directly
+and deletes paired-restore/provider adapters. Independent crash trials validate
+each opaque snapshot's digest and map binding before comparing logical map rows;
+all owner-content manifests and other shared authority remain compared unchanged.
 
 ### C5. The router only routes (T1)
 **Deleted from `owner_router.py:225–378`:** the account-deletion orchestration

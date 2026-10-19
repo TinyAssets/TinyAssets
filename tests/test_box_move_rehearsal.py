@@ -64,6 +64,7 @@ def test_reset_fixture_restores_archived_root_custody(tmp_path, monkeypatch):
         code = code.replace("'/data'", repr(str(root)))
         code = code.replace("'/box-store'", repr(str(store)))
         code = code.replace("'/backup/original.tar.gz'", repr(str(archive)))
+        code = code.replace("'/deployment/cutover'", repr(str(tmp_path / "control")))
         exec(code, {})
 
     venue = harness.Venue('unused', 1)
@@ -218,6 +219,9 @@ def test_cleanup_runs_before_step_failure_or_interrupt_escapes(monkeypatch, fail
 
         def setup(self, _):
             calls.append("setup")
+
+        def initialize_cutover(self):
+            pass
 
         def migration(self, step):
             calls.append(step)
@@ -578,7 +582,7 @@ with tempfile.TemporaryDirectory() as scratch:
 Path(str(archive) + '.sha256').write_text(
     hashlib.sha256(archive.read_bytes()).hexdigest() + '  ' + archive.name + '\\n')
 """)
-                original_restore(refuse=True, refusal_reason="not index-only")
+                original_restore(refuse=True, refusal_reason="pre-cutover backup changed")
                 venue.container(
                     "--rm", "--user", "0", "-v", venue.names["backup"] + ":/backup",
                     "--entrypoint", "python", venue.image, "-c", """
@@ -591,10 +595,9 @@ Path(str(archive) + '.sha256').write_text(
 """)
                 tested_corruption = True
             result = original_restore(**kwargs)
-            if not kwargs or kwargs.get("disaster") and not kwargs.get("refuse"):
+            if not kwargs:
                 venue.helper("""
-home = (Path('/box-store/300001/a1') if
-        Path('/box-store/300001/a1').exists() else Path('/data/a1'))
+home = Path('/data/a1')
 assert (home / 'shortcut').readlink() == Path('notes.txt')
 assert (home / 'shortcut').read_text() == 'private history for a1'
 assert (home / 'notes.txt').samefile(home / 'notes-copy.txt')
@@ -675,8 +678,8 @@ finally:
             "host_startup",
             "serving",
             "normal_restore_after_traffic_refuses",
-            "disaster_provider_unreachable_refuses",
-            "disaster_restore_after_traffic",
+            "single_owner_restore",
+            "platform_recovery_lane_b_pending",
             "cleanup",
         }
         assert all(step["status"] == "PASS" for step in result.values())
@@ -694,11 +697,11 @@ finally:
         }
         assert result["restore_before_write"] == {"status": "PASS", "comparisons": 1}
         assert result["normal_restore_after_traffic_refuses"] == {"status": "PASS", "refusals": 1}
-        assert result["disaster_provider_unreachable_refuses"] == {"status": "PASS", "refusals": 1}
-        assert result["disaster_restore_after_traffic"] == {
-            "status": "PASS", "comparisons": 1, "replay_refusals": 7, "fenced_owners": 2,
-            "stale_credentials": 3, "erased_owners": 1, "reconciled_owners": 2,
-        }
+        assert result['single_owner_restore'] == {
+            'status': 'PASS', 'replay_refusals': 3, 'new_operations': 2, 'revoked_keys': 1}
+        assert result['platform_recovery_lane_b_pending'] == {
+            'status': 'PASS', 'unchanged_volumes': 2, 'stale_credentials': 3,
+            'admission_closed': 1, 'lane_b_pending_refusals': 1}
         captured = capsys.readouterr()
         assert captured.err == ""
         assert len(captured.out.splitlines()) == len(result)

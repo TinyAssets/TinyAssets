@@ -54,180 +54,102 @@ def validate_archive(path: Path) -> int:
     return total
 
 
-def restore_replay_probe(mode: str) -> int:
-    """Synthetic operations in the disposable venue, through real owner tools."""
-    import asyncio
-    import json
-    import os
-    import runpy
-    import sqlite3
-    import subprocess
+def rehearsal_manifests():
+    """Compare all content and authority across independent migration trials.
 
-    from tinyassets import owner_runtime
-    from tinyassets.agent_loop.owner_tools import OwnerTools
-    from tinyassets.boxes.boxd import OwnerBoxd
-    from tinyassets.boxes.provider import BoxError
-    from tinyassets.erasure_ledger import ErasureLedger
-
-    data, store, backup = Path("/data"), Path("/box-store"), Path("/backup/replay")
-    os.environ["TINYASSETS_DATA_DIR"] = str(data)
-    backup.mkdir(exist_ok=True)
-    with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
-        owners = db.execute("SELECT principal,machine FROM box_records WHERE machine<>399999"
-                            ).fetchall()
-    proof = backup / "proof.json"
-    epochs = json.loads(proof.read_text()) if mode == "verify" else {}
-    for owner, uid in owners:
-        tree = store / str(uid)
-        fence = data / ".restore-epoch"
-        core = OwnerBoxd(owner_id=owner, owner_root=tree, state_dir=tree / ".owner-boxd",
-                         restore_epoch=fence.read_text() if fence.exists() else "")
-        try:
-            handle = core.bind(owner)
-            owner_runtime._runtime = owner_runtime.OwnerRuntime(owner, uid, tree, os.getpid(), core)
-            tools = OwnerTools(tree)
-            if mode == "snapshot":
-                core.write(handle, "rehearsal-before", "/cc/.replay-proof", b"snapshot",
-                           max_bytes=100)
-                epochs[owner] = core.operation_prefix()
-                asyncio.run(tools.bash("rehearsal-bash", "echo once >> .bash-proof"))
-            elif mode == "write":
-                core.write(handle, "rehearsal-after", "/cc/.replay-proof", b"after", max_bytes=100)
-            elif mode == "verify":
-                if core.operation_prefix() == epochs[owner]:
-                    raise RuntimeError("owner epoch did not advance")
-                if (tree / ".replay-proof").read_bytes() != b"snapshot":
-                    raise RuntimeError("owner snapshot was not restored")
-                core.write(handle, core.operation_prefix() + "rehearsal-later", "/cc/.replay-proof",
-                           b"later work", max_bytes=100)
-                for op_id, content in (("rehearsal-before", b"snapshot"),
-                                       ("rehearsal-after", b"after")):
-                    try:
-                        core.write(handle, op_id, "/cc/.replay-proof", content, max_bytes=100)
-                    except BoxError as exc:
-                        if "not re-run" not in str(exc):
-                            raise
-                    else:
-                        raise RuntimeError("restored operation was admitted again")
-                if (tree / ".replay-proof").read_bytes() != b"later work":
-                    raise RuntimeError("replayed operation changed later work")
-                try:
-                    asyncio.run(tools.bash("rehearsal-bash", "echo once >> .bash-proof"))
-                except BoxError as exc:
-                    if "not re-run" not in str(exc):
-                        raise
-                else:
-                    raise RuntimeError("restored bash operation was admitted again")
-                if (tree / ".bash-proof").read_text() != "once\n":
-                    raise RuntimeError("replayed bash changed restored work")
-            else:
-                raise ValueError("unknown replay proof phase")
-        finally:
-            owner_runtime._runtime = None
-            core.close()
-    if mode == "snapshot":
-        # A separate disposable owner preserves the per-owner replay proof
-        # while exercising complete post-snapshot deletion in the same restore.
-        with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
-            db.execute("INSERT INTO owner_identities VALUES ('restore-erased',399999)")
-            db.execute("INSERT INTO box_records VALUES ('restore-erased',399999,399999,1048576)")
-        erased_tree = store / "399999"
-        erased_tree.mkdir(mode=0o700)
-        (erased_tree / "private").write_bytes(b"synthetic erased content")
-        os.chown(erased_tree, 399999, 399999)
-        import hashlib
-
-        from tinyassets.api_keys import ApiKeyStore
-        from tinyassets.broker.ops import new_op_id
-        from tinyassets.onboarding import owner_sessions
-        from tinyassets.router_credentials import HookOwners
-
-        # Shared credentials are router-owned, including in the root-sticky
-        # data directory installed by a real box-host startup.
-        os.setegid(1001)
-        os.seteuid(1001)
-        try:
-            credential = ApiKeyStore(data).mint(owners[0][0], name="synthetic", scopes=[],
-                                                authority=None)["key"]
-            HookOwners(data).publish(hashlib.sha256(b"rehearsal-hook").hexdigest(), owners[0][0])
-            with owner_sessions.store() as db:
-                db.execute("INSERT INTO owner_sessions VALUES (?,?,?)",
-                           (owner_sessions.hashed("rehearsal-session"),
-                            json.dumps({"user_id": owners[0][0]}), 4000000000))
-        finally:
-            os.seteuid(0)
-            os.setegid(0)
-        (backup / "credentials.json").write_text(json.dumps({
-            "key": credential, "op": new_op_id()}))
-        runpy.run_path("/support/rehearsal_restore_provider.py")["record"](
-            data, owners, backup / "provider.json")
-        proof.write_text(json.dumps(epochs))
-        stamp = "2026-10-17T01-00-00Z"
-        shared = backup / f"tinyassets-data-{stamp}.tar.gz"
-        boxes = backup / f"tinyassets-box-store-{stamp}.tar.gz"
-        # The S flag keeps symlink targets verbatim: an owner's links are
-        # content, while member and hard-link names take the archive prefix.
-        subprocess.run(["tar", "-czf", str(shared), "--transform=s,^data,_data,S",
-                        "-C", "/", "--numeric-owner", "--acls", "--xattrs", "data"], check=True)
-        subprocess.run(["tar", "-czf", str(boxes), "--transform=s,^,owners/,S",
-                        "-C", str(store), "--numeric-owner", "--acls", "--xattrs",
-                        *(str(uid) for _, uid in owners), "399999"], check=True)
-        runpy.run_path("/support/deploy/backup-pair.py")["create"](
-            shared, boxes, backup / f"tinyassets-pair-{stamp}.json")
-    elif mode == "write":
-        from tinyassets.boxes.destroy import tree as destroy_tree
-
-        # No local tombstone: the recorded provider alone proves this erasure.
-        destroy_tree(store, 399999, erase=True)
-        from tinyassets.router_traffic import open_traffic
-
-        open_traffic(data)
-    elif mode == "verify":
-        report = json.loads((data / ".disaster-restore.json").read_text())
-        if report["owners_reconciled"] != len(owners):
-            raise RuntimeError("not every surviving owner was reconciled")
-        if (store / "399999").exists() or not ErasureLedger(data).contains("restore-erased"):
-            raise RuntimeError("restored erased owner returned")
-        from tinyassets.api_keys import ApiKeyStore
-        from tinyassets.broker.ops import OpStore
-        from tinyassets.onboarding import owner_sessions
-        from tinyassets.router_credentials import HookOwners
-
-        credentials = json.loads((backup / "credentials.json").read_text())
-        if (ApiKeyStore(data).resolve(credentials["key"]) is not None
-                or HookOwners(data).resolve("rehearsal-hook") is not None
-                or owner_sessions.lookup("rehearsal-session") is not None):
-            raise RuntimeError("stale credential still verifies")
-        if OpStore(data / ".broker/ops.db").admit(
-                "rehearsal-outbound", credentials["op"], "digest").kind != "expired":
-            raise RuntimeError("pre-restore outbound operation admitted")
-    return len(owners)
-
-
-def provider_failure_probe(mode):
-    """A failed provider must leave both live volumes byte-identical."""
+    C2 creates new opaque snapshots in each trial. Validate those objects and
+    compare their logical bindings, preserving every other identity value and
+    schema object. SQLite page layout and snapshot UUIDs are not owner content.
+    """
+    import gzip
     import hashlib
     import json
+    import sqlite3
+    from contextlib import closing
 
-    backup = Path("/backup/replay")
-    recording = backup / "provider.json"
-    provider = json.loads(recording.read_text())
-    fingerprints = {}
-    for root in (Path("/data"), Path("/box-store")):
-        fingerprints[str(root)] = {
-            str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
-            for path in root.rglob("*") if path.is_file()}
-    proof = backup / "provider-failure-proof.json"
-    if mode == "before":
-        proof.write_text(json.dumps(fingerprints))
-        provider["unreachable"] = True
-    elif mode == "after":
-        if json.loads(proof.read_text()) != fingerprints:
-            raise RuntimeError("provider failure changed live volumes")
-        provider["unreachable"] = False
+    root = Path('/data')
+    journal = json.loads((root / '.owner-cutover.json').read_text())
+    shared = journal['final_manifest']
+    relative = '.broker/state/owner-identities.db'
+    with closing(sqlite3.connect(root / relative)) as db:
+        schema = db.execute('SELECT type,name,tbl_name,sql FROM sqlite_master '
+                            'ORDER BY name').fetchall()
+        bindings = db.execute('SELECT principal,uid,snapshot_id,snapshot_sha256,work '
+                              'FROM owner_volumes ORDER BY principal').fetchall()
+        for owner, uid, snapshot, digest, work in bindings:
+            assert work is None
+            assert journal['snapshots'][str(uid)] == snapshot
+            with gzip.open(Path('/backup/owner-snapshots') / str(uid) /
+                           (snapshot + '.img.gz'), 'rb') as stream:
+                assert hashlib.file_digest(stream, 'sha256').hexdigest() == digest
+            assert db.execute('SELECT snapshot_sha256 FROM owner_snapshots '
+                              'WHERE principal=? AND snapshot_id=?',
+                              (owner, snapshot)).fetchall() == [(digest,)]
+        tables = {}
+        for kind, name, _, _ in schema:
+            if kind != 'table':
+                continue
+            cursor = db.execute('SELECT * FROM "' + name.replace('"', '""') + '"')
+            columns = [column[0] for column in cursor.description]
+            rows = cursor.fetchall()
+            if name in {'owner_volumes', 'owner_snapshots'}:
+                rows = [tuple('verified snapshot' if column in {'snapshot_id', 'snapshot_sha256'}
+                              else value for column, value in zip(columns, row)) for row in rows]
+            tables[name] = sorted(rows, key=repr)
+    shared[relative] = {'schema': schema, 'tables': tables}
+    return [shared, journal['owner_manifests']]
+
+
+def platform_recovery_probe():
+    """Recover shared credentials only; C3's missing deletion authority stays closed."""
+    import hashlib
+    import json
+    import os
+    import shutil
+
+    from tinyassets.api_keys import ApiKeyStore
+    from tinyassets.onboarding import owner_sessions
+    from tinyassets.restore_recovery import RecoveryUnavailable, platform_recovery
+    from tinyassets.router_credentials import HookOwners
+    from tinyassets.router_traffic import admits
+
+    root, store = Path('/data'), Path('/box-store')
+    os.environ['TINYASSETS_DATA_DIR'] = str(root)
+    owner = json.loads((root / '.owner-cutover.json').read_text())['plan'][0]['principal']
+    keys = ApiKeyStore(root)
+    key = keys.mint(owner, name='synthetic platform recovery', scopes=[], authority=None)['key']
+    HookOwners(root).publish(hashlib.sha256(b'rehearsal-hook').hexdigest(), owner)
+    with owner_sessions.store() as db:
+        db.execute('INSERT INTO owner_sessions VALUES (?,?,?)',
+                   (owner_sessions.hashed('rehearsal-session'),
+                    json.dumps({'user_id': owner}), 4000000000))
+
+    def images():
+        # Opaque volume objects are the lifecycle unit; never attach or inspect content.
+        hashes = {}
+        for path in store.glob('*.img'):
+            with path.open('rb') as stream:
+                hashes[path.name] = hashlib.file_digest(stream, 'sha256').hexdigest()
+        return hashes
+
+    before = images()
+    staged = Path('/backup/platform-stage')
+    shutil.copytree(root, staged)
+    os.environ['TINYASSETS_DATA_DIR'] = str(staged)
+    try:
+        platform_recovery(staged, backup_time=1)
+    except RecoveryUnavailable as error:
+        assert 'deletion-job recovery is not implemented' in str(error)
     else:
-        raise ValueError("unknown provider failure phase")
-    recording.write_text(json.dumps(provider))
+        raise AssertionError('missing lane-b authority reopened platform')
+    assert not admits(staged, owner)
+    assert json.loads((staged / '.layout.json').read_text())['state'] == 'recovering'
+    assert ApiKeyStore(staged).resolve(key) is None
+    assert HookOwners(staged).resolve('rehearsal-hook') is None
+    assert owner_sessions.lookup('rehearsal-session') is None
+    assert images() == before
+    return {'unchanged_volumes': len(before), 'stale_credentials': 3,
+            'admission_closed': 1, 'lane_b_pending_refusals': 1}
 
 
 def archive_rehearsal(image, archive, *, store_bytes):
