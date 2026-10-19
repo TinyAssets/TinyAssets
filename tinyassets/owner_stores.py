@@ -37,8 +37,10 @@ INFRASTRUCTURE: frozenset[str] = frozenset({
     "tinyassets/broker/owner_sources.py",
     # T3/C2: broker-only permanent volume binding and snapshot publication.
     "tinyassets/broker/owner_volumes.py",
-    # Offline restore holds both layout locks and writes only unpublished staging.
+    # Offline C3 recovery writes shared staging with services stopped.
     "tinyassets/restore_recovery.py",
+    # C1/T4 one-shot cutover verifies old-layout databases inside its attachments.
+    "tinyassets/cutover_sqlite.py",
     "tinyassets/router_traffic.py",
 })
 

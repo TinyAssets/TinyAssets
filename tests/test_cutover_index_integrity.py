@@ -74,8 +74,8 @@ def damage_many_indexes(path, *, corrupt_table):
 @pytest.mark.parametrize("caller", ["census", "forward", "seed", "rollback"])
 def test_non_index_fault_after_110_damaged_indexes_is_never_hidden(source, tmp_path, caller):
     from tinyassets.box_layout_migration import _build_cutover
+    from tinyassets.cutover_sqlite import _repair_staged_databases
     from tinyassets.erasure_ledger import _legacy_main_digests
-    from tinyassets.restore_recovery import _repair_staged_databases
 
     damage_many_indexes(source / ".tinyassets.db", corrupt_table=True)
     from tinyassets.sqlite_readonly import readonly_db
@@ -102,7 +102,7 @@ def test_non_index_fault_after_110_damaged_indexes_is_never_hidden(source, tmp_p
 
 @pytest.mark.parametrize("many", [False, True])
 def test_rollback_database_repair_accepts_index_only_drift(source, many):
-    from tinyassets.restore_recovery import _repair_staged_databases
+    from tinyassets.cutover_sqlite import _repair_staged_databases
 
     path = source / ".tinyassets.db"
     if many:
@@ -129,8 +129,8 @@ def test_legacy_seeding_repairs_private_copy_without_changing_source(source, tmp
 
 
 def test_staged_repair_preserves_symlinks_without_following_them(source, tmp_path):
+    from tinyassets.cutover_sqlite import _repair_staged_databases
     from tinyassets.erasure_ledger import _legacy_main_digests
-    from tinyassets.restore_recovery import _repair_staged_databases
 
     outside = tmp_path / "outside.db"
     with closing(sqlite3.connect(outside)) as db, db:
@@ -161,7 +161,7 @@ def test_staged_repair_preserves_symlinks_without_following_them(source, tmp_pat
 def test_staged_repair_preserves_text_hardlinks_but_refuses_database_hardlinks(source):
     import os
 
-    from tinyassets.restore_recovery import _repair_staged_databases
+    from tinyassets.cutover_sqlite import _repair_staged_databases
 
     original = source / "a1/notes.txt"
     linked = source / "a1/notes-copy.txt"

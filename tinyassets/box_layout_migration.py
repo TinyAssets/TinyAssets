@@ -2290,7 +2290,6 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
                 shutil.copy2(source, destination)
         _seed_shared(data, shared, inventory, report, plan)
         from tinyassets.erasure_ledger import NAME, ErasureLedger, carry_forward, seed_legacy
-        from tinyassets.restore_recovery import _reserve_erasures, _schedule_trees
 
         if (shared / NAME).exists():
             os.chown(shared / NAME, 0, 0)
@@ -2299,14 +2298,13 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
         ledger = carry_forward(data, shared)
         seed_legacy(data, ledger, store_root=store)
         _reserve_erasures(ledger, shared)
-        _schedule_trees(ledger, [store])
         _crash_at("after_seeding")
         from tinyassets.boxes.layout import BROKER_READ_GID, BROKER_UID, DAEMON_UID
         from tinyassets.boxes.state import BoxHostState
 
         owner_manifests = {}
         workflow_counts = {}
-        from tinyassets.restore_recovery import _repair_staged_databases
+        from tinyassets.cutover_sqlite import _repair_staged_databases
 
         for owner in plan:
             tree = mounts / str(owner.uid)
@@ -2556,6 +2554,30 @@ def _verify_owner_volumes(store, journal):
             _verify_workflow_definitions(tree)
             if volumes.size(owner.uid) != owner.quota:
                 raise RuntimeError("committed owner volume allowance changed")
+
+
+def _reserve_erasures(ledger, staged):
+    """An erased permanent UID can never be reassigned to a surviving owner."""
+    from tinyassets.restore_recovery import _safe
+
+    entries = [entry for entry in ledger.entries() if entry["uids"]]
+    if not entries:
+        return
+    identity = _safe(staged, ".broker/state/owner-identities.db")
+    with closing(sqlite3.connect(identity)) as db, db:
+        for entry in entries:
+            owner, uids = entry["principal"], entry["uids"]
+            if not owner or len(uids) != 1:
+                raise ValueError("ambiguous erased UID reservation")
+            rows = db.execute("SELECT principal,machine_id FROM owner_identities "
+                              "WHERE principal=? OR machine_id=?", (owner, uids[0])).fetchall()
+            if any(row != (owner, uids[0]) for row in rows):
+                raise ValueError("erased UID conflicts with permanent reservation")
+            if not rows:
+                db.execute("INSERT INTO owner_identities (principal,machine_id) VALUES (?,?)",
+                           (owner, uids[0]))
+
+
 
 
 def main() -> int:

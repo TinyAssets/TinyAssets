@@ -580,6 +580,7 @@ ROOT_ENTRIES: dict[str, str] = {
     ".restore-epoch": "platform: root-owned disaster operation generation mounted read-only",
     ".router-traffic.sqlite3": "platform: durable router admission and credential restore fence",
     ".router-credentials.json": "platform: rotated operational credentials after disaster",
+    ".platform-recovery.json": "platform: shared-layer recovery completion report (C3)",
     ".disaster-restore.json": "platform: acknowledged paired disaster recovery report",
     ".owner-boxd": "platform: in-box file operation generations and idempotency receipts",
     ".boxhost": "platform: root-private owner generations and idempotency receipts",

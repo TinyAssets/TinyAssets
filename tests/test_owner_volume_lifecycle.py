@@ -337,3 +337,55 @@ def test_database_validation_is_owner_local_and_retried_after_failure(tmp_path):
 def test_volume_protocol_refuses_caller_selected_binding(storage, arguments):
     with pytest.raises(ValueError):
         storage.admission.volume("alice", **arguments)
+
+
+def test_owner_restore_keeps_revoked_key_and_refuses_write_and_bash_replay(storage, tmp_path):
+    import shutil
+
+    from tinyassets.api_keys import ApiKeyStore
+    from tinyassets.boxes.boxd import OwnerBoxd
+    from tinyassets.boxes.provider import BoxOperationRefused
+
+    storage.lifecycle.prepare("alice")
+    published = sleep(storage)
+    from tinyassets.erasure_ledger import ErasureLedger
+    ErasureLedger(tmp_path).initialize()
+    keys = ApiKeyStore(tmp_path)
+    key = keys.mint("alice", name="snapshot key", scopes=[], authority=None)
+    assert keys.resolve(key["key"]) is not None
+    owner = tmp_path / "owner-mount"
+    owner.mkdir()
+    (owner / "note").write_bytes(b"snapshot content")
+    snapshot = tmp_path / "snapshot-content"
+    shutil.copytree(owner, snapshot)
+    core = OwnerBoxd(owner_id="alice", owner_root=owner, state_dir=owner / ".owner-boxd",
+                     volume_generation=published["volume_generation"])
+    old = core.bind("alice")
+    write_id, bash_id = core.operation_prefix() + "write", core.operation_prefix() + "bash"
+    core.write(old, write_id, "/cc/note", b"after snapshot", max_bytes=100)
+    core.consume_operation(old, bash_id, "bash", {"command": "echo once"})
+    core.close()
+    keys.revoke("alice", key["key_id"], authority=None)
+    assert keys.resolve(key["key"]) is None
+    other = storage.admission.volume("bob")
+    restored = storage.lifecycle.restore("alice", published["snapshot_id"], lambda: None)
+    shutil.rmtree(owner)
+    shutil.copytree(snapshot, owner)
+    core = OwnerBoxd(owner_id="alice", owner_root=owner, state_dir=owner / ".owner-boxd",
+                     volume_generation=restored["volume_generation"])
+    try:
+        with pytest.raises(BoxOperationRefused):
+            core.write(old, write_id, "/cc/note", b"replay", max_bytes=100)
+        handle = core.bind("alice")
+        with pytest.raises(BoxOperationRefused, match="volume generation"):
+            core.write(handle, write_id, "/cc/note", b"replay", max_bytes=100)
+        with pytest.raises(BoxOperationRefused, match="volume generation"):
+            core.consume_operation(handle, bash_id, "bash", {"command": "echo once"})
+        assert (owner / "note").read_bytes() == b"snapshot content"
+        core.write(handle, core.operation_prefix() + "fresh", "/cc/note", b"fresh", max_bytes=100)
+        assert (owner / "note").read_bytes() == b"fresh"
+    finally:
+        core.close()
+    assert keys.resolve(key["key"]) is None
+    assert storage.admission.volume("bob") == other
+    assert restored["volume_generation"] == published["volume_generation"] + 1

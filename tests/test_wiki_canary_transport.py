@@ -21,7 +21,8 @@ _CANARY_TOKEN = "transport-canary-token-value-32-bytes"
 @pytest.fixture
 def transport_client(monkeypatch, tmp_path):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _CANARY_TOKEN)
+    (tmp_path / ".router-credentials.json").write_text(
+        json.dumps({"TINYASSETS_WIKI_CANARY_TOKEN": _CANARY_TOKEN}))
     set_provider(OptionalOAuthProvider(tmp_path / "auth.db"))
     try:
         with TestClient(create_streamable_http_app()) as client:

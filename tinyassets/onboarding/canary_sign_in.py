@@ -73,10 +73,10 @@ def configured() -> tuple[str, str] | None:
     A short key is the same as no key: a door whose only unguessable part is
     weak would be worse than the browser sign-in it replaces.
     """
-    from tinyassets.router_traffic import credential
+    from tinyassets.operational_credentials import credential
     from tinyassets.storage import data_dir
 
-    key = credential(data_dir(), KEY_ENV, os.environ.get(KEY_ENV, "")).strip()
+    key = credential(data_dir(), KEY_ENV).strip()
     user_id = os.environ.get(USER_ENV, "").strip()
     if len(key.encode("utf-8", "ignore")) < MIN_KEY_BYTES:
         return None

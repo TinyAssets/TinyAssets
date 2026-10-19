@@ -163,8 +163,29 @@ own backup. Restoring it never touches owner volumes.
   so a missing current credential can never select an old environment value.
   Unavailable authority leaves the affected admission closed.
 
-**Implementation status (a2a):** the platform-only restore and credential-source
-replacement are still pending. The existing paired recovery is not C3 acceptance.
+**As built (a2a-2):** `backup-restore.sh` stages and installs only the shared
+layer and accepts no owner-volume input. It stops shared consumers and boxhostd;
+`platform-recovery.py` durably closes the live layout before preparation. Recovery
+invalidates local credentials and custody, advances only the broker replay cutoff,
+then calls the single `resume_deletion_jobs(staged, backup_time=...)` seam. Lane b
+must recover current lifecycle authority, permanent bindings and unfinished jobs
+there; its body currently raises, so recovery cannot complete or reopen admission.
+After that seam, recovery rotates box secrets, reconciles billing/spend/suspension,
+and confirms identities and revokes provider sessions for the positively admitted
+map records. A missing authority fails closed. The current billing adapter has no
+current spend or abuse-suspension source; subscription refresh alone explicitly
+refuses recovery, even after lane b implements deletion recovery. No provider
+reconciliation success is fabricated.
+The two operational doors now read only `.router-credentials.json`; absent,
+invalid or incomplete current credentials deny even with old environment values.
+The owner carry/union/tree scheduling, project-quota restore, fleet restore epoch
+and next-day spend fence are deleted from recovery. Old-layout database validation
+is confined to the one-shot cutover; `restore_old_layout` only extracts a verified
+pre-cutover archive into private staging. Durable rollback eligibility and live
+installation remain a2a-3. The quota script retains only the quiescence check still
+used by the unsplit backup producer; backup splitting and rehearsal steps remain
+a2a-3. This is not end-to-end platform recovery acceptance until the named current
+authorities are available.
 
 ### C4. Cutover rollback is the old system's restore, gated by durable eligibility
 Before ordinary traffic opens, rollback means stopping the new image, restoring

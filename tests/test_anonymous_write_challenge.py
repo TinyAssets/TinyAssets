@@ -332,7 +332,7 @@ def test_large_authenticated_body_is_never_buffered_or_rejected():
     ],
 )
 def test_canary_bearer_is_admitted_for_exactly_the_probe_shapes(monkeypatch, body):
-    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _CANARY_TOKEN)
+    _set_canary(_CANARY_TOKEN)
     raw = json.dumps(body).encode()
     observed: list[Any] = []
     sent, app_called, seen = _drive(body, token=_CANARY_TOKEN, observe=observed)
@@ -368,7 +368,7 @@ def test_canary_bearer_is_admitted_for_exactly_the_probe_shapes(monkeypatch, bod
     ],
 )
 def test_canary_bearer_is_refused_outside_its_allowlist(monkeypatch, body):
-    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _CANARY_TOKEN)
+    _set_canary(_CANARY_TOKEN)
     sent, app_called, _ = _drive(body, token=_CANARY_TOKEN)
     assert not app_called
     assert _status(sent) == 403                 # refused, never downgraded to nobody
@@ -377,7 +377,7 @@ def test_canary_bearer_is_refused_outside_its_allowlist(monkeypatch, body):
 
 
 def test_canary_bearer_is_refused_off_the_mcp_endpoint_and_off_post(monkeypatch):
-    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _CANARY_TOKEN)
+    _set_canary(_CANARY_TOKEN)
     for path, method in (("/app/settings", "POST"), ("/mcp", "GET"), ("/mcp", "DELETE")):
         sent, app_called, _ = _drive(
             _rpc("tools/call", "get_status"), token=_CANARY_TOKEN, path=path, method=method,
@@ -387,7 +387,7 @@ def test_canary_bearer_is_refused_off_the_mcp_endpoint_and_off_post(monkeypatch)
 
 
 def test_malformed_json_under_the_canary_bearer_is_forbidden(monkeypatch):
-    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _CANARY_TOKEN)
+    _set_canary(_CANARY_TOKEN)
     sent, app_called, _ = _drive(b"{not json", token=_CANARY_TOKEN, chunks=[b"{not json"])
     assert not app_called
     assert _status(sent) == 403
@@ -396,7 +396,7 @@ def test_malformed_json_under_the_canary_bearer_is_forbidden(monkeypatch):
 def test_oversized_canary_body_answers_413(monkeypatch):
     from tinyassets.auth.middleware import _MAX_PROBE_BODY_BYTES
 
-    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _CANARY_TOKEN)
+    _set_canary(_CANARY_TOKEN)
     chunk = b"y" * (_MAX_PROBE_BODY_BYTES // 2 + 1)
     sent, app_called, _ = _drive(b"", token=_CANARY_TOKEN, chunks=[chunk, chunk, chunk])
     assert not app_called
@@ -410,7 +410,7 @@ def test_canary_token_uses_constant_time_compare(monkeypatch):
         calls.append((left, right))
         return left == right
 
-    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _CANARY_TOKEN)
+    _set_canary(_CANARY_TOKEN)
     monkeypatch.setattr(secrets, "compare_digest", _compare)
 
     sent, app_called, _ = _drive(_canary_write_rpc(), token=_CANARY_TOKEN)
@@ -431,9 +431,9 @@ def test_canary_token_uses_constant_time_compare(monkeypatch):
 )
 def test_canary_token_is_off_when_absent_short_or_mismatched(monkeypatch, configured, presented):
     if configured is None:
-        monkeypatch.delenv("TINYASSETS_WIKI_CANARY_TOKEN", raising=False)
+        _set_canary(None)
     else:
-        monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", configured)
+        _set_canary(configured)
 
     sent, app_called, _ = _drive(_canary_write_rpc(), token=presented)
 
@@ -443,7 +443,7 @@ def test_canary_token_is_off_when_absent_short_or_mismatched(monkeypatch, config
 
 
 def test_canary_write_authority_is_set_only_for_the_exact_write(monkeypatch):
-    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _CANARY_TOKEN)
+    _set_canary(_CANARY_TOKEN)
     flags: list[bool] = []
 
     async def _app(scope, receive, send):  # noqa: ANN001, ANN202
@@ -475,7 +475,7 @@ def test_canary_bearer_writes_exact_reserved_draft(monkeypatch, tmp_path):
     from tinyassets import universe_server
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _CANARY_TOKEN)
+    _set_canary(_CANARY_TOKEN)
     tool_results: list[dict[str, Any]] = []
 
     async def _app(scope, receive, send):  # noqa: ANN001, ANN202
@@ -520,7 +520,7 @@ def test_canary_bearer_writes_exact_reserved_draft(monkeypatch, tmp_path):
 
 
 def test_canary_authority_is_isolated_between_concurrent_requests(monkeypatch):
-    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _CANARY_TOKEN)
+    _set_canary(_CANARY_TOKEN)
     observed: dict[str, Any] = {}
 
     async def _run() -> None:
@@ -583,3 +583,16 @@ def test_canary_authority_is_isolated_between_concurrent_requests(monkeypatch):
     assert observed["user_identity"].user_id == "founder-1"
     assert current_wiki_canary_authority() is False
     assert current_identity_or_none() is None
+
+
+@pytest.fixture(autouse=True)
+def _current_credential_source(tmp_path, monkeypatch):
+    from tinyassets.erasure_ledger import ErasureLedger
+    ErasureLedger(tmp_path).initialize()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+
+
+def _set_canary(value):
+    from tinyassets.storage import data_dir
+    (data_dir() / ".router-credentials.json").write_text(json.dumps(
+        {} if value is None else {"TINYASSETS_WIKI_CANARY_TOKEN": value}))

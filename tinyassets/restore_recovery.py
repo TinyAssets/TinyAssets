@@ -1,4 +1,5 @@
-"""Offline paired restore: exact before traffic, reset authority after disaster."""
+"""Offline shared-layer recovery; no owner-volume paths or content."""
+
 from __future__ import annotations
 
 import json
@@ -8,9 +9,7 @@ import sqlite3
 import stat
 import time
 from contextlib import closing
-from pathlib import Path
 
-from tinyassets.boxes.layout import OWNER_BOX_MIGRATION
 from tinyassets.sqlite_readonly import readonly_db
 
 
@@ -52,181 +51,20 @@ def _read(root, relative):
             info = db.execute(f"PRAGMA table_info({_quote(name)})").fetchall()
             columns = [row[1] for row in info]
             keys = [row[1] for row in sorted(info, key=lambda r: r[5]) if row[5]]
-            result[name] = (ddl, columns, keys,
-                           [dict(zip(columns, row)) for row in db.execute(
-                               f"SELECT * FROM {_quote(name)} NOT INDEXED")])
+            result[name] = (
+                ddl,
+                columns,
+                keys,
+                [
+                    dict(zip(columns, row))
+                    for row in db.execute(f"SELECT * FROM {_quote(name)} NOT INDEXED")
+                ],
+            )
         return result
-
-
-def normal_preflight(current, staged, owners, *, backup_time, restored_owners=None,
-                     retained_owners=None):
-    """Only platform traffic/layout evidence authorizes pre-traffic rollback."""
-    from tinyassets.router_traffic import NAME
-
-    try:
-        marker = _read(current, NAME).get("traffic", (None, [], [], []))[3]
-        if len(marker) != 1 or marker[0].get("singleton") != 1:
-            raise ValueError("unreadable traffic marker")
-        opened, credentials_after = marker[0]["traffic_opened_at"], marker[0]["credentials_after"]
-        if type(credentials_after) not in (int, float):
-            raise ValueError("unreadable credential generation")
-    except (OSError, ValueError, sqlite3.DatabaseError, RuntimeError, KeyError):
-        try:
-            layout = json.loads(_safe(current, ".layout.json").read_text())
-            unfinished = (layout.get("box_layout") != "owner-box"
-                          and layout.get("state") == "migrating"
-                          and layout.get("migration") == OWNER_BOX_MIGRATION
-                          and (layout.get("split") == "owner-split"
-                               or layout.get("box_layout") == "owner-split"))
-        except (OSError, ValueError, AttributeError):
-            unfinished = False
-        if not unfinished:
-            raise ValueError("live marker/layout cannot prove pre-traffic cutover; "
-                             "use the disaster path") from None
-        _carry_rollback(current, staged, owners, retained_owners)
-        return
-    if opened is not None or credentials_after:
-        raise ValueError("normal restore refuses traffic_opened_at or credentials_after; "
-                         "use the disaster path")
-    _carry_rollback(current, staged, owners, retained_owners)
-
-
-def _repair_staged_databases(staged):
-    from tinyassets.box_layout_migration import _claim_sqlite_sidecars
-    from tinyassets.sqlite_integrity import check
-
-    verified = set()
-    for path in sorted(staged.rglob("*")):
-        # A sidecar of a database verified above was refused-or-claimed with
-        # it, and closing that database may remove it; sorted() visits the
-        # database first. Any other file, whatever its name, is inspected.
-        if any(path.name.endswith(suffix) and path.with_name(path.name[:-len(suffix)]) in verified
-               for suffix in ("-wal", "-shm", "-journal")):
-            continue
-        # Owner content includes links. Discover SQLite without following any
-        # symlink; only database candidates need private-inode custody.
-        info = path.lstat()
-        if not stat.S_ISREG(info.st_mode):
-            continue
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(fd, "rb") as stream:
-            opened = os.fstat(stream.fileno())
-            if (not stat.S_ISREG(opened.st_mode)
-                    or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino)):
-                raise ValueError("staged file changed during database discovery")
-            if stream.read(16) != b"SQLite format 3\x00":
-                continue
-        _safe(staged, path.relative_to(staged))
-        for suffix in ("-wal", "-shm", "-journal"):
-            _safe(staged, str(path.relative_to(staged)) + suffix)
-        _claim_sqlite_sidecars(path)
-        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=rw", uri=True)) as db, db:
-            check(db, repair=True)
-        verified.add(path)
-
-
-def _carry_rollback(current, staged, owners, retained_owners):
-    from tinyassets.erasure_ledger import ErasureLedger, carry_forward, seed_legacy
-
-    marker = _safe(staged, ".layout.json")
-    legacy = not marker.exists() or json.loads(marker.read_text()).get("box_layout") != "owner-box"
-    # Rollback publishes the extracted stage itself. A refusal discards that
-    # stage; live data and owner trees are never repaired or read here.
-    _repair_staged_databases(staged)
-    if legacy:
-        ErasureLedger(staged).initialize()
-    ledger = carry_forward(current, staged)
-    if legacy:
-        seed_legacy(staged, ledger, store_root=owners)
-        marker = _safe(current, ".layout.json")
-        if marker.exists() and json.loads(marker.read_text()).get("box_layout") != "owner-box":
-            seed_legacy(current, ledger, store_root=owners)
-    else:
-        _identify_erased(ledger, current, staged)
-    _reserve_erasures(ledger, staged)
-    _schedule_trees(ledger, [owners, retained_owners] if retained_owners else [owners])
 
 
 def _rows(root, relative, table):
     return _read(root, relative).get(table, (None, [], [], []))[3]
-
-
-def _identify_erased(ledger, current, staged, identity_exists=None, unavailable_sources=None):
-    from tinyassets.erasure_ledger import principal_digest
-
-    identities = _rows(staged, ".broker/state/owner-identities.db", "owner_identities")
-    try:
-        live = _rows(current, ".broker/state/owner-identities.db", "owner_identities")
-    except (OSError, sqlite3.DatabaseError, UnreadableFacts, RuntimeError):
-        live = []
-        if unavailable_sources is not None:
-            unavailable_sources.append("live owner identities")
-    backed_up = {row["principal"] for row in identities}
-    for row in [*identities, *live]:
-        owner = row["principal"]
-        if (ledger.contains(owner) or (identity_exists is not None and (
-                owner not in backed_up or not identity_exists(owner)))):
-            ledger.execute("add", {"digest": principal_digest(owner), "principal": owner,
-                                   "uids": [row["machine_id"]]})
-    return identities, live
-
-
-def erasures(current, staged, *, identity_exists, unavailable_sources=None,
-             store_root=Path("/var/lib/boxhostd/owners")):
-    """Carry only ledger authority; import pre-ledger facts during the cutover."""
-    from tinyassets.erasure_ledger import carry_forward
-
-    ledger = carry_forward(current, staged, unavailable_sources)
-    _identify_erased(ledger, current, staged, identity_exists, unavailable_sources)
-    entries = ledger.entries()
-    erased = {entry["principal"] for entry in entries if entry["principal"]}
-    _reserve_erasures(ledger, staged)
-    identity = _safe(staged, ".broker/state/owner-identities.db")
-    with closing(sqlite3.connect(identity)) as db, db:
-        for owner in erased:
-            db.execute("INSERT INTO owner_box_revocations VALUES (?,1) "
-                       "ON CONFLICT(principal) DO UPDATE SET deleted=1", (owner,))
-    if entries:
-        custody = _safe(staged, ".broker/credential-custody.db")
-        with closing(sqlite3.connect(custody)) as db, db:
-            db.execute("CREATE TABLE IF NOT EXISTS deleted_principals (digest TEXT PRIMARY KEY)")
-            db.executemany("INSERT OR IGNORE INTO deleted_principals VALUES (?)",
-                           [(entry["digest"],) for entry in entries])
-        os.chown(custody, 1002, 1002)
-        custody.chmod(0o600)
-    return {uid for entry in entries for uid in entry["uids"]}
-
-
-def _reserve_erasures(ledger, staged):
-    """An erased permanent UID can never be reassigned to a surviving owner."""
-    entries = [entry for entry in ledger.entries() if entry["uids"]]
-    if not entries:
-        return
-    identity = _safe(staged, ".broker/state/owner-identities.db")
-    with closing(sqlite3.connect(identity)) as db, db:
-        for entry in entries:
-            owner, uids = entry["principal"], entry["uids"]
-            if not owner or len(uids) != 1:
-                raise ValueError("ambiguous erased UID reservation")
-            rows = db.execute("SELECT principal,machine_id FROM owner_identities "
-                              "WHERE principal=? OR machine_id=?", (owner, uids[0])).fetchall()
-            if any(row != (owner, uids[0]) for row in rows):
-                raise ValueError("erased UID conflicts with permanent reservation")
-            if not rows:
-                db.execute("INSERT INTO owner_identities (principal,machine_id) VALUES (?,?)",
-                           (owner, uids[0]))
-
-
-def _schedule_trees(ledger, stores):
-    for entry in ledger.entries():
-        ledger.execute("restart", {"digest": entry["digest"]})
-        for store in stores:
-            for uid in entry["uids"]:
-                destination = (Path(".tinyassets-erasure-quarantine." + secrets.token_hex(16))
-                               / str(uid))
-                ledger.execute("work", {"digest": entry["digest"], "target": {
-                    "uid": uid, "store": str(store.relative_to(stores[0])),
-                    "quarantine": str(destination)}})
 
 
 # These are wholesale resets, never intersections with live authority.
@@ -237,16 +75,28 @@ RESET_TABLES = {
     ".outside-client-authority.sqlite3": ("outside_families", "outside_grants", "outside_effects"),
     ".hosted-model-auth.db": ("hosted_model_flows", "connection_oauth_flows"),
     ".runtime/owner-sessions.db": (
-        "owner_sessions", "owner_login_flows", "owner_login_completions",
-        "owner_refresh_sessions", "owner_approval_handoffs", "canary_sign_in_attempts",
-        "approval_handoffs", "inline_model_flows"),
+        "owner_sessions",
+        "owner_login_flows",
+        "owner_login_completions",
+        "owner_refresh_sessions",
+        "owner_approval_handoffs",
+        "canary_sign_in_attempts",
+        "approval_handoffs",
+        "inline_model_flows",
+    ),
     ".tinyassets.db": ("user_sessions",),
     ".broker/credential-custody.db": (
-        "llm_credential_deposit_owners", "llm_credential_custody",
-        "llm_credential_deposit_commits", "llm_credential_refresh_state"),
+        "llm_credential_deposit_owners",
+        "llm_credential_custody",
+        "llm_credential_deposit_commits",
+        "llm_credential_refresh_state",
+    ),
     ".broker/outbound.db": (
-        "outbound_connections", "outbound_connection_grants", "connection_capabilities",
-        "browser_vault"),
+        "outbound_connections",
+        "outbound_connection_grants",
+        "connection_capabilities",
+        "browser_vault",
+    ),
 }
 
 
@@ -260,14 +110,11 @@ def reset_credentials(staged, now):
             for table in tables:
                 if table in present:
                     db.execute(f"DELETE FROM {_quote(table)}")
-    identity = staged / ".broker/state/owner-identities.db"
-    with closing(sqlite3.connect(identity)) as db, db:
-        if "owner_box_secrets" in _read(staged, str(identity.relative_to(staged))):
-            for owner, in db.execute("SELECT principal FROM owner_box_secrets").fetchall():
-                db.execute("UPDATE owner_box_secrets SET secret=? WHERE principal=?",
-                           (secrets.token_urlsafe(32), owner))
-    for relative in (".connect/session_secret", ".connect/client_secret",
-                     ".runtime/restore-session-seal.key"):
+    for relative in (
+        ".connect/session_secret",
+        ".connect/client_secret",
+        ".runtime/restore-session-seal.key",
+    ):
         path = _safe(staged, relative)
         missing_parent = not path.parent.exists()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -276,8 +123,10 @@ def reset_credentials(staged, now):
         path.write_text(secrets.token_hex(32))
         path.chmod(0o600)
         os.chown(path, 1001, 1001)
-    for pattern in (".runtime/app_refresh_sessions/*.json",
-                    ".platform/credential-vaults/*/.credential-vault.json"):
+    for pattern in (
+        ".runtime/app_refresh_sessions/*.json",
+        ".platform/credential-vaults/*/.credential-vault.json",
+    ):
         for path in staged.glob(pattern):
             _safe(staged, path.relative_to(staged)).unlink()
     for path in staged.glob(".broker/accounts/*/policy.db"):
@@ -289,8 +138,9 @@ def reset_credentials(staged, now):
 
     operational = _safe(staged, ".router-credentials.json")
     operational.unlink(missing_ok=True)
-    operational.write_text(json.dumps({name: secrets.token_urlsafe(48) for name in (
-        WIKI_CANARY_TOKEN_ENV, KEY_ENV)}))
+    operational.write_text(
+        json.dumps({name: secrets.token_urlsafe(48) for name in (WIKI_CANARY_TOKEN_ENV, KEY_ENV)})
+    )
     operational.chmod(0o600)
     os.chown(operational, 1001, 1001)
     from tinyassets.router_traffic import NAME, initialize
@@ -303,7 +153,18 @@ def reset_credentials(staged, now):
     (staged / NAME).chmod(0o660)
 
 
-def fence_ops(staged, trees, now):
+def rotate_box_secrets(staged):
+    identity = staged / ".broker/state/owner-identities.db"
+    with closing(sqlite3.connect(identity)) as db, db:
+        if "owner_box_secrets" in _read(staged, str(identity.relative_to(staged))):
+            for (owner,) in db.execute("SELECT principal FROM owner_box_secrets").fetchall():
+                db.execute(
+                    "UPDATE owner_box_secrets SET secret=? WHERE principal=?",
+                    (secrets.token_urlsafe(32), owner),
+                )
+
+
+def fence_ops(staged, now):
     from tinyassets.broker.ops import MAX_FUTURE_SKEW_S
 
     cutoff = int(now * 1000) + MAX_FUTURE_SKEW_S * 1000 + 1
@@ -312,64 +173,98 @@ def fence_ops(staged, trees, now):
     path.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(path)) as db, db:
         db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER)")
-        db.execute("INSERT INTO meta VALUES ('cutoff_ms',?) ON CONFLICT(key) "
-                   "DO UPDATE SET value=MAX(value,excluded.value)", (cutoff,))
+        db.execute(
+            "INSERT INTO meta VALUES ('cutoff_ms',?) ON CONFLICT(key) "
+            "DO UPDATE SET value=MAX(value,excluded.value)",
+            (cutoff,),
+        )
     os.chown(path, 1002, 1002)
-    # The entire owner mount, including boxd's journal, is owner-writable.
-    # A fresh platform generation fences every owner without opening their files.
-    fence = _safe(staged, ".restore-epoch")
-    fence.write_text(secrets.token_hex(32))
-    os.chown(fence, 0, 0)
-    fence.chmod(0o444)
 
 
-def disaster_restore(current, staged, trees, *, backup_time, now=None,
-                     identity_exists=None, billing_sync=None, revoke_sessions=None,
-                     live_trees, retained_trees=None):
+class RecoveryUnavailable(RuntimeError):
+    """Current platform authority is unavailable; admission stays closed."""
+
+
+def resume_deletion_jobs(staged, *, backup_time):
+    """C3 lane-b seam: recover off-host lifecycle authority and finish its jobs.
+
+    Called after credential invalidation and before provider reconciliation or
+    committing a stable layout. Lane b must recover permanent bindings, erased
+    admission and all later unfinished jobs. No historical snapshot is enough.
+    """
+    raise RecoveryUnavailable("deletion-job recovery is not implemented; admission remains closed")
+
+
+def reconcile_authority(staged, now):
+    """Recover current billing, spend and suspension facts from their authorities."""
     from tinyassets.billing.stripe_adapter import restore_billing
+
+    billing = restore_billing(staged, now)
+    # C3 requires current spend and abuse authority too. The existing billing
+    # adapter reports no external abuse source and has no spend reconciliation.
+    # Its subscription refresh alone cannot authorize restored admission.
+    raise RecoveryUnavailable(f"current spend and suspension authority unavailable: {billing}")
+
+
+def write_layout(root, document):
+    """C3: persist closed admission before any recoverable authority is changed."""
+    with _safe(root, ".layout.json").open("w") as stream:
+        json.dump(document, stream)
+        stream.flush()
+        os.fsync(stream.fileno())
+    directory = os.open(root, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def platform_recovery(
+    staged, *, backup_time, now=None, authority=None, identity_exists=None, revoke_sessions=None
+):
+    """Prepare only the shared stage while every service is stopped.
+
+    The layout remains non-admitting across every failure and process restart.
+    A caller may publish the stage only after this function returns. Authorities
+    are injected solely by offline callers/tests, never by a request payload.
+    """
     from tinyassets.router_account_deletion import revoke_workos_sessions, workos_user_exists
 
     now = time.time() if now is None else now
-    # Publish the repaired stage, not the disposable copies used by _read.
-    # Both restore modes use the same exhaustive repair/reverification policy.
-    _repair_staged_databases(staged)
-    unavailable_sources = []
-    erased = erasures(current, staged, identity_exists=identity_exists or workos_user_exists,
-                      unavailable_sources=unavailable_sources, store_root=live_trees)
-    reconciled = 0
-    for row in _rows(staged, ".broker/state/owner-identities.db", "owner_identities"):
-        if row["machine_id"] not in erased:
-            (revoke_sessions or revoke_workos_sessions)(row["principal"])
-            reconciled += 1
+    marker = _safe(staged, ".layout.json")
+    layout = json.loads(marker.read_text())
+    if layout.get("box_layout") != "owner-box":
+        raise RecoveryUnavailable("platform recovery requires a shared-layer backup")
+    layout["state"] = "recovering"
+    write_layout(staged, layout)
     reset_credentials(staged, now)
-    fence_ops(staged, trees, now)
+    fence_ops(staged, now)
+    resume_deletion_jobs(staged, backup_time=backup_time)
+    rotate_box_secrets(staged)
     _read(staged, ".broker/plans.db")
-    billing = (billing_sync or restore_billing)(staged, now)
-    # One broker-wide spend fence covers all owners, including absent policies.
-    fence = _safe(staged, ".broker/restore-spend-until")
-    fence.write_text(str((int(now) // 86400 + 1) * 86400))
-    os.chown(fence, 1002, 1002)
-    report_path = _safe(staged, ".disaster-restore.json")
-    # Paths describe the published pair, never staging. The shell reserves the
-    # retained destination before preparation and creates it only during swap.
-    stores = [live_trees]
-    if retained_trees is not None:
-        stores.append(retained_trees)
-    from tinyassets.erasure_ledger import ErasureLedger
-
-    _schedule_trees(ErasureLedger(staged), stores)
-    report = {"backup_time": backup_time, "restore_time": now,
-              "credential_roots_reset": True, "operation_fences_reset": True,
-              "erased_owners": len(erased), "erased_uids": sorted(erased), "billing": billing,
-              "unavailable_erasure_sources": unavailable_sources,
-              "owners_reconciled": reconciled,
-              "spend_blocked_until": int(fence.read_text()),
-              "reverted_classes": ["owner consents and grants", "effector consents",
-                  "capability grants", "graph receivers", "outside grants",
-                  "spend reservations", "policies", "content", "turns", "schedules",
-                  "receipts", "abuse suspension history"]}
+    (authority or reconcile_authority)(staged, now)
+    identities = _read(staged, ".broker/state/owner-identities.db")
+    if not {"owner_identities", "box_records"} <= identities.keys():
+        raise RecoveryUnavailable("current identity authority unavailable")
+    reconciled = 0
+    # Current admission, installed by lane b, positively selects the accounts
+    # to reconcile. Permanent identities include terminally erased accounts.
+    for row in identities["box_records"][3]:
+        owner = row["principal"]
+        if not (identity_exists or workos_user_exists)(owner):
+            raise RecoveryUnavailable("identity provider did not confirm current identity")
+        (revoke_sessions or revoke_workos_sessions)(owner)
+        reconciled += 1
+    report = {
+        "backup_time": backup_time,
+        "restore_time": now,
+        "credential_roots_reset": True,
+        "broker_replay_cutoff_advanced": True,
+        "owners_reconciled": reconciled,
+    }
+    report_path = _safe(staged, ".platform-recovery.json")
     report_path.write_text(json.dumps(report, sort_keys=True))
-    os.chown(report_path, 0, 0)
     report_path.chmod(0o600)
-    print("WARN disaster restore: " + json.dumps(report, sort_keys=True))
+    layout["state"] = "stable"
+    write_layout(staged, layout)
     return report

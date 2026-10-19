@@ -56,11 +56,3 @@ def accepts_issued_at(root, issued_at):
         return True
     _, cutoff = state(root)
     return not cutoff or (type(issued_at) in (int, float) and issued_at > cutoff)
-
-
-def credential(root, name, configured):
-    """Disaster replacements override old process environment credentials."""
-    import json
-
-    path = root / ".router-credentials.json"
-    return json.loads(path.read_text())[name] if path.exists() else configured

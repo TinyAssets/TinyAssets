@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import secrets
 from contextvars import ContextVar, Token
 from typing import Any, Mapping
@@ -23,11 +22,10 @@ _current_wiki_canary_authority: ContextVar[bool] = ContextVar(
 
 def wiki_canary_token_matches(presented: str) -> bool:
     """Match a configured, sufficiently long token in constant time."""
-    from tinyassets.router_traffic import credential
+    from tinyassets.operational_credentials import credential
     from tinyassets.storage import data_dir
 
-    configured = credential(data_dir(), WIKI_CANARY_TOKEN_ENV,
-                            os.environ.get(WIKI_CANARY_TOKEN_ENV))
+    configured = credential(data_dir(), WIKI_CANARY_TOKEN_ENV)
     if configured is None:
         return False
     try:

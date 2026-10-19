@@ -589,89 +589,16 @@ def test_completed_apply_restores_paired_owner_split(cutover, tmp_path, journal)
     elif journal == 'corrupt':
         (data / '.boxhost').mkdir()
         (data / '.boxhost/boxhost.db').write_bytes(b'corrupt live journal')
-    result = _restore_paired(cutover, tmp_path)
+    result = _restore_old_layout(cutover, tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
     assert {k: v for k, v in _fingerprint(data).items()
             if k != '.erasure-ledger.sqlite3'} == before
-    assert not any(path.name.isdecimal() for path in store.iterdir())
-    assert list(store.glob('.tinyassets-box-restore-old.*/300001/a1/notes.txt'))
+    assert (store / '300001.img').exists()
+    assert (contents(store) / '300001/a1/notes.txt').read_text() == 'private history for a1'
 
 
-def test_disaster_restore_keeps_erasure_and_destroys_restored_tree(cutover, tmp_path):
-    import runpy
-
-    from tests.test_owner_cutover_restore import REPO
-    from tinyassets.erasure_ledger import ErasureLedger
-
-    data, store, data_archive, box_archive = cutover
-    migration.apply(*cutover)
-    for path, tree, name in ((data_archive, data, "_data"), (box_archive, store, "owners")):
-        with tarfile.open(path, "w:gz") as archive:
-            archive.add(tree, arcname=name)
-        _archive(path, path.read_bytes())
-    runpy.run_path(str(REPO / "deploy/backup-pair.py"))["create"](
-        data_archive, box_archive, tmp_path / "tinyassets-pair-2026-10-17T00-00-00Z.json")
-    # Local sweep succeeded, broker retirement/custody is still unavailable.
-    (contents(store) / "300001/a1/notes.txt").unlink()
-    ErasureLedger(data).add("alice", {"unfinished_phases": ["owner_tree", "broker_egress"]})
-    result = _restore_paired(cutover, tmp_path, disaster=True)
-    assert result.returncode == 6, result.stdout + result.stderr
-    assert not (contents(store) / "300001").exists()
-    assert (contents(store) / "300002/b1/notes.txt").exists()
-    with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
-        assert db.execute("SELECT deleted FROM owner_box_revocations WHERE principal='alice'"
-                          ).fetchone() == (1,)
-    assert ErasureLedger(data).contains("alice")
-    assert list(store.glob(".tinyassets-box-restore-old.*"))
 
 
-def _restore_paired(cutover, tmp_path, *, disaster=False):
-    from tests.test_owner_cutover_restore import REPO, _shim
-
-    data, store, data_archive, box_archive = cutover
-    binary = tmp_path / 'bin'
-    binary.mkdir()
-    _shim(binary, 'docker', 'case "$1 $2" in\n"volume inspect") echo "$TEST_VOLUME" ;;\n'
-          '"ps -q") : ;;\n*) exit 79 ;;\nesac\n')
-    _shim(binary, 'systemctl', ':\n')
-    _shim(binary, 'findmnt', 'if [[ "${@: -1}" == FSTYPE ]]; then echo xfs; '
-          'else echo rw,prjquota,nodiscard; fi\n')
-    _shim(binary, 'xfs_quota', 'exit 79\n')
-    # Only the absent host runtime is modeled: the real restore census still
-    # checks all receipt identities, tables and modes before asking for its list.
-    wrapper = binary / 'python3'
-    wrapper.write_text(f"#!{sys.executable}\n" + """import os, runpy, subprocess, sys
-if len(sys.argv) > 1 and sys.argv[1].endswith('/box-store-quotas.py'):
-    sys.path.insert(0, os.path.dirname(os.path.dirname(sys.argv[1])))
-    import deploy.box_project_readback as readback
-    import tinyassets.boxes.destroy as destruction
-    destruction.verify_store = lambda *args: None  # Disposable non-XFS restore fixture.
-    readback.verify_owner = lambda *args: None
-    readback.verify_tree = lambda *args: None
-    real_run = subprocess.run
-    def run(argv, **kwargs):
-        if argv[0] == 'xfs_quota':
-            return subprocess.CompletedProcess(argv, 0, '', '')
-        if argv[0] == '/opt/tinyassets/boxhostd/current/runsc':
-            assert argv[-3:] == ['list', '--format=json'] or argv[-2:] == ['list', '--format=json']
-            return subprocess.CompletedProcess(argv, 0, '[]', '')
-        return real_run(argv, **kwargs)
-    subprocess.run = run
-    sys.argv = sys.argv[1:]
-    runpy.run_path(sys.argv[0], run_name='__main__')
-else:
-    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
-""")
-    wrapper.chmod(0o755)
-    result = subprocess.run(
-        ['bash', str(REPO / 'deploy/backup-restore.sh'),
-         *(['--disaster-restore', '--acknowledge-unrecoverable-facts'] if disaster else [])],
-        env={**os.environ, 'PATH': f"{binary}:{os.environ['PATH']}",
-             'BACKUP_FILE': str(data_archive), 'BOX_BACKUP_FILE': str(box_archive),
-             'BACKUP_VOLUME': 'synthetic-cutover', 'BOX_STORE_DIR': str(store),
-             'BACKUP_LOG': str(tmp_path / 'restore.log'), 'TEST_VOLUME': str(data)},
-        text=True, capture_output=True, check=False)
-    return result
 
 
 def test_actual_interrupted_migration_allows_normal_rollback(cutover, tmp_path, monkeypatch):
@@ -683,7 +610,7 @@ def test_actual_interrupted_migration_allows_normal_rollback(cutover, tmp_path, 
     monkeypatch.setattr(migration, "_copy", crash)
     with pytest.raises(OSError, match="crash after migration marker"):
         migration.apply(*cutover)
-    result = _restore_paired(cutover, tmp_path)
+    result = _restore_old_layout(cutover, tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
     assert {k: v for k, v in _fingerprint(cutover[0]).items()
             if k != '.erasure-ledger.sqlite3'} == before
@@ -706,7 +633,7 @@ def test_owner_content_links_survive_migration_and_rollback(cutover, tmp_path):
 
     migration.apply(*cutover)
     assert_links(contents(store) / "300001/a1")
-    result = _restore_paired(cutover, tmp_path)
+    result = _restore_old_layout(cutover, tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
     assert_links(data / "a1")
 
@@ -781,28 +708,17 @@ def test_shared_doors_authenticate_migrated_keys_and_hooks(cutover, monkeypatch)
 
 @pytest.mark.parametrize('mutation', ['shared', 'owner'])
 def test_pretraffic_restore_ignores_migration_and_canary_writes(cutover, tmp_path, mutation):
-    import runpy
-
-    from tests.test_owner_cutover_restore import REPO
-
+    from tinyassets.cutover_restore import restore_old_layout
     data, store, archive, _ = cutover
-    restored = tmp_path / 'restored'
-    restored.mkdir()
-    with tarfile.open(archive, 'r:gz') as source_archive:
-        source_archive.extractall(restored, filter='fully_trusted')
-    staged = restored / '_data'
+    before = _fingerprint(data)
     migration.apply(*cutover)
-    helper = runpy.run_path(str(REPO / 'deploy/box-store-quotas.py'))
-    fence = helper['fence_restore']
-    restored_trees = tmp_path / 'restored-trees'
-    restored_trees.mkdir()
     if mutation == 'shared':
         _sql(data / '.broker/plans.db', "UPDATE plans SET tier='paid' WHERE owner='bob'")
     elif mutation == 'owner':
         (contents(store) / '300001/a1/notes.txt').write_text('post-cutover owner write')
-    fence(data, staged, cutover_store=store, restored_store=restored_trees)
+    staged = restore_old_layout(archive, tmp_path / 'restored')
     assert (staged / 'a1/notes.txt').read_text() == 'private history for a1'
-    assert list(restored_trees.iterdir()) == []
+    assert _fingerprint(staged) == before
     assert (contents(store) / '300001/a1').is_dir()
     assert not (data / 'a1').exists()
 
@@ -828,31 +744,6 @@ def test_seeded_tombstones_block_broker_custody_without_old_metadata(cutover):
         check_not_deleted(db, 'bob')
 
 
-def test_normal_restore_refuses_after_traffic(cutover, tmp_path):
-    import runpy
-
-    from tests.test_owner_cutover_restore import REPO
-
-    data, store, archive, _ = cutover
-    staged_parent = tmp_path / 'staged'
-    staged_parent.mkdir()
-    with tarfile.open(archive, 'r:gz') as backup:
-        backup.extractall(staged_parent, filter='fully_trusted')
-    staged = staged_parent / '_data'
-    migration.apply(*cutover)
-    (contents(store) / '300001/a1/notes.txt').write_text('accepted owner write loss')
-    from tinyassets.router_traffic import open_traffic
-
-    open_traffic(data)
-    before = _fingerprint(staged)
-    helper = runpy.run_path(str(REPO / 'deploy/box-store-quotas.py'))
-    restored_trees = tmp_path / 'restored-trees'
-    restored_trees.mkdir()
-    with pytest.raises(ValueError):
-        helper['fence_restore'](data, staged, cutover_store=store,
-                                restored_store=restored_trees)
-    assert _fingerprint(staged) == before
-    assert list(restored_trees.iterdir()) == []
 
 
 def test_migrated_owner_processes_serve_history_requests_and_pause(
@@ -1008,33 +899,16 @@ def test_migrated_owner_processes_serve_history_requests_and_pause(
 
     open_traffic(data)
     live_before = _fingerprint(data), _fingerprint(store)
-    result = _restore_paired(cutover, tmp_path)
-    assert result.returncode == 4, result.stdout + result.stderr
-    assert "traffic_opened_at" in result.stderr
+    from tinyassets.cutover_restore import restore_old_layout
+    from tinyassets.restore_recovery import RecoveryUnavailable, platform_recovery
+    staged = restore_old_layout(cutover[2], tmp_path / "old-layout")
+    with pytest.raises(RecoveryUnavailable, match="shared-layer backup") as refused:
+        platform_recovery(staged, backup_time=1)
+    assert "shared-layer backup" in str(refused.value)
+    assert (staged / "a1/notes.txt").read_text() == "private history for a1"
     assert (_fingerprint(data), _fingerprint(store)) == live_before
 
 
-def test_forward_cutover_preserves_ledger_and_reopens_copied_home_work(cutover, monkeypatch):
-    from tests.support.recovery_daemons import recovery_daemons
-    from tinyassets.erasure_ledger import PHASES, ErasureLedger
-    from tinyassets.restore_recovery import finish_erasures
-
-    data, store, *_ = cutover
-    ledger = ErasureLedger(data)
-    ledger.initialize()
-    ledger.add("alice")
-    ledger.save_receipt("alice", {"completed_phases": list(PHASES)})
-    assert ledger.receipt("alice")["home_removed"]
-    assert migration.census(data)["ready"]
-    migration.apply(*cutover)
-    ledger = ErasureLedger(data)
-    assert ledger.contains("alice")
-    assert not ledger.receipt("alice")["home_removed"]
-    assert (contents(store) / "300001").exists()
-    finish_erasures(data, store, daemons=recovery_daemons(store, monkeypatch))
-    assert not (contents(store) / "300001").exists()
-    assert ledger.receipt("alice")["home_removed"]
-    assert (contents(store) / "300002/b1/notes.txt").exists()
 
 
 def test_cutover_imports_router_custody_and_host_erasure_facts(cutover):
@@ -1164,3 +1038,16 @@ def test_migration_uses_existing_box_allowance(cutover):
     migration.apply(*cutover)
     assert migration._volumes(store).size(300001) == allowance
     migration.verify(data, store)
+
+
+def _restore_old_layout(cutover, tmp_path):
+    # Test installation only: eligibility and production installation are C4's
+    # separate deployment-control lane. This unit restores the old bytes.
+    import shutil
+
+    from tinyassets.cutover_restore import restore_old_layout
+    data, _, archive, _ = cutover
+    restored = restore_old_layout(archive, tmp_path / "rollback-stage")
+    data.rename(tmp_path / "retained-shared")
+    shutil.move(restored, data)
+    return subprocess.CompletedProcess([], 0, "", "")
