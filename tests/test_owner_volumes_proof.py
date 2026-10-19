@@ -82,7 +82,7 @@ def test_owner_volumes_real_mounts(tmp_path):
 class Boxes:
     def __init__(self, root: Path):
         self.root = root
-        self.live = set()
+        self.live = {}
         # Match production's supervisor-leaf delegation inside this disposable
         # container's cgroup namespace. Never disable runsc's cgroup handling.
         cgroup = Path("/sys/fs/cgroup")
@@ -95,7 +95,7 @@ class Boxes:
         for directory in ("bin", "dev", "proc", "sys", "tmp", "home/owner"):
             (self.rootfs / directory).mkdir(parents=True, exist_ok=True)
         # A minimal genuine dynamic rootfs, with no host owner-content paths.
-        for name in ("sh", "sleep", "dd", "cat", "sync"):
+        for name in ("sh", "sleep", "dd", "cat", "sync", "fallocate"):
             binary = Path(shutil.which(name))
             paths = [str(binary), *re.findall(r"(/\S+)", command("ldd", str(binary)))]
             for source in paths:
@@ -132,27 +132,58 @@ class Boxes:
             "proc", "sysfs", "tmpfs", "devpts", "mqueue")]
         config["mounts"].append(handle.oci_mount())
         (bundle / "config.json").write_text(json.dumps(config))
-        self.live.add(uid)
-        # Detached children must not inherit PIPE descriptors.
-        with tempfile.TemporaryFile() as output:
-            result = subprocess.run([*self.argv, "run", "--detach", "--bundle", str(bundle),
-                                     f"owner-{uid}"], stdout=subprocess.DEVNULL,
-                                    stderr=output, timeout=60)
-            output.seek(0)
-            assert result.returncode == 0, output.read().decode()
+        # Keep the foreground supervisor as our child so cleanup can reap it.
+        output = tempfile.TemporaryFile()
+        process = subprocess.Popen([*self.argv, "run", "--bundle", str(bundle),
+                                    f"owner-{uid}"], stdout=subprocess.DEVNULL, stderr=output)
+        self.live[uid] = process, output
+        try:
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                state = subprocess.run([*self.argv, "state", f"owner-{uid}"],
+                                       capture_output=True, text=True, timeout=10)
+                if state.returncode == 0 and json.loads(state.stdout)["status"] == "running":
+                    return
+                if process.poll() is not None:
+                    output.seek(0)
+                    raise AssertionError(output.read().decode())
+                time.sleep(.05)
+            raise TimeoutError(f"box {uid} did not start")
+        except BaseException:
+            self.stop(uid)
+            raise
 
-    def shell(self, uid, script, *, check=True):
-        result = subprocess.run([*self.argv, "exec", "--user", f"{uid}:{uid}",
-                                 f"owner-{uid}", "/bin/sh", "-c", script],
-                                capture_output=True, text=True, timeout=120)
+    def shell(self, uid, script, *, check=True, timeout=120):
+        with subprocess.Popen([*self.argv, "exec", "--user", f"{uid}:{uid}",
+                               f"owner-{uid}", "/bin/sh", "-c", script],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
+            try:
+                stdout, stderr = process.communicate(timeout=timeout)
+                result = subprocess.CompletedProcess(
+                    process.args, process.returncode, stdout, stderr)
+            finally:
+                if process.poll() is None:
+                    # Killing the exec client alone leaves its in-box writer alive.
+                    try:
+                        self.stop(uid)
+                    finally:
+                        process.kill()
+                        process.wait(timeout=30)
         if check:
             assert result.returncode == 0, result.stderr
         return result
 
     def stop(self, uid):
         if uid in self.live:
-            command(*self.argv, "delete", "--force", f"owner-{uid}")
-            self.live.remove(uid)
+            process, output = self.live[uid]
+            try:
+                if process.poll() is None:
+                    command(*self.argv, "kill", "--all", f"owner-{uid}", "KILL")
+            finally:
+                process.wait(timeout=30)
+                command(*self.argv, "delete", "--force", f"owner-{uid}")
+                output.close()
+                del self.live[uid]
 
 
 def digest(path):
@@ -471,11 +502,37 @@ def inner_proof(root):
         assert grown.f_bavail * grown.f_frsize > metrics["usable_bytes"]
         with pytest.raises(VolumeError, match="shrink"):
             volumes.grow(uid, size)
-        full = boxes.shell(uid, "dd if=/dev/zero of=/home/owner/full bs=1M; "
-                           "code=$?; sync; exit $code", check=False)
-        assert full.returncode != 0 and "No space left on device" in full.stderr, full
-        boxes.shell(uids[1], "printf unaffected > /home/owner/healthy; sync")
-        assert boxes.shell(uids[1], "cat /home/owner/healthy").stdout == "unaffected"
+        # Reuse the erased owner's UID with a fresh smallest-plan image, not
+        # the grown image. Allocate extents inside runsc without streaming GiB
+        # through its gofer; descend to one XFS block to consume the tail too.
+        volumes.create(last, size)
+        boxes.start(volumes.attach(last))
+        started = time.monotonic()
+        try:
+            full = boxes.shell(last, "offset=0; for chunk in 67108864 1048576 4096; do "
+                               "while fallocate -o $offset -l $chunk /home/owner/full; do "
+                               "offset=$((offset + chunk)); done; done; "
+                               "printf 'allocated_bytes=%s\\n' $offset; "
+                               "dd if=/dev/zero of=/home/owner/write-fails "
+                               "bs=4096 count=1 conv=fsync",
+                               check=False, timeout=60)
+            assert full.returncode != 0 and "No space left on device" in full.stderr, full
+            assert "dd: " in full.stderr
+            assert "No space left on device" in full.stderr.split("dd: ")[-1]
+            metrics["exhaustion_seconds"] = time.monotonic() - started
+            metrics["exhaustion_allocated_bytes"] = int(full.stdout.split("allocated_bytes=")[1])
+            assert metrics["exhaustion_allocated_bytes"] > 0
+            boxes.shell(uids[1], "printf unaffected > /home/owner/healthy; sync")
+            assert boxes.shell(uids[1], "cat /home/owner/healthy").stdout == "unaffected"
+            # Exercise the old leak: a timed-out exec must stop and reap the
+            # entire box, including the command, before volume detachment.
+            with pytest.raises(subprocess.TimeoutExpired):
+                boxes.shell(last, "sleep infinity", timeout=.5)
+            assert last not in boxes.live
+        finally:
+            boxes.stop(last)
+        volumes.detach(last)
+        volumes._detached(last)
         print("PROOF h PASS", flush=True)
 
         # (f): deny Python content access throughout product delete.
@@ -514,6 +571,8 @@ def inner_proof(root):
         monitor.join()
         for uid in uids:
             boxes.stop(uid)
+        # A detach failure must never strand a different box's processes.
+        for uid in uids:
             volumes.detach(uid)
         command("umount", str(store))
         command("losetup", "--detach", outer)
