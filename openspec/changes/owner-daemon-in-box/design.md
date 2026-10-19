@@ -224,6 +224,30 @@ work time, or null when paused or empty. A missing index row triggers
 reconstruction. Delivery stays at least once, and the box handles each
 occurrence idempotently. Snapshot retries are C2's lifecycle work, never an agent wake.
 
+### C10. Storage scales with active owners (founder decision, 2026-10-19)
+The founder asked for storage that grows and shrinks with demand, with no
+downtime and little wasted money. This builds on C1 and C2 and adds no new
+authority:
+- **Thin.** Owner images are sparse. An allowance is a ceiling, not a
+  preallocation, so physical use equals the bytes written.
+- **Hot and cold.** The local box store keeps only active owners' images. An
+  owner asleep more than 7 days whose latest snapshot is verified and published
+  has their local image evicted, under the same per-owner serialization. Their next
+  wake restores from the published snapshot before attaching, which adds a few
+  seconds once. That cost is founder-accepted, and it means local disk tracks
+  active owners rather than total sign-ups.
+- **Grow online.** The box store is an XFS filesystem on a DigitalOcean block
+  volume, starting at about 25 GiB. It grows without unmounting (resize the
+  volume, then `xfs_growfs`) when free space falls below a threshold. Block
+  volumes can't shrink, so eviction is what keeps the needed size small.
+  Spending is capped at $15/month for the volume plus Spaces, under the founder's
+  approval.
+- **Next foundation, not cutover scope: compute cells.** When one droplet can't
+  run the awake set, add hosts. The map points each owner to a box on a host (the
+  research's cell router, research.md:32). New owners are placed on the
+  least-loaded host, and a sleeping owner moves by snapshot restore on another
+  host. The router stays a map lookup.
+
 ### Step 1 proof, before any lane is built
 Run on a disposable venue that matches the deployment kernel, the outer
 filesystem and the pinned runsc. Prove each of these:
@@ -1212,6 +1236,25 @@ sleep. No owner-store reader or compatibility path is added to the door.
   - Local image descriptions are dropped.
   - Billing status no longer shows usage figures.
 - **The cutover deploy goes ahead when every gate passes**: a clean census, the real-data rehearsal passing on a fresh backup, the lead's receipt on every slice, green CI, and the report delivered. The founder's condition: "Just make sure the architecture isn't sacrificed on review rounds or hard parts." No weakened shape, compatibility path or skipped gate gets a slice through.
+
+## Founder decisions (2026-10-19)
+
+- **Build the researched shape before cutover.** The founder's go covers the whole
+  way to deploy; builders and reviewers must keep the architecture clean.
+- **Every approval routes through the lead's session.** Approval-gated steps
+  (spending, droplet changes, the deploy) are executed there.
+- **Storage spending:** up to $15/month for the block-volume box store and Spaces
+  snapshots, plus the C10 scaling design.
+- **User-visible changes accepted:**
+  - account deletion completes in the background, with a status page;
+  - an owner asleep more than 7 days gets a few seconds of cold restore on their first request;
+  - a box awake more than 24 hours pauses briefly between turns for its snapshot;
+  - everyone signs in again and reconnects after a platform disaster recovery.
+- **Design questions** that research.md and this design answer are decided by the
+  lead and reported afterwards. New user-facing questions go to the founder.
+- **The deploy may run at any hour** once every gate passes.
+- **The old on-server box store copy** is deleted only after every C6 fix is done
+  and 24 hours pass with no new related issue.
 
 ## Index-only corruption at cutover
 
