@@ -158,6 +158,13 @@ the generation; the observed bare IDs came from incomplete fixture admission and
 direct test IDs. No replay check was relaxed.
 The unused shared `.restore-epoch` marker and its storage inventory entry are
 deleted; only the box-local generation journal remains.
+**Verified (a2a-5):** the synthetic archive rehearsal restores one owner's
+snapshot through the real opaque-volume lifecycle. Three earlier-generation
+operations (executed write, unseen write and bash) refuse, two fresh operations
+succeed, and a key revoked after the snapshot stays revoked. The native serving
+fixture releases inherited attachment handles in its private mount namespace;
+the production startup proof separately uses the pinned runtime and verifies
+completed shutdown snapshot publication.
 
 ### C3. Platform recovery is separate, and it keeps lifecycle authority
 The shared layer (identity, map, billing, broker custody, published data) has its
@@ -211,8 +218,11 @@ under a sticky shared root. The root Linux proof reaches the pending deletion-jo
 refusal with admission closed and local credentials invalidated.
 The archive rehearsal now invokes separate C2/C3/C4 operations. Its C3 step
 requires the labelled lane-b-pending refusal, invalidated local credentials,
-unchanged opaque image bytes and closed admission. Its complete serving receipt
-is still pending. This is not end-to-end platform recovery acceptance until the named current
+unchanged opaque image bytes and closed admission. The complete rehearsal now
+passes, including serving two owners across four centers and cleanup with no
+mount, loop-device, container or volume residue. Credential seeding runs as the
+owning service UID, and direct table readback proves invalidation rather than
+treating an unreadable credential store as success. This is not end-to-end platform recovery acceptance until the named current
 authorities are available.
 
 ### C4. Cutover rollback is the old system's restore, gated by durable eligibility
@@ -243,8 +253,8 @@ missing-state refusal; deploy-shell tests pin the integration. Migration publish
 the root-owned 0644 admission decision after assigning service custody, under the
 sticky root-owned shared directory. Root tests give both service UIDs directory
 access and prove neither can overwrite or unlink that decision. The full archive
-rehearsal has passed pre-traffic restore and both crash-resume trials; its complete
-serving receipt remains pending. The harness uses deployment eligibility directly
+rehearsal passes exact pre-traffic restore, both crash-resume trials, serving and
+rollback refusal after ordinary admission opens. The harness uses deployment eligibility directly
 and deletes paired-restore/provider adapters. Independent crash trials validate
 each opaque snapshot's digest and map binding before comparing logical map rows;
 all owner-content manifests and other shared authority remain compared unchanged.
