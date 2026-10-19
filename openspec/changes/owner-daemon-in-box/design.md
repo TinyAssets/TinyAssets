@@ -1,123 +1,160 @@
 # Design: the owner's daemon in the owner's box
 
-## Restore: pre-traffic rollback, post-traffic disaster
+## Target shape (binding)
 
-Normal restore exists only for pre-traffic cutover rollback. It restores the verified backup pair except for the monotonic erasure ledger, whose live and staged events are unioned. Its admission proof remains root-owned `.layout.json` and `.router-traffic.sqlite3`; no owner-writable state is restore authority.
-Any set `traffic_opened_at` (including one newer than the backup) or `credentials_after` refuses with exit 4 and directs the operator to disaster recovery; a missing or unreadable marker refuses unless readable layout proves an unfinished pre-traffic cutover, and missing or unreadable layout too always refuses.
-After traffic, only acknowledged disaster recovery is allowed, and its operation fences live in platform-owned state exposed read-only to boxes, never in owner-writable journals or receipt databases.
+This section is the yardstick for every slice, builder brief and review round.
+It restates `research.md`, quoted by line, and gives each rule a check that
+proves it. **Where an "as built" section below disagrees with this section or
+with the corrections that follow it, this section wins.** That as-built text is
+replaced when its correction lands.
 
-The cutover initializes router admission closed. The workflow starts the router
-and runs the public and owner-box acceptance canaries while ordinary traffic is
-held. After acceptance, a root-authenticated local RPC asks the router to open
-admission. The router writes and fsyncs `traffic_opened_at` in its backed-up
-`.router-traffic.sqlite3` transaction before the first ordinary request can pass.
-Canary admission cannot set that marker. Repeated acceptance never resets it.
-Closed admission also blocks anonymous token, sign-in, OAuth and billing callbacks.
-Only immutable app assets and the independently keyed canary sign-in bypass it.
+The research's test (research.md:117): **"the shared daemon holds zero host
+paths to owner data, and every cross-owner decision reduces to a positive
+identity→box mapping in three named components."** The three components are the
+router/map, the credential/egress proxy and the waker (research.md:69).
 
-### Disaster restore
+| # | Research rule (research.md line) | TinyAssets design | Done check |
+|---|---|---|---|
+| T1 | The shared door "authenticates the caller, turns that identity into an instance ID, forwards the request … and never reads tenant data" (3); the router avoids "complex business logic" and routes from "an in-memory copy of the map even when the control plane is down" (32) | Router: authenticate → `owner_id` → map entry → wake if asleep → forward with the per-box secret. No lifecycle, billing or deletion logic. The map is cached in the router, and routing works while the broker is down. | A test kills the broker and an admitted owner's request is still forwarded. A static test shows the router imports no billing, erasure, deletion or custody module. |
+| T2 | Six shared responsibilities, each with a "must not" (52–59) | Identity; owner→box map and router; billing and metering; credential and egress proxy; wake index; published data. Nothing else is shared. | design.md lists every shared component against one of the six, and the guard test fails if a new shared module isn't listed. |
+| T3 | The map holds "`owner_id → box_id`, plus the latest volume/snapshot ID" (55); "the box needs a durable volume and off-host snapshots" (61) | Each owner's data is one **opaque volume**. The map records the volume and its latest verified off-host snapshot. | The map schema has `volume_generation`, `snapshot_id` and `snapshot_sha256`. A test restores an owner from the map's snapshot reference alone. |
+| T4 | "never reads tenant data" (3); "zero host paths to owner data" (117); "Tests that prove the daemon holds no host path to owner data" (113, countermeasure 7) | Shared processes (router, broker, waker, boxhostd lifecycle) handle owner data only as whole volumes, by UID: create, attach, detach, snapshot, restore and delete. None of them opens, lists, stats or walks a path inside a volume. The one exception is the one-shot cutover migration, which is deleted after cutover. | A structural test fails if any shared module opens a path under the volume mount root, or calls a tree walk on owner data. |
+| T5 | Cross-owner checks are "positive mappings ('derive the box from the authenticated owner'), never exclusion filters", in three components only (69) | Admission is one map record per owner: `admitted`, `suspended` or `erased`. The router, waker and proxy read only that record. Erasure, deletion and suspension are states of that record, not separate stores checked at many doors. | A grep-based guard finds no erasure or deletion-ledger read outside the map module. |
+| T6 | Credentials and egress proxy: "keys and OAuth tokens, injected into outbound requests per box; a per-box allowlist" (57) | Every outbound connection from a box (model HTTP, connector HTTP, public HTTP/CONNECT, git) passes through one proxy function that checks the owner's allowlist. A missing allowlist denies. | A test sends each egress path to a destination outside the owner's allowlist, and every one is refused. |
+| T7 | Wake index: "`(owner_id, next_wake_at)`, rebuildable by asking each box"; it must not store "job definitions, pause state or payloads" (58) | The index holds `owner` and `next_wake_at` only. The box reports `min(next schedule, now + 24h)`, which keeps the daily wake inside the box. If the index is lost, every admitted owner is woken once and reports again. | The schema has two columns, and a rebuild test passes. |
+| T8 | Into the box: the agent loop, history, files, owner DB, schedules, pause, "the app and MCP logic that serves the owner's own data" and "authorization among an owner's sub-users" (63) | The owner's policy for their own file, shell, workflow and app actions runs in the box. The broker keeps only credential, egress and spending policy. | No `workspace.*`, `shell` or workflow action is decided in a broker module. |
+| T9 | A flag lives "where its reader lives, and give it one writer" (67) | Pause is box state with the box as its writer. Suspension is map state with billing and abuse as its writers. Erasure is map state with the deletion job as its writer. | One writer per flag, asserted by the guard test. |
+| T10 | Published data is "copied out of the box at publish time" (59) | Unchanged: commons publishing via `BOX_PUBLISH`. | Existing tests. |
 
-Both `--disaster-restore --acknowledge-unrecoverable-facts` are required. Restore
-selects the newest verified pair, records backup time -> restore time, prepares
-all safety changes in staging, and exits **6** after publication. It never starts
-services. A fresh droplet uses this path, including the scheduled DR drill.
+Review scope, from research.md:69 and :108. Floor-class review covers the router/map,
+the egress proxy and the waker. Every reviewer receives `research.md` and this
+table, and states for each finding whether it can exist in the target shape.
+A finding that can't be expressed as a defect in those three components is fixed
+inside one box, never by adding a check to shared code. Any check added to shared
+code must say why the path it guards still exists (research.md:119).
 
-Credential roots and their reset:
-- Router `.connect/session_secret` and `.connect/client_secret`: replace with
-  fresh random secrets. `client_id` is an identifier, not a credential.
-- Router approval/login sessions in `.runtime/owner-sessions.db`, legacy
-  `.tinyassets.db:user_sessions`, hosted/inline OAuth flows, and sealed app
-  refresh files: remove all rows/files. Rotate the session seal root used by
-  the restored router; no restored handle or login flow survives.
-- `.api-keys.sqlite3:api_keys` and `.hook-owners.sqlite3:hook_owners` use plain
-  SHA-256, without a pepper: delete all rows; introduce no new crypto.
-- Local MCP OAuth `.auth.db` clients/codes/access/refresh rows use random tokens
-  and plain digests, not a signing key: delete them. WorkOS signs external JWTs;
-  revoke every surviving owner's sessions through the provider API, failing closed
-  on unavailability. Enforce the restore epoch against the signed `sid` and its
-  provider-recorded creation time, never the refreshed JWT `iat`.
-- Operational wiki-canary bearer and canary sign-in door key: fresh replacements
-  in router-owned `.router-credentials.json` override the old environment values.
-  Recovery operators reconfigure acceptance clients from these replacements.
-- Broker `owner_box_secrets`: rotate every secret before startup.
-- Drop every broker custody, outbound connection, grant/capability and browser
-  vault row, including file credential vaults. Provider OAuth/refresh credentials
-  cannot be invalidated by rotating our keys; owners must reconnect.
-- Drop one-use policy approvals and router outside bearer families/grants. Provider signing keys
-  and billing webhook credentials are not user bearer credentials.
+## Corrections to the as-built slices (2026-10-19)
 
-Operation fences:
-- Root-owned shared `.restore-epoch`: replace with a fresh generation and
-  bind read-only at `/run/boxhostd/restore-epoch`; boxd and receipt admission reject
-  IDs from an earlier generation before consulting owner-writable state.
-- `.broker/ops.db:meta.cutoff_ms`: advance past restore time plus the broker's
-  maximum admitted future skew; admission rejects old ULIDs before receipt lookup.
+The research-based audit of `d057f96fad2` (VERDICT: DRIFT_BLOCKS_CUTOVER) found
+the drift below. Each correction replaces a shared path; none adds a guard.
 
-Erasure has ONE source of truth: root-owned 0600 `.erasure-ledger.sqlite3` at
-the fixed shared data root, outside every owner tree. The data root is root:1001
-01775 so the router can create its own files but cannot replace root authority;
-SQLite sidecars must also be root-private. Its append-only events
-are keyed by sha256(principal), matching broker custody. Boxhostd serves ledger
-reads and phase receipts over its authenticated control socket; only root writes
-the file. Plaintext principals are retained there only for external cleanup.
-Account deletion appends the entry before any deletion phase. Each completed
-phase (home_removed, broker custody, billing, credentials, identity) is recorded.
+### C1. One volume per owner (T3, T4)
+Today all owners are directories on one shared XFS store with project quotas, so
+shared code walks inside owner trees: `boxes/quota.py:72`, `boxes/destroy.py:15–167`,
+`boxes/gvisor_runtime.py:74` and the `finish_erasures` walk at
+`restore_recovery.py:378`. That is the source of the mount, symlink, inode and
+link special cases. Target:
+- Each owner gets one XFS-formatted image file `<volume root>/<uid>.img`, sized to
+  the owner's plan quota, on the box store. The quota is the volume's size.
+- boxhostd attaches the volume only while the box is awake: a loop device, mounted
+  into the gVisor box as `/home/owner`, and detached on sleep. Loop devices in use
+  equal the awake boxes (cap 6).
+- Resize grows the image and runs `xfs_growfs` inside the box start path; it
+  never shrinks.
+- Destroy detaches the volume and deletes the image file. There is no tree walk.
+- **Deleted:** the project-quota tree logic in `quota.py`, the recursive destroy in
+  `destroy.py`, the owner-tree walk in `restore_recovery.finish_erasures`, and the
+  mount and symlink checks around owner trees.
+- Step 1 proves the mechanics on real mounts before any build: a loop image inside
+  the box store, mounted into runsc, a reflink copy, and an upload to Spaces.
 
-Both normal rollback and disaster recovery union live (when readable) and staged
-ledger events, never remove an entry, and retain all unfinished cleanup targets
-across arbitrarily many restores. Every restored home creates a new obligation;
-old receipts cannot discharge new work. Quarantine destinations are recorded
-before rename. Post-publication cleanup and every boxhost start retry all pending
-home and quarantine paths with the descriptor-relative walker. home_removed is
-true only after every recorded target and owner destruction have completed.
-Restore reports are diagnostics, never retry authority. Router retries select
-all ledger entries with unfinished phases, with no restore_pending or identity-row
-filter. An unmapped digest remains fenced and pending. Every authentication door
-checks sha256(principal) directly against the ledger.
+### C2. Durability is per-owner snapshots (T3)
+Replaces the paired whole-system restore (the former "Restore: pre-traffic
+rollback, post-traffic disaster" section). That design rewound platform authority
+together with owner data, which produced four review rounds of carry-forward
+fixes.
+- **Snapshot:** taken only while the volume is detached, so it is consistent by
+  construction. This happens on the box's sleep, when the last snapshot is older
+  than 24 hours. A box awake for more than 24 hours gets a scheduled stop between
+  turns. The snapshot is a reflink copy of the image, compressed and uploaded off-host
+  to the backup destination, verified by SHA-256, and then recorded in the map
+  (`snapshot_id`, `snapshot_sha256`). Seven are retained.
+- **Restore one owner:** stop the box, fetch the snapshot, verify its SHA-256,
+  replace the image atomically, bump `volume_generation` in the map and start the
+  box. The box refuses operation IDs from an earlier generation. Platform state
+  (identity, credentials, map, billing, custody) is untouched, so a restore
+  **cannot** revive a revoked key, an erased account or a spent allowance.
+- **Deleted:** live SQLite copying and retakes (`backup-live-sqlite.py`'s owner
+  retake, `backup-owner-box.sh:85–138`), the paired data/box-store archive as the
+  owner recovery unit, `restore_recovery.py`'s carry, fence and reconciliation
+  logic for owner data, `router_traffic.py`'s fail-open predicates, and the
+  restore-day spend fence.
 
-Cutover seeds the ledger from router tombstones, custody deletion digests,
-boxhost owner_destroys and broker revocations before removing the legacy router
-tombstone store and shared boxhost journal. Per-box operation journals remain owner-local.
-Disaster recovery also reconciles WorkOS absence and erases post-backup owners,
-retaining permanent UID reservations. Uncertain provider results refuse recovery.
-Pre-cutover pairs require forward migration and cannot be disaster sources.
-Tests use synthetic adapters and never call production providers.
+### C3. Platform disaster recovery is separate and rare (T2)
+The shared layer (identity, map, billing, broker custody and ledger, published
+data) has its own backup, as `deploy/backup.sh` does today. Restoring it does not
+touch owner volumes; the map it restores points at the owners' snapshots. Its
+rule stays minimal:
+- rotate every credential root (sessions, API keys and hooks deleted, box secrets
+  rotated, custody dropped so owners reconnect);
+- advance the broker operation cutoff;
+- reconcile identities against WorkOS, where an owner absent there is erased.
+An erased owner's volume and snapshots were deleted at erasure time, so no
+restored map entry can bring their data back. That replaces the erasure-ledger
+union across restores.
 
-Reconcile plan and billing suspension through the Stripe adapter where configured,
-using the webhook's permanent subscription/customer-to-owner resolver for signed
-legacy universe identities;
-report unavailable sources and abuse suspension explicitly. Block every owner's
-remaining daily spend through the end of the restore day, independent of policy
-caps or missing policy rows. There is no authoritative daily-spend reconstruction
-source today. Report owner consents/grants, effector consents, capability grants,
-graph receivers, outside grants, spend reservations, policies, schedules, content,
-turns, receipts and suspension history as reverted to backup time where not reset
-or reconciled above. This is acknowledged loss, never carry-forward.
+### C4. Cutover rollback is the old system's restore
+Before ordinary traffic opens, rollback means stopping the new image, restoring
+the pre-cutover backup (old layout) and starting the old image. After traffic
+opens, there is no rollback, as D11 already states. The deploy workflow offers
+rollback only before its open-admission step. **Deleted:** the runtime
+`traffic_opened_at` and `credentials_after` restore authority in the router.
 
-Rehearsal proves exact normal restore before traffic, normal refusal after traffic,
-and completed disaster recovery with stale key/session/hook rejection, erased
-owner destruction and write/bash/broker-outbound replay refusal. Network-less
-rehearsal mounts a recorded provider module at its own fixed venue path, selected
-only by an explicit harness argument refused without that mount. Production
-images contain no such module and deploy never passes the argument. Rehearsal
-proves every survivor reconciled, provider-absent identity erased before boxes
-start, and unreachable provider exit 4 with both live volumes unchanged.
+### C5. The router only routes (T1)
+**Deleted from `owner_router.py:225–378`:** account-deletion orchestration (billing
+cancellation, broker channel closure, drain, retirement, credential and identity
+deletion), plus the router-process deletion retries in `router_credentials.py:245`.
+`POST /app/account/delete` authenticates, enqueues a deletion job in the control
+plane and returns 202 with a status URL. The router keeps a cached map and
+forwards from it when the broker is unavailable. Wake and lease calls to boxhostd
+are routing, and they stay.
 
-## Shape check against the research (required for every slice)
+### C6. Deletion is one control-plane job; admission is one map record (T5, T9)
+The broker owns the map, and it runs a resumable deletion job whose steps are each
+idempotent:
+1. Set the map record to `erased`. From this point the router, waker and proxy refuse the owner, and the broker closes that owner's open channels.
+2. boxhostd stops the box and deletes the volume.
+3. Delete the owner's snapshots off-host.
+4. Erase custody.
+5. Cancel billing and expire any open checkout.
+6. Revoke router credentials: API keys, hooks and sessions.
+7. Delete the WorkOS user.
+8. Write the receipt.
 
-| Research rule | This design |
-|---|---|
-| The shared door authenticates, maps the identity to an instance, forwards, and never reads tenant data | Router: identity → `owner_id` → box socket; no owner file or database path in the shared process (D7 guard) |
-| Isolation is infrastructure, not shared-code filters | The gVisor box per owner with a null netns and its own uid and quota; no cross-owner checks in shared code |
-| Secrets stay outside the instance; egress goes through a proxy | Broker credential and egress proxy; the box has no raw secrets (C6 P5) |
-| The clock is outside, the rows are inside | The box keeps its schedule rows; the shared index keeps only `next_wake_at` |
-| A flag lives with its reader and has one writer | Pause, heartbeats and the ledger are box state; account suspension is router state |
-| Durable truth survives the instance | The box tree on an XFS volume, plus off-host snapshots (C6 P6/S27) |
-| Cross-tenant views are published data, not reads of private stores | Commons publishing copies out at publish time; public listing reads only `.published/` |
+**Deleted:** the erasure checks spread across authentication doors, worker
+commit, stream open, network send and host admission
+(`router_credentials.py:31` and its callers, `broker/server.py` erasure checks,
+`http_connect.py:110`, `boxes/admission.py:42`); the vault tombstone and
+policy deletion markers as separate authorities; and the host-path work records
+in `erasure_ledger.py:258–406`. Deletion history is kept as the job's receipts.
+Billing's own refusal of a deleted account's checkout stays, because billing is a
+retained responsibility.
 
-Any finding in review that can't be expressed as a defect in the router, the
-broker proxy or the waker belongs inside one box. It is fixed there, never by
-adding a check in shared code.
+### C7. One egress allowlist check at the proxy (T6)
+`broker/public_egress.py:40` connects without consulting the owner's allowlist
+(an audit blocker). One proxy function resolves the owner's allowlist from the
+map and policy, and it checks every outbound connection on every egress path. A
+missing allowlist denies. The duplicate allowlist logic at `broker/policy.py:478`
+becomes that single function.
+
+### C8. The owner's own action policy moves into the box (T8)
+`broker/policy.py:29` decides `workspace.files`, `workspace.shell`, workflows and
+private app reads and writes for owners. That policy moves into the box, and the
+broker keeps credential, egress and spending policy. `policy_rules.py:69` stops
+delegating owner-local decisions to `broker/server.py:1020`.
+
+### C9. Wake index is two columns (T7)
+Drop `reported_at` and `last_woken_at` from `broker/next_wake.py:16`, along with
+the 24-hour floor query at `:41–55`. The box reports
+`min(next schedule, now + 24h)`.
+
+### Build order and lanes
+Step 1 is the volume proof. Then three lanes run one after another on one branch,
+each after the previous has merged: (a) C1 + C2 + C3 + C4 storage and durability,
+including the migration writing each owner into their own volume; (b) C5 + C6
+router and deletion; (c) C7 + C8 + C9 egress, policy and wake. Each lane's brief
+cites this section and research.md and names the shared code it deletes. Each
+lane gets one review round, scoped as above.
 
 ## D1. The owner daemon
 

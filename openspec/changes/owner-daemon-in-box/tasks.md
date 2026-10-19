@@ -152,5 +152,19 @@ Nothing deploys until slice 7.
       receipt and cutover rollback refusal: design.md D11 as built. Validation
       and the protected migration baseline failures: main-audit.md. Workflow
       remains held and unrun; independent review and live acceptance are lead work.
+- [ ] 6c. Return to the researched shape (design.md "Target shape" and
+      "Corrections", 2026-10-19). Each lane names the shared code it deletes and
+      gets one review round scoped to the router/map, egress proxy and waker.
+      - [ ] Step 0: spec reviewed against research.md by the lead and one reviewer.
+      - [ ] Step 1: per-owner volume proof on real mounts (loop image in the box
+            store, mounted into runsc, reflink snapshot, Spaces upload, restore by
+            snapshot ID, destroy by deletion).
+      - [ ] Lane a: C1–C4, volumes, per-owner snapshots, separate platform DR,
+            and cutover rollback as the old system's restore; the migration writes
+            each owner into their own volume.
+      - [ ] Lane b: C5–C6, thin router and the deletion job, with admission as one map record.
+      - [ ] Lane c: C7–C9, one egress allowlist check, owner action policy in
+            the box, and a two-column wake index.
+      - [ ] Real-data census and rehearsal on both copies; CI green.
 - [ ] 7. Report the list of unported, dropped features to the founder; then the cutover deploy (lead), with deployed sha asserted and one naive-user
       pass per surface: app, MCP and a scheduled run.

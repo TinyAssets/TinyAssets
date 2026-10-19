@@ -1,101 +1,90 @@
 ## ADDED Requirements
 
-### Requirement: Restore: pre-traffic rollback, post-traffic disaster
-Normal restore SHALL be limited to pre-traffic cutover rollback. It SHALL restore the verified backup pair except for the monotonic erasure ledger, whose live and staged events are unioned. Its admission proof remains root-owned `.layout.json` and `.router-traffic.sqlite3`; no owner-writable state is restore authority.
-Any set `traffic_opened_at` (including one newer than the backup) or `credentials_after` refuses with exit 4 and directs the operator to disaster recovery; a missing or unreadable marker refuses unless readable layout proves an unfinished pre-traffic cutover, and missing or unreadable layout too always refuses.
-After traffic, only acknowledged disaster recovery is allowed, and its operation fences live in platform-owned state exposed read-only to boxes, never in owner-writable journals or receipt databases.
-The router SHALL durably record its backed-up traffic marker before admitting
-ordinary traffic after deploy canary acceptance. Closed admission SHALL also
-refuse anonymous writable callbacks; only immutable app probes and the separately
-authenticated canary sign-in may bypass it.
-Disaster recovery SHALL require both existing acknowledgement flags, select the
-newest verified pair, reset every bearer credential root or delete unkeyed digest
-rows, drop external credential custody and outbound grants/vaults, fence every
-operation/receipt authority, and block remaining daily spend until the next day.
-WorkOS SHALL revoke all surviving owners' sessions and refuse uncertain results;
-the router SHALL compare original session creation time resolved by signed `sid`
-to the restore epoch, including cookie refresh. Broker cutoffs SHALL exceed the
-restore time plus the shared maximum future skew. Billing reconciliation SHALL
-use the webhook resolver for signed legacy universe subscription mappings.
-It SHALL reconcile identity erasure through WorkOS and billing through Stripe
-adapter seams, report unavailable billing/suspension sources, loss window and
-classes reverting to backup time, and exit 6 on completed recovery.
-One root-owned append-only `.erasure-ledger.sqlite3` on the shared data root
-SHALL be erasure authority, keyed by sha256(principal). Deletion SHALL append its
-entry first and record each phase completion. The shared root SHALL be root-owned
-with sticky group-write access for the router, preventing replacement of root
-ledger files; all ledger SQLite sidecars SHALL be root-private. Cutover SHALL seed all router
-tombstones, `.tinyassets.db.deleted_principals(founder_sub)` digests, custody
-digests in both source and staging, boxhost owner_destroys, broker revocations
-with deleted=1, and `.broker/accounts/<digest>/.deleted` policy markers, then
-remove the router tombstone store and shared host journal. Plaintext required for phases SHALL
-remain only in root-owned state. Local custody fences are not retry authority.
-Both restore paths SHALL union readable live and staged ledger events; owner-box
-restores SHALL NOT read legacy erasure stores or diagnostic reports as authority.
-Cutover and NORMAL rollback to a pre-cutover pair SHALL import legacy facts,
-including report-only quarantine obligations, before retiring those formats. Every new
-restored home SHALL create new work; prior completion receipts cannot hide it.
-Post-publication cleanup and every start SHALL retry all unfinished home and
-quarantine targets across any number of restores. A quarantine destination SHALL
-be recorded before rename and home_removed SHALL remain false until all targets
-are destroyed. Reports SHALL carry no authoritative cleanup queue.
-Authentication SHALL refuse any principal whose digest is in the ledger, even
-without an identity mapping. Automatic retries SHALL select every ledger entry
-with unfinished phases, without a restore_pending or identity-row filter.
-An erased box SHALL never start; deletion of sleeping or suspended owners SHALL
-destroy the complete volume, quota project, sockets and secret without launching a box. Deletion SHALL be iterative, descriptor-relative,
-and never follow symlinks or cross mounts.
-Identities found only in live platform state and absent from the backup SHALL be
-erased with their permanent UID reservations retained from the ledger even if
-live identity rows are unavailable; conflicting reservations SHALL refuse restore.
-Forward migration SHALL record new cleanup obligations for copied erased homes.
-Retained live quota clearing
-SHALL not require backup registry membership.
-Pre-cutover pairs SHALL be refused as disaster sources with an explicit explanation
-that forward migration is required; disaster restore requires an owner-box pair.
-Unsafe platform paths, invalid pairs, uncertain
-identity reconciliation and preparation failures SHALL preserve original volumes.
-The DR drill SHALL fetch, verify and transfer both archives and their manifest.
-Rehearsal provider injection SHALL require an explicit harness argument and a
-fixed mounted module absent from production images; no environment selector.
-Rehearsal SHALL prove survivor reconciliation, provider-only erasure before box
-startup, and unreachable-provider exit 4 without changing either live volume.
+### Requirement: Owner data is one opaque volume per owner
+Each owner's data SHALL live in one volume sized to the owner's plan quota.
+Shared processes (router, broker, waker and boxhostd lifecycle) SHALL handle owner
+data only as whole volumes identified by owner UID: create, attach, detach,
+snapshot, restore and delete. They SHALL NOT open, list, stat or walk any path
+inside a volume. The one-shot cutover migration is the only exception, and it
+SHALL be deleted after cutover.
 
-#### Scenario: Exact maintenance-window rollback
-- **WHEN** a verified pair is restored before ordinary traffic has opened
-- **THEN** normal restore preserves the backup pair and unions erasure events created after it
-- **AND** no live credential, policy or operation row is carried forward
+#### Scenario: Destroying an owner deletes the volume without a walk
+- **WHEN** an owner's account deletion reaches the destroy step
+- **THEN** boxhostd detaches and deletes that owner's volume
+- **AND** no shared code lists, stats or opens a path inside it
 
-#### Scenario: Normal restore after traffic
-- **WHEN** the live router marker is newer than the backup pair
-- **THEN** normal restore refuses before swapping either volume
+#### Scenario: Structural proof of zero owner paths
+- **WHEN** the structural guard scans the shared-layer modules
+- **THEN** it finds no open, listing, stat or tree walk under the volume mount root
 
-#### Scenario: Missing pre-traffic proof
-- **WHEN** marker and layout are both missing or unreadable
-- **THEN** normal restore refuses with exit 4 before publication
+### Requirement: Owner durability is off-host snapshots referenced in the map
+The map SHALL record, per owner, the volume generation and the latest verified
+off-host snapshot (identifier and SHA-256). A snapshot SHALL be taken only while
+the volume is detached. Restoring an owner SHALL replace only that owner's volume
+from a verified snapshot and SHALL advance its volume generation. It SHALL NOT
+modify identity, credentials, the map's admission state, billing or custody.
 
-#### Scenario: Owner content is not recovery authority
-- **WHEN** an owner plants a corrupt database anywhere in its writable tree
-- **THEN** neither normal preflight nor disaster fencing opens it
-- **AND** disaster recovery still fences that owner's pre-restore operation IDs
+#### Scenario: Restoring an owner cannot revive platform authority
+- **WHEN** an owner's API key is revoked after their latest snapshot and the owner is then restored from that snapshot
+- **THEN** the key stays revoked
+- **AND** the box refuses operation IDs from the earlier volume generation
 
-#### Scenario: Acknowledged disaster recovery on a fresh droplet
-- **WHEN** both disaster acknowledgement flags are supplied with the newest verified pair
-- **THEN** recovery completes with status 6 and rotation/fencing evidence
-- **AND** pre-restore API keys, sessions, hook tokens and external bearer credentials fail
-- **AND** pre-restore write, bash, broker outbound and receipt replays refuse
-- **AND** non-ULID IDs are fenced by epoch, never by lexical timestamp comparison
-- **AND** every owner's remaining daily cap is zero until the next day
-- **AND** the report names the backup-to-restore loss window and reverted classes
+#### Scenario: Snapshots are consistent and verified
+- **WHEN** a box sleeps and its last snapshot is older than 24 hours
+- **THEN** boxhostd snapshots the detached volume, uploads it, verifies its SHA-256 and records it in the map
+- **AND** a snapshot that fails verification is not recorded
 
-#### Scenario: Erasure survives loss of live stores
-- **WHEN** a readable erasure ledger or WorkOS proves an owner deleted
-- **THEN** disaster restore unions that erasure and destroys the restored owner tree
-- **AND** an uncertain identity lookup refuses publication
+### Requirement: The router only authenticates, maps and forwards
+The router SHALL authenticate the caller, resolve the owner from a cached copy of
+the map, wake a sleeping box and forward with the per-box secret. It SHALL hold
+no billing, deletion, erasure or custody logic. It SHALL keep forwarding to
+admitted owners while the broker is unavailable.
 
-#### Scenario: Disaster preparation failure
-- **WHEN** credential reset, fencing, erasure quarantine or reconciliation cannot complete
-- **THEN** neither staged volume is published and original state remains intact
+#### Scenario: Routing survives a broker outage
+- **WHEN** the broker is down and an admitted owner's box is awake
+- **THEN** the router forwards the owner's request from its cached map
+
+#### Scenario: Account deletion is handed to the control plane
+- **WHEN** an owner requests account deletion
+- **THEN** the router enqueues a deletion job in the control plane and returns 202 with a status URL
+
+### Requirement: Admission is one map record and deletion is one control-plane job
+Each owner SHALL have one admission record with the state `admitted`,
+`suspended` or `erased`. The router, waker and egress proxy SHALL decide on that
+record alone. Account deletion SHALL be one resumable control-plane job. Its
+first step SHALL set the record to `erased`; it then deletes the volume and its
+snapshots, erases custody, cancels billing, revokes router credentials, deletes
+the identity and writes a receipt.
+
+#### Scenario: Erasure takes effect at the first step
+- **WHEN** the deletion job sets an owner's record to `erased`
+- **THEN** the router, waker and proxy refuse that owner
+- **AND** the broker closes the owner's open channels
+
+#### Scenario: A deleted owner's data cannot return through recovery
+- **WHEN** the shared layer is restored from a backup taken before an owner's deletion
+- **THEN** the owner's volume and snapshots no longer exist, so no data returns
+- **AND** identity reconciliation marks the owner `erased`
+
+### Requirement: Every egress path checks the owner's allowlist at the proxy
+Every outbound connection from a box SHALL pass one proxy check against the
+owner's allowlist: model HTTP, connector HTTP, public HTTP and CONNECT, and git.
+A missing allowlist SHALL deny.
+
+#### Scenario: Public CONNECT outside the allowlist is refused
+- **WHEN** an admitted box issues CONNECT to a public destination outside its owner's allowlist
+- **THEN** the proxy refuses before opening an upstream connection
+
+### Requirement: Platform disaster recovery is separate from owner restore
+Restoring the shared layer SHALL leave owner volumes untouched. It SHALL rotate
+every credential root, advance the broker operation cutoff and reconcile
+identities against the identity provider. It SHALL fail closed when the provider
+is unavailable.
+
+#### Scenario: Shared-layer restore invalidates old bearer credentials
+- **WHEN** the shared layer is restored from a backup
+- **THEN** no session, API key or hook token issued before the restore is accepted
+- **AND** owners reconnect their model sources
 
 ### Requirement: Cutover preserves knowledge bytes and removes rehearsal residue
 The migration SHALL copy admitted centers' vector directories and knowledge
