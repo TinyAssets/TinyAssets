@@ -6,13 +6,10 @@ import subprocess
 import uuid
 from pathlib import Path
 
-import pytest
-
 
 def test_sleeping_and_suspended_deletion_without_box_starts():
     """Run through linux_oracle --as-root --docker-engine; never skip a missing venue."""
-    if not hasattr(os, "geteuid") or os.geteuid() != 0:
-        pytest.skip("requires root Docker oracle; owner=c6-owner-box runs-in=linux_oracle.py")
+    assert hasattr(os, "geteuid") and os.geteuid() == 0, "root Linux oracle required"
     name = "ta-cold-delete-" + uuid.uuid4().hex[:12]
     root = Path(__file__).resolve().parents[1]
     image = os.environ["TA_REHEARSAL_BASE_IMAGE"]
@@ -41,13 +38,14 @@ async def probe():
     import sqlite3
     from types import SimpleNamespace
 
-    from deploy.box_project_readback import read_hard_limit
     from tinyassets.boxes.gvisor_runtime import GvisorRuntime
     from tinyassets.boxes.owner_daemons import OwnerDaemons
-    from tinyassets.boxes.quota import OwnerQuota
     from tinyassets.boxes.relay import OwnerRelays
+    from tinyassets.boxes.volumes import OwnerVolumes
+    from tinyassets.broker import box_admission, owner_volumes
     from tinyassets.broker.box_admission import owner_record
     from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.owner_reads import Plans
     from tinyassets.broker.server import BOX_HOST, _Connection
     from tinyassets.erasure_ledger import ErasureLedger, principal_digest, require_active
 
@@ -56,7 +54,8 @@ async def probe():
     disk = root / "store.img"
     with disk.open("wb") as stream:
         stream.truncate(512 * 1024**2)
-    subprocess.run(["mkfs.xfs", "-f", str(disk)], check=True, capture_output=True)
+    subprocess.run(["mkfs.xfs", "-f", "-m", "reflink=1", str(disk)],
+                   check=True, capture_output=True)
     subprocess.run(["mount", "-o", "loop,prjquota", str(disk), str(store)], check=True)
     try:
         filesystem = subprocess.check_output(
@@ -71,11 +70,20 @@ async def probe():
         ledger.initialize()
         broker = shared / ".broker/state"
         broker.mkdir(parents=True, mode=0o700)
-        identities = OwnerIdentities(broker / "identities.db", initialize=True)
+        identities = OwnerIdentities(broker / "identities.db", initialize=True,
+                                     plans=Plans(shared))
+        with sqlite3.connect(identities.path) as db:
+            db.execute("CREATE TABLE box_records (principal TEXT PRIMARY KEY, machine INT, "
+                       "project_id INT, bhard_bytes INT)")
         channel = _Connection(SimpleNamespace(_data_root=shared, _owner_identities=identities),
                               None, BOX_HOST)
 
         class Admission:
+            def volume(self, owner, action="binding", **arguments):
+                return owner_volumes.dispatch(identities, {
+                    "op": "BOX_VOLUME", "principal": owner,
+                    "action": action, "arguments": arguments})
+
             def owner(self, owner, *, rotate=False):
                 require_active(shared, owner)
                 return owner_record(identities, owner, rotate=rotate)
@@ -85,11 +93,9 @@ async def probe():
                     "op": "BOX_RETIRE_ADMISSION", "principal": owner, "uid": uid
                 }) == {"op": "BOX_ADMISSION_RETIRED"}
 
-        epoch = root / "epoch"
-        epoch.write_text("")
-        runtime = GvisorRuntime(runsc=Path("/runsc"), rootfs=root, owner_store=store,
+        runtime = GvisorRuntime(runsc=Path("/runsc"), rootfs=root,
                                 state_root=root / "state", bundle_root=root / "bundles",
-                                cgroup_parent=root / "cgroups", restore_epoch_file=epoch)
+                                cgroup_parent=root / "cgroups")
         commands = []
         command = runtime._command
 
@@ -107,24 +113,20 @@ async def probe():
 
         runtime.start = checked_start
         relays = OwnerRelays(root / "relays", Admission())
-        quota = OwnerQuota(store)
-        manager = OwnerDaemons(runtime, Admission(), quota, relays, sockets)
+        volumes = OwnerVolumes(store, root / "mounts", ":local:/unused-snapshots")
+        manager = OwnerDaemons(runtime, Admission(), volumes, relays, sockets)
         for owner in ("sleeping", "suspended"):
             uid = identities.resolve(owner, allocate=True).uid
             identities.admission("admit", owner, owner)
+            box_admission.provision(identities, shared, owner, owner)
             identities.box_route(owner, rotate=True)
             identities.plans.apply(owner, tier="paid", event_created=1)
             if owner == "suspended":
                 identities.plans.set_suspension(owner, reason="billing", suspended=True)
-            tree = quota.set_bound(uid, uid, 16 * 1024**2)
-            assert read_hard_limit(store, uid) == 16 * 1024
-            # Every local sweep class is under this volume, including retired/staged homes.
-            for relative in ("home/note", ".runs.db", ".tinyassets.db", "blobs/upload",
-                             ".agent-sessions/home/agent-activities.db", ".deleting/home/note",
-                             ".owner-boxd/boxhost.db", ".agent-home/session"):
-                path = tree / relative
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(b"synthetic owner content")
+            volumes.create(uid, 2 * 1024**3)
+            Admission().volume(owner, "created")
+            image = store / f"{uid}.img"
+            assert image.stat().st_size == 2 * 1024**3
             relay = relays.bind(owner, uid)
             directory, secret = manager._paths(uid, "synthetic-secret")
             app = socket.socket(socket.AF_UNIX)
@@ -140,18 +142,14 @@ async def probe():
                 raise AssertionError("cold owner acquired a cleanup box")
             manager.destroy(owner, uid)
             assert json.loads(runtime._command("list", "--format=json").stdout) in (None, [])
-            assert not any(path.exists() for path in (tree, relay, directory, secret))
-            for kind in ("-b", "-i"):
-                report = subprocess.check_output([
-                    "xfs_quota", "-x", "-c", f"report -p -n {kind}", str(store)], text=True)
-                rows = [line.split() for line in report.splitlines()
-                        if line.split() and line.split()[0].lstrip("#") == str(uid)]
-                assert all(row[1:4] == ["0", "0", "0"] for row in rows), rows
+            assert not any(path.exists() for path in (image, relay, directory, secret))
+            volumes._detached(uid)
+            assert Admission().volume(owner)["uid"] == uid
             assert identities.center_state(owner) == "retired"
             with sqlite3.connect(identities.path) as db:
                 assert not db.execute("SELECT 1 FROM owner_box_secrets WHERE principal=?",
                                       (owner,)).fetchall()
-            print("PASS", owner, "volume quota sockets secret admission; zero starts")
+            print("PASS", owner, "opaque volume sockets secret admission; zero starts")
         assert commands and all(cmd[0] in {"kill", "delete", "list"} for cmd in commands)
         assert not starts
     finally:

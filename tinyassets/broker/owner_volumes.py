@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import uuid
 from contextlib import closing, contextmanager
+
+COLD_AFTER = 7 * 86400
 
 
 def schema(db):
@@ -18,6 +21,7 @@ def schema(db):
                "principal TEXT PRIMARY KEY NOT NULL, uid INTEGER NOT NULL UNIQUE, "
                "volume_generation INTEGER NOT NULL CHECK(volume_generation > 0), "
                "snapshot_id TEXT, snapshot_sha256 TEXT, work TEXT, "
+               "local INTEGER NOT NULL DEFAULT 1 CHECK(local IN (0,1)), asleep_at REAL, "
                "CHECK((snapshot_id IS NULL) = (snapshot_sha256 IS NULL)))")
     db.execute("CREATE TRIGGER IF NOT EXISTS permanent_volume_binding "
                "BEFORE UPDATE OF principal, uid ON owner_volumes BEGIN "
@@ -47,7 +51,8 @@ def transaction(identities, owner, *, active=True):
         db.execute("PRAGMA synchronous=FULL")
         db.execute("BEGIN IMMEDIATE")
         row = db.execute(
-            "SELECT v.uid,v.volume_generation,v.snapshot_id,v.snapshot_sha256,v.work "
+            "SELECT v.uid,v.volume_generation,v.snapshot_id,v.snapshot_sha256,v.work,"
+            "v.local,v.asleep_at "
             "FROM owner_volumes v JOIN owner_identities i "
             "ON i.principal=v.principal AND i.machine_id=v.uid WHERE v.principal=?",
             (owner,)).fetchone()
@@ -58,7 +63,8 @@ def transaction(identities, owner, *, active=True):
                                  (owner,)).fetchone() != (row[0],):
             raise PermissionError("owner admission is erased")
         record = dict(zip(("uid", "volume_generation", "snapshot_id", "snapshot_sha256",
-                           "work"), row))
+                           "work", "local", "asleep_at"), row))
+        record["local"] = bool(record["local"])
         record["work"] = json.loads(record["work"]) if record["work"] else None
         yield db, record
 
@@ -75,7 +81,9 @@ def pending(identities):
             "ON i.principal=v.principal AND i.machine_id=v.uid "
             "JOIN box_records b ON b.principal=v.principal AND b.machine=v.uid "
             "WHERE (v.work IS NOT NULL OR "
-            "(SELECT COUNT(*) FROM owner_snapshots s WHERE s.principal=v.principal)>7)")]
+            "(SELECT COUNT(*) FROM owner_snapshots s WHERE s.principal=v.principal)>7 OR "
+            "(v.local=1 AND v.asleep_at<? AND v.snapshot_id IS NOT NULL))",
+            (time.time() - COLD_AFTER,))]
 
 
 def reference(snapshot_id, sha256):
@@ -93,14 +101,33 @@ def dispatch(identities, document):
     fields = {"binding": set(), "created": set(), "sleep": set(),
               "publish": {"snapshot_id", "sha256"},
               "restore": {"snapshot_id"}, "restored": {"snapshot_id"}, "pending": set(),
-              "snapshots": set(), "forget": {"snapshot_id"}}
+              "snapshots": set(), "forget": {"snapshot_id"},
+              "wake": set(), "evict": set(), "evicted": set()}
     if action not in fields or not isinstance(arguments, dict) or set(arguments) != fields[action]:
         raise ValueError("invalid volume lifecycle arguments")
     if action == "binding":
         return binding(identities, owner)
     with transaction(identities, owner) as (db, record):
         work = record["work"]
-        if action == "created":
+        if action == "evict":
+            # C10: only the admitted binding's published snapshot permits eviction.
+            if (work is not None or not record["local"] or record["asleep_at"] is None
+                    or record["asleep_at"] >= time.time() - COLD_AFTER):
+                return None
+            reference(record["snapshot_id"], record["snapshot_sha256"])
+            work = {"kind": "evict"}
+        elif action == "evicted":
+            if work != {"kind": "evict"}:
+                raise PermissionError("eviction is not pending")
+            db.execute("UPDATE owner_volumes SET local=0 WHERE principal=?", (owner,))
+            record["local"] = False
+            work = None
+        elif action == "wake":
+            if work is not None or not record["local"]:
+                raise PermissionError("volume must be local and committed before wake")
+            db.execute("UPDATE owner_volumes SET asleep_at=NULL WHERE principal=?", (owner,))
+            record["asleep_at"] = None
+        elif action == "created":
             if work != {"kind": "create"}:
                 raise PermissionError("volume creation is not pending")
             work = None
@@ -118,8 +145,9 @@ def dispatch(identities, document):
                        "(principal,snapshot_id,snapshot_sha256,volume_generation) VALUES (?,?,?,?)",
                        (owner, arguments["snapshot_id"], arguments["sha256"],
                         record["volume_generation"]))
-            db.execute("UPDATE owner_volumes SET snapshot_id=?,snapshot_sha256=? "
-                       "WHERE principal=?", (arguments["snapshot_id"], arguments["sha256"], owner))
+            db.execute("UPDATE owner_volumes SET snapshot_id=?,snapshot_sha256=?,asleep_at=? "
+                       "WHERE principal=?", (arguments["snapshot_id"], arguments["sha256"],
+                                             time.time(), owner))
             work = None
         elif action == "restore":
             snapshot_id = arguments["snapshot_id"]
@@ -143,12 +171,13 @@ def dispatch(identities, document):
             if (work is None or work["kind"] != "restore"
                     or work["snapshot_id"] != arguments["snapshot_id"]):
                 raise PermissionError("no matching restore awaiting commit")
-            db.execute("UPDATE owner_volumes SET volume_generation=?,snapshot_id=?,"
-                       "snapshot_sha256=? WHERE principal=?",
+            db.execute("UPDATE owner_volumes SET local=1,asleep_at=NULL,"
+                       "volume_generation=?,snapshot_id=?,snapshot_sha256=? WHERE principal=?",
                        (work["volume_generation"], work["snapshot_id"], work["sha256"], owner))
             record["volume_generation"] = work["volume_generation"]
             record["snapshot_id"] = work["snapshot_id"]
             record["snapshot_sha256"] = work["sha256"]
+            record["local"], record["asleep_at"] = True, None
             work = None
         elif action == "snapshots":
             return [dict(zip(("snapshot_id", "sha256"), row)) for row in db.execute(

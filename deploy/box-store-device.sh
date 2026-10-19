@@ -17,7 +17,7 @@ config=/etc/tinyassets/box-store.conf
 }
 mode="$(stat -c %a "$config")"
 (( (8#$mode & 8#22) == 0 )) || { echo 'box-store.conf is writable by non-root' >&2; exit 1; }
-# The configuration is root-owned and contains only BOX_STORE_DEVICE.
+# The root-owned configuration pins the device and C10 growth limits.
 source "$config"
 device="${BOX_STORE_DEVICE:?BOX_STORE_DEVICE must be pinned in box-store.conf}"
 [[ "$device" != auto ]] || { echo 'BOX_STORE_DEVICE=auto is unsafe; rerun the installer' >&2; exit 1; }
@@ -62,7 +62,7 @@ else
         [[ -z "${signatures//[[:space:]]/}" ]] || {
             echo 'box volume has an existing signature; refusing to format it' >&2; exit 1;
         }
-        mkfs.xfs "$device"
+        mkfs.xfs -m 'reflink=1' "$device"
     fi
 fi
 [[ "$(blkid -s TYPE -o value "$device")" == xfs ]] || {

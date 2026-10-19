@@ -379,6 +379,34 @@ authority:
   least-loaded host, and a sleeping owner moves by snapshot restore on another
   host. The router stays a map lookup.
 
+**As built (a2b, C10):** sparse `OwnerVolumes.create` remains the sole creation
+path. A 2 GiB XFS image uses 67,457,024 physical bytes in the pinned Linux
+venue. The permanent volume binding now records `local` and `asleep_at`.
+Completed snapshot publication starts the cold interval; wake clears it.
+After more than seven days, maintenance records eviction work, removes the
+opaque image and commits `local=false` under the existing UID lock. Pending
+snapshot/restore work and absent admission prevent eviction. Interrupted
+eviction resumes before wake, and a cold wake uses C2 restore and generation
+commit before attach; restore failure never creates an empty image.
+
+The production outer store is a reflink-enabled XFS DigitalOcean block volume.
+`box-store-grow.timer` checks every five minutes; its root script uses the
+pinned device/volume identity and a private token file. Below 20% free, it
+requests one 25 GiB step, waits for kernel capacity and runs `xfs_growfs`
+without unmounting. A configured cap at or below 100 GiB is enforced before
+the API call; cap, API and device failures alert through stderr and syslog.
+The [100 GiB volume price](https://www.digitalocean.com/pricing/volumes)
+is $10/month, leaving $5 of the approved budget for Spaces. The timer and its
+complete source closure are installed with the boxhostd bundle. Tests use only
+a fake API, synthetic snapshots, loop devices and the pinned runsc.
+
+The DR drill consumes C3 manifests and verifies a C2 single-owner restore
+separately in a disposable store. Paired archive transfer/verification and
+`backup-pair.py` are deleted. C3 still fails closed on unavailable current
+authority. Failed-cutover guidance invokes C4 deployment control; the obsolete
+paired restore instructions, owner-tree project readback and quiescence
+wrapper are deleted. Production setup is the a2b row in `docs/host-actions.md`.
+
 ### Step 1 proof, before any lane is built
 Run on a disposable venue that matches the deployment kernel, the outer
 filesystem and the pinned runsc. Prove each of these:

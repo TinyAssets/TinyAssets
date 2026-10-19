@@ -2787,7 +2787,6 @@ def test_a_committed_migration_never_restarts_the_previous_image(box: Box, candi
     assert json.loads((volume / ".layout.json").read_text(encoding="utf-8"))["state"] == "stable"
     snapshots = list((box.root / "backups").glob("tinyassets-snapshot-*.tar.gz"))
     assert len(snapshots) == 1
-    snapshot = snapshots[0]
     if candidate == "healthy":
         assert completed.returncode == 0, completed.stderr
         assert _result(completed) == "deployed"
@@ -2800,7 +2799,9 @@ def test_a_committed_migration_never_restarts_the_previous_image(box: Box, candi
         "only the candidate's converge was attempted; no rollback converge of the previous image"
     )
     assert f"NOT starting {OLD_IMAGE}" in completed.stderr
-    assert f"BACKUP_FILE={snapshot} sudo bash deploy/backup-restore.sh" in completed.stderr
+    assert "python3 -m tinyassets.cutover_control rollback --state " in completed.stderr
+    assert "/cutover --data" in completed.stderr
+    assert "backup-restore.sh" not in completed.stderr
     assert box.live() == before, "the bundle this run installed is restored"
     assert box.env_image() == NEW_IMAGE, "the env must not be re-pointed at the previous image"
     daemon = box.docker_state_json()["containers"]["tinyassets-daemon"]
@@ -2846,7 +2847,8 @@ def test_a_failed_apply_is_judged_by_sql(box: Box, outcome, result, code):
         assert 'recheck_output={"pending": 1}' in reason
     else:
         assert "start " not in calls and daemon["status"] == "exited"
-        assert "restore it with: BACKUP_FILE=" in completed.stderr
+        assert "rollback through deployment control:" in completed.stderr
+        assert "tinyassets.cutover_control rollback" in completed.stderr
         assert "apply_rc=1 apply_output=fake migration: apply failed outcome=" in (
             completed.stdout
         )

@@ -488,6 +488,7 @@ class OwnerDaemons:
                     box = self.boxes.get(record["uid"])
                     if box and not self.runtime.alive(box.uid):
                         box.awake = False
+                    self.storage.evict(owner)
                 except Exception:
                     log.exception("volume maintenance remains pending")
             for box in self.boxes.values():

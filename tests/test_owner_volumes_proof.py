@@ -64,6 +64,10 @@ def test_owner_volumes_real_mounts(tmp_path):
         shutil.copytree(root / "tinyassets", package / "tinyassets", dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns("__pycache__"))
         shutil.copy2(__file__, package / "tests")
+        shutil.copy2(root / "tests/test_box_store_growth.py", package / "tests")
+        (package / "deploy").mkdir()
+        shutil.copy2(root / "deploy/box-store-grow.py", package / "deploy")
+        shutil.copy2(root / "deploy/dr-owner-restore.py", package / "deploy")
         command("docker", "cp", str(package), name + ":/proof")
         command("docker", "cp", str(pinned), name + ":/gvisor")
         result = subprocess.run(["docker", "start", "--attach", name],
@@ -74,6 +78,9 @@ def test_owner_volumes_real_mounts(tmp_path):
         assert result.returncode == 0, result.stderr + result.stdout
         assert command("docker", "inspect", "-f", "{{.State.ExitCode}}", name) == "0"
         assert "PROOFS a b c d e f g h i PASS" in result.stdout
+        assert "PROOF C10 sparse eviction cold-wake PASS" in result.stdout
+        assert "PROOF C10 online block growth cap API-failure token-secrecy PASS" in result.stdout
+        assert "PROOF C2 drill map-reference restore PASS" in result.stdout
     finally:
         if created:
             command("docker", "rm", "-f", name)
@@ -329,6 +336,64 @@ def integrated_lifecycle(root, volumes, rootfs, size):
             assert manager._sleep(manager.boxes[uid], idle=0)
         published = manager.admission.volume("proof-owner")
         assert published["snapshot_id"] and published["work"] is None
+        original_bytes = digest(volumes.store / f"{uid}.img")
+        with sqlite3.connect(identities.path) as db:
+            db.execute("UPDATE owner_volumes SET asleep_at=?",
+                       (time.time() - owner_volumes.COLD_AFTER - 1,))
+        # Prove restored opaque image equality before runsc can update its journal.
+        restore_image = volumes.restore
+        def verified_restore(*args):
+            assert not manager.admission.volume("proof-owner")["local"]
+            assert not (volumes.store / f"{uid}.img").exists()
+            restore_image(*args)
+            assert digest(volumes.store / f"{uid}.img") == original_bytes
+        volumes.restore = verified_restore
+        deleting, release, waking = threading.Event(), threading.Event(), threading.Event()
+        delete_image = volumes.delete
+        def paused_delete(owner_uid):
+            deleting.set()
+            assert release.wait(30)
+            delete_image(owner_uid)
+        def wake():
+            waking.set()
+            return manager.ensure_awake("proof-owner")
+        volumes.delete = paused_delete
+        with ThreadPoolExecutor(2) as pool:
+            eviction = pool.submit(manager.maintain)
+            assert deleting.wait(30)
+            request = pool.submit(wake)
+            assert waking.wait(30)
+            assert not request.done()
+            release.set()
+            eviction.result(timeout=30)
+            assert request.result(timeout=60) == uid
+        volumes.delete = delete_image
+        volumes.restore = restore_image
+        result = runtime.exec(uid, ["/bin/cat", "/home/owner/content"], timeout=30)
+        assert result.stdout == "integrated"
+        with manager.condition:
+            assert manager._sleep(manager.boxes[uid], idle=0)
+        published = manager.admission.volume("proof-owner")
+        print("PROOF C10 sparse eviction cold-wake PASS", flush=True)
+        import runpy
+        import tarfile
+        drill = runpy.run_path("/proof/deploy/dr-owner-restore.py")
+        remote_root = Path(volumes.remote.split(":", 1)[1])
+        archive = remote_root / "tinyassets-data-2026-10-19T00-00-00Z.tar.gz"
+        manifest = remote_root / "tinyassets-platform-2026-10-19T00-00-00Z.json"
+        with tarfile.open(archive, "w:gz") as bundle:
+            bundle.add(identities.path, arcname="_data/.broker/state/owner-identities.db")
+        manifest.write_text(json.dumps({
+            "version": 1, "archive": archive.name,
+            "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+            "snapshots": [{"uid": uid, "snapshot_id": published["snapshot_id"],
+                           "sha256": published["snapshot_sha256"]}]}))
+        with tempfile.TemporaryDirectory(prefix="ta-owner-drill-") as temporary:
+            directory = Path(temporary)
+            selected = drill["select"](manifest, archive, directory)
+            drill["restore"](manifest, archive, directory, selected)
+        assert manager.admission.volume("proof-owner") == published
+        print("PROOF C2 drill map-reference restore PASS", flush=True)
         # Local image and catalog loss: the published map reference is sufficient.
         volumes.delete(uid)
         with sqlite3.connect(identities.path) as db:
@@ -336,7 +401,7 @@ def integrated_lifecycle(root, volumes, rootfs, size):
         assert manager.restore("proof-owner", published["snapshot_id"]) == {
             "volume_generation": published["volume_generation"] + 1}
         manager.ensure_awake("proof-owner")
-        assert generations == [1, 2]
+        assert generations == [1, 2, 3]
         result = runtime.exec(uid, ["/bin/cat", "/home/owner/content"], timeout=30)
         assert result.stdout == "integrated"
         manager.destroy("proof-owner", uid)
@@ -388,6 +453,16 @@ def inner_proof(root):
     monitor = threading.Thread(target=measure)
     monitor.start()
     try:
+        from test_box_store_growth import real_growth_proof
+        real_growth_proof(root)
+        thin_uid = 399999
+        volumes.create(thin_uid, 2 * 1024**3)
+        thin = (store / f"{thin_uid}.img").stat()
+        assert thin.st_size == 2 * 1024**3
+        # XFS log/allocation metadata is small; allowance bytes are not allocated.
+        assert 0 < thin.st_blocks * 512 < 160 * 1024**2
+        metrics["new_2gib_physical_bytes"] = thin.st_blocks * 512
+        volumes.delete(thin_uid)
         # (i), (a): format the real smallest plan, then write as its real UID.
         uid = uids[0]
         volumes.create(uid, size)

@@ -20,6 +20,28 @@ exception to these rules, and it SHALL be deleted after cutover.
 - **THEN** no shared process or subprocess opens, lists or walks owner content
 - **AND** writes to `/home/owner` land in that owner's volume
 
+### Requirement: Storage scales with active owners
+Owner images SHALL be sparse. The map SHALL record local availability and the
+completed sleep time. After more than seven days asleep, lifecycle maintenance
+SHALL evict the local image only when its latest snapshot is verified and
+published, under the existing per-owner serialization. Pending snapshot or
+restore work and erased admission SHALL prevent eviction. Cold wake SHALL
+restore that reference and commit its generation before attach; any failure
+SHALL refuse wake without creating an empty volume.
+
+#### Scenario: Cold wake preserves the owner bytes
+- **WHEN** an owner sleeps more than seven days and its verified snapshot is published
+- **THEN** maintenance deletes only the local opaque image and records `local=false`
+- **AND** the next wake restores byte-identical snapshot data before attach
+- **AND** concurrent wake and eviction serialize, including after interruption
+
+#### Scenario: Block store grows within the spending cap
+- **WHEN** the mounted reflink-enabled XFS block store has less than the configured free-space threshold
+- **THEN** the root timer requests one DigitalOcean volume growth step with its private scoped token and grows XFS online
+- **AND** the default maximum is 100 GiB, a larger cap is refused, and no shrink is possible
+- **AND** a step exceeding the cap or a failed API call alerts and stops without growing the filesystem
+- **AND** no log contains the token
+
 ### Requirement: Owner durability is off-host snapshots referenced in the map
 The map SHALL record, per owner, the permanent UID and volume binding, the volume
 generation and the latest verified off-host snapshot. The map and its bindings

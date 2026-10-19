@@ -303,18 +303,24 @@ def test_restore_uses_backup_restore_sh():
     assert "backup-restore.sh" in _text()
 
 
-def test_drill_fetches_verifies_and_transfers_complete_pair():
+def test_drill_fetches_platform_manifest_and_separate_owner_snapshot():
     fetch = _step("Validate selected backup")["run"]
     transfer = _step("Transfer verified backup to drill Droplet")["run"]
     for run in (fetch, transfer):
-        assert "tinyassets-box-store-${pair_stamp}.tar.gz" in run
-        assert "tinyassets-pair-${pair_stamp}.json" in run
-        assert "deploy/backup-pair.py" in run
-        assert " verify " in run
+        assert "tinyassets-platform-" in run
+        assert "dr-owner-restore.py reference" in run
+        assert "${snapshot}" in run
+    assert "validate_manifest" in fetch
+    assert "platform manifest archive digest mismatch" in fetch
     restore = _step("Disaster restore on drill Droplet")["run"]
-    assert "BOX_BACKUP_FILE=${box_file}" in restore
-    assert "PAIR_MANIFEST_FILE=${pair_file}" in restore
-    assert 'test "$rc" -eq 6' in restore
+    assert 'test "$rc" -eq 0' in restore
+    for retired in ("backup-pair.py", "BOX_BACKUP_FILE", "PAIR_MANIFEST_FILE",
+                    "tinyassets-box-store-", "--disaster-restore",
+                    "--acknowledge-unrecoverable-facts"):
+        assert retired not in _text()
+    owner = _step("Restore one owner from the recovered map")["run"]
+    assert "dr-owner-restore.py restore" in owner
+    assert "backup-restore.sh" not in owner
     assert "--rehearsal-provider" not in _text()
 
 
@@ -560,10 +566,10 @@ def test_restore_uses_exact_transferred_backup_file():
     assert "BACKUP_FILE=" in run
     assert "BACKUP_DEST=" not in run
     assert "steps.backup.outputs.tarball" in str(restore.get("env", {}))
-    assert "--disaster-restore --acknowledge-unrecoverable-facts" in run
-    assert 'test "$rc" -eq 6' in run
-    assert '"credential_roots_reset": true' in run
-    assert '"operation_fences_reset": true' in run
+    assert 'test "$rc" -eq 0' in run
+    assert "Missing current C3 authority is a failed drill" in run
+    assert "credential_roots_reset" not in run
+    assert "operation_fences_reset" not in run
 
 
 def test_restored_state_proof_precedes_compose_and_probe():

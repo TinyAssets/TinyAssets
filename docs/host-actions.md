@@ -12,6 +12,10 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+| Item | Lead-only deploy action |
+|---|---|
+| a2b: 25 GiB box store | In the lead's root shell on the droplet, with authenticated `doctl`: `set -eu; region=$(curl -fsS http://169.254.169.254/metadata/v1/region); droplet=$(curl -fsS http://169.254.169.254/metadata/v1/id); volume=$(doctl compute volume create tinyassets-box-store --region "$region" --size 25GiB --format ID --no-header); doctl compute volume-action attach "$volume" "$droplet" --wait; udevadm settle; device=/dev/disk/by-id/scsi-0DO_Volume_tinyassets-box-store; mkfs.xfs -m reflink=1 "$device"; install -d -m 0700 /etc/tinyassets; install -o root -g root -m 0600 /root/box-store-resize.token /etc/tinyassets/box-store.token; (umask 077; printf 'BOX_STORE_DEVICE=%s\nBOX_STORE_VOLUME_ID=%s\nBOX_STORE_REGION=%s\nBOX_STORE_DROPLET_ID=%s\nBOX_STORE_TOKEN_FILE=/etc/tinyassets/box-store.token\nBOX_STORE_MAX_GIB=100\n' "$device" "$volume" "$region" "$droplet" > /etc/tinyassets/box-store.conf)`. Supply `/root/box-store-resize.token` with only [block_storage_action:create and its required read scopes](https://docs.digitalocean.com/reference/api/scopes/block_storage_action/create/). The normal deploy installs/enables the growth timer. Do not run the create/format commands against an existing store. |
+
 ## Production secrets move into a main-only GitHub Environment (2026-10-13)
 
 **Why:** a `workflow_dispatch` on a branch runs that branch's YAML, so `if: github.ref == 'refs/heads/main'` guards protect nothing; repo-level secrets are reachable from any ref, and run 38484527257 scp'd branch code onto the production host as root. Every production job now declares `environment: production` (enforced by `tests/test_workflow_production_environment.py`); the environment itself must exist and own the secrets, which only the repo admin can do.

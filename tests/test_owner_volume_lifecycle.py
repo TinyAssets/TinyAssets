@@ -3,6 +3,7 @@
 import hashlib
 import sqlite3
 import threading
+import time
 from collections import defaultdict
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -339,6 +340,131 @@ def test_database_validation_is_owner_local_and_retried_after_failure(tmp_path):
 def test_volume_protocol_refuses_caller_selected_binding(storage, arguments):
     with pytest.raises(ValueError):
         storage.admission.volume("alice", **arguments)
+
+
+def age_sleep(storage, seconds):
+    with sqlite3.connect(storage.identities.path) as db:
+        db.execute("UPDATE owner_volumes SET asleep_at=? WHERE principal='alice'",
+                   (time.time() - seconds,))
+
+
+def test_cold_eviction_restores_exact_bytes_before_attach(storage):
+    record, _ = storage.lifecycle.prepare("alice")
+    uid = record["uid"]
+    storage.volumes.images[uid] = b"owner bytes\x00\xff"
+    before = sleep(storage)
+    age_sleep(storage, owner_volumes.COLD_AFTER - 1)
+    assert not storage.lifecycle.evict("alice")
+    age_sleep(storage, owner_volumes.COLD_AFTER + 1)
+    assert "alice" in storage.admission.pending_volumes()
+    assert storage.lifecycle.evict("alice")
+    assert not storage.admission.volume("alice")["local"]
+    assert uid not in storage.volumes.images
+    storage.volumes.events.clear()
+    record, _ = storage.lifecycle.prepare("alice")
+    assert storage.volumes.images[uid] == b"owner bytes\x00\xff"
+    assert record["volume_generation"] == before["volume_generation"] + 1
+    assert storage.admission.volume("alice")["local"]
+    assert storage.admission.volume("alice")["asleep_at"] is None
+    events = storage.volumes.events
+    assert events.index(("restore", uid)) < events.index(("attach", uid))
+    assert ("create", uid) not in storage.volumes.events
+
+
+@pytest.mark.parametrize("state", ["pending", "restore", "erased", "unverified", "awake"])
+def test_eviction_requires_completed_sleep_and_published_snapshot(storage, state):
+    storage.lifecycle.prepare("alice")
+    before = sleep(storage)
+    age_sleep(storage, owner_volumes.COLD_AFTER + 1)
+    if state == "pending":
+        storage.admission.volume("alice", "sleep")
+    elif state == "restore":
+        storage.admission.volume("alice", "restore", snapshot_id=before["snapshot_id"])
+    elif state == "erased":
+        storage.identities.retire_owner("alice")
+    elif state == "unverified":
+        with sqlite3.connect(storage.identities.path) as db:
+            db.execute("UPDATE owner_volumes SET snapshot_id=NULL,snapshot_sha256=NULL")
+    else:
+        storage.lifecycle.prepare("alice")
+    if state in ("erased", "unverified"):
+        with pytest.raises((PermissionError, ValueError)):
+            storage.lifecycle.evict("alice")
+    else:
+        assert not storage.lifecycle.evict("alice")
+    assert before["uid"] in storage.volumes.images
+    assert storage.admission.volume("alice")["local"]
+
+
+def test_cold_restore_failure_never_creates_empty_volume(storage):
+    storage.lifecycle.prepare("alice")
+    before = sleep(storage)
+    age_sleep(storage, owner_volumes.COLD_AFTER + 1)
+    storage.lifecycle.evict("alice")
+    storage.volumes.remote.clear()
+    storage.volumes.events.clear()
+    with pytest.raises(KeyError):
+        storage.lifecycle.prepare("alice")
+    assert before["uid"] not in storage.volumes.images
+    assert not storage.volumes.attached
+    assert not any(event == "create" for event, _ in storage.volumes.events)
+    assert storage.admission.volume("alice")["work"]["kind"] == "restore"
+
+
+def test_interrupted_eviction_resumes_before_cold_wake(storage, monkeypatch):
+    storage.lifecycle.prepare("alice")
+    before = sleep(storage)
+    age_sleep(storage, owner_volumes.COLD_AFTER + 1)
+    dispatch = storage.admission.volume
+
+    def interrupted(owner, action="binding", **arguments):
+        if action == "evicted":
+            raise OSError("commit interrupted")
+        return dispatch(owner, action, **arguments)
+
+    monkeypatch.setattr(storage.admission, "volume", interrupted)
+    with pytest.raises(OSError):
+        storage.lifecycle.evict("alice")
+    assert before["uid"] not in storage.volumes.images
+    monkeypatch.setattr(storage.admission, "volume", dispatch)
+    storage.lifecycle.prepare("alice")
+    assert storage.volumes.images[before["uid"]] == b"initial"
+
+
+@pytest.mark.parametrize("first", ["wake", "evict"])
+def test_concurrent_wake_and_eviction_share_owner_serialization(storage, monkeypatch, first):
+    from concurrent.futures import ThreadPoolExecutor
+
+    storage.lifecycle.prepare("alice")
+    before = sleep(storage)
+    age_sleep(storage, owner_volumes.COLD_AFTER + 1)
+    entered, release, second_started = threading.Event(), threading.Event(), threading.Event()
+    action = "wake" if first == "wake" else "evict"
+    dispatch = storage.admission.volume
+
+    def paused(owner, operation="binding", **arguments):
+        if operation == action and not entered.is_set():
+            entered.set()
+            assert release.wait(10)
+        return dispatch(owner, operation, **arguments)
+
+    monkeypatch.setattr(storage.admission, "volume", paused)
+    methods = {"wake": storage.lifecycle.prepare, "evict": storage.lifecycle.evict}
+    def second():
+        second_started.set()
+        return methods["evict" if first == "wake" else "wake"]("alice")
+    with ThreadPoolExecutor(2) as pool:
+        one = pool.submit(methods[first], "alice")
+        assert entered.wait(10)
+        two = pool.submit(second)
+        assert second_started.wait(10)
+        assert not two.done()
+        release.set()
+        one.result(timeout=10)
+        two.result(timeout=10)
+    assert storage.volumes.images[before["uid"]] == b"initial"
+    assert storage.admission.volume("alice")["local"]
+    assert before["uid"] in storage.volumes.attached
 
 
 def test_owner_restore_keeps_revoked_key_and_refuses_write_and_bash_replay(storage, tmp_path):

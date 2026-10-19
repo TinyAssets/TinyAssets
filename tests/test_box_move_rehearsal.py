@@ -368,9 +368,7 @@ def test_migration_container_overrides_image_fault_default(tmp_path, mode):
 
 
 def test_production_restore_cannot_load_recorded_provider(tmp_path):
-    import runpy
-
-    assert "rehearsal_adapters" not in runpy.run_path(str(ROOT / "deploy/box-store-quotas.py"))
+    assert not (ROOT / "deploy/box-store-quotas.py").exists()
     result = subprocess.run([
         "bash", str(ROOT / "deploy/backup-restore.sh"), "--disaster-restore",
         "--acknowledge-unrecoverable-facts", "--rehearsal-provider"],
@@ -511,7 +509,6 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
         payload = (
             f"FROM {base}\nWORKDIR /app\nENV PYTHONPATH=/app\n"
             "COPY tinyassets /app/tinyassets\n"
-            "COPY deploy/box_project_readback.py /app/deploy/box_project_readback.py\n"
             "COPY data/world_rules.lp /app/data/world_rules.lp\n"
         ).encode()
         member = tarfile.TarInfo("Dockerfile")
@@ -521,9 +518,6 @@ def test_synthetic_archive_rehearses_final_cutover(source, tmp_path, monkeypatch
             ROOT / "tinyassets",
             arcname="tinyassets",
             filter=lambda m: None if "__pycache__" in m.name else m,
-        )
-        stream.add(
-            ROOT / "deploy/box_project_readback.py", arcname="deploy/box_project_readback.py"
         )
         stream.add(ROOT / "data/world_rules.lp", arcname="data/world_rules.lp")
     built = subprocess.run(

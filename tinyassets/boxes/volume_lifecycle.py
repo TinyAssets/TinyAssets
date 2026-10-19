@@ -20,6 +20,9 @@ class VolumeLifecycle:
                 return record
             if work["kind"] == "create":
                 return record
+            if work["kind"] == "evict":
+                self.volumes.delete(uid)
+                return self.admission.volume(owner, "evicted")
             if work["kind"] == "snapshot":
                 self.runtime.shutdown(uid)
             else:
@@ -36,6 +39,10 @@ class VolumeLifecycle:
         uid = record["uid"]
         with self.volumes.operation(uid):
             self.recover(owner)
+            binding = self.admission.volume(owner)
+            if not binding["local"]:
+                self.admission.volume(owner, "restore", snapshot_id=binding["snapshot_id"])
+                self.recover(owner)
             record = self.admission.owner(owner, rotate=True)
             binding = self.admission.volume(owner)
             if binding["work"] == {"kind": "create"}:
@@ -44,6 +51,7 @@ class VolumeLifecycle:
                 except FileExistsError:
                     pass  # Exclusive image publication completed before the interrupted commit.
                 self.admission.volume(owner, "created")
+            self.admission.volume(owner, "wake")
             # A center retirement stops only the runtime. Release its retained
             # mount before starting the next sandbox; no content path is read.
             self.volumes.detach(uid)
@@ -95,6 +103,15 @@ class VolumeLifecycle:
             self.admission.volume(owner, "restore", snapshot_id=snapshot_id)
             stop()
             return self.recover(owner)
+
+    def evict(self, owner):
+        """C10: the same UID lock covers the decision, deletion and map commit."""
+        record = self.admission.volume(owner)
+        with self.volumes.operation(record["uid"]):
+            if self.admission.volume(owner, "evict") is None:
+                return False
+            self.recover(owner)
+            return True
 
     def delete(self, owner, stop):
         record = self.admission.volume(owner)

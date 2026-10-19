@@ -61,7 +61,7 @@ def test_every_installed_unit_execstart_has_closed_imports(tmp_path, pulse_serve
     result = subprocess.run([
         sys.executable, str(ROOT / "scripts/host_service_bundle.py"),
         "--root", str(ROOT), "--install-to", str(box), "--flat-scripts",
-        "boxhostd.service", "box-store-device.service",
+        "boxhostd.service", "box-store-device.service", "box-store-grow.service",
     ], text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
     for relative in ship_list(ROOT):
@@ -82,7 +82,8 @@ def test_every_installed_unit_execstart_has_closed_imports(tmp_path, pulse_serve
         "tinyassets-backup.service", "tinyassets-disk-watch.service",
         "tinyassets-prune.service", "tinyassets-watchdog.service",
         "daemon-watchdog.service", "tinyassets-ship-logs.service",
-        "boxhostd.service", "box-store-device.service", "tinyassets-daemon.service",
+        "boxhostd.service", "box-store-device.service", "box-store-grow.service",
+        "tinyassets-daemon.service",
     }
     assert set(units) == covered
     # These two retired templates have no installer; any other new template needs coverage.
@@ -129,6 +130,7 @@ def test_every_installed_unit_execstart_has_closed_imports(tmp_path, pulse_serve
         "boxhostd.service": [(1, "delegated systemd service cgroup" if os.geteuid() == 0
                              else "needs root for delegated cgroups and XFS quotas")],
         "box-store-device.service": [(1, "root-owned box-store.conf required")],
+        "box-store-grow.service": [(1, "ALERT: box store growth failed")],
         "tinyassets-daemon.service": [(0, "synthetic docker:")],
     }
     for name, (unit, bundle) in sorted(units.items()):

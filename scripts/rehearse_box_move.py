@@ -59,12 +59,14 @@ def rehearsal_manifests():
 
     C2 creates new opaque snapshots in each trial. Validate those objects and
     compare their logical bindings, preserving every other identity value and
-    schema object. SQLite page layout and snapshot UUIDs are not owner content.
+    schema object. Snapshot publication clocks must be recent in each trial;
+    their exact wall-clock values, like UUIDs, are not owner content.
     """
     import gzip
     import hashlib
     import json
     import sqlite3
+    import time
     from contextlib import closing
 
     root = Path('/data')
@@ -74,10 +76,13 @@ def rehearsal_manifests():
     with closing(sqlite3.connect(root / relative)) as db:
         schema = db.execute('SELECT type,name,tbl_name,sql FROM sqlite_master '
                             'ORDER BY name').fetchall()
-        bindings = db.execute('SELECT principal,uid,snapshot_id,snapshot_sha256,work '
+        bindings = db.execute('SELECT principal,uid,snapshot_id,snapshot_sha256,'
+                              'work,local,asleep_at '
                               'FROM owner_volumes ORDER BY principal').fetchall()
-        for owner, uid, snapshot, digest, work in bindings:
+        for owner, uid, snapshot, digest, work, local, asleep_at in bindings:
             assert work is None
+            assert local == 1
+            assert isinstance(asleep_at, (float, int)) and 0 <= time.time() - asleep_at < 7 * 86400
             assert journal['snapshots'][str(uid)] == snapshot
             with gzip.open(Path('/backup/owner-snapshots') / str(uid) /
                            (snapshot + '.img.gz'), 'rb') as stream:
@@ -94,6 +99,7 @@ def rehearsal_manifests():
             rows = cursor.fetchall()
             if name in {'owner_volumes', 'owner_snapshots'}:
                 rows = [tuple('verified snapshot' if column in {'snapshot_id', 'snapshot_sha256'}
+                              else 'recent snapshot publication' if column == 'asleep_at'
                               else value for column, value in zip(columns, row)) for row in rows]
             tables[name] = sorted(rows, key=repr)
     shared[relative] = {'schema': schema, 'tables': tables}

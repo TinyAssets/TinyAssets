@@ -1433,22 +1433,17 @@ def test_installed_operational_entrypoints_invoke_from_runtime(tmp_path):
     env = _install_env(tmp_path)
     assert _run_installer(env).returncode == 0
     current = tmp_path / "runtime" / "current"
-    data = tmp_path / "snapshot-data"
-    data.mkdir()
-    (data / ".layout.json").write_text('{"box_layout":"owner-box","state":"stable"}')
+    assert not (current / "scripts/backup_ship_gh.py").exists()
     (tmp_path / "state" / "tinyassets-daemon.service.active").touch()
     commands = (
-        # The offline backup imports this helper before it checks guest quiescence.
-        # -S prevents an editable checkout or site-packages masking missing files.
+        # The shared-only backup imports its actual manifest implementation.
         f"PYTHONPATH={shlex.quote(_bash_path(current))} "
-        "python3 -S deploy/box-store-quotas.py --snapshot-data "
-        + shlex.quote(_bash_path(data)),
+        "python3 -S deploy/backup-platform.py --help",
         "python3 scripts/watchdog.py --help",
         "python3 scripts/mcp_public_canary.py --help",
         "python3 scripts/disk_watch.py --help",
         "python3 scripts/disk_autoprune.py --help",
         "python3 scripts/daemon_image_retention.py --help",
-        "python3 scripts/backup_ship_gh.py --help",
         "python3 scripts/backup_prune.py --help",
         (
             f"DRY_RUN=1 BACKUP_LOG={shlex.quote(_bash_path(tmp_path / 'backup.log'))} "

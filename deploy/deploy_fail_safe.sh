@@ -1862,8 +1862,10 @@ migration_snapshot() {  # prints the archive name backup.sh took
   fi
   printf '%s\n' "$id"
 }
-migration_restore_command() {  # the exact remedy for the snapshot this run took
-  printf 'restore it with: BACKUP_FILE=%s/%s sudo bash deploy/backup-restore.sh' "$MIGRATION_BACKUP_DIR" "$MIGRATION_SNAPSHOT"
+migration_restore_command() {  # C4: recorded backup/image, durable pre-traffic eligibility only
+  printf 'rollback through deployment control: sudo env PYTHONPATH=%q python3 -m tinyassets.cutover_control rollback --state %q --data "$(docker volume inspect tinyassets-data --format '\''{{ .Mountpoint }}'\'')" --deploy-script %q' \
+    "${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}/harness-current/app" \
+    "${BUNDLE_STATE_DIR}/cutover" "$(realpath "$0")"
 }
 migration_refused() {  # $1 = failed check; $2 = pre_stop skips needless daemon start
   log "migration refused: $1"
