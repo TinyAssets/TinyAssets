@@ -98,6 +98,16 @@ is acknowledged. It then deletes the volume and snapshots, erases custody,
 cancels billing, revokes router credentials, deletes the identity and writes a
 receipt. Snapshot publication, restore and deletion SHALL be serialized per owner.
 
+#### Scenario: Retiring a center leaves the owner admitted
+- **WHEN** an owner retires one of their centers
+- **THEN** the owner's admission record stays `admitted`, and the broker stops the box so that its next start receives the updated center list
+- **AND** an admitted owner with zero live centers can still be woken and use egress
+
+#### Scenario: A suspended owner can still sign in
+- **WHEN** a billing-suspended owner signs in
+- **THEN** authentication succeeds, because only `erased` denies authentication
+- **AND** the owner's work is not served while suspended
+
 #### Scenario: Erasure takes effect before acknowledgement
 - **WHEN** the deletion job withdraws an owner's admission
 - **THEN** cached routes are invalidated, and concurrent wake or open operations cannot complete

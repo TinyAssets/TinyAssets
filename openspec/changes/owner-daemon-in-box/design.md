@@ -314,6 +314,23 @@ source and cleared only by that source), or terminal `erased`. The router's
 snapshot, the proxy at channel admission and the waker all read only this
 record. The research permits exactly one positive mapping (research.md:69).
 
+**Admission questions, settled for lane b (lead decision, 2026-10-19; research.md:63, 67, 69; C11):**
+- **Retiring a center is not an admission change.** Admission is per owner, and
+  centers belong inside the box. Until lane d moves the center list into the box,
+  retiring a center is a broker lifecycle action: stop the box, and its next
+  start receives the updated center list. The record stays `admitted`. There is
+  no "revoked but wakeable" state, and retiring a center rotates no secret.
+  Expectations that a retired center blocks the owner's egress or routing tested
+  the old center coupling and change accordingly.
+- **Zero centers.** An admitted owner with no live centers can be woken and
+  served. Lifecycle no longer requires a live center, and the one admission
+  function is owner-keyed, with no per-question center eligibility.
+- **Authentication is not admission.** A suspended owner can still sign in (to
+  pay or to delete their account). Authentication consults only `erased`. The
+  admission function answers "may this owner's work be served, woken, admitted
+  to a channel or allowed out". The authentication door's `erased` read goes
+  away in lane b's deletion job step, once deletion revokes credentials directly.
+
 **It replaces these six "is this owner gone or suspended" authorities, all deleted:**
 - the root erasure ledger (`erasure_ledger.py`, the whole file), its
   `erasure.sock` listener in boxhostd (`host_service.py` ~115–134, ~638–640),
