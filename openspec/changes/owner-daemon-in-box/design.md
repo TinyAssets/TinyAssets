@@ -41,11 +41,9 @@ shape deletes. Spec v1 (`2346ab1fc3b`) was independently reviewed against
 research.md, and this v2 applies that review.
 
 ### C1. One volume per owner (T3, T4)
-Today all owners are directories on one shared XFS store with project quotas, so
-shared code walks inside owner trees: `boxes/quota.py:72`, `boxes/destroy.py:15–167`,
-`boxes/gvisor_runtime.py:74`, and the `finish_erasures` walk at
-`restore_recovery.py:378`. That is the source of the mount, symlink, inode and link
-special cases. Target:
+This replaces owner directories on a shared XFS store with project quotas and
+the shared tree walks in `boxes/quota.py`, `boxes/destroy.py`,
+`boxes/gvisor_runtime.py` and `restore_recovery.finish_erasures`. Target:
 - **One image per owner.** Each owner gets one XFS-formatted image file,
   `<volume root>/<uid>.img`, on the box store. Its size is the owner's plan
   allowance. A downgrade never shrinks or truncates an existing filesystem: the
@@ -65,6 +63,20 @@ special cases. Target:
 - **Deleted:** the project-quota tree logic in `quota.py`, the recursive destroy
   in `destroy.py`, the owner-tree walk in `restore_recovery.finish_erasures`, and
   the mount and symlink checks around owner trees.
+
+**As built (a1 runtime):** `OwnerDaemons` uses `VolumeLifecycle` and `OwnerVolumes`;
+the UID lock spans runtime transitions and broker publication. boxhostd creates a
+private mount namespace, uses `BOX_STORE_DIR` for opaque images, and gives runsc
+only `attach().oci_mount()`. Owner directory initialization runs inside the box.
+Account retirement (`broker.server._retire_owner` → `destroy`) deletes the volume;
+center retirement (`_box_retire_center` / `_center_admission` → `_stop_owner_box`
+→ `retire`) is stop-only and performs no volume operation. Runtime sockets and
+the secret are removed separately. The next wake releases a retained attachment.
+The project-quota module, owner-tree destroy helpers and `finish_erasures` are deleted.
+Migration, service environment wiring and the deployment rehearsal remain a2.
+The integrated XFS lifecycle proof passes under the pinned runsc with shared
+mount-root instrumentation. The synthetic archive rehearsal remains blocked in
+a2's `deploy/box-store-quotas.py`, which still imports the deleted `finish_erasures`.
 
 ### C2. Durability is per-owner snapshots (T3)
 This replaces the paired whole-system restore, which rewound platform authority
@@ -96,6 +108,23 @@ together with owner data and produced four review rounds of carry-forward fixes.
   the owner recovery unit, `restore_recovery.py`'s owner-data carry, fence and
   reconciliation logic, `router_traffic.py`'s fail-open predicates, and the
   restore-day spend fence.
+
+**As built (a1 runtime):** the broker identity database holds permanent
+`owner_volumes` bindings (`uid`, `volume_generation`, nullable `snapshot_id` and
+`snapshot_sha256`), pending lifecycle work, and `owner_snapshots`. Only the broker
+writes them. Sleep records a retryable snapshot ID before shutdown; publication
+requires the positive owner-to-box record in the publication transaction. Account
+retirement removes that record while retaining the permanent volume binding. Uploads use
+`BACKUP_DEST/<uid>/<snapshot_id>.img.gz`; readback precedes publication. Maintenance
+retries pending work and seven-snapshot retention without starting an agent.
+After 24 hours, the box closes new work admission and drains its current turn.
+Root-only `restore(owner, snapshot_id)` resumes installation after interruption,
+commits the new generation and recovery reference together, and leaves the box
+asleep for its next ordinary wake.
+The in-box operation journal keys IDs by that generation and validates owner
+databases before admitting a restored generation. No fleet restore epoch enters
+the box. a2 must preserve bindings and supported recovery references in platform
+backup; b owns the deletion job and erasure of the UID's remote snapshot namespace.
 
 ### C3. Platform recovery is separate, and it keeps lifecycle authority
 The shared layer (identity, map, billing, broker custody, published data) has its

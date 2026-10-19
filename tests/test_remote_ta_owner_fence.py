@@ -82,7 +82,7 @@ def test_disaster_epoch_refuses_old_execution_before_receipt_lookup(tmp_path, mo
     from tinyassets.owner_runtime import OwnerRuntime
 
     core = OwnerBoxd(owner_id="owner", owner_root=tmp_path,
-                     state_dir=tmp_path / ".owner-boxd", restore_epoch="platform-generation")
+                     state_dir=tmp_path / ".owner-boxd", volume_generation=2)
     monkeypatch.setattr("tinyassets.owner_runtime._runtime",
                         OwnerRuntime("owner", os.getuid(), tmp_path, os.getpid(), core))
     async def run():

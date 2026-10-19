@@ -356,6 +356,23 @@ class _Connection:
             raise rf.FrameError("unknown stream operation")
 
     async def _connection_op(self, op: str, doc: dict[str, Any]) -> None:
+        if self._role == BOX_HOST and doc == {"op": "BOX_VOLUME_PENDING"}:
+            from tinyassets.broker.owner_volumes import pending
+
+            result = await asyncio.to_thread(pending, self._server._owner_identities)
+            await self.send_async(rf.control(rf.CONNECTION, {
+                "op": "BOX_VOLUME_RESULT", "result": result}))
+            return
+        if self._role == BOX_HOST and op == "BOX_VOLUME":
+            from tinyassets.broker.owner_volumes import dispatch
+
+            try:
+                result = await asyncio.to_thread(dispatch, self._server._owner_identities, doc)
+                answer = {"op": "BOX_VOLUME_RESULT", "result": result}
+            except Exception:
+                answer = {"op": "BOX_REFUSED"}
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+            return
         if self._role == BOX_HOST and op == "BOX_RETIRE_ADMISSION":
             answer = await asyncio.to_thread(self._retire_box_admission, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
@@ -602,7 +619,7 @@ class _Connection:
     def _stop_owner_box(self, owner, uid):
         from tinyassets.boxes.daemon_control import request
 
-        if request("retire", owner, uid=uid) != {"stopped": True}:
+        if request("retire", owner) != {"stopped": True}:
             raise RuntimeError("boxhostd did not acknowledge retirement")
 
     def _box_retire_center(self, doc):
@@ -765,10 +782,9 @@ class _Connection:
                 identities = self._server._owner_identities
                 if identities.owner_machine(doc["principal"]) is None:
                     raise RuntimeError("owner tree absence requires its permanent reservation")
-                uid = identities.owner_machine(doc["principal"])
                 from tinyassets.boxes.daemon_control import request
 
-                if request("destroy", doc["principal"], uid=uid) != {"destroyed": True}:
+                if request("destroy", doc["principal"]) != {"destroyed": True}:
                     raise RuntimeError("boxhostd did not confirm owner destruction")
             return {"op": "OWNER_RETIRED"}
         except Exception:

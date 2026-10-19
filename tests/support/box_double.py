@@ -325,6 +325,21 @@ def install(monkeypatch):
     monkeypatch.setattr(owner_runtime, "require", local_runtime)
     monkeypatch.setattr(owner_runtime, "file_scope", local_file_scope)
     monkeypatch.setattr(owner_tools, "tools_for", local_tools_for)
+    # The threaded fixture models several owner processes. Mint tool IDs from
+    # its bound owner core, just as the real single-owner runtime does.
+    from tinyassets import universe_tools
+
+    operation_id = universe_tools._operation_id
+
+    def local_operation_id(purpose):
+        value = operation_id(purpose)
+        binding = binding_module.current_binding()
+        if original_current() is None and binding is not None:
+            runtime = local_runtime(binding.universe_dir, binding.handle.account_id)
+            return runtime.tools.operation_prefix() + value
+        return value
+
+    monkeypatch.setattr(universe_tools, "_operation_id", local_operation_id)
     previous_close = double.close
 
     def close():

@@ -35,6 +35,8 @@ INFRASTRUCTURE: frozenset[str] = frozenset({
     "tinyassets/broker/owner_reads.py",
     "tinyassets/broker/next_wake.py",
     "tinyassets/broker/owner_sources.py",
+    # T3/C2: broker-only permanent volume binding and snapshot publication.
+    "tinyassets/broker/owner_volumes.py",
     # Offline restore holds both layout locks and writes only unpublished staging.
     "tinyassets/restore_recovery.py",
     "tinyassets/router_traffic.py",

@@ -110,30 +110,33 @@ def test_installed_tool_command_and_hook_run_in_owner_box(world, tmp_path, monke
 
     async def run():
         async with owner_session(server, world, tmp_path) as (tools, _):
+            op_prefix = tools.provider.operation_prefix()
             # Before delivery this was extension_runtime_unavailable.
             result = json.loads(_out(await tools.bash(
-                "tool", f"ta {prefix}:tools:hello --json '{{}}'")))
+                op_prefix + "tool", f"ta {prefix}:tools:hello --json '{{}}'")))
             assert result["entry"] == "hello" and result["value"] == "PINNED"
             assert result["cwd"].endswith(f"/extensions/sample/{revision}")
             assert result["cwd"].startswith("/tmp/")  # box-local, never a host path
             command = json.loads(_out(await tools.bash(
-                "command", f"ta {prefix}:commands:greet --json '{{}}'")))
+                op_prefix + "command", f"ta {prefix}:commands:greet --json '{{}}'")))
             assert command["entry"] == "greet"
             event = json.dumps({"version": 1, "event": "turn_start", "payload": {}})
             hooks = json.loads(_out(await tools.bash(
-                "hook", "ta extension:event --json " + shlex.quote(event))))
+                op_prefix + "hook", "ta extension:event --json " + shlex.quote(event))))
             assert [x["result"]["entry"] for x in hooks["results"]] == ["start"]
             # Parity with local ta after install: same names and same contract.
-            assert json.loads(_out(await tools.bash("search", "ta search"))) == local_search
             assert json.loads(_out(await tools.bash(
-                "describe", f"ta describe {prefix}:tools:hello"))) == local_describe
-            staged = json.loads(_out(await tools.bash("inspect", "python3 -c " +
+                op_prefix + "search", "ta search"))) == local_search
+            assert json.loads(_out(await tools.bash(
+                op_prefix + "describe", f"ta describe {prefix}:tools:hello"))) == local_describe
+            staged = json.loads(_out(await tools.bash(op_prefix + "inspect", "python3 -c " +
                                                       shlex.quote(inspect))))
             refused = await tools.bash(
-                "write", f'echo changed > "$TA_EXTENSION_ROOT/sample/{revision}/run.py"; '
+                op_prefix + "write",
+                f'echo changed > "$TA_EXTENSION_ROOT/sample/{revision}/run.py"; '
                 f'touch "$TA_EXTENSION_ROOT/sample/new"')
             again = json.loads(_out(await tools.bash(
-                "again", f"ta {prefix}:tools:hello --json '{{}}'")))
+                op_prefix + "again", f"ta {prefix}:tools:hello --json '{{}}'")))
             return staged, refused, again
 
     staged, refused, again = asyncio.run(run())
@@ -161,15 +164,18 @@ def test_revoked_extension_disappears_from_owner_box(world, tmp_path, monkeypatc
 
     async def run():
         async with owner_session(server, world, tmp_path) as (tools, _):
-            assert "PINNED" in _out(await tools.bash("before", f"ta {name} --json '{{}}'"))
+            op_prefix = tools.provider.operation_prefix()
+            assert "PINNED" in _out(await tools.bash(
+                op_prefix + "before", f"ta {name} --json '{{}}'"))
             pin["expected_generation"] = 1
             revoked = json.loads(_out(await tools.bash(
-                "revoke", "ta extension:revoke --json " + shlex.quote(json.dumps(pin)))))
+                op_prefix + "revoke",
+                "ta extension:revoke --json " + shlex.quote(json.dumps(pin)))))
             assert revoked["state"] == "revoked", revoked
-            called = await tools.bash("after", f"ta {name} --json '{{}}'")
-            search = json.loads(_out(await tools.bash("search", "ta search sample")))
+            called = await tools.bash(op_prefix + "after", f"ta {name} --json '{{}}'")
+            search = json.loads(_out(await tools.bash(op_prefix + "search", "ta search sample")))
             absent = _out(await tools.bash(
-                "absent", 'test ! -e "$TA_EXTENSION_ROOT/sample" && echo ABSENT'))
+                op_prefix + "absent", 'test ! -e "$TA_EXTENSION_ROOT/sample" && echo ABSENT'))
             return called, search, absent
 
     called, search, absent = asyncio.run(run())
@@ -192,10 +198,11 @@ def test_cross_owner_extension_never_reaches_owner_box(world, tmp_path, monkeypa
 
     async def run():
         async with owner_session(server, world, tmp_path) as (tools, _):
-            search = json.loads(_out(await tools.bash("search", "ta search sample")))
-            called = await tools.bash("call", f"ta {name} --json '{{}}'")
+            op_prefix = tools.provider.operation_prefix()
+            search = json.loads(_out(await tools.bash(op_prefix + "search", "ta search sample")))
+            called = await tools.bash(op_prefix + "call", f"ta {name} --json '{{}}'")
             absent = _out(await tools.bash(
-                "absent", 'test ! -e "$TA_EXTENSION_ROOT/sample" && echo ABSENT'))
+                op_prefix + "absent", 'test ! -e "$TA_EXTENSION_ROOT/sample" && echo ABSENT'))
             # Even a forged host claim of the foreign revision is re-checked
             # against this owner's own store by the engine dispatcher.
             payload = base64.urlsafe_b64encode(json.dumps({
@@ -241,10 +248,11 @@ def test_failed_delivery_fails_closed_before_command_runs(owner, tmp_path, fault
     async def run():
         from tinyassets.agent_loop.owner_tools import OwnerTools
         tools = OwnerTools(owner.home)
+        op_prefix = tools.provider.operation_prefix()
         bridge = tools.enable_ta(dispatch=dispatch, deliver=deliver, turn="delivery")
         try:
             with pytest.raises(EngineToolError, match="remote_extension_delivery_failed") as err:
-                await tools.bash("refused", "touch should-not-exist")
+                await tools.bash(op_prefix + "refused", "touch should-not-exist")
             assert err.value.outcome == "not_sent"
             assert not (owner.home / "should-not-exist").exists()
         finally:
@@ -270,6 +278,7 @@ def test_turn_hooks_run_in_the_turns_owner_box(world, tmp_path, monkeypatch):
 
     async def run():
         async with owner_session(server, world, tmp_path, turn="turn-1") as (tools, engine):
+            turn_id = tools.provider.operation_prefix() + "turn-1"
             @contextlib.asynccontextmanager
             async def engine_route(**_):
                 yield engine
@@ -278,14 +287,14 @@ def test_turn_hooks_run_in_the_turns_owner_box(world, tmp_path, monkeypatch):
             coordinator = SimpleNamespace(
                 config=SimpleNamespace(engine_tool_grant=None),
                 context=SimpleNamespace(universe_dir=root, acting_agent=None),
-                owner=server._ACTOR_ID, turn=SimpleNamespace(turn_id="turn-1"),
+                owner=server._ACTOR_ID, turn=SimpleNamespace(turn_id=turn_id),
                 _interrupted=lambda: False)
             coordinator._open_tools = lambda timeout: tool_session.open_loop_tools(
                 granted=("bash",),
                 owner=server._ACTOR_ID, universe_dir=root,
                 engine_identity=lambda: (server._ACTOR_ID, root.name),
-                timeout=timeout, ta_turn="turn-1")
-            assert await turn_event(coordinator, "turn_start", {"turn_id": "turn-1"}) is None
+                timeout=timeout, ta_turn=turn_id)
+            assert await turn_event(coordinator, "turn_start", {"turn_id": turn_id}) is None
 
     asyncio.run(run())
     assert (root / "turn-hook.log").read_text() == "start\n"

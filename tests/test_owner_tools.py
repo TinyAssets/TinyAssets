@@ -82,7 +82,7 @@ def test_operation_producers_mint_current_generation_and_refuse_old(owner, monke
         return captured[-1]
 
     old = invoke()
-    owner.core._restore_epoch = "new-platform-generation"
+    owner.core._volume_generation += 1
     fresh = invoke()  # real admission and effect, not just a prefix comparison
     assert fresh.startswith(owner.core.operation_prefix())
     with pytest.raises(BoxOperationRefused, match="not re-run"):
@@ -93,31 +93,33 @@ def test_bash_consumes_operation_before_effect_and_refuses_replay(owner):
     from tinyassets.boxes.provider import BoxOperationRefused
 
     tools = OwnerTools(owner.home)
+    prefix = owner.core.operation_prefix()
 
     async def run():
-        await tools.bash("once", "echo effect >> effects")
+        await tools.bash(prefix + "once", "echo effect >> effects")
         with pytest.raises(BoxOperationRefused, match="not re-run"):
-            await tools.bash("once", "echo effect >> effects")
+            await tools.bash(prefix + "once", "echo effect >> effects")
 
     asyncio.run(run())
     assert (owner.home / "effects").read_text() == "effect\n"
-    assert owner.core._state.lookup("alice", "once") is not None
+    assert owner.core._state.lookup("alice", prefix + "once") is not None
 
 
 def test_local_tools_read_write_edit_and_definitions(owner):
     tools = OwnerTools(owner.home)
+    prefix = owner.core.operation_prefix()
 
     async def run():
-        assert "wrote 8 bytes" in await tools.write("write", "notes/a", "one\ntwo\n")
+        assert "wrote 8 bytes" in await tools.write(prefix + "write", "notes/a", "one\ntwo\n")
         assert await tools.read("read", "notes/a", offset=2, limit=1) == "two\n"
-        assert await tools.edit("edit", "notes/a", "two", "three") == "edited notes/a"
+        assert await tools.edit(prefix + "edit", "notes/a", "two", "three") == "edited notes/a"
         assert await tools.read("read2", "notes/a") == "one\nthree\n"
         assert await tools.read("folder", "notes") == "a\n"
-        assert "exactly once" in await tools.edit("missing", "notes/a", "absent", "x")
-        assert "error" in await tools.edit("empty", "notes/a", "", "x")
+        assert "exactly once" in await tools.edit(prefix + "missing", "notes/a", "absent", "x")
+        assert "error" in await tools.edit(prefix + "empty", "notes/a", "", "x")
         assert "does not take" in await tools.call("read", "extra", {"path": "a", "owner": "bob"})
         assert "error" in await tools.read("missing", "absent")
-        assert "error" in await tools.bash("empty", "")
+        assert "error" in await tools.bash(prefix + "empty", "")
 
     asyncio.run(run())
     definitions = box_tool_definitions(str(owner.home))
@@ -147,17 +149,19 @@ def test_local_tools_refuse_foreign_files_and_links(owner, tmp_path):
 
 def test_local_bash_output_timeout_and_cancellation(owner):
     tools = OwnerTools(owner.home)
+    prefix = owner.core.operation_prefix()
 
     async def run():
-        assert await tools.bash("ok", "echo hello") == "hello\n[exit code 0]"
-        orphan = await asyncio.wait_for(tools.bash("orphan", "sleep 30 & echo leader-done"), 3)
+        assert await tools.bash(prefix + "ok", "echo hello") == "hello\n[exit code 0]"
+        orphan = await asyncio.wait_for(
+            tools.bash(prefix + "orphan", "sleep 30 & echo leader-done"), 3)
         assert orphan == "leader-done\n[exit code 0]"
-        assert (await tools.bash("timeout", "sleep 30", timeout=1)).endswith(
+        assert (await tools.bash(prefix + "timeout", "sleep 30", timeout=1)).endswith(
             "[killed: ran longer than 1s]")
-        loud = await tools.bash("output", "head -c 100000 /dev/zero")
+        loud = await tools.bash(prefix + "output", "head -c 100000 /dev/zero")
         assert loud.endswith(f"[killed: output passed {OUTPUT_BYTES} bytes]")
         assert len(loud) <= OUTPUT_BYTES + 100
-        task = asyncio.create_task(tools.bash("cancel", "echo started > leader; sleep 30"))
+        task = asyncio.create_task(tools.bash(prefix + "cancel", "echo started > leader; sleep 30"))
         for _ in range(200):
             if (owner.home / "leader").exists():
                 break
@@ -172,6 +176,7 @@ def test_local_bash_output_timeout_and_cancellation(owner):
 
 def test_local_ta_roundtrip_receipts_fences_and_changed_payload(owner):
     tools = OwnerTools(owner.home)
+    prefix = owner.core.operation_prefix()
     effects = []
 
     async def dispatch(message):
@@ -184,11 +189,11 @@ def test_local_ta_roundtrip_receipts_fences_and_changed_payload(owner):
     async def run():
         bridge = tools.enable_ta(dispatch=dispatch, turn="turn")
         try:
-            result = await tools.bash("exec", "ta owner.effect --json '{}' > answer")
+            result = await tools.bash(prefix + "exec", "ta owner.effect --json '{}' > answer")
             assert result.endswith("[exit code 0]"), result
             assert json.loads((owner.home / "answer").read_text())["owner"] == "alice"
             assert len(effects) == 1
-            args = (bridge.handle, "retry", "b" * 32, {"op": "call"})
+            args = (bridge.handle, prefix + "retry", "b" * 32, {"op": "call"})
             first = await asyncio.to_thread(bridge.request, *args)
             assert first == {"result": {"owner": "alice", "value": "committed"}}
             assert await asyncio.to_thread(bridge.request, *args) == first
@@ -198,7 +203,7 @@ def test_local_ta_roundtrip_receipts_fences_and_changed_payload(owner):
             for field, value in (("account_id", "bob"), ("command_center_id", "foreign"),
                                  ("turn_id", "foreign")):
                 foreign = replace(bridge.handle, **{field: value})
-                answer = await asyncio.to_thread(bridge.request, foreign, "x", "c" * 32,
+                answer = await asyncio.to_thread(bridge.request, foreign, prefix + "x", "c" * 32,
                                                 {"op": "catalog"})
                 assert "refused" in answer["error"]
             assert len(effects) == 2
@@ -217,6 +222,7 @@ def test_local_ta_roundtrip_receipts_fences_and_changed_payload(owner):
 
 def test_local_ta_cancellation_preserves_unknown_receipt(owner):
     tools = OwnerTools(owner.home)
+    prefix = owner.core.operation_prefix()
     entered = asyncio.Event()
     cancelled = asyncio.Event()
     effects = []
@@ -231,7 +237,7 @@ def test_local_ta_cancellation_preserves_unknown_receipt(owner):
 
     async def run():
         bridge = tools.enable_ta(dispatch=dispatch, turn="cancel-turn")
-        task = asyncio.create_task(tools.bash("cancel", "ta search"))
+        task = asyncio.create_task(tools.bash(prefix + "cancel", "ta search"))
         await asyncio.wait_for(entered.wait(), 10)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -244,7 +250,7 @@ def test_local_ta_cancellation_preserves_unknown_receipt(owner):
         assert answer is None
         restarted = tools.enable_ta(dispatch=dispatch, turn="cancel-turn")
         try:
-            result = await asyncio.to_thread(restarted.request, restarted.handle, "cancel",
+            result = await asyncio.to_thread(restarted.request, restarted.handle, prefix + "cancel",
                                              request, {"op": "catalog"})
             assert "unknown" in result["error"]
             assert len(effects) == 1
@@ -256,6 +262,7 @@ def test_local_ta_cancellation_preserves_unknown_receipt(owner):
 
 def test_local_ta_large_results_stay_off_bash_output(owner):
     tools = OwnerTools(owner.home)
+    prefix = owner.core.operation_prefix()
     body = "x" * (OUTPUT_BYTES * 2)
 
     async def dispatch(message):
@@ -267,7 +274,7 @@ def test_local_ta_large_results_stay_off_bash_output(owner):
     async def run():
         bridge = tools.enable_ta(dispatch=dispatch, turn="large")
         try:
-            result = await tools.bash("large", "ta owner.value --json '{}' > large.json")
+            result = await tools.bash(prefix + "large", "ta owner.value --json '{}' > large.json")
             assert result.endswith("[exit code 0]"), result
             assert len(result) < OUTPUT_BYTES
             answer = json.loads((owner.home / "large.json").read_text())
@@ -283,6 +290,7 @@ def test_extension_delivery_failure_prevents_local_command(owner, failure):
     from tinyassets.engine_tool_client import EngineToolError
 
     tools = OwnerTools(owner.home)
+    prefix = owner.core.operation_prefix()
 
     async def dispatch(message):
         raise AssertionError("failed delivery must never dispatch")
@@ -296,7 +304,7 @@ def test_extension_delivery_failure_prevents_local_command(owner, failure):
         bridge = tools.enable_ta(dispatch=dispatch, deliver=deliver, turn="delivery")
         try:
             with pytest.raises(EngineToolError, match="extension_delivery_failed"):
-                await tools.bash("delivery", "touch should-not-exist")
+                await tools.bash(prefix + "delivery", "touch should-not-exist")
             assert not (owner.home / "should-not-exist").exists()
             assert not bridge._executions
         finally:
@@ -310,11 +318,12 @@ def test_local_bash_fences_file_cas_until_the_child_stops(owner):
     from tinyassets.boxes.provider import WriteConflict, WriteMode
 
     tools = OwnerTools(owner.home)
-    tools.provider.write(tools.handle, "seed", "/cc/center/file", b"before", max_bytes=100)
+    prefix = owner.core.operation_prefix()
+    tools.provider.write(tools.handle, prefix + "seed", "/cc/center/file", b"before", max_bytes=100)
     generation = tools.provider.committed_generation(tools.handle)
 
     async def run():
-        task = asyncio.create_task(tools.bash("writer", "echo ready > started; sleep 30"))
+        task = asyncio.create_task(tools.bash(prefix + "writer", "echo ready > started; sleep 30"))
         try:
             for _ in range(200):
                 if (owner.home / "started").exists():
@@ -323,7 +332,7 @@ def test_local_bash_fences_file_cas_until_the_child_stops(owner):
             assert (owner.home / "started").read_text() == "ready\n"
             assert owner.core._state.pending("alice") == 1
             with pytest.raises(WriteConflict):
-                tools.provider.write(tools.handle, "conflict", "/cc/center/file", b"stale",
+                tools.provider.write(tools.handle, prefix + "conflict", "/cc/center/file", b"stale",
                                      max_bytes=100, mode=WriteMode.CAS,
                                      expect_generation=generation)
         finally:

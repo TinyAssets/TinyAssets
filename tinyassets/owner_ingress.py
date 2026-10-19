@@ -44,7 +44,8 @@ class OwnerIngress:
             if scope["path"] == "/_box/delete-admission" and scope["method"] == "POST":
                 activity.admit_deletion_only()
                 return await JSONResponse(activity.status())(scope, receive, send)
-            if scope["path"] in {"/_box/drain", "/_box/revoke"} and scope["method"] == "POST":
+            if (scope["path"] in {"/_box/drain", "/_box/revoke", "/_box/snapshot-stop"}
+                    and scope["method"] == "POST"):
                 from starlette.requests import Request
 
                 doc = await Request(scope, receive).json()
@@ -52,6 +53,7 @@ class OwnerIngress:
                 if type(idle) not in (int, float) or not 0 <= idle <= 86400:
                     raise ValueError("invalid idle interval")
                 result = activity.status(drain=True, idle=idle,
+                                         snapshot=scope["path"] == "/_box/snapshot-stop",
                                          revoke=scope["path"] == "/_box/revoke")
                 return await JSONResponse(result)(scope, receive, send)
             identity = Identity(**json.loads(base64.b64decode(

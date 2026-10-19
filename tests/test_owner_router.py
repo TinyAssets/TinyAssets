@@ -117,9 +117,11 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
     import sqlite3
 
     from tests.support.owner_daemon_launcher import ProcessRuntime
+    from tests.test_owner_volume_lifecycle import Admission
+    from tests.test_owner_volume_lifecycle import Images as Volumes
     from tinyassets.boxes import daemon_control
     from tinyassets.boxes.owner_daemons import OwnerDaemons
-    from tinyassets.broker.box_admission import owner_record
+    from tinyassets.broker.owner_volumes import provision as bind_volume
 
     with sqlite3.connect(admitted.path) as db:
         db.execute("CREATE TABLE IF NOT EXISTS box_records (principal TEXT PRIMARY KEY, "
@@ -128,6 +130,7 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
             uid = admitted.owner_machine(owner)
             db.execute("INSERT OR REPLACE INTO box_records VALUES (?,?,?,?)",
                        (owner, uid, uid, 1024**3))
+            bind_volume(db, owner, uid)
     with tempfile.TemporaryDirectory(prefix="ta-router-") as short:
         run = Path(short)
         monkeypatch.setenv("TINYASSETS_BOXES_RUN", str(run))
@@ -137,19 +140,18 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
         runtime = ProcessRuntime({admitted.owner_machine(owner): root
                                   for owner, root in roots.items()})
         relays = OwnerRelays(run / "relay", SimpleNamespace(broker_socket=host_path))
-        admission = SimpleNamespace(owner=lambda owner, rotate=False:
-                                    owner_record(admitted, owner, rotate=rotate),
-                                    retire=lambda owner, uid: admitted.retire_owner(owner))
+        admission = Admission(admitted)
+        volumes = Volumes()
         def destroy_volume(uid):
             import shutil
 
             assert not runtime.alive(uid)
+            Volumes.delete(volumes, uid)
             if runtime.roots[uid].exists():
                 shutil.rmtree(runtime.roots[uid])
 
-        manager = OwnerDaemons(runtime, admission, SimpleNamespace(
-            provision=lambda *args: None, destroy=destroy_volume),
-                               relays, run)
+        volumes.delete = destroy_volume
+        manager = OwnerDaemons(runtime, admission, volumes, relays, run)
 
         def paths(uid, secret):
             directory = run / str(uid)
@@ -169,10 +171,10 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
                 manager.release(owner, fields["lease"])
                 return {"released": True}
             if operation == "destroy":
-                manager.destroy(owner, fields["uid"])
+                manager.destroy(owner, admission.volume(owner)["uid"])
                 return {"destroyed": True}
             assert operation == "retire"
-            manager.retire(owner, fields["uid"])
+            manager.retire(owner, admission.volume(owner)["uid"])
             return {"stopped": True}
 
         monkeypatch.setattr(daemon_control, "request", control)
@@ -923,7 +925,8 @@ def test_root_lifecycle_broker_operation_uses_admission_and_box_record(
 
     request = {"op": "BOX_LIFECYCLE", "principal": "alice", "rotate": False}
     assert call(request) == {"op": "BOX_LIFECYCLE_IS", "uid": admitted.owner_machine("alice"),
-                             "quota": 1024**3, "centers": ["cc-alice"]}
+                             "quota": 2 * 1024**3, "centers": ["cc-alice"],
+                             "volume_generation": 1, "snapshot_id": None, "snapshot_sha256": None}
     for override in ({"uid": 300002}, {"rotate": 1}, {"quota": 1}):
         assert call(request | override) == {"op": "BOX_REFUSED"}
     assert call(request | {"principal": "reserved"}) == {"op": "BOX_UNADMITTED"}
@@ -1056,7 +1059,7 @@ def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
     monkeypatch.setattr(router_account_deletion.urllib.request, "urlopen", upstream)
     targets = {
         "stop": (boxes.runtime, "stop"),
-        "owner_tree": (boxes.manager.quota, "destroy"),
+        "owner_tree": (boxes.manager.storage.volumes, "delete"),
         "relay": (boxes.relays, "retire"),
         "socket": (destroy, "socket_tree"),
         "broker_egress": (account_erasure, "erase_account"),

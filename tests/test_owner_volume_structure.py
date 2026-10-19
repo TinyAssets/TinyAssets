@@ -17,14 +17,16 @@ SHARED_FILES = ("tinyassets/owner_router.py", "tinyassets/router_credentials.py"
                 "tinyassets/router_traffic.py", "tinyassets/router_account_deletion.py",
                 "tinyassets/restore_recovery.py", "scripts/roll_owner_boxes.py",
                 "scripts/open_router_traffic.py")
-ROOT_NAMES = {"mount_root", "mountpoint", "volume_mount_root", "owner_mount_root"}
+ROOT_NAMES = {"mount_root", "mountpoint", "volume_mount_root", "owner_mount_root", "volume_mount"}
+LIFECYCLE = {"owner_daemons.py", "gvisor_runtime.py", "host_service.py", "admission.py",
+             "quota.py", "destroy.py", "volume_lifecycle.py"}
 READS = {"open", "read_text", "read_bytes", "stat", "lstat", "exists", "is_file",
          "is_dir", "is_symlink", "walk", "scandir", "listdir", "iterdir", "glob",
          "rglob", "resolve"}
 OPAQUE_COMMANDS = {"mount", "umount", "xfs_growfs"}
 
 
-def violations(source):
+def violations(source, *, roots=ROOT_NAMES):
     tree = ast.parse(source)
     tainted = set()
     aliases = {}
@@ -62,7 +64,7 @@ def violations(source):
         if node is None:
             return False
         if isinstance(node, (ast.Name, ast.Attribute)):
-            if name(node) in ROOT_NAMES or (scopes[id(node)], name(node)) in tainted:
+            if name(node) in roots or (scopes[id(node)], name(node)) in tainted:
                 return True
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return "/home/owner" in node.value or "/boxhostd/mounts" in node.value
@@ -119,7 +121,9 @@ def violations(source):
 def test_shared_code_never_reads_volume_mounts():
     files = {path for directory in SHARED for path in (ROOT / directory).rglob("*.py")}
     files.update(ROOT / path for path in SHARED_FILES if (ROOT / path).is_file())
-    failures = {str(path.relative_to(ROOT)): violations(path.read_text(encoding="utf-8"))
+    failures = {str(path.relative_to(ROOT)): violations(
+        path.read_text(encoding="utf-8"), roots=ROOT_NAMES | (
+            {"owner_store", "_owner_tree"} if path.name in LIFECYCLE else set()))
                 for path in sorted(files)}
     assert not {path: found for path, found in failures.items() if found}
 
@@ -132,6 +136,7 @@ def test_shared_code_never_reads_volume_mounts():
     "from os import stat as inspect\ninspect(mount_root)",
     "opener = os.open\nopener(mount_root / 'secret', 0)",
     "h = volumes.attach(uid)\n(h.mountpoint / 'secret').open()",
+    "source = volume_mount['source']\nPath(source).stat()",
     "def read(p):\n    return p.read_text()\nread(mount_root / 'file')",
     "def root():\n    return mount_root\nroot().stat()",
     "subprocess.run(['find', str(mount_root)])",
@@ -149,3 +154,9 @@ image.open('rb')
 subprocess.run(['umount', '--no-canonicalize', str(mount_root / str(uid))])
 subprocess.run(['xfs_growfs', str(mount_root / str(uid))])
 """)
+
+
+@pytest.mark.parametrize("root", ["owner_store", "_owner_tree"])
+def test_lifecycle_guard_rejects_the_retired_shared_tree_roots(root):
+    assert violations(f"(self.{root} / str(uid)).stat()",
+                      roots=ROOT_NAMES | {"owner_store", "_owner_tree"})

@@ -16,7 +16,8 @@ def main():
 
     # The process rig substitutes only the fixed mount supplied by boxhostd.
     owner_runtime.OWNER_MOUNT = root
-    owner_runtime.RESTORE_EPOCH = Path("/dev/null")
+    os.environ.setdefault("TINYASSETS_VOLUME_GENERATION", "1")
+    os.environ.setdefault("TINYASSETS_ADMITTED_CENTERS", "[]")
     owner_runtime._is_owner_mount = lambda path: path == root
     # Like the router process rig, these apps share the oracle's network
     # namespace. Native egress has a separate null-netns, fixed-port proof.

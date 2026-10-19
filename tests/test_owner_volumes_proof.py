@@ -61,7 +61,8 @@ def test_owner_volumes_real_mounts(tmp_path):
         (package / "tests").mkdir()
         (package / "tinyassets/__init__.py").touch()
         (package / "tinyassets/boxes/__init__.py").touch()
-        shutil.copy2(root / "tinyassets/boxes/volumes.py", package / "tinyassets/boxes")
+        shutil.copytree(root / "tinyassets", package / "tinyassets", dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("__pycache__"))
         shutil.copy2(__file__, package / "tests")
         command("docker", "cp", str(package), name + ":/proof")
         command("docker", "cp", str(pinned), name + ":/gvisor")
@@ -245,6 +246,110 @@ def interrupted_restore(volumes, uid, reference, phase):
     assert os.waitstatus_to_exitcode(status) == 73, phase
 
 
+def integrated_lifecycle(root, volumes, rootfs, size):
+    """Actual coordinator, broker map, XFS and GvisorRuntime; a minimal box payload.
+
+    Status is supplied by the harness because the minimal rootfs runs sleep,
+    while the existing owner-daemon process tests exercise its HTTP drain gate.
+    The caller's mount-root instrumentation stays enabled for this entire proof.
+    """
+    import socket
+    import sqlite3
+    from types import SimpleNamespace
+
+    from tinyassets.boxes.gvisor_runtime import GvisorRuntime
+    from tinyassets.boxes.owner_daemons import OwnerDaemons
+    from tinyassets.broker import box_admission, owner_volumes
+    from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.owner_activity import Activity
+
+    data = root / "metadata"
+    broker = data / ".broker"
+    broker.mkdir(parents=True, mode=0o700)
+    identities = OwnerIdentities(broker / "owner-identities.db", initialize=True)
+    uid = identities.resolve("proof-owner", allocate=True).uid
+    identities.admission("admit", "proof-owner", "proof-center")
+    with sqlite3.connect(identities.path) as db:
+        db.execute("CREATE TABLE box_records (principal TEXT PRIMARY KEY, machine INT, "
+                   "project_id INT, bhard_bytes INT)")
+    box_admission.provision(identities, data, "proof-owner", "proof-center")
+
+    class Admission:
+        def owner(self, owner, *, rotate=False):
+            return box_admission.owner_record(identities, owner, rotate=rotate)
+
+        def volume(self, owner, action="binding", **arguments):
+            return owner_volumes.dispatch(identities, {"op": "BOX_VOLUME", "principal": owner,
+                                         "action": action, "arguments": arguments})
+
+        def pending_volumes(self):
+            return owner_volumes.pending(identities)
+
+        def retire(self, owner, expected_uid):
+            assert identities.owner_machine(owner) == expected_uid
+            identities.retire_owner(owner)
+
+    runtime = GvisorRuntime(runsc=Path("/gvisor/runsc"), rootfs=rootfs,
+                            state_root=root / "integrated-state",
+                            bundle_root=root / "integrated-bundles",
+                            cgroup_parent=Path("/sys/fs/cgroup"))
+    start = runtime.start
+    states, generations = {}, []
+
+    def launch(owner_uid, gid, **kwargs):
+        kwargs.pop("app_dir")
+        kwargs.pop("secret_file")
+        generations.append(kwargs["volume_generation"])
+        start(owner_uid, gid, **kwargs)
+        states[owner_uid] = Activity()
+
+    runtime.start = launch
+    sockets = root / "socket-exports"
+    sockets.mkdir()
+    listener = socket.socket(socket.AF_UNIX)
+    relay = root / "proof-relay.sock"
+    listener.bind(str(relay))
+    manager = OwnerDaemons(runtime, Admission(), volumes,
+                           SimpleNamespace(bind=lambda *_: relay, retire=lambda _: None),
+                           sockets, idle_seconds=1)
+
+    def status(box, operation="status", **body):
+        return states[box.uid].status(drain=operation == "drain",
+                                      revoke=operation == "revoke",
+                                      snapshot=operation == "snapshot-stop",
+                                      idle=body.get("idle_seconds", 0))
+
+    manager._rpc = status
+    try:
+        assert manager.ensure_awake("proof-owner") == uid
+        assert volumes.size(uid) == size
+        runtime.exec(uid, ["/bin/sh", "-c", "printf integrated > /home/owner/content; sync"],
+                     timeout=30)
+        with manager.condition:
+            assert manager._sleep(manager.boxes[uid], idle=0)
+        published = manager.admission.volume("proof-owner")
+        assert published["snapshot_id"] and published["work"] is None
+        # Local image and catalog loss: the published map reference is sufficient.
+        volumes.delete(uid)
+        with sqlite3.connect(identities.path) as db:
+            db.execute("DELETE FROM owner_snapshots")
+        assert manager.restore("proof-owner", published["snapshot_id"]) == {
+            "volume_generation": published["volume_generation"] + 1}
+        manager.ensure_awake("proof-owner")
+        assert generations == [1, 2]
+        result = runtime.exec(uid, ["/bin/cat", "/home/owner/content"], timeout=30)
+        assert result.stdout == "integrated"
+        manager.destroy("proof-owner", uid)
+        assert not runtime.alive(uid)
+        volumes._detached(uid)
+        assert not (volumes.store / f"{uid}.img").exists()
+        print("PROOF integrated lifecycle map/runsc/generation/no-traversal PASS", flush=True)
+    finally:
+        runtime.stop(uid)
+        volumes.detach(uid)
+        listener.close()
+
+
 def inner_proof(root):
     from tinyassets.boxes.volumes import OwnerVolumes, VolumeError
 
@@ -357,7 +462,7 @@ def inner_proof(root):
         reference = volumes.snapshot(uid)
         metrics["snapshot_seconds"] = time.monotonic() - started
         metrics["upload_seconds"], metrics["readback_transfer_seconds"] = transfer_times
-        frozen = remote / f"{reference[0]}.img.gz"
+        frozen = remote / str(uid) / f"{reference[0]}.img.gz"
         frozen_hash = digest(frozen)
         with gzip.open(frozen, "rb") as source:
             started = time.monotonic()
@@ -558,6 +663,7 @@ def inner_proof(root):
             patch.setattr(io, "open", guard(io.open))
             for owner in uids:
                 volumes.delete(owner)
+            integrated_lifecycle(root, volumes, boxes.rootfs, size)
         assert not touched
         for owner in uids:
             assert not (store / f"{owner}.img").exists()

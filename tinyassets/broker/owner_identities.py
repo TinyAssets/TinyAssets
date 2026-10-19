@@ -113,6 +113,9 @@ class OwnerIdentities:
                        "principal TEXT PRIMARY KEY NOT NULL, secret TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS owner_box_revocations ("
                        "principal TEXT PRIMARY KEY NOT NULL, deleted INTEGER NOT NULL)")
+            from tinyassets.broker.owner_volumes import schema
+
+            schema(db)
         directory = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             os.fsync(directory)
@@ -259,6 +262,9 @@ class OwnerIdentities:
         uid = self.revoke_box(principal, deleted=True)
         with closing(self._connect(write=True)) as db, db:
             db.execute("PRAGMA synchronous=FULL")
+            # C2: withdraw the positive runtime admission in the same database
+            # transaction used by snapshot publication. Permanent bindings stay.
+            db.execute("DELETE FROM box_records WHERE principal=?", (principal,))
             db.execute("INSERT INTO center_admissions (event, principal, center, machine) "
                        "SELECT 'retire', a.principal, a.center, a.machine "
                        "FROM center_admissions a WHERE a.principal=? AND a.event='admit' "

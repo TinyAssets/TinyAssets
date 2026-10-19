@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import sys
@@ -29,7 +30,6 @@ _runtime: OwnerRuntime | None = None
 #: boxhostd bind-mounts the owner's durable tree here (one-box-per-owner design;
 #: ``boxes/gvisor_runtime``). It is the only data root an owner daemon serves.
 OWNER_MOUNT = Path("/home/owner")
-RESTORE_EPOCH = Path("/run/boxhostd/restore-epoch")
 
 
 def _is_owner_mount(path: Path) -> bool:
@@ -109,11 +109,28 @@ def start(relay: Path) -> OwnerRuntime:
         raise PermissionError("owner relay refused startup admission")
     root = OWNER_MOUNT
     from tinyassets.boxes.boxd import OwnerBoxd
+    from tinyassets.broker.owner_identities import validate_center
+
+    # C1: initialization moved from the shared project-quota provisioner into
+    # the owner boundary. Names come from the broker's launch admission.
+    centers = json.loads(os.environ["TINYASSETS_ADMITTED_CENTERS"])
+    if not isinstance(centers, list):
+        raise ValueError("admitted center names required")
+    for center in centers:
+        validate_center(center)
+        (root / center).mkdir(mode=0o700, exist_ok=True)
+    (root / ".agent-home").mkdir(mode=0o700, exist_ok=True)
 
     tools = OwnerBoxd(owner_id=doc["principal"], owner_root=root,
                      state_dir=root / ".owner-boxd",
-                     restore_epoch=RESTORE_EPOCH.read_text(),
+                     volume_generation=int(os.environ["TINYASSETS_VOLUME_GENERATION"]),
                      relay=relay)
+    try:
+        tools._state.verify_volume(int(os.environ["TINYASSETS_VOLUME_GENERATION"]),
+                                   lambda: validate_databases(root))
+    except BaseException:
+        tools.close()
+        raise
     os.environ["TINYASSETS_DATA_DIR"] = str(root)
     os.environ["TINYASSETS_ENGINE_MCP_TOOLS"] = "1"
     os.environ["TINYASSETS_ONBOARDING_APP"] = "1"
@@ -121,6 +138,19 @@ def start(relay: Path) -> OwnerRuntime:
                             Path(relay).resolve())
     install_outbound_guard()
     return _runtime
+
+
+def validate_databases(root: Path) -> None:
+    """C2 consistency checks run solely inside this owner's mounted boundary."""
+    import sqlite3
+    from contextlib import closing
+
+    from tinyassets.sqlite_integrity import check
+
+    for path in root.rglob("*"):
+        if path.is_file() and path.suffix in {".db", ".sqlite", ".sqlite3"}:
+            with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+                check(db)
 
 
 def router_credential(operation: str, **fields):

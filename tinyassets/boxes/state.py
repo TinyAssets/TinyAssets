@@ -117,6 +117,17 @@ class BoxHostState:
             fd, self._owner_fd = self._owner_fd, None
             os.close(fd)
 
+    def verify_volume(self, generation: int, validate) -> None:
+        """C2: owner-local startup validation, before any work is admitted."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT v FROM host WHERE k='volume_generation'").fetchone()
+        if row == (generation,):
+            return
+        validate()
+        with self._conn() as conn:
+            conn.execute("INSERT INTO host (k,v) VALUES ('volume_generation',?) "
+                         "ON CONFLICT(k) DO UPDATE SET v=excluded.v", (generation,))
+
     @contextlib.contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self._path, timeout=30.0, isolation_level=None)

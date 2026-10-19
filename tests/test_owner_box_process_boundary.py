@@ -29,7 +29,7 @@ async def command(doc):
     owner_runtime.require(root / "center", doc.get("owner", "alice"))
     bridge = tools.enable_ta(dispatch=dispatch, turn=doc["turn"])
     try:
-        return await tools.bash(doc["turn"], doc["command"], timeout=5)
+        return await tools.bash(core.operation_prefix() + doc["turn"], doc["command"], timeout=5)
     finally:
         bridge.close()
 try:

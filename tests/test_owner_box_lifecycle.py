@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from tests.test_owner_volume_lifecycle import Images as Volumes
 from tinyassets.boxes.gvisor_runtime import GvisorRuntime
 from tinyassets.boxes.host_service import HostService
 from tinyassets.boxes.owner_daemons import OwnerDaemons
@@ -25,6 +26,34 @@ def fleet(tmp_path, monkeypatch):
             self.secrets = {}
             self.revoked = set()
             self.suspended = set()
+            self.volumes = {owner: {"uid": 300001 + ord(owner) - ord("a"),
+                                   "volume_generation": 1, "snapshot_id": None,
+                                   "snapshot_sha256": None, "work": {"kind": "create"}}
+                            for owner in ("a", "b", "c")}
+            self.snapshots = {owner: [] for owner in self.volumes}
+
+        def volume(self, owner, action="binding", **arguments):
+            if action != "binding" and owner in self.revoked:
+                raise LookupError("unadmitted")
+            record = self.volumes[owner]
+            if action == "sleep":
+                record["work"] = {"kind": "snapshot", "snapshot_id": secrets.token_hex(16)}
+            elif action == "created":
+                record["work"] = None
+            elif action == "publish":
+                record.update(snapshot_id=arguments["snapshot_id"],
+                              snapshot_sha256=arguments["sha256"], work=None)
+                self.snapshots[owner].insert(0, arguments)
+            elif action == "snapshots":
+                return self.snapshots[owner]
+            elif action == "forget":
+                self.snapshots[owner] = [s for s in self.snapshots[owner]
+                                         if s["snapshot_id"] != arguments["snapshot_id"]]
+            return dict(record)
+
+        def pending_volumes(self):
+            return [owner for owner, record in self.volumes.items()
+                    if record["work"] and owner not in self.revoked]
 
         def owner(self, owner, *, rotate=False):
             from tinyassets.boxes.admission import BoxSuspended
@@ -36,7 +65,8 @@ def fleet(tmp_path, monkeypatch):
             if rotate:
                 self.secrets[owner] = secrets.token_urlsafe(32)
             return {"uid": 300001 + ord(owner) - ord("a"), "quota": 1024**3,
-                    "centers": [owner], "secret": self.secrets.get(owner)}
+                    "centers": [owner], "secret": self.secrets.get(owner),
+                    "volume_generation": self.volumes[owner]["volume_generation"]}
 
     class Runtime:
         box_id = staticmethod(GvisorRuntime.box_id)
@@ -61,9 +91,9 @@ def fleet(tmp_path, monkeypatch):
 
     states = {}
     admission, runtime = Admission(), Runtime()
-    quota = SimpleNamespace(provision=lambda *args: None)
+    volumes = Volumes()
     relays = SimpleNamespace(bind=lambda owner, uid: tmp_path / f"{uid}.sock")
-    manager = OwnerDaemons(runtime, admission, quota, relays, tmp_path,
+    manager = OwnerDaemons(runtime, admission, volumes, relays, tmp_path,
                            idle_seconds=1, awake_cap=2, wake_timeout=2)
 
     def paths(uid, secret):
@@ -78,6 +108,7 @@ def fleet(tmp_path, monkeypatch):
         if operation == "delete-admission":
             states[box.uid].admit_deletion_only()
         return states[box.uid].status(drain=operation == "drain",
+                                     snapshot=operation == "snapshot-stop",
                                      revoke=operation == "revoke",
                                      idle=body.get("idle_seconds", 0))
 
@@ -98,6 +129,49 @@ def test_wake_reuses_one_box_and_rotates_on_restart(fleet):
     manager.ensure_awake("a")
     assert fleet.admission.secrets["a"] != first
     assert len(fleet.runtime.starts) == 2
+
+
+def test_snapshot_deadline_drains_current_turn_before_sleep_and_restart(fleet):
+    manager = fleet.manager
+    uid = manager.ensure_awake("a")
+    activity = fleet.states[uid]
+    manager.boxes[uid].started -= 86401
+    with activity.enter():
+        manager.maintain()
+        assert activity.draining and activity.active == 1
+        assert not fleet.runtime.stops
+        with pytest.raises(RuntimeError, match="draining"):
+            with activity.enter():
+                pytest.fail("new turn admitted after snapshot deadline")
+    manager.maintain()
+    assert fleet.runtime.stops == [uid]
+    assert len(fleet.runtime.starts) == 2
+    assert fleet.admission.volume("a")["snapshot_id"]
+
+
+def test_center_retirement_has_no_volume_operation(fleet):
+    manager = fleet.manager
+    uid = manager.ensure_awake("a")
+    previous = list(manager.volumes.events)
+    manager.retire("a", uid)
+    assert manager.volumes.events == previous
+    assert uid in manager.volumes.images
+    manager.ensure_awake("a")
+    assert uid in fleet.runtime.live
+
+
+def test_restore_control_is_root_only_and_accepts_no_uid():
+    calls = []
+    service = HostService(None, None, None, SimpleNamespace(
+        restore=lambda owner, snapshot_id: calls.append((owner, snapshot_id)) or {
+            "volume_generation": 2}))
+    request = {"lifecycle": "restore", "owner": "alice", "snapshot_id": "a" * 32}
+    for peer in (1001, 1002):
+        assert "error" in service.lifecycle(request, peer)
+    assert "error" in service.lifecycle({**request, "uid": 300002}, 0)
+    assert not calls
+    assert service.lifecycle(request, 0) == {"volume_generation": 2}
+    assert calls == [("alice", "a" * 32)]
 
 
 @pytest.mark.parametrize("failure", ["suspended", "auth", "refused", "transport"])
@@ -264,7 +338,8 @@ def test_retirement_stops_box_before_ack_and_control_roles_are_positive(fleet):
     assert "error" in service.lifecycle(request, 1002)
     assert "error" in service.lifecycle({**request, "uid": 300002}, 1001)
     uid = service.lifecycle(request, 1001)["uid"]
-    retirement = {"lifecycle": "retire", "owner": "a", "uid": uid}
+    retirement = {"lifecycle": "retire", "owner": "a"}
+    assert "error" in service.lifecycle({**retirement, "uid": 300002}, 1002)
     assert "error" in service.lifecycle(retirement, 1001)
     fleet.admission.revoked.add("a")
     assert service.lifecycle(retirement, 1002) == {"stopped": True}

@@ -134,7 +134,7 @@ def test_owner_channel_admission_retry_and_refusals(broker, tmp_path, monkeypatc
     stops = []
 
     def stopped(operation, owner, **fields):
-        assert operation == "retire" and owner == "alice" and fields == {"uid": 300001}
+        assert operation == "retire" and owner == "alice" and fields == {}
         with pytest.raises(LookupError):
             identities.box_route(owner)
         stops.append(owner)
@@ -163,11 +163,22 @@ def test_owner_retirement_is_fenced_complete_and_retryable(broker, tmp_path, mon
     from types import SimpleNamespace
 
     from tinyassets.boxes.host_service import HostService
+    from tinyassets.erasure_ledger import ErasureLedger
 
     identities = store(tmp_path, "alice", "bob")
+    ErasureLedger(tmp_path).initialize()
     broker.server._owner_identities = identities
     for owner, center in (("alice", "a"), ("alice", "a2"), ("bob", "b")):
         identities.admission("admit", owner, center)
+    with sqlite3.connect(identities.path) as db:
+        db.execute("CREATE TABLE box_records (principal TEXT PRIMARY KEY, machine INT, "
+                   "project_id INT, bhard_bytes INT)")
+        for owner in ("alice", "bob"):
+            from tinyassets.broker.owner_volumes import provision
+
+            uid = identities.owner_machine(owner)
+            db.execute("INSERT INTO box_records VALUES (?,?,?,?)", (owner, uid, uid, 2 * 1024**3))
+            provision(db, owner, uid)
     stopped = []
 
     destroyed = []
@@ -185,7 +196,10 @@ def test_owner_retirement_is_fenced_complete_and_retryable(broker, tmp_path, mon
             raise OSError("destroy acknowledgement lost")
         destroyed.append(owner)
 
-    host = HostService(SimpleNamespace(data_root=tmp_path), None, None,
+    from tinyassets.broker.owner_volumes import binding
+
+    host = HostService(SimpleNamespace(data_root=tmp_path,
+                                      volume=lambda owner: binding(identities, owner)), None, None,
                        SimpleNamespace(destroy=destroy))
 
     def stop(operation, owner, **fields):

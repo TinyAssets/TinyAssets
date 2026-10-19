@@ -57,7 +57,8 @@ def owner_mode(tmp_path, monkeypatch, agent, in_process_broker, _owner_box_doubl
     monkeypatch.setattr(api_runs, "_RUNS_RECOVERY_DONE", False)
     monkeypatch.setattr(api_runs, "_RUNS_RECOVERY_LOCK", None)
     monkeypatch.setattr(owner_runtime, "_runtime", None)
-    monkeypatch.setattr(owner_runtime, "RESTORE_EPOCH", Path("/dev/null"))
+    monkeypatch.setenv("TINYASSETS_VOLUME_GENERATION", "1")
+    monkeypatch.setenv("TINYASSETS_ADMITTED_CENTERS", "[]")
     monkeypatch.setattr(owner_runtime, "OWNER_MOUNT", tmp_path)
     monkeypatch.setattr(owner_runtime, "_is_owner_mount", lambda path: path == tmp_path)
     # The CLI subprocess proof shares this fixture's host netns. Production
@@ -126,6 +127,8 @@ def owner_mode(tmp_path, monkeypatch, agent, in_process_broker, _owner_box_doubl
                        "machine INTEGER, project_id INTEGER, bhard_bytes INTEGER)")
             db.execute("INSERT OR REPLACE INTO box_records VALUES (?, ?, ?, ?)",
                        ("owner", uid, uid, 1024**3))
+            from tinyassets.broker.owner_volumes import provision as bind_volume
+            bind_volume(db, "owner", uid)
         # Seed the published-only store, as the cutover will; owner operational
         # state remains in tmp_path and is never read by this shared query.
         from tinyassets.storage import db_path
@@ -190,7 +193,8 @@ def test_startup_refuses_a_negative_relay_answer(tmp_path, monkeypatch):
     from tinyassets import rpc_frames as rf
 
     monkeypatch.setattr(owner_runtime, "_runtime", None)
-    monkeypatch.setattr(owner_runtime, "RESTORE_EPOCH", Path("/dev/null"))
+    monkeypatch.setenv("TINYASSETS_VOLUME_GENERATION", "1")
+    monkeypatch.setenv("TINYASSETS_ADMITTED_CENTERS", "[]")
     monkeypatch.setattr(owner_runtime, "OWNER_MOUNT", tmp_path)
     monkeypatch.setattr(owner_runtime, "_is_owner_mount", lambda path: path == tmp_path)
     with tempfile.TemporaryDirectory(prefix="taod-refused-") as directory:
@@ -429,9 +433,10 @@ def test_cli_starts_a_real_subprocess_on_unix_socket(owner_mode):
         # A test process has no boxhostd mount: point the fixed mount at a temp
         # tree, then run the real CLI entry unchanged.
         launcher = (
-            "import sys; from pathlib import Path; import tinyassets.owner_runtime as r; "
+            "import os, sys; from pathlib import Path; import tinyassets.owner_runtime as r; "
             f"r.OWNER_MOUNT = Path({str(mount)!r}); r._is_owner_mount = lambda p: True; "
-            "r.RESTORE_EPOCH = Path('/dev/null'); "
+            "os.environ['TINYASSETS_VOLUME_GENERATION'] = '1'; "
+            "os.environ['TINYASSETS_ADMITTED_CENTERS'] = '[]'; "
             "from tinyassets.owner_daemon import main; "
             f"sys.argv = ['owner_daemon', '--socket', {str(uds)!r}, "
             f"'--relay', {str(owner_mode.relay)!r}, '--secret-file', {str(secret_file)!r}]; "
@@ -460,7 +465,8 @@ def test_cli_starts_a_real_subprocess_on_unix_socket(owner_mode):
 def test_refuses_to_start_without_the_boxhostd_owner_mount(tmp_path, monkeypatch):
     """No caller-chosen data root: outside the owner mount nothing starts."""
     monkeypatch.setattr(owner_runtime, "_runtime", None)
-    monkeypatch.setattr(owner_runtime, "RESTORE_EPOCH", Path("/dev/null"))
+    monkeypatch.setenv("TINYASSETS_VOLUME_GENERATION", "1")
+    monkeypatch.setenv("TINYASSETS_ADMITTED_CENTERS", "[]")
     monkeypatch.setattr(owner_runtime, "OWNER_MOUNT", tmp_path / "not-a-mount")
     with pytest.raises(PermissionError, match="owner mount"):
         owner_runtime.start(tmp_path / "relay.sock")

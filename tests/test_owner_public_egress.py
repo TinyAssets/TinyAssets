@@ -190,7 +190,8 @@ def test_every_owner_command_gets_proxy_defaults_without_ambient_proxy(native, m
 
     command = f"test \"$HTTPS_PROXY\" = '{JAIL_PROXY_URL}'"
     assert run_probe(native.home, {"owner": "alice"}, {"command": command})
-    assert asyncio.run(OwnerTools(native.home).bash("proxy", command)) == "[exit code 0]"
+    op_id = native.core.operation_prefix() + "proxy"
+    assert asyncio.run(OwnerTools(native.home).bash(op_id, command)) == "[exit code 0]"
 
 
 @pytest.mark.parametrize("refusal", ["admission", "registry", "tombstone", "billing", "abuse",

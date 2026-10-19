@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from tinyassets.boxes.gvisor_runtime import OVERLAY, TMP_BYTES, GvisorRuntime
-from tinyassets.boxes.provider import BoxError
+from tinyassets.boxes.volumes import MountHandle
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="runsc is Linux-only")
 
@@ -18,11 +18,10 @@ def _runtime(tmp_path: Path) -> GvisorRuntime:
     runsc = tmp_path / "runsc"
     runsc.write_text("#!/bin/sh\nexit 0\n")
     runsc.chmod(0o700)
-    for name in ("rootfs", "owners"):
+    for name in ("rootfs",):
         (tmp_path / name).mkdir()
-    (tmp_path / "restore-epoch").write_text("")
     return GvisorRuntime(
-        runsc=runsc, rootfs=tmp_path / "rootfs", owner_store=tmp_path / "owners",
+        runsc=runsc, rootfs=tmp_path / "rootfs",
         state_root=tmp_path / "state", bundle_root=tmp_path / "bundles",
         cgroup_parent=Path("/sys/fs/cgroup/system.slice/boxhostd.service"),
     )
@@ -38,17 +37,20 @@ def test_oci_bundle_exposes_only_owner_tree_relay_and_bounded_tmp(tmp_path):
                 {"type": "bind", "destination": "/data", "source": "/data"},
                 {"type": "proc", "destination": "/proc", "source": "proc"},
             ]},
-            uid=300001, gid=300001, tree=tmp_path / "owners" / "300001",
+            uid=300001, gid=300001, volume_mount=MountHandle(300001, "/dev/loop1",
+                                     tmp_path / "mounts/300001").oci_mount(),
+            volume_generation=3,
             relay=relay, memory_bytes=1024**3,
         )
     assert config["root"] == {"path": str(tmp_path / "rootfs"), "readonly": True}
     assert [mount["destination"] for mount in config["mounts"]] == [
         "/proc", "/home/owner", "/run/boxhostd/relay.sock",
-        "/run/boxhostd/restore-epoch", "/tmp",
+        "/tmp",
     ]
     assert config["mounts"][-1]["options"][-1] == f"size={TMP_BYTES}"
     assert config["process"]["env"] == [
         "PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/owner",
+        "TINYASSETS_VOLUME_GENERATION=3", "TINYASSETS_ADMITTED_CENTERS=[]",
         "PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright",
     ]
     assert config["process"]["noNewPrivileges"] is True
@@ -84,7 +86,9 @@ def test_persistent_daemon_launch_has_mount_secret_socket_static_env_and_memory_
         listener.bind(str(relay))
         config = runtime._config(
             {"process": {}, "mounts": [], "linux": {}}, uid=300001, gid=300001,
-            tree=tmp_path / "owners/300001", relay=relay, memory_bytes=1024**3,
+            volume_mount=MountHandle(300001, "/dev/loop1",
+                                     tmp_path / "mounts/300001").oci_mount(),
+            volume_generation=3, relay=relay, memory_bytes=1024**3,
             app_dir=tmp_path / "300001", secret_file=secret)
     assert config["process"]["args"] == [
         "/opt/venv/bin/python", "-B", "-m", "tinyassets.owner_daemon",
@@ -94,27 +98,32 @@ def test_persistent_daemon_launch_has_mount_secret_socket_static_env_and_memory_
     assert config["linux"]["resources"]["memory"]["limit"] == 1024**3
     mounts = {item["destination"]: item for item in config["mounts"]}
     assert "ro" in mounts["/run/boxhostd/secret"]["options"]
-    assert mounts["/run/boxhostd/restore-epoch"]["source"] == str(runtime.restore_epoch_file)
-    assert "ro" in mounts["/run/boxhostd/restore-epoch"]["options"]
+    assert "/run/boxhostd/restore-epoch" not in mounts
     assert mounts["/run/owner"]["source"] == str(tmp_path / "300001")
-    assert mounts["/home/owner"]["source"] == str(tmp_path / "owners/300001")
+    assert mounts["/home/owner"]["source"] == str(tmp_path / "mounts/300001")
     assert config["process"]["env"] == [
         "PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/owner",
+        "TINYASSETS_VOLUME_GENERATION=3", "TINYASSETS_ADMITTED_CENTERS=[]",
         "PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright"]
 
 
-@pytest.mark.skipif(os.name == "posix" and os.geteuid() != 0,
-                    reason="quota ownership guard requires --as-root; "
-                           "owner=c6-owner-box runs-in=linux_oracle.py")
-def test_owner_tree_must_match_permanent_uid_and_private_mode(tmp_path):
+def test_runtime_never_inspects_the_volume_mount(tmp_path, monkeypatch):
     runtime = _runtime(tmp_path)
-    tree = tmp_path / "owners" / "300001"
-    tree.mkdir(mode=0o700)
-    os.chown(tree, 300001, 300001)
-    assert runtime._owner_tree(300001, 300001) == tree
-    tree.chmod(0o755)
-    with pytest.raises(BoxError, match="0700"):
-        runtime._owner_tree(300001, 300001)
-    tree.chmod(0o700)
-    with pytest.raises(BoxError, match="UID/GID"):
-        runtime._owner_tree(300001, 300002)
+    assert not hasattr(runtime, "_owner_tree") and not hasattr(runtime, "owner_store")
+    target = tmp_path / "mounts/300001"
+    inspect = Path.stat
+
+    def forbidden(path, *args, **kwargs):
+        assert not path.is_relative_to(target), "shared runtime inspected owner content"
+        return inspect(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", forbidden)
+    relay = tmp_path / "relay.sock"
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.bind(str(relay))
+        mount = MountHandle(300001, "/dev/loop1", target).oci_mount()
+        config = runtime._config({"process": {}, "mounts": []}, uid=300001, gid=300001,
+                                 volume_mount=mount, volume_generation=7,
+                                 relay=relay, memory_bytes=1024**3)
+    assert config["mounts"][0] == mount
+    assert "TINYASSETS_VOLUME_GENERATION=7" in config["process"]["env"]

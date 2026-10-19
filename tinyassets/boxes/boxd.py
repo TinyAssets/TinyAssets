@@ -840,8 +840,10 @@ class OwnerBoxd(BoxdCore):
         return principal
 
     def __init__(self, *, owner_id: str, owner_root: Path, state_dir: Path,
-                 relay: Path | None = None, restore_epoch: str = "") -> None:
-        self._restore_epoch = restore_epoch
+                 relay: Path | None = None, volume_generation: int = 1) -> None:
+        if type(volume_generation) is not int or volume_generation < 1:
+            raise ValueError("positive owner volume generation required")
+        self._volume_generation = volume_generation
         self._owner_id = self._check_cc(owner_id)
         if not owner_root.is_dir() or owner_root.is_symlink():
             raise BoxPathError("owner root must be an existing directory, not a link")
@@ -876,13 +878,11 @@ class OwnerBoxd(BoxdCore):
             self._begin(self._owner_id, op_id, kind, payload)
 
     def operation_prefix(self) -> str:
-        return f"{self._restore_epoch}:{self._state.epoch(self._owner_id)}:"
+        return f"{self._volume_generation}:{self._state.epoch(self._owner_id)}:"
 
     def check_operation(self, op_id: str) -> None:
-        if self._restore_epoch and (not isinstance(op_id, str)
-                                   or not op_id.startswith(self._restore_epoch + ":")
-                                   or not op_id.startswith(self.operation_prefix())):
-            raise BoxOperationRefused("operation predates restore epoch; not re-run")
+        if not isinstance(op_id, str) or not op_id.startswith(self.operation_prefix()):
+            raise BoxOperationRefused("operation predates owner volume generation; not re-run")
 
     def _begin(self, cc: str, op_id: str, kind: str, payload: object) -> None:
         self.check_operation(op_id)

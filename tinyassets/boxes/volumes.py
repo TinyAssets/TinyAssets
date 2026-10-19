@@ -13,6 +13,7 @@ import hashlib
 import os
 import re
 import subprocess
+import threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -48,6 +49,7 @@ class OwnerVolumes:
         self.store = Path(store).absolute()
         self.mount_root = Path(mount_root).absolute()
         self.remote = remote.rstrip("/")
+        self._held = threading.local()
         if not self.remote or ":" not in self.remote:
             raise VolumeError("an explicit rclone remote is required")
         if self.store.is_relative_to(self.mount_root):
@@ -78,9 +80,33 @@ class OwnerVolumes:
         import fcntl
 
         self._image(uid)
+        held = getattr(self._held, "uids", set())
+        if uid in held:
+            yield
+            return
         with (self.locks / str(uid)).open("a+b") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            yield
+            self._held.uids = held | {uid}
+            try:
+                yield
+            finally:
+                self._held.uids = held
+
+    def operation(self, uid: int):
+        """C1/C2: keep the same UID lock through runtime and map publication."""
+        return self._lock(uid)
+
+    def size(self, uid: int) -> int:
+        """Opaque image length, never a filesystem path inside a volume."""
+        with self._lock(uid):
+            return self._image(uid).stat().st_size
+
+    def delete_snapshot(self, uid: int, snapshot_id: str) -> None:
+        """The broker supplies an unreferenced object from this owner's catalog."""
+        with self._lock(uid):
+            if not re.fullmatch(r"[a-f0-9]{32}", snapshot_id or ""):
+                raise VolumeError("snapshot reference is required")
+            self._run("rclone", "deletefile", f"{self.remote}/{uid}/{snapshot_id}.img.gz")
 
     @staticmethod
     def _sync(path: Path) -> None:
@@ -215,11 +241,13 @@ class OwnerVolumes:
         self._run("rclone", "copyto", "--ignore-times", "--contimeout", "60s",
                   "--timeout", "900s", source, destination)
 
-    def snapshot(self, uid: int) -> tuple[str, str]:
+    def snapshot(self, uid: int, snapshot_id: str | None = None) -> tuple[str, str]:
         """Return (object ID, raw-image SHA256) only after remote readback."""
         with self._lock(uid):
             self._detached(uid)
-            snapshot_id = uuid.uuid4().hex
+            snapshot_id = snapshot_id or uuid.uuid4().hex
+            if not re.fullmatch(r"[a-f0-9]{32}", snapshot_id):
+                raise VolumeError("snapshot reference is required")
             clone = self.store / f".{uid}.clone"
             packed = self.store / f".{uid}.gz"
             readback = self.store / f".{uid}.readback"
@@ -230,7 +258,7 @@ class OwnerVolumes:
                 with clone.open("rb") as source, gzip.open(packed, "wb", compresslevel=1) as dest:
                     while chunk := source.read(1024 * 1024):
                         dest.write(chunk)
-                remote = f"{self.remote}/{snapshot_id}.img.gz"
+                remote = f"{self.remote}/{uid}/{snapshot_id}.img.gz"
                 self._transfer(str(packed), remote)
                 self._transfer(remote, str(readback))
                 with gzip.open(readback, "rb") as stream:
@@ -257,7 +285,7 @@ class OwnerVolumes:
                 raise VolumeError("snapshot SHA256 is required")
             packed = self.store / f".{uid}.download"
             stage = self.store / f".{uid}.restore"
-            self._transfer(f"{self.remote}/{snapshot_id}.img.gz", str(packed))
+            self._transfer(f"{self.remote}/{uid}/{snapshot_id}.img.gz", str(packed))
             with gzip.open(packed, "rb") as source, stage.open("wb") as dest:
                 actual = self._copy(source, dest)
             if actual != sha256:

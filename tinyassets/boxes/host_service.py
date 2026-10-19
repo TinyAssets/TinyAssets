@@ -10,7 +10,6 @@ import signal
 import socket
 import stat
 import threading
-import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -20,14 +19,14 @@ from tinyassets.boxes.control_channel import receive, send
 from tinyassets.boxes.gvisor_runtime import GvisorRuntime
 from tinyassets.boxes.owner_daemons import OwnerDaemons
 from tinyassets.boxes.provider import BoxError
-from tinyassets.boxes.quota import OwnerQuota
 from tinyassets.boxes.relay import OwnerRelays
+from tinyassets.boxes.volumes import OwnerVolumes
 
 
 class HostService:
-    def __init__(self, admission: OwnerRegistry, quota: OwnerQuota,
+    def __init__(self, admission: OwnerRegistry, volumes: OwnerVolumes,
                  relays: OwnerRelays, daemons: OwnerDaemons) -> None:
-        self.admission, self.quota, self.relays = admission, quota, relays
+        self.admission, self.volumes, self.relays = admission, volumes, relays
         self._broker_lock = threading.Lock()
         self._broker = None
         self.broker_ready = threading.Event()
@@ -151,14 +150,18 @@ class HostService:
                     and isinstance(document["lease"], str)):
                 self.daemons.release(owner, document["lease"])
                 return {"released": True}
+            if (uid == 0 and operation == "restore"
+                    and set(document) == {"lifecycle", "owner", "snapshot_id"}):
+                return self.daemons.restore(owner, document["snapshot_id"])
             if (uid == 1002 and operation == "destroy"
-                    and set(document) == {"lifecycle", "owner", "uid"}):
+                    and set(document) == {"lifecycle", "owner"}):
                 from tinyassets.erasure_ledger import ErasureLedger, principal_digest
 
+                owner_uid = self.admission.volume(owner)["uid"]
                 ledger = ErasureLedger(self.admission.data_root)
                 ledger.execute("add", {"digest": principal_digest(owner), "principal": owner,
-                                       "uids": [document["uid"]]})
-                self.daemons.destroy(owner, document["uid"])
+                                       "uids": [owner_uid]})
+                self.daemons.destroy(owner, owner_uid)
                 return {"destroyed": True}
             if ((uid == 1001 or (uid == 1002 and document.get("scheduled") is True))
                     and operation == "ensure_awake"
@@ -177,15 +180,13 @@ class HostService:
                     and set(document) == {"lifecycle", "owner"}):
                 return self.daemons.status(owner)
             if (uid == 1002 and operation == "retire"
-                    and set(document) == {"lifecycle", "owner", "uid"}):
-                self.daemons.retire(owner, document["uid"])
+                    and set(document) == {"lifecycle", "owner"}):
+                self.daemons.retire(owner, self.admission.volume(owner)["uid"])
                 return {"stopped": True}
             raise BoxError("lifecycle operation refused for this peer")
         except LookupError:
             return {"error": "unadmitted"}
         except Exception as exc:
-            import logging
-
             logging.getLogger(__name__).exception("owner lifecycle failed")
             return {"error": str(exc)}
 
@@ -273,9 +274,17 @@ def main(*, rootfs: Path, data_root: Path, cgroup_parent: Path) -> None:
 
 
 def _serve(*, rootfs: Path, data_root: Path, cgroup_parent: Path) -> None:
+    import ctypes
+    import subprocess
+
     from tinyassets.boxes.images import Images
     if os.geteuid() != 0:
         raise RuntimeError("box host requires its dedicated root service")
+    # T4: only this lifecycle namespace and its runsc children see attachments.
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.unshare(0x00020000) != 0:  # CLONE_NEWNS, before listener threads exist
+        raise OSError(ctypes.get_errno(), "private volume mount namespace unavailable")
+    subprocess.run(["mount", "--make-rprivate", "/"], check=True, timeout=10)
     os.umask(0o077)
     RUNTIME.mkdir(mode=0o755, exist_ok=True)
     os.chmod(RUNTIME, 0o755)  # Same mode as systemd RuntimeDirectory, even on first boot.
@@ -289,24 +298,24 @@ def _serve(*, rootfs: Path, data_root: Path, cgroup_parent: Path) -> None:
     relays = OwnerRelays(RUNTIME / "relays", admission)
     runtime = GvisorRuntime(
         runsc=Path("/opt/tinyassets/boxhostd/current/runsc"), rootfs=rootfs,
-        owner_store=Path("/var/lib/boxhostd/owners"), state_root=state / "runsc",
+        state_root=state / "runsc",
         bundle_root=state / "bundles",
-        restore_epoch_file=data_root / ".restore-epoch",
         cgroup_parent=cgroup_parent)
     recover_daemons(runtime)
     from tinyassets.erasure_ledger import protect_root
-    from tinyassets.restore_recovery import finish_erasures
 
     protect_root(data_root)
 
-    quota = OwnerQuota(runtime.owner_store)
+    volumes = OwnerVolumes(
+        Path(os.environ.get("BOX_STORE_DIR", "/var/lib/boxhostd/owners")),
+        Path("/var/lib/boxhostd/mounts"), os.environ["BACKUP_DEST"])
     daemons = OwnerDaemons(
-        runtime, admission, quota, relays, RUNTIME,
+        runtime, admission, volumes, relays, RUNTIME,
         idle_seconds=float(os.environ.get("TINYASSETS_BOX_IDLE_SECONDS", "900")),
         awake_cap=int(os.environ.get("TINYASSETS_BOX_AWAKE_CAP", "6")),
         memory_bytes=int(os.environ.get("TINYASSETS_BOX_MEMORY_BYTES", str(1024**3))))
     daemons.images = Images(rootfs.parent, state / "images.json", rootfs)
-    service = HostService(admission, quota, relays, daemons)
+    service = HostService(admission, volumes, relays, daemons)
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())
@@ -320,19 +329,11 @@ def _serve(*, rootfs: Path, data_root: Path, cgroup_parent: Path) -> None:
         # handshake; erased owners remain fenced while other owners can serve.
         for listener in listeners:
             listener.start()
-        recovery_at = 0
         while not stop.wait(1):
             if not all(listener.is_alive() for listener in listeners):
                 raise RuntimeError("box host control listener failed")
-            if service.broker_ready.is_set() and time.monotonic() >= recovery_at:
-                try:
-                    complete = finish_erasures(data_root, runtime.owner_store, daemons=daemons)
-                    recovery_at = float("inf") if complete else time.monotonic() + 30
-                except Exception:
-                    logging.getLogger(__name__).exception(
-                        "startup erasure retry failed; ledger fences remain")
-                    recovery_at = time.monotonic() + 30
-            daemons.maintain()
+            if service.broker_ready.is_set():
+                daemons.maintain()
     finally:
         stop.set()
         for listener in listeners:

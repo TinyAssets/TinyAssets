@@ -21,7 +21,7 @@ from tinyassets import onboarding, owner_runtime
 from tinyassets.broker.owner_reads import PlanMissing, Plans
 
 BOX_CODE = """
-import json, sys
+import json, os, sys
 from pathlib import Path
 from tinyassets import owner_runtime
 from tinyassets.broker.owner_reads import PlanMissing
@@ -32,7 +32,8 @@ from tinyassets.universe_owner import account_type_for_universe
 root, relay, mode = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 root.mkdir(exist_ok=True)
 owner_runtime.OWNER_MOUNT = root
-owner_runtime.RESTORE_EPOCH = Path("/dev/null")
+os.environ["TINYASSETS_VOLUME_GENERATION"] = "1"
+os.environ["TINYASSETS_ADMITTED_CENTERS"] = "[]"
 owner_runtime._is_owner_mount = lambda candidate: candidate == root
 runtime = owner_runtime.start(relay)
 try:

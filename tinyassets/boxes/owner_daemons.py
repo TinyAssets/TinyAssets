@@ -41,14 +41,18 @@ class Box:
 
 
 class OwnerDaemons:
-    def __init__(self, runtime, admission, quota, relays, directory: Path, *,
+    def __init__(self, runtime, admission, volumes, relays, directory: Path, *,
                  idle_seconds=900, awake_cap=6, memory_bytes=1024**3,
                  wake_timeout=60, backoff_cap=60, failure_limit=5, images=None,
                  roll_wait=60):
         if (not 0 < idle_seconds <= 86400 or awake_cap < 1 or wake_timeout <= 0
                 or backoff_cap < 1 or failure_limit < 1 or not 0 < roll_wait <= 60):
             raise ValueError("positive owner lifecycle limits required")
-        self.runtime, self.admission, self.quota, self.relays = runtime, admission, quota, relays
+        from tinyassets.boxes.volume_lifecycle import VolumeLifecycle
+
+        self.runtime, self.admission = runtime, admission
+        self.volumes, self.relays = volumes, relays
+        self.storage = VolumeLifecycle(volumes, admission, runtime)
         self.directory = Path(directory)
         self.idle_seconds, self.awake_cap = idle_seconds, awake_cap
         self.memory_bytes, self.wake_timeout = memory_bytes, wake_timeout
@@ -108,49 +112,56 @@ class OwnerDaemons:
         return directory, path
 
     def _start(self, box, deadline, *, image=None, cleanup=True):
+        with self.volumes.operation(box.uid):
+            try:
+                return self._launch(box, deadline, image=image)
+            except Exception:
+                if cleanup:
+                    self.runtime.stop(box.uid)
+                    self.volumes.detach(box.uid)
+                    box.awake = False
+                raise
+
+    def _launch(self, box, deadline, *, image=None):
         if box.deletion_only:
             raise BoxAuthError("deleting owner cannot restart")
-        record = self.admission.owner(box.owner, rotate=True)
+        record, volume_mount = self.storage.prepare(box.owner)
         if record["uid"] != box.uid:
             raise BoxError("broker owner reservation changed")
-        self.quota.provision(box.uid, record["quota"], record["centers"][0])
         relay = self.relays.bind(box.owner, box.uid)
         box.secret = record["secret"]
         directory, secret = self._paths(box.uid, box.secret)
         # Reserve capacity before touching runsc; failed cleanup keeps the slot.
         box.awake = True
-        try:
-            launch = {}
-            if self.images is not None:
-                image = image or self.images.current
-                if not self.images.compatible(image):
-                    raise BoxError("cutover boundary: restore with deploy/backup-restore.sh")
-                launch["rootfs"] = self.images.path(image)
-                # Persist before launch: a process can write before readiness.
-                self.images.ran(box.uid, image)
-                box.image = image
-            self.runtime.start(box.uid, box.uid, relay=relay, memory_bytes=self.memory_bytes,
-                               app_dir=directory, secret_file=secret, **launch)
-            while True:
-                if not self.runtime.alive(box.uid):
-                    raise BoxError("owner daemon exited during startup")
-                try:
-                    status = self._rpc(box)
-                    if not status["draining"]:
-                        box.started = box.last = time.monotonic()
-                        box.error = ""
-                        box.roll_failed = False
-                        return
-                except (OSError, http.client.HTTPException):
-                    pass
-                if time.monotonic() >= deadline:
-                    raise BoxError("owner app socket did not become ready")
-                time.sleep(.05)
-        except Exception:
-            if cleanup:
-                self.runtime.stop(box.uid)
-                box.awake = False
-            raise
+        launch = {}
+        if self.images is not None:
+            image = image or self.images.current
+            if not self.images.compatible(image):
+                raise BoxError("cutover boundary: restore with deploy/backup-restore.sh")
+            launch["rootfs"] = self.images.path(image)
+            # Persist before launch: a process can write before readiness.
+            self.images.ran(box.uid, image)
+            box.image = image
+        self.runtime.start(box.uid, box.uid, relay=relay, memory_bytes=self.memory_bytes,
+                           app_dir=directory, secret_file=secret,
+                           volume_mount=volume_mount,
+                           centers=tuple(record["centers"]),
+                           volume_generation=record["volume_generation"], **launch)
+        while True:
+            if not self.runtime.alive(box.uid):
+                raise BoxError("owner daemon exited during startup")
+            try:
+                status = self._rpc(box)
+                if not status["draining"]:
+                    box.started = box.last = time.monotonic()
+                    box.error = ""
+                    box.roll_failed = False
+                    return
+            except (OSError, http.client.HTTPException):
+                pass
+            if time.monotonic() >= deadline:
+                raise BoxError("owner app socket did not become ready")
+            time.sleep(.05)
 
     def _failed(self, box, error):
         box.failures += 1
@@ -171,7 +182,7 @@ class OwnerDaemons:
                     pass  # A dead/unreachable ingress is still followed by a proven stop.
                 self.runtime.stop(box.uid)
             else:
-                self.runtime.shutdown(box.uid)
+                self.storage.sleep(box.owner, lambda: self.runtime.shutdown(box.uid))
             box.awake = False
         box.secret = ""
         box.error, box.failures, box.retry_at = "", 0, 0
@@ -249,6 +260,7 @@ class OwnerDaemons:
             raise ValueError("scheduled must be boolean")
         deadline = time.monotonic() + self.wake_timeout
         with self.condition:
+            self.storage.recover(owner)
             record = self.admission.owner(owner)
             uid = record["uid"]
             box = self.boxes.setdefault(uid, Box(owner, uid))
@@ -267,6 +279,10 @@ class OwnerDaemons:
                         self.condition.wait(min(left, .1))
                         continue
                     if box.awake and self.runtime.alive(uid):
+                        if record["quota"] > self.volumes.size(uid):
+                            if not self._sleep(box, idle=0):
+                                raise BoxBusy("owner work must drain before volume growth")
+                            continue
                         if box.error:
                             raise BoxError("owner sandbox has an unverified launch or stop")
                         if self._rpc(box)["draining"]:
@@ -332,13 +348,23 @@ class OwnerDaemons:
         from tinyassets.boxes.destroy import socket_tree
 
         with self.condition:
-            self.retire(owner, uid)
-            self.admission.retire(owner, uid)
-            self.quota.destroy(uid)
+            uid = self.storage.delete(owner, lambda: self.retire(owner, uid))
             self.relays.retire(uid)
             socket_tree(self.directory, uid)
             (self.directory / "secrets" / str(uid)).unlink(missing_ok=True)
             self.boxes.pop(uid, None)
+
+    def restore(self, owner, snapshot_id):
+        with self.condition:
+            record = self.admission.volume(owner)
+            uid = record["uid"]
+            box = self.boxes.get(uid)
+            if box and box.awake:
+                self._rpc(box, "snapshot-stop")
+            if box and box.awake and not self._sleep(box, idle=0, stop=False):
+                raise BoxBusy("owner work must drain before restore")
+            result = self.storage.restore(owner, snapshot_id, lambda: self.retire(owner, uid))
+            return {"volume_generation": result["volume_generation"]}
 
     def status(self, owner):
         with self.condition:
@@ -451,6 +477,19 @@ class OwnerDaemons:
     def maintain(self):
         """One host clock handles idle sleep and bounded crash restart."""
         with self.condition:
+            try:
+                pending = self.admission.pending_volumes()
+            except Exception:
+                log.exception("volume maintenance authority unavailable")
+                pending = []
+            for owner in pending:
+                try:
+                    record = self.storage.recover(owner)
+                    box = self.boxes.get(record["uid"])
+                    if box and not self.runtime.alive(box.uid):
+                        box.awake = False
+                except Exception:
+                    log.exception("volume maintenance remains pending")
             for box in self.boxes.values():
                 if box.uid in self.rolling:
                     continue
@@ -486,7 +525,15 @@ class OwnerDaemons:
                         if (status and not status["draining"]
                                 and time.monotonic() - box.started >= self.idle_seconds):
                             box.failures = 0
-                        if (time.monotonic() - box.last >= self.idle_seconds
+                        if time.monotonic() - box.started >= 86400:
+                            try:
+                                self._rpc(box, "snapshot-stop")
+                            except (OSError, http.client.HTTPException):
+                                continue
+                            resume = box.wanted
+                            if self._sleep(box, idle=0):
+                                box.wanted = resume
+                        elif (time.monotonic() - box.last >= self.idle_seconds
                                 and time.monotonic() >= box.retry_at
                                 and box.failures < self.failure_limit):
                             self._sleep(box, idle=self.idle_seconds)
@@ -504,5 +551,4 @@ class OwnerDaemons:
         with self.condition:
             for box in self.boxes.values():
                 if box.awake:
-                    self.runtime.shutdown(box.uid)
-                    box.awake = False
+                    self._stop(box)

@@ -29,6 +29,16 @@ def owner_record(identities, owner: str, *, rotate: bool) -> dict:
     record = resolve(identities, {"op": "BOX_ADMISSION", "principal": owner,
                                   "center": centers[0]})
     result = {"uid": record["uid"], "quota": record["quota"], "centers": centers}
+    from tinyassets.broker.owner_volumes import binding
+
+    volume = binding(identities, owner)
+    if volume["work"] and volume["work"]["kind"] == "restore":
+        raise PermissionError("owner restore has not committed")
+    result.update({key: volume[key] for key in (
+        "volume_generation", "snapshot_id", "snapshot_sha256")})
+    from tinyassets.usage_policy import limits_for
+
+    result["quota"] = int(limits_for(identities.plans.read(owner)["tier"]).storage_bytes)
     if rotate:
         uid, result["secret"] = identities.box_route(owner, rotate=True)
         if uid != result["uid"]:
@@ -108,8 +118,14 @@ def provision(identities, data_root, owner: str, center: str) -> None:
         if row is not None:
             if row != (uid, uid):
                 raise PermissionError("permanent box reservation changed")
+            if db.execute("SELECT uid FROM owner_volumes WHERE principal=?",
+                          (owner,)).fetchone() != (uid,):
+                raise PermissionError("permanent volume binding is missing")
             return  # center admission must never overwrite migrated paid limits
         quota = int(limits_for(Plans(data_root).read(owner)["tier"]).storage_bytes)
         if quota <= 0 or quota % 1024:
             raise PermissionError("invalid canonical owner box bound")
         db.execute("INSERT INTO box_records VALUES (?,?,?,?)", (owner, uid, uid, quota))
+        from tinyassets.broker.owner_volumes import provision as bind_volume
+
+        bind_volume(db, owner, uid)

@@ -586,6 +586,7 @@ ROOT_ENTRIES: dict[str, str] = {
     ".platform": "platform: platform stores; legacy agent homes move to quota-charged owner boxes",
     ".layout.json": "platform: committed storage layout admission marker",
     ".layout.lock": "platform: shared service lifetime and exclusive migration lock",
+    ".locks": "platform: root-owned per-UID opaque-volume lifecycle locks",
     ".runs.db": "run_records, uploads, branches (rows attributed per table)",
     ".langgraph_runs.db": "checkpoints",
     ".run-file-custody": "uploads (blobs; sized from run_file_objects)",

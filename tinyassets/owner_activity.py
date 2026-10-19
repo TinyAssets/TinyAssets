@@ -43,13 +43,15 @@ class Activity:
             self.deleting = self.draining = True
             return self.lock.wait_for(lambda: self.active == 0, timeout=timeout)
 
-    def status(self, *, drain=False, idle=0.0, revoke=False, deleting=False):
+    def status(self, *, drain=False, idle=0.0, revoke=False, deleting=False, snapshot=False):
         with self.lock:
             age = time.monotonic() - self.last
             if revoke:
                 self.revoked = self.draining = True
             elif deleting:
                 self.deleting = self.draining = True
+            elif snapshot:
+                self.draining = True  # Finish admitted turns; refuse the next turn.
             elif drain and self.active == 0 and age >= idle:
                 self.draining = True
             return {"active": self.active, "idle_seconds": age,

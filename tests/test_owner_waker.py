@@ -29,10 +29,16 @@ def index(tmp_path):
     state = tmp_path / ".broker"
     state.mkdir(mode=0o700)
     identities = OwnerIdentities(state / "owner-identities.db", initialize=True)
+    with sqlite3.connect(identities.path) as db:
+        db.execute("CREATE TABLE box_records (principal TEXT PRIMARY KEY, machine INT, "
+                   "project_id INT, bhard_bytes INT)")
     for owner in ("a", "b", "c", "retired", "reserved"):
         identities.resolve(owner, allocate=True)
         if owner != "reserved":
             identities.admission("admit", owner, "cc-" + owner)
+            from tinyassets.broker.box_admission import provision
+
+            provision(identities, tmp_path, owner, "cc-" + owner)
     identities.retire_owner("retired")
     return NextWakeIndex(identities)
 
@@ -237,11 +243,13 @@ def sleeping_box(tmp_path, monkeypatch, in_process_broker, cloud_runtime):  # no
     from tests.support.http_model import seed_http_assignment
     from tests.support.owner_daemon_launcher import ProcessRuntime
     from tests.test_automations import _seed_branch, _seed_owner
+    from tests.test_owner_volume_lifecycle import Admission as VolumeAdmission
+    from tests.test_owner_volume_lifecycle import Images as Volumes
     from tinyassets import automations
     from tinyassets.boxes import relay as relay_module
     from tinyassets.boxes.owner_daemons import OwnerDaemons
     from tinyassets.boxes.relay import OwnerRelays
-    from tinyassets.broker.box_admission import owner_record
+    from tinyassets.broker.owner_volumes import provision as bind_volume
     from tinyassets.broker.server import BOX_HOST
     from tinyassets.erasure_ledger import ErasureLedger
     from tinyassets.storage import db_path
@@ -269,6 +277,7 @@ def sleeping_box(tmp_path, monkeypatch, in_process_broker, cloud_runtime):  # no
                    "machine INTEGER, project_id INTEGER, bhard_bytes INTEGER)")
         db.execute("INSERT OR REPLACE INTO box_records VALUES (?,?,?,?)",
                    (owner, uid, uid, 1024**3))
+        bind_volume(db, owner, uid)
     published = tmp_path / ".published"
     published.mkdir(exist_ok=True)
     with closing(sqlite3.connect(db_path(tmp_path))) as source:
@@ -300,9 +309,8 @@ def sleeping_box(tmp_path, monkeypatch, in_process_broker, cloud_runtime):  # no
         directory = Path(short)
         relays = OwnerRelays(directory / "relays", Admission())
         runtime = ProcessRuntime({uid: tmp_path}, module="tests.support.owner_waker_process")
-        admission = SimpleNamespace(owner=lambda owner, rotate=False:
-                                    owner_record(live.identities, owner, rotate=rotate))
-        manager = OwnerDaemons(runtime, admission, SimpleNamespace(provision=lambda *a: None),
+        admission = VolumeAdmission(live.identities)
+        manager = OwnerDaemons(runtime, admission, Volumes(),
                                relays, directory)
 
         def paths(uid, secret):

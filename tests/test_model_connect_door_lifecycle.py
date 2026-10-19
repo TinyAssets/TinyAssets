@@ -335,7 +335,8 @@ root = Path(root)
 home = root / "center"
 home.mkdir(parents=True, exist_ok=True)
 owner_runtime.OWNER_MOUNT = root
-owner_runtime.RESTORE_EPOCH = Path("/dev/null")
+os.environ["TINYASSETS_VOLUME_GENERATION"] = "1"
+os.environ["TINYASSETS_ADMITTED_CENTERS"] = "[]"
 owner_runtime._is_owner_mount = lambda p: p == root
 os.environ["TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED"] = "1"
 # Reuse the effector rig's explicit owner-approved rule and real consent store.
@@ -498,7 +499,8 @@ root, relay, operation, payload = sys.argv[1:]
 root = Path(root)
 root.mkdir(parents=True, exist_ok=True)
 owner_runtime.OWNER_MOUNT = root
-owner_runtime.RESTORE_EPOCH = Path("/dev/null")
+os.environ["TINYASSETS_VOLUME_GENERATION"] = "1"
+os.environ["TINYASSETS_ADMITTED_CENTERS"] = "[]"
 owner_runtime._is_owner_mount = lambda p: p == root
 runtime = owner_runtime.start(Path(relay))
 try:

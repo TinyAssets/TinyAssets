@@ -215,7 +215,8 @@ def test_owner_boxd_opens_only_its_mounted_owner_tree(tmp_path):
     try:
         handle = worker.bind("owner-a", session_id="session-a")
         assert handle.account_id == "owner-a" and handle.turn_id == "session-a"
-        worker.write(handle, "write-a", "/cc/file.txt", b"owner bytes", max_bytes=32)
+        worker.write(handle, worker.operation_prefix() + "write-a", "/cc/file.txt",
+                     b"owner bytes", max_bytes=32)
         assert (owner_root / "file.txt").read_bytes() == b"owner bytes"
         assert not (owner_root / "owner-a").exists()
         with pytest.raises(BoxAuthError):

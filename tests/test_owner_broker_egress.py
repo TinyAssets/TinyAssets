@@ -63,6 +63,8 @@ def box(broker, tmp_path, monkeypatch):  # noqa: F811
         db.execute("CREATE TABLE box_records (principal TEXT PRIMARY KEY, machine INTEGER, "
                    "project_id INTEGER, bhard_bytes INTEGER)")
         db.execute("INSERT INTO box_records VALUES (?, ?, ?, ?)", ("owner", uid, uid, 1024**3))
+        from tinyassets.broker.owner_volumes import provision as bind_volume
+        bind_volume(db, "owner", uid)
     Plans(shared).apply("owner", tier="paid", event_created=1)
     published = publish_definition(shared / ".published", author_id="publisher", payload={
         "schema_version": 1, "name": "Public agent", "description": "published only",
@@ -142,7 +144,8 @@ def box(broker, tmp_path, monkeypatch):  # noqa: F811
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "0")
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "0")
-    monkeypatch.setattr(owner_runtime, "RESTORE_EPOCH", Path("/dev/null"))
+    monkeypatch.setenv("TINYASSETS_VOLUME_GENERATION", "1")
+    monkeypatch.setenv("TINYASSETS_ADMITTED_CENTERS", "[]")
     monkeypatch.setattr(owner_runtime, "OWNER_MOUNT", root)
     monkeypatch.setattr(owner_runtime, "_is_owner_mount", lambda candidate: candidate == root)
     runtime = owner_runtime.start(path)
@@ -441,7 +444,8 @@ from tinyassets.request_budget import TurnRequestBudget
 root, relay, definition = Path(sys.argv[1]), Path(sys.argv[2]), json.loads(sys.argv[3])
 root.mkdir()
 owner_runtime.OWNER_MOUNT = root
-owner_runtime.RESTORE_EPOCH = Path("/dev/null")
+os.environ["TINYASSETS_VOLUME_GENERATION"] = "1"
+os.environ["TINYASSETS_ADMITTED_CENTERS"] = "[]"
 owner_runtime._is_owner_mount = lambda candidate: candidate == root
 runtime = owner_runtime.start(relay)
 (root / 'center').mkdir()
@@ -529,7 +533,8 @@ def test_owner_startup_refuses_credential_environment(tmp_path, monkeypatch, nam
     for secret_name in CHILD_FORBIDDEN_ENV | ENGINE_REQUIRED_SECRET_ENV.keys():
         monkeypatch.delenv(secret_name, raising=False)
     monkeypatch.setattr(owner_runtime, "_runtime", None)
-    monkeypatch.setattr(owner_runtime, "RESTORE_EPOCH", Path("/dev/null"))
+    monkeypatch.setenv("TINYASSETS_VOLUME_GENERATION", "1")
+    monkeypatch.setenv("TINYASSETS_ADMITTED_CENTERS", "[]")
     monkeypatch.setattr(owner_runtime, "OWNER_MOUNT", tmp_path)
     monkeypatch.setattr(owner_runtime, "_is_owner_mount", lambda candidate: True)
     monkeypatch.setenv(name, "synthetic-key")
@@ -590,7 +595,8 @@ from tinyassets.storage.outbound_connections import _broker_channel
 root, relay = Path(sys.argv[1]), Path(sys.argv[2])
 root.mkdir()
 owner_runtime.OWNER_MOUNT = root
-owner_runtime.RESTORE_EPOCH = Path("/dev/null")
+os.environ["TINYASSETS_VOLUME_GENERATION"] = "1"
+os.environ["TINYASSETS_ADMITTED_CENTERS"] = "[]"
 owner_runtime._is_owner_mount = lambda candidate: candidate == root
 runtime = owner_runtime.start(relay)
 assert not any(n.startswith('TINYASSETS_OAUTH_') and n.endswith('_SECRET') for n in os.environ)
