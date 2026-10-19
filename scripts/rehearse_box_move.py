@@ -106,8 +106,11 @@ def platform_recovery_probe():
     import json
     import os
     import shutil
+    import sqlite3
+    import subprocess
+    from contextlib import closing
 
-    from tinyassets.api_keys import ApiKeyStore
+    from tinyassets.api_keys import _KEY_RE, ApiKeyStore
     from tinyassets.onboarding import owner_sessions
     from tinyassets.restore_recovery import RecoveryUnavailable, platform_recovery
     from tinyassets.router_credentials import HookOwners
@@ -116,13 +119,34 @@ def platform_recovery_probe():
     root, store = Path('/data'), Path('/box-store')
     os.environ['TINYASSETS_DATA_DIR'] = str(root)
     owner = json.loads((root / '.owner-cutover.json').read_text())['plan'][0]['principal']
-    keys = ApiKeyStore(root)
-    key = keys.mint(owner, name='synthetic platform recovery', scopes=[], authority=None)['key']
-    HookOwners(root).publish(hashlib.sha256(b'rehearsal-hook').hexdigest(), owner)
-    with owner_sessions.store() as db:
-        db.execute('INSERT INTO owner_sessions VALUES (?,?,?)',
-                   (owner_sessions.hashed('rehearsal-session'),
-                    json.dumps({'user_id': owner}), 4000000000))
+    # Seed through the service UID that owns these live databases. Root's
+    # SQLite O_CREAT is correctly refused for service files under a sticky root.
+    seed = """
+import hashlib, json, sys
+from pathlib import Path
+from tinyassets.api_keys import ApiKeyStore
+from tinyassets.onboarding import owner_sessions
+from tinyassets.router_credentials import HookOwners
+root, owner = Path('/data'), sys.argv[1]
+key = ApiKeyStore(root).mint(owner, name='synthetic platform recovery',
+                           scopes=[], authority=None)['key']
+HookOwners(root).publish(hashlib.sha256(b'rehearsal-hook').hexdigest(), owner)
+with owner_sessions.store() as db:
+    db.execute('INSERT INTO owner_sessions VALUES (?,?,?)',
+               (owner_sessions.hashed('rehearsal-session'),
+                json.dumps({'user_id': owner}), 4000000000))
+print(json.dumps(key))
+"""
+    key = json.loads(subprocess.run(
+        [sys.executable, '-c', seed, owner], user=1001, group=1001, extra_groups=[1102],
+        capture_output=True, text=True, check=True).stdout)
+    key_id, secret = _KEY_RE.fullmatch(key).groups()
+    with closing(sqlite3.connect((root / '.api-keys.sqlite3').as_uri() + '?mode=ro')) as db:
+        assert db.execute('SELECT owner,secret_sha256,revoked_at FROM api_keys WHERE key_id=?',
+                          (key_id,)).fetchone() == (
+                              owner, hashlib.sha256(secret.encode()).hexdigest(), None)
+    assert HookOwners(root).resolve('rehearsal-hook') == owner
+    assert owner_sessions.lookup('rehearsal-session') is not None
 
     def images():
         # Opaque volume objects are the lifecycle unit; never attach or inspect content.
@@ -147,6 +171,12 @@ def platform_recovery_probe():
     assert ApiKeyStore(staged).resolve(key) is None
     assert HookOwners(staged).resolve('rehearsal-hook') is None
     assert owner_sessions.lookup('rehearsal-session') is None
+    # An unreadable store must never masquerade as successful invalidation.
+    for relative, table in (('.api-keys.sqlite3', 'api_keys'),
+                            ('.hook-owners.sqlite3', 'hook_owners'),
+                            ('.runtime/owner-sessions.db', 'owner_sessions')):
+        with closing(sqlite3.connect((staged / relative).as_uri() + '?mode=ro')) as db:
+            assert db.execute('SELECT COUNT(*) FROM ' + table).fetchone() == (0,)
     assert images() == before
     return {'unchanged_volumes': len(before), 'stale_credentials': 3,
             'admission_closed': 1, 'lane_b_pending_refusals': 1}

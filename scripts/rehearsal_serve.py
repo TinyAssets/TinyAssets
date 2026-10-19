@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, "/app")
 
 
-def owner(root, relay, secret, socket, uid, generation, centers):
+def owner(root, relay, secret, socket, uid, generation, centers, inherited_mounts):
     import fcntl
     import socket as sockets
     import struct
@@ -33,6 +33,12 @@ def owner(root, relay, secret, socket, uid, generation, centers):
         struct.pack_into("H", flags, 16, struct.unpack_from("H", flags, 16)[0] | 1)
         fcntl.ioctl(interface.fileno(), 0x8914, flags)
     subprocess.run(["mount", "--bind", root, "/home/owner"], check=True)
+    # The native process venue inherits the launcher's mount namespace, unlike
+    # runsc's OCI root. Keep only its fixed owner bind; release every inherited
+    # attachment using the launcher's admitted runtime records, without opening
+    # a volume or enumerating its content.
+    for attachment in json.loads(inherited_mounts):
+        subprocess.run(["umount", "--no-canonicalize", attachment], check=True)
     for original, mounted in ((relay, "/run/owner-relay"), (secret, "/run/owner-secret")):
         Path(mounted).touch()
         subprocess.run(["mount", "--bind", original, mounted], check=True)
@@ -278,11 +284,13 @@ def smoke(confirm=False):
         class Runtime:
             def __init__(self):
                 self.processes = {}
+                self.mounts = {}
 
             def start(self, uid, gid, *, relay, app_dir, secret_file, memory_bytes,
                       volume_mount, volume_generation, centers):
                 log = tempfile.TemporaryFile()
                 logs.append(log)
+                self.mounts[uid] = volume_mount["source"]
                 process = subprocess.Popen(
                     [
                         "unshare",
@@ -298,6 +306,7 @@ def smoke(confirm=False):
                         str(secret_file),
                         str(app_dir / "app.sock"),
                         str(uid), str(volume_generation), json.dumps(centers),
+                        json.dumps(list(self.mounts.values())),
                     ],
                     stdout=log,
                     stderr=log,
@@ -312,12 +321,14 @@ def smoke(confirm=False):
                 if self.alive(uid):
                     self.processes[uid].kill()
                     self.processes[uid].wait(20)
+                self.mounts.pop(uid, None)
 
             def shutdown(self, uid):
                 if self.alive(uid):
                     self.processes[uid].terminate()
                     if self.processes[uid].wait(30) != 0:
                         raise RuntimeError("owner did not finish graceful shutdown")
+                self.mounts.pop(uid, None)
 
         runtime = Runtime()
         log = tempfile.TemporaryFile()
@@ -538,13 +549,31 @@ def smoke(confirm=False):
                                 raise RuntimeError("confirmed source did not become serving")
                             counts["reconnect"] += 1
                 if not confirm:
-                    from tinyassets.api_keys import ApiKeyStore
-
                     item = journal['plan'][0]
                     owner_name, center = item['principal'], item['centers'][0]
-                    keys = ApiKeyStore(Path('/data'))
-                    key = keys.mint(owner_name, name='synthetic restore proof', scopes=[],
-                                    authority=None)
+
+                    def router_key(action, key=None):
+                        code = """
+import json, sys
+from tinyassets.api_keys import ApiKeyStore
+action, owner, key = json.load(sys.stdin)
+keys = ApiKeyStore('/data')
+if action == 'mint':
+    key = keys.mint(owner, name='synthetic restore proof', scopes=[], authority=None)
+    assert keys.resolve(key['key']) is not None
+else:
+    if action == 'revoke':
+        keys.revoke(owner, key['key_id'], authority=None)
+    assert keys.resolve(key['key']) is None
+print(json.dumps(key))
+"""
+                        result = subprocess.run(
+                            [sys.executable, '-c', code], user=1001, group=1001,
+                            extra_groups=[1102], input=json.dumps([action, owner_name, key]),
+                            capture_output=True, text=True, check=True)
+                        return json.loads(result.stdout)
+
+                    key = router_key('mint')
                     with identity_context(Identity(user_id=owner_name, username=owner_name,
                                                    capabilities=['tinyassets.universe.write'])):
                         def proof(action, **values):
@@ -558,12 +587,11 @@ def smoke(confirm=False):
                         assert manager._drain(manager.boxes[uid], idle=0, stop=True)
                         snapshot = admission.volume(owner_name)['snapshot_id']
                         proof('restore_mutate', operations=operations)
-                        keys.revoke(owner_name, key['key_id'], authority=None)
-                        assert keys.resolve(key['key']) is None
+                        router_key('revoke', key)
                         assert manager._drain(manager.boxes[uid], idle=0, stop=True)
                         manager.storage.restore(owner_name, snapshot, lambda: runtime.stop(uid))
                         restored = proof('restore_verify', operations=operations)
-                        assert keys.resolve(key['key']) is None
+                        router_key('refused', key)
                         counts['restore_replay_refusals'] = restored['replay_refusals']
                         counts['restore_new_operations'] = restored['new_operations']
                         counts['restore_revoked_keys'] = 1
