@@ -123,8 +123,8 @@ SHALL permit neither rollback nor opening traffic.
 - **THEN** old-layout rollback is refused
 
 ### Requirement: The shared layer is keyed by owner, not center
-Admission, credential custody, grants, egress policy and relay channels in the
-shared layer SHALL be keyed by owner. An owner's centers SHALL be a table inside
+The shared layer SHALL key admission, credential custody, grants, egress policy
+and relay channels by owner. An owner's centers SHALL be a table inside
 the owner's box, and creating or retiring a center SHALL be a box operation. The
 shared layer SHALL hold no center admission table and no per-center store.
 
