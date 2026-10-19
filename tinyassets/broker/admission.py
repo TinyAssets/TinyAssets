@@ -23,7 +23,7 @@ class OwnerErased(OwnerUnadmitted):
 
 
 @dataclass(frozen=True)
-class Admission:
+class OwnerAdmissionRecord:
     state: str
     reasons: frozenset[str]
 
@@ -55,14 +55,14 @@ def admission(db, owner):
     row = db.execute("SELECT state,reasons FROM owner_admission WHERE digest=?",
                      (digest(owner),)).fetchone()
     if row is None:
-        return Admission("absent", frozenset())
+        return OwnerAdmissionRecord("absent", frozenset())
     state, raw = row
     reasons = json.loads(raw)
     if (not isinstance(reasons, list) or any(r not in {"billing", "abuse"} for r in reasons)
             or state not in {"admitted", "suspended", "erased"}
             or (state == "suspended") != bool(reasons)):
         raise ValueError("invalid owner admission record")
-    return Admission(state, frozenset(reasons))
+    return OwnerAdmissionRecord(state, frozenset(reasons))
 
 
 def mutate(db, owner, action, *, reason=None, suspended=None, erased_digest=None):
@@ -141,4 +141,4 @@ def remote(root, owner):
             or answer["op"] != "OWNER_ADMISSION_IS"
             or answer["state"] not in {"absent", "admitted", "suspended", "erased"}):
         raise PermissionError("owner admission unavailable")
-    return Admission(answer["state"], frozenset(answer["reasons"]))
+    return OwnerAdmissionRecord(answer["state"], frozenset(answer["reasons"]))
