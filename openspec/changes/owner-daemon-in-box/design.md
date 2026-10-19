@@ -263,8 +263,12 @@ all owner-content manifests and other shared authority remain compared unchanged
 The router authenticates, looks the owner up in its **in-memory routing snapshot**
 (owner → admission state, box socket, per-box secret), and forwards. The broker
 pushes that snapshot to the router and updates it on admission changes. On a
-miss (box asleep), the router asks boxhostd to wake the box and forwards when it
-is up. A request makes no other control-plane call. The per-box secret rotates
+An absent or non-admitted owner record denies. For an admitted owner whose box
+is asleep, the router requests a wake from the broker's lifecycle authority. The
+broker serializes the wake with admission changes and supplies boxhostd with the
+operation's bound owner, UID, volume state and secret. The router forwards after
+readiness, using the current installed route. Forwarding to an awake box makes
+no lifecycle or control-plane lookup. The per-box secret rotates
 only on platform recovery or an explicit revocation, never on every start. That
 keeps the snapshot valid across sleep and wake, and the box still authenticates
 every request with it.
@@ -277,6 +281,30 @@ every request with it.
 
 `POST /app/account/delete` authenticates, enqueues the broker's deletion job and
 returns 202 with a status URL.
+
+**Withdrawal and rotation are ordered.**
+- Admission and secret updates are installed atomically and in order. An older
+  snapshot or wake completion can never restore a withdrawn route or credential.
+- Erasure, suspension and explicit secret revocation share the broker's per-owner
+  lifecycle serialization.
+- Before a withdrawal is acknowledged as effective, every serving router must have
+  installed it, or the old owner ingress must be made unreachable. A wake or
+  channel open running at the same time cannot publish or admit work under the
+  withdrawn state.
+- A withdrawal that can't complete stays pending and is reported as pending.
+- Secret rotation retires the box's acceptance of the old secret before the
+  replacement route is admitted.
+- A router that restarts needs a current snapshot before it serves.
+
+This is not solved by per-request broker checks or by expiring healthy routes on
+a timer (research.md:32).
+
+**Secret custody.** The persistent ingress secret is unique to one owner's box and
+stored in the private broker identity store. Its router projection and shared
+backups keep credential access restrictions. boxhostd supplies only that box's
+read-only runtime copy, kept separate from the owner volume. Neither provider
+credentials nor another box's secret is ever stored in an owner volume. Recovery
+and explicit revocation retire every previously accepted copy.
 
 ### C6. Admission is one record; deletion is one control-plane job (T5, T9)
 **One admission record per owner,** in the broker's identity database, with one
@@ -340,7 +368,11 @@ before opening the upstream:
 
 A missing allowlist denies. **Deleted:** the three separate mechanisms (policy
 egress mode, per-connection endpoint allowlist and git scope matching as
-independent allowlists). Git scope stays as credential scoping only.
+independent allowlists). Credential scoping remains for every credential type: an owner-bound credential
+may be injected only into its authorized service endpoint and operation. Passing
+the per-box network allowlist never authorizes using an arbitrary credential at
+that destination. A redirect re-evaluates credential eligibility before injection.
+Git repository scope is one instance of this rule.
 
 ### C8. The owner's own action policy moves into the box (T8)
 `broker/policy.py:29` decides `workspace.files`, `workspace.shell`, workflows and
@@ -409,8 +441,19 @@ and `RETIRE_CENTER`, per-center vault directories, `_namespace`,
   channels by **owner**;
 - centers are a table inside the box, so creating and retiring a center are box
   operations;
-- the cutover migration re-keys broker custody and grants from center to owner
-  (the one-shot exception).
+- the stopped cutover migration (the one-shot exception) re-keys custody:
+  - it derives each credential's, connection's and grant's owner from verified
+    ownership records, and checks that this agrees with the admitted
+    center-to-owner mapping;
+  - missing or conflicting ownership refuses the migration, and directory names
+    alone never assign custody;
+  - re-keying keeps credentials and connections distinct when several of one
+    owner's centers use the same service, preserves revocations and credential
+    scopes, and rebuilds the affected references and binding digests without
+    widening any grant;
+  - center-local authorization moves into the owner's box;
+  - publication is restartable and exposes only the complete owner-keyed layout,
+    and then the center-keyed stores and lookup paths are deleted.
 
 **Deleted:** the shared center tables, ops, environment and per-center
 directories listed above.
@@ -420,7 +463,23 @@ The research has no per-box rolling deploy. A deploy publishes the new image,
 then drains awake boxes to sleep between turns, and every box starts the newly
 published image on its next wake. The canary owner wakes on the new image as the
 acceptance check. Rolling back an image means republishing the previous one and
-draining again; it is never a per-box operation. **Deleted:** the per-box roll
+draining again; it is never a per-box operation.
+
+**Drain.**
+- Deployment drain closes the box's existing work-admission gate atomically with
+  request and background-turn admission, lets already-admitted work finish, then
+  takes the normal flush, detach and snapshot sleep path.
+- A timeout or unknown activity state never authorizes killing a turn; it is
+  reported as an incomplete drain.
+- Concurrent requests wait or get a retryable response; they are never replayed
+  after ambiguous execution.
+- Draining doesn't eagerly restart ordinary owners.
+
+**Canary.** The canary must complete a sleep, then wake through the normal public
+router on the published immutable image, prove that image's revision, and
+complete a model turn before acceptance.
+
+Republishing an older image keeps the existing layout-compatibility boundary. **Deleted:** the per-box roll
 and roll-back (`owner_daemons.py` ~385–475), the last-launch tracking in
 `images.py`, and the per-UID loop in `scripts/roll_owner_boxes.py`. Cutover
 rollback (C4) is unchanged.
@@ -430,8 +489,22 @@ rollback (C4) is unchanged.
   The broker passes the state an operation needs, and boxhostd never calls back
   into the broker for lifecycle or volume state (`boxes/admission.py` ~20–32,
   ~63–84; `destroy` → `BOX_RETIRE_ADMISSION`).
-- **One hop for credential mints.** The relay forwards key and hook mints straight
-  to identity (the router's credential socket), not via the broker.
+  - The broker owns lifecycle orchestration, pending-work recovery and map
+    publication, including sleep snapshots, restoration, eviction and restart.
+  - boxhostd executes the operations it is given and returns results. It never
+    selects or commits the next lifecycle transition.
+  - boxhostd's maintain loop observes runtime state and moves forward only
+    execution that was already authorized.
+  - The broker collects results through its existing lifecycle coordination; no
+    additional authority store or polling clock is introduced.
+- **One hop for credential mints.**
+  - The owner-bound relay forwards key and hook operations directly to identity's
+    credential socket.
+  - Identity authenticates the relay service, takes the owner only from the
+    relay's fixed binding, and uses the broker-authored admission projection.
+  - Minting is serialized with owner withdrawal and credential revocation.
+  - The broker forwarding operation is deleted, and identity remains the only
+    writer of keys and hooks.
 - **Shared clocks.** The deletions in C5, C6 and the spend fence leave two:
   boxhostd's maintain loop and the waker.
 
@@ -443,6 +516,10 @@ another on `conv/c6-research-shape`, each after the previous lane has merged:
 - **(d) C11–C13:** an owner-keyed shared layer, image-at-wake deploys, fewer mechanisms.
 - **(c) C7–C9:** the egress allowlist, owner policy in the box, the wake index.
   It runs after d, because policy and allowlists are keyed by owner.
+
+Lane b establishes the broker-owned cold-wake and withdrawal contract that lane d
+uses. Lane d preserves that contract while removing host callbacks and center
+keys. Lane c builds on the resulting owner-keyed custody and relay interfaces.
 
 Each lane's brief cites this section and research.md, names the shared code it
 deletes, and replaces the superseded as-built text and spec scenarios it touches.
