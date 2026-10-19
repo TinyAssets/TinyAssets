@@ -739,6 +739,8 @@ def test_staged_repair_inspects_a_sidecar_named_database_with_no_verified_base(t
 
     stage = tmp_path / "stage"
     stage.mkdir()
+    # A base that merely exists is not a verified database.
+    (stage / name[:name.rindex("-")]).write_text("not a database")
     with closing(sqlite3.connect(stage / name)) as db, db:
         db.execute("CREATE TABLE notes (body)")
     (stage / "alias").hardlink_to(stage / name)
