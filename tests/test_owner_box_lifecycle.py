@@ -28,6 +28,7 @@ def fleet(tmp_path, monkeypatch):
             self.suspended = set()
             self.volumes = {owner: {"uid": 300001 + ord(owner) - ord("a"),
                                    "volume_generation": 1, "snapshot_id": None,
+                                   "local": True, "asleep_at": None,
                                    "snapshot_sha256": None, "work": {"kind": "create"}}
                             for owner in ("a", "b", "c")}
             self.snapshots = {owner: [] for owner in self.volumes}
@@ -42,8 +43,16 @@ def fleet(tmp_path, monkeypatch):
                 record["work"] = None
             elif action == "publish":
                 record.update(snapshot_id=arguments["snapshot_id"],
-                              snapshot_sha256=arguments["sha256"], work=None)
+                              snapshot_sha256=arguments["sha256"], work=None,
+                              asleep_at=time.time())
                 self.snapshots[owner].insert(0, arguments)
+            elif action == "wake":
+                record["asleep_at"] = None
+            elif action == "evict":
+                # These runtime-decision fixtures never age a snapshot seven days.
+                # Cold eviction itself uses the real map in the volume proofs.
+                assert record["asleep_at"] is None or time.time() - record["asleep_at"] < 7 * 86400
+                return None
             elif action == "snapshots":
                 return self.snapshots[owner]
             elif action == "forget":
