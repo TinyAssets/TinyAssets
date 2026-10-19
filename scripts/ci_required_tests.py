@@ -45,7 +45,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 QUARANTINE = REPO_ROOT / ".github" / "known-failing-tests.txt"
 
-# Root-only proofs (the live owner-box backup runs as root on the host).
+# Root-only proofs (shared backup and lifecycle authority run as root on the host).
 # These files still belong to their ordinary shard and selection receipt.
 ROOT_TEST_FILES = frozenset({
     "tests/test_backup_owner_box.py",
@@ -74,6 +74,7 @@ ROOT_TEST_FILES = frozenset({
     "tests/test_owner_cutover_restore.py",
     "tests/test_owner_public_egress.py",
     "tests/test_owner_router.py",
+    "tests/test_owner_volume_lifecycle.py",
     "tests/test_owner_waker.py",
     "tests/test_router_store_guard.py",
 })
