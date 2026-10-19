@@ -726,3 +726,25 @@ def test_staged_repair_survives_sidecars_removed_by_repairing_their_database(tmp
     _repair_staged_databases(stage)
     with sqlite3.connect(stage / "memory.db.bak") as db:
         assert db.execute("SELECT body FROM notes").fetchall() == [("kept",)]
+
+
+@pytest.mark.parametrize("name", ["notes-wal", "ledger-shm", "ledger-journal"])
+def test_staged_repair_inspects_a_sidecar_named_database_with_no_verified_base(tmp_path, name):
+    # Only a verified database's own sidecars are skipped; a database merely
+    # named like one still gets link refusal and the integrity verdict.
+    from contextlib import closing
+
+    from tests.test_cutover_index_integrity import damage_many_indexes
+    from tinyassets.restore_recovery import _repair_staged_databases
+
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    with closing(sqlite3.connect(stage / name)) as db, db:
+        db.execute("CREATE TABLE notes (body)")
+    (stage / "alias").hardlink_to(stage / name)
+    with pytest.raises(ValueError, match="private regular file"):
+        _repair_staged_databases(stage)
+    (stage / "alias").unlink()
+    damage_many_indexes(stage / name, corrupt_table=True)
+    with pytest.raises(ValueError, match="not index-only"):
+        _repair_staged_databases(stage)

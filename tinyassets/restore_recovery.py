@@ -95,10 +95,13 @@ def _repair_staged_databases(staged):
     from tinyassets.box_layout_migration import _claim_sqlite_sidecars
     from tinyassets.sqlite_integrity import check
 
+    verified = set()
     for path in sorted(staged.rglob("*")):
-        # A sidecar belongs to its database: closing a repaired database may
-        # remove its -wal/-shm before the scan reaches them.
-        if path.name.endswith(("-wal", "-shm", "-journal")):
+        # A sidecar of a database verified above was refused-or-claimed with
+        # it, and closing that database may remove it; sorted() visits the
+        # database first. Any other file, whatever its name, is inspected.
+        if any(path.name.endswith(suffix) and path.with_name(path.name[:-len(suffix)]) in verified
+               for suffix in ("-wal", "-shm", "-journal")):
             continue
         # Owner content includes links. Discover SQLite without following any
         # symlink; only database candidates need private-inode custody.
@@ -119,6 +122,7 @@ def _repair_staged_databases(staged):
         _claim_sqlite_sidecars(path)
         with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=rw", uri=True)) as db, db:
             check(db, repair=True)
+        verified.add(path)
 
 
 def _carry_rollback(current, staged, owners, retained_owners):
