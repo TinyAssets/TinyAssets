@@ -12,7 +12,9 @@ from tinyassets import restore_recovery as recovery
 
 
 def seed(root):
-    (root / ".broker/state").mkdir(parents=True)
+    from tinyassets.broker.admission import mutate, schema
+
+    (root / ".broker/state").mkdir(parents=True, mode=0o700)
     (root / ".layout.json").write_text(
         json.dumps({"layout": 2, "box_layout": "owner-box", "state": "stable"})
     )
@@ -24,6 +26,9 @@ def seed(root):
         db.execute("INSERT INTO box_records VALUES ('alice', 300001)")
         db.execute("CREATE TABLE owner_box_secrets (principal TEXT, secret TEXT)")
         db.execute("INSERT INTO owner_box_secrets VALUES ('alice', 'old-box-secret')")
+        schema(db)
+        mutate(db, "alice", "admit")
+    (root / ".broker/state/owner-identities.db").chmod(0o600)
     for relative, tables in recovery.RESET_TABLES.items():
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
