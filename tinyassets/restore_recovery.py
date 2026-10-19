@@ -7,6 +7,7 @@ import os
 import secrets
 import sqlite3
 import stat
+import tempfile
 import time
 from contextlib import closing
 
@@ -208,10 +209,21 @@ def reconcile_authority(staged, now):
 
 def write_layout(root, document):
     """C3: persist closed admission before any recoverable authority is changed."""
-    with _safe(root, ".layout.json").open("w") as stream:
-        json.dump(document, stream)
-        stream.flush()
-        os.fsync(stream.fileno())
+    target = _safe(root, ".layout.json")
+    # Deployment root cannot O_CREAT|O_TRUNC a service-owned file in the
+    # sticky shared root with fs.protected_regular=2. Publish a new inode;
+    # the closed marker is also never observable as a partially written JSON.
+    fd, temporary = tempfile.mkstemp(prefix=".platform-layout-", dir=root)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump(document, stream)
+            stream.flush()
+            os.fchmod(stream.fileno(), 0o644)
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
     directory = os.open(root, os.O_RDONLY)
     try:
         os.fsync(directory)

@@ -192,7 +192,11 @@ is confined to the one-shot cutover; `restore_old_layout` only extracts a verifi
 pre-cutover archive into private staging. Durable rollback eligibility and live
 installation remain a2a-3. The backup producer is now split (a2a-3): platform publication uses a verified
 manifest and excludes owner volumes. Shared restore preserves the archived root's
-ownership and mode. Rehearsal steps and durable rollback control remain a2a-3. This is not end-to-end platform recovery acceptance until the named current
+ownership and mode. Recovery atomically replaces and fsyncs the shared layout
+marker before changing authority, including when the service-owned marker is
+under a sticky shared root. The root Linux proof reaches the pending deletion-job
+refusal with admission closed and local credentials invalidated.
+Rehearsal steps and durable rollback control remain a2a-3. This is not end-to-end platform recovery acceptance until the named current
 authorities are available.
 
 ### C4. Cutover rollback is the old system's restore, gated by durable eligibility

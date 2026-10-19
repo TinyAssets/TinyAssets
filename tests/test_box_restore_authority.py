@@ -40,6 +40,23 @@ def fingerprint(root):
     return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
 
 
+def test_platform_recovery_closes_service_owned_marker_under_sticky_root(tmp_path):
+    import os
+
+    seed(tmp_path)
+    tmp_path.chmod(0o1775)
+    marker = tmp_path / ".layout.json"
+    os.chown(marker, 1001, 1001)
+    marker.chmod(0o644)
+    with pytest.raises(recovery.RecoveryUnavailable, match="deletion-job recovery"):
+        recovery.platform_recovery(tmp_path, backup_time=1, now=2000000000)
+    assert json.loads(marker.read_text())["state"] == "recovering"
+    assert marker.stat().st_uid == 0
+    assert not list(tmp_path.glob(".platform-layout-*"))
+    with sqlite3.connect(tmp_path / ".api-keys.sqlite3") as db:
+        assert db.execute("SELECT * FROM api_keys").fetchall() == []
+
+
 @pytest.fixture
 def platform(tmp_path, monkeypatch):
     staged = tmp_path / "staged"
