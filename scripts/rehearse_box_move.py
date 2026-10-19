@@ -54,31 +54,18 @@ def validate_archive(path: Path) -> int:
     return total
 
 
-def ingress_projection(rows, owners):
-    """C5: independent cutovers mint independent secrets, with identical bindings."""
-    assert len(rows) == len(owners)
-    assert {owner for owner, _ in rows} == set(owners)
-    assert len({secret for _, secret in rows}) == len(rows)
-    assert all(isinstance(secret, str) and re.fullmatch(r"[A-Za-z0-9_-]{43}", secret)
-               for _, secret in rows)
-    return sorted((owner, 'verified per-box credential') for owner, _ in rows)
-
-
 def rehearsal_manifests():
     """Compare all content and authority across independent migration trials.
 
     C2 creates new opaque snapshots in each trial. Validate those objects and
     compare their logical bindings, preserving every other identity value and
     schema object. Snapshot publication clocks must be recent in each trial;
-    their exact wall-clock values, like UUIDs, are not owner content. C5's initial
-    credentials likewise differ between independent trials; their complete owner
-    mapping, uniqueness, format and private custody must be proven in each trial.
+    their exact wall-clock values, like UUIDs, are not owner content.
     """
     import gzip
     import hashlib
     import json
     import sqlite3
-    import stat
     import time
     from contextlib import closing
 
@@ -86,10 +73,6 @@ def rehearsal_manifests():
     journal = json.loads((root / '.owner-cutover.json').read_text())
     shared = journal['final_manifest']
     relative = '.broker/state/owner-identities.db'
-    credential_store = root / relative
-    assert credential_store.stat().st_uid == 1002
-    assert stat.S_IMODE(credential_store.stat().st_mode) == 0o600
-    assert stat.S_IMODE(credential_store.parent.stat().st_mode) == 0o700
     with closing(sqlite3.connect(root / relative)) as db:
         schema = db.execute('SELECT type,name,tbl_name,sql FROM sqlite_master '
                             'ORDER BY name').fetchall()
@@ -114,8 +97,6 @@ def rehearsal_manifests():
             cursor = db.execute('SELECT * FROM "' + name.replace('"', '""') + '"')
             columns = [column[0] for column in cursor.description]
             rows = cursor.fetchall()
-            if name == 'owner_box_secrets':
-                rows = ingress_projection(rows, [owner['principal'] for owner in journal['plan']])
             if name in {'owner_volumes', 'owner_snapshots'}:
                 rows = [tuple('verified snapshot' if column in {'snapshot_id', 'snapshot_sha256'}
                               else 'recent snapshot publication' if column == 'asleep_at'

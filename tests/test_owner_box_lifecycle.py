@@ -64,14 +64,15 @@ def fleet(tmp_path, monkeypatch):
             return [owner for owner, record in self.volumes.items()
                     if record["work"] and owner not in self.revoked]
 
-        def owner(self, owner, *, include_secret=False):
+        def owner(self, owner, *, rotate=False):
             from tinyassets.boxes.admission import BoxSuspended
 
             if owner in self.revoked or owner not in {"a", "b", "c"}:
                 raise LookupError("unadmitted")
             if owner in self.suspended:
                 raise BoxSuspended("suspended")
-            self.secrets.setdefault(owner, secrets.token_urlsafe(32))
+            if rotate:
+                self.secrets[owner] = secrets.token_urlsafe(32)
             return {"uid": 300001 + ord(owner) - ord("a"), "quota": 1024**3,
                     "centers": [owner], "secret": self.secrets.get(owner),
                     "volume_generation": self.volumes[owner]["volume_generation"]}
@@ -125,7 +126,7 @@ def fleet(tmp_path, monkeypatch):
     return SimpleNamespace(manager=manager, runtime=runtime, admission=admission, states=states)
 
 
-def test_wake_reuses_one_box_and_preserves_secret_on_restart(fleet):
+def test_wake_reuses_one_box_and_rotates_on_restart(fleet):
     manager = fleet.manager
     uid = manager.ensure_awake("a")
     first = fleet.admission.secrets["a"]
@@ -135,7 +136,7 @@ def test_wake_reuses_one_box_and_preserves_secret_on_restart(fleet):
     with manager.condition:
         assert manager._sleep(manager.boxes[uid], idle=0)
     manager.ensure_awake("a")
-    assert fleet.admission.secrets["a"] == first
+    assert fleet.admission.secrets["a"] != first
     assert len(fleet.runtime.starts) == 2
 
 

@@ -20,30 +20,6 @@ from tests.test_owner_cutover_census import source as source
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_independent_cutover_credentials_preserve_the_complete_owner_mapping():
-    from scripts.rehearse_box_move import ingress_projection
-
-    first = ingress_projection([('alice', 'a' * 43), ('bob', 'b' * 43)], ['alice', 'bob'])
-    second = ingress_projection([('bob', 'c' * 43), ('alice', 'd' * 43)], ['alice', 'bob'])
-    assert first == second == [('alice', 'verified per-box credential'),
-                               ('bob', 'verified per-box credential')]
-
-
-@pytest.mark.parametrize('rows', [
-    [], [('alice', 'a' * 43)],
-    [('alice', 'a' * 43), ('alice', 'b' * 43)],
-    [('alice', 'a' * 43), ('foreign', 'b' * 43)],
-    [('alice', 'a' * 43), ('bob', 'a' * 43)],
-    [('alice', 'a' * 43), ('bob', '')],
-    [('alice', 'a' * 43), ('bob', '/' * 43)],
-])
-def test_cutover_manifest_refuses_missing_foreign_duplicate_or_invalid_credentials(rows):
-    from scripts.rehearse_box_move import ingress_projection
-
-    with pytest.raises(AssertionError):
-        ingress_projection(rows, ['alice', 'bob'])
-
-
 def test_missing_image_refuses_before_setup(monkeypatch):
     from scripts import archive_rehearsal as harness
 

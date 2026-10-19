@@ -194,11 +194,11 @@ def test_production_layout_uses_one_plan_store_for_admission_billing_and_launch(
     plans.set_plan("a", "paid", event_created=10)
     plans.set_suspension("a", reason="billing", suspended=False)
     with pytest.raises(PermissionError, match="suspended"):
-        owner_record(identities, "a", include_secret=True)
+        owner_record(identities, "a", rotate=True)
     with closing(sqlite3.connect(plans.path)) as db, db:
         db.execute("DELETE FROM plans WHERE owner='a'")
     with pytest.raises(PlanMissing):
-        owner_record(identities, "a", include_secret=True)
+        owner_record(identities, "a", rotate=True)
 
 
 def test_broker_can_only_request_scheduled_wakes():

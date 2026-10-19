@@ -43,7 +43,7 @@ class VolumeLifecycle:
             if not binding["local"]:
                 self.admission.volume(owner, "restore", snapshot_id=binding["snapshot_id"])
                 self.recover(owner)
-            record = self.admission.owner(owner, include_secret=True)
+            record = self.admission.owner(owner, rotate=True)
             binding = self.admission.volume(owner)
             if binding["work"] == {"kind": "create"}:
                 try:

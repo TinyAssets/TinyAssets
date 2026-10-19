@@ -11,7 +11,7 @@ class OwnerSuspended(PermissionError):
     """Explicit lifecycle refusal; never a host-wide failure."""
 
 
-def owner_record(identities, owner: str, *, include_secret: bool) -> dict:
+def owner_record(identities, owner: str, *, rotate: bool) -> dict:
     """Root boxhostd's launch inputs; no center or UID is selected by a caller."""
     validate_principal(owner)
     with identities._connect(write=False) as db:
@@ -39,18 +39,18 @@ def owner_record(identities, owner: str, *, include_secret: bool) -> dict:
     from tinyassets.usage_policy import limits_for
 
     result["quota"] = int(limits_for(identities.plans.read(owner)["tier"]).storage_bytes)
-    if include_secret:
-        uid, result["secret"] = identities.box_route(owner)
+    if rotate:
+        uid, result["secret"] = identities.box_route(owner, rotate=True)
         if uid != result["uid"]:
             raise RuntimeError("owner reservation changed")
     return result
 
 
 def lifecycle(identities, doc):
-    if (set(doc) != {"op", "principal", "include_secret"}
-            or doc["op"] != "BOX_LIFECYCLE" or type(doc["include_secret"]) is not bool):
+    if (set(doc) != {"op", "principal", "rotate"}
+            or doc["op"] != "BOX_LIFECYCLE" or type(doc["rotate"]) is not bool):
         raise ValueError("invalid lifecycle request")
-    return owner_record(identities, doc["principal"], include_secret=doc["include_secret"])
+    return owner_record(identities, doc["principal"], rotate=doc["rotate"])
 
 
 def resolve(identities, request: dict) -> dict:

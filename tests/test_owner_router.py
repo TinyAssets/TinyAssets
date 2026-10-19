@@ -868,7 +868,7 @@ def test_a_failed_account_revoke_can_be_retried_to_completion(
                ApiKeyStore(tmp_path).list("alice", authority=None)["keys"])
 
 
-def test_boxhostd_real_process_restart_preserves_secret_and_serves_again(boxes, admitted):
+def test_boxhostd_real_process_restart_rotates_secret_and_serves_again(boxes, admitted):
     from tinyassets.owner_router import release_route, resolve_box
 
     first = resolve_box("alice")
@@ -879,10 +879,10 @@ def test_boxhostd_real_process_restart_preserves_secret_and_serves_again(boxes, 
         assert boxes.manager._sleep(boxes.manager.boxes[uid], idle=0)
     assert process.poll() == 0  # SIGTERM completed the actual app lifespan.
     second = resolve_box("alice")
-    assert first.socket == second.socket and first.secret == second.secret
+    assert first.socket == second.socket and first.secret != second.secret
     with httpx.Client(transport=httpx.HTTPTransport(uds=str(first.socket)),
                       base_url="http://owner") as client:
-        assert client.get("/_box/status", headers={"x-box-secret": first.secret}).status_code == 200
+        assert client.get("/_box/status", headers={"x-box-secret": first.secret}).status_code == 401
         ready = client.get("/_box/status", headers={"x-box-secret": second.secret})
         assert ready.status_code == 200
 
@@ -924,17 +924,17 @@ def test_root_lifecycle_broker_operation_uses_admission_and_box_record(
             channel.sendall(rf.control(0, document))
             return rf.read_frame_blocking(channel).control()
 
-    request = {"op": "BOX_LIFECYCLE", "principal": "alice", "include_secret": False}
+    request = {"op": "BOX_LIFECYCLE", "principal": "alice", "rotate": False}
     assert call(request) == {"op": "BOX_LIFECYCLE_IS", "uid": admitted.owner_machine("alice"),
                              "quota": 2 * 1024**3, "centers": ["cc-alice"],
                              "volume_generation": 1, "snapshot_id": None, "snapshot_sha256": None}
-    for override in ({"uid": 300002}, {"include_secret": 1}, {"quota": 1}, {"rotate": True}):
+    for override in ({"uid": 300002}, {"rotate": 1}, {"quota": 1}):
         assert call(request | override) == {"op": "BOX_REFUSED"}
     assert call(request | {"principal": "reserved"}) == {"op": "BOX_UNADMITTED"}
     old = admitted.box_route("alice")[1]
-    launch = call(request | {"include_secret": True})
-    assert launch["secret"] == old
-    assert admitted.box_route("alice")[1] == launch["secret"]
+    rotated = call(request | {"rotate": True})
+    assert rotated["secret"] != old
+    assert admitted.box_route("alice")[1] == rotated["secret"]
     admitted.plans.set_suspension("alice", reason="abuse", suspended=True)
     assert call(request) == {"op": "BOX_SUSPENDED"}
     assert call(request | {"deletion_only": True}) == {"op": "BOX_REFUSED"}
@@ -1309,7 +1309,7 @@ def test_running_fenced_box_is_refused_on_every_broker_operation(boxes, admitted
         if op in {"BOX_ADMISSION", "BOX_CHANNEL", "BOX_SHARED"}:
             document["center"] = "cc-alice"
         if op == "BOX_LIFECYCLE":
-            document["include_secret"] = False
+            document["rotate"] = False
         channel.sendall(rf.control(rf.CONNECTION, document))
         assert rf.read_frame_blocking(channel).control() == {"op": "BOX_REFUSED"}
     assert boxes.runtime.alive(uid)

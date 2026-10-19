@@ -306,17 +306,6 @@ read-only runtime copy, kept separate from the owner volume. Neither provider
 credentials nor another box's secret is ever stored in an owner volume. Recovery
 and explicit revocation retire every previously accepted copy.
 
-**As built (b, ordinary-start secret lifetime):** `BOX_LIFECYCLE` takes
-`include_secret`, which only reads the broker's persistent per-box credential.
-`VolumeLifecycle.prepare` no longer rotates it. First admission and the stopped
-cutover seed the credential; route lookup never creates a missing credential,
-and adding or retiring a center never replaces it. The real owner-process
-sleep/wake test reuses the original credential, while existing ingress tests
-still refuse missing, forged and wrong-box credentials. The private broker
-store and the separate read-only runtime secret mount retain custody.
-Routing snapshot push and the serialized withdrawal/explicit-rotation contract
-remain pending; this note does not claim T1 or T5 complete.
-
 ### C6. Admission is one record; deletion is one control-plane job (T5, T9)
 **One admission record per owner,** in the broker's identity database, with one
 writer (the broker's admission authority). Its state is `admitted`, or
@@ -365,7 +354,7 @@ authority it needs is unavailable, admission stays closed. **There is no
 restore-day spend fence:** it was deleted by C2, and its remaining reader goes
 too (`broker/policy.py` ~420–423, `server.py` ~1261–1263).
 
-**As built (b, spend-fence deletion):** the remaining `PolicyStore.spend_blocked`
+**As built (b, spend-fence deletion only):** the remaining `PolicyStore.spend_blocked`
 reader and its policy/inference call sites are deleted. The broker uses current
 spending policy and reservations. The real broker RPC tests carry an obsolete,
 non-timestamp restore marker while proving an allowed reservation, an over-cap
@@ -637,7 +626,7 @@ against the research), not just a test review.
 - **One hook door:** `/hooks/inbound/<token>`; `/mcp/hooks/` is deleted and integrations re-point at cutover (named in the slice 7 report).
 
 - Slices 2 onward change production serving, so they stay unmerged and merge together with the cutover slice as one maintenance deploy, after the `--archive` rehearsal (review of #5172).
-- **Secret delivery (C5):** boxhostd reads the persistent per-box secret from the broker for ordinary starts and writes its separate read-only runtime file. First admission or stopped cutover seeds it. Recovery and explicit revocation own rotation.
+- Secret delivery and rotation at sandbox start: slice 4 (boxhostd mints via the broker on every start and writes the read-only secret file); slices 2–7 merge together as one stack.
 - **Credential channel.** The existing per-box relay adds `ROUTER_CREDENTIAL`; only its `bind()` supplies owner/uid, the broker checks live admission and forwards to a broker-uid-only router socket under `.runtime`; the router is the only key/hook-map writer, using the existing runtime group without host provisioning.
 - **API key authority.** Owner-mode mint/list/revoke use the channel, with no box key database; grants remain local, a failed grant invalidates the newly minted router key, and a request reference never replays its secret.
 - **Hook ordering.** The router mints hook tokens; the box stores only the digest and delivery configuration; all three revocation paths invalidate the router map before the local row, and failed local creation revokes the router token.
@@ -881,11 +870,12 @@ are described in the 3c-2 as-built contract above.
   requests. Queue overflow refuses loudly.
 > **Superseded by T1/C5.** Control-plane admission publishes the current route and per-box secret, and the router forwards awake traffic from its installed routing snapshot. Lifecycle transitions refresh that snapshot.
 
-- **Admission inputs (C5).** Root-only broker
-  `BOX_LIFECYCLE(principal, include_secret)` reads the live admissions and box
-  record. The UID, quota, centers and persistent ingress credential come from
-  the broker; launch never rotates the credential. The router snapshot and
-  broker-owned cold-wake replacement remain the pending C5 work above.
+- **Admission.** Root-only broker `BOX_LIFECYCLE(principal, rotate)` reads the
+  live admissions and box record. The UID, XFS quota and centers come from the
+  broker. `rotate=true` mints the next secret. Router resolution first waits for
+  boxhostd, then obtains the current secret through `OWNER_BOX_ROUTE`; it opens
+  no owner data and starts no process. Control waits expire at 65 seconds and
+  become `box_unavailable` (503); unknown/deleted owners remain 404.
 - **Launch.** runsc starts `/opt/venv/bin/python -B -m tinyassets.owner_daemon`
   with `--socket /run/owner/app.sock --relay /run/boxhostd/relay.sock
   --secret-file /run/boxhostd/secret`. The only data root is `/home/owner`.
@@ -1351,10 +1341,9 @@ explicit classes refuse. Shared tables are not split.
 
 - The router resolves owner → box socket only through broker admission
   (`owner_machine`), never from a request field.
-- The broker mints the per-box secret at first admission, or the stopped
-  cutover seeds it. Ordinary starts reuse it through boxhostd's separate
-  read-only runtime file. Platform recovery rotates it before admission;
-  ordinary owner-volume restore preserves it.
+- The broker mints the per-box secret when the box is admitted and rotates
+  it on every box start. boxhostd passes it into the box as a read-only file.
+  A restored box gets a fresh secret on its first start.
 
 ## D10. Waker floor and the interactive priority (review gaps 4, 5)
 

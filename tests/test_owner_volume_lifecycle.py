@@ -87,8 +87,8 @@ class Admission:
             "op": "BOX_VOLUME", "principal": owner, "action": action,
             "arguments": arguments})
 
-    def owner(self, owner, *, include_secret=False):
-        return box_admission.owner_record(self.identities, owner, include_secret=include_secret)
+    def owner(self, owner, *, rotate=False):
+        return box_admission.owner_record(self.identities, owner, rotate=rotate)
 
     def retire(self, owner, uid):
         assert self.identities.owner_machine(owner) == uid
@@ -125,33 +125,6 @@ def sleep(storage, owner="alice"):
     uid = storage.admission.volume(owner)["uid"]
     storage.lifecycle.sleep(owner, lambda: storage.runtime.shutdown(uid))
     return storage.admission.volume(owner)
-
-
-def test_launch_reads_persistent_ingress_secret_and_missing_secret_denies(storage):
-    first, _ = storage.lifecycle.prepare("alice")
-    bob, _ = storage.lifecycle.prepare("bob")
-    assert first["secret"] != bob["secret"]
-    sleep(storage)
-    second, _ = storage.lifecycle.prepare("alice")
-    assert second["secret"] == first["secret"]
-    sleep(storage)
-    with sqlite3.connect(storage.identities.path) as db:
-        db.execute("DELETE FROM owner_box_secrets WHERE principal='alice'")
-    storage.identities.admission("admit", "alice", "another-center")
-    with pytest.raises(LookupError, match="credential is missing"):
-        storage.lifecycle.prepare("alice")
-    assert first["uid"] not in storage.volumes.attached
-    assert storage.identities.box_route("bob")[1] == bob["secret"]
-
-
-def test_retiring_one_center_keeps_the_owners_ingress_secret(storage):
-    first, _ = storage.lifecycle.prepare("alice")
-    sleep(storage)
-    storage.identities.admission("admit", "alice", "second")
-    storage.identities.admission("retire", "alice", "alice")
-    second, _ = storage.lifecycle.prepare("alice")
-    assert second["centers"] == ["second"]
-    assert second["secret"] == first["secret"]
 
 
 def test_every_sleep_publishes_verified_reference_and_growth_never_shrinks(storage):
