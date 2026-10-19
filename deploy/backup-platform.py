@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tinyassets.platform_backup import manifests, publish  # noqa: E402
+from tinyassets.platform_backup import manifests, prune, publish  # noqa: E402
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
@@ -20,7 +20,8 @@ if __name__ == "__main__":
     else:
         if not args.destination:
             parser.error("destination required")
-        result = publish(Path(args.source), args.destination, retention=tuple(
+        result = publish(Path(args.source), args.destination)
+        print("verified platform backup published:", result["archive"], flush=True)
+        prune(args.destination, retention=tuple(
             int(os.environ.get(f"BACKUP_RETAIN_{name}", default))
             for name, default in (("DAILY", "7"), ("WEEKLY", "4"), ("MONTHLY", "6"))))
-        print("verified platform backup published:", result["archive"])

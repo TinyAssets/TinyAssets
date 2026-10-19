@@ -124,10 +124,19 @@ def _digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def publish(root, destination, *, retention=(7, 4, 6)):
-    import fcntl
-
+def prune(destination, *, retention=(7, 4, 6)):
+    """Withdraw old recovery points before releasing their snapshot pins."""
     from scripts.backup_prune import _apply_retention_one_tier
+
+    with retention_lock():
+        catalog = manifests(destination)
+        for victim in _apply_retention_one_tier(list(catalog), *retention):
+            remote("deletefile", f"{destination}/{CATALOG}/{victim}")
+            remote("deletefile", f"{destination}/{catalog[victim]['archive']}")
+
+
+def publish(root, destination):
+    import fcntl
 
     root = Path(root).absolute()
     destination = destination.rstrip("/")
@@ -169,9 +178,4 @@ def publish(root, destination, *, retention=(7, 4, 6)):
             if json.loads(remote("cat", pending)) != document:
                 raise ValueError("platform manifest off-host readback mismatch")
             remote("moveto", pending, f"{destination}/{CATALOG}/{name}")
-            # Manifest removal withdraws the recovery point before releasing pins.
-            catalog = manifests(destination)
-            for victim in _apply_retention_one_tier(list(catalog), *retention):
-                remote("deletefile", f"{destination}/{CATALOG}/{victim}")
-                remote("deletefile", f"{destination}/{catalog[victim]['archive']}")
             return document

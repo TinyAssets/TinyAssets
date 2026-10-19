@@ -195,7 +195,8 @@ def test_platform_retention_releases_only_withdrawn_map_pins(shared_backup):
     with sqlite3.connect(root / ".broker/state/owner-identities.db") as db:
         db.execute("UPDATE owner_volumes SET snapshot_id=?", ("c" * 32,))
     assert backup.pinned_snapshots(str(remote)) == {(300001, "a" * 32)}
-    latest = backup.publish(root, str(remote), retention=(1, 0, 0))
+    latest = backup.publish(root, str(remote))
+    backup.prune(str(remote), retention=(1, 0, 0))
     assert backup.pinned_snapshots(str(remote)) == {(300001, "c" * 32)}
     assert not old.exists()
     assert not (remote / document["archive"]).exists()
