@@ -2722,7 +2722,8 @@ def test_owner_box_move_commits_once_or_requires_snapshot_restore(box: Box, outc
         assert marker["box_layout"] == "owner-box"
     else:
         assert _result(completed) == "rollback_needs_restore", completed.stderr
-        assert "BACKUP_FILE=" in completed.stderr
+        assert "-m tinyassets.cutover_control rollback --state" in completed.stderr
+        assert "backup-restore.sh" not in completed.stderr
         assert marker["state"] == "migrating"
         assert not _daemon_starts(box)
 

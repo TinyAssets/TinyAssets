@@ -113,6 +113,7 @@ def test_host_manifest_matches_what_the_installer_prints():
         text=True,
         check=True,
     ).stdout.split()
+    assert {"deploy/backup-platform.py", "tinyassets/platform_backup.py"} <= set(printed)
     # Generated closures have no literal array; runtime_inputs calls the same
     # derivation against the selected revision.
     if parsed is not None:

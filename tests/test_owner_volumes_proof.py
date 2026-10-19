@@ -74,7 +74,8 @@ def test_owner_volumes_real_mounts(tmp_path):
                                 capture_output=True, text=True, timeout=1200)
         print(result.stdout, flush=True)
         if Path("/out").is_dir():
-            Path("/out/owner-volumes-proof.txt").write_text(result.stdout + result.stderr)
+            proof = Path("/out/owner-volumes-proof.txt")
+            proof.write_text(result.stdout + result.stderr)  # hermetic-ok: oracle evidence mount
         assert result.returncode == 0, result.stderr + result.stdout
         assert command("docker", "inspect", "-f", "{{.State.ExitCode}}", name) == "0"
         assert "PROOFS a b c d e f g h i PASS" in result.stdout

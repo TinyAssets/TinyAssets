@@ -507,7 +507,7 @@ CANDIDATE_LAYOUT_PY
 refuse_on_layout() {  # $1 = what was about to start; $2 = why (default: the marker)
   local why
   if [ $# -ge 2 ]; then why="$2"; else
-    why="the data layout marker is incompatible with $1, unstable, unreadable, or locked by a migration: NOT starting $1. Before traffic opens, restore the exact pre-migration pair with deploy/backup-restore.sh; after traffic opens use its acknowledged disaster path (deploy/RESTORE.md), then deploy the image built for the restored layout"
+    why="the data layout marker is incompatible with $1, unstable, unreadable, or locked by a migration: NOT starting $1. For pre-traffic rollback use deployment-owned cutover_control and its recorded backup/image; after traffic use independent platform recovery (deploy/RESTORE.md)"
   fi
   err "$why"
   docker stop "$DAEMON_CONTAINER" >/dev/null 2>&1 || true
@@ -2257,7 +2257,7 @@ fi
 # A committed or unverifiable move cannot safely start the previous image.
 # The snapshot step 3c took is the rollback point.
 if [ "$MIGRATION_COMMITTED" = "1" ] || [ "$MIGRATION_COMMIT_UNVERIFIED" = "1" ]; then
-  refuse_on_layout "$PREV_IMAGE" "a layout migration committed or its state could not be verified, and ${NEW_IMAGE} did not become acceptable: NOT starting ${PREV_IMAGE}. Deploy a fixed candidate onto it, or $(migration_restore_command), then deploy the image built for the restored layout"
+  refuse_on_layout "$PREV_IMAGE" "a layout migration committed or its state could not be verified, and ${NEW_IMAGE} did not become acceptable: NOT starting ${PREV_IMAGE}. Deploy a fixed candidate onto it, or $(migration_restore_command)"
 fi
 # The failed candidate may have migrated (or begun migrating) the data while it
 # booted: re-check before the previous image starts on it.

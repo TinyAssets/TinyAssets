@@ -164,7 +164,7 @@ def test_store_unit_contract_and_installer_guards() -> None:
     assert "fallocate -l" in device and "reserve=$((6 * 1024 * 1024 * 1024))" in device
     assert "discard_max_bytes" in device and "--direct-io=on" in device
     assert "mkfs.xfs" in device and 'if [[ ! -e "$device" ]]' in device
-    assert device.index("blkid -p -s TYPE") < device.index('mkfs.xfs "$device"')
+    assert device.index("blkid -p -s TYPE") < device.index('mkfs.xfs -m \'reflink=1\' "$device"')
     assert "wipefs -n --noheadings --output TYPE" in device
     for name in (
         "box-store-device.sh",
