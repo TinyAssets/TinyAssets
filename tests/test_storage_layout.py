@@ -264,7 +264,7 @@ def test_the_backup_takes_the_shared_layout_lock_before_reading_the_volume():
     script = (REPO / "deploy" / "backup.sh").read_text(encoding="utf-8")
     lock = script.index('flock -s -w 600 9')
     marker = script.index('doc.get("state") == "stable"')
-    first_read = script.index('for d in wiki daemon_wikis; do')
+    first_read = script.index('/backup-platform.py" "$VOLUME_DIR"')
     assert lock < marker < first_read, "lock, then refuse a half-migrated volume, then read"
 
 

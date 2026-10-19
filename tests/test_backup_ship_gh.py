@@ -306,23 +306,10 @@ def test_tag_derived_from_tarball_stem(tmp_path, monkeypatch) -> None:
 # ── backup.sh integration ─────────────────────────────────────────────
 
 
-def test_backup_sh_references_backup_ship_gh() -> None:
-    sh = Path(__file__).parent.parent / "deploy" / "backup.sh"
-    text = sh.read_text(encoding="utf-8")
-    assert "backup_ship_gh.py" in text
 
 
-def test_backup_sh_gh_token_guard() -> None:
-    sh = Path(__file__).parent.parent / "deploy" / "backup.sh"
-    text = sh.read_text(encoding="utf-8")
-    assert "GH_TOKEN" in text
 
 
-def test_backup_sh_offsite_is_best_effort() -> None:
-    sh = Path(__file__).parent.parent / "deploy" / "backup.sh"
-    text = sh.read_text(encoding="utf-8")
-    # Non-fatal: script should not exit on GH ship failure.
-    assert "WARN" in text or "non-fatal" in text.lower() or "best-effort" in text.lower()
 
 
 # ── Runbook ───────────────────────────────────────────────────────────

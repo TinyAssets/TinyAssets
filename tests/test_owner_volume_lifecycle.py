@@ -71,8 +71,10 @@ class Images:
         self.images.pop(uid, None)
         self.events.append(("delete", uid))
 
-    def delete_snapshot(self, uid, snapshot_id):
+    def delete_snapshot(self, uid, snapshot_id, forget):
         self.remote.pop((uid, snapshot_id), None)
+        forget()
+        return True
 
 
 class Admission:

@@ -115,7 +115,6 @@ PINNED: dict[str, list[str]] = {
         "initialize: os.open()", "initialize: os.open()",
     ],
     # Fixed, read-only host bind, outside /home/owner; never an owner-supplied path.
-    "tinyassets/owner_runtime.py": ["start: .read_text()"],
     # The router's own Unix socket in its private shared runtime directory.
     "tinyassets/router_credentials.py": ["serving: .unlink()", "serving: .unlink()"],
     "tinyassets/account_deletion.py": [

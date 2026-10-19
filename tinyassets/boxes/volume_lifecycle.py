@@ -83,8 +83,11 @@ class VolumeLifecycle:
                     retained.add(snapshot["snapshot_id"])
                 if snapshot["snapshot_id"] in retained:
                     continue
-                self.volumes.delete_snapshot(record["uid"], snapshot["snapshot_id"])
-                self.admission.volume(owner, "forget", snapshot_id=snapshot["snapshot_id"])
+                self.volumes.delete_snapshot(
+                    record["uid"], snapshot["snapshot_id"],
+                    lambda: self.admission.volume(
+                        owner, "forget", snapshot_id=snapshot["snapshot_id"]),
+                )
 
     def restore(self, owner, snapshot_id, stop):
         record = self.admission.volume(owner)

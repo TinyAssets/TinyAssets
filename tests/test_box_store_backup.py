@@ -34,6 +34,14 @@ def test_shared_archive_restore_leaves_owner_volumes_untouched(tmp_path, remote_
     archive = remote / "tinyassets-data-2026-10-17T00-00-00Z.tar.gz"
     with tarfile.open(archive, "w:gz") as output:
         output.add(volume, arcname="_data")
+    import hashlib
+
+    manifest_dir = remote / "platform"
+    manifest_dir.mkdir()
+    (manifest_dir / "tinyassets-platform-2026-10-17T00-00-00Z.json").write_text(json.dumps({
+        "version": 1, "archive": archive.name, "snapshots": [],
+        "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+    }))
     owners = tmp_path / "owners"
     owners.mkdir()
     (owners / "300001.img").write_bytes(b"current opaque owner volume")
@@ -51,7 +59,9 @@ def test_shared_archive_restore_leaves_owner_volumes_untouched(tmp_path, remote_
         binary,
         "rclone",
         'case "$1" in copyto) cp "${@: -2:1}" "${@: -1}";; '
-        'ls) test -f "${@: -1}";; *) exit 79;; esac\n',
+        'ls) test -f "${@: -1}";; '
+        'lsf) find "${@: -1}" -type f -printf "%f\\n";; '
+        'cat) cat "${@: -1}";; *) exit 79;; esac\n',
     )
     for command in ("findmnt", "xfs_quota", "xfs_freeze"):
         _shim(binary, command, 'echo "owner store accessed" >&2; exit 79\n')

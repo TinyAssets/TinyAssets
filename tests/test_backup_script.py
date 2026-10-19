@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.test_backup_owner_box import shared_backup as shared_backup
 from tinyassets.boxes.layout import OWNER_BOX_MIGRATION
 
 REPO = Path(__file__).resolve().parent.parent
@@ -113,10 +114,10 @@ def _run(script: Path, env: dict, args: list[str] | None = None,
 
 
 @pytest.mark.parametrize('mode', ['snapshot', 'nightly'])
-def test_browser_keys_never_enter_data_archives(tmp_path, mode):
+def test_browser_keys_never_enter_data_archives(tmp_path, mode, shared_backup):
     import sqlite3
 
-    volume = tmp_path / 'volume' / '_data'
+    volume = shared_backup[0] if mode == 'nightly' else tmp_path / 'volume' / '_data'
     keys = volume / '.broker' / 'browser-vault'
     keys.mkdir(parents=True)
     (keys / 'owner.key').write_bytes(b'private owner key')
@@ -130,15 +131,21 @@ def test_browser_keys_never_enter_data_archives(tmp_path, mode):
         f"docker() {{ if [[ $1 == volume ]]; then echo {shlex.quote(str(volume))}; fi; }}\n"
         'rclone() { if [[ $1 == copyto ]]; then '
         f'cp "$6" {shlex.quote(str(archives))}/; fi; }}\n')
-    result = _run(BACKUP_SH, {
-        'BASH_ENV': str(fake_env), 'BACKUP_VOLUME': 'nonexistent-browser-backup-test',
-        'BACKUP_DEST': 'test:backup', 'BACKUP_MODE': mode, 'GH_TOKEN': '',
-        'BACKUP_LOG': str(tmp_path / 'log'),
-        'BACKUP_SNAPSHOT_DIR': str(tmp_path / 'snapshots'),
-    })
-    assert result.returncode == 0, result.stdout + result.stderr
+    if mode == 'nightly':
+        from tinyassets.platform_backup import publish
+
+        archives = shared_backup[1]
+        publish(volume, str(archives))
+    else:
+        result = _run(BACKUP_SH, {
+            'BASH_ENV': str(fake_env), 'BACKUP_VOLUME': 'nonexistent-browser-backup-test',
+            'BACKUP_DEST': 'test:backup', 'BACKUP_MODE': mode, 'GH_TOKEN': '',
+            'BACKUP_LOG': str(tmp_path / 'log'),
+            'BACKUP_SNAPSHOT_DIR': str(tmp_path / 'snapshots'),
+        })
+        assert result.returncode == 0, result.stdout + result.stderr
     found = list(archives.glob('*.tar.gz'))
-    assert len(found) == (1 if mode == 'snapshot' else 2)
+    assert len(found) == 1
     for archive in found:
         with tarfile.open(archive) as handle:
             names = handle.getnames()
@@ -383,11 +390,14 @@ def _fake_rclone_bin(tmp_path: Path) -> Path:
     fake_rclone.write_text(
         "#!/usr/bin/env bash\n"
         'if [[ "$1" == "lsf" ]]; then\n'
-        "    echo '2026-04-20T02-00-00Z;tinyassets-data-2026-04-20T02-00-00Z.tar.gz'\n"
+        "    echo 'tinyassets-platform-2026-04-20T02-00-00Z.json'\n"
         "    exit 0\n"
         "fi\n"
         'if [[ "$1" == "ls" ]]; then exit 0; fi\n'
-        'if [[ "$1" == "cat" ]]; then cat "$REMOTE_PAIR"; exit 0; fi\n'
+        'if [[ "$1" == "cat" ]]; then echo '
+        + shlex.quote(json.dumps({"version": 1, "snapshots": [], "sha256": "a" * 64,
+                                "archive": "tinyassets-data-2026-04-20T02-00-00Z.tar.gz"}))
+        + '; exit 0; fi\n'
         'if [[ "$1" == "obscure" ]]; then echo "obscured"; exit 0; fi\n'
         "exit 0\n",
         encoding="utf-8",
@@ -403,7 +413,7 @@ def _fake_rclone_bash_env(tmp_path: Path) -> Path:
     fake_env.write_text(
         "rclone() {\n"
         '    if [[ "$1" == "lsf" ]]; then\n'
-        "        echo '2026-04-20T02-00-00Z;tinyassets-data-2026-04-20T02-00-00Z.tar.gz'\n"
+        "        echo 'tinyassets-platform-2026-04-20T02-00-00Z.json'\n"
         "        return 0\n"
         "    fi\n"
         '    if [[ "$1" == "ls" ]]; then return 0; fi\n'
@@ -470,13 +480,17 @@ _PRETRAFFIC_LAYOUT = json.dumps({
 }).encode()
 
 
-def _empty_owner_pair(tmp_path):
-    owners = tmp_path / "owners"
-    owners.mkdir(exist_ok=True)
-    pair = tmp_path / "tinyassets-box-store-2026-07-23T00-00-00Z.tar.gz"
-    with tarfile.open(pair, "w:gz") as archive:
-        archive.add(owners, arcname="owners")
-    return pair
+def _seed_shared(root):
+    from tests.test_box_restore_authority import seed
+
+    seed(root)
+    import sqlite3
+
+    with sqlite3.connect(root / ".broker/state/owner-identities.db") as db:
+        db.execute("CREATE TABLE owner_volumes (principal, uid, snapshot_id, snapshot_sha256)")
+        db.execute("CREATE TABLE owner_snapshots (principal, snapshot_id, snapshot_sha256)")
+    root.chmod(0o1775)
+    os.chown(root, 0, 1001)
 
 
 def _fake_restore_bin(tmp_path: Path, volume_dir: Path) -> Path:
@@ -513,57 +527,42 @@ def _fake_restore_bin(tmp_path: Path, volume_dir: Path) -> Path:
         path = fake_bin / name
         path.write_text("#!/usr/bin/env bash\n" + body + "\n", newline="\n")
         path.chmod(0o755)
+    wrapper = fake_bin / "python3"
+    wrapper.write_text("#!" + sys.executable + "\n" + """import os, runpy, sys
+from pathlib import Path
+if len(sys.argv) > 1 and sys.argv[1].endswith('/platform-recovery.py'):
+    sys.path.insert(0, str(Path(sys.argv[1]).resolve().parents[1]))
+    from tinyassets import restore_recovery as recovery
+    if os.environ.get('TEST_RECOVERY_PENDING') != '1':
+        recovery.resume_deletion_jobs = lambda *args, **kwargs: None
+        recovery.reconcile_authority = lambda *args: None
+        from tinyassets import router_account_deletion as identity
+        identity.workos_user_exists = lambda owner: owner == 'alice'
+        identity.revoke_workos_sessions = lambda owner: None
+    sys.argv = sys.argv[1:]
+    runpy.run_path(sys.argv[0], run_name='__main__')
+else:
+    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
+""")
+    wrapper.chmod(0o755)
     return fake_bin
 
 
-def _backup_archive(tmp_path: Path, source_dir: Path) -> Path:
-    """Run backup.sh and return its real full-tier archive.
+def _backup_archive(source_dir: Path, remote: Path) -> Path:
+    """Exercise the production shared producer before the restore round trip."""
+    from tinyassets.platform_backup import publish
 
-    The fake rclone copies uploads to a local directory, exercising the exact
-    `tar -C <parent> _data` archive shape the restore path must accept.
-    """
-    remote = tmp_path / "remote"
-    remote.mkdir()
-    fake_bin = _fake_restore_bin(tmp_path, source_dir)
-    (source_dir / ".layout.json").write_text('{"box_layout":"owner-split","state":"stable"}')
-    fake_rclone = fake_bin / "rclone"
-    fake_rclone.write_text(
-        "#!/usr/bin/env bash\n"
-        'if [[ "$1" == "copyto" ]]; then\n'
-        '    argc=$#; src="${!argc}"; prev=$((argc - 1)); src="${!prev}"\n'
-        '    dest="${!argc}"; cp "$src" "$dest"; exit 0\n'
-        "fi\n"
-        'if [[ "$1" == "lsf" ]]; then exit 0; fi\n'
-        'if [[ "$1" == "deletefile" ]]; then exit 0; fi\n'
-        "exit 1\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    fake_rclone.chmod(0o755)
-    result = _run(
-        BACKUP_SH,
-        {
-            "BACKUP_DEST": _bash_path(remote),
-            "BACKUP_LOG": _bash_path(tmp_path / "backup.log"),
-            "BACKUP_VOLUME": "test-volume",
-            "TEST_VOLUME_DIR": _bash_path(source_dir),
-            "PATH": _bash_path_env(fake_bin),
-        },
-    )
-    assert result.returncode == 0, f"backup.sh failed:\n{result.stdout}\n{result.stderr}"
-    archives = list(remote.glob("tinyassets-data-*.tar.gz"))
-    assert len(archives) == 1
-    return archives[0]
+    _seed_shared(source_dir)
+    document = publish(source_dir, str(remote))
+    return remote / document["archive"]
 
 
 def _restore_env(tmp_path: Path, volume_dir: Path, archive: Path, fake_bin: Path) -> dict:
-    pair = _empty_owner_pair(tmp_path)
     # Use the production timestamp pairing contract, including for corrupt archives.
     selected = tmp_path / "tinyassets-data-2026-07-23T00-00-00Z.tar.gz"
     selected.write_bytes(archive.read_bytes())
     return {
         "BACKUP_FILE": _bash_path(selected),
-        "BOX_BACKUP_FILE": _bash_path(pair),
         "BOX_STORE_DIR": _bash_path(tmp_path / "owners"),
         "BACKUP_LOG": _bash_path(tmp_path / "restore.log"),
         "BACKUP_VOLUME": "test-volume",
@@ -585,13 +584,13 @@ def test_restore_rejects_unsafe_docker_volume_name(tmp_path):
     assert "invalid Docker volume name" in (result.stdout + result.stderr)
 
 
-def test_restore_round_trip_from_backup_archive_preserves_dotfiles(tmp_path):
+def test_restore_round_trip_from_backup_archive_preserves_dotfiles(tmp_path, shared_backup):
     source_dir = tmp_path / "source-volume" / "_data"
     source_dir.mkdir(parents=True)
     (source_dir / ".private-state").write_text("secret-state", encoding="utf-8")
     (source_dir / "nested").mkdir()
     (source_dir / "nested" / "canon.json").write_text("{}", encoding="utf-8")
-    archive = _backup_archive(tmp_path, source_dir)
+    archive = _backup_archive(source_dir, shared_backup[1])
 
     target_dir = tmp_path / "target-volume" / "_data"
     target_dir.mkdir(parents=True)
@@ -616,7 +615,7 @@ def test_restore_round_trip_from_backup_archive_preserves_dotfiles(tmp_path):
 
 
 @pytest.mark.parametrize("opened", [False, True])
-def test_normal_restore_without_live_owner_store_refuses_before_swap(tmp_path, opened):
+def test_platform_restore_without_deletion_authority_refuses_before_swap(tmp_path, opened):
     from tinyassets.router_traffic import initialize, open_traffic
 
     target = tmp_path / "volume/_data"
@@ -629,10 +628,10 @@ def test_normal_restore_without_live_owner_store_refuses_before_swap(tmp_path, o
         initialize(target)
         open_traffic(target)
     env["BOX_STORE_DIR"] = _bash_path(tmp_path / "absent-owners")
-    env["ALLOW_PRE_STORE_BACKUP"] = "1"  # The retired override cannot bypass refusal.
+    env["TEST_RECOVERY_PENDING"] = "1"
     result = _run(RESTORE_SH, env)
     assert result.returncode == 4, result.stdout + result.stderr
-    assert "paired restore requires a readable live owner store" in result.stdout
+    assert "deletion-job recovery is not implemented" in result.stderr
     assert (target / "prior").read_text() == "unchanged"
     assert not list(target.parent.glob(".tinyassets-restore-old.*"))
 
@@ -699,14 +698,12 @@ def test_restore_consumer_enumeration_failure_leaves_volume_intact(tmp_path):
 
 
 def _simple_full_archive(path: Path, value: str = "new") -> Path:
-    with tarfile.open(path, "w:gz") as tar:
-        layout = tarfile.TarInfo("_data/.layout.json")
-        layout.size = len(_PRETRAFFIC_LAYOUT)
-        tar.addfile(layout, BytesIO(_PRETRAFFIC_LAYOUT))
-        member = tarfile.TarInfo("_data/value.txt")
-        data = value.encode("utf-8")
-        member.size = len(data)
-        tar.addfile(member, BytesIO(data))
+    with tempfile.TemporaryDirectory(dir=path.parent) as directory:
+        root = Path(directory) / "_data"
+        _seed_shared(root)
+        (root / "value.txt").write_text(value)
+        with tarfile.open(path, "w:gz") as output:
+            output.add(root, arcname="_data")
     return path
 
 
@@ -854,17 +851,21 @@ def test_remote_restore_filters_brain_and_uses_unique_download_dir(tmp_path):
     target_dir.mkdir(parents=True)
     remote_archive = _simple_full_archive(tmp_path / "remote-data.tar.gz")
     fake_bin = _fake_restore_bin(tmp_path, target_dir)
-    remote_pair = _empty_owner_pair(tmp_path)
+    import hashlib
+
+    manifest = json.dumps({"version": 1, "snapshots": [],
+                           "archive": "tinyassets-data-2026-07-23T00-00-00Z.tar.gz",
+                           "sha256": hashlib.sha256(remote_archive.read_bytes()).hexdigest()})
     rclone_log = tmp_path / "rclone.log"
     (fake_bin / "rclone").write_text(
         "#!/usr/bin/env bash\n"
         'if [[ "$1" == "lsf" ]]; then\n'
         "  echo '2026-07-23T00-00-00Z;tinyassets-brain-2026-07-23T00-00-00Z.tar.gz'\n"
-        "  echo '2026-07-23T00-00-00Z;tinyassets-data-2026-07-23T00-00-00Z.tar.gz'\n"
+        "  echo 'tinyassets-platform-2026-07-23T00-00-00Z.json'\n"
         "  exit 0\n"
         "fi\n"
         'if [[ "$1" == "ls" ]]; then exit 0; fi\n'
-        'if [[ "$1" == "cat" ]]; then cat "$REMOTE_PAIR"; exit 0; fi\n'
+        'if [[ "$1" == "cat" ]]; then echo "$REMOTE_MANIFEST"; exit 0; fi\n'
         'if [[ "$1" == "copyto" ]]; then\n'
         '  argc=$#; dest="${!argc}"; echo "$dest" >> "$RCLONE_LOG"\n'
         '  cp "$REMOTE_ARCHIVE" "$dest"; exit 0\n'
@@ -880,7 +881,7 @@ def test_remote_restore_filters_brain_and_uses_unique_download_dir(tmp_path):
         "BACKUP_VOLUME": "test-volume",
         "TEST_VOLUME_DIR": _bash_path(target_dir),
         "REMOTE_ARCHIVE": _bash_path(remote_archive),
-        "REMOTE_PAIR": _bash_path(remote_pair),
+        "REMOTE_MANIFEST": manifest,
         "BOX_STORE_DIR": _bash_path(tmp_path / "owners"),
         "RCLONE_LOG": _bash_path(rclone_log),
         "PATH": _bash_path_env(fake_bin),
@@ -1063,15 +1064,12 @@ def test_retention_per_tier_independent():
     }, f"Expected per-tier Apr 01 pruning; got: {to_delete}"
 
 
-def test_backup_sh_has_brain_tier_and_tolerates_live_tar():
-    """Structural anchors for the 2026-06-10 two-tier redesign."""
+def test_nightly_backup_uses_only_shared_layer_producer():
     text = BACKUP_SH.read_text(encoding="utf-8")
-    assert "tinyassets-brain-" in text, "brain-tier archive missing from backup.sh"
-    assert "--warning=no-file-changed" in text, "live-tar warning suppression missing"
-    assert 'tar_rc' in text and '-ge 2' in text, (
-        "full-tier tar must tolerate rc=1 and fail only on rc>=2"
-    )
-    assert "src.backup(dst)" in text, "consistent sqlite copy (sqlite3 backup API) missing"
+    assert '/backup-platform.py" "$VOLUME_DIR" "$BACKUP_DEST"' in text
+    assert "tinyassets-brain-" not in text
+    assert "backup-owner-box.sh" not in text
+    assert "owner durability requires per-owner snapshots" in text
 
 
 def test_prune_script_subprocess_emits_deletions():

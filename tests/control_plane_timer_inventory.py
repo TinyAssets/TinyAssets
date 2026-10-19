@@ -38,6 +38,10 @@ CLASSES = frozenset({CONTROL_PLANE, CALL_SCOPED, DELETE, CLIENT, BOX})
 #: callback-scheduling site; ``#n`` is the n-th clock-driven site in one function.
 CLASSIFICATION: dict[str, tuple[str, str]] = {
 
+    "tinyassets/boxes/owner_daemons.py::OwnerDaemons._launch": (
+        CONTROL_PLANE, "C2 boxhostd lifecycle: snapshot retries and the 24-hour snapshot cycle",
+    ),
+
     "tinyassets/broker/public_egress.py::watch_erasure": (
         CONTROL_PLANE, "broker revokes active and idle owner streams after erasure fencing",
     ),
@@ -48,9 +52,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/broker/waker.py::Waker.run": (
         CONTROL_PLANE, "broker clock wakes admitted, unsuspended owners from timestamp-only "
         "reports and the 24-hour floor; boxhostd queues scheduled wakes behind interactive",
-    ),
-    "tinyassets/boxes/owner_daemons.py::OwnerDaemons._start": (
-        CALL_SCOPED, "bounded wait for one daemon's authenticated app socket readiness",
     ),
     "tinyassets/boxes/owner_daemons.py::OwnerDaemons.ensure_awake": (
         CALL_SCOPED, "one wake's bounded priority/capacity and crash-backoff wait",

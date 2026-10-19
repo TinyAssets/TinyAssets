@@ -101,12 +101,18 @@ class OwnerVolumes:
         with self._lock(uid):
             return self._image(uid).stat().st_size
 
-    def delete_snapshot(self, uid: int, snapshot_id: str) -> None:
+    def delete_snapshot(self, uid: int, snapshot_id: str, forget) -> bool:
         """The broker supplies an unreferenced object from this owner's catalog."""
-        with self._lock(uid):
+        from tinyassets.platform_backup import pinned_snapshots, retention_lock
+
+        with self._lock(uid), retention_lock():
             if not re.fullmatch(r"[a-f0-9]{32}", snapshot_id or ""):
                 raise VolumeError("snapshot reference is required")
+            if (uid, snapshot_id) in pinned_snapshots(self.remote):
+                return False
             self._run("rclone", "deletefile", f"{self.remote}/{uid}/{snapshot_id}.img.gz")
+            forget()
+            return True
 
     @staticmethod
     def _sync(path: Path) -> None:

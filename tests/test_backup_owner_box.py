@@ -1,21 +1,22 @@
-"""Exercise the live owner-box backup with disposable shims on Linux.
-
-24/7: the nightly backup never stops a service. Only synthetic volume discovery
-may call docker; SQLite files are copied through the online backup API.
-"""
-
+"""C2/C3: installed shared backup, off-host verification and snapshot retention."""
 from __future__ import annotations
 
+import json
 import os
 import shlex
-import shutil
 import sqlite3
 import subprocess
 import sys
 import tarfile
-import tempfile
-import unittest
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from pathlib import Path
+
+import pytest
+
+from tinyassets import platform_backup as backup
+from tinyassets.boxes.volumes import OwnerVolumes
 
 REPO = Path(__file__).parents[1]
 
@@ -26,353 +27,202 @@ def shim(directory: Path, name: str, body: str) -> None:
     path.chmod(0o755)
 
 
-@unittest.skipUnless(os.name == "posix" and os.geteuid() == 0, "needs Linux root host")
-class OwnerBoxLiveBackupTest(unittest.TestCase):
-    def test_installed_service_publishes_live_pair_without_stopping_writers(self) -> None:
-        from tests.test_host_uptime_installers import _install_env, _run_installer
-
-        with tempfile.TemporaryDirectory(prefix="ta-backup-live-", dir="/tmp") as temporary:
-            root = Path(temporary)
-            installation = root / "installation"
-            installation.mkdir()
-            result = _run_installer(_install_env(installation))
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            runtime = installation / "runtime/current"
-            # Run the installed service command, replacing only its installation prefix.
-            unit = (installation / "systemd/tinyassets-backup.service").read_text()
-            command = next(line.removeprefix("ExecStart=") for line in unit.splitlines()
-                           if line.startswith("ExecStart="))
-            command = shlex.split(command.replace("/opt/tinyassets-host-uptime/current",
-                                                  str(runtime)))
-            binary = root / "bin"
-            binary.mkdir()
-            data, box, remote = (root / part for part in ("_data", "owners", "remote"))
-            for directory in (data, box, remote):
-                directory.mkdir()
-            (data / "file").write_text("receipt and platform data")
-            (data / ".layout.json").write_text('{"box_layout":"owner-box","state":"stable"}')
-            private = data / ".platform" / "credential-vaults" / "center"
-            private.mkdir(parents=True)
-            (private / ".credential-vault.json").write_text("platform credential")
-            registry = data / ".broker" / "state"
-            registry.mkdir(parents=True)
-            with sqlite3.connect(registry / "owner-identities.db") as db:
-                db.execute("CREATE TABLE box_records (machine, project_id, bhard_bytes)")
-                db.execute("INSERT INTO box_records VALUES (300001, 300001, 1048576)")
-                db.execute("INSERT INTO box_records VALUES (300002, 300002, 1048576)")
-                db.execute("INSERT INTO box_records VALUES (300003, 300003, 1048576)")
-            # Owner 300002's destruction began: its tree must not come back.
-            from tinyassets.erasure_ledger import ErasureLedger, principal_digest
-
-            ledger = ErasureLedger(data)
-            ledger.initialize()
-            ledger.execute("add", {"digest": principal_digest("o2"), "principal": "o2",
-                                   "uids": [300002]})
-            (box / "300002").mkdir()
-            (box / "300002" / "file").write_text("erased owner bytes")
-            for path in (box / "300002", box / "300002" / "file"):
-                os.chown(path, 300002, 300002)
-            # Owner 300003 is mid-provisioning (still root-owned): its re-take
-            # cannot run, but it never fails everyone else's night.
-            (box / "300003").mkdir()
-            (box / "300003" / "file").write_text("new owner bytes")
-            owner = box / "300001"
-            owner.mkdir()
-            (owner / "file").write_text("owner bytes")
-            # A live WAL database whose committed row is only in the -wal file.
-            live = sqlite3.connect(owner / "state.db")
-            live.execute("PRAGMA journal_mode=WAL")
-            live.execute("PRAGMA wal_autocheckpoint=0")
-            live.execute("CREATE TABLE t (v TEXT)")
-            live.execute("INSERT INTO t VALUES ('committed')")
-            live.commit()
-            # Owner trees are re-taken as their owner, never as root.
-            root.chmod(0o755)
-            for path in (owner, *owner.rglob("*")):
-                os.chown(path, 300001, 300001)
-            for name in (
-                "tinyassets-data-2026-01-01T00-00-00Z.tar.gz",
-                "tinyassets-box-store-2026-01-01T00-00-00Z.tar.gz",
-                "tinyassets-pair-2026-01-01T00-00-00Z.json",
-                "unrelated.txt",
-            ):
-                (remote / name).write_text("old")
-            log = root / "actions.log"
-            for name in ("docker", "systemctl", "xfs_freeze"):
-                shim(binary, name, f'echo "{name} $*" >> "$TEST_LOG"\nexit 1\n')
-            shim(binary, "docker", '''
-if [[ "$*" == "volume inspect --format {{ .Mountpoint }} synthetic-installed-backup" ]]; then
-  printf '%s\\n' "$TEST_DATA"
-else
-  echo "docker $*" >> "$TEST_LOG"
-  exit 1
-fi
-''')
-            shim(binary, "findmnt", '''
-case "${@: -1}" in
-  FSTYPE) echo xfs ;;
-  OPTIONS) echo rw,pquota ;;
-  *) exit 1 ;;
-esac
-''')
-            shim(binary, "cp", """
-args=()
-for arg in "$@"; do
-  if [[ "$arg" == --reflink=always ]]; then
-    echo 'reflink required' >> "$TEST_LOG"
-  else
-    args+=("$arg")
-  fi
-done
-# The fixture is on ext4, while the host store is XFS.
-/bin/cp "${args[@]}"
-# A live tree: a file listed by cp vanished before it was copied.
-if [[ " $* " == *" --reflink=auto "* ]]; then
-  echo "cp: cannot stat '${@: -2:1}/tmp-123': No such file or directory" >&2
-  exit 1
-fi
+@pytest.fixture
+def shared_backup(tmp_path, monkeypatch):
+    root, remote = tmp_path / "_data", tmp_path / "remote"
+    (root / ".broker/state").mkdir(parents=True)
+    remote.mkdir()
+    (root / ".layout.lock").touch()
+    (root / ".layout.json").write_text('{"box_layout":"owner-box","state":"stable"}')
+    (root / "published.txt").write_text("published shared bytes")
+    with sqlite3.connect(root / ".broker/state/owner-identities.db") as db:
+        db.execute("CREATE TABLE owner_volumes (principal, uid, snapshot_id, snapshot_sha256)")
+        db.execute("CREATE TABLE owner_snapshots (principal, snapshot_id, snapshot_sha256)")
+        db.execute("INSERT INTO owner_volumes VALUES (?,?,?,?)",
+                   ("alice", 300001, "a" * 32, "b" * 64))
+    owners = tmp_path / "owners"
+    owners.mkdir()
+    (owners / "300001.img").write_bytes(b"PRIVATE OWNER VOLUME")
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    # Local files model only the transport boundary. Every executable is real
+    # production code except Docker discovery and the remote object service.
+    rclone = binary / "rclone"
+    rclone.write_text("#!" + sys.executable + "\n" + """import os, shutil, sys
+from pathlib import Path
+op, *args = sys.argv[1:]
+if os.environ.get('FAIL_UPLOAD') == '1' and op == 'copyto':
+    raise SystemExit(3)
+if op == 'mkdir':
+    Path(args[-1]).mkdir(parents=True, exist_ok=True)
+elif op == 'lsf':
+    print('\\n'.join(p.name for p in Path(args[-1]).iterdir() if p.is_file()))
+elif op == 'cat':
+    print(Path(args[-1]).read_text())
+elif op in ('copyto', 'moveto'):
+    source, target = map(Path, args[-2:])
+    if op == 'copyto':
+        shutil.copyfile(source, target)
+        if os.environ.get('CORRUPT_READBACK') == '1' and target.name == 'readback.tar.gz':
+            target.write_bytes(b'corrupt readback')
+    else:
+        source.rename(target)
+elif op == 'deletefile':
+    Path(args[-1]).unlink()
+else:
+    raise SystemExit(79)
 """)
-            shim(binary, "rclone", """
-case "$1" in
-  copyto) cp "${@: -2:1}" "${@: -1}" ;;
-  lsf) find "$TEST_REMOTE" -maxdepth 1 -type f -printf '%f\\n' ;;
-  deletefile) rm -f -- "${@: -1}" ;;
-  *) exit 1 ;;
-esac
-""")
-            env = {
-                **os.environ,
-                "PATH": f"{binary}:{os.environ['PATH']}",
-                "TEST_LOG": str(log),
-                "TEST_REMOTE": str(remote),
-                "BACKUP_SNAPSHOT_DIR": str(root / "stage"),
-                "BACKUP_RETAIN_DAILY": "1",
-                "BACKUP_RETAIN_WEEKLY": "0",
-                "BACKUP_RETAIN_MONTHLY": "0",
-                "BACKUP_VOLUME": "synthetic-installed-backup",
-                "TEST_DATA": str(data),
-                "BOX_STORE_DIR": str(box),
-                "BACKUP_DEST": str(remote),
-                "BACKUP_LOG": str(root / "backup.log"),
-                "BACKUP_MODE": "",
-                "DRY_RUN": "0",
-                # No checkout, editable install, or inherited Python path may fill
-                # a hole in the installed service's transitive import closure.
-                "PYTHONPATH": "",
-                "PYTHONNOUSERSITE": "1",
-            }
-            for line in unit.splitlines():
-                if line.startswith("Environment="):
-                    for assignment in shlex.split(line.removeprefix("Environment=")):
-                        key, value = assignment.split("=", 1)
-                        env[key] = value.replace(
-                            "/opt/tinyassets-host-uptime/current", str(runtime))
-            shim(binary, "python3", 'exec ' + shlex.quote(sys.executable) + ' -S "$@"\n')
-            try:
-                result = subprocess.run(
-                    command, cwd=root,
-                    env=env, capture_output=True, text=True, check=False, timeout=90,
-                )
-            finally:
-                live.close()
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            actions = log.read_text().splitlines()
-            self.assertIn("reflink required", actions)
-            self.assertFalse([a for a in actions if a.split()[0] in
-                              ("docker", "systemctl", "xfs_freeze")], actions)
-            self.assertEqual(len(list(remote.glob("tinyassets-pair-*.json"))), 1)
-            self.assertEqual(len(list(remote.glob("tinyassets-data-*.tar.gz"))), 1)
-            self.assertTrue((remote / "unrelated.txt").exists())
-            with tarfile.open(next(remote.glob("tinyassets-data-*.tar.gz"))) as archive:
-                member = archive.extractfile(
-                    "_data/.platform/credential-vaults/center/.credential-vault.json")
-                self.assertIsNotNone(member)
-                self.assertEqual(member.read(), b"platform credential")
-            restored = root / "restored"
-            with tarfile.open(next(remote.glob("tinyassets-box-store-*.tar.gz"))) as archive:
-                names = archive.getnames()
-                self.assertFalse(any("300002" in name for name in names), names)
-                self.assertIn("owners/300003/file", names)
-                self.assertFalse(any("credential-vault" in name for name in names))
-                self.assertFalse(any(name.endswith(("-wal", "-shm")) for name in names))
-                archive.extractall(restored, filter="tar")
-            copy = sqlite3.connect(restored / "owners" / "300001" / "state.db")
-            try:
-                self.assertEqual(copy.execute("SELECT v FROM t").fetchall(), [("committed",)])
-            finally:
-                copy.close()
-
-    def test_unreserved_owner_tree_fails_the_backup_loudly(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="ta-backup-pair-", dir="/tmp") as temporary:
-            root = Path(temporary)
-            deploy, binary = root / "deploy", root / "bin"
-            deploy.mkdir()
-            binary.mkdir()
-            for name in ("backup-owner-box.sh", "backup-live-sqlite.py"):
-                shutil.copy2(REPO / "deploy" / name, deploy / name)
-            shim(deploy, "box-store-check.sh", "exit 0\n")
-            shim(binary, "cp", 'exec /bin/cp "${@/--reflink=always/--reflink=auto}"\n')
-            shim(binary, "rclone", 'echo "rclone $*" >> "$TEST_LOG"\nexit 1\n')
-            data, box = root / "_data", root / "owners"
-            (data / ".broker" / "state").mkdir(parents=True)
-            from tinyassets.erasure_ledger import ErasureLedger
-
-            ErasureLedger(data).initialize()
-            with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
-                db.execute("CREATE TABLE box_records (machine, project_id, bhard_bytes)")
-            (box / "300002").mkdir(parents=True)
-            os.chown(box / "300002", 300002, 300002)
-            log = root / "actions.log"
-            result = subprocess.run(
-                ["bash", str(deploy / "backup-owner-box.sh"), str(data), str(box),
-                 str(root / "remote")],
-                env={**os.environ, "PATH": f"{binary}:{os.environ['PATH']}",
-                     "TEST_LOG": str(log), "BACKUP_SNAPSHOT_DIR": str(root / "stage")},
-                capture_output=True, text=True, check=False,
-            )
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("without a paired reservation", result.stderr)
-            self.assertFalse(log.exists(), "nothing may be uploaded")
+    rclone.chmod(0o755)
+    shim(binary, "docker", 'echo "$TEST_DATA"\n')
+    shim(binary, "systemctl", 'echo "unexpected service stop" >&2; exit 79\n')
+    monkeypatch.setenv("PATH", f"{binary}:{os.environ['PATH']}")
+    monkeypatch.setenv("TEST_DATA", str(root))
+    monkeypatch.setattr(backup, "LOCK", tmp_path / "retention.lock")
+    return root, remote, owners, binary
 
 
-def _module():
-    import importlib.util
+def test_installed_service_publishes_shared_backup_without_owner_bytes(shared_backup, tmp_path):
+    from tests.test_host_uptime_installers import _install_env, _run_installer
 
-    spec = importlib.util.spec_from_file_location(
-        "backup_live_sqlite", REPO / "deploy" / "backup-live-sqlite.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-class LiveSqliteRetakeTest(unittest.TestCase):
-    def test_a_database_that_vanishes_mid_backup_is_skipped_not_fatal(self) -> None:
-        module = _module()
-        with tempfile.TemporaryDirectory() as temporary:
-            live, copy = Path(temporary) / "live", Path(temporary) / "copy"
-            live.mkdir()
-            copy.mkdir()
-            with sqlite3.connect(live / "eph.db") as db:
-                db.execute("CREATE TABLE t (v)")
-            db.close()
-            real = module.sqlite3.connect
-
-            def vanish(*args, **kwargs):
-                (live / "eph.db").unlink(missing_ok=True)
-                raise module.sqlite3.OperationalError("unable to open database file")
-
-            module.sqlite3.connect = vanish
-            try:
-                self.assertEqual(module.main(live, copy), 0)
-            finally:
-                module.sqlite3.connect = real
-            self.assertFalse((copy / "eph.db").exists())
-
-    @unittest.skipUnless(os.name == "posix" and os.geteuid() == 0, "needs Linux root host")
-    def test_an_owner_symlink_never_reaches_another_owners_database(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="ta-backup-leak-", dir="/tmp") as temporary:
-            root = Path(temporary)
-            root.chmod(0o755)
-            other = root / "box" / "300002"
-            other.mkdir(parents=True)
-            with sqlite3.connect(other / "secret.db") as db:
-                db.execute("CREATE TABLE s (v)")
-                db.execute("INSERT INTO s VALUES ('OTHER OWNER SECRET')")
-            db.close()
-            live = root / "box" / "300001"
-            (live / "d").mkdir(parents=True)
-            with sqlite3.connect(live / "d" / "secret.db") as db:
-                db.execute("CREATE TABLE s (v)")
-            db.close()
-            for uid, tree in ((300001, live), (300002, other)):
-                for path in (tree, *tree.rglob("*")):
-                    os.chown(path, uid, uid)
-                tree.chmod(0o700)
-            (root / "box").chmod(0o755)
-            stage = root / "stage"
-            stage.mkdir(mode=0o711)
-            copy = stage / "300001"
-            subprocess.run(["cp", "-a", str(live), str(copy)], check=True)
-            shutil.rmtree(live / "d")
-            os.symlink("../300002", live / "d")
-            os.lchown(live / "d", 300001, 300001)
-            result = subprocess.run(
-                [sys.executable, str(REPO / "deploy" / "backup-live-sqlite.py"),
-                 "--as-owner", str(live), str(copy)],
-                capture_output=True, text=True, check=False,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            # The owner's own reflink copy is kept; the other owner's rows never land.
-            with sqlite3.connect(copy / "d" / "secret.db") as db:
-                self.assertEqual(db.execute("SELECT * FROM s").fetchall(), [])
-            db.close()
-
-    @unittest.skipUnless(os.name == "posix" and os.geteuid() == 0, "needs Linux root host")
-    def test_an_owners_read_only_directories_never_fail_the_backup(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="ta-backup-ro-", dir="/tmp") as temporary:
-            # The store's parent stays root-only (like /var/lib/boxhostd).
-            root = Path(temporary) / "store"
-            root.mkdir(mode=0o755)
-            live = root / "300001"
-            (live / "ro").mkdir(parents=True)
-            with sqlite3.connect(live / "ro" / "a.db") as db:
-                db.execute("CREATE TABLE t (v)")
-                db.execute("INSERT INTO t VALUES ('kept')")
-            db.close()
-            for path in (live, *live.rglob("*")):
-                os.chown(path, 300001, 300001)
-            stage = root / "stage"
-            stage.mkdir(mode=0o711)
-            copy = stage / "300001"
-            subprocess.run(["cp", "-a", str(live), str(copy)], check=True)
-            (copy / "ro").chmod(0o555)
-            (live / "ro" / "a.db").chmod(0o000)  # case A: unreadable, read-only copy dir
-            (live / "late" / "b").mkdir(parents=True)  # case B: new db under a 0555 parent
-            with sqlite3.connect(live / "late" / "b" / "x.db") as db:
-                db.execute("CREATE TABLE t (v)")
-            db.close()
-            for path in (live / "late", *(live / "late").rglob("*")):
-                os.chown(path, 300001, 300001)
-            (live / "late").chmod(0o555)
-            result = subprocess.run(
-                [sys.executable, str(REPO / "deploy" / "backup-live-sqlite.py"),
-                 "--as-owner", str(live), str(copy)],
-                capture_output=True, text=True, check=False,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("reflink copy kept", result.stderr)
-            (copy / "ro").chmod(0o755)
-            with sqlite3.connect(copy / "ro" / "a.db") as db:
-                self.assertEqual(db.execute("SELECT v FROM t").fetchall(), [("kept",)])
-            db.close()
-
-    def test_a_root_owned_tree_is_refused_in_owner_mode(self) -> None:
-        if os.geteuid() != 0:
-            self.skipTest("needs root")
-        with tempfile.TemporaryDirectory() as temporary:
-            result = subprocess.run(
-                [sys.executable, str(REPO / "deploy" / "backup-live-sqlite.py"),
-                 "--as-owner", temporary, temporary],
-                capture_output=True, text=True, check=False,
-            )
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("owned by root", result.stderr)
-
-    def test_a_database_created_after_the_tree_copy_is_backed_up(self) -> None:
-        module = _module()
-        with tempfile.TemporaryDirectory() as temporary:
-            live, copy = Path(temporary) / "live", Path(temporary) / "copy"
-            (live / "late" / "nested").mkdir(parents=True)
-            copy.mkdir()
-            with sqlite3.connect(live / "late" / "nested" / "new.db") as db:
-                db.execute("CREATE TABLE t (v TEXT)")
-                db.execute("INSERT INTO t VALUES ('committed')")
-            db.close()
-            module.main(live, copy)
-            with sqlite3.connect(copy / "late" / "nested" / "new.db") as db:
-                self.assertEqual(db.execute("SELECT v FROM t").fetchall(), [("committed",)])
-            db.close()
+    root, remote, owners, binary = shared_backup
+    installation = tmp_path / "installation"
+    installation.mkdir()
+    installed = _run_installer(_install_env(installation))
+    assert installed.returncode == 0, installed.stdout + installed.stderr
+    runtime = installation / "runtime/current"
+    unit = (installation / "systemd/tinyassets-backup.service").read_text()
+    command = next(line.removeprefix("ExecStart=") for line in unit.splitlines()
+                   if line.startswith("ExecStart="))
+    command = shlex.split(command.replace("/opt/tinyassets-host-uptime/current", str(runtime)))
+    shim(binary, "python3", 'exec ' + shlex.quote(sys.executable) + ' -S "$@"\n')
+    env = {**os.environ, "PYTHONPATH": str(runtime), "PYTHONNOUSERSITE": "1",
+           "BACKUP_VOLUME": "synthetic-installed-backup", "BACKUP_DEST": str(remote),
+           "BOX_STORE_DIR": str(owners), "BACKUP_LOG": str(tmp_path / "log"),
+           "BACKUP_MODE": "", "DRY_RUN": "0"}
+    result = subprocess.run(command, env=env, cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    records = backup.manifests(str(remote))
+    assert len(records) == 1
+    document = next(iter(records.values()))
+    assert document["snapshots"] == [{"uid": 300001, "snapshot_id": "a" * 32, "sha256": "b" * 64}]
+    with tarfile.open(remote / document["archive"]) as archive:
+        assert archive.extractfile("_data/published.txt").read() == b"published shared bytes"
+        assert not any("owners" in name or name.endswith(".img") for name in archive.getnames())
+        assert all(b"PRIVATE OWNER VOLUME" not in archive.extractfile(member).read()
+                   for member in archive if member.isfile())
+    assert (owners / "300001.img").read_bytes() == b"PRIVATE OWNER VOLUME"
+    assert backup.pinned_snapshots(str(remote)) == {(300001, "a" * 32)}
 
 
-if __name__ == "__main__":
-    unittest.main()
+@pytest.mark.parametrize("failure", ["FAIL_UPLOAD", "CORRUPT_READBACK"])
+def test_failed_or_unverified_platform_backup_is_not_published(shared_backup, monkeypatch, failure):
+    root, remote, _, _ = shared_backup
+    monkeypatch.setenv(failure, "1")
+    with pytest.raises((subprocess.CalledProcessError, ValueError)):
+        backup.publish(root, str(remote))
+    assert backup.manifests(str(remote)) == {}
+
+
+def test_referenced_snapshot_survives_pruning(shared_backup, monkeypatch):
+    root, remote, _, _ = shared_backup
+    backup.publish(root, str(remote))
+    snapshot = remote / "300001" / ("a" * 32 + ".img.gz")
+    snapshot.parent.mkdir()
+    snapshot.write_bytes(b"retained snapshot")
+    stale = snapshot.with_name("c" * 32 + ".img.gz")
+    stale.write_bytes(b"unreferenced snapshot")
+    volumes = object.__new__(OwnerVolumes)
+    volumes.remote = str(remote)
+    monkeypatch.setattr(volumes, "_lock", lambda uid: nullcontext())
+    forgotten = []
+    assert volumes.delete_snapshot(300001, "a" * 32, lambda: forgotten.append("a")) is False
+    assert snapshot.read_bytes() == b"retained snapshot"
+    assert volumes.delete_snapshot(300001, "c" * 32, lambda: forgotten.append("c")) is True
+    assert forgotten == ["c"]
+    assert not stale.exists()
+    next((remote / "platform").glob("*.json")).write_text("corrupt catalog")
+    with pytest.raises(ValueError):
+        volumes.delete_snapshot(300001, "a" * 32, lambda: forgotten.append("a"))
+    assert snapshot.read_bytes() == b"retained snapshot"
+
+
+def test_map_capture_and_pruning_serialize(shared_backup, monkeypatch):
+    root, remote, _, _ = shared_backup
+    snapshot = remote / "300001" / ("a" * 32 + ".img.gz")
+    snapshot.parent.mkdir()
+    snapshot.write_bytes(b"snapshot being captured")
+    entered, release, deleting = threading.Event(), threading.Event(), threading.Event()
+    original = backup._copy_shared
+
+    def copying(source, target, relative=Path()):
+        if source == root:
+            entered.set()
+            assert release.wait(10)
+        return original(source, target, relative)
+
+    monkeypatch.setattr(backup, "_copy_shared", copying)
+    volumes = object.__new__(OwnerVolumes)
+    volumes.remote = str(remote)
+    monkeypatch.setattr(volumes, "_lock", lambda uid: nullcontext())
+
+    def prune():
+        deleting.set()
+        return volumes.delete_snapshot(300001, "a" * 32,
+                                       lambda: pytest.fail("captured reference forgotten"))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        publication = pool.submit(backup.publish, root, str(remote))
+        assert entered.wait(10)
+        pruning = pool.submit(prune)
+        assert deleting.wait(10)
+        assert not pruning.done()
+        release.set()
+        assert publication.result(timeout=15)["snapshots"]
+        assert pruning.result(timeout=15) is False
+    assert snapshot.read_bytes() == b"snapshot being captured"
+
+
+def test_platform_retention_releases_only_withdrawn_map_pins(shared_backup):
+    root, remote, _, _ = shared_backup
+    document = backup.publish(root, str(remote))
+    manifest = next((remote / "platform").glob("*.json"))
+    original_archive = remote / document["archive"]
+    document["archive"] = "tinyassets-data-2020-01-01T00-00-00Z.tar.gz"
+    original_archive.rename(remote / document["archive"])
+    old = manifest.with_name("tinyassets-platform-2020-01-01T00-00-00Z.json")
+    old.write_text(json.dumps(document))
+    manifest.unlink()
+    with sqlite3.connect(root / ".broker/state/owner-identities.db") as db:
+        db.execute("UPDATE owner_volumes SET snapshot_id=?", ("c" * 32,))
+    assert backup.pinned_snapshots(str(remote)) == {(300001, "a" * 32)}
+    latest = backup.publish(root, str(remote), retention=(1, 0, 0))
+    assert backup.pinned_snapshots(str(remote)) == {(300001, "c" * 32)}
+    assert not old.exists()
+    assert not (remote / document["archive"]).exists()
+    assert (remote / latest["archive"]).exists()
+
+
+
+def test_shared_sqlite_copy_is_consistent_and_failure_is_fatal(shared_backup, monkeypatch):
+    root, remote, _, _ = shared_backup
+    with sqlite3.connect(root / "live.db") as db:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("CREATE TABLE evidence (v)")
+        db.execute("INSERT INTO evidence VALUES ('committed')")
+        db.commit()
+        document = backup.publish(root, str(remote))
+    with tarfile.open(remote / document["archive"]) as archive:
+        assert "_data/live.db-wal" not in archive.getnames()
+        stage = root.parent / "restored"
+        archive.extractall(stage, filter="data")
+    with sqlite3.connect(stage / "_data/live.db") as db:
+        assert db.execute("SELECT * FROM evidence").fetchall() == [("committed",)]
+    def fail(*args):
+        raise OSError("read failed")
+
+    monkeypatch.setattr(backup, "_copy_shared", fail)
+    # Remove this fixture's prior publication to allow a second timestamp in the same second.
+    next((remote / "platform").glob("*.json")).unlink()
+    with pytest.raises(OSError, match="read failed"):
+        backup.publish(root, str(remote))
+    assert backup.manifests(str(remote)) == {}

@@ -4,9 +4,8 @@
 # openspec/specs/uptime-and-alarms/spec.md.
 #
 # Triggered by tinyassets-backup.timer nightly at 03:00 UTC. Invokes
-# deploy/backup.sh: brain-tier + full-tier archives of the tinyassets-data
-# named volume, rclone-uploaded to BACKUP_DEST and shipped to GitHub
-# release assets when GH_TOKEN is set. Retention pruned in the same run.
+# deploy/backup.sh: shared-layer archive verified by off-host readback before
+# publication. Owner snapshots have their own lifecycle and retention pins.
 #
 # Runs as root because:
 #   1. /var/lib/docker/volumes/ is only root-readable by default.
@@ -19,7 +18,7 @@
 # destination credentials live in root's rclone configuration.
 
 [Unit]
-Description=TinyAssets daemon state backup (nightly two-tier snapshot to BACKUP_DEST + GH releases)
+Description=TinyAssets daemon state backup (nightly shared-layer snapshot to BACKUP_DEST)
 Documentation=https://github.com/TinyAssets/TinyAssets/blob/main/deploy/HETZNER-DEPLOY.md
 After=docker.service network-online.target
 Wants=network-online.target

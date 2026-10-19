@@ -113,34 +113,22 @@ else
         exit 1
     fi
 
+    if ! catalog="$(python3 "$(dirname "$(realpath "$0")")/backup-platform.py" --catalog "$BACKUP_DEST")"; then
+        log "ERROR: verified platform backup catalog unavailable"
+        exit 2
+    fi
     if [[ "${LIST_MODE}" -eq 1 ]]; then
-        log "available full archives at ${BACKUP_DEST}:"
-        rclone lsf --format tp "${BACKUP_DEST}/" 2>/dev/null \
-            | awk -F';' '$2 ~ /^tinyassets-data-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z[.]tar[.]gz$/ {print "  " $2}' \
-            | sort -r
+        printf '%s\n' "$catalog"
         exit 0
     fi
-
     if [[ -n "${TIMESTAMP_ARG}" ]]; then
-        if [[ ! "${TIMESTAMP_ARG}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z$ ]]; then
-            log "ERROR: invalid UTC backup timestamp ${TIMESTAMP_ARG}"
-            exit 1
-        fi
-        TAR_NAME="tinyassets-data-${TIMESTAMP_ARG}.tar.gz"
+        selected="$(awk -v name="tinyassets-data-${TIMESTAMP_ARG}.tar.gz" '$1==name {print}' <<< "$catalog")"
     else
-        TAR_NAME="$(
-            rclone lsf --format tp "${BACKUP_DEST}/" 2>/dev/null \
-                | awk -F';' '$2 ~ /^tinyassets-data-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z[.]tar[.]gz$/ {print $2}' \
-                | sort -r \
-                | awk 'NR==1 {print}'
-        )"
-        if [[ -z "${TAR_NAME}" ]]; then
-            log "ERROR: no full-volume archives found at ${BACKUP_DEST}/"
-            exit 2
-        fi
+        selected="$(head -n 1 <<< "$catalog")"
     fi
-    if ! is_full_archive_name "${TAR_NAME}"; then
-        log "ERROR: unsafe or non-full archive name ${TAR_NAME}"
+    read -r TAR_NAME EXPECTED_SHA <<< "$selected"
+    if ! is_full_archive_name "$TAR_NAME" || [[ ! "$EXPECTED_SHA" =~ ^[a-f0-9]{64}$ ]]; then
+        log "ERROR: no verified platform backup found"
         exit 2
     fi
 
@@ -162,6 +150,10 @@ else
             "${BACKUP_DEST}/${TAR_NAME}" "${TAR_PATH}"; then
         log "ERROR: rclone download failed"
         exit 3
+    fi
+    if [[ "$(sha256sum "$TAR_PATH" | cut -d' ' -f1)" != "$EXPECTED_SHA" ]]; then
+        log "ERROR: platform backup differs from verified publication"
+        exit 4
     fi
     log "  download OK ($(stat -c %s "${TAR_PATH}" 2>/dev/null || echo '?') bytes)"
 fi
@@ -263,8 +255,19 @@ if ! tar -xzf "${TAR_PATH}" -C "${STAGE_DIR}" --strip-components=1 \
     log "ERROR: archive staging extract failed"
     exit 4
 fi
-if ! chown --reference="${VOLUME_DIR}" "${STAGE_DIR}" \
-        || ! chmod --reference="${VOLUME_DIR}" "${STAGE_DIR}"; then
+if ! python3 - "$TAR_PATH" "$STAGE_DIR" <<'PY'
+import os
+import sys
+import tarfile
+
+with tarfile.open(sys.argv[1]) as archive:
+    root = archive.getmember("_data")
+    if not root.isdir():
+        raise ValueError("shared backup root metadata missing")
+    os.chown(sys.argv[2], root.uid, root.gid)
+    os.chmod(sys.argv[2], root.mode)
+PY
+then
     log "ERROR: failed to preserve volume-root ownership or mode on staging"
     exit 4
 fi

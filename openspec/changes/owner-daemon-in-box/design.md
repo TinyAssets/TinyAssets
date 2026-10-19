@@ -134,9 +134,17 @@ asleep for its next ordinary wake.
 The in-box operation journal keys IDs by that generation and validates owner
 databases before admitting a restored generation. No fleet restore epoch enters
 the box. a2a migration now publishes each initial verified snapshot and its permanent
-binding before completing cutover. Platform backup splitting and retention of its
-referenced snapshots remain unimplemented; b owns the deletion job and erasure of
-the UID's remote snapshot namespace.
+binding before completing cutover. **As built (a2a-3 backup split):** nightly `backup.sh` calls the shared-only
+`backup-platform.py`; the live owner-tree copy and SQLite retake scripts are
+removed. The stopped old-layout snapshot remains solely for the one-shot cutover.
+Shared SQLite stores use online backup; any copy or integrity failure aborts.
+The archive and manifest are read back off-host before the manifest becomes the
+published recovery point. Recovery selects only these manifests and verifies the
+archive digest. Each manifest pins the latest snapshot references in its captured owner-volume
+map; those references are the platform backup's supported owner recovery points. A host lock spans map capture/publication and snapshot deletion
+through catalog removal, so concurrent pruning cannot invalidate a backup.
+The nightly service/timer survives for shared storage only. Lane b owns deletion
+jobs and erasure of the UID's remote snapshot namespace.
 
 ### C3. Platform recovery is separate, and it keeps lifecycle authority
 The shared layer (identity, map, billing, broker custody, published data) has its
@@ -182,9 +190,9 @@ The owner carry/union/tree scheduling, project-quota restore, fleet restore epoc
 and next-day spend fence are deleted from recovery. Old-layout database validation
 is confined to the one-shot cutover; `restore_old_layout` only extracts a verified
 pre-cutover archive into private staging. Durable rollback eligibility and live
-installation remain a2a-3. The quota script retains only the quiescence check still
-used by the unsplit backup producer; backup splitting and rehearsal steps remain
-a2a-3. This is not end-to-end platform recovery acceptance until the named current
+installation remain a2a-3. The backup producer is now split (a2a-3): platform publication uses a verified
+manifest and excludes owner volumes. Shared restore preserves the archived root's
+ownership and mode. Rehearsal steps and durable rollback control remain a2a-3. This is not end-to-end platform recovery acceptance until the named current
 authorities are available.
 
 ### C4. Cutover rollback is the old system's restore, gated by durable eligibility
