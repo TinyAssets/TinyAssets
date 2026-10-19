@@ -328,12 +328,19 @@ def uds_broker(rig):
     fence = Fence(rig.base / "fence.json", verify_lease_proof=lambda g, p: (g, p) == (1, "proof"))
     ops = OpStore(rig.base / "ops.db")
     state = {}
+    from tests.support.broker_double import seed_owner_admission
+    from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.owner_reads import Plans
+
+    seed_owner_admission(rig.base, principal=OWNER_ID, center=UNIVERSE)
+    identities = OwnerIdentities(rig.base / ".broker/state/owner-identities.db",
+                                 plans=Plans(rig.base))
     server = BrokerServer(
         ledger_for=lambda principal: outbound.ConnectionLedger(
             rig.base / ".broker" / "outbound.db", data_root=rig.base,
             verify_authenticated_principal=lambda: principal),
         dispatch_for=lambda *args: state["dispatch"], ops=ops, fence=fence,
-        roles={os.getuid(): OWNER},
+        roles={os.getuid(): OWNER}, owner_identities=identities, data_root=rig.base,
     )
     # pytest's long directory names exceed AF_UNIX's 108-byte path bound.
     import tempfile

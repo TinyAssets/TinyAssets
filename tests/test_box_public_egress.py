@@ -24,9 +24,16 @@ def proxy(tmp_path):
 
     ErasureLedger(tmp_path).initialize()
     tmp_path.chmod(0o700)
-    path = tmp_path / "identities.db"
-    identities = OwnerIdentities(path, initialize=True)
+    from tinyassets.broker.owner_reads import Plans
+
+    path = tmp_path / ".broker/state/owner-identities.db"
+    path.parent.mkdir(parents=True, mode=0o700)
+    path.parent.parent.chmod(0o700)
+    identities = OwnerIdentities(path, initialize=True, plans=Plans(tmp_path))
     uid = identities.resolve("alice", allocate=True).uid
+    from tinyassets.broker.admission import local_mutate
+
+    local_mutate(identities.path, "alice", "admit")
     identities.plans.apply("alice", tier="paid", event_created=1)
     with sqlite3.connect(path) as db:
         db.execute("CREATE TABLE box_records (principal TEXT, machine INT, "
@@ -179,9 +186,9 @@ async def test_established_idle_tunnel_closes_within_erasure_bound(proxy, monkey
         if damage == "fenced":
             ledger.add("alice")
         elif damage == "corrupt":
-            ledger.path.write_bytes(b"corrupt ledger")
+            proxy._owner_identities.path.write_bytes(b"corrupt admission")
         elif damage == "missing":
-            ledger.path.unlink()
+            proxy._owner_identities.path.unlink()
         else:
             proxy.close_owner("alice")
         async with asyncio.timeout(2 * ERASURE_CHECK_SECONDS + .25):

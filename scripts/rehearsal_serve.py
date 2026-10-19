@@ -555,7 +555,12 @@ def smoke(confirm=False):
                     def router_key(action, key=None):
                         code = """
 import json, sys
+from pathlib import Path
 from tinyassets.api_keys import ApiKeyStore
+from tinyassets.broker.supervisor import BrokerSupervisor
+supervisor = BrokerSupervisor.from_boxhost(
+    Path('/data'), socket_path=Path(sys.argv[1]), proof='synthetic-rehearsal-proof' * 2)
+supervisor.start()
 action, owner, key = json.load(sys.stdin)
 keys = ApiKeyStore('/data')
 if action == 'mint':
@@ -568,9 +573,11 @@ else:
 print(json.dumps(key))
 """
                         result = subprocess.run(
-                            [sys.executable, '-c', code], user=1001, group=1001,
+                            [sys.executable, '-c', code, str(run / 'broker/broker.sock')],
+                            user=1001, group=1001,
                             extra_groups=[1102], input=json.dumps([action, owner_name, key]),
-                            capture_output=True, text=True, check=True)
+                            capture_output=True, text=True)
+                        assert result.returncode == 0, result.stderr
                         return json.loads(result.stdout)
 
                     key = router_key('mint')

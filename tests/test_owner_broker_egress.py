@@ -244,16 +244,28 @@ def test_box_raw_model_post_requires_usage_after_metadata_removed(box, source):
     assert not box.events
 
 
-def test_box_center_retired_during_connect_refuses_before_credential_send(box):
+def test_box_center_retirement_during_connect_keeps_owner_admitted(box):
+    from tinyassets.storage.outbound_connections import _broker_channel
+
+    box.transport["before_connect"] = lambda: box.identities.admission("retire", "owner", "center")
+    channel = _broker_channel(box.root, principal="owner", command_center="center",
+                              grant_id="grant-model", connection_id="conn-model")
+    assert channel.request("GET", {"url": "https://models.example.com/v1/chat"})["status"] == 200
+    assert box.identities.center_state("center") == "retired"
+    assert len(box.calls) == 1
+
+
+
+def test_box_account_retired_during_connect_refuses_before_credential_send(box):
     from tinyassets import rpc_frames as rf
     from tinyassets.broker.ops import new_op_id
 
     def retire():
-        box.identities.admission("retire", "owner", "center")
+        box.identities.retire_owner("owner")
 
     box.transport["before_connect"] = retire
     # Exercise the relay's broker-side protocol directly: the relay also closes
-    # retired center channels, which must not mask a missing broker checkpoint.
+    # erased owner channels, which must not mask a missing broker checkpoint.
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.settimeout(5)
         sock.connect(str(box.broker.path))
@@ -274,7 +286,7 @@ def test_box_center_retired_during_connect_refuses_before_credential_send(box):
     assert not box.calls
 
 
-def test_box_shared_channel_rechecks_last_live_admission_on_every_read(box):
+def test_box_shared_channel_rechecks_owner_admission_on_every_read(box):
     from tinyassets import rpc_frames as rf
     from tinyassets.owner_channel import connect
 
@@ -290,6 +302,12 @@ def test_box_shared_channel_rechecks_last_live_admission_on_every_read(box):
         with pytest.MonkeyPatch.context() as broker_context:
             broker_context.setattr(owner_runtime, "_runtime", None)
             box.identities.admission("retire", "owner", "center")
+        sock.sendall(document)
+        assert rf.read_frame_blocking(sock).control() == {
+            "op": "BOX_RESULT", "result": {"tier": "paid", "ends_at": None}}
+        with pytest.MonkeyPatch.context() as broker_context:
+            broker_context.setattr(owner_runtime, "_runtime", None)
+            box.identities.retire_owner("owner")
         sock.sendall(document)
         assert rf.read_frame_blocking(sock).control() == {"op": "BOX_REFUSED"}
 
@@ -362,7 +380,7 @@ def test_retired_owner_cannot_admit_on_an_already_open_channel(box, monkeypatch)
         identities = box.broker.server._owner_identities
         with monkeypatch.context() as broker_context:
             broker_context.setattr(owner_runtime, "_runtime", None)
-            identities.admission("retire", "owner", "center")
+            identities.retire_owner("owner")
         channel.sendall(rf.control(rf.CONNECTION, {"op": "ADMIT_CENTER", "center": "late"}))
         assert rf.read_frame_blocking(channel).control() == {"op": "BOX_REFUSED"}
     assert identities.center_state("late") == "unadmitted"

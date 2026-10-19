@@ -14,6 +14,18 @@ RECORD = {"credential_type": "http", "service": "model:example",
           "destination": "model:example", "token": "synthetic-not-a-real-key"}
 
 
+@pytest.fixture(autouse=True)
+def admitted(tmp_path):
+    from tests.support.broker_double import seed_owner_admission
+    from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.owner_reads import Plans
+
+    for owner, center in ((OWNER, HOME), ("another-owner", "another")):
+        seed_owner_admission(tmp_path, principal=owner, center=center)
+    return OwnerIdentities(tmp_path / ".broker/state/owner-identities.db", plans=Plans(tmp_path))
+
+
+
 def write(home, owner=OWNER):
     return vault.write_credential_vault(home, [RECORD], owner_user_id=owner,
                                       universe_id=home.name)
@@ -75,24 +87,22 @@ def test_deletion_preserves_another_owners_vault(tmp_path):
     assert vault.load_credential_vault(tmp_path / "another")[0] == RECORD
 
 
-def test_malformed_broker_tombstone_schema_refuses_deposit(tmp_path):
-    path = custody_metadata_path(tmp_path)
-    path.parent.mkdir()
-    with sqlite3.connect(path) as conn:
-        conn.execute("CREATE TABLE deleted_principals (wrong_column TEXT)")
+def test_malformed_admission_schema_refuses_deposit(tmp_path, admitted):
+    with sqlite3.connect(admitted.path) as conn:
+        conn.execute("ALTER TABLE owner_admission RENAME COLUMN state TO wrong_column")
     with pytest.raises(sqlite3.OperationalError):
         write(tmp_path / HOME)
     assert_no_credentials(tmp_path / HOME)
 
 
-def test_unreadable_broker_tombstones_refuse_deposit(tmp_path, monkeypatch):
+def test_unreadable_admission_refuses_deposit(tmp_path, monkeypatch):
     original = sqlite3.connect
 
     def guarded(*args, **kwargs):
         conn = original(*args, **kwargs)
         conn.set_authorizer(lambda action, table, *_:
             sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_READ
-            and table == "deleted_principals" else sqlite3.SQLITE_OK)
+            and table == "owner_admission" else sqlite3.SQLITE_OK)
         return conn
 
     with monkeypatch.context() as scope:

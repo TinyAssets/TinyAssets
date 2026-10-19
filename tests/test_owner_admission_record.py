@@ -168,6 +168,15 @@ def test_runtime_restart_does_not_recreate_missing_admission_schema(authority):
         read(restarted, "alice")
 
 
+def test_suspension_write_does_not_recreate_a_missing_identity_database(authority):
+    authority.path.unlink()
+    with pytest.raises(sqlite3.OperationalError):
+        authority.plans.set_suspension("alice", reason="billing", suspended=True)
+    assert not authority.path.exists()
+    assert authority.plans.read("alice")["billing_suspended"] == 0
+
+
+
 def test_suspended_owner_authenticates_but_cannot_work(authority, tmp_path):
     from tinyassets.router_credentials import active_owner
 

@@ -562,7 +562,7 @@ def test_box_channel_cannot_supply_owner_or_revoke_another_owners_credentials(
     admitted.admission("retire", "bob", "cc-bob")
     assert request("bob", {"operation": "key_list"})["op"] == "ROUTER_CREDENTIAL_IS"
     admitted.retire_owner("bob")
-    assert request("bob", {"operation": "key_list"}) == {"op": "ROUTER_CREDENTIAL_REFUSED"}
+    assert request("bob", {"operation": "key_list"}) == {"op": "BOX_REFUSED"}
 
 
 def test_router_credential_socket_refuses_a_non_broker_peer(boxes, tmp_path, monkeypatch):

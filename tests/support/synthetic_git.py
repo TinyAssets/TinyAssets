@@ -117,8 +117,21 @@ def synthetic(tmp_path, monkeypatch):
                                        network_request=lambda **_: None).dispatch
     fence = Fence(tmp_path / "fence.json", verify_lease_proof=lambda g, p: True)
     generation = fence.barrier(1, "proof")
+    from tests.support.broker_double import seed_owner_admission
+
+    # This fixture models another broker even when its client is an owner runtime.
+    from tinyassets import owner_runtime
+    from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.owner_reads import Plans
+
+    with monkeypatch.context() as broker_context:
+        broker_context.setattr(owner_runtime, "_runtime", None)
+        seed_owner_admission(tmp_path, principal="alice", center="center")
+        identities = OwnerIdentities(tmp_path / ".broker/state/owner-identities.db",
+                                     plans=Plans(tmp_path))
     server = BrokerServer(ledger_for=ledger, dispatch_for=lambda *_: dispatch,
-                          ops=OpStore(tmp_path / "ops.db"), fence=fence, roles={os.getuid(): OWNER})
+                          ops=OpStore(tmp_path / "ops.db"), fence=fence, roles={os.getuid(): OWNER},
+                          owner_identities=identities, data_root=tmp_path)
     path = tmp_path / "b.sock"
     loop = asyncio.new_event_loop()
     listener = loop.run_until_complete(server.serve(path))

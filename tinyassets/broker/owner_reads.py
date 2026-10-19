@@ -44,18 +44,13 @@ class Plans:
                     db.execute(f"ALTER TABLE plans ADD COLUMN {name} INTEGER NOT NULL "
                                f"DEFAULT 0 CHECK ({name} IN (0, 1))")
 
-    def suspended(self, owner):
-        from tinyassets.broker.admission import admission
-
-        with closing(sqlite3.connect(self.admission_path.as_uri() + "?mode=ro", uri=True)) as db:
-            return admission(db, owner).state == "suspended"
-
     def set_suspension(self, owner, *, reason, suspended):
         if reason not in {"billing", "abuse"} or type(suspended) is not bool:
             raise ValueError("invalid account suspension")
         self.read(owner)
         with closing(self._connect()) as db, db:
-            db.execute("ATTACH DATABASE ? AS admission_authority", (str(self.admission_path),))
+            db.execute("ATTACH DATABASE ? AS admission_authority",
+                       (self.admission_path.as_uri() + "?mode=rw",))
             db.execute("BEGIN IMMEDIATE")
             from tinyassets.broker.admission import mutate
 
