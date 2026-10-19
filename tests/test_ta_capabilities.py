@@ -177,7 +177,7 @@ def test_connection_uses_initiating_agents_rules_and_broker(
         assert "D6-SYNTHETIC-SECRET" not in json.dumps(catalog)
         assert "credential_ref" not in json.dumps(catalog)
         assert [item['name'] for item in catalog['capabilities']] == [
-            'browser', 'connection:conn-http:POST']
+            'policy:show', 'policy:propose', 'browser', 'connection:conn-http:POST']
         assert catalog["extension_roots"]["agent"] == "/u/agents/worker/extensions"
     finally:
         loop.stop()
@@ -204,6 +204,19 @@ def test_connection_missing_consent_and_scope_still_refuse(tmp_path, monkeypatch
         assert loop.recorded == []
     finally:
         loop.stop()
+
+
+def test_unadmitted_owner_has_no_policy_capabilities(tmp_path):
+    root = tmp_path / "unadmitted-center"
+    root.mkdir()
+    service = backend(root)
+    assert [item["name"] for item in invoke(service, op="catalog")["capabilities"]] == [
+        "browser"]
+    assert invoke(service, op="call", name="policy:show", arguments={}) == {
+        "error": "owner policy unavailable"}
+    assert invoke(service, op="call", name="policy:propose",
+                  arguments={"expected_generation": 0, "policy": {}}) == {
+        "error": "owner policy unavailable"}
 
 
 def test_cross_user_and_context_spoofing_fail_closed(tmp_path):
@@ -404,7 +417,8 @@ def test_unrestricted_launch_keeps_every_served_capability_and_connections(
                                      platform_call("write_graph"), platform_call("run_graph"))
     assert [item["name"] for item in catalog["capabilities"]] == [
         t for t in BACKEND_ENGINE_CAPABILITIES if t not in FILE_TOOLS
-    ] + ["wake:register", "wake:list", "wake:cancel", "agent:run", "browser",
+    ] + ["wake:register", "wake:list", "wake:cancel", "agent:run",
+         "policy:show", "policy:propose", "browser",
          "connection:conn-http:POST"]
     assert wrote == {"result": {"called": "write_graph"}}
     assert ran == {"result": {"called": "run_graph"}} and calls == ["write_graph", "run_graph"]
@@ -430,7 +444,8 @@ def test_node_grant_is_the_whole_reach_of_ta(tmp_path, monkeypatch, tools_allowe
     server = grant_engine(monkeypatch, root, calls)
     catalog, *answers = through_ta(
         server, CATALOG, CONNECTION, *map(platform_call, reachable + withheld))
-    assert [item["name"] for item in catalog["capabilities"]] == reachable
+    assert [item["name"] for item in catalog["capabilities"]] == reachable + [
+        "policy:show", "policy:propose"]
     assert answers[0] == {"error": "unknown capability"}
     assert answers[1:1 + len(reachable)] == [{"result": {"called": t}} for t in reachable]
     assert answers[1 + len(reachable):] == [{"error": "unknown capability"}] * len(withheld)
@@ -444,7 +459,8 @@ def test_grant_holding_build_and_run_reaches_connections_as_before(tmp_path, mon
     signed_launch(monkeypatch, ["write_graph", "run_graph", "bash"])
     (catalog,) = through_ta(grant_engine(monkeypatch, root, []), CATALOG)
     assert [item["name"] for item in catalog["capabilities"]] == [
-        "run_graph", "write_graph", "browser", "connection:conn-http:POST"]
+        "run_graph", "write_graph", "policy:show", "policy:propose", "browser",
+        "connection:conn-http:POST"]
 
 
 def test_unsigned_forged_or_foreign_grant_never_widens(tmp_path, monkeypatch):
