@@ -880,6 +880,10 @@ class OwnerBoxd(BoxdCore):
     def operation_prefix(self) -> str:
         return f"{self._volume_generation}:{self._state.epoch(self._owner_id)}:"
 
+    def new_operation(self, value: str) -> str:
+        """Bind a newly minted identity to this box, before it is journaled."""
+        return self.operation_prefix() + value
+
     def check_operation(self, op_id: str) -> None:
         if not isinstance(op_id, str) or not op_id.startswith(self.operation_prefix()):
             raise BoxOperationRefused("operation predates owner volume generation; not re-run")

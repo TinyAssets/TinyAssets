@@ -186,7 +186,7 @@ def test_owner_boxd_principal_is_a_journal_key_not_a_directory(tmp_path, princip
     core = OwnerBoxd(owner_id=principal, owner_root=root, state_dir=tmp_path / "state")
     try:
         handle = core.bind(principal, session_id="local")
-        core.write(handle, "write", "/cc/notes.txt", b"own", max_bytes=10)
+        core.write(handle, core.new_operation("write"), "/cc/notes.txt", b"own", max_bytes=10)
         assert (root / "notes.txt").read_bytes() == b"own"
         assert core.read(handle, "/cc/notes.txt", max_bytes=10).data == b"own"
         assert handle.account_id == principal
@@ -194,5 +194,62 @@ def test_owner_boxd_principal_is_a_journal_key_not_a_directory(tmp_path, princip
         with pytest.raises(BoxError):
             core.bind("foreign", session_id="foreign")
         assert [p.name for p in root.iterdir()] == ["notes.txt"]
+    finally:
+        core.close()
+
+
+def test_real_runtime_mints_current_ids_and_never_rebinds_old_ids(tmp_path, monkeypatch):
+    import asyncio
+    import shutil
+
+    from tinyassets import operation_epoch, ui_preview, universe_tools
+    from tinyassets.agent_loop.owner_tools import OwnerTools
+    from tinyassets.boxes.provider import BoxOperationRefused
+
+    root = tmp_path / "owner"
+    home = root / "center"
+    home.mkdir(parents=True)
+    snapshot = tmp_path / "snapshot"
+    core = OwnerBoxd(owner_id="alice", owner_root=root, state_dir=root / ".owner-boxd")
+
+    def install():
+        monkeypatch.setattr(owner_runtime, "_runtime", owner_runtime.OwnerRuntime(
+            "alice", os.getuid(), root, os.getpid(), core))
+
+    try:
+        install()
+        old_write = operation_epoch.new_identity("write-before-restore")
+        old_bash = operation_epoch.new_identity("bash-before-restore")
+        assert old_write.startswith(core.operation_prefix())
+        core.close()
+        shutil.copytree(root, snapshot)
+        core = OwnerBoxd(owner_id="alice", owner_root=root, state_dir=root / ".owner-boxd")
+        install()
+        tools = OwnerTools(home)
+        asyncio.run(tools.write(old_write, "note", "once"))
+        asyncio.run(tools.bash(old_bash, "printf once > shell-proof"))
+        assert (home / "shell-proof").read_text() == "once"
+        core.close()
+        shutil.rmtree(root)
+        shutil.copytree(snapshot, root)
+        core = OwnerBoxd(owner_id="alice", owner_root=root, state_dir=root / ".owner-boxd",
+                         volume_generation=2)
+        install()
+        tools = OwnerTools(home)
+        for op_id in (old_write, "missing-generation"):
+            with pytest.raises(BoxOperationRefused, match="volume generation"):
+                asyncio.run(tools.write(op_id, "note", "replayed"))
+        with pytest.raises(BoxOperationRefused, match="volume generation"):
+            asyncio.run(tools.bash(old_bash, "printf replayed > shell-proof"))
+        assert not (home / "note").exists()
+        assert not (home / "shell-proof").exists()
+        assert "wrote" in universe_tools.write_file(home, "note", "new", agent_id="main")
+        assert "edited" in universe_tools.edit_file(home, "note", "new", "current", agent_id="main")
+        assert (home / "note").read_text() == "current"
+        assert "[exit code 0]" in universe_tools.bash(
+            home, "printf fresh > shell-proof", agent_id="main")
+        assert (home / "shell-proof").read_text() == "fresh"
+        assert ui_preview.write_preview(home, "proof", b"png") == "/u/previews/proof.png"
+        assert (home / "previews/proof.png").read_bytes() == b"png"
     finally:
         core.close()

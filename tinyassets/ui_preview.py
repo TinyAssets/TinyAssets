@@ -547,13 +547,12 @@ def write_preview(universe_dir: str | Path, ui_id: str, png: bytes) -> str:
     ui_id = _checked_ui_id(ui_id)
     name = f"{ui_id}.png"
     try:
-        from tinyassets.operation_epoch import new_identity
         from tinyassets.owner_runtime import require
 
         runtime = require(Path(universe_dir))
         handle = runtime.tools.bind(runtime.principal, session_id=uuid.uuid4().hex)
         runtime.tools.write(
-            handle, new_identity(f"preview:{ui_id}:{uuid.uuid4().hex}"),
+            handle, runtime.tools.new_operation(f"preview:{ui_id}:{uuid.uuid4().hex}"),
             f"/cc/{Path(universe_dir).name}/{PREVIEW_DIR}/{name}", png,
             max_bytes=MAX_CHILD_OUTPUT,
         )

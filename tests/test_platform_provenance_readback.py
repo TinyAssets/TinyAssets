@@ -192,7 +192,9 @@ def client(monkeypatch, tmp_path):
     mw.auth_middleware(None)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv(DEV_USER_ENV, "operator-app")
-    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _CANARY_TOKEN)
+    (tmp_path / ".router-credentials.json").write_text(
+        json.dumps({"TINYASSETS_WIKI_CANARY_TOKEN": _CANARY_TOKEN})
+    )
     # Serving startup and origin ingress now ADMIT (change tasks 7/8), so this
     # fixture must state the runtime it is testing against instead of letting
     # the lifespan perform a real link-local metadata read and refuse. Injected

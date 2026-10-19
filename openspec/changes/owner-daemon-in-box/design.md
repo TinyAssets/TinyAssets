@@ -146,6 +146,17 @@ through catalog removal, so concurrent pruning cannot invalidate a backup.
 The nightly service/timer survives for shared storage only. Lane b owns deletion
 jobs and erasure of the UID's remote snapshot namespace.
 
+**As built (a2a-4 operation minting):** the bound in-box `OwnerBoxd.new_operation`
+binds the current volume generation and journal epoch at creation. Universe tools
+and preview writes mint through that already admitted box; journaled agent turns
+mint through the process runtime, and the engine client forwards their IDs unchanged.
+Missing generations are still refused, never rebound at execution. The multi-owner
+test fixture now gives journal creation the same synthetic runtime as execution.
+Real-runtime tests prove ordinary writes/bash, snapshot rewind with old write/bash
+refusal, and fresh tools/preview after restore. Production startup already supplied
+the generation; the observed bare IDs came from incomplete fixture admission and
+direct test IDs. No replay check was relaxed.
+
 ### C3. Platform recovery is separate, and it keeps lifecycle authority
 The shared layer (identity, map, billing, broker custody, published data) has its
 own backup. Restoring it never touches owner volumes.

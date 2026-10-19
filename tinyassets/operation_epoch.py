@@ -9,7 +9,7 @@ def new_identity(value):
     runtime = current()
     if runtime is None:
         return value
-    return runtime.tools.operation_prefix() + value
+    return runtime.tools.new_operation(value)
 
 
 def check(database, identity):

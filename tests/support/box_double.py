@@ -325,21 +325,27 @@ def install(monkeypatch):
     monkeypatch.setattr(owner_runtime, "require", local_runtime)
     monkeypatch.setattr(owner_runtime, "file_scope", local_file_scope)
     monkeypatch.setattr(owner_tools, "tools_for", local_tools_for)
-    # The threaded fixture models several owner processes. Mint tool IDs from
-    # its bound owner core, just as the real single-owner runtime does.
-    from tinyassets import universe_tools
+    # The fixture models several owner processes in one interpreter. Turn IDs
+    # must be minted in the same admitted runtime as the tools executing them.
+    from tinyassets import operation_epoch
+    from tinyassets.storage.agent_turn_journal import AgentTurnJournal
 
-    operation_id = universe_tools._operation_id
+    mint = operation_epoch.new_identity
+    create_turn = AgentTurnJournal.create
 
-    def local_operation_id(purpose):
-        value = operation_id(purpose)
-        binding = binding_module.current_binding()
-        if original_current() is None and binding is not None:
-            runtime = local_runtime(binding.universe_dir, binding.handle.account_id)
-            return runtime.tools.operation_prefix() + value
-        return value
+    def local_identity(value):
+        runtime = admitted.get()
+        return runtime.tools.new_operation(value) if runtime is not None else mint(value)
 
-    monkeypatch.setattr(universe_tools, "_operation_id", local_operation_id)
+    def local_create_turn(journal, owner, universe, **kwargs):
+        token = admitted.set(local_runtime(journal._ledger.base_path / universe, owner))
+        try:
+            return create_turn(journal, owner, universe, **kwargs)
+        finally:
+            admitted.reset(token)
+
+    monkeypatch.setattr(operation_epoch, "new_identity", local_identity)
+    monkeypatch.setattr(AgentTurnJournal, "create", local_create_turn)
     previous_close = double.close
 
     def close():

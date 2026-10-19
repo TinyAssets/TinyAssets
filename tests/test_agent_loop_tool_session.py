@@ -23,6 +23,10 @@ def _open(universe, *, granted=("bash",), session_key=THREAD, turn="live-1"):
 
 
 def _call(universe, name, arguments, *, op_id="t1:1:1", **kwargs):
+    from tinyassets.owner_runtime import require
+
+    op_id = require(universe).tools.new_operation(op_id)
+
     async def scenario():
         async with _open(universe, **kwargs) as session:
             return await session.call(name, arguments, op_id=op_id)

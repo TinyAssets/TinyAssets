@@ -94,12 +94,10 @@ def _run(coroutine):
     return asyncio.run(coroutine)
 
 
-def _operation_id(purpose):
+def _operation_id(tools, purpose):
     import uuid
 
-    from tinyassets.operation_epoch import new_identity
-
-    return new_identity(f"{purpose}:{uuid.uuid4().hex}")
+    return tools.provider.new_operation(f"{purpose}:{uuid.uuid4().hex}")
 
 
 def read_file(universe_dir: Path, path: str, offset: int = 0, limit: int = 0,
@@ -108,7 +106,7 @@ def read_file(universe_dir: Path, path: str, offset: int = 0, limit: int = 0,
     image path, the image itself (bounded by :mod:`tinyassets.tool_images`)."""
     tools, root = _box(universe_dir, agent_id)
     target = _tool_path(path, root)
-    op = _operation_id("tool:read")
+    op = _operation_id(tools, "tool:read")
     if is_image_path(target):
 
         read = tools.read_content(target, MAX_IMAGE_SOURCE_BYTES)
@@ -129,7 +127,7 @@ def write_file(universe_dir: Path, path: str, content: str, *, agent_id: str) ->
     target = _tool_path(path, root)
     if len((content or "").encode("utf-8")) > MAX_WRITE_BYTES:
         raise UniverseToolError(f"content is over the {MAX_WRITE_BYTES}-byte write limit")
-    return _run(tools.write(_operation_id("tool:write"), target, content))
+    return _run(tools.write(_operation_id(tools, "tool:write"), target, content))
 
 
 def edit_file(universe_dir: Path, path: str, old_text: str, new_text: str,
@@ -144,7 +142,7 @@ def edit_file(universe_dir: Path, path: str, old_text: str, new_text: str,
     target = _tool_path(path, root)
     if not old_text:
         raise UniverseToolError("old_text is required: the exact passage to replace")
-    return _run(tools.edit(_operation_id("tool:edit"), target,
+    return _run(tools.edit(_operation_id(tools, "tool:edit"), target,
                            old_text, new_text))
 
 
@@ -174,7 +172,7 @@ async def _bash(tools, universe_dir: Path, command: str, timeout: float,
                 ta_dispatch, stop) -> str:
     from tinyassets.extension_git import for_launch
 
-    op = _operation_id("tool:bash")
+    op = _operation_id(tools, "tool:bash")
     bridge = None
     if ta_dispatch is not None:
         from tinyassets.extension_capabilities import ExtensionCapabilities, delivered

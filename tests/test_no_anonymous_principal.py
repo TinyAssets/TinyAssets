@@ -121,7 +121,9 @@ def client(monkeypatch, tmp_path):
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv(DEV_USER_ENV, "operator-app")
-    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _CANARY_TOKEN)
+    (tmp_path / ".router-credentials.json").write_text(
+        json.dumps({"TINYASSETS_WIKI_CANARY_TOKEN": _CANARY_TOKEN})
+    )
     with TestClient(create_streamable_http_app()) as test_client:
         yield test_client
 
