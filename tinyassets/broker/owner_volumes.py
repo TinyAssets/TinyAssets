@@ -59,9 +59,11 @@ def transaction(identities, owner, *, active=True):
         if row is None:
             raise LookupError("owner has no permanent volume binding")
         # C2: publication and erasure share the admission database transaction.
-        if active and db.execute("SELECT machine FROM box_records WHERE principal=?",
-                                 (owner,)).fetchone() != (row[0],):
-            raise PermissionError("owner admission is erased")
+        if active:
+            from tinyassets.broker.admission import admission
+
+            if admission(db, owner).state not in {"admitted", "suspended"}:
+                raise PermissionError("owner admission is erased")
         record = dict(zip(("uid", "volume_generation", "snapshot_id", "snapshot_sha256",
                            "work", "local", "asleep_at"), row))
         record["local"] = bool(record["local"])
@@ -76,14 +78,17 @@ def binding(identities, owner):
 
 def pending(identities):
     with closing(identities._connect(write=False)) as db:
-        return [row[0] for row in db.execute(
+        candidates = [row[0] for row in db.execute(
             "SELECT v.principal FROM owner_volumes v JOIN owner_identities i "
             "ON i.principal=v.principal AND i.machine_id=v.uid "
-            "JOIN box_records b ON b.principal=v.principal AND b.machine=v.uid "
             "WHERE (v.work IS NOT NULL OR "
             "(SELECT COUNT(*) FROM owner_snapshots s WHERE s.principal=v.principal)>7 OR "
             "(v.local=1 AND v.asleep_at<? AND v.snapshot_id IS NOT NULL))",
             (time.time() - COLD_AFTER,))]
+        from tinyassets.broker.admission import admission
+
+        return [owner for owner in candidates
+                if admission(db, owner).state in {"admitted", "suspended"}]
 
 
 def reference(snapshot_id, sha256):

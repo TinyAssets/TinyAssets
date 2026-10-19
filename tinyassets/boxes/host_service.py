@@ -125,6 +125,9 @@ class HostService:
                         or document["ledger_op"] not in {
                             "contains", "contains_many", "add", "receipt", "save", "pending_page"}):
                     raise BoxError("erasure operation refused for this peer")
+                if document["ledger_op"] == "add":
+                    # lane-b2: delete with the old authority
+                    self.admission.erase_admission(document["arguments"]["principal"])
                 result = ErasureLedger(self.admission.data_root).execute(
                     document["ledger_op"], document["arguments"])
                 if document["ledger_op"] == "receipt":
@@ -159,6 +162,8 @@ class HostService:
 
                 owner_uid = self.admission.volume(owner)["uid"]
                 ledger = ErasureLedger(self.admission.data_root)
+                # lane-b2: delete with the old authority
+                self.admission.erase_admission(owner)
                 ledger.execute("add", {"digest": principal_digest(owner), "principal": owner,
                                        "uids": [owner_uid]})
                 self.daemons.destroy(owner, owner_uid)

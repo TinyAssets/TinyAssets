@@ -130,8 +130,20 @@ def broker(tmp_path, monkeypatch):
 
         return dispatch
 
+    from tinyassets.broker.admission import local_mutate
+    from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.owner_reads import Plans
+
+    state_dir = tmp_path / ".broker/state"
+    state_dir.mkdir(parents=True, mode=0o700)
+    state_dir.parent.chmod(0o700)
+    identities = OwnerIdentities(state_dir / "owner-identities.db", initialize=True,
+                                 plans=Plans(tmp_path))
+    identities.resolve("alice", allocate=True)
+    local_mutate(identities.path, "alice", "admit")
     server = BrokerServer(ledger_for=Ledger, dispatch_for=dispatch_for, ops=ops, fence=fence,
-                          roles={os.getuid(): OWNER}, data_root=tmp_path)
+                          roles={os.getuid(): OWNER}, data_root=tmp_path,
+                          owner_identities=identities)
     path = tmp_path / "b.sock"
     loop = asyncio.new_event_loop()
     started = threading.Event()
@@ -390,13 +402,10 @@ def _connect(broker):
 def test_box_channel_uses_host_identity_and_cannot_enter_owner_control(
     broker, monkeypatch, attempt,
 ):
-    from types import SimpleNamespace
-
     from tinyassets.broker import box_admission
     from tinyassets.broker.server import BOX_HOST
 
     broker.server._roles = {os.getuid(): BOX_HOST}
-    broker.server._owner_identities = SimpleNamespace(admitted_owner=lambda center: "alice")
 
     def admitted(identities, request):
         assert request == {"op": "BOX_ADMISSION", "principal": "alice", "center": "cc-alice"}
@@ -766,9 +775,9 @@ def test_idle_streams_close_on_erasure_or_explicit_owner_close(broker, tmp_path,
         if damage in {"fenced", "operation"}:
             ledger.add("alice")
         elif damage == "corrupt":
-            ledger.path.write_bytes(b"broken ledger")
+            broker.server._owner_identities.path.write_bytes(b"broken admission")
         else:
-            ledger.path.unlink()
+            broker.server._owner_identities.path.unlink()
         if damage == "operation":
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as control:
                 control.settimeout(3)

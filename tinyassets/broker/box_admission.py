@@ -4,30 +4,19 @@ from __future__ import annotations
 
 import sqlite3
 
+from tinyassets.broker.admission import OwnerSuspended, require_admitted  # noqa: F401
 from tinyassets.broker.owner_identities import validate_center, validate_principal
-
-
-class OwnerSuspended(PermissionError):
-    """Explicit lifecycle refusal; never a host-wide failure."""
 
 
 def owner_record(identities, owner: str, *, rotate: bool) -> dict:
     """Root boxhostd's launch inputs; no center or UID is selected by a caller."""
-    validate_principal(owner)
+    require_admitted(identities, owner)
     with identities._connect(write=False) as db:
-        if db.execute("SELECT 1 FROM owner_box_revocations WHERE principal=? AND deleted=1",
-                      (owner,)).fetchone():
-            raise LookupError("owner account is deleted")
         centers = [row[0] for row in db.execute(
             "SELECT a.center FROM center_admissions a WHERE a.principal=? AND a.event='admit' "
             "AND NOT EXISTS (SELECT 1 FROM center_admissions r WHERE r.center=a.center "
             "AND r.event='retire')", (owner,))]
-    if not centers:
-        raise LookupError("owner has no live admission")
-    if identities.plans.suspended(owner):
-        raise OwnerSuspended("owner account is suspended")
-    record = resolve(identities, {"op": "BOX_ADMISSION", "principal": owner,
-                                  "center": centers[0]})
+    record = _box_record(identities, owner)
     result = {"uid": record["uid"], "quota": record["quota"], "centers": centers}
     from tinyassets.broker.owner_volumes import binding
 
@@ -59,8 +48,14 @@ def resolve(identities, request: dict) -> dict:
     owner, center = request["principal"], request["center"]
     validate_principal(owner)
     validate_center(center)
-    if identities is None or identities.admitted_owner(center) != owner:
-        raise PermissionError("owner has no retained center admission")
+    require_admitted(identities, owner)
+    # Until centers move inside the box, retain only their positive ownership
+    # binding here. Retirement changes the next launch list, not admission.
+    with identities._connect(write=False) as db:
+        binding = db.execute("SELECT principal FROM center_admissions "
+                             "WHERE center=? AND event='admit'", (center,)).fetchone()
+    if binding != (owner,):
+        raise PermissionError("owner has no retained center binding")
     return _box_record(identities, owner)
 
 
@@ -72,17 +67,8 @@ def resolve_owner(identities, request: dict, *, data_root=None) -> dict:
     validate_principal(owner)
     if identities is None:
         raise PermissionError("owner box admission unavailable")
-    from tinyassets.erasure_ledger import require_active
-
-    require_active(data_root, owner)
-    with identities._connect(write=False) as db:
-        if db.execute("SELECT 1 FROM owner_box_revocations WHERE principal=?",
-                      (owner,)).fetchone():
-            raise LookupError("owner box is revoked")
-    record = _box_record(identities, owner)
-    if identities.plans.suspended(owner):
-        raise PermissionError("owner account is suspended")
-    return record
+    require_admitted(identities, owner)
+    return _box_record(identities, owner)
 
 
 def _box_record(identities, owner: str) -> dict:

@@ -43,11 +43,12 @@ async def probe():
     from tinyassets.boxes.relay import OwnerRelays
     from tinyassets.boxes.volumes import OwnerVolumes
     from tinyassets.broker import box_admission, owner_volumes
+    from tinyassets.broker.admission import local_mutate
     from tinyassets.broker.box_admission import owner_record
     from tinyassets.broker.owner_identities import OwnerIdentities
     from tinyassets.broker.owner_reads import Plans
     from tinyassets.broker.server import BOX_HOST, _Connection
-    from tinyassets.erasure_ledger import ErasureLedger, principal_digest, require_active
+    from tinyassets.erasure_ledger import ErasureLedger, principal_digest
 
     root, store = Path("/venue"), Path("/venue/owners")
     store.mkdir(parents=True)
@@ -85,7 +86,6 @@ async def probe():
                     "action": action, "arguments": arguments})
 
             def owner(self, owner, *, rotate=False):
-                require_active(shared, owner)
                 return owner_record(identities, owner, rotate=rotate)
 
             def retire(self, owner, uid):
@@ -132,6 +132,7 @@ async def probe():
             app = socket.socket(socket.AF_UNIX)
             app.bind(str(directory / "app.sock"))
             app.close()
+            local_mutate(identities.path, owner, "erase")
             ledger.execute("add", {"digest": principal_digest(owner), "principal": owner,
                                    "uids": [uid]})
             try:

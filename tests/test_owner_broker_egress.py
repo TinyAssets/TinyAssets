@@ -57,7 +57,7 @@ def box(broker, tmp_path, monkeypatch):  # noqa: F811
     shared.mkdir()
     root.mkdir()
     seed_owner_admission(shared, principal="owner", center="center")
-    identities = OwnerIdentities(shared / ".broker/owner-identities.db")
+    identities = OwnerIdentities(shared / ".broker/state/owner-identities.db", plans=Plans(shared))
     uid = identities.owner_machine("owner")
     with sqlite3.connect(identities.path) as db:
         db.execute("CREATE TABLE box_records (principal TEXT PRIMARY KEY, machine INTEGER, "

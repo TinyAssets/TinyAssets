@@ -128,6 +128,7 @@ def request(broker, **changes):  # noqa: F811 - fixture passed as a helper argum
 
 def test_owner_channel_admission_retry_and_refusals(broker, tmp_path, monkeypatch):  # noqa: F811
     refused = {"op": "CENTER_ADMISSION_REFUSED"}
+    broker.server._owner_identities = None
     assert request(broker) == refused  # no map is never initialized at runtime
     identities = store(tmp_path, "alice")
     broker.server._owner_identities = identities
@@ -135,8 +136,8 @@ def test_owner_channel_admission_retry_and_refusals(broker, tmp_path, monkeypatc
 
     def stopped(operation, owner, **fields):
         assert operation == "retire" and owner == "alice" and fields == {}
-        with pytest.raises(LookupError):
-            identities.box_route(owner)
+        assert identities.box_route(owner)[0] == identities.owner_machine(owner)
+        assert identities.center_state("alice-home") == "retired"
         stops.append(owner)
         return {"stopped": True}
 
@@ -196,9 +197,12 @@ def test_owner_retirement_is_fenced_complete_and_retryable(broker, tmp_path, mon
             raise OSError("destroy acknowledgement lost")
         destroyed.append(owner)
 
+    from tinyassets.broker.admission import local_mutate
     from tinyassets.broker.owner_volumes import binding
 
     host = HostService(SimpleNamespace(data_root=tmp_path,
+                                      erase_admission=lambda owner: local_mutate(
+                                          identities.path, owner, "erase"),
                                       volume=lambda owner: binding(identities, owner)), None, None,
                        SimpleNamespace(destroy=destroy))
 

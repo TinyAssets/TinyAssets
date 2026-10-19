@@ -61,12 +61,12 @@ class BoxRoute:
 
 def resolve_box(owner: str, *, cleanup=False) -> BoxRoute:
     from tinyassets.boxes.daemon_control import request
+    from tinyassets.broker.admission import remote
     from tinyassets.broker.owner_identities import owner_box_route
-    from tinyassets.erasure_ledger import ErasureLedger
     from tinyassets.storage import data_dir
 
-    if not cleanup and ErasureLedger(data_dir()).contains(owner):
-        raise LookupError("owner account is deleted")
+    if not cleanup:
+        remote(data_dir(), owner).require_work()
     result = request("resolve", owner, cleanup=cleanup)
     expected = {"uid", "lease", "secret"} if cleanup else {"uid", "lease"}
     if (set(result) != expected or type(result["uid"]) is not int
@@ -263,11 +263,8 @@ async def _delete_owner_account(identity):
     deleted = ErasureLedger(root)
     receipt = None
     try:
-        if await run_in_threadpool(deleted.contains, owner):
-            receipt = await run_in_threadpool(deleted.receipt, owner)
-        else:
-            await run_in_threadpool(tombstone, root, owner, {"local_cleanup": "pending"})
-            receipt = await run_in_threadpool(deleted.receipt, owner)
+        await run_in_threadpool(tombstone, root, owner, {"local_cleanup": "pending"})
+        receipt = await run_in_threadpool(deleted.receipt, owner)
 
         receipt.setdefault("billing", "pending")
         receipt.setdefault("identity", "pending")

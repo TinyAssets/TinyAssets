@@ -169,12 +169,14 @@ def test_callback_is_nonmutating_shell_with_private_headers(monkeypatch):
 
 def test_retirement_between_ingress_and_durable_begin_cannot_create_flow(monkeypatch):
     from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.owner_reads import Plans
     from tinyassets.storage import data_dir
 
     original = hosted.begin_flow
 
     def delayed_begin(**kwargs):
-        identities = OwnerIdentities(data_dir() / ".broker/owner-identities.db")
+        identities = OwnerIdentities(data_dir() / ".broker/state/owner-identities.db",
+                                     plans=Plans(data_dir()))
         identities.admission("retire", kwargs["owner"], kwargs["universe_id"])
         return original(**kwargs)
 

@@ -9,7 +9,6 @@ import sqlite3
 import sys
 import time
 from contextlib import closing
-from dataclasses import dataclass
 from types import SimpleNamespace
 
 import pytest
@@ -21,17 +20,18 @@ from tinyassets.broker.policy import PolicyRefused, PolicyStore
 from tinyassets.broker.server import _Connection
 
 
-@dataclass(frozen=True)
-class Admission:
-    center: str
-    principal: str
-    event: str = "admit"
+def admissions(root):
+    from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.owner_reads import Plans
 
-
-class Admissions:
-    def admissions_after(self, _generation):
-        return [Admission("alpha", "alice"), Admission("beta", "alice"),
-                Admission("gamma", "bob")]
+    state = root / ".broker/state"
+    state.mkdir(parents=True, mode=0o700, exist_ok=True)
+    state.parent.chmod(0o700)
+    identities = OwnerIdentities(state / "owner-identities.db", initialize=True, plans=Plans(root))
+    for owner, center in (("alice", "alpha"), ("alice", "beta"), ("bob", "gamma")):
+        identities.resolve(owner, allocate=True)
+        identities.admission("admit", owner, center)
+    return identities
 
 
 @pytest.mark.parametrize("expired", [False, True])
@@ -39,7 +39,7 @@ def test_session_hash_proof_requires_a_live_router_row(tmp_path, expired):
     cookie = "interactive-cookie-" + "z" * 32
     _session(tmp_path, "alice", cookie)
     proof = {"session_hash": hashlib.sha256(cookie.encode()).hexdigest()}
-    store = PolicyStore(tmp_path, Admissions())
+    store = PolicyStore(tmp_path, admissions(tmp_path))
     assert store._session("alice", proof) == proof["session_hash"]
     with sqlite3.connect(tmp_path / ".runtime" / "owner-sessions.db") as db:
         if expired:
@@ -78,7 +78,7 @@ def test_default_policy_ignores_legacy_rules_and_owner_write_is_receipted(tmp_pa
     original = legacy.read_bytes()
     cookie = "interactive-cookie-" + "a" * 32
     _session(tmp_path, "alice", cookie)
-    store = PolicyStore(tmp_path, Admissions())
+    store = PolicyStore(tmp_path, admissions(tmp_path))
     store.bootstrap()
 
     before = store.read("alice")
@@ -115,11 +115,10 @@ def test_default_policy_ignores_legacy_rules_and_owner_write_is_receipted(tmp_pa
 
 
 def test_new_center_uses_defaults_without_reading_legacy_rules(tmp_path):
-    rows = [Admission("alpha", "alice")]
-    admissions = SimpleNamespace(admissions_after=lambda _generation: rows)
-    store = PolicyStore(tmp_path, admissions)
+    identities = admissions(tmp_path)
+    store = PolicyStore(tmp_path, identities)
     store.bootstrap()
-    rows.append(Admission("new", "alice"))
+    identities.admission("admit", "alice", "new")
     legacy = _legacy(tmp_path, "new", "hand_off")
     original = legacy.read_bytes()
     assert store.decide("alice", center="new", action_class="app.write")["decision"] == "allow"
@@ -127,9 +126,9 @@ def test_new_center_uses_defaults_without_reading_legacy_rules(tmp_path):
 
 
 def test_bootstrap_failure_isolates_one_owner(tmp_path, caplog):
-    store = PolicyStore(tmp_path, Admissions())
+    store = PolicyStore(tmp_path, admissions(tmp_path))
     blocked = store._path("alice").parent
-    (tmp_path / ".broker").mkdir(mode=0o700)
+    (tmp_path / ".broker").mkdir(mode=0o700, exist_ok=True)
     blocked.parent.mkdir(mode=0o700)
     blocked.write_text("not a directory")
     store.bootstrap()
@@ -144,7 +143,7 @@ def test_bootstrap_failure_isolates_one_owner(tmp_path, caplog):
 def test_owner_policy_actions_cross_the_real_broker_socket(broker, tmp_path):  # noqa: F811
     cookie = "interactive-cookie-" + "g" * 32
     _session(tmp_path, "alice", cookie)
-    broker.server._policy_store = PolicyStore(tmp_path, Admissions())
+    broker.server._policy_store = PolicyStore(tmp_path, admissions(tmp_path))
     broker.server._policy_store.bootstrap()
     # C6: a historical restore-day marker has no authority. Exercise the real
     # policy RPC with unreadable-as-a-timestamp bytes; current policy still
@@ -186,9 +185,8 @@ def test_owner_policy_actions_cross_the_real_broker_socket(broker, tmp_path):  #
 def test_unpriced_model_call_with_a_spend_cap_is_denied_at_broker(broker, tmp_path):  # noqa: F811
     cookie = "interactive-cookie-" + "h" * 32
     _session(tmp_path, "alice", cookie)
-    admissions = SimpleNamespace(admissions_after=lambda _generation: [
-        Admission("cc-alice", "alice")])
-    store = PolicyStore(tmp_path, admissions)
+    broker.server._owner_identities.admission("admit", "alice", "cc-alice")
+    store = PolicyStore(tmp_path, broker.server._owner_identities)
     store.bootstrap()
     # The inference OPEN must reach the current spend policy even when an old
     # restore artifact is present. The receipt below proves that real path.
@@ -210,7 +208,7 @@ def test_once_approval_is_exact_and_stale_generation_refused(tmp_path):
     _legacy(tmp_path, "alpha", "ask_first")
     cookie = "interactive-cookie-" + "b" * 32
     _session(tmp_path, "alice", cookie)
-    store = PolicyStore(tmp_path, Admissions())
+    store = PolicyStore(tmp_path, admissions(tmp_path))
     store.bootstrap()
     current = store.read("alice")
     digest = "sha256:" + "1" * 64
@@ -229,7 +227,7 @@ def test_broker_refuses_agent_injection_api_key_and_other_owner(tmp_path):
     other_cookie = "interactive-cookie-" + "d" * 32
     _session(tmp_path, "alice", owner_cookie)
     _session(tmp_path, "bob", other_cookie)
-    store = PolicyStore(tmp_path, Admissions())
+    store = PolicyStore(tmp_path, admissions(tmp_path))
     store.bootstrap()
     current = store.read("alice")
     peer = object.__new__(_Connection)
@@ -269,7 +267,7 @@ def test_standing_grant_survives_other_edits_and_revokes_on_removal(tmp_path):
     _legacy(tmp_path, "alpha", "ask_first")
     cookie = "interactive-cookie-" + "e" * 32
     _session(tmp_path, "alice", cookie)
-    store = PolicyStore(tmp_path, Admissions())
+    store = PolicyStore(tmp_path, admissions(tmp_path))
     store.bootstrap()
     current = store.read("alice")
     document = json.loads(json.dumps(current.document))
@@ -301,7 +299,7 @@ def test_egress_and_spend_caps_stay_under_approvals(tmp_path):
     _legacy(tmp_path, "alpha", "do")
     cookie = "interactive-cookie-" + "f" * 32
     _session(tmp_path, "alice", cookie)
-    store = PolicyStore(tmp_path, Admissions())
+    store = PolicyStore(tmp_path, admissions(tmp_path))
     store.bootstrap()
     current = store.read("alice")
     document = json.loads(json.dumps(current.document))

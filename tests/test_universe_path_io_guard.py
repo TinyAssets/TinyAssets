@@ -108,12 +108,6 @@ def _scan() -> dict[str, list[str]]:
 #: convert its site to tinyassets.universe_files. Platform-only custody below
 #: is reviewed separately from owner-writable command-center paths.
 PINNED: dict[str, list[str]] = {
-    # Root-only ledger creation uses O_EXCL|O_NOFOLLOW and fsyncs its directory.
-    # Restore reads/removes stopped shared-root metadata after _safe checks;
-    # no owner box mounts this root (test_erasure_ledger proves custody).
-    "tinyassets/erasure_ledger.py": [
-        "initialize: os.open()", "initialize: os.open()",
-    ],
     # Fixed, read-only host bind, outside /home/owner; never an owner-supplied path.
     # The router's own Unix socket in its private shared runtime directory.
     "tinyassets/router_credentials.py": ["serving: .unlink()", "serving: .unlink()"],

@@ -33,15 +33,21 @@ def native(broker, tmp_path, monkeypatch, request):  # noqa: F811
     from tinyassets.boxes import bootstrap, relay
 
     shared = tmp_path / "shared"
-    (shared / ".broker").mkdir(parents=True, mode=0o700)
+    (shared / ".broker/state").mkdir(parents=True, mode=0o700)
     from tinyassets.erasure_ledger import ErasureLedger
 
     ErasureLedger(shared).initialize()
-    identities = OwnerIdentities(shared / ".broker/owner-identities.db", initialize=True)
+    identities = OwnerIdentities(shared / ".broker/state/owner-identities.db", initialize=True,
+                                 plans=Plans(shared))
     uid = identities.resolve("alice", allocate=True).uid
     if getattr(request, "param", True):
         identities.admission("admit", "alice", "center")
+    from tinyassets.broker.admission import local_mutate
+
+    local_mutate(identities.path, "alice", "admit")
     Plans(shared).apply("alice", tier="paid", event_created=1)
+    if getattr(request, "param", True) == "retired":
+        identities.admission("retire", "alice", "center")
     with sqlite3.connect(identities.path) as db:
         db.execute("CREATE TABLE box_records (principal TEXT, machine INT, "
                    "project_id INT, bhard_bytes INT)")
@@ -113,7 +119,8 @@ def http_origin():
 
 
 @pytest.mark.parametrize("tunnel", [False, True])
-@pytest.mark.parametrize("native", [True, False], indirect=True, ids=["center", "zero-centers"])
+@pytest.mark.parametrize("native", [True, False, "retired"], indirect=True,
+                         ids=["center", "zero-centers", "retired-center"])
 def test_owner_command_http_and_connect_reach_local_origin(
     native, http_origin, monkeypatch, tunnel,
 ):
@@ -207,12 +214,13 @@ def test_native_proxy_refuses_without_opening_any_upstream(native, monkeypatch, 
     monkeypatch.setattr(asyncio, "open_connection", record_open)
     host = "169.254.169.254" if refusal == "metadata" else "127.0.0.1"
     if refusal == "admission":
-        native.identities.admission("retire", "alice", "center")
+        with sqlite3.connect(native.identities.path) as db:
+            db.execute("DELETE FROM owner_admission")
     elif refusal == "registry":
         with sqlite3.connect(native.identities.path) as db:
             db.execute("DELETE FROM box_records")
     elif refusal == "tombstone":
-        native.identities.revoke_box("alice", deleted=True)
+        native.identities.revoke_box("alice")
     elif refusal in {"billing", "abuse"}:
         native.identities.plans.set_suspension("alice", reason=refusal, suspended=True)
     elif refusal == "owner_cap":
@@ -430,6 +438,6 @@ def test_relay_bootstrap_refuses_fenced_owner_with_retained_admission(native, mo
     # This rig combines host and box Python contexts. Fence from the host side.
     with monkeypatch.context() as host:
         host.setattr(owner_runtime, "_runtime", None)
-        ErasureLedger(native.identities.path.parent.parent).add("alice")
+        ErasureLedger(native.identities.path.parents[2]).add("alice")
     assert native.identities.admitted_owner("center") == "alice"
     assert connect() is None

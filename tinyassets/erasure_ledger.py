@@ -96,6 +96,12 @@ class ErasureLedger:
             os.close(directory)
 
     def add(self, owner, receipt=None):
+        from tinyassets.broker.owner_identities import _owner_request
+
+        # lane-b2: delete with the old authority
+        answer = _owner_request(self.root, {"op": "OWNER_ADMISSION_ERASE", "principal": owner})
+        if answer != {"op": "OWNER_ADMISSION_ERASED"}:
+            raise PermissionError("admission erasure refused")
         return self._call("add", digest=principal_digest(owner), principal=owner,
                           receipt=receipt or {})
 
@@ -404,16 +410,6 @@ def _seed_legacy_work(source, ledger, store_root):
             if relative != target:
                 ledger.execute("work", {"digest": entry["digest"], "target": relative})
                 ledger.execute("finish", {"digest": entry["digest"], "ids": [key]})
-
-
-def require_active(root, owner):
-    """The authentication fence, also used by every broker box admission."""
-    from tinyassets.broker.owner_identities import validate_principal
-    from tinyassets.storage import data_dir
-
-    validate_principal(owner)
-    if ErasureLedger(root if root is not None else data_dir()).contains(owner):
-        raise PermissionError("owner fenced by erasure authority")
 
 
 def fresh_install(root):

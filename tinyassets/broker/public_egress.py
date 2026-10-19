@@ -11,23 +11,22 @@ from tinyassets.broker.box_admission import resolve_owner
 ERASURE_CHECK_SECONDS = 0.5
 
 
-async def watch_erasure(root, principals, close):
+async def watch_erasure(identities, principals, close):
     """Bound idle streams too; a stuck authority read is a refusal."""
-    from tinyassets.erasure_ledger import ErasureLedger
-    from tinyassets.storage import data_dir
+    from tinyassets.broker.admission import read
 
-    ledger = ErasureLedger(root if root is not None else data_dir())
     while True:
-        owners = tuple(principals())
-        if owners:
+        for owner in tuple(principals()):
             try:
-                fenced = await asyncio.wait_for(
-                    asyncio.to_thread(ledger.fenced, owners), ERASURE_CHECK_SECONDS)
+                record = await asyncio.wait_for(
+                    asyncio.to_thread(read, identities, owner), ERASURE_CHECK_SECONDS)
+                if record.state == "admitted":
+                    continue
             except Exception:
-                fenced = owners
-            for owner in fenced:
-                close(owner)
+                pass
+            close(owner)
         await asyncio.sleep(ERASURE_CHECK_SECONDS)
+
 
 
 class PublicEgress:

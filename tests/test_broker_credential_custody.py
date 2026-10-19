@@ -48,9 +48,15 @@ def _broker_process(root, path, channel):
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
     dispatchers = _Dispatchers(root, allow_test_fixtures=True)
     fence = Fence(state / "fence.json", verify_lease_proof=lambda *_: True)
+    from tests.support.broker_double import seed_owner_admission
+    from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.owner_reads import Plans
+
+    seed_owner_admission(root, principal="owner", center="center")
+    identities = OwnerIdentities(state / "state/owner-identities.db", plans=Plans(root))
     server = BrokerServer(ledger_for=dispatchers.ledger_for,
         dispatch_for=dispatchers.dispatch_for, ops=OpStore(state / "ops.db"),
-        fence=fence, roles={os.getuid(): OWNER}, data_root=root)
+        fence=fence, roles={os.getuid(): OWNER}, data_root=root, owner_identities=identities)
     original = vault.write_credential_vault
 
     def observed(*args, **kwargs):

@@ -207,7 +207,7 @@ class BrokerServer:
 
         if self._erasure_watch is None or self._erasure_watch.done():
             self._erasure_watch = asyncio.create_task(watch_erasure(
-                self._data_root,
+                self._owner_identities,
                 lambda: set(self._public_egress.active).union(
                     *(c._principals for c in self._connections)),
                 self.close_owner))
@@ -356,6 +356,26 @@ class _Connection:
             raise rf.FrameError("unknown stream operation")
 
     async def _connection_op(self, op: str, doc: dict[str, Any]) -> None:
+        if (self._role == BOX_HOST and op == "BOX_ADMISSION_ERASE"
+                or self._role == OWNER and op == "OWNER_ADMISSION_ERASE"):
+            from tinyassets.broker.admission import local_mutate
+
+            try:
+                expected = {"op", "principal"} | (
+                    {"generation", "token"} if self._role == OWNER else set())
+                if set(doc) != expected:
+                    raise ValueError("invalid erasure transition")
+                if self._role == OWNER and not self._server._fence.admits(
+                        doc["generation"], doc["token"]):
+                    raise Fenced("invalid fence")
+                await asyncio.to_thread(local_mutate, self._server._owner_identities.path,
+                                        doc["principal"], "erase")
+                self._server.close_owner(doc["principal"])
+                answer = {"op": "OWNER_ADMISSION_ERASED"}
+            except Exception:
+                answer = {"op": "BOX_REFUSED"}
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+            return
         if self._role == BOX_HOST and doc == {"op": "BOX_VOLUME_PENDING"}:
             from tinyassets.broker.owner_volumes import pending
 
@@ -378,21 +398,25 @@ class _Connection:
             await self.send_async(rf.control(rf.CONNECTION, answer))
             return
         if self._role in {BOX_HOST, BOX}:
-            from tinyassets.erasure_ledger import require_active
+            from tinyassets.broker.admission import require_admitted
 
             try:
                 owner = self._box_owner if self._role == BOX else doc.get("principal")
-                await asyncio.to_thread(require_active, self._server._data_root, owner)
+                if op != "BOX_LIFECYCLE":
+                    await asyncio.to_thread(require_admitted, self._server._owner_identities, owner)
             except Exception:
                 await self.send_async(rf.control(rf.CONNECTION, {"op": "BOX_REFUSED"}))
                 return
         if self._role == BOX_HOST:
             if op == "BOX_LIFECYCLE":
+                from tinyassets.broker.admission import OwnerErased
                 from tinyassets.broker.box_admission import OwnerSuspended, lifecycle
 
                 try:
                     result = await asyncio.to_thread(lifecycle, self._server._owner_identities, doc)
                     answer = {"op": "BOX_LIFECYCLE_IS", **result}
+                except OwnerErased:
+                    answer = {"op": "BOX_REFUSED"}
                 except LookupError:
                     answer = {"op": "BOX_UNADMITTED"}
                 except OwnerSuspended:
@@ -525,6 +549,19 @@ class _Connection:
         elif op == "SOLE_CENTER":
             answer = await asyncio.to_thread(self._sole_center, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "OWNER_ADMISSION":
+            from tinyassets.broker.admission import read
+
+            try:
+                if set(doc) != {"op", "principal", "generation", "token"}:
+                    raise ValueError("invalid admission query")
+                with self._server._fence.send(doc["generation"], doc["token"]):
+                    record = read(self._server._owner_identities, doc["principal"])
+                answer = {"op": "OWNER_ADMISSION_IS", "state": record.state,
+                          "reasons": sorted(record.reasons)}
+            except Exception:
+                answer = {"op": "OWNER_ADMISSION_REFUSED"}
+            await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "OWNER_BOX_ROUTE":
             answer = await asyncio.to_thread(self._owner_box_route, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
@@ -536,7 +573,7 @@ class _Connection:
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "CLOSE_OWNER_CHANNELS":
             from tinyassets.broker.account_erasure import validate
-            from tinyassets.erasure_ledger import ErasureLedger
+            from tinyassets.broker.admission import read
 
             try:
                 if set(doc) != {"op", "principal", "command_center", "generation", "token"}:
@@ -545,8 +582,8 @@ class _Connection:
                 if (type(doc["generation"]) is not int or not isinstance(doc["token"], str)
                         or not self._server._fence.admits(doc["generation"], doc["token"])):
                     raise Fenced("invalid fence")
-                if not await asyncio.to_thread(
-                        ErasureLedger(self._server._data_root).contains, doc["principal"]):
+                if (await asyncio.to_thread(
+                        read, self._server._owner_identities, doc["principal"])).state != "erased":
                     raise ValueError("owner is not fenced")
                 self._server.close_owner(doc["principal"])
                 answer = {"op": "OWNER_CHANNELS_CLOSED"}
@@ -635,18 +672,16 @@ class _Connection:
             return {"op": "BOX_REFUSED"}
 
     def _box_scope(self, doc):
-        from tinyassets.erasure_ledger import require_active
+        from tinyassets.broker.admission import require_admitted
 
         try:
-            require_active(self._server._data_root, self._box_owner)
-        except PermissionError as exc:
+            require_admitted(self._server._owner_identities, self._box_owner)
+        except (PermissionError, LookupError) as exc:
             raise rf.FrameError("erased box admission") from exc
         # The socket selected this scope. Guest identity fields grant nothing.
         if (not getattr(self, "_box_center", None)
                 or doc.get("principal", self._box_owner) != self._box_owner
-                or doc.get("command_center", self._box_center) != self._box_center
-                or self._server._owner_identities.admitted_owner(self._box_center)
-                != self._box_owner):
+                or doc.get("command_center", self._box_center) != self._box_center):
             raise rf.FrameError("retired box admission")
         return {**doc, "principal": self._box_owner, "command_center": self._box_center,
                 "generation": self._server._fence.generation,
@@ -791,14 +826,13 @@ class _Connection:
             return {"op": "OWNER_RETIRE_REFUSED"}
 
     def _retire_box_admission(self, doc):
-        from tinyassets.erasure_ledger import ErasureLedger
+        from tinyassets.broker.admission import read
 
         try:
             if (set(doc) != {"op", "principal", "uid"} or type(doc["uid"]) is not int
                     or not 300001 <= doc["uid"] <= 399999):
                 raise ValueError("invalid admission retirement")
-            ledger = ErasureLedger(self._server._data_root)
-            if not ledger.contains(doc["principal"]):
+            if read(self._server._owner_identities, doc["principal"]).state != "erased":
                 raise PermissionError("retirement requires an erasure fence")
             identities = self._server._owner_identities
             uid = identities.owner_machine(doc["principal"])
@@ -1087,8 +1121,8 @@ class _Connection:
             return {"op": "USAGE_REFUSED"}
 
     def _http_connect(self, doc: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.broker.admission import require_admitted
         from tinyassets.broker.http_connect import local_operation, validate
-        from tinyassets.erasure_ledger import require_active
 
         try:
             if set(doc) != {"op", "principal", "command_center", "generation", "token",
@@ -1107,7 +1141,7 @@ class _Connection:
             with self._server._fence.send(doc["generation"], doc["token"]):
                 if self._closed.is_set():
                     raise PermissionError("connection cancelled")
-                require_active(self._server._data_root, doc["principal"])
+                require_admitted(self._server._owner_identities, doc["principal"])
                 if doc["document"]["action"] in {
                         "oauth_offer", "oauth_exchange", "preset_exchange"}:
                     if (self._server._owner_identities is None
@@ -1221,10 +1255,9 @@ class _Connection:
             return
         self._principals.add(principal)
         try:
-            if self._server._data_root is not None:
-                from tinyassets.erasure_ledger import require_active
+            from tinyassets.broker.admission import require_admitted
 
-                await asyncio.to_thread(require_active, self._server._data_root, principal)
+            await asyncio.to_thread(require_admitted, self._server._owner_identities, principal)
             ledger = self._server._ledger_for(principal)
             _grant, resource = await asyncio.to_thread(
                 ledger.authorize_exact, universe_id=command_center, grant_id=grant_id,

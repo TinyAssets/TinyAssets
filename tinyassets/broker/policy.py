@@ -81,8 +81,13 @@ class PolicyStore:
         broker.mkdir(mode=0o700, exist_ok=True)
         path.parent.parent.mkdir(mode=0o700, exist_ok=True)
         path.parent.mkdir(mode=0o700, exist_ok=True)
-        if (path.parent / ".deleted").exists() and not allow_deleted:
-            raise PolicyRefused("account policy was erased")
+        if not allow_deleted:
+            from tinyassets.broker.admission import read
+
+            try:
+                read(self._admissions, owner).require_work()
+            except (PermissionError, LookupError) as exc:
+                raise PolicyRefused("account policy is not admitted") from exc
         if os.name == "posix":
             for directory in (broker, path.parent.parent, path.parent):
                 info = directory.lstat()
@@ -127,6 +132,10 @@ class PolicyStore:
 
     def erase(self, owner: str) -> int:
         """Erase policy data at account deletion and fence later stale requests."""
+        from tinyassets.broker.admission import local_mutate
+
+        # lane-b2: delete with the old authority
+        local_mutate(self._admissions.path, owner, "erase")
         path = self._path(owner)
         marker = path.parent / ".deleted"
         if marker.exists() and not path.exists():

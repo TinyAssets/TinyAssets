@@ -33,6 +33,8 @@ INFRASTRUCTURE: frozenset[str] = frozenset({
     "tinyassets/broker/vault.py",
     "tinyassets/broker/http_connect.py",
     "tinyassets/broker/owner_reads.py",
+    # C6/T9: the broker's sole shared owner-admission writer.
+    "tinyassets/broker/admission.py",
     "tinyassets/broker/next_wake.py",
     "tinyassets/broker/owner_sources.py",
     # T3/C2: broker-only permanent volume binding and snapshot publication.

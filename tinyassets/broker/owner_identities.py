@@ -68,6 +68,7 @@ class OwnerIdentities:
 
         self.path = Path(path)
         self.plans = plans if plans is not None else Plans(broker_dir=self.path.parent)
+        self.plans.admission_path = self.path
         parent = self.path.parent.lstat()
         if (not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.geteuid()
                 or stat.S_IMODE(parent.st_mode) & 0o077):
@@ -116,6 +117,10 @@ class OwnerIdentities:
             from tinyassets.broker.owner_volumes import schema
 
             schema(db)
+            if initialize:
+                from tinyassets.broker.admission import schema as admission_schema
+
+                admission_schema(db)
         directory = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             os.fsync(directory)
@@ -168,9 +173,10 @@ class OwnerIdentities:
             if admitted is not None and admitted[2] != principal:
                 raise PermissionError("center is admitted to another principal")
             if event == "admit":
-                if db.execute("SELECT 1 FROM owner_box_revocations WHERE principal=? "
-                              "AND deleted=1", (principal,)).fetchone():
-                    raise PermissionError("owner account is deleted")
+                from tinyassets.broker.admission import mutate
+
+                # lane-b2: delete with the old authority
+                mutate(db, principal, "admit")
                 if "retire" in rows:
                     raise PermissionError("a retired center is never admitted again")
                 if admitted is not None:
@@ -189,9 +195,6 @@ class OwnerIdentities:
             else:
                 if admitted is None:
                     raise CenterUnadmitted("retire requires a prior admit")
-                db.execute("INSERT OR IGNORE INTO owner_box_revocations VALUES (?, 0)",
-                           (principal,))
-                db.execute("DELETE FROM owner_box_secrets WHERE principal=?", (principal,))
                 if "retire" in rows:
                     return _row(rows["retire"])
                 machine = admitted[4]
@@ -218,31 +221,25 @@ class OwnerIdentities:
         with closing(self._connect(write=True)) as db, db:
             db.execute("PRAGMA synchronous=FULL")
             db.execute("BEGIN IMMEDIATE")
-            revoked = db.execute("SELECT deleted FROM owner_box_revocations WHERE principal=?",
-                                 (principal,)).fetchone()
-            if revoked is not None:
-                if revoked[0] or not rotate:
-                    raise LookupError("owner box is revoked")
-                db.execute("DELETE FROM owner_box_revocations WHERE principal=?", (principal,))
-            row = db.execute(
-                "SELECT machine_id FROM owner_identities WHERE principal=? AND EXISTS ("
-                "SELECT 1 FROM center_admissions a WHERE a.principal=owner_identities.principal "
-                "AND a.event='admit' AND NOT EXISTS (SELECT 1 FROM center_admissions r "
-                "WHERE r.center=a.center AND r.event='retire'))", (principal,),
-            ).fetchone()
-            if row is None:
-                raise LookupError("owner has no live admission")
-            # Existing admissions receive their first secret on the first lookup.
-            db.execute("INSERT OR IGNORE INTO owner_box_secrets VALUES (?, ?)",
-                       (principal, secrets.token_urlsafe(32)))
-            if rotate:
-                db.execute("UPDATE owner_box_secrets SET secret=? WHERE principal=?",
-                           (secrets.token_urlsafe(32), principal))
-            secret = db.execute("SELECT secret FROM owner_box_secrets WHERE principal=?",
-                                (principal,)).fetchone()[0]
-            return row[0], secret
+            from tinyassets.broker.admission import admission
 
-    def revoke_box(self, principal: str, *, deleted: bool = False) -> int:
+            admission(db, principal).require_work()
+            row = db.execute("SELECT machine_id FROM owner_identities WHERE principal=?",
+                             (principal,)).fetchone()
+            if row is None:
+                raise LookupError("owner identity is missing")
+            # The next start mints a secret missing after the cutover.
+            if rotate:
+                db.execute("INSERT INTO owner_box_secrets VALUES (?, ?) "
+                           "ON CONFLICT(principal) DO UPDATE SET secret=excluded.secret",
+                           (principal, secrets.token_urlsafe(32)))
+            secret = db.execute("SELECT secret FROM owner_box_secrets WHERE principal=?",
+                                (principal,)).fetchone()
+            if secret is None:
+                raise LookupError("owner box has not started")
+            return row[0], secret[0]
+
+    def revoke_box(self, principal: str) -> int:
         """Durable fence before boxhostd stops the process; retries stay revoked."""
         uid = self.owner_machine(principal)
         if uid is None:
@@ -250,16 +247,20 @@ class OwnerIdentities:
         with closing(self._connect(write=True)) as db, db:
             db.execute("PRAGMA synchronous=FULL")
             db.execute("BEGIN IMMEDIATE")
+            from tinyassets.broker.admission import mutate
+
+            # lane-b2: delete with the old authority
+            mutate(db, principal, "erase")
             db.execute("INSERT INTO owner_box_revocations VALUES (?, ?) "
                        "ON CONFLICT(principal) DO UPDATE SET "
                        "deleted=MAX(deleted, excluded.deleted)",
-                       (principal, int(deleted)))
+                       (principal, 1))
             db.execute("DELETE FROM owner_box_secrets WHERE principal=?", (principal,))
         return uid
 
     def retire_owner(self, principal: str) -> int:
         """Fence new admissions, retire every center, and keep retries possible."""
-        uid = self.revoke_box(principal, deleted=True)
+        uid = self.revoke_box(principal)
         with closing(self._connect(write=True)) as db, db:
             db.execute("PRAGMA synchronous=FULL")
             # C2: withdraw the positive runtime admission in the same database

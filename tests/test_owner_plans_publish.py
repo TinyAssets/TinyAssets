@@ -197,7 +197,8 @@ def test_admission_creates_free_atomically_and_never_repairs_missing_existing_pl
     seed_owner_admission(tmp_path, principal="owner", center="first")
     plans = Plans(tmp_path)
     assert plans.read("owner")["tier"] == "free"
-    identities = OwnerIdentities(tmp_path / ".broker/owner-identities.db")
+    identities = OwnerIdentities(
+        tmp_path / ".broker/state/owner-identities.db", plans=Plans(tmp_path))
     plans.set_plan("owner", "paid", event_created=5)
     identities.admission("admit", "owner", "second")
     assert plans.read("owner")["tier"] == "paid"
@@ -230,7 +231,8 @@ def test_admission_failure_rolls_back_the_free_row(tmp_path):
     from tinyassets.broker.owner_identities import OwnerIdentities
 
     seed_owner_admission(tmp_path, principal="owner", center="first")
-    identities = OwnerIdentities(tmp_path / ".broker/owner-identities.db")
+    identities = OwnerIdentities(
+        tmp_path / ".broker/state/owner-identities.db", plans=Plans(tmp_path))
     identities.resolve("new-owner", allocate=True)
     with sqlite3.connect(identities.path) as db:
         db.execute("CREATE TRIGGER refuse_new_center BEFORE INSERT ON center_admissions "

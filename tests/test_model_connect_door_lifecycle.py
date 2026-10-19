@@ -46,6 +46,7 @@ def _broker_process(root, socket_path, relay_socket, pipe, kind):
     from tinyassets.broker.fence import Fence
     from tinyassets.broker.ops import OpStore
     from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.owner_reads import Plans
     from tinyassets.broker.process import _Dispatchers
     from tinyassets.broker.server import BOX_HOST, OWNER, BrokerServer
     from tinyassets.broker.tokens import ConnectionTokens
@@ -58,7 +59,7 @@ def _broker_process(root, socket_path, relay_socket, pipe, kind):
     layout.BROKER_READ_GID = os.getgid()
     seed_owner_admission(root, principal="owner", center="center")
     seed_owner_admission(root, principal="foreign", center="foreign-center")
-    identities = OwnerIdentities(root / ".broker/owner-identities.db")
+    identities = OwnerIdentities(root / ".broker/state/owner-identities.db", plans=Plans(root))
     machine = identities.owner_machine("owner")
     with sqlite3.connect(identities.path) as db:
         db.execute("CREATE TABLE box_records (principal TEXT PRIMARY KEY, machine INTEGER, "

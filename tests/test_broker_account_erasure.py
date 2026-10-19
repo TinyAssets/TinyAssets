@@ -45,6 +45,9 @@ def seed(ledger):
 def test_transaction_erases_only_owner_and_counts_indirect_rows(tmp_path):
     ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
     seed(ledger)
+    from tests.support.broker_double import seed_owner_admission
+
+    seed_owner_admission(tmp_path, principal="erase-a", center="erase-a")
     counts = local_erase(ledger, principal="erase-a", command_center=ACCOUNT_SCOPE)
     assert len(counts) == 9 and set(counts.values()) == {1}
     assert local_erase(ledger, principal="erase-a", command_center=ACCOUNT_SCOPE) == {}

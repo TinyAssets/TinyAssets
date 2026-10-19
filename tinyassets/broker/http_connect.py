@@ -109,9 +109,9 @@ def local_operation(ledger, *, principal, command_center, document, committed_vi
         conn.execute("BEGIN IMMEDIATE")
         # Serialize against custody erasure before consulting the sole fence.
         # A worker already dispatched before close-all cannot recreate rows.
-        from tinyassets.erasure_ledger import require_active
+        from tinyassets.broker.admission import local_read
 
-        require_active(ledger._data_root, principal)
+        local_read(ledger._data_root, principal).require_work()
         row = conn.execute("SELECT * FROM outbound_connections WHERE connection_id=?",
                            (connection_id,)).fetchone()
         grow = conn.execute("SELECT * FROM outbound_connection_grants WHERE grant_id=?",

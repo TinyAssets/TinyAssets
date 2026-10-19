@@ -25,6 +25,9 @@ def owner_box(tmp_path):
     tmp_path.chmod(0o700)
     identities = OwnerIdentities(tmp_path / "identities.db", initialize=True)
     uid = identities.resolve("alice", allocate=True).uid
+    from tinyassets.broker.admission import local_mutate
+
+    local_mutate(identities.path, "alice", "admit")
     identities.plans.apply("alice", tier="paid", event_created=1)
     with sqlite3.connect(identities.path) as db:
         db.execute("CREATE TABLE box_records (principal TEXT, machine INT, "
@@ -77,15 +80,22 @@ def test_owner_public_admission_refuses_missing_identity_plan_or_schema(owner_bo
         resolve_owner(None, request)
     with sqlite3.connect(identities.plans.path) as db:
         db.execute("DELETE FROM plans")
+    # Billing metadata is no longer an admission authority.
+    assert resolve_owner(identities, request)["uid"] == identities.owner_machine("alice")
+    with sqlite3.connect(identities.path) as db:
+        db.execute("DELETE FROM owner_admission")
     with pytest.raises(LookupError):
         resolve_owner(identities, request)
+    from tinyassets.broker.admission import local_mutate
+
+    local_mutate(identities.path, "alice", "admit")
     with sqlite3.connect(identities.path) as db:
         db.execute("DROP TABLE box_records")
     with pytest.raises(sqlite3.OperationalError):
         resolve_owner(identities, request)
 
 
-def test_broker_admission_requires_permanent_mapping_live_center_and_migrated_quota(tmp_path):
+def test_broker_admission_requires_permanent_mapping_center_binding_and_migrated_quota(tmp_path):
     tmp_path.chmod(0o700)
     identities = OwnerIdentities(tmp_path / "identities.db", initialize=True)
     identity = identities.resolve("alice", allocate=True)
@@ -106,9 +116,10 @@ def test_broker_admission_requires_permanent_mapping_live_center_and_migrated_qu
         db.execute("UPDATE box_records SET project_id=project_id+1")
     with pytest.raises(PermissionError):
         resolve(identities, request)
+    with sqlite3.connect(identities.path) as db:
+        db.execute("UPDATE box_records SET project_id=machine")
     identities.admission("retire", "alice", "a")
-    with pytest.raises(PermissionError):
-        resolve(identities, request)
+    assert resolve(identities, request)["uid"] == identity.uid
 
 
 

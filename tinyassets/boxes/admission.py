@@ -44,6 +44,22 @@ class OwnerRegistry:
             raise BoxAuthError("broker refused volume lifecycle")
         return result["result"]
 
+    def erase_admission(self, owner: str) -> None:
+        from tinyassets.boxes.bootstrap import peer
+
+        validate_principal(owner)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(10)
+            sock.connect(str(self.broker_socket))
+            if peer(sock)[1:] != (1002, 1002):
+                raise BoxAuthError("lifecycle peer is not the credential broker")
+            sock.sendall(rf.control(rf.CONNECTION, {
+                "op": "BOX_ADMISSION_ERASE", "principal": owner}))
+            frame = rf.read_frame_blocking(sock)
+        if (frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION
+                or frame.control() != {"op": "OWNER_ADMISSION_ERASED"}):
+            raise BoxAuthError("broker refused admission erasure")
+
     def retire(self, owner: str, uid: int) -> None:
         """Root cleanup retires broker admission without recursively destroying."""
         from tinyassets.boxes.bootstrap import peer
@@ -63,10 +79,6 @@ class OwnerRegistry:
 
     def owner(self, owner: str, *, rotate: bool = False) -> dict:
         validate_principal(owner)
-        from tinyassets.erasure_ledger import ErasureLedger
-
-        if ErasureLedger(self.data_root).contains(owner):
-            raise BoxAuthError("Account deleted.")
         from tinyassets.boxes.bootstrap import peer
 
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
@@ -90,7 +102,7 @@ class OwnerRegistry:
                 or type(result["uid"]) is not int or not 300001 <= result["uid"] <= 399999
                 or type(result["quota"]) is not int or result["quota"] <= 0
                 or type(result["volume_generation"]) is not int or result["volume_generation"] < 1
-                or not isinstance(result["centers"], list) or not result["centers"]):
+                or not isinstance(result["centers"], list)):
             raise BoxAuthError("broker refused owner lifecycle")
         for center in result["centers"]:
             validate_center(center)

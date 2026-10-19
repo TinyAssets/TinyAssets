@@ -37,8 +37,10 @@ def admitted(in_process_broker, broker, tmp_path, monkeypatch):  # noqa: F811
 
     tmp_path.chmod(0o700)
     state = tmp_path / ".broker"
-    state.mkdir(mode=0o700)
-    identities = OwnerIdentities(state / "owner-identities.db", initialize=True)
+    state.mkdir(mode=0o700, exist_ok=True)
+    from tinyassets.broker.owner_reads import Plans
+
+    identities = OwnerIdentities(state / "state/owner-identities.db", plans=Plans(tmp_path))
     broker.server._owner_identities = identities
     broker.server._data_root = tmp_path
     from tinyassets.storage.outbound_connections import ConnectionLedger
@@ -70,8 +72,7 @@ def test_secret_mint_rotation_and_admission_through_real_broker(admitted, tmp_pa
         with pytest.raises(LookupError):
             owner_box_route(tmp_path, principal=owner)
     admitted.admission("retire", "alice", "cc-alice")
-    with pytest.raises(LookupError):
-        owner_box_route(tmp_path, principal="alice")
+    assert owner_box_route(tmp_path, principal="alice") == rotated
 
 
 def test_route_operation_rejects_forged_authority_or_socket_overrides(
@@ -191,6 +192,9 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
                                   manager=manager, runtime=runtime, relays=relays,
                                   host_path=host_path)
         finally:
+            # A fenced test box must be stopped, never snapshotted at teardown.
+            for owner in roots:
+                manager.retire(owner, admitted.owner_machine(owner))
             manager.close()
             runtime.close()
             relays.close()
@@ -556,6 +560,8 @@ def test_box_channel_cannot_supply_owner_or_revoke_another_owners_credentials(
             .hexdigest()})
     assert HookOwners(tmp_path).resolve(token) == "alice"
     admitted.admission("retire", "bob", "cc-bob")
+    assert request("bob", {"operation": "key_list"})["op"] == "ROUTER_CREDENTIAL_IS"
+    admitted.retire_owner("bob")
     assert request("bob", {"operation": "key_list"}) == {"op": "ROUTER_CREDENTIAL_REFUSED"}
 
 
@@ -896,10 +902,7 @@ def test_broker_retirement_stops_real_daemon_and_stale_forward_fails(boxes, admi
     _owner_request(tmp_path, {"op": "CENTER_ADMISSION", "event": "retire",
                               "principal": "alice", "center": "cc-alice"})
     assert not boxes.runtime.alive(uid)
-    with pytest.raises(LookupError):
-        admitted.box_route("alice")
-    with pytest.raises(LookupError):
-        resolve_box("alice")
+    assert admitted.box_route("alice") == (uid, stale.secret)
 
     async def proxy(scope, receive, send):
         await forward(scope, receive, send, Identity(user_id="alice", username="alice"),
@@ -910,6 +913,13 @@ def test_broker_retirement_stops_real_daemon_and_stale_forward_fails(boxes, admi
                                      base_url="http://router") as client:
             assert (await client.get("/app/api/file")).status_code == 503
     asyncio.run(exercise())
+    # C6: lifecycle stop updates the center list; the owner remains wakeable.
+    fresh = resolve_box("alice")
+    assert boxes.runtime.alive(uid)
+    assert boxes.manager.admission.owner("alice")["centers"] == []
+    from tinyassets.owner_router import release_route
+
+    release_route(fresh)
 
 
 def test_root_lifecycle_broker_operation_uses_admission_and_box_record(
@@ -966,8 +976,8 @@ def test_bound_center_retirement_uses_relay_owner_and_stops_its_daemon(boxes, ad
         assert rf.read_frame_blocking(channel).control()["op"] == "BOX_RESULT"
     assert not boxes.runtime.alive(uid)
     assert boxes.runtime.alive(admitted.owner_machine("bob"))
-    with pytest.raises(LookupError):
-        admitted.box_route("alice")
+    assert admitted.box_route("alice") == (uid, boxes.secrets["alice"])
+    assert boxes.manager.admission.owner("alice")["centers"] == []
 
 
 @pytest.mark.parametrize("outcome", ["blocked", "refused"])
@@ -1011,7 +1021,8 @@ def test_box_deletion_rejection_keeps_ledger_fence_and_pending_cleanup(
     assert ErasureLedger(tmp_path).contains("alice")
     assert ErasureLedger(tmp_path).receipt("alice")["local_cleanup"] == "pending"
     assert admitted.admissions_after(0) == before
-    assert admitted.box_route("alice")[1] == boxes.secrets["alice"]
+    with pytest.raises(LookupError):
+        admitted.box_route("alice")
     assert boxes.runtime.alive(admitted.owner_machine("alice"))
     assert (boxes.roots["alice"] / "cc-alice" / "hello.txt").exists()
     assert not session_store.read(handle)[0]

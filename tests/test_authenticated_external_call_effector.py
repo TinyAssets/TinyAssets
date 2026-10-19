@@ -89,6 +89,9 @@ def _setup(
 ):
     """REAL vault http record + http connection + per-universe grant."""
     data_root = tmp_path
+    from tests.support.broker_double import seed_owner_admission
+
+    seed_owner_admission(data_root, principal="user-1", center=universe_id)
     universe_dir = data_root / universe_id
     write_credential_vault(
         universe_dir,

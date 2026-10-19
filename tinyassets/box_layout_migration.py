@@ -158,7 +158,8 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
     add(".owner_devices.db", "owner_devices owner_notify_settings request_notifications", "owner",
         principals=("owner_user_id",))
     add(".broker/state/owner-identities.db", "owner_identities center_admissions box_records "
-        "owner_box_secrets owner_box_revocations owner_volumes owner_snapshots", "broker")
+        "owner_box_secrets owner_box_revocations owner_volumes owner_snapshots owner_admission",
+        "broker")
     add(".broker/plans.db", "plans checkout_settlements", "broker")
     add(".broker/state/next-wake.db", "next_wakes", "broker")
     add(".broker/credential-custody.db", "llm_credential_deposit_owners llm_credential_custody "
@@ -2294,6 +2295,7 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
         ledger = carry_forward(data, shared)
         seed_legacy(data, ledger, store_root=store)
         _reserve_erasures(ledger, shared)
+        _seed_owner_admission(shared, ledger)
         _crash_at("after_seeding")
         from tinyassets.boxes.layout import BROKER_READ_GID, BROKER_UID, DAEMON_UID
         from tinyassets.boxes.state import BoxHostState
@@ -2571,6 +2573,37 @@ def _reserve_erasures(ledger, staged):
                 db.execute("INSERT INTO owner_identities (principal,machine_id) VALUES (?,?)",
                            (owner, uids[0]))
 
+
+
+
+def _seed_owner_admission(shared, ledger):
+    """C6 one-shot conversion; old authorities never participate in runtime reads."""
+    from tinyassets.broker.admission import mutate, schema
+    from tinyassets.erasure_ledger import principal_digest
+
+    identity = shared / ".broker/state/owner-identities.db"
+    with closing(sqlite3.connect(identity)) as db, db:
+        db.execute("ATTACH DATABASE ? AS billing", (str(shared / ".broker/plans.db"),))
+        db.execute("BEGIN IMMEDIATE")
+        schema(db)
+        # lane-b2: delete with the old authority
+        db.execute("DELETE FROM owner_box_revocations WHERE deleted=0")
+        erased = {entry["digest"] for entry in ledger.entries()}
+        erased.update(principal_digest(row[0]) for row in db.execute(
+            "SELECT principal FROM owner_box_revocations WHERE deleted=1"))
+        for owner, in db.execute("SELECT principal FROM owner_identities").fetchall():
+            if principal_digest(owner) in erased:
+                continue
+            box = db.execute("SELECT 1 FROM box_records WHERE principal=?", (owner,)).fetchone()
+            plan = db.execute("SELECT billing_suspended,abuse_suspended FROM billing.plans "
+                              "WHERE owner=?", (owner,)).fetchone()
+            if box is None or plan is None:
+                continue
+            mutate(db, owner, "admit")
+            for reason, suspended in zip(("billing", "abuse"), plan, strict=True):
+                mutate(db, owner, "suspend", reason=reason, suspended=bool(suspended))
+        for key in erased:
+            mutate(db, None, "erase", erased_digest=key)
 
 
 

@@ -25,10 +25,11 @@ def removal(discovery, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(discovery.root))
     from tests.support.broker_double import seed_owner_admission
     from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.owner_reads import Plans
 
     seed_owner_admission(discovery.root, principal="alice", center="cc-alice")
     discovery.broker.server._owner_identities = OwnerIdentities(
-        discovery.root / ".broker/owner-identities.db")
+        discovery.root / ".broker/state/owner-identities.db", plans=Plans(discovery.root))
     (discovery.root / "cc-alice").mkdir()
     grant_universe_access(discovery.root, universe_id="cc-alice", actor_id="alice",
                           permission="admin")

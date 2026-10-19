@@ -367,7 +367,7 @@ def _write_credential_vault_locked(
         if owner:
             # Deletion takes this same admission lock while tombstoning.
             # Keep non-home administrators valid: this is not a home check.
-            check_not_deleted(conn, owner)
+            check_not_deleted(universe.parent, owner)
         placeholders = ",".join("?" for _ in final_owner_keys)
         if final_owner_keys:
             conn.execute(
@@ -441,14 +441,21 @@ def metadata_connection(data_root):
     return conn
 
 
-def check_not_deleted(conn, owner):
-    digest = hashlib.sha256(owner.encode()).hexdigest()
-    if conn.execute("SELECT 1 FROM deleted_principals WHERE digest=?", (digest,)).fetchone():
+def check_not_deleted(data_root, owner):
+    from tinyassets.broker.admission import local_read
+
+    record = local_read(data_root, owner)
+    if record.state == "erased":
         raise PermissionError("credential owner has been deleted")
+    record.require_work()
 
 
 def erase_owner(data_root, principal):
     """Tombstone before locking vaults: a delayed writer cannot resurrect custody."""
+    from tinyassets.broker.admission import local_mutate
+
+    # lane-b2: delete with the old authority
+    local_mutate(Path(data_root) / ".broker/state/owner-identities.db", principal, "erase")
     conn = metadata_connection(data_root)
     try:
         conn.execute("INSERT OR IGNORE INTO deleted_principals VALUES (?)",

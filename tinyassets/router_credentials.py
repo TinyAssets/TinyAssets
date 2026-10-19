@@ -30,9 +30,14 @@ _DISPATCH = threading.Lock()
 
 def active_owner(owner: str, root: Path | None = None) -> bool:
     """One identity fence shared by every router authentication entry point."""
+    from tinyassets.broker.admission import remote
     from tinyassets.storage import data_dir
 
-    if ErasureLedger(root if root is not None else data_dir()).contains(owner):
+    try:
+        erased = remote(root if root is not None else data_dir(), owner).state == "erased"
+    except Exception:
+        return False
+    if erased:
         from tinyassets.auth.workos_provider import _log_token_rejection
 
         _log_token_rejection("account_deleted")
@@ -119,8 +124,9 @@ def dispatch(root: Path, owner: str, request: dict) -> dict:
     if not isinstance(request, dict):
         raise ValueError("invalid credential operation")
     with _DISPATCH:
-        deleted = ErasureLedger(root)
-        if deleted.contains(owner):
+        from tinyassets.broker.admission import remote
+
+        if remote(root, owner).state == "erased":
             raise PermissionError("owner account is deleted")
         return _dispatch(root, owner, request)
 
@@ -137,7 +143,9 @@ def revoke_account(root: Path, owner: str):
     from tinyassets.api_keys import ApiKeyStore
 
     with _DISPATCH:
-        if not ErasureLedger(root).contains(owner):
+        from tinyassets.broker.admission import remote
+
+        if remote(root, owner).state != "erased":
             raise RuntimeError("account deletion requires a tombstone")
         _revoke_account(root, owner, ApiKeyStore(root))
 

@@ -19,6 +19,8 @@ class Plans:
         refuse_router_store("plans")
         state = Path(broker_dir) if broker_dir is not None else Path(root) / ".broker"
         self.path = state.resolve() / "plans.db"
+        self.admission_path = (state / "owner-identities.db" if broker_dir is not None
+                               else state / "state/owner-identities.db").resolve()
 
     def initialize(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -43,14 +45,22 @@ class Plans:
                                f"DEFAULT 0 CHECK ({name} IN (0, 1))")
 
     def suspended(self, owner):
-        plan = self.read(owner)  # Missing plans and missing schema fail loudly.
-        return bool(plan["billing_suspended"] or plan["abuse_suspended"])
+        from tinyassets.broker.admission import admission
+
+        with closing(sqlite3.connect(self.admission_path.as_uri() + "?mode=ro", uri=True)) as db:
+            return admission(db, owner).state == "suspended"
 
     def set_suspension(self, owner, *, reason, suspended):
         if reason not in {"billing", "abuse"} or type(suspended) is not bool:
             raise ValueError("invalid account suspension")
         self.read(owner)
         with closing(self._connect()) as db, db:
+            db.execute("ATTACH DATABASE ? AS admission_authority", (str(self.admission_path),))
+            db.execute("BEGIN IMMEDIATE")
+            from tinyassets.broker.admission import mutate
+
+            # lane-b2: delete with the old authority
+            mutate(db, owner, "suspend", reason=reason, suspended=suspended)
             db.execute(f"UPDATE plans SET {reason}_suspended=? WHERE owner=?",
                        (int(suspended), owner))
 

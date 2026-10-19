@@ -340,14 +340,14 @@ def _start_checkout(*, owner: str, origin: str) -> dict[str, Any]:
         checkout_params,
         key_is_live,
     )
-    from tinyassets.erasure_ledger import ErasureLedger
+    from tinyassets.broker.admission import remote
     from tinyassets.storage import data_dir
     from tinyassets.storage.subscription_state import (
         CHECKOUT_SESSION_SECONDS,
         CHECKOUT_WINDOW_SECONDS,
     )
 
-    if ErasureLedger(data_dir()).contains(owner):
+    if remote(data_dir(), owner).state == "erased":
         return {"error": "account_deleted"}
     plans = BillingPlans(data_dir())
     if plans.read(owner)["tier"] == "paid":

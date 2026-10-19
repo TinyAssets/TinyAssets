@@ -54,7 +54,28 @@ for operation in (lambda: os.open(name, os.O_WRONLY | os.O_TRUNC, dir_fd=directo
     assert json.loads(gate.read_text()) == {"ordinary": False}
 
 
-def test_cutover_preserves_cancellation_mapping_and_resumes_payable_checkout(cutover, monkeypatch):
+def _admission_transport(data, broker, monkeypatch):  # noqa: F811
+    """Serve migrated authority in the same-UID protocol venue."""
+    from types import SimpleNamespace
+
+    from tinyassets.broker import supervisor
+    from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.owner_reads import Plans
+
+    path = data / ".broker/state/owner-identities.db"
+    # Production custody was asserted by apply. This fixture's broker is root.
+    os.chown(path.parent, os.getuid(), os.getgid())
+    os.chown(path, os.getuid(), os.getgid())
+    broker.server._owner_identities = OwnerIdentities(path, plans=Plans(data))
+    broker.server._data_root = data
+    live = SimpleNamespace(socket_path=broker.path, fence=lambda: (
+        broker.state["generation"], broker.state["token"]), verify_broker=lambda sock: None)
+    monkeypatch.setattr(supervisor, "get_supervisor", lambda root: live)
+
+
+def test_cutover_preserves_cancellation_mapping_and_resumes_payable_checkout(
+    cutover, broker, monkeypatch,  # noqa: F811
+):
     from tests.test_cutover_billing_deletion import attempt, legacy_attempt
     from tinyassets.billing.plan_action import _start_checkout
     from tinyassets.broker.owner_reads import Plans
@@ -72,6 +93,7 @@ def test_cutover_preserves_cancellation_mapping_and_resumes_payable_checkout(cut
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data))
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_synthetic")
     # Use the actual shared writer through the test broker transport.
+    _admission_transport(data, broker, monkeypatch)
     assert _start_checkout(owner="bob", origin="https://tinyassets.io") == {
         "url": original["url"], "resumed": True}
 
@@ -704,7 +726,9 @@ def test_publication_refuses_changed_verified_owner_tree(cutover, monkeypatch):
     assert json.loads((cutover[0] / '.layout.json').read_text())['state'] == 'migrating'
 
 
-def test_shared_doors_authenticate_migrated_keys_and_hooks(cutover, monkeypatch):
+def test_shared_doors_authenticate_migrated_keys_and_hooks(
+    cutover, broker, monkeypatch,  # noqa: F811
+):
     import hashlib
 
     from tinyassets import api_keys
@@ -725,6 +749,7 @@ def test_shared_doors_authenticate_migrated_keys_and_hooks(cutover, monkeypatch)
                        'AND revoked_at IS NULL',
                        (hashlib.sha256(token.encode()).hexdigest(), owner))
     migration.apply(*cutover)
+    _admission_transport(data, broker, monkeypatch)
     # This functional reader runs as root; production's writer is UID1001.
     # Match this test writer for SQLite's journal ownership in the sticky root.
     os.chown(data / '.api-keys.sqlite3', os.getuid(), os.getgid())
@@ -775,8 +800,8 @@ def test_seeded_tombstones_block_broker_custody_without_old_metadata(cutover):
         assert [row[1] for row in db.execute('PRAGMA table_info(deleted_principals)')] == ['digest']
         assert db.execute('SELECT digest FROM deleted_principals').fetchall() == [(digest,)]
         with pytest.raises(PermissionError, match='deleted'):
-            check_not_deleted(db, 'retired-account')
-        check_not_deleted(db, 'bob')
+            check_not_deleted(data, 'retired-account')
+        check_not_deleted(data, 'bob')
 
 
 
@@ -853,7 +878,7 @@ def test_migrated_owner_processes_serve_history_requests_and_pause(
                 app = run / str(uid)
                 app.mkdir()
                 secret = app / 'secret'
-                secret.write_text('s' * 43)
+                secret.write_text(identities.box_route(owner, rotate=True)[1])
                 secret.chmod(0o400)
                 runtime.start(uid, uid, relay=relays.bind(owner, uid), app_dir=app,
                               secret_file=secret, memory_bytes=1024**3,
@@ -876,7 +901,8 @@ def test_migrated_owner_processes_serve_history_requests_and_pause(
                 }).encode()).decode()
                 with httpx.Client(transport=httpx.HTTPTransport(uds=str(socket)),
                                   base_url='http://localhost', timeout=30,
-                                  headers={'x-owner': owner, 'x-box-secret': 's' * 43,
+                                  headers={'x-owner': owner,
+                                           'x-box-secret': identities.box_route(owner)[1],
                                            'x-owner-identity': identity}) as client:
                     for center in centers:
                         status = client.post('/app/api/status', json={

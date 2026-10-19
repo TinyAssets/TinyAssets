@@ -547,7 +547,9 @@ def _record_deleted_billing(root, owner, key, value):
     from tinyassets.erasure_ledger import ErasureLedger
 
     deleted = ErasureLedger(root)
-    if deleted.contains(owner):
+    from tinyassets.broker.admission import remote
+
+    if remote(root, owner).state == "erased":
         receipt = deleted.receipt(owner)
         receipt.setdefault("billing_cleanup", {})[key] = value
         deleted.save_receipt(owner, receipt)

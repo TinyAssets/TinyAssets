@@ -283,6 +283,9 @@ def test_missing_admission_cannot_reprovision_an_existing_volume_binding(storage
     with pytest.raises(sqlite3.IntegrityError):
         box_admission.provision(storage.identities, storage.identities.path.parent.parent,
                                 "alice", "alice")
+    from tinyassets.broker.admission import local_mutate
+
+    local_mutate(storage.identities.path, "alice", "erase")
     with pytest.raises(PermissionError, match="erased"):
         storage.lifecycle.recover("alice")
 

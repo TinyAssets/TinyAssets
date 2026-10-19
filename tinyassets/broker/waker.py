@@ -25,7 +25,9 @@ class Waker:
         self.attempted = {}
 
     def _wake(self, owner):
-        if self.plans.suspended(owner):
+        from tinyassets.broker.admission import read
+
+        if read(self.index.identities, owner).state != "admitted":
             return
         # boxhostd rechecks both admission and suspension after capacity waits.
         self.wake(owner, scheduled=True)

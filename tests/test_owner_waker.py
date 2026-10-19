@@ -83,28 +83,36 @@ def test_floor_includes_never_reported_and_preserves_reports_across_restart(inde
 
 
 @pytest.mark.parametrize("reason", ["billing", "abuse"])
-def test_suspension_missing_plan_and_retirement_never_wake(index, reason, caplog):
+def test_suspension_and_missing_launch_plan_refuse_but_retired_center_wakes(index, reason, caplog):
     plans = plan_store(index)
-    plans.set_suspension("a", reason=reason, suspended=True)
     index.report("a", 0, now=0)
+    plans.set_suspension("a", reason=reason, suspended=True)
+    with pytest.raises(PermissionError, match="suspended"):
+        index.report("a", 0, now=0)
     with closing(sqlite3.connect(plans.path)) as db, db:
         db.execute("DELETE FROM plans WHERE owner='b'")
     index.identities.admission("retire", "c", "cc-c")
     calls = []
-    waker = Waker(index, plans, wake=lambda owner, **kw: calls.append(owner))
+    from tinyassets.broker.box_admission import owner_record
+
+    def wake(owner, **kw):
+        owner_record(index.identities, owner, rotate=False)
+        calls.append(owner)
+
+    waker = Waker(index, plans, wake=wake)
 
     async def exercise():
         await settled_tick(waker)
         await settled_tick(waker)
-        assert calls == []
+        assert calls == ["c"]
         assert "PlanMissing" in caplog.text
         plans.set_suspension("a", reason=reason, suspended=False)
         await settled_tick(waker)
-        assert calls == ["a"]
+        assert calls == ["c", "a"]
 
     asyncio.run(exercise())
     with pytest.raises(PlanMissing):
-        plans.suspended("b")
+        owner_record(index.identities, "b", rotate=False)
 
 
 def test_due_delivery_retries_without_consuming_report_and_failed_wake_has_no_ack(index):
@@ -197,7 +205,7 @@ def test_production_layout_uses_one_plan_store_for_admission_billing_and_launch(
         owner_record(identities, "a", rotate=True)
     with closing(sqlite3.connect(plans.path)) as db, db:
         db.execute("DELETE FROM plans WHERE owner='a'")
-    with pytest.raises(PlanMissing):
+    with pytest.raises(PermissionError, match="suspended"):
         owner_record(identities, "a", rotate=True)
 
 

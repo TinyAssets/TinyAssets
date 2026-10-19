@@ -24,7 +24,9 @@ class NextWakeIndex:
         if at is not None and (type(at) not in (int, float) or not math.isfinite(at)):
             raise ValueError("next wake must be finite epoch seconds or null")
         # Every report rechecks live admission, including on an established relay.
-        self.identities.box_route(owner)
+        from tinyassets.broker.admission import require_admitted
+
+        require_admitted(self.identities, owner)
         with closing(self._connect()) as db, db:
             db.execute("INSERT INTO next_wakes (owner, next_wake_at, reported_at) "
                        "VALUES (?, ?, ?) ON CONFLICT(owner) DO UPDATE SET "
@@ -42,14 +44,11 @@ class NextWakeIndex:
         with closing(self._connect()) as db:
             db.execute("ATTACH DATABASE ? AS identities",
                        (self.identities.path.as_uri() + "?mode=ro",))
-            return [row[0] for row in db.execute(
+            candidates = [row[0] for row in db.execute(
                 "SELECT i.principal FROM identities.owner_identities i "
                 "LEFT JOIN next_wakes w ON w.owner=i.principal "
-                "WHERE EXISTS (SELECT 1 FROM identities.center_admissions a "
-                "WHERE a.principal=i.principal AND a.event='admit' AND NOT EXISTS ("
-                "SELECT 1 FROM identities.center_admissions r "
-                "WHERE r.center=a.center AND r.event='retire')) "
-                "AND NOT EXISTS (SELECT 1 FROM identities.owner_box_revocations v "
-                "WHERE v.principal=i.principal AND v.deleted=1) "
-                "AND (w.next_wake_at<=? OR w.last_woken_at IS NULL OR w.last_woken_at<=?) "
+                "WHERE w.next_wake_at<=? OR w.last_woken_at IS NULL OR w.last_woken_at<=? "
                 "ORDER BY w.last_woken_at, i.principal", (now, now - FLOOR_SECONDS))]
+            from tinyassets.broker.admission import admission
+
+            return [owner for owner in candidates if admission(db, owner).state == "admitted"]

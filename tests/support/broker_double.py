@@ -85,10 +85,14 @@ def seed_owner_admission(data_root: Path, *, principal: str, center: str) -> Non
         return  # The broker double itself is Linux-only.
     from tinyassets.broker.owner_identities import OwnerIdentities
 
-    state = Path(data_root) / ".broker"
+    state = Path(data_root) / ".broker/state"
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
     state.chmod(0o700)
-    identities = OwnerIdentities(state / "owner-identities.db", initialize=True)
+    state.parent.chmod(0o700)
+    from tinyassets.broker.owner_reads import Plans
+
+    identities = OwnerIdentities(state / "owner-identities.db", initialize=True,
+                                 plans=Plans(data_root))
     identities.resolve(principal, allocate=True)
     identities.admission("admit", principal, center)
 
@@ -114,8 +118,11 @@ class _InProcessBroker:
         state = data_root / ".broker"
         state.mkdir(parents=True, exist_ok=True)
         state.chmod(0o700)
-        identity_path = state / "owner-identities.db"
-        self.identities = OwnerIdentities(identity_path) if identity_path.exists() else None
+        from tinyassets.broker.owner_reads import Plans
+
+        identity_path = state / "state/owner-identities.db"
+        identity_path.parent.mkdir(mode=0o700, exist_ok=True)
+        self.identities = OwnerIdentities(identity_path, initialize=True, plans=Plans(data_root))
         policy_store = PolicyStore(data_root, self.identities) if self.identities else None
         if policy_store is not None:
             policy_store.bootstrap()

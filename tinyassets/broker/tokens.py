@@ -68,13 +68,10 @@ class ConnectionTokens:
         def read() -> TokenBundle:
             # Re-read INSIDE the locks: the holder before us may have rotated it.
             try:
-                from contextlib import closing
-
-                from tinyassets.broker.vault import check_not_deleted, metadata_connection
+                from tinyassets.broker.vault import check_not_deleted
                 from tinyassets.credential_vault import http_deposit_refusal
 
-                with closing(metadata_connection(self._universe_dir.parent)) as conn:
-                    check_not_deleted(conn, self._owner)
+                check_not_deleted(self._universe_dir.parent, self._owner)
 
                 if http_deposit_refusal(self._universe_dir, destination=destination,
                                         owner_user_id=self._owner):
