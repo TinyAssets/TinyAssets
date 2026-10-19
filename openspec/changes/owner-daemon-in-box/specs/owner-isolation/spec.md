@@ -150,6 +150,11 @@ and relay channels by owner. An owner's centers SHALL be a table inside
 the owner's box, and creating or retiring a center SHALL be a box operation. The
 shared layer SHALL hold no center admission table and no per-center store.
 
+#### Scenario: Re-keying never widens or merges credentials
+- **WHEN** the cutover migration re-keys custody from center to owner
+- **THEN** each credential's owner comes from verified ownership records that agree with the center-to-owner mapping
+- **AND** missing or conflicting ownership refuses the migration, and same-service credentials of different centers stay distinct
+
 #### Scenario: Creating a center touches no shared store
 - **WHEN** an owner creates a new center
 - **THEN** the center is recorded inside the owner's box
@@ -161,15 +166,25 @@ Each box SHALL start the published image on its next wake. Rolling back an image
 SHALL be republishing the previous image. There SHALL be no per-box roll or
 per-box rollback.
 
+#### Scenario: Drain never kills a turn
+- **WHEN** a deploy drains an awake box with a turn in progress
+- **THEN** new work admission closes atomically, and the turn finishes before the box sleeps
+- **AND** a timeout is reported as an incomplete drain, never a killed turn
+
 #### Scenario: A sleeping box wakes on the new image
 - **WHEN** a new image is published and a sleeping owner's box next wakes
 - **THEN** the box starts on the new image, and the canary acceptance runs on that path
 
 ### Requirement: The router forwards from an in-memory routing snapshot
 The broker SHALL push each owner's admission state, box socket and per-box secret
-to the router. The router SHALL forward from that snapshot without any
-control-plane call, except asking boxhostd to wake a sleeping box. The per-box
-secret SHALL rotate only on platform recovery or explicit revocation.
+to the router. An absent or non-admitted record SHALL deny. Forwarding to an
+awake box SHALL make no control-plane call. A sleeping admitted owner's wake
+SHALL be requested from the broker's lifecycle authority. Admission and secret
+updates SHALL be installed atomically and in order, so an older snapshot can
+never restore a withdrawn route. A restarted router SHALL hold a current snapshot
+before serving. The per-box secret SHALL rotate only on platform recovery or
+explicit revocation, and rotation SHALL retire the box's acceptance of the old
+secret before the new route is admitted.
 
 #### Scenario: A box wakes without invalidating the route
 - **WHEN** a sleeping owner's box is woken
