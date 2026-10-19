@@ -573,9 +573,10 @@ else:
 print(json.dumps(key))
 """
                         result = subprocess.run(
-                            [sys.executable, '-c', code, str(run / 'broker/broker.sock')],
-                            user=1001, group=1001,
-                            extra_groups=[1102], input=json.dumps([action, owner_name, key]),
+                            ['setpriv', '--reuid=1001', '--regid=1001',
+                             '--groups=1100,1101,1102', '--bounding-set=-all', '--no-new-privs',
+                             sys.executable, '-c', code, str(run / 'broker/broker.sock')],
+                            input=json.dumps([action, owner_name, key]),
                             capture_output=True, text=True)
                         assert result.returncode == 0, result.stderr
                         return json.loads(result.stdout)

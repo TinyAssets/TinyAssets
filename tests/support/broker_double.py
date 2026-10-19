@@ -121,9 +121,10 @@ class _InProcessBroker:
         from tinyassets.broker.owner_reads import Plans
 
         identity_path = state / "state/owner-identities.db"
+        seeded_admission = identity_path.exists()
         identity_path.parent.mkdir(mode=0o700, exist_ok=True)
         self.identities = OwnerIdentities(identity_path, initialize=True, plans=Plans(data_root))
-        policy_store = PolicyStore(data_root, self.identities) if self.identities else None
+        policy_store = PolicyStore(data_root, self.identities) if seeded_admission else None
         if policy_store is not None:
             policy_store.bootstrap()
         # The same dispatcher factory the broker process uses, so the ledger
