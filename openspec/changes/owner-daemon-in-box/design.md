@@ -379,6 +379,18 @@ refusal and an unpriced-inference refusal with a current policy receipt.
 Platform recovery still refuses unavailable current spend or suspension authority;
 this deletion does not complete C3 recovery or the remaining C5/C6 work.
 
+**As built (b1, admission readers):** the broker identity database now holds one
+`owner_admission` record per owner. The router, channel and public-egress proxy,
+waker and boxhostd read that record through the same admission function.
+Authentication reads only terminal erasure. Billing and abuse submit independent
+reasons through the sole mutation API. Center retirement stops the box without
+changing admission or deleting its ingress secret; zero-center owners remain
+eligible. Cutover seeds the record and discards nonterminal center revocations.
+The temporary legacy-writer mirrors and equivalence matrix are marked for b2.
+The overlapping ledger, plan, revocation and center-eligibility reader decisions
+are removed. This completes neither the b2 authority deletion nor b3 deletion job,
+b4 routing snapshot/secret persistence or b5 recovery. Those remain lane b work.
+
 ### C7. One per-box egress allowlist at the proxy (T6)
 Each owner has one egress allowlist. Its default is derived from the owner's
 connected sources (the endpoints of their admitted connections and model

@@ -470,10 +470,12 @@ reported next-wake time.
 - **AND** scheduled wakes queue without eviction and behind interactive wakes
 
 #### Scenario: Retirement fences stale forwards
-- **WHEN** a center is retired or the shared door retires an account after persisting its deletion tombstone
-- **THEN** the broker durably revokes its box secret and requires boxhostd to stop the box before router credentials are cleared
-- **AND** a forward resolved beforehand fails at revoked ingress or the stopped socket
-- **AND** another retained center starts with a fresh secret; a deleted account can never wake or admit again
+- **WHEN** a center is retired
+- **THEN** the broker requires boxhostd to stop the box, preserving the owner's admission and ingress secret
+- **AND** a forward resolved beforehand fails at the stopped socket, and the next start receives the updated center list
+- **WHEN** the shared door retires an account after persisting its deletion tombstone
+- **THEN** the owner's admission is terminally erased and the box stops before router credentials are cleared
+- **AND** the deleted account can never wake or admit again
 
 #### Scenario: The door hands account deletion to the control plane
 - **WHEN** an authenticated owner submits same-origin JSON with `confirm == "DELETE"` to `/app/account/delete`
@@ -501,10 +503,10 @@ reported next-wake time.
 - **AND** a failed wake or report is retried, and duplicate delivery never runs the same occurrence twice
 
 #### Scenario: Suspension and retirement prevent scheduled wakes
-- **WHEN** an owner is billing-suspended, abuse-suspended or has no live admission
+- **WHEN** an owner's admission record is suspended, erased or absent
 - **THEN** a due report does not wake it
-- **AND** boxhostd rechecks broker plan suspension and admission after capacity waits
-- **AND** a missing plan is a loud error, never an unsuspended default
+- **AND** boxhostd rechecks the same admission record after capacity waits
+- **AND** missing launch-plan quota input is a loud launch error, never a default allowance
 - **AND** plan suspension is written only through the broker's fenced shared-door operation
 
 

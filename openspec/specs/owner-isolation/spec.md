@@ -2,9 +2,28 @@
 
 ## Purpose
 
-Define source integrity and crash-resume requirements for the owner-box cutover.
+Define owner admission, source integrity and crash-resume requirements for the owner-box cutover.
 
 ## Requirements
+
+### Requirement: Owner admission has one record and one writer
+
+Each owner SHALL have one admission record with one writer. The router, waker
+and egress proxy SHALL decide on that record alone, with the authenticated
+identity or bound channel selecting the box. A caller-supplied owner or box SHALL
+be refused, and an absent record SHALL deny. Billing and abuse suspension SHALL be
+separate reasons: clearing one SHALL NOT clear the other, and `erased` SHALL be
+terminal.
+
+#### Scenario: Retiring a center leaves the owner admitted
+- **WHEN** an owner retires one of their centers
+- **THEN** the owner's admission record stays `admitted`, and the broker stops the box so that its next start receives the updated center list
+- **AND** an admitted owner with zero live centers can still be woken and use egress
+
+#### Scenario: A suspended owner can still sign in
+- **WHEN** a billing-suspended owner signs in
+- **THEN** authentication succeeds, because only `erased` denies authentication
+- **AND** the owner's work is not served while suspended
 
 ### Requirement: Cutover repairs only named index drift
 
