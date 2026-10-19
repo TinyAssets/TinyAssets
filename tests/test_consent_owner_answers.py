@@ -148,10 +148,11 @@ def test_bearer_cannot_mint_retry_or_write_authority(home, monkeypatch, door):
 
         seed_owner_admission(home.parent, principal="owner", center=home.name)
         from tinyassets.broker.owner_identities import OwnerIdentities
+        from tinyassets.broker.owner_reads import Plans
         from tinyassets.broker.supervisor import get_supervisor
 
         get_supervisor(home.parent).server._owner_identities = OwnerIdentities(
-            home.parent / ".broker" / "owner-identities.db")
+            home.parent / ".broker/state/owner-identities.db", plans=Plans(home.parent))
         document = {"center": home.name, **(
             {"code_challenge": "a" * 43} if door == "oauth_begin" else {"preset_id": "sample"})}
     body = json.dumps(document).encode()

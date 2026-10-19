@@ -24,13 +24,14 @@ def post(operation, body):
     if admins:
         seed_owner_admission(base, principal=admins[0], center=center)
         from tinyassets.broker.owner_identities import OwnerIdentities
+        from tinyassets.broker.owner_reads import Plans
         from tinyassets.broker.supervisor import get_supervisor
 
         broker = get_supervisor(base)
         # A rail read may already have started this fixture's broker.
         if hasattr(broker, "server"):
             broker.server._owner_identities = OwnerIdentities(
-                base / ".broker" / "owner-identities.db")
+                base / ".broker/state/owner-identities.db", plans=Plans(base))
     raw = json.dumps(body).encode()
     from tinyassets.api.permissions import is_authenticated_request
     cookie = session_cookie() if is_authenticated_request() else ""

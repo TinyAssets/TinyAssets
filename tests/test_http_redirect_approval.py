@@ -25,6 +25,9 @@ OPTED = {**SOURCE, "redirect_mode": "public_https_get"}
 
 def _seed(base, mode):
     _make_universe(base, "u-1", admin="alice")
+    from tests.support.broker_double import seed_owner_admission
+
+    seed_owner_admission(base, principal="alice", center="u-1")
     _login("alice")
     ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
     verify_authenticated_principal=lambda: "alice")

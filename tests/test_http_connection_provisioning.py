@@ -235,11 +235,13 @@ def _seed_legacy_http_connection(
     """Write a PRE-FIX http connection: the legacy ("http",) scope token + an old
     secret + a grant carrying the legacy ``http_requests`` cap (the shape a
     connection provisioned before the #2521 scope fix actually has)."""
+    from tests.support.broker_double import seed_owner_admission
     from tinyassets.api.http_connection import _ids
     from tinyassets.broker.vault import write_credential_vault
     from tinyassets.storage.outbound_connections import ActionCap
 
     udir = _make_universe(base, uid, admin="founder")
+    seed_owner_admission(base, principal="founder", center=uid)
     conn_id, grant_id = _ids(universe_id=uid, destination="webhook:acme")
     write_credential_vault(
         udir,
