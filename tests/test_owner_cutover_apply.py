@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.support.migration_volumes import contents, install
 from tests.test_box_layout_migration import _archive
 from tests.test_broker_server import broker  # noqa: F401
 from tests.test_owner_cutover_census import _fingerprint, _round6_files, _sql
@@ -32,7 +33,7 @@ def test_cutover_preserves_cancellation_mapping_and_resumes_payable_checkout(cut
     assert plan.read("alice")["subscription_id"] == "sub_legacy"
     assert json.loads(plan.read("bob")["attempt"]) == original
     assert not (data / "b1/.subscription_state.db").exists()
-    assert not (store / "300002/b1/.subscription_state.db").exists()
+    assert not (contents(store) / "300002/b1/.subscription_state.db").exists()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data))
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_synthetic")
     # Use the actual shared writer through the test broker transport.
@@ -55,8 +56,8 @@ def test_root_vectors_never_inherit_knowledge_owner(cutover):
     assert loss["bytes"] == 2 * len(b"synthetic mixed root vectors")
     migration.apply(*cutover)
     for uid in (300001, 300002):
-        assert not (store / str(uid) / "lancedb").exists()
-    assert (store / "300001/knowledge.db").exists()
+        assert not (contents(store) / str(uid) / "lancedb").exists()
+    assert (contents(store) / "300001/knowledge.db").exists()
 
 
 @pytest.mark.parametrize("protected", [False, True])
@@ -90,7 +91,7 @@ os._exit(0)
     receipt = json.loads((data / ".owner-cutover.json").read_text())
     assert receipt["report"]["reindexed"] == ["reindexed: .tinyassets.db/drift"]
     for uid in (300001, 300002):
-        with sqlite3.connect(store / str(uid) / ".tinyassets.db") as db:
+        with sqlite3.connect(contents(store) / str(uid) / ".tinyassets.db") as db:
             assert db.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
             assert db.execute("SELECT COUNT(*) FROM agent_turns INDEXED BY drift"
                               ).fetchone() == (2,)
@@ -176,7 +177,7 @@ def test_published_workflow_keeps_local_definition_and_readable_commons(cutover)
         "account-0001": 1}
     migration.apply(*cutover)
     migration.verify(data, store)
-    tree = store / "300001"
+    tree = contents(store) / "300001"
     with sqlite3.connect(tree / ".tinyassets.db") as db:
         definition_id = db.execute(
             "SELECT branch_def_id FROM background_branch_bindings").fetchone()[0]
@@ -207,7 +208,7 @@ def test_apply_refuses_workflow_instance_without_local_definition(cutover, monke
 
         def lose_definition(*args):
             result = original(*args)
-            with sqlite3.connect(store / "300001/.tinyassets.db") as db:
+            with sqlite3.connect(contents(store) / "300001/.tinyassets.db") as db:
                 db.execute("DELETE FROM branch_definitions")
             return result
 
@@ -249,7 +250,7 @@ def test_automation_missing_definition_is_history_only_when_retired(
         "automations with non-empty retired_at kept as history"] == 1
     migration.apply(*cutover)
     migration.verify(data, store)
-    with sqlite3.connect(store / "300001/.automations.db") as db:
+    with sqlite3.connect(contents(store) / "300001/.automations.db") as db:
         assert db.execute("SELECT * FROM automations").fetchall() == [
             ("old", "a1", definition, retired_at)]
         assert db.execute("SELECT * FROM automation_attempts").fetchall() == [
@@ -285,10 +286,7 @@ def cutover(source, tmp_path, monkeypatch):
     # XFS mount/quota only: SQLite, rsync, permissions, journal and publication
     # are the real implementations. Real-mount proof belongs to the lead.
     monkeypatch.setattr(migration, '_mounted', lambda *_: None)
-    monkeypatch.setattr('tinyassets.boxes.destroy.verify_store', lambda *a: None)
-    monkeypatch.setattr(migration, '_xfs_quota', lambda *_: 'synthetic quota venue')
-    monkeypatch.setattr(migration, 'verify_tree', lambda *_: None)
-    monkeypatch.setattr(migration, 'verify_owner', lambda *_: None)
+    install(monkeypatch)
     data_backup = tmp_path / 'tinyassets-snapshot-2026-10-17T00-00-00Z.tar.gz'
     box_backup = tmp_path / 'tinyassets-box-store-2026-10-17T00-00-00Z.tar.gz'
     for path, tree, name in ((data_backup, source, '_data'), (box_backup, store, 'owners')):
@@ -329,11 +327,11 @@ def test_knowledge_stores_move_verbatim_with_counted_legacy_disposition(cutover,
     migration.apply(*cutover)
     migration.verify(data, store)
     for relative, content in originals.items():
-        assert (store / "300001" / relative).read_bytes() == content
-        assert not (store / "300002" / relative).exists()
+        assert (contents(store) / "300001" / relative).read_bytes() == content
+        assert not (contents(store) / "300002" / relative).exists()
     assert not (data / "knowledge.db").exists()
     if legacy_scope != "a1":
-        assert not (store / "300001/knowledge.db").exists()
+        assert not (contents(store) / "300001/knowledge.db").exists()
 
 
 @pytest.mark.parametrize('drop_blob', [False, True])
@@ -350,8 +348,8 @@ def test_round6_apply_resumes_hard_crash_between_verified_history_splits(cutover
         os._exit(0)
     _, status = os.waitpid(child, 0)
     assert os.waitstatus_to_exitcode(status) == 137
-    assert (store / '300001/.scheduler_fires.jsonl').is_file()
-    assert not (store / '300001/ledger.json').exists()
+    assert (contents(store) / '300001/.scheduler_fires.jsonl').is_file()
+    assert not (contents(store) / '300001/ledger.json').exists()
     assert json.loads((data / '.owner-cutover.json').read_text())['phase'] == 'build'
     for relative in placements:
         assert _fingerprint(data)[relative] == before[relative]
@@ -360,7 +358,7 @@ def test_round6_apply_resumes_hard_crash_between_verified_history_splits(cutover
     receipt = json.loads((data / '.owner-cutover.json').read_text())
     assert receipt['report']['history_splits'] == report['history_splits']
     for uid, fire_indices, ledger_indices in ((300001, (0, 2), (0, 2)), (300002, (1,), (1,))):
-        tree = store / str(uid)
+        tree = contents(store) / str(uid)
         assert [json.loads(line) for line in (tree / '.scheduler_fires.jsonl').read_text(
             ).splitlines()] == [fires[i] for i in fire_indices]
         assert json.loads((tree / 'ledger.json').read_text()) == [ledger[i] for i in ledger_indices]
@@ -382,7 +380,7 @@ def test_round6_apply_resumes_hard_crash_between_verified_history_splits(cutover
         else:
             assert not (data / relative).exists()
     for name, summary in report['history_splits'].items():
-        actual = sum(len(migration._history_entries(store / str(uid) / name))
+        actual = sum(len(migration._history_entries(contents(store) / str(uid) / name))
                      for uid in (300001, 300002))
         assert actual + summary['dropped'] == summary['total']
     published = (_fingerprint(data), _fingerprint(store))
@@ -466,15 +464,15 @@ def test_apply_splits_databases_seeds_stores_and_resumes(cutover, monkeypatch, c
         monkeypatch.setattr(migration, name, original)
         if crash == 'copy':
             # Residue from a hard process death, beyond Python exception cleanup.
-            (store / '300001/a1/.interrupted-copy').write_text('partial output')
-            (store / '300001/.tinyassets.db-journal').write_bytes(b'incomplete journal')
+            (contents(store) / '300001/a1/.interrupted-copy').write_text('partial output')
+            (contents(store) / '300001/.tinyassets.db-journal').write_bytes(b'incomplete journal')
             for filename in ('.layout.json.99999.tmp', '.owner-cutover.json.99999.tmp'):
                 residue = data / filename
                 residue.write_text('{')
                 residue.chmod(0o600)
     migration.apply(*cutover)
     assert not list(data.glob('*.99999.tmp'))
-    assert not (store / '300001/a1/.interrupted-copy').exists()
+    assert not (contents(store) / '300001/a1/.interrupted-copy').exists()
     marker = json.loads((data / '.layout.json').read_text())
     assert marker['owner_daemon'] == 1
     assert marker['state'] == 'stable'
@@ -489,7 +487,7 @@ def test_apply_splits_databases_seeds_stores_and_resumes(cutover, monkeypatch, c
         with pytest.raises(sqlite3.IntegrityError, match='permanent'):
             db.execute("UPDATE owner_identities SET machine_id=300009 WHERE principal='alice'")
     for owner, uid in [('alice', 300001), ('bob', 300002)]:
-        root = store / str(uid)
+        root = contents(store) / str(uid)
         assert root.stat().st_uid == uid
         with closing(sqlite3.connect(root / '.tinyassets.db')) as db:
             assert db.execute('SELECT DISTINCT owner_user_id FROM agent_turns').fetchall() == [
@@ -513,7 +511,7 @@ def test_apply_splits_databases_seeds_stores_and_resumes(cutover, monkeypatch, c
         assert db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall() == [
             ('user_accounts',)]
         assert db.execute('SELECT id FROM user_accounts').fetchall() == [('router-identity',)]
-    assert (store / '300001/runs/run-a.jsonl').read_text() == 'owned transcript'
+    assert (contents(store) / '300001/runs/run-a.jsonl').read_text() == 'owned transcript'
     assert not (data / 'runs').exists()
     assert not home.exists()
     assert before['losses']['account-0001']['files'][
@@ -522,7 +520,8 @@ def test_apply_splits_databases_seeds_stores_and_resumes(cutover, monkeypatch, c
     for tree in (data, store):
         assert all(b'legacy-secret-or-runtime-must-not-copy' not in p.read_bytes()
                    for p in tree.rglob('*') if p.is_file())
-    assert (store / '300001/a1/lancedb/index').read_bytes() == b'owner-vector-must-copy-verbatim'
+    assert (contents(store) / '300001/a1/lancedb/index').read_bytes() == (
+        b'owner-vector-must-copy-verbatim')
     with closing(sqlite3.connect(data / '.outside-client-authority.sqlite3')) as db:
         assert db.execute('SELECT * FROM outside_switch').fetchall() == [(1, 1)]
     assert before['tables']['.runs.db/runs']['dropped'] == 2
@@ -565,7 +564,7 @@ def test_final_verify_refuses_changed_committed_output(cutover, changed):
     migration.apply(*cutover)
     migration.verify(data, store)
     if changed == 'owner':
-        (store / '300001/a1/notes.txt').write_text('changed owner output')
+        (contents(store) / '300001/a1/notes.txt').write_text('changed owner output')
     elif changed == 'shared':
         _sql(data / '.broker/plans.db', "UPDATE plans SET tier='paid' WHERE owner='bob'")
     else:
@@ -613,12 +612,12 @@ def test_disaster_restore_keeps_erasure_and_destroys_restored_tree(cutover, tmp_
     runpy.run_path(str(REPO / "deploy/backup-pair.py"))["create"](
         data_archive, box_archive, tmp_path / "tinyassets-pair-2026-10-17T00-00-00Z.json")
     # Local sweep succeeded, broker retirement/custody is still unavailable.
-    (store / "300001/a1/notes.txt").unlink()
+    (contents(store) / "300001/a1/notes.txt").unlink()
     ErasureLedger(data).add("alice", {"unfinished_phases": ["owner_tree", "broker_egress"]})
     result = _restore_paired(cutover, tmp_path, disaster=True)
     assert result.returncode == 6, result.stdout + result.stderr
-    assert not (store / "300001").exists()
-    assert (store / "300002/b1/notes.txt").exists()
+    assert not (contents(store) / "300001").exists()
+    assert (contents(store) / "300002/b1/notes.txt").exists()
     with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
         assert db.execute("SELECT deleted FROM owner_box_revocations WHERE principal='alice'"
                           ).fetchone() == (1,)
@@ -706,7 +705,7 @@ def test_owner_content_links_survive_migration_and_rollback(cutover, tmp_path):
         assert (home / "notes.txt").stat().st_nlink == 2
 
     migration.apply(*cutover)
-    assert_links(store / "300001/a1")
+    assert_links(contents(store) / "300001/a1")
     result = _restore_paired(cutover, tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
     assert_links(data / "a1")
@@ -736,7 +735,7 @@ def test_publication_refuses_changed_verified_owner_tree(cutover, monkeypatch):
     with pytest.raises(OSError, match='before publication'):
         migration.apply(*cutover)
     monkeypatch.setattr(migration, '_publish_cutover', publish)
-    (cutover[1] / '300001/a1/notes.txt').write_text('changed after verification')
+    (contents(cutover[1]) / '300001/a1/notes.txt').write_text('changed after verification')
     with pytest.raises(RuntimeError, match='owner manifest changed'):
         migration.apply(*cutover)
     assert (cutover[0] / 'a1/notes.txt').read_text() == 'private history for a1'
@@ -800,11 +799,11 @@ def test_pretraffic_restore_ignores_migration_and_canary_writes(cutover, tmp_pat
     if mutation == 'shared':
         _sql(data / '.broker/plans.db', "UPDATE plans SET tier='paid' WHERE owner='bob'")
     elif mutation == 'owner':
-        (store / '300001/a1/notes.txt').write_text('post-cutover owner write')
+        (contents(store) / '300001/a1/notes.txt').write_text('post-cutover owner write')
     fence(data, staged, cutover_store=store, restored_store=restored_trees)
     assert (staged / 'a1/notes.txt').read_text() == 'private history for a1'
     assert list(restored_trees.iterdir()) == []
-    assert (store / '300001/a1').is_dir()
+    assert (contents(store) / '300001/a1').is_dir()
     assert not (data / 'a1').exists()
 
 
@@ -841,7 +840,7 @@ def test_normal_restore_refuses_after_traffic(cutover, tmp_path):
         backup.extractall(staged_parent, filter='fully_trusted')
     staged = staged_parent / '_data'
     migration.apply(*cutover)
-    (store / '300001/a1/notes.txt').write_text('accepted owner write loss')
+    (contents(store) / '300001/a1/notes.txt').write_text('accepted owner write loss')
     from tinyassets.router_traffic import open_traffic
 
     open_traffic(data)
@@ -918,7 +917,7 @@ def test_migrated_owner_processes_serve_history_requests_and_pause(
     broker.server._data_root = data
     broker.server._owner_identities = identities
     monkeypatch.setattr(relay_module, 'peer', lambda sock: (os.getpid(), 1002, 1002))
-    roots = {300001: store / '300001', 300002: store / '300002'}
+    roots = {300001: contents(store) / '300001', 300002: contents(store) / '300002'}
     with tempfile.TemporaryDirectory(prefix='ta-cutover-') as directory:
         run = Path(directory)
         relays = OwnerRelays(run / 'relay', SimpleNamespace(broker_socket=broker.path))
@@ -931,7 +930,9 @@ def test_migrated_owner_processes_serve_history_requests_and_pause(
                 secret.write_text('s' * 43)
                 secret.chmod(0o400)
                 runtime.start(uid, uid, relay=relays.bind(owner, uid), app_dir=app,
-                              secret_file=secret, memory_bytes=1024**3)
+                              secret_file=secret, memory_bytes=1024**3,
+                              volume_mount={"source": str(roots[uid])}, volume_generation=1,
+                              centers=("a1", "a2") if owner == "alice" else ("b1", "b2"))
             for owner, uid, centers in [('alice', 300001, ('a1', 'a2')),
                                         ('bob', 300002, ('b1', 'b2'))]:
                 socket = run / str(uid) / 'app.sock'
@@ -1001,7 +1002,7 @@ def test_migrated_owner_processes_serve_history_requests_and_pause(
         finally:
             runtime.close()
             relays.close()
-    assert _fingerprint(store / '300001') != json.loads(
+    assert _fingerprint(contents(store) / '300001') != json.loads(
         (data / '.owner-cutover.json').read_text())['owner_manifests']['300001']
     from tinyassets.router_traffic import open_traffic
 
@@ -1029,11 +1030,11 @@ def test_forward_cutover_preserves_ledger_and_reopens_copied_home_work(cutover, 
     ledger = ErasureLedger(data)
     assert ledger.contains("alice")
     assert not ledger.receipt("alice")["home_removed"]
-    assert (store / "300001").exists()
+    assert (contents(store) / "300001").exists()
     finish_erasures(data, store, daemons=recovery_daemons(store, monkeypatch))
-    assert not (store / "300001").exists()
+    assert not (contents(store) / "300001").exists()
     assert ledger.receipt("alice")["home_removed"]
-    assert (store / "300002/b1/notes.txt").exists()
+    assert (contents(store) / "300002/b1/notes.txt").exists()
 
 
 def test_cutover_imports_router_custody_and_host_erasure_facts(cutover):
@@ -1093,7 +1094,73 @@ def test_whole_copied_database_uses_same_integrity_verdict(cutover, relative, co
         assert report["ready"], report["refusals"]
         assert report["repairable_indexes"] == [f"repairable index: {relative}/facts_drift"]
         migration.apply(*cutover)
-        with closing(sqlite3.connect(store / "300001" / relative)) as db:
+        with closing(sqlite3.connect(contents(store) / "300001" / relative)) as db:
             assert db.execute("PRAGMA integrity_check(1000000000)").fetchall() == [("ok",)]
             rows = db.execute("SELECT universe_id FROM facts INDEXED BY facts_drift").fetchall()
             assert rows == [("a1",)]
+
+
+def test_migration_publishes_detached_owner_snapshots_and_preserves_binding(cutover):
+    data, store, *_ = cutover
+    migration.apply(*cutover)
+    volumes = migration._volumes(store)
+    assert not volumes.attached
+    assert not (store / "300001").exists()
+    assert not (store / "300002").exists()
+    with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
+        rows = db.execute("SELECT principal,uid,volume_generation,snapshot_id,"
+                          "snapshot_sha256,work FROM owner_volumes ORDER BY uid").fetchall()
+        assert len(rows) == 2
+        for owner, uid, generation, reference, digest, work in rows:
+            assert generation == 1 and work is None
+            assert len(reference) == 32 and len(digest) == 64
+            assert db.execute("SELECT principal,snapshot_sha256 FROM owner_snapshots "
+                              "WHERE snapshot_id=?", (reference,)).fetchone() == (owner, digest)
+            allowance = db.execute("SELECT bhard_bytes FROM box_records WHERE principal=?",
+                                   (owner,)).fetchone()[0]
+            assert volumes.size(uid) == allowance
+            events = [event for event, event_uid in volumes.events if event_uid == uid]
+            assert events[events.index("snapshot") - 1] == "detach"
+    migration.verify(data, store)
+    assert not volumes.attached
+
+
+def test_snapshot_failure_keeps_cutover_closed_and_resumes_same_reference(cutover, monkeypatch):
+    data, store, *_ = cutover
+    volumes = migration._volumes(store)
+    snapshot = volumes.snapshot
+    attempts = []
+
+    def fail(uid, snapshot_id):
+        attempts.append(snapshot_id)
+        raise OSError("synthetic remote unavailable")
+
+    monkeypatch.setattr(volumes, "snapshot", fail)
+    with pytest.raises(OSError, match="remote unavailable"):
+        migration.apply(*cutover)
+    assert not volumes.attached
+    journal = json.loads((data / ".owner-cutover.json").read_text())
+    assert journal["phase"] == "build"
+    assert json.loads((data / ".layout.json").read_text())["state"] == "migrating"
+    assert (data / "a1").is_dir()
+    assert journal["snapshots"]["300001"] == attempts[0]
+    monkeypatch.setattr(volumes, "snapshot", snapshot)
+    migration.apply(*cutover)
+    migration.verify(data, store)
+    with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
+        assert db.execute("SELECT snapshot_id FROM owner_volumes WHERE uid=300001"
+                          ).fetchone() == (attempts[0],)
+
+
+def test_migration_uses_existing_box_allowance(cutover):
+    data, store, *_ = cutover
+    allowance = 3 * 1024**3
+    _sql(data / ".broker/state/owner-identities.db", """
+        CREATE TABLE box_records (principal TEXT PRIMARY KEY, machine INT,
+                                  project_id INT, bhard_bytes INT);
+        INSERT INTO box_records VALUES ('alice',300001,300001,3221225472);
+    """)
+    assert migration._owner_plan(data)[0].quota == allowance
+    migration.apply(*cutover)
+    assert migration._volumes(store).size(300001) == allowance
+    migration.verify(data, store)

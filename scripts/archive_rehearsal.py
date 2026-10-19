@@ -334,6 +334,9 @@ class Venue:
             "--rm",
             "--user",
             "0",
+            "--privileged",
+            "-e",
+            "BACKUP_DEST=:local:/backup/owner-snapshots",
             "--device",
             self.device + ":" + self.device,
             "-v",
@@ -457,10 +460,11 @@ bash /support/deploy/backup-restore.sh
         """Reset disposable inputs between independent crash trials, never restore."""
         self.helper(
             "from pathlib import Path; import shutil, tarfile; "
-            "from tinyassets.boxes.destroy import tree; "
+            "from tinyassets.box_layout_migration import _volumes; "
             "root=Path('/data'); store=Path('/box-store'); "
-            "[tree(store,int(p.name),erase=True) for p in store.iterdir() "
-            "if p.name.isdecimal()]; "
+            "[_volumes(store).delete(int(p.stem)) for p in store.glob('*.img')]; "
+            "[shutil.rmtree(p) for p in store.iterdir() "
+            "if p.name in {'.locks', '.cutover-shared'}]; "
             "[shutil.rmtree(p) if p.is_dir() else p.unlink() for p in root.iterdir()]; "
             "archive=tarfile.open('/backup/original.tar.gz'); "
             "members=archive.getmembers(); "

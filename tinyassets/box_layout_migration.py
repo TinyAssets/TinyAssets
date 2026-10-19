@@ -18,11 +18,11 @@ import stat
 import subprocess
 import sys
 import time
+import uuid
 from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from deploy.box_project_readback import verify_owner, verify_tree
 from tinyassets import storage_layout
 from tinyassets.boxes.layout import OWNER_BOX_MIGRATION
 from tinyassets.broker.owner_identities import OWNER_ID_FIRST, OWNER_ID_LAST
@@ -159,7 +159,7 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
     add(".owner_devices.db", "owner_devices owner_notify_settings request_notifications", "owner",
         principals=("owner_user_id",))
     add(".broker/state/owner-identities.db", "owner_identities center_admissions box_records "
-        "owner_box_secrets owner_box_revocations", "broker")
+        "owner_box_secrets owner_box_revocations owner_volumes owner_snapshots", "broker")
     add(".broker/plans.db", "plans checkout_settlements", "broker")
     add(".broker/state/next-wake.db", "next_wakes", "broker")
     add(".broker/credential-custody.db", "llm_credential_deposit_owners llm_credential_custody "
@@ -1647,6 +1647,10 @@ def _owner_plan(data: Path) -> list[OwnerMove]:
             "SELECT event, principal, center, machine FROM center_admissions "
             "ORDER BY generation"
         ).fetchall()
+        allowances = {}
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='box_records'").fetchone():
+            allowances = {row[0]: row[1:] for row in db.execute(
+                "SELECT principal,machine,project_id,bhard_bytes FROM box_records")}
     owners: dict[str, set[str]] = {principal: set() for principal in identities}
     retired: set[str] = set()
     for event, principal, center, machine in admissions:
@@ -1685,8 +1689,12 @@ def _owner_plan(data: Path) -> list[OwnerMove]:
         account = account_type(report["plans"][label]["tier"])
         quota = int(limits_for(account).storage_bytes)
         quota = (quota // 1024) * 1024
-        if quota <= 0:
-            raise RuntimeError("owner quota is not positive")
+        if principal in allowances:
+            machine, project, quota = allowances[principal]
+            if (machine, project) != (uid, uid):
+                raise RuntimeError("owner allowance does not match permanent identity")
+        if type(quota) is not int or quota <= 0 or quota % 1024:
+            raise RuntimeError("owner quota is not positive and KiB aligned")
         plan.append(OwnerMove(principal, uid, centers, quota))
     return plan
 
@@ -1800,21 +1808,30 @@ def _copy(source: Path, target: Path, uid: int) -> None:
             f"rsync verification differs for {source}: {result.stdout.strip()[:2000]}")
 
 
-def _xfs_quota(store: Path, command: str) -> str:
-    # xfs_quota exits zero even when it cannot resolve a mounted block device.
-    # A successful process status alone did not establish any project quota.
-    result = subprocess.run(
-        ["xfs_quota", "-x", "-c", command, str(store)],
-        check=True, capture_output=True, text=True,
-    )
-    # Project IDs cannot be set on symlinks or device nodes; xfs_quota names
-    # each one it skips. Owner trees legitimately hold links, and a resumed
-    # cutover walks populated trees. Every other diagnostic still refuses.
-    errors = [line for line in result.stderr.splitlines()
-              if line.strip() and not line.startswith("xfs_quota: skipping special file ")]
-    if errors:
-        raise RuntimeError(f"xfs_quota {command}: " + "\n".join(errors))
-    return result.stdout
+def _volumes(store: Path):
+    """The one-shot migration alone receives an owner-content mount root (T4)."""
+    from tinyassets.boxes.volumes import OwnerVolumes
+
+    return OwnerVolumes(store, store.parent / (store.name + ".cutover-mounts"),
+                        os.environ["BACKUP_DEST"])
+
+
+@contextmanager
+def _attached(volumes, plan, *, create=False):
+    """Always release migration mounts, including a resumed interrupted attach."""
+    with ExitStack() as stack:
+        for owner in plan:
+            stack.enter_context(volumes.operation(owner.uid))
+            volumes.detach(owner.uid)
+            if create:
+                try:
+                    volumes.create(owner.uid, owner.quota)
+                except FileExistsError:
+                    if volumes.size(owner.uid) != owner.quota:
+                        raise RuntimeError("migration volume allowance changed") from None
+            stack.callback(volumes.detach, owner.uid)
+            volumes.attach(owner.uid)
+        yield volumes.mount_root
 
 
 def _owner_move_preconditions(data: Path, store: Path, marker: dict) -> list[OwnerMove]:
@@ -1826,8 +1843,6 @@ def _owner_move_preconditions(data: Path, store: Path, marker: dict) -> list[Own
     _owner_inode_preflight(data, plan)
     if any(entry.name != "lost+found" for entry in store.iterdir()):
         raise RuntimeError("box store must be empty before the cutover")
-    if not _xfs_quota(store, "report -p -n").strip():
-        raise RuntimeError("xfs_quota project report unavailable")
     report = census(data)
     if not report["ready"]:
         raise RuntimeError(f"cutover census refused: {report['refusals']}")
@@ -2040,8 +2055,11 @@ def _seed_shared(data: Path, shared: Path, inventory: dict, report: dict, plan) 
                    "machine INTEGER UNIQUE NOT NULL, project_id INTEGER UNIQUE NOT NULL, "
                    "bhard_bytes INTEGER NOT NULL)")
         for owner in plan:
-            db.execute("INSERT INTO box_records VALUES (?,?,?,?)",
+            db.execute("INSERT OR IGNORE INTO box_records VALUES (?,?,?,?)",
                        (owner.principal, owner.uid, owner.uid, owner.quota))
+            from tinyassets.broker.owner_volumes import provision
+
+            provision(db, owner.principal, owner.uid)
     from types import SimpleNamespace
 
     from tinyassets.broker.next_wake import NextWakeIndex
@@ -2194,7 +2212,7 @@ def _claim_sqlite_sidecars(path: Path) -> None:
             os.fchown(fd, 0, 0)
 
 
-def _build_cutover(data: Path, store: Path, journal: dict, *, apply_quotas=True) -> None:
+def _build_cutover(data: Path, store: Path, journal: dict) -> None:
     inventory = {}
     report = census(data, _inventory=inventory, _source_marker=journal["source_marker"])
     if not report["ready"]:
@@ -2210,103 +2228,120 @@ def _build_cutover(data: Path, store: Path, journal: dict, *, apply_quotas=True)
     shared = store / ".cutover-shared"
     _remove_tree(shared, store)
     shared.mkdir(mode=0o700)
-    for index, owner in enumerate(plan, 1):
-        tree = store / str(owner.uid)
-        tree.mkdir(mode=0o700, exist_ok=True)
-        if apply_quotas:
-            _xfs_quota(store, f"project -s -p {tree} {owner.uid}")
-            verify_tree(tree, owner.uid, True)
-            _xfs_quota(store, f"limit -p bhard={owner.quota // 1024}k {owner.uid}")
-        for center in owner.centers:
-            for relative in (center, f".agent-sessions/{center}", f".universe-sidecars/{center}"):
+    volumes = _volumes(store)
+    with _attached(volumes, plan, create=True) as mounts:
+        for index, owner in enumerate(plan, 1):
+            tree = mounts / str(owner.uid)
+            tree.mkdir(mode=0o700, exist_ok=True)
+            for center in owner.centers:
+                for relative in (center, f".agent-sessions/{center}",
+                                 f".universe-sidecars/{center}"):
+                    source = data / relative
+                    if source.exists():
+                        target = tree / relative
+                        target.mkdir(parents=True, exist_ok=True)
+                        _copy(source, target, owner.uid)
+            _crash_at(f"after_owner_tree:{index}")
+        for relative, target in inventory["file_targets"].items():
+            if isinstance(target, tuple):
+                parts = PurePosixPath(relative).parts
+                if (parts[0] in inventory["centers"] or (
+                    len(parts) > 1 and parts[0] in {".agent-sessions", ".universe-sidecars"}
+                    and parts[1] in inventory["centers"]
+                )):
+                    continue  # Already copied and checksum-verified by the tree rsync.
                 source = data / relative
-                if source.exists():
-                    target = tree / relative
-                    target.mkdir(parents=True, exist_ok=True)
-                    _copy(source, target, owner.uid)
-        _crash_at(f"after_owner_tree:{index}")
-    for relative, target in inventory["file_targets"].items():
-        if isinstance(target, tuple):
-            parts = PurePosixPath(relative).parts
-            if (parts[0] in inventory["centers"] or (
-                len(parts) > 1 and parts[0] in {".agent-sessions", ".universe-sidecars"}
-                and parts[1] in inventory["centers"]
-            )):
-                continue  # Already copied and checksum-verified by the tree rsync.
+                destination = mounts / str(inventory["owners"][target[1]]) / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if not (source.is_file() or source.is_symlink()):
+                    raise RuntimeError("unsupported run transcript inode")
+                shutil.copy2(source, destination, follow_symlinks=False)
+                if (source.is_symlink() and os.readlink(source) != os.readlink(destination)):
+                    raise RuntimeError("run transcript symlink copy differs")
+                if not source.is_symlink():
+                    with source.open("rb") as original, destination.open("rb") as copied:
+                        if hashlib.file_digest(original, "sha256").digest() != hashlib.file_digest(
+                                copied, "sha256").digest():
+                            raise RuntimeError("run transcript copy differs")
+            elif target in {"dropped", "regenerated"}:
+                # A center rsync can have included a classified cache/index. Match
+                # the census disposition in every output, not just in its report.
+                for owner in plan:
+                    destination = mounts / str(owner.uid) / relative
+                    if destination.is_file() or destination.is_symlink():
+                        destination.unlink()
+        _build_databases(data, mounts, shared, inventory)
+        _split_histories(data, mounts, inventory)
+        from tinyassets.router_traffic import initialize as initialize_traffic
+
+        initialize_traffic(shared)
+        # File-only shared state stays in its authority's custody and is included
+        # in the same verified publication as the extracted databases.
+        for relative, target in inventory["file_targets"].items():
+            if target not in {"broker", "router"} or relative in {
+                    ".layout.json", ".layout.lock", ".owner-cutover.json"}:
+                continue
+            if PurePosixPath(relative).parts[0] in inventory["centers"]:
+                continue  # Center-local subscription metadata is seeded as plans.
             source = data / relative
-            destination = store / str(inventory["owners"][target[1]]) / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if not (source.is_file() or source.is_symlink()):
-                raise RuntimeError("unsupported run transcript inode")
-            shutil.copy2(source, destination, follow_symlinks=False)
-            if (source.is_symlink() and os.readlink(source) != os.readlink(destination)):
-                raise RuntimeError("run transcript symlink copy differs")
-            if not source.is_symlink():
-                with source.open("rb") as original, destination.open("rb") as copied:
-                    if hashlib.file_digest(original, "sha256").digest() != hashlib.file_digest(
-                            copied, "sha256").digest():
-                        raise RuntimeError("run transcript copy differs")
-        elif target in {"dropped", "regenerated"}:
-            # A center rsync can have included a classified cache/index. Match
-            # the census disposition in every output, not just in its report.
-            for owner in plan:
-                destination = store / str(owner.uid) / relative
-                if destination.is_file() or destination.is_symlink():
-                    destination.unlink()
-    _build_databases(data, store, shared, inventory)
-    _split_histories(data, store, inventory)
-    from tinyassets.router_traffic import initialize as initialize_traffic
+            destination = shared / relative
+            if not destination.exists():
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+        _seed_shared(data, shared, inventory, report, plan)
+        from tinyassets.erasure_ledger import NAME, ErasureLedger, carry_forward, seed_legacy
+        from tinyassets.restore_recovery import _reserve_erasures, _schedule_trees
 
-    initialize_traffic(shared)
-    # File-only shared state stays in its authority's custody and is included
-    # in the same verified publication as the extracted databases.
-    for relative, target in inventory["file_targets"].items():
-        if target not in {"broker", "router"} or relative in {
-                ".layout.json", ".layout.lock", ".owner-cutover.json"}:
-            continue
-        if PurePosixPath(relative).parts[0] in inventory["centers"]:
-            continue  # Center-local subscription metadata is seeded as plans.
-        source = data / relative
-        destination = shared / relative
-        if not destination.exists():
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
-    _seed_shared(data, shared, inventory, report, plan)
-    from tinyassets.erasure_ledger import NAME, ErasureLedger, carry_forward, seed_legacy
-    from tinyassets.restore_recovery import _reserve_erasures, _schedule_trees
+        if (shared / NAME).exists():
+            os.chown(shared / NAME, 0, 0)
+            (shared / NAME).chmod(0o600)
+        ErasureLedger(shared).initialize()
+        ledger = carry_forward(data, shared)
+        seed_legacy(data, ledger, store_root=store)
+        _reserve_erasures(ledger, shared)
+        _schedule_trees(ledger, [store])
+        _crash_at("after_seeding")
+        from tinyassets.boxes.layout import BROKER_READ_GID, BROKER_UID, DAEMON_UID
+        from tinyassets.boxes.state import BoxHostState
 
-    if (shared / NAME).exists():
-        os.chown(shared / NAME, 0, 0)
-        (shared / NAME).chmod(0o600)
-    ErasureLedger(shared).initialize()
-    ledger = carry_forward(data, shared)
-    seed_legacy(data, ledger, store_root=store)
-    _reserve_erasures(ledger, shared)
-    _schedule_trees(ledger, [store])
-    _crash_at("after_seeding")
-    from tinyassets.boxes.layout import BROKER_READ_GID, BROKER_UID, DAEMON_UID
-    from tinyassets.boxes.state import BoxHostState
+        owner_manifests = {}
+        workflow_counts = {}
+        from tinyassets.restore_recovery import _repair_staged_databases
 
-    owner_manifests = {}
-    workflow_counts = {}
-    from tinyassets.restore_recovery import _repair_staged_databases
+        for owner in plan:
+            tree = mounts / str(owner.uid)
+            _repair_staged_databases(tree)
+            state = BoxHostState(tree / ".owner-boxd/boxhost.db")
+            state.epoch(owner.principal)
+            state.close()
+            for directory, dirs, files in os.walk(tree, followlinks=False):
+                for path in (Path(directory), *(Path(directory) / name for name in dirs + files)):
+                    mode = stat.S_IMODE(path.lstat().st_mode)
+                    os.chown(path, owner.uid, owner.uid, follow_symlinks=False)
+                    if not path.is_symlink():
+                        os.chmod(path, mode)
+            workflow_counts[inventory["labels"][owner.principal]] = (
+                _verify_workflow_definitions(tree))
+            owner_manifests[str(owner.uid)] = _durable_tree(tree)
+    # The detached image, not a shared directory archive, is the recovery unit.
+    from tinyassets.broker import owner_volumes
+    from tinyassets.broker.owner_identities import OwnerIdentities
 
+    identities = OwnerIdentities(shared / ".broker/state/owner-identities.db")
+    snapshots = journal.setdefault("snapshots", {})
     for owner in plan:
-        tree = store / str(owner.uid)
-        _repair_staged_databases(tree)
-        state = BoxHostState(tree / ".owner-boxd/boxhost.db")
-        state.epoch(owner.principal)
-        state.close()
-        for directory, dirs, files in os.walk(tree, followlinks=False):
-            for path in (Path(directory), *(Path(directory) / name for name in dirs + files)):
-                mode = stat.S_IMODE(path.lstat().st_mode)
-                os.chown(path, owner.uid, owner.uid, follow_symlinks=False)
-                if not path.is_symlink():
-                    os.chmod(path, mode)
-        workflow_counts[inventory["labels"][owner.principal]] = _verify_workflow_definitions(tree)
-        owner_manifests[str(owner.uid)] = _durable_tree(tree)
-        if apply_quotas:
-            verify_owner(store, tree, owner.uid, owner.quota)
+        with volumes.operation(owner.uid):
+            snapshot_id = snapshots.setdefault(str(owner.uid), uuid.uuid4().hex)
+            _atomic_json(data / ".owner-cutover.json", journal)
+            with closing(sqlite3.connect(identities.path)) as db, db:
+                db.execute("UPDATE owner_volumes SET work=? WHERE principal=?",
+                           (json.dumps({"kind": "snapshot", "snapshot_id": snapshot_id}),
+                            owner.principal))
+            snapshot_id, digest = volumes.snapshot(owner.uid, snapshot_id)
+            owner_volumes.dispatch(identities, {
+                "op": "BOX_VOLUME", "principal": owner.principal, "action": "publish",
+                "arguments": {"snapshot_id": snapshot_id, "sha256": digest}})
+            _crash_at(f"after_owner_snapshot:{owner.uid}")
     for directory, dirs, files in os.walk(shared, followlinks=False):
         for path in (Path(directory), *(Path(directory) / name for name in dirs + files)):
             relative = path.relative_to(shared).parts
@@ -2360,9 +2395,7 @@ def _publish_cutover(data: Path, store: Path, journal: dict) -> None:
         protect_root(data)
     if _durable_tree(shared) != journal["shared"]:
         raise RuntimeError("staged shared manifest changed")
-    for uid, manifest in journal["owner_manifests"].items():
-        if _durable_tree(store / uid) != manifest:
-            raise RuntimeError("staged owner manifest changed")
+    _verify_owner_volumes(store, journal)
     for directory, dirs, _ in os.walk(shared):
         for name in dirs:
             original = Path(directory) / name
@@ -2460,9 +2493,7 @@ def apply(data: Path, store: Path, data_backup: Path, box_backup: Path) -> None:
                 if journal.get("phase") != "complete":
                     if _durable_tree(store / ".cutover-shared") != journal["shared"]:
                         raise RuntimeError("staged shared manifest changed")
-                    for uid, manifest in journal["owner_manifests"].items():
-                        if _durable_tree(store / uid) != manifest:
-                            raise RuntimeError("staged owner manifest changed")
+                    _verify_owner_volumes(store, journal)
                     journal["phase"] = "complete"
                     journal["identity_manifest"] = cutover_identity_manifest(data)
                     journal["final_manifest"] = _durable_tree(
@@ -2510,12 +2541,21 @@ def verify(data: Path, store: Path) -> None:
         raise RuntimeError("owner cutover is not complete")
     if _durable_tree(data, exclude=(".owner-cutover.json",)) != journal["final_manifest"]:
         raise RuntimeError("committed shared manifest changed")
-    for owner in journal["plan"]:
-        tree = store / str(owner["uid"])
-        if _durable_tree(tree) != journal["owner_manifests"][str(owner["uid"])]:
-            raise RuntimeError("committed owner manifest changed")
-        _verify_workflow_definitions(tree)
-        verify_owner(store, tree, owner["uid"], owner["quota"])
+    _verify_owner_volumes(store, journal)
+
+
+def _verify_owner_volumes(store, journal):
+    """Migration verification only; runtime validates inside the owner boundary."""
+    plan = [OwnerMove(**owner) for owner in journal["plan"]]
+    volumes = _volumes(store)
+    with _attached(volumes, plan) as mounts:
+        for owner in plan:
+            tree = mounts / str(owner.uid)
+            if _durable_tree(tree) != journal["owner_manifests"][str(owner.uid)]:
+                raise RuntimeError("committed owner manifest changed")
+            _verify_workflow_definitions(tree)
+            if volumes.size(owner.uid) != owner.quota:
+                raise RuntimeError("committed owner volume allowance changed")
 
 
 def main() -> int:

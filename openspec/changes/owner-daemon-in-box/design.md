@@ -73,10 +73,20 @@ center retirement (`_box_retire_center` / `_center_admission` → `_stop_owner_b
 → `retire`) is stop-only and performs no volume operation. Runtime sockets and
 the secret are removed separately. The next wake releases a retained attachment.
 The project-quota module, owner-tree destroy helpers and `finish_erasures` are deleted.
-Migration, service environment wiring and the deployment rehearsal remain a2.
-The integrated XFS lifecycle proof passes under the pinned runsc with shared
-mount-root instrumentation. The synthetic archive rehearsal remains blocked in
-a2's `deploy/box-store-quotas.py`, which still imports the deleted `finish_erasures`.
+**As built (a2a migration):** stopped apply creates each owner's image at the
+retained box-record allowance (or the census-derived allowance being seeded at
+cutover). It copies and verifies the existing census disposition inside temporary
+volume attachments. Every attachment is cleanly detached before snapshotting;
+the first verified snapshot is published through `owner_volumes` before shared
+publication. Snapshot IDs survive a build retry. Publication and final verification
+reattach the images only within this one-shot migration exception. The old owner
+directories and project-quota setup/readback in migration are deleted. The deploy
+container has the loop/mount privileges and snapshot transport required by C1/C2;
+the disposable venue uses a local rclone destination with networking disabled.
+Service environment wiring and the complete recovery rehearsal remain pending.
+The integrated a1 XFS lifecycle proof passes under the pinned runsc with shared
+mount-root instrumentation. The old recovery harness still needs its paired
+restore and `finish_erasures` call sites replaced.
 
 ### C2. Durability is per-owner snapshots (T3)
 This replaces the paired whole-system restore, which rewound platform authority
@@ -123,8 +133,10 @@ commits the new generation and recovery reference together, and leaves the box
 asleep for its next ordinary wake.
 The in-box operation journal keys IDs by that generation and validates owner
 databases before admitting a restored generation. No fleet restore epoch enters
-the box. a2 must preserve bindings and supported recovery references in platform
-backup; b owns the deletion job and erasure of the UID's remote snapshot namespace.
+the box. a2a migration now publishes each initial verified snapshot and its permanent
+binding before completing cutover. Platform backup splitting and retention of its
+referenced snapshots remain unimplemented; b owns the deletion job and erasure of
+the UID's remote snapshot namespace.
 
 ### C3. Platform recovery is separate, and it keeps lifecycle authority
 The shared layer (identity, map, billing, broker custody, published data) has its
@@ -151,6 +163,9 @@ own backup. Restoring it never touches owner volumes.
   so a missing current credential can never select an old environment value.
   Unavailable authority leaves the affected admission closed.
 
+**Implementation status (a2a):** the platform-only restore and credential-source
+replacement are still pending. The existing paired recovery is not C3 acceptance.
+
 ### C4. Cutover rollback is the old system's restore, gated by durable eligibility
 Before ordinary traffic opens, rollback means stopping the new image, restoring
 the pre-cutover backup (old layout) and starting the old image. Deployment
@@ -160,6 +175,9 @@ permanently just before admission opens. A restarted workflow cannot recreate
 it. Missing or unreadable deployment state permits neither rollback nor opening
 traffic. This state belongs to deployment control, not the router. **Deleted:**
 the router's `traffic_opened_at` and `credentials_after` restore authority.
+
+**Implementation status (a2a):** deployment-owned durable eligibility is still
+pending. Router timestamps remain in the current implementation and do not satisfy C4.
 
 ### C5. The router only routes (T1)
 **Deleted from `owner_router.py:225–378`:** the account-deletion orchestration
@@ -731,12 +749,13 @@ are described in the 3c-2 as-built contract above.
 
 ## D6. Migration (one cutover, after a verified full backup)
 
-The one migration builds each admitted owner's box root on the box store,
-copies center trees and per-center platform files, and extracts that owner's
+The one migration builds each admitted owner's box root inside its own attached
+volume, copies center trees and per-center platform files, and extracts that owner's
 rows from shared root databases with their table/index/trigger schemas. It
 seeds the router, broker and published stores, regenerates platform-local state,
-verifies attribution totals and SQLite integrity, removes host owner trees,
-and publishes the final owner-daemon marker.
+verifies attribution totals and SQLite integrity, detaches the volumes, publishes
+their verified initial snapshot references, removes host owner trees, and publishes
+the final owner-daemon marker.
 
 Every row and file must be attributed to its destination, explicitly dropped,
 or explicitly regenerated. Anything else refuses the cutover. The `--archive` rehearsal on the private production copy must:

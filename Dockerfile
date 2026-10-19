@@ -186,6 +186,7 @@ RUN set -e; \
         libgomp1 \
         ffmpeg \
         ripgrep \
+        rclone \
         rsync \
         tini \
         util-linux \

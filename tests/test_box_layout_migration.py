@@ -15,11 +15,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.support.migration_volumes import contents, install
 from tinyassets import box_layout_migration as migration
 from tinyassets.usage_policy import AccountType, limits_for
 
 
 def _root_migration(monkeypatch) -> None:
+    install(monkeypatch)
     # Only the migration entry point impersonates root. Identity stores must
     # still validate the real uid that owns this unprivileged fixture.
     monkeypatch.setattr(migration, "os", SimpleNamespace(**(vars(os) | {"geteuid": lambda: 0})))
@@ -78,7 +80,7 @@ def _cutover_root(tmp_path: Path) -> tuple[Path, Path]:
     return data, store
 
 
-@pytest.mark.parametrize("refusal", ["store", "mount", "inode", "quota"])
+@pytest.mark.parametrize("refusal", ["store", "mount", "inode"])
 def test_read_only_preflight_refuses_without_changing_the_layout(tmp_path, monkeypatch, refusal):
     data, store = _cutover_root(tmp_path)
     original = (data / ".layout.json").read_bytes()
@@ -87,9 +89,8 @@ def test_read_only_preflight_refuses_without_changing_the_layout(tmp_path, monke
         migration.OwnerMove("alice", 300001, ("c1",), 1024**3)])
     monkeypatch.setattr(migration, "_mounted", lambda _: None)
     monkeypatch.setattr(migration, "_owner_inode_preflight", lambda *_: None)
-    monkeypatch.setattr(migration, "_xfs_quota", lambda *_: "project report")
     if refusal == "store":
-        (store / "300001").mkdir()
+        (store / "300001.img").touch()
         reason = "box store must be empty"
     elif refusal == "mount":
         monkeypatch.setattr(migration, "_mounted", lambda _: (_ for _ in ()).throw(
@@ -99,13 +100,10 @@ def test_read_only_preflight_refuses_without_changing_the_layout(tmp_path, monke
         monkeypatch.setattr(migration, "_owner_inode_preflight", lambda *_: (
             _ for _ in ()).throw(RuntimeError("unsupported owner inode")))
         reason = "unsupported owner inode"
-    else:
-        monkeypatch.setattr(migration, "_xfs_quota", lambda *_: "")
-        reason = "project report unavailable"
     with pytest.raises(RuntimeError, match=reason):
         migration.preflight(data, store)
     assert (data / ".layout.json").read_bytes() == original
-    assert not (store / "300002").exists()
+    assert not (contents(store) / "300002").exists()
 
 
 def test_read_only_preflight_accepts_clean_owner_split(tmp_path, monkeypatch):
@@ -118,7 +116,6 @@ def test_read_only_preflight_accepts_clean_owner_split(tmp_path, monkeypatch):
     monkeypatch.setattr(migration, "_owner_plan", lambda _, **_kwargs: [
         migration.OwnerMove("alice", 300001, ("c1",), 1024**3)])
     monkeypatch.setattr(migration, "_owner_inode_preflight", lambda *_: None)
-    monkeypatch.setattr(migration, "_xfs_quota", lambda *_: "project report")
     migration.preflight(data, store)
     assert not list(store.iterdir())
 
@@ -207,7 +204,6 @@ def test_preflight_reads_wal_without_writing_data(tmp_path, monkeypatch, live_wr
         _root_migration(monkeypatch)
         monkeypatch.setattr(migration, "_mounted", lambda _: None)
         monkeypatch.setattr(migration, "_owner_inode_preflight", lambda *_: None)
-        monkeypatch.setattr(migration, "_xfs_quota", lambda *_: "project report")
         plan = migration._owner_plan(data)
         assert plan[0].quota == limits_for(AccountType.SUBSCRIPTION).storage_bytes
         migration.preflight(data, store)
@@ -382,11 +378,6 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
         migration.subprocess, "run",
         lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
     )
-    monkeypatch.setattr(migration, "_xfs_quota", lambda _store, command:
-                        f"Setting up project {command.rsplit(' ', 1)[-1]} "
-                        if command.startswith("project ") else "project report")
-    monkeypatch.setattr(migration, "verify_tree", lambda *args, **kwargs: None)
-    monkeypatch.setattr(migration, "verify_owner", lambda *args, **kwargs: None)
 
     def copy(source, target, uid):
         if copy_fails:
@@ -407,7 +398,7 @@ def test_apply_commits_only_after_copy_or_leaves_restore_marker(
     else:
         assert marker["state"] == "stable"
         assert marker["box_layout"] == "owner-box"
-        assert (store / "300001" / "c1" / "note.txt").read_text() == "owner content"
+        assert (contents(store) / "300001" / "c1" / "note.txt").read_text() == "owner content"
         with sqlite3.connect(data / ".broker" / "state" / "owner-identities.db") as db:
             assert db.execute("SELECT principal, machine FROM box_records").fetchall() == [
                 ("person", 300001)
@@ -564,11 +555,6 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
     _root_migration(monkeypatch)
     monkeypatch.setattr(migration, "_mounted", lambda *args, **kwargs: None)
     monkeypatch.setattr(migration.subprocess, "run", run)
-    monkeypatch.setattr(migration, "_xfs_quota", lambda _store, command:
-                        f"Setting up project {command.rsplit(' ', 1)[-1]} "
-                        if command.startswith("project ") else "project report")
-    monkeypatch.setattr(migration, "verify_tree", lambda *args, **kwargs: None)
-    monkeypatch.setattr(migration, "verify_owner", lambda *args, **kwargs: None)
     (data / 'home/Activities.md').write_text('Owner activity instructions')
 
     data_backup = tmp_path / "tinyassets-snapshot-2026-10-15T00-00-00Z.tar.gz"
@@ -578,8 +564,8 @@ def test_owner_split_fixture_census_moves_old_layout_and_refuses_absent_or_ambig
 
     migration.apply(data, store, data_backup, box_backup)
 
-    assert (store / "300001" / "home" / "note.txt").read_text() == "owner sentence"
-    assert (store / "300001" / "home" / "Activities.md").read_text() == (
+    assert (contents(store) / "300001" / "home" / "note.txt").read_text() == "owner sentence"
+    assert (contents(store) / "300001" / "home" / "Activities.md").read_text() == (
         "Owner activity instructions")
     assert not (data / "home").exists()
     marker = json.loads((data / ".layout.json").read_text())
@@ -612,15 +598,6 @@ def test_xfs_mount_accepts_real_prjquota_output(monkeypatch, tmp_path):
     monkeypatch.setattr(migration.subprocess, "run", discard)
     with pytest.raises(RuntimeError, match="no discard"):
         migration._mounted(tmp_path)
-
-
-def test_xfs_quota_refuses_zero_exit_with_mount_error(monkeypatch, tmp_path):
-    def failed_setup(*args, **kwargs):
-        return subprocess.CompletedProcess(args[0], 0, "", "xfs_quota: cannot setup path for mount")
-
-    monkeypatch.setattr(migration.subprocess, "run", failed_setup)
-    with pytest.raises(RuntimeError, match="cannot setup path for mount"):
-        migration._xfs_quota(tmp_path, "project -s -p /box-store/300001 300001")
 
 
 @pytest.mark.skipif(
@@ -671,21 +648,3 @@ def test_real_copy_preserves_setgid_sticky_and_setuid_modes(tmp_path):
     for name, mode in modes.items():
         assert stat.S_IMODE((guest / name).stat().st_mode) == mode
         assert (guest / name).stat().st_uid == 300001
-
-
-def test_xfs_quota_ignores_only_skipped_special_files(tmp_path, monkeypatch):
-    # A resumed cutover walks populated owner trees; their symlinks make
-    # xfs_quota print a skip notice that must not refuse the move.
-    import subprocess
-
-    from tinyassets import box_layout_migration as migration
-
-    def run(stderr):
-        monkeypatch.setattr(migration.subprocess, "run", lambda *a, **k:
-                            subprocess.CompletedProcess(a[0], 0, "report", stderr))
-        return migration._xfs_quota(tmp_path, "project -s -p tree 300001")
-
-    skipped = "xfs_quota: skipping special file /box-store/300001/a1/shortcut\n"
-    assert run(skipped) == "report"
-    with pytest.raises(RuntimeError, match="cannot find mount point"):
-        run(skipped + "xfs_quota: cannot find mount point for path\n")

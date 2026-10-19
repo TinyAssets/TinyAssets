@@ -335,7 +335,8 @@ def test_disposable_runner_refuses_fault_on_arbitrary_paths():
     assert result.stderr.strip() == "rehearsal fault requires disposable volumes"
 
 
-def test_migration_container_overrides_image_fault_default(tmp_path):
+@pytest.mark.parametrize("mode", ["check", "apply", "verify"])
+def test_migration_container_overrides_image_fault_default(tmp_path, mode):
     import shutil
 
     fake = tmp_path / "docker"
@@ -345,7 +346,7 @@ def test_migration_container_overrides_image_fault_default(tmp_path):
     result = subprocess.run(
         [bash, str(ROOT / "deploy/deploy_fail_safe.sh"), "--box-migration-container",
          "disposable-data", "/disposable-store", "/dev/loop0", "/disposable-backup",
-         "unused-image", "check", "/data"],
+         "unused-image", mode, "/data"],
         env={**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
              "CUTOVER_CRASH_AT": "", "MSYS_NO_PATHCONV": "1"},
         capture_output=True, text=True,
@@ -353,7 +354,13 @@ def test_migration_container_overrides_image_fault_default(tmp_path):
     assert result.returncode == 0, result.stderr
     args = result.stdout.splitlines()
     assert args[args.index("CUTOVER_CRASH_AT=") - 1] == "-e"
-    assert args[-5:] == ["-B", "-m", "tinyassets.box_layout_migration", "check", "/data"]
+    assert args[-5:] == ["-B", "-m", "tinyassets.box_layout_migration", mode, "/data"]
+    assert args[args.index("--network") + 1] == "none"
+    if mode in {"apply", "verify"}:
+        assert "--privileged" in args
+        assert "BACKUP_DEST=:local:/snapshots/owner-snapshots" in args
+        assert "/disposable-backup:/snapshots" in args
+        assert not any("/root/.config/rclone" in argument for argument in args)
 
 
 def test_production_restore_cannot_load_recorded_provider(tmp_path):
@@ -677,12 +684,16 @@ assert not Path('/data/.erasure-ledger.sqlite3').exists()
                              "protect_root(Path('/data'))")
             if mode in {"apply", "verify"} and result.returncode == 0:
                 venue.helper("""
-import fcntl, os, stat
+import fcntl, json, os, stat
 root = Path('/data')
-home = Path('/box-store/300001/a1')
-assert (home / 'shortcut').readlink() == Path('notes.txt')
-assert (home / 'shortcut').read_text() == 'private history for a1'
-assert (home / 'notes.txt').samefile(home / 'notes-copy.txt')
+from tinyassets.box_layout_migration import _volumes, _attached, OwnerMove
+journal = json.loads((root / '.owner-cutover.json').read_text())
+plan = [OwnerMove(**owner) for owner in journal['plan']]
+with _attached(_volumes(Path('/box-store')), plan) as mounts:
+    home = mounts / '300001/a1'
+    assert (home / 'shortcut').readlink() == Path('notes.txt')
+    assert (home / 'shortcut').read_text() == 'private history for a1'
+    assert (home / 'notes.txt').samefile(home / 'notes-copy.txt')
 lock = root / '.layout.lock'
 assert os.geteuid() == 0
 assert Path('/proc/sys/fs/protected_regular').read_text().strip() == '2'

@@ -131,6 +131,7 @@ box_migration_container() {  # $1 = check|preflight|apply, then module arguments
   local posture=(--user 0)
   local data_mount="${BOX_MIGRATION_DATA:-tinyassets-data}:/data:ro"
   local extra=()
+  local network=none
   if [ "$1" != "check" ]; then
     local store_device
     store_device="${BOX_MIGRATION_DEVICE:-$(findmnt --mountpoint "${BOX_MIGRATION_STORE:-/var/lib/boxhostd/owners}" -no SOURCE)}" || return 1
@@ -142,11 +143,26 @@ box_migration_container() {  # $1 = check|preflight|apply, then module arguments
     # ownership and mode capabilities belong to apply alone.
     posture=(--user 0 --cap-add DAC_OVERRIDE --cap-add SYS_ADMIN)
     extra=(--device "${store_device}:${store_device}:r")
-    if [ "$1" = "apply" ]; then
-      posture+=(--cap-add CHOWN --cap-add FOWNER --cap-add FSETID)
-      data_mount="${BOX_MIGRATION_DATA:-tinyassets-data}:/data"
+    if [ "$1" = "apply" ] || [ "$1" = "verify" ]; then
+      # C1/T4: this one-shot exception formats and attaches owner volumes in
+      # the container's mount namespace; application containers never do so.
+      posture=(--user 0 --privileged)
       extra+=(-v "${MIGRATION_BACKUP_DIR}:/backup:ro" \
         --mount type=bind,src=${BOX_MIGRATION_STORE:-/var/lib/boxhostd/owners},dst=/box-store)
+      if [ "$1" = "apply" ]; then
+        data_mount="${BOX_MIGRATION_DATA:-tinyassets-data}:/data"
+      fi
+      if [ "${BOX_MIGRATION_DISPOSABLE:-0}" = 1 ]; then
+        # Synthetic remote, preserved across disposable migration containers.
+        extra+=(-v "${MIGRATION_BACKUP_DIR}:/snapshots" \
+          -e BACKUP_DEST=:local:/snapshots/owner-snapshots)
+      else
+        local snapshot_dest
+        snapshot_dest="$(set -a; source "$ENV_FILE"; printf '%s' "${BACKUP_DEST:?}")" || return 1
+        extra+=(-e "BACKUP_DEST=$snapshot_dest" \
+          -v /root/.config/rclone:/root/.config/rclone:ro)
+        [ "$1" != "apply" ] || network=bridge
+      fi
     else
       extra+=(--mount type=bind,src=${BOX_MIGRATION_STORE:-/var/lib/boxhostd/owners},dst=/box-store,readonly)
     fi
@@ -159,7 +175,7 @@ box_migration_container() {  # $1 = check|preflight|apply, then module arguments
   fi
   extra+=(-e "CUTOVER_CRASH_AT=$crash")
   timeout "${MIGRATION_TIMEOUT:-1800}" docker run --rm --cap-drop ALL ${posture[@]+"${posture[@]}"} \
-    --security-opt no-new-privileges=true --network none --memory=2g --memory-swap=2g \
+    --security-opt no-new-privileges=true --network "$network" --memory=2g --memory-swap=2g \
     --tmpfs /tmp:rw,size=512m,mode=1777 \
     -v "$data_mount" ${extra[@]+"${extra[@]}"} \
     --entrypoint python "$NEW_IMAGE" -B -m tinyassets.box_layout_migration "$@"
