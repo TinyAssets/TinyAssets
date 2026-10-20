@@ -1,7 +1,7 @@
 """Router-held hook token -> owner map. No branch, payload or owner-store reads.
 
 The cutover seeds digests from existing hooks. Box token publication uses this
-same map through the shared-state broker seam; delivery never opens hook rows.
+same map through the fixed owner relay; delivery never opens hook rows.
 """
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from tinyassets.boxes.layout import BROKER_READ_GID, BROKER_UID, DAEMON_UID
 
 #: Router rows one owner may hold, so no box can grow the shared map unbounded.
 MAX_HOOKS_PER_OWNER = 200
+RELAY_UID = 0
 
 #: One router process answers every box's credential request. Serializing them
 #: means no mint can interleave with an account revocation.
@@ -93,8 +94,13 @@ def credential_socket(root: Path) -> Path:
 
 
 def broker_request(root: Path, owner: str, request: dict) -> dict:
-    """Broker forwarding only: the router remains the sole credential writer."""
+    """Broker's account-revocation seam; owner mints come directly from the relay."""
     return _request(root, {"op": "ROUTER_CREDENTIAL", "owner": owner, "request": request})
+
+
+def relay_request(root: Path, owner: str, request: dict) -> dict:
+    """Root relay supplies only its fixed binding; boxes cannot supply an owner."""
+    return _request(root, {"op": "RELAY_CREDENTIAL", "owner": owner, "request": request})
 
 
 def routing_request(root: Path, request: dict) -> dict:
@@ -118,7 +124,7 @@ def _request(root, document):
 
 
 def dispatch(root: Path, owner: str, request: dict) -> dict:
-    """Only router state; the owner argument comes from the authenticated broker."""
+    """Only router state; owner comes from the authenticated service binding."""
     from tinyassets.broker.owner_identities import validate_principal
 
     validate_principal(owner)
@@ -127,11 +133,11 @@ def dispatch(root: Path, owner: str, request: dict) -> dict:
     if request == {"operation": "revoke_account"}:
         revoke_account(root, owner)
         return {"revoked": True}
-    with _DISPATCH:
-        from tinyassets.broker.owner_identities import owner_admission
+    from tinyassets.routing_snapshot import snapshot
 
-        if owner_admission(root, owner).state == "erased":
-            raise PermissionError("owner account is deleted")
+    projection = snapshot(root)
+    with _DISPATCH:
+        projection.route(owner)
         return _dispatch(root, owner, request)
 
 
@@ -140,10 +146,6 @@ def revoke_account(root: Path, owner: str):
     from tinyassets.api_keys import ApiKeyStore
 
     with _DISPATCH:
-        from tinyassets.broker.owner_identities import owner_admission
-
-        if owner_admission(root, owner).state != "erased":
-            raise RuntimeError("account deletion requires a tombstone")
         _revoke_account(root, owner, ApiKeyStore(root))
 
 
@@ -210,37 +212,46 @@ def routing_dispatch(root, request):
         return {"instance": snapshot(root).instance}
     if (request.get("operation") == "routing_install"
             and set(request) == {"operation", "instance", "revision", "records"}):
-        revision = snapshot(root).install(request["instance"], request["revision"],
-                                          request["records"])
+        # C13: a mint either precedes withdrawal or sees its installed absence.
+        # Revocation shares this lock; no per-call control-plane lookup is needed.
+        with _DISPATCH:
+            revision = snapshot(root).install(request["instance"], request["revision"],
+                                              request["records"])
         return {"revision": revision}
     raise ValueError("invalid routing publication")
 
 
 @asynccontextmanager
 async def serving(root: Path):
-    """Private router RPC: only the broker's kernel identity may supply an owner."""
+    """Broker publication/revocation and root relay's fixed owner binding."""
     from tinyassets.broker.server import peer_uid
 
     async def handle(reader, writer):
         answer = None
         try:
             caller = peer_uid(writer.get_extra_info("socket"))
-            if caller != BROKER_UID:
+            if caller not in {RELAY_UID, BROKER_UID}:
                 return
             frame = await asyncio.wait_for(rf.read_frame(reader), 30)
             if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
                 return
             doc = frame.control()
-            if set(doc) == {"op", "request"} and doc["op"] == "ROUTING_SNAPSHOT":
+            if (caller == BROKER_UID and set(doc) == {"op", "request"}
+                    and doc["op"] == "ROUTING_SNAPSHOT"):
                 result = routing_dispatch(root, doc["request"])
                 answer = {"op": "ROUTING_SNAPSHOT_IS", "result": result}
-            elif (set(doc) == {"op", "owner", "request"}
-                    and doc["op"] == "ROUTER_CREDENTIAL"):
+            elif (set(doc) == {"op", "owner", "request"} and
+                  ((caller == BROKER_UID and doc["op"] == "ROUTER_CREDENTIAL")
+                   or (caller == RELAY_UID and doc["op"] == "RELAY_CREDENTIAL"))):
+                if doc["op"] == "RELAY_CREDENTIAL" and doc["request"].get("operation") not in {
+                        "key_mint", "key_list", "key_revoke", "hook_mint", "hook_revoke"}:
+                    raise PermissionError("relay credential operation refused")
                 result = await asyncio.to_thread(dispatch, root, doc["owner"], doc["request"])
                 answer = {"op": "ROUTER_CREDENTIAL_IS", "result": result}
             else:
                 raise ValueError("invalid router request")
-        except (ValueError, PermissionError, sqlite3.Error, OSError, TimeoutError):
+        except (ValueError, LookupError, RuntimeError, PermissionError, sqlite3.Error,
+                OSError, TimeoutError):
             answer = {"op": "ROUTER_CREDENTIAL_REFUSED"}
         finally:
             try:

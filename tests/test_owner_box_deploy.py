@@ -18,77 +18,67 @@ from scripts import roll_owner_boxes as driver
 SHA = "a" * 40
 
 
-@pytest.mark.parametrize("outcome,code", [
-    ("rolled", 0), ("asleep", 0), ("deferred_busy", 0), ("rolled_back", 1), ("error", 1)])
-def test_receipt_outcomes_and_exit_codes_are_allowlisted(outcome, code):
-    def control(uid):
-        if uid is None:
-            return {"uids": [300001, 300002], "asleep": 0}
-        if uid == 300002:
-            return {"uid": uid, "outcome": "rolled"}
-        if outcome == "error":
-            return {"error": ".connect/private-key SHOULD NEVER BE PRINTED"}
-        result = {"uid": uid, "outcome": outcome}
-        if outcome == "rolled_back":
-            result["reason"] = "health_failed"
-        return result
-
-    receipt, actual = driver.run(control, lambda: True)
+@pytest.mark.parametrize("counts,code", [
+    ({"slept": 2, "asleep": 3, "incomplete": 0}, 0),
+    ({"slept": 1, "asleep": 3, "incomplete": 1}, 1),
+    ({"error": "private owner data"}, 1),
+    ({"slept": -1, "asleep": 0, "incomplete": 0}, 1),
+])
+def test_receipt_counts_are_allowlisted_and_incomplete_drain_blocks_canary(counts, code):
+    calls = []
+    receipt, actual = driver.run(lambda: counts, lambda: calls.append("canary") or True,
+                                 lambda: None)
     assert actual == code
-    assert set(receipt) == {"counts", "failing_uids", "canary", "control"}
-    assert set(receipt["counts"]) == {*driver.OUTCOMES, "failed"}
-    assert sum(receipt["counts"].values()) == 2
-    assert receipt["failing_uids"] == ([300001] if code else [])
-    assert receipt["canary"] == "passed"
-    assert ".connect" not in json.dumps(receipt)
-
-
-def test_canary_failure_and_control_failure_are_fatal_and_do_not_leak():
-    def broken(uid):
-        raise RuntimeError("owner private error")
-
-    receipt, code = driver.run(broken, lambda: False)
-    assert code == 1
-    assert receipt["control"] == receipt["canary"] == "failed"
-    assert receipt["failing_uids"] == []
+    assert set(receipt) == {"counts", "canary", "control"}
+    assert set(receipt["counts"]) == set(driver.OUTCOMES)
+    assert calls == ([] if code else ["canary"])
     assert "private" not in json.dumps(receipt)
 
 
-def test_sleeping_census_is_counted_without_per_box_calls():
+def test_canary_failure_and_control_failure_are_fatal_and_do_not_leak():
+    def broken():
+        raise RuntimeError("owner private error")
+    receipt, code = driver.run(broken, lambda: pytest.fail("control failed"), lambda: None)
+    assert code == 1
+    assert receipt["control"] == receipt["canary"] == "failed"
+    assert "private" not in json.dumps(receipt)
+    receipt, code = driver.run(lambda: {"slept": 1, "asleep": 0, "incomplete": 0},
+                               lambda: False, lambda: None)
+    assert code == 1 and receipt["canary"] == "failed"
+
+
+def test_deploy_uses_one_control_call_regardless_of_fleet_size():
     calls = []
-
-    def control(uid):
-        calls.append(uid)
-        assert uid is None
-        return {"uids": [], "asleep": 1000}
-
-    receipt, code = driver.run(control, lambda: True)
-    assert code == 0 and receipt["counts"]["asleep"] == 1000
-    assert calls == [None]
+    def control():
+        calls.append("deploy")
+        return {"slept": 6, "asleep": 1000, "incomplete": 0}
+    receipt, code = driver.run(control, lambda: True, lambda: None)
+    assert code == 0 and receipt["counts"] == {"slept": 6, "asleep": 1000, "incomplete": 0}
+    assert calls == ["deploy"]
 
 
-def test_roll_concurrency_is_bounded_to_two():
-    barrier = threading.Barrier(2)
-    lock = threading.Lock()
-    active, peak = 0, 0
+def test_canary_public_wake_precedes_drain_and_acceptance(router_box):
+    origin, state = router_box
+    events = []
 
-    def control(uid):
-        nonlocal active, peak
-        if uid is None:
-            return {"uids": [300001, 300002, 300003, 300004], "asleep": 0}
-        with lock:
-            active += 1
-            peak = max(peak, active)
-        barrier.wait(timeout=5)
-        with lock:
-            active -= 1
-        return {"uid": uid, "outcome": "rolled"}
+    def prepare():
+        assert canary.wake(origin)[2] == "300001"
+        events.append("awake")
 
-    receipt, code = driver.run(control, lambda: True)
-    assert code == 0 and receipt["counts"]["rolled"] == 4
-    assert peak == 2
-    with pytest.raises(ValueError):
-        driver.run(control, lambda: True, concurrency=3)
+    def control():
+        assert events == ["awake"]
+        events.append("slept")
+        return {"slept": 1, "asleep": 1000, "incomplete": 0}
+
+    def accept():
+        assert events == ["awake", "slept"]
+        return canary.probe(origin, SHA)
+
+    receipt, code = driver.run(control, accept, prepare)
+    assert code == 0 and receipt["canary"] == "passed"
+    assert state.calls == ["/app/canary-sign-in", "/app/canary-sign-in",
+                           "/mcp", "/mcp", "/mcp"]
+    assert state.broker_turns == 1
 
 
 @pytest.fixture
@@ -179,10 +169,11 @@ def test_driver_cli_writes_one_receipt_and_invokes_canary(tmp_path, monkeypatch)
 
     def ssh(command, **kwargs):
         calls.append(command)
-        return SimpleNamespace(stdout=json.dumps({"uids": [], "asleep": 0}))
+        return SimpleNamespace(stdout=json.dumps({"slept": 0, "asleep": 0, "incomplete": 0}))
 
     monkeypatch.setattr(driver.subprocess, "run", ssh)
     monkeypatch.setattr(canary, "probe", lambda *args: True)
+    monkeypatch.setattr(canary, "wake", lambda *args: True)
     receipt = tmp_path / "receipt.json"
     assert driver.main(["--image-ref", "synthetic@sha256:" + "a" * 64,
                         "--ssh-target", "synthetic", "--ssh-key", "unused",

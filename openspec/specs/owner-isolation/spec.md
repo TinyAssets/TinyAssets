@@ -183,6 +183,7 @@ admission closed.
 - **WHEN** a job completed after the restored platform backup
 - **THEN** its current off-host receipt restores terminal erasure before any admission opens
 - **AND** completed destructive steps are not executed again
+- **AND** reassertion removes restored snapshot catalog rows and published references through the map erase transition
 
 #### Scenario: Recovery finishes deletions before admitting anyone
 - **WHEN** the shared layer is restored and services start with admission closed
@@ -205,3 +206,46 @@ enqueue SHALL return after its first step; later steps SHALL run as broker tasks
 - **THEN** the call returns after the owner is erased, channels are closed and routing is withdrawn
 - **AND** destroy and snapshot deletion run afterwards as a broker task
 
+
+### Requirement: Deploys start each box on the published image at wake
+A deploy SHALL publish the new image and drain awake boxes to sleep between turns.
+Each box SHALL start the published image on its next wake. Rolling back an image
+SHALL be republishing the previous image. There SHALL be no per-box roll or
+per-box rollback.
+
+#### Scenario: Drain never kills a turn
+- **WHEN** a deploy drains an awake box with a turn in progress
+- **THEN** new work admission closes atomically, and the turn finishes before the box sleeps
+- **AND** a timeout is reported as an incomplete drain, never a killed turn
+
+#### Scenario: A sleeping box wakes on the new image
+- **WHEN** a new image is published and a sleeping owner's box next wakes
+- **THEN** the box starts on the new image, and the canary acceptance runs on that path
+
+#### Scenario: Canary proves sleep and public wake on the image
+- **WHEN** deployment acceptance runs
+- **THEN** public preflight wakes the configured canary, and the normal deployment drain completes its sleep
+- **AND** only a complete drain proceeds to a public router wake on the published immutable image, revision proof and a successful model turn
+
+
+#### Scenario: Canary proves sleep and public wake on the image
+- **WHEN** deployment acceptance runs
+- **THEN** public preflight wakes the configured canary, and the normal deployment drain completes its sleep
+- **AND** only a complete drain proceeds to a public router wake on the published immutable image, revision proof and a successful model turn
+
+### Requirement: Credential mints go directly from bound relay to identity
+The owner-bound relay SHALL forward key and hook operations directly to identity.
+Identity SHALL authenticate the relay service, take the owner only from its fixed
+binding and read admission from its installed routing snapshot. Missing admission
+SHALL deny. Mints, withdrawal and credential revocation SHALL serialize. The broker
+SHALL NOT forward owner mints and identity SHALL NOT query admission per mint.
+
+#### Scenario: An admitted owner mints with broker lookups unavailable
+- **WHEN** the owner's routing snapshot is installed and all broker lookups are unavailable
+- **THEN** the bound relay mints through identity without contacting the broker
+- **AND** a substituted owner, missing record or non-service peer cannot mint
+
+#### Scenario: Withdrawal orders a mint already in flight
+- **WHEN** a mint and owner withdrawal run concurrently
+- **THEN** the mint completes before withdrawal acknowledgement or is refused by the withdrawn projection
+- **AND** withdrawal retires the relay endpoint before acknowledgement, including when snapshot publication is unavailable

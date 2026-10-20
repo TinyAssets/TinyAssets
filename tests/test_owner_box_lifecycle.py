@@ -63,7 +63,8 @@ def fleet(tmp_path, monkeypatch):
     admission, runtime = Admission(identities), Runtime()
     admission.secrets = {owner: identities.box_route(owner)[1] for owner in "abc"}
     volumes = Volumes()
-    relays = SimpleNamespace(bind=lambda owner, uid: tmp_path / f"{uid}.sock")
+    relays = SimpleNamespace(bind=lambda owner, uid: tmp_path / f"{uid}.sock",
+                             retire=lambda uid: None)
     manager = OwnerDaemons(runtime, admission, volumes, relays, tmp_path,
                            idle_seconds=1, awake_cap=2, wake_timeout=2)
 

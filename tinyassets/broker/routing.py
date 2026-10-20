@@ -104,52 +104,15 @@ class RoutingAuthority:
         self.publish()
         return self.volumes.prepare(owner, record)
 
-    def _launch(self, owner, record, *, scheduled=False, image=None):
+    def _launch(self, owner, record, *, scheduled=False):
         from tinyassets.boxes.daemon_control import request
 
-        fields = {"image": image} if image is not None else {}
-        result = request("wake", owner, record=record, scheduled=scheduled, **fields)
+        result = request("wake", owner, record=record, scheduled=scheduled)
         if result != {"uid": record["uid"]}:
             raise RuntimeError("broker-bound box did not become ready")
         return result["uid"]
 
-    def _wake(self, owner, *, scheduled=False, image=None):
-        return self._launch(owner, self._prepare(owner), scheduled=scheduled, image=image)
-
-    def _roll(self, image, uid=None):
-        from tinyassets.boxes.daemon_control import request
-
-        if uid is None:
-            return request("roll", image=image)
-        with closing(self.identities._connect(write=False)) as db:
-            row = db.execute("SELECT principal FROM owner_identities WHERE machine_id=?",
-                             (uid,)).fetchone()
-        if row is None:
-            raise LookupError("roll requires a permanent owner binding")
-        owner = row[0]
-        read(self.identities, owner).require_work()
-        status = self.volumes.host(owner, "status")
-        result = {"uid": self.identities.owner_machine(owner)}
-        if not status["awake"]:
-            return {**result, "outcome": "asleep"}
-        if status["image"] == image and not status["error"]:
-            return {**result, "outcome": "rolled"}
-        if not self.volumes.host(owner, "drain")["drained"]:
-            return {**result, "outcome": "deferred_busy"}
-        self.volumes.volume(owner, "sleep")
-        self.volumes.recover(owner)
-        try:
-            self._wake(owner, image=image)
-            return {**result, "outcome": "rolled"}
-        except Exception:
-            if not self.volumes.host(owner, "drain")["drained"]:
-                raise RuntimeError("candidate cannot safely drain") from None
-            self.volumes.volume(owner, "sleep")
-            self.volumes.recover(owner)
-            self._wake(owner, image=status["image"])
-            return {**result, "outcome": "rolled_back", "reason": "health_failed"}
-
-    async def wake(self, owner, *, scheduled=False, image=None):
+    async def wake(self, owner, *, scheduled=False):
         from tinyassets.broker.owner_volumes import pending
 
         async with owner_lock(self.identities.path, owner):
@@ -196,7 +159,7 @@ class RoutingAuthority:
                 if victim is not None:
                     await owner_call(self.identities.path, victim, self.volumes.sleep, victim)
                 return await thread_work(self._launch, owner, record,
-                                         scheduled=scheduled, image=image)
+                                         scheduled=scheduled)
             finally:
                 async with self._capacity:
                     self._reservations.pop(owner, None)
@@ -206,15 +169,28 @@ class RoutingAuthority:
         async with self._capacity:
             self._capacity.notify_all()
 
-    async def roll(self, image, uid=None):
-        if uid is None:
-            return await asyncio.to_thread(self._roll, image)
+    async def deploy(self, image):
+        """C12: publish once, then use ordinary sleep; wake remains demand-driven."""
+        from tinyassets.boxes.daemon_control import request
+
+        await asyncio.to_thread(request, "select_image", image=image)
         with closing(self.identities._connect(write=False)) as db:
-            row = db.execute("SELECT principal FROM owner_identities WHERE machine_id=?",
-                             (uid,)).fetchone()
-        if row is None:
-            raise LookupError("roll requires a permanent owner binding")
-        return await owner_call(self.identities.path, row[0], self._roll, image, uid)
+            owners = [row[0] for row in db.execute("SELECT principal FROM owner_volumes")]
+        counts = {"slept": 0, "asleep": 0, "incomplete": 0}
+        for owner in owners:
+            try:
+                async with owner_lock(self.identities.path, owner):
+                    status = await thread_work(self.volumes.host, owner, "status")
+                    if not status["awake"]:
+                        counts["asleep"] += 1
+                        continue
+                    await thread_work(self.volumes.sleep, owner)
+                    counts["slept"] += 1
+            except Exception:
+                counts["incomplete"] += 1
+            finally:
+                await self._capacity_changed()
+        return counts
 
     async def sleep(self, owner):
         try:

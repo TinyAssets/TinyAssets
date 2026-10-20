@@ -617,6 +617,19 @@ roll into the broker): `RoutingAuthority.roll` and its rollback, the
 `scripts/roll_owner_boxes.py`. Every wake starts `images.current`. Cutover
 rollback (C4) is unchanged.
 
+**As built (lane d, C12):** the deployment driver wakes the canary through the
+ordinary public router before publishing. Its one root-authenticated broker
+`deploy(image)` call selects the immutable image through boxhostd and enumerates
+permanent volume bindings. Awake owners use the existing `VolumeLifecycle.sleep`
+under the broker owner lock. A busy or unknown drain stays pending on that same
+volume state machine and reports `incomplete`; no ordinary owner is restarted.
+Only a complete drain proceeds to public canary acceptance, which wakes the canary
+on `images.current`, checks its baked revision and completes a model turn.
+Rollback repeats publication and drain with the previous compatible image.
+`RoutingAuthority.roll`, host roll/drain operations, per-box rollback, image-last
+records, restart flags/waits, wake image overrides and the driver's UID loop are
+deleted. The image registry retains only `current`. No owner-content path is added.
+
 ### C13. Fewer shared mechanisms (T2)
 - **One call direction.** The broker calls boxhostd; boxhostd is a pure executor.
   The broker passes the state an operation needs, and boxhostd never calls back
@@ -649,6 +662,18 @@ rollback (C4) is unchanged.
   routing snapshot the broker already installs, not by a per-call admission IPC
   (`router_credentials.py` ~137–152 is deleted).
 
+**As built (lane d, remaining C13):** the root relay sends the owner from its
+fixed binding directly to identity's credential socket. Identity authenticates
+the service UID, admits mints through its installed routing snapshot, and shares
+one credential-store lock between snapshot installation, mint and revocation.
+The relay's existing binding-registry lock serializes accepted mints with endpoint
+retirement; broker withdrawal waits for retirement, including when publication
+failed and stopping ingress is the acknowledgement path (T5/C13). The broker's
+`BOX_CREDENTIAL` handler and identity's admission IPC are deleted. Broker account
+revocation remains an authenticated identity operation, unavailable to a box.
+Lifecycle call direction remains broker to host; the clocks remain boxhostd's
+maintain loop, the waker and C10's host-only growth timer.
+
 ### C14. The broker owns each owner's lifecycle; deletion records live in the broker (T2, T5, T9)
 The round-2 structural review (2026-10-20) found that the deletion job decides in
 the broker but writes `erased` because boxhostd calls back into it, and that one
@@ -679,6 +704,12 @@ UID flock. Target:
   ordinary admission closed for every owner. Unfinished deletion jobs then run
   through the normal broker path, and only then does admission open.
   `resume_deletion_jobs` is that phase, not a lock-holding offline step.
+
+**As built (lane d, C14 recovery gap):** withdrawal reassertion also reasserts
+the map's idempotent `erase` when the imported job already completed snapshots.
+The existing job path owns this decision. It clears restored snapshot catalog
+rows and published references without repeating a completed host operation.
+The older-map/completed-job regression exercises the real broker job and map.
 
 ### C15. One lifecycle intent, one lock, one path per job (T2, T4, T9)
 The round-3 structural review (2026-10-20) confirmed that C14 holds (0 callbacks,
@@ -806,7 +837,7 @@ against the research), not just a test review.
 
 - Slices 2 onward change production serving, so they stay unmerged and merge together with the cutover slice as one maintenance deploy, after the `--archive` rehearsal (review of #5172).
 - Secret delivery and rotation at sandbox start: slice 4 (boxhostd mints via the broker on every start and writes the read-only secret file); slices 2–7 merge together as one stack.
-- **Credential channel.** The existing per-box relay adds `ROUTER_CREDENTIAL`; only its `bind()` supplies owner/uid, the broker checks live admission and forwards to a broker-uid-only router socket under `.runtime`; the router is the only key/hook-map writer, using the existing runtime group without host provisioning.
+- **Credential channel (C13).** The fixed owner relay forwards `ROUTER_CREDENTIAL` directly to identity under `.runtime`. Identity authenticates the root relay service and checks its installed routing snapshot under the mint/publication/revocation lock. Relay retirement serializes with accepted mints. The broker forwarding operation is deleted; identity remains the only key/hook-map writer.
 - **API key authority.** Owner-mode mint/list/revoke use the channel, with no box key database; grants remain local, a failed grant invalidates the newly minted router key, and a request reference never replays its secret.
 - **Hook ordering.** The router mints hook tokens; the box stores only the digest and delivery configuration; all three revocation paths invalidate the router map before the local row, and failed local creation revokes the router token.
 > **Superseded by C5/C6.** The authenticated door durably enqueues the control-plane deletion job and returns 202. The job withdraws admission, completes shared cleanup and exposes durable progress through the status URL. The door does not orchestrate deletion.
@@ -825,7 +856,7 @@ against the research), not just a test review.
 - **Identity.** The router replaces caller-supplied `X-Owner`, `X-Box-Secret` and `X-Owner-Identity`; the last carries the existing authenticated identity and capability metadata, while public bearer/cookie credentials are removed before forwarding.
 - **Sessions.** Existing protected-owner cookies resolve only through the router session map; cookie-authenticated mutations retain exact-origin JSON admission, and the verified protected-view proof travels with the authenticated identity for box-local consumers.
 - **Placement.** Router authentication resolves credentials only; MCP payload checks, outside capability admission and connection receipts run inside the owner daemon, and router logging never buffers owner payloads.
-- **Hook map.** The router's `.hook-owners.sqlite3` contains only token digests and owners; the migration seeds existing digests; box mint/revoke requests now use the bound relay and broker to reach the router writer, while payload/delivery rows remain inside the box.
+- **Hook map.** The router's `.hook-owners.sqlite3` contains only token digests and owners; the migration seeds existing digests; box mint/revoke requests use the fixed owner relay directly to reach the identity writer, while payload/delivery rows remain inside the box.
 - **Startup.** The shared entrypoint no longer starts owner recovery, engine endpoints, ticks or storage initialization and refuses direct SSE/stdio serving; owner recovery moved into the existing owner lifespan.
 - **Routes.** All owner-facing `/app/*` routes (including `/app/api/*`, home, chat, uploads and preferences), `/api` and descendants, MCP transport `/mcp[/]` and `/mcp/events`, and `/hooks/inbound/<token>` share the forwarder; discovery, sign-in/OAuth, pulse, published listing reads and billing retain router handlers.
 
@@ -1515,98 +1546,37 @@ explicit classes refuse. Shared tables are not split.
 - At the awake cap, an interactive request evicts the least recently used
   idle box. Scheduled wakes queue behind interactive requests.
 
-## D11. Deploys, canary and rollback (review gaps 6–8)
+## D11. Deploys, canary and rollback
 
-- **Deploy:** the router rolls a new image per box. It waits until the box
-  has no running turn, restarts it on the new image, health-checks it, and
-  rolls back that box alone if the check fails. The router itself deploys as
-  today.
-- **Canary:** the canary account signs in through the router and runs one
-  turn in its own box. That is the per-deploy acceptance.
-- **Cutover rollback:** an old image cannot run on the isolated layout. Before
-  ordinary traffic opens, exact paired restore can roll back the maintenance
-  window. After router admission opens, only acknowledged disaster restore is
-  allowed, with the credential resets, operation fences and erasure reconciliation
-  specified above.
+C12 is implemented by `scripts/roll_owner_boxes.py`: public canary wake, immutable
+image extraction, one broker deployment call, ordinary sleep, then public canary
+acceptance. Extraction never runs the image or mounts owner data. The broker
+selects the image and serializes each awake owner's ordinary sleep with wake,
+restore and withdrawal. The host executes the bound operation. New work receives
+a retryable response after the in-box Activity gate closes; existing request and
+background turns finish before flush, detach and snapshot. Unknown activity or a
+busy turn reports an incomplete drain and remains pending on the normal lifecycle
+path. An incomplete result fails acceptance. Healthy ordinary owners remain
+asleep until a request or schedule wakes them on the current image.
 
-> **Superseded by C12.** Deploys are image-at-wake: publish, drain awake boxes, and each box starts the new image on its next wake. There is no per-box roll or per-box rollback.
+The static image's `ACTIVE_BOX_LAYOUT` declaration still rejects pre-cutover
+images. Compatible rollback means republishing the previous image and draining
+again. `images.json` contains one current image; there is no per-owner image
+history, rollout or automatic rollback. Root calls the broker; only the broker
+can select the host's image. No host callback, new clock or authority store is
+introduced.
 
-### D11 as built (slice 6b, 2026-10-17)
+Canary preflight reaches `/app/me` through the authenticated public router, so
+the canary participates in the ordinary drain. After successful control, canary
+acceptance signs in again, checks its configured owner/home, bound UID and baked
+build revision, and completes a nonce model turn through public MCP. Missing
+evidence fails. This uses no canary fixture endpoint. The driver writes counts of
+`slept`, `asleep`, `incomplete` and control/canary outcomes; it records no owner ID,
+private error, credentials or model reply. Existing extraction, SSH and socket
+bounds remain. No workflow has been enabled, dispatched or run.
 
-- **One deployment image.** The shared deployment is unchanged. After its
-  health checks, `scripts/roll_owner_boxes.py` resolves that same immutable
-  OCI digest to its image ID and installs a static `harness-<image-id>` rootfs
-  without executing the image or mounting owner data. Existing extracted
-  images remain available for individual rollback. The current harness link
-  advances only after boxhostd accepts the target. No host service restart is
-  part of a roll.
-> **Superseded by C4.** Deployment durably consumes pre-traffic rollback eligibility before opening ordinary writable admission. The router does not decide restore eligibility.
-
-- **Traffic acceptance.** After public acceptance and `roll_owner_boxes.py`'s
-  owner-box canary succeed, deploy-prod invokes `scripts.open_router_traffic` as
-  host root through the inspected data-volume socket. The router verifies the
-  kernel peer, commits `traffic_opened_at` to `.router-traffic.sqlite3`, and then
-  admits ordinary authenticated requests. Broker callers cannot open admission.
-- **Authority and metadata (b6).** The deploy driver uses root-authenticated
-  broker `LIFECYCLE_ADMIN`. The broker resolves the UID to its permanent owner
-  binding and holds that owner's lock across drain, sleep snapshot, candidate
-  wake and rollback. Only the broker can select the host's next image through
-  `roll(image)`; the host no longer orchestrates per-UID roll calls. The driver
-  still receives `rolled`, `deferred_busy`, `asleep`, or `rolled_back` results.
-  Root-private `/var/lib/boxhostd/state/images.json` records the current image
-  and each UID's last launch image, using file and directory fsync plus atomic
-  replacement. The launch record is written before starting a process, because
-  a process can write before readiness. It survives service restart and sleep.
-  These are deployment records, never reads of owner trees or connections.
-- **Drain and bounds.** An awake box gets 60 seconds to drain; existing turns
-  and requests hold slice 4's Activity gate. A successful atomic drain closes
-  admission before SIGTERM. There is a 30-second graceful flush budget, the
-  existing 60-second authenticated readiness deadline, two-second lifecycle
-  HTTP calls and bounded runtime commands (spec/state five seconds, run 30,
-  liveness/kill/delete/census ten). Quota subprocesses have ten-second bounds.
-  A failed candidate gets a separate 60-second drain budget before rollback;
-  scheduled work that started during startup cannot be killed by rollback.
-  If drain/restore cannot complete safely, the control call fails loudly;
-  maintenance only drains that failed box safely, and never kills its work.
-  Retirement waits at most 600 seconds for an in-flight restart to settle.
-- **Wakes and concurrency (b6).** Owner locks serialize rollout with that owner's
-  wake, restore and deletion. The executor releases its capacity condition
-  during candidate readiness, so other owners can wake. A failed candidate's
-  active work must drain before rollback; unknown status never permits a kill.
-  No resolve/release lease or lock-delegation protocol remains.
-
-- **Failure containment and cutover.** Only the failed box is restored to its
-  own previous image. Static parsing of the image's layout declaration must
-  prove `ACTIVE_BOX_LAYOUT = "owner-box"` before any launch or rollback.
-  Missing or pre-cutover declarations refuse even before the first write;
-  there is no override. The refusal directs the cutover operator to
-  `deploy/backup-restore.sh`: exact rollback only before traffic, acknowledged
-  disaster recovery afterwards. Failed cleanup never advertises readiness.
-- **Driver and receipt.** Root control calls have a 600-second socket bound;
-  SSH has a 610-second bound and a ten-second connect bound. Static extraction
-  bounds create/remove at 30 seconds each and export/tar at 180 seconds each.
-  The workflow step has a 50-minute bound. The driver writes one JSON receipt
-  with counts for the four outcomes plus `failed`, sorted failing UIDs only,
-  and `control`/`canary` pass/fail states. It never copies a control error,
-  owner identity, reply, connection record or credential into that receipt.
-  Rollback, control failure or failed canary makes the driver exit nonzero;
-  deferred busy and sleeping boxes are explicitly counted.
-- **Acceptance.** `scripts/owner_box_canary.py` uses the existing pinned
-  canary account's password and door-key environment from `load_secrets.sh`
-  using the opt-in `TINYASSETS_SECRETS_PROFILE=canary`, also supported by
-  PowerShell. CI injects the same secret names. It signs in at the public router door,
-  verifies the configured owner and home through `/app/me`, then initializes
-  public `/mcp` and invokes one `converse` nonce turn. It requires the exact
-  nonce reply. Every MCP response must carry the same owner-box UID and exact
-  deployed SHA as `/app/me`. OwnerIngress replaces handler provenance headers
-  with the startup-admitted UID and `/etc/tinyassets-build-sha`, baked into the
-  immutable image rather than inherited environment or shared release state.
-  Missing build evidence fails acceptance. This uses the ordinary router,
-  owner daemon and broker-backed model call, with no canary fixture endpoint.
-- **Workflow hold.** The new required step follows existing public/shared
-  health probes and uploads its one receipt. It does not invoke global image
-  rollback on a box failure. The founder's external `disabled_manually` hold
-  is unchanged; no workflow was enabled, dispatched or run in this slice.
+C4's deployment-owned pre-traffic rollback and C3's shared-platform recovery are
+unchanged. The router holds neither rollback eligibility nor recovery authority.
 
 ## Billing and deletion at cutover (review round, 2026-10-18)
 

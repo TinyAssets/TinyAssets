@@ -203,6 +203,10 @@ class DeletionJobs:
             local_mutate(self.server._owner_identities.path, job["owner"], "erase", routing=routing)
         else:
             routing.changed(job["owner"])
+        if "snapshots" in job["completed_steps"]:
+            # Recovery can restore an older map after the off-host job finished.
+            # Reassert its map effect without repeating completed host deletion.
+            self._erase_snapshot_map(job)
 
     def _uid(self, job):
         from tinyassets.broker.owner_volumes import binding
@@ -215,12 +219,16 @@ class DeletionJobs:
         if request("destroy", uid=self._uid(job)) != {"destroyed": True}:
             raise RuntimeError("owner volume deletion remains pending")
 
-    def _snapshots(self, job):
-        from tinyassets.boxes.daemon_control import request
+    def _erase_snapshot_map(self, job):
         from tinyassets.broker.owner_volumes import dispatch
 
-        record = dispatch(self.server._owner_identities, {
+        return dispatch(self.server._owner_identities, {
             "op": "BOX_VOLUME", "principal": job["owner"], "action": "erase", "arguments": {}})
+
+    def _snapshots(self, job):
+        from tinyassets.boxes.daemon_control import request
+
+        record = self._erase_snapshot_map(job)
         if request("delete_snapshots", uid=record["uid"], snapshot_ids=None,
                    released=record["work"]["released"]) != {"deleted": True}:
             raise RuntimeError("owner snapshot deletion remains pending")

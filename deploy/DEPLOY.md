@@ -7,54 +7,39 @@ does not enable or dispatch deployment. The following is the wired path for
 the lead's cutover/live acceptance after that hold is lifted.
 
 After the shared image and public health probes pass, deploy-prod calls
-`scripts/roll_owner_boxes.py`. Its authenticated deploy SSH caller resolves
-the same immutable image digest and extracts a static rootfs without running
-it or mounting data. Boxhostd publishes that image for every future wake,
-then rolls known awake boxes with at most two operations in flight. Sleeping
-boxes are counted in the initial census without individual SSH/control calls. It waits
-up to 60 seconds for the atomic request/turn drain, preserves wake leases,
-flushes with SIGTERM and checks authenticated socket readiness. Other owners'
-interactive wakes continue during restart/readiness. Sleeping boxes are not
-started; they use the latest image on their next wake.
+`scripts/roll_owner_boxes.py`. It first wakes the configured canary through the
+public router. Its authenticated deploy SSH caller resolves the immutable image
+digest and extracts a static rootfs without running it or mounting owner data.
+One root-authenticated broker call publishes that image for future wakes and
+uses ordinary sleep for awake owners under their existing lifecycle locks.
 
-A failed candidate is drained before restoring that box's previous image.
-If work cannot drain safely within another 60 seconds, deployment fails
-without killing it. Pre-cutover images are always refused: after split data
-writes the rollback path is slice 6's `deploy/backup-restore.sh`, inside the
-cutover window, using the verified paired backup. Never downgrade an image
-across this boundary. This roll does not perform backup or restore.
+The in-box Activity gate closes new requests and background turns atomically.
+Already admitted work finishes before flush, detach and snapshot. Busy or unknown
+activity reports an incomplete drain and stays pending on the ordinary lifecycle
+path. Incomplete drain fails acceptance. Ordinary owners remain asleep until a
+request or schedule wakes them on the current image.
 
-Root-private `/var/lib/boxhostd/state/images.json` durably records the wake
-image and the last image launched for each box UID. Keep those extracted
-root filesystems available; neither this driver nor image retention deletes
-them. `roll` is admitted only for root/deploy and broker UID 1002 on the
-existing kernel-authenticated socket; router UID 1001 cannot invoke it.
+Root-private `/var/lib/boxhostd/state/images.json` records only the current image.
+Rollback means republishing the previous compatible image and draining again.
+There is no per-owner image history, per-box rollback or wake image override.
+Pre-cutover images are refused by the existing layout-compatibility boundary;
+cutover rollback remains the separate C4 deployment procedure.
 
-The required acceptance signs in as the existing dedicated canary account at
-the public router, verifies its owner/home and box UID, and invokes one MCP
-`converse` turn. The reply must reproduce a fresh nonce and come from that
-same box on the exact target SHA, read from the box image's baked build file.
-Missing credentials, model egress, box provenance or a stale box all fail.
-Local callers use `TINYASSETS_SECRETS_PROFILE=canary` and source
-`scripts/load_secrets.sh` (or dot-source `scripts/load_secrets.ps1`); this
-opt-in profile loads only the dedicated canary credentials. CI injects the same
-`TINYASSETS_CANARY_EMAIL`, `PASSWORD` and `DOOR_KEY` secret names, plus
-`TINYASSETS_CANARY_USER_ID` and `TINYASSETS_CANARY_UNIVERSE_ID` configuration.
-There is no provision/waiver path in this acceptance.
+After successful drain, acceptance wakes the canary again through the public
+router, verifies its owner/home, bound UID and baked revision, and completes one
+nonce model turn through MCP. Missing credentials, model egress, provenance or the
+expected reply fail acceptance. The existing canary secret profile and CI inputs
+are unchanged. This task has not read them or invoked deployment.
 
-The step uploads one `owner-box-roll.json` receipt: counts of `rolled`,
-`deferred_busy`, `asleep`, `rolled_back` and `failed`; sorted failing UIDs;
-and canary/control pass/fail states. No owner data, error text, connection
-secrets or model replies enter it. Any rollback, control failure or canary
-failure exits nonzero, without rolling other boxes or the shared image back.
-Deferred busy boxes are visible in the counts and use the newest image at
-their next restart/wake. Per-control socket waits are 600 seconds, SSH 610
-seconds, and the workflow step 50 minutes. Detailed subprocess and lifecycle
-bounds are in `owner-daemon-in-box/design.md`, D11 as built.
+The existing receipt artifact contains counts of `slept`, `asleep`, `incomplete`,
+and canary/control pass/fail states. It contains no owner IDs, private error text,
+credentials or model replies. Control, drain or canary failure exits nonzero.
+Root control waits remain 600 seconds and SSH 610 seconds; a transport timeout
+never authorizes killing active owner work. The ordinary pending-work state
+continues on the existing broker clock.
 
-The lead still owns native gVisor/XFS/cgroup verification, independent floor
-review and a live canary pass with the deployed SHA asserted. All slice 6b
-tests use synthetic accounts, routers and processes.
+The lead owns independent floor review and live acceptance with the deployed SHA
+asserted. Local proofs use synthetic accounts, loopback routers and processes.
 
 Self-host migration Row D per
 `openspec/specs/uptime-and-alarms/spec.md`.

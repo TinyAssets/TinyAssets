@@ -110,6 +110,7 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
 
     # Same-uid fixture: production pins both directions to the kernel role uid.
     monkeypatch.setattr(router_credentials, "BROKER_UID", os.getuid())
+    monkeypatch.setattr(router_credentials, "RELAY_UID", os.getuid())
     monkeypatch.setattr(router_credentials, "DAEMON_UID", os.getuid())
     monkeypatch.setattr(relay_module, "peer", lambda sock: (os.getpid(), 1002, 1002))
     monkeypatch.setattr(relay_module, "os", SimpleNamespace(
@@ -153,7 +154,8 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
             root.mkdir()
         runtime = ProcessRuntime({admitted.owner_machine(owner): root
                                   for owner, root in roots.items()})
-        relays = OwnerRelays(run / "relay", SimpleNamespace(broker_socket=host_path))
+        relays = OwnerRelays(run / "relay", SimpleNamespace(
+            broker_socket=host_path, data_root=tmp_path))
         admission = Admission(admitted)
         volumes = Volumes()
         def destroy_volume(uid):
@@ -759,6 +761,8 @@ def test_box_channel_cannot_supply_owner_or_revoke_another_owners_credentials(
     assert request("bob", {"operation": "key_list"}, principal="alice") is None
     assert request("alice", {"operation": "account_revoke"}) == {
         "op": "ROUTER_CREDENTIAL_REFUSED"}
+    assert request("alice", {"operation": "revoke_account"}) == {
+        "op": "ROUTER_CREDENTIAL_REFUSED"}
     assert request("alice", {"operation": "account_revoke", "owner": "bob"}) == {
         "op": "ROUTER_CREDENTIAL_REFUSED"}
     assert request("alice", {"operation": "routing_instance"}) == {
@@ -773,13 +777,110 @@ def test_box_channel_cannot_supply_owner_or_revoke_another_owners_credentials(
     admitted.admission("retire", "bob", "cc-bob", routing=projection(admitted.path))
     assert request("bob", {"operation": "key_list"})["op"] == "ROUTER_CREDENTIAL_IS"
     local_mutate(admitted.path, "bob", "erase", routing=projection(admitted.path))
-    assert request("bob", {"operation": "key_list"}) == {"op": "BOX_REFUSED"}
+    with pytest.raises(FileNotFoundError):
+        request("bob", {"operation": "key_list"})
+
+
+def test_relay_mint_uses_installed_snapshot_with_broker_lookups_unavailable(
+    boxes, admitted, tmp_path, monkeypatch,
+):
+    from tinyassets import rpc_frames as rf
+    from tinyassets.broker import owner_identities
+
+    path = boxes.relays.directory / f"{admitted.owner_machine('alice')}.sock"
+    def unavailable(*args, **kwargs):
+        raise AssertionError("credential mint consulted the broker")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(owner_identities, "_owner_request", unavailable)
+        patch.setattr(OwnerIdentities, "_connect", unavailable)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+            channel.settimeout(5)
+            channel.connect(str(path))
+            channel.sendall(rf.control(0, {"op": "ROUTER_CREDENTIAL",
+                                          "request": {"operation": "hook_mint"}}))
+            reply = rf.read_frame_blocking(channel).control()
+    assert reply["op"] == "ROUTER_CREDENTIAL_IS"
+    from tinyassets.router_credentials import HookOwners
+
+    assert HookOwners(tmp_path).resolve(reply["result"]["token"]) == "alice"
+
+
+@pytest.mark.parametrize("publication_available", [True, False])
+def test_snapshot_withdrawal_waits_for_inflight_mint_then_retires_relay(
+    boxes, admitted, broker, monkeypatch, publication_available,  # noqa: F811
+):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tinyassets import router_credentials
+    from tinyassets import rpc_frames as rf
+    from tinyassets.broker.admission import owner_call
+
+    entered, release, installing = threading.Event(), threading.Event(), threading.Event()
+    original, publish = router_credentials._dispatch, broker.server.routing._router
+
+    def mint(*args):
+        entered.set()
+        assert release.wait(10)
+        return original(*args)
+
+    def route(document):
+        if document["operation"] == "routing_install":
+            installing.set()
+            if not publication_available:
+                raise OSError("synthetic snapshot publication outage")
+        return publish(document)
+
+    monkeypatch.setattr(router_credentials, "_dispatch", mint)
+    monkeypatch.setattr(broker.server.routing, "_router", route)
+    path = boxes.relays.directory / f"{admitted.owner_machine('alice')}.sock"
+
+    def request():
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+            channel.settimeout(15)
+            channel.connect(str(path))
+            channel.sendall(rf.control(0, {"op": "ROUTER_CREDENTIAL",
+                                          "request": {"operation": "hook_mint"}}))
+            return rf.read_frame_blocking(channel).control()
+
+    async def withdraw():
+        await owner_call(admitted.path, "alice", local_mutate, admitted.path, "alice",
+                         "suspend", reason="billing", suspended=True,
+                         routing=broker.server.routing)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        minted = pool.submit(request)
+        assert entered.wait(5)
+        withdrawn = pool.submit(lambda: asyncio.run_coroutine_threadsafe(
+            withdraw(), broker.loop).result(20))
+        try:
+            assert installing.wait(5)
+            assert not withdrawn.done()
+        finally:
+            release.set()
+        assert minted.result(10)["op"] == "ROUTER_CREDENTIAL_IS"
+        withdrawn.result(10)
+    assert not path.exists()
+    with pytest.raises(FileNotFoundError):
+        request()
+    if publication_available:
+        with pytest.raises(PermissionError, match="suspended"):
+            router_credentials.dispatch(broker.server._data_root, "alice",
+                                        {"operation": "hook_mint"})
+    else:
+        from tinyassets.routing_snapshot import snapshot
+
+        # Even with a stale installed route, the authenticated binding is gone.
+        assert snapshot(broker.server._data_root).route("alice")
+        assert not boxes.runtime.alive(admitted.owner_machine("alice"))
 
 
 def test_router_credential_socket_refuses_a_non_broker_peer(boxes, tmp_path, monkeypatch):
     from tinyassets import router_credentials
 
     monkeypatch.setattr(router_credentials, "BROKER_UID", os.getuid() + 1)
+    monkeypatch.setattr(router_credentials, "RELAY_UID", os.getuid() + 2)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
         channel.settimeout(5)
         channel.connect(str(router_credentials.credential_socket(tmp_path)))
@@ -867,7 +968,7 @@ def test_retired_hook_door_never_delivers_a_valid_token(router, monkeypatch):
     asyncio.run(exercise())
 
 
-def test_a_deleted_owner_can_never_mint_again(tmp_path, monkeypatch):
+def test_a_deleted_owner_can_never_mint_again(tmp_path, monkeypatch, admitted, boxes):
     from tinyassets import router_credentials
     from tinyassets.broker.owner_identities import owner_admission
     from tinyassets.router_credentials import dispatch
@@ -882,11 +983,11 @@ def test_a_deleted_owner_can_never_mint_again(tmp_path, monkeypatch):
     assert owner_admission(tmp_path, "alice").state == "erased"
     # The door's revocation removed the hook the owner minted before deletion.
     assert router_credentials.HookOwners(tmp_path).resolve(token) is None
-    # The tombstone is durable and checked under the dispatch lock, so a box
+    # The withdrawn snapshot is checked under the dispatch lock, so a box
     # request racing the revocation lands either before it (and is revoked)
     # or after it (and is refused).
     for request in (mint, {"operation": "hook_mint"}, {"operation": "key_list"}):
-        with pytest.raises(PermissionError, match="deleted"):
+        with pytest.raises(LookupError, match="admitted route"):
             dispatch(tmp_path, "alice", request)
     assert dispatch(tmp_path, "bob", {"operation": "hook_mint"})["token"]
     assert router_credentials._DISPATCH.acquire(blocking=False)

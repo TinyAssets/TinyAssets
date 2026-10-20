@@ -110,24 +110,22 @@ class HostService:
             if self.daemons is None:
                 raise BoxError("owner lifecycle is unavailable")
             operation = document.get("lifecycle")
-            if (uid == 1002 and operation == "roll"
+            if (uid == 1002 and operation == "select_image"
                     and set(document) == {"lifecycle", "image"}):
-                return self.daemons.roll(document["image"])
+                self.daemons.images.select(document["image"])
+                return {"selected": self.daemons.images.current}
             if uid == 1002 and "uid" in document:
                 owner_uid = document["uid"]
                 self.daemons.runtime.box_id(owner_uid)
                 fields = {
                     "stop": set(), "destroy": set(),
                     "delete_snapshots": {"snapshot_ids", "released"},
-                    "drain": set(),
                     "status": set(), "create": {"quota"}, "snapshot": {"snapshot_id"},
                     "restore": {"snapshot_id", "sha256"}, "evict": set(),
                 }
                 if (operation not in fields
                         or set(document) != {"lifecycle", "uid"} | fields[operation]):
                     raise BoxError("invalid bound lifecycle operation")
-                if operation == "drain":
-                    return self.daemons.drain(owner_uid)
                 if operation == "status":
                     return self.daemons.status(owner_uid)
                 with self.volumes.operation(owner_uid):
@@ -166,14 +164,12 @@ class HostService:
             validate_principal(document.get("owner"))
             owner = document["owner"]
             if (uid == 1002 and operation == "wake"
-                    and set(document) in ({"lifecycle", "owner", "scheduled", "record"},
-                                          {"lifecycle", "owner", "scheduled", "record", "image"})):
+                    and set(document) == {"lifecycle", "owner", "scheduled", "record"}):
                 scheduled = document["scheduled"]
                 if type(scheduled) is not bool:
                     raise ValueError("scheduled must be boolean")
                 ready = self.daemons.ensure_awake(
-                    owner, scheduled=scheduled, launch=document["record"],
-                    **({"image": document["image"]} if "image" in document else {}))
+                    owner, scheduled=scheduled, launch=document["record"])
                 return {"uid": ready}
             if (uid == 1001 and operation == "status"
                     and set(document) == {"lifecycle", "owner"}):

@@ -41,7 +41,7 @@ def authority(tmp_path, monkeypatch):
         identities.resolve(owner, allocate=True)
         identities.admission("admit", owner, owner, routing=projection(identities.path))
         box_admission.provision(identities, tmp_path, owner, owner)
-    events, remote = [], Remote()
+    events, remote, released = [], Remote(), []
     server = SimpleNamespace(_owner_identities=identities, _data_root=tmp_path)
     server.routing = RoutingAuthority(server)
     server.routing.publish = lambda **kwargs: None
@@ -75,7 +75,7 @@ def authority(tmp_path, monkeypatch):
         assert fields["uid"] == identities.owner_machine("alice")
         if operation == "delete_snapshots":
             assert fields["snapshot_ids"] is None
-            assert fields["released"] == []
+            assert fields["released"] == released
         events.append(operation)
         return {"destroyed" if operation == "destroy" else "deleted": True}
 
@@ -85,7 +85,7 @@ def authority(tmp_path, monkeypatch):
     for step in ("custody", "billing", "credentials", "identity"):
         monkeypatch.setattr(DeletionJobs, "_" + step, lambda self, job: "done")
     return SimpleNamespace(jobs=jobs, remote=remote, identities=identities,
-                           events=events, server=server, host=host)
+                           events=events, server=server, host=host, released=released)
 
 
 def test_enqueue_and_status_never_read_remote_and_erasure_mutates_once(authority):
@@ -128,6 +128,13 @@ def test_restart_resumes_local_job_when_remote_reads_are_unavailable(authority, 
 
 def test_historical_platform_copy_recovers_from_offhost_job(authority, tmp_path):
     a = authority
+    a.released.append("retained-before-erasure")
+    with sqlite3.connect(a.identities.path) as db:
+        db.execute("UPDATE owner_volumes SET snapshot_id=?,snapshot_sha256=? WHERE principal=?",
+                   ("retained-before-erasure", "b" * 64, "alice"))
+        db.execute("INSERT INTO owner_snapshots (principal,snapshot_id,snapshot_sha256,"
+                   "volume_generation) VALUES (?,?,?,?)",
+                   ("alice", "retained-before-erasure", "b" * 64, 1))
     backup = tmp_path / "old.db"
     with sqlite3.connect(a.identities.path) as src, sqlite3.connect(backup) as dst:
         src.backup(dst)
@@ -141,9 +148,15 @@ def test_historical_platform_copy_recovers_from_offhost_job(authority, tmp_path)
     assert admission.read(a.identities, "alice").state == "admitted"
     recovered = DeletionJobs(a.server, records=a.remote)
     loaded, = a.remote.records()
+    host_effects = a.events.count("delete_snapshots"), a.events.count("destroy")
     assert asyncio.run(recovered.resume_loaded_job(loaded))["status"] == "deleted"
     assert admission.read(a.identities, "alice").state == "erased"
     assert recovered.records.load(loaded["id"])["completed_steps"] == list(STEPS)
+    record = owner_volumes.binding(a.identities, "alice")
+    assert record["snapshot_id"] is None and record["snapshot_sha256"] is None
+    with sqlite3.connect(a.identities.path) as db:
+        assert db.execute("SELECT * FROM owner_snapshots WHERE principal='alice'").fetchall() == []
+    assert (a.events.count("delete_snapshots"), a.events.count("destroy")) == host_effects
 
 
 def test_wake_and_deletion_share_the_broker_owner_lock(authority, monkeypatch):

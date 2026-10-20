@@ -377,7 +377,7 @@ class _Connection:
             try:
                 if set(doc) != {"op", "operation", "arguments"}:
                     raise ValueError("invalid lifecycle command")
-                operations = {"roll": self._server.routing.roll,
+                operations = {"deploy": self._server.routing.deploy,
                               "wake": self._server.routing.wake,
                               "sleep": self._server.routing.sleep,
                               "restore": self._server.routing.restore}
@@ -400,10 +400,6 @@ class _Connection:
                 await self.send_async(rf.control(rf.CONNECTION, {"op": "BOX_REFUSED"}))
                 return
         if self._role == BOX_HOST:
-            if op == "BOX_CREDENTIAL":
-                answer = await asyncio.to_thread(self._box_credential, doc)
-                await self.send_async(rf.control(rf.CONNECTION, answer))
-                return
             if op not in {"BOX_ADMISSION", "BOX_CHANNEL", "BOX_SHARED"}:
                 raise rf.FrameError("box host channel is read-only admission")
             from tinyassets.broker.admission import owner_lock
@@ -695,22 +691,6 @@ class _Connection:
         except Exception:
             self.abandon()
             raise
-
-    def _box_credential(self, doc: dict[str, Any]) -> dict[str, Any]:
-        from tinyassets.router_credentials import broker_request
-
-        try:
-            if set(doc) != {"op", "principal", "uid", "request"}:
-                raise ValueError("invalid credential channel")
-            identities = self._server._owner_identities
-            if identities is None or self._server._data_root is None:
-                raise RuntimeError("router credential admission is unavailable")
-            if (type(doc["uid"]) is not int
-                    or identities.box_route(doc["principal"])[0] != doc["uid"]):
-                raise PermissionError("owner channel is no longer admitted")
-            return broker_request(self._server._data_root, doc["principal"], doc["request"])
-        except (OSError, ValueError, LookupError, PermissionError, RuntimeError, sqlite3.Error):
-            return {"op": "ROUTER_CREDENTIAL_REFUSED"}
 
     def _billing_plan(self, doc):
         from tinyassets.broker.owner_reads import PlanMissing, Plans

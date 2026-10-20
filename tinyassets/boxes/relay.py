@@ -69,19 +69,15 @@ class OwnerRelays:
                     }))
                     return
                 if set(doc) == {"op", "request"} and doc["op"] == "ROUTER_CREDENTIAL":
-                    broker.settimeout(30)
-                    broker.connect(str(self.admission.broker_socket))
-                    if peer(broker)[1:] != (1002, 1002):
-                        raise BoxAuthError("relay peer is not the broker")
-                    broker.sendall(rf.control(rf.CONNECTION, {
-                        "op": "BOX_CREDENTIAL", "principal": owner, "uid": uid,
-                        "request": doc["request"],
-                    }))
-                    answer = rf.read_frame_blocking(broker)
-                    if (answer is None or answer.kind != rf.CONTROL
-                            or answer.stream != rf.CONNECTION):
-                        raise BoxAuthError("invalid credential reply")
-                    guest.sendall(rf.control(rf.CONNECTION, answer.control()))
+                    from tinyassets.router_credentials import relay_request
+
+                    # C13/T5: withdrawal retires this endpoint under the same
+                    # registry lock, including a mint already accepted by it.
+                    with self._lock:
+                        bound_owner = self._bindings[uid]
+                        answer = relay_request(
+                            self.admission.data_root, bound_owner, doc["request"])
+                    guest.sendall(rf.control(rf.CONNECTION, answer))
                     return
                 shared = doc == {"op": "BOX_SHARED"}
                 owner_public = doc == {"op": "BOX_PUBLIC"}

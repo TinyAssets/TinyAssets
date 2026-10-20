@@ -52,12 +52,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/boxes/owner_daemons.py::OwnerDaemons.withdraw": (
         CALL_SCOPED, "C6 withdrawal waits at most 20 seconds for admitted work to drain",
     ),
-    "tinyassets/boxes/owner_daemons.py::OwnerDaemons.retire": (
-        CALL_SCOPED, "one retirement waits at most 600 seconds for an in-flight restart",
-    ),
-    "tinyassets/boxes/owner_daemons.py::OwnerDaemons.drain": (
-        CALL_SCOPED, "one broker-authorized drain waits at most 60 seconds for owner work",
-    ),
     "tinyassets/boxes/gvisor_runtime.py::GvisorRuntime.shutdown": (
         CALL_SCOPED, "bounded SIGTERM flush wait for one stopped owner daemon",
     ),

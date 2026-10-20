@@ -20,9 +20,8 @@ from scripts._canary_common import (  # noqa: E402
 )
 
 
-def probe(origin: str, expected_sha: str, *, timeout=180):
-    if not re.fullmatch(r"[0-9a-f]{40}", expected_sha):
-        raise RuntimeError("invalid_expected_sha")
+def wake(origin: str, *, timeout=180):
+    """Reach the canary through the public router before deployment drains it."""
     home = os.environ.get("TINYASSETS_CANARY_UNIVERSE_ID", "")
     owner = os.environ.get("TINYASSETS_CANARY_USER_ID", "")
     if not home or not owner:
@@ -33,7 +32,13 @@ def probe(origin: str, expected_sha: str, *, timeout=180):
     uid = headers.get("x-tinyassets-box-uid", "")
     if not re.fullmatch(r"3[0-9]{5}", uid) or not 300001 <= int(uid) <= 399999:
         raise RuntimeError("canary_box_missing")
+    return token, home, uid, headers
 
+
+def probe(origin: str, expected_sha: str, *, timeout=180):
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_sha):
+        raise RuntimeError("invalid_expected_sha")
+    token, home, uid, headers = wake(origin, timeout=timeout)
     def provenance(headers):
         if (headers.get("x-tinyassets-box-uid") != uid
                 or headers.get("x-tinyassets-box-sha") != expected_sha):

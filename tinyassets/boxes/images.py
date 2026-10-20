@@ -16,15 +16,10 @@ class Images:
         self.directory, self.state = directory.resolve(strict=True), state
         self.lock = threading.RLock()
         self.current = initial.name
-        self.last: dict[str, str] = {}
         if state.exists():
             document = json.loads(state.read_text())
-            self.current, self.last = document["current"], document["last"]
+            self.current = document["current"]
         self.path(self.current)
-        for uid, image in self.last.items():
-            if not uid.isdecimal() or not 300001 <= int(uid) <= 399999:
-                raise BoxError("invalid image-state UID")
-            self.path(image)
 
     def path(self, image: str) -> Path:
         if not isinstance(image, str) or not re.fullmatch(r"harness-[0-9a-f]{64}", image):
@@ -54,7 +49,7 @@ class Images:
         self.state.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         temporary = self.state.with_suffix(".new")
         with temporary.open("w", encoding="utf-8") as stream:
-            json.dump({"current": self.current, "last": self.last}, stream)
+            json.dump({"current": self.current}, stream)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, self.state)
@@ -69,9 +64,4 @@ class Images:
             if not self.compatible(image):
                 raise BoxError("cutover boundary: restore with deploy/backup-restore.sh")
             self.current = image
-            self.save()
-
-    def ran(self, uid, image):
-        with self.lock:
-            self.last[str(uid)] = image
             self.save()

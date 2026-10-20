@@ -1,8 +1,7 @@
-"""Bounded owner-box roll followed by public canary acceptance; one safe receipt."""
+"""Publish one image, drain through ordinary sleep, then accept the public canary."""
 from __future__ import annotations
 
 import argparse
-import concurrent.futures
 import json
 import os
 import re
@@ -13,7 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-OUTCOMES = ("rolled", "deferred_busy", "asleep", "rolled_back")
+OUTCOMES = ("slept", "asleep", "incomplete")
 
 
 def install_image(image_ref, image_id, root):
@@ -56,53 +55,29 @@ def install_image(image_ref, image_id, root):
     return target
 
 
-def run(control, canary, *, concurrency=2):
-    if not 1 <= concurrency <= 2:
-        raise ValueError("roll concurrency must be one or two")
-    receipt = {"counts": dict.fromkeys((*OUTCOMES, "failed"), 0),
-               "failing_uids": [], "canary": "failed", "control": "passed"}
+def run(control, canary, prepare):
+    receipt = {"counts": dict.fromkeys(OUTCOMES, 0),
+               "canary": "failed", "control": "failed"}
     try:
-        inventory = control(None)
-        uids = inventory["uids"]
-        if (set(inventory) != {"uids", "asleep"} or not isinstance(uids, list)
-                or type(inventory["asleep"]) is not int or inventory["asleep"] < 0
-                or len(uids) != len(set(uids))
-                or any(type(uid) is not int or not 300001 <= uid <= 399999 for uid in uids)):
-            raise ValueError("invalid roll census")
-        receipt["counts"]["asleep"] = inventory["asleep"]
-        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
-            futures = {pool.submit(control, uid): uid for uid in uids}
-            for future in concurrent.futures.as_completed(futures):
-                uid = futures[future]
-                try:
-                    result = future.result()
-                    outcome = result.get("outcome")
-                    expected = {"uid", "outcome", "reason"} if outcome == "rolled_back" else {
-                        "uid", "outcome"}
-                    if (set(result) != expected or result["uid"] != uid
-                            or outcome not in OUTCOMES
-                            or (outcome == "rolled_back" and result["reason"] != "health_failed")):
-                        raise ValueError("invalid roll result")
-                except Exception:
-                    outcome = "failed"
-                receipt["counts"][outcome] += 1
-                if outcome in {"rolled_back", "failed"}:
-                    receipt["failing_uids"].append(uid)
-    except Exception:
-        receipt["control"] = "failed"
-    try:
-        if canary() is not True:
-            raise RuntimeError("canary did not pass")
-        receipt["canary"] = "passed"
+        # A public request first makes the canary awake. Successful fleet drain
+        # then proves its ordinary sleep before the acceptance request wakes it.
+        prepare()
+        counts = control()
+        if (set(counts) != set(OUTCOMES)
+                or any(type(n) is not int or n < 0 for n in counts.values())):
+            raise ValueError("invalid deployment drain result")
+        receipt["counts"] = counts
+        if counts["incomplete"]:
+            return receipt, 1
+        receipt["control"] = "passed"
+        if canary() is True:
+            receipt["canary"] = "passed"
     except Exception:
         pass
-    receipt["failing_uids"].sort()
-    failed = (receipt["control"] == "failed" or receipt["canary"] == "failed"
-              or bool(receipt["failing_uids"]))
-    return receipt, int(failed)
+    return receipt, int(receipt["canary"] != "passed")
 
 
-def host_control(image_ref, uid):
+def host_control(image_ref):
     """Executed only by the authorized deploy caller, over the root control socket."""
     if not re.fullmatch(r"[A-Za-z0-9./_-]+@sha256:[0-9a-f]{64}", image_ref):
         raise ValueError("immutable image reference required")
@@ -114,17 +89,13 @@ def host_control(image_ref, uid):
     sys.path.insert(0, str(harness / "app"))
     from tinyassets.broker.lifecycle_control import request
 
-    fields = {"image": "harness-" + image[7:]}
-    if uid is None:
-        install_image(image_ref, image, harness.parent)
-    if uid is not None:
-        fields["uid"] = uid
-    result = request("roll", **fields)
-    if uid is None:
-        link = harness.parent / ".roll-current"
-        link.unlink(missing_ok=True)
-        link.symlink_to(fields["image"])
-        os.replace(link, harness.parent / "harness-current")
+    selected = "harness-" + image[7:]
+    install_image(image_ref, image, harness.parent)
+    result = request("deploy", image=selected)
+    link = harness.parent / ".image-current"
+    link.unlink(missing_ok=True)
+    link.symlink_to(selected)
+    os.replace(link, harness.parent / "harness-current")
     return result
 
 
@@ -132,7 +103,6 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image-ref", required=True)
     parser.add_argument("--control", action="store_true")
-    parser.add_argument("--uid", type=int)
     parser.add_argument("--ssh-target")
     parser.add_argument("--ssh-key")
     parser.add_argument("--expected-sha")
@@ -141,21 +111,19 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.control:
         try:
-            print(json.dumps(host_control(args.image_ref, args.uid)))
+            print(json.dumps(host_control(args.image_ref)))
             return 0
         except Exception:
-            print('{"error":"roll_control_failed"}')
+            print('{"error":"image_drain_failed"}')
             return 1
     if not all((args.ssh_target, args.ssh_key, args.expected_sha, args.receipt)):
         parser.error("deploy mode needs SSH target/key, expected SHA and receipt path")
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from scripts.owner_box_canary import probe
+    from scripts.owner_box_canary import probe, wake
 
-    def control(uid):
+    def control():
         command = ["sudo", "python3", "-", "--control",
                    "--image-ref", args.image_ref]
-        if uid is not None:
-            command.extend(["--uid", str(uid)])
         result = subprocess.run(
             ["ssh", "-i", args.ssh_key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
              args.ssh_target, shlex.join(command)],
@@ -163,7 +131,8 @@ def main(argv=None):
             check=True, capture_output=True, text=True, timeout=610)
         return json.loads(result.stdout)
 
-    receipt, code = run(control, lambda: probe(args.origin, args.expected_sha))
+    receipt, code = run(control, lambda: probe(args.origin, args.expected_sha),
+                        lambda: wake(args.origin))
     args.receipt.write_text(json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(receipt, sort_keys=True))
     return code

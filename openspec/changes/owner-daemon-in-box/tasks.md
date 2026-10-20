@@ -147,11 +147,11 @@ Nothing deploys until slice 7.
       legacy launcher and ports owner callers to local OwnerBoxd tools.
       Part 2 removes protected `.premigration` copying, one-shot migrations
       and deploy old-layout branches after slice 6.
-- [x] 6b. Per-box deploy roll and the canary-box acceptance (D11).
-      Local implementation and synthetic Linux/root proof complete; bounds,
-      receipt and cutover rollback refusal: design.md D11 as built. Validation
-      and the protected migration baseline failures: main-audit.md. Workflow
-      remains held and unrun; independent review and live acceptance are lead work.
+- [x] 6b. Image-at-wake deployment and public canary acceptance (C12/D11).
+      The per-box rollout is deleted. Publish once, drain through ordinary sleep,
+      and wake on demand; the public canary completes sleep before acceptance.
+      Root synthetic process proofs cover active-turn preservation and retryable
+      admission. Deployment remains held; live acceptance is lead work.
 - [ ] 6c. Return to the researched shape (design.md "Target shape" and
       "Corrections", 2026-10-19). Each lane names the shared code it deletes and
       gets one review round scoped to the router/map, egress proxy and waker.

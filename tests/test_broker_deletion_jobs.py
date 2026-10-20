@@ -439,7 +439,7 @@ def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
 
             first = await delete()
             await asyncio.to_thread(drive, jobs.server.routing.close())
-            if failure == "stop":
+            if failure in {"stop", "relay"}:
                 assert first.status_code == 503, first.text
                 assert first.headers["location"] == first.json()["status_url"]
                 progress = await client.get(first.json()["status_url"] + "?format=json")
@@ -448,7 +448,7 @@ def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
                 assert first.status_code == 202, first.text
             if failure:
                 job = jobs.remote.load(digest("alice"))
-                expected = {"stop": "withdrawal", "owner_tree": "volume", "relay": "volume",
+                expected = {"stop": "withdrawal", "owner_tree": "volume", "relay": "withdrawal",
                             "socket": "volume", "broker_egress": "custody", "plan": "billing"
                             }.get(failure, failure)
                 assert job["failed_step"] == expected

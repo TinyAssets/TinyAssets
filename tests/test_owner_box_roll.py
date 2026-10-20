@@ -1,7 +1,7 @@
-"""D11 roll decisions: no owner tree or real deployment venue is used."""
+"""C12: one image selection, ordinary sleep and demand-driven wake."""
 from __future__ import annotations
 
-import threading
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -25,204 +25,135 @@ def rolling(fleet, tmp_path):  # noqa: F811
     root = tmp_path / "images"
     old, new = image(root, "1"), image(root, "2")
     fleet.manager.images = Images(root, tmp_path / "state/images.json", old)
-    fleet.manager.roll_wait = .15
     return SimpleNamespace(**vars(fleet), old=old.name, new=new.name, root=root,
                            state=tmp_path / "state/images.json")
 
 
-def test_roll_waits_for_a_turn_and_interactive_wake_uses_newest_image(rolling):
-    manager = rolling.manager
+def test_deploy_sleeps_awake_owners_without_eager_restart(rolling):
     uid = rolling.wake("a")
-    original = rolling.states[uid]
-    result = []
-    manager.roll_wait = 3
-    assert drive(rolling.routing.roll(rolling.new)) == {"uids": [uid], "asleep": 0}
-    with original.enter():
-        thread = threading.Thread(
-            target=lambda: result.append(drive(rolling.routing.roll(rolling.new, uid))))
-        thread.start()
-        other = rolling.wake("b")
-        assert manager.boxes[other].image == rolling.new
-        assert manager.boxes[uid].image == rolling.old
-        assert not rolling.runtime.stops
-    thread.join(5)
-    assert not thread.is_alive()
-    assert result == [{"uid": uid, "outcome": "rolled"}]
+    before = len(rolling.runtime.starts)
+    assert drive(rolling.routing.deploy(rolling.new)) == {
+        "slept": 1, "asleep": 2, "incomplete": 0}
+    assert rolling.runtime.live == set()
     assert rolling.runtime.stops == [uid]
-    assert original.draining
-    assert manager.boxes[uid].image == rolling.new
-
-
-def test_sleeping_box_untouched_and_image_record_survives_host_restart(rolling):
-    manager = rolling.manager
-    uid = rolling.wake("a")
-    with manager.condition:
-        assert manager._sleep(manager.boxes[uid], idle=0)
-    starts, stops = len(rolling.runtime.starts), len(rolling.runtime.stops)
-    assert drive(rolling.routing.roll(rolling.new)) == {"uids": [], "asleep": 1}
-    assert drive(rolling.routing.roll(rolling.new, uid)) == {"uid": uid, "outcome": "asleep"}
-    assert (len(rolling.runtime.starts), len(rolling.runtime.stops)) == (starts, stops)
-    recovered = Images(rolling.root, rolling.state, rolling.root / rolling.old)
-    assert recovered.current == rolling.new and recovered.last[str(uid)] == rolling.old
-    manager.images = recovered
-    rolling.wake("a")
-    assert recovered.last[str(uid)] == rolling.new
+    assert len(rolling.runtime.starts) == before
+    assert rolling.wake("a") == uid
     assert rolling.runtime.starts[-1][1]["rootfs"] == rolling.root / rolling.new
 
 
-def test_busy_turn_defers_roll_without_stopping(rolling):
+def test_sleeping_box_untouched_and_only_current_image_survives_host_restart(rolling):
     uid = rolling.wake("a")
-    drive(rolling.routing.roll(rolling.new))
-    with rolling.states[uid].enter():
-        assert drive(rolling.routing.roll(rolling.new, uid))["outcome"] == "deferred_busy"
-    assert not rolling.runtime.stops
-    assert drive(rolling.routing.roll(rolling.new, uid))["outcome"] == "rolled"
+    drive(rolling.routing.sleep("a"))
+    before = len(rolling.runtime.starts), len(rolling.runtime.stops)
+    assert drive(rolling.routing.deploy(rolling.new)) == {
+        "slept": 0, "asleep": 3, "incomplete": 0}
+    assert (len(rolling.runtime.starts), len(rolling.runtime.stops)) == before
+    recovered = Images(rolling.root, rolling.state, rolling.root / rolling.old)
+    assert recovered.current == rolling.new
+    assert json.loads(rolling.state.read_text()) == {"current": rolling.new}
+    rolling.manager.images = recovered
+    assert rolling.wake("a") == uid
+    assert rolling.runtime.starts[-1][1]["rootfs"] == rolling.root / rolling.new
 
 
-def test_abandoned_wake_has_no_lease_pinning_the_box(rolling):
-    manager = rolling.manager
+@pytest.mark.parametrize("keep_awake", [True, False])
+def test_busy_request_and_background_turn_finish_before_normal_snapshot_sleep(rolling, keep_awake):
     uid = rolling.wake("a")
-    drive(rolling.routing.roll(rolling.new))
-    assert drive(rolling.routing.roll(rolling.new, uid)) == {"uid": uid, "outcome": "rolled"}
-    assert "leases" not in vars(manager.boxes[uid])
+    activity = rolling.states[uid]
+    with activity.enter(keep_awake=keep_awake):
+        result = drive(rolling.routing.deploy(rolling.new))
+        assert result == {"slept": 0, "asleep": 2, "incomplete": 1}
+        assert activity.draining and activity.active == 1
+        assert rolling.runtime.live == {uid} and rolling.runtime.stops == []
+        with pytest.raises(RuntimeError, match="draining"), activity.enter():
+            pytest.fail("deployment admitted new work")
+    rolling.tick()
+    assert rolling.runtime.live == set() and rolling.runtime.stops == [uid]
+    assert len(rolling.runtime.starts) == 1
+    rolling.wake("a")
+    assert rolling.manager.boxes[uid].image == rolling.new
 
 
-def test_failed_health_rolls_back_only_that_box(rolling, monkeypatch):
-    manager = rolling.manager
+def test_unknown_activity_is_incomplete_and_never_stops_a_turn(rolling, monkeypatch):
+    uid = rolling.wake("a")
+    original = rolling.manager._rpc
+    monkeypatch.setattr(rolling.manager, "_rpc", lambda *a, **k: (_ for _ in ()).throw(
+        OSError("unknown activity")))
+    assert drive(rolling.routing.deploy(rolling.new))["incomplete"] == 1
+    assert rolling.runtime.live == {uid} and not rolling.runtime.stops
+    monkeypatch.setattr(rolling.manager, "_rpc", original)
+    assert drive(rolling.routing.deploy(rolling.new))["slept"] == 1
+
+
+def test_rollback_republishes_previous_image_for_every_next_wake(rolling):
     a, b = rolling.wake("a"), rolling.wake("b")
-    manager.wake_timeout = .05
-    original = manager._rpc
-
-    def rpc(box, operation="status", **body):
-        if box.uid == a and box.image == rolling.new and operation == "status":
-            raise OSError("synthetic failed health")
-        return original(box, operation, **body)
-
-    monkeypatch.setattr(manager, "_rpc", rpc)
-    drive(rolling.routing.roll(rolling.new))
-    assert drive(rolling.routing.roll(rolling.new, b))["outcome"] == "rolled"
-    assert drive(rolling.routing.roll(rolling.new, a)) == {
-        "uid": a, "outcome": "rolled_back", "reason": "health_failed"}
-    assert rolling.runtime.live == {a, b}
-    assert manager.boxes[a].image == rolling.old
-    assert manager.boxes[b].image == rolling.new
-    assert manager.images.last == {str(a): rolling.old, str(b): rolling.new}
+    assert drive(rolling.routing.deploy(rolling.new))["slept"] == 2
+    assert not rolling.runtime.live
+    rolling.wake("a")
+    assert rolling.manager.boxes[a].image == rolling.new
+    assert drive(rolling.routing.deploy(rolling.old))["slept"] == 1
+    assert not rolling.runtime.live
+    rolling.wake("a")
+    rolling.wake("b")
+    assert rolling.manager.boxes[a].image == rolling.manager.boxes[b].image == rolling.old
+    assert json.loads(rolling.state.read_text()) == {"current": rolling.old}
 
 
-def test_cutover_boundary_refuses_previous_image_and_never_starts_it(rolling, monkeypatch):
-    manager = rolling.manager
+def test_failed_health_does_not_select_a_per_owner_rollback(rolling, monkeypatch):
     uid = rolling.wake("a")
-    # An old-image record cannot be used after split writes, even if the
-    # candidate's health fails. There is no caller override for this refusal.
+    drive(rolling.routing.deploy(rolling.new))
+    rolling.manager.wake_timeout = .05
+    original = rolling.manager._rpc
+    def rpc(box, operation="status", **body):
+        if box.image == rolling.new and operation == "status":
+            raise OSError("synthetic unhealthy image")
+        return original(box, operation, **body)
+    monkeypatch.setattr(rolling.manager, "_rpc", rpc)
+    with pytest.raises(BoxError, match="startup failed"):
+        rolling.wake("a")
+    assert rolling.manager.images.current == rolling.new
+    assert rolling.runtime.starts[-1][1]["rootfs"] == rolling.root / rolling.new
+    assert not rolling.runtime.live
+    assert "roll_failed" not in vars(rolling.manager.boxes[uid])
+
+
+def test_cutover_boundary_refuses_previous_image_and_never_starts_it(rolling):
+    uid = rolling.wake("a")
     (rolling.root / rolling.old / "app/tinyassets/storage_layout.py").write_text(
         'ACTIVE_BOX_LAYOUT = "owner-split"\n')
-    original = rolling.runtime.start
-
-    def start(*args, **kwargs):
-        original(*args, **kwargs)
-        raise BoxError("synthetic unhealthy image")
-
-    monkeypatch.setattr(rolling.runtime, "start", start)
-    drive(rolling.routing.roll(rolling.new))
-    with pytest.raises(BoxError, match="cutover boundary.*backup-restore"):
-        drive(rolling.routing.roll(rolling.new, uid))
-    assert len(rolling.runtime.starts) == 2
-    assert not rolling.runtime.live and not hasattr(manager.boxes[uid], "wanted")
+    drive(rolling.routing.deploy(rolling.new))
     with pytest.raises(BoxError, match="cutover boundary"):
-        drive(rolling.routing.roll(rolling.old))
+        drive(rolling.routing.deploy(rolling.old))
+    assert rolling.manager.images.current == rolling.new
+    assert not rolling.runtime.live and rolling.runtime.stops == [uid]
 
 
 def test_image_reference_and_symlink_cannot_select_another_host_path(rolling):
     with pytest.raises(BoxError, match="immutable"):
-        drive(rolling.routing.roll("../somewhere"))
+        drive(rolling.routing.deploy("../somewhere"))
     link = rolling.root / ("harness-" + "3" * 64)
     link.symlink_to(rolling.root / rolling.new, target_is_directory=True)
     with pytest.raises(BoxError, match="unavailable"):
-        drive(rolling.routing.roll(link.name))
+        drive(rolling.routing.deploy(link.name))
 
 
-def test_interactive_wake_is_not_blocked_by_another_box_readiness_poll(rolling, monkeypatch):
-    manager = rolling.manager
+def test_host_refuses_retired_roll_drain_and_wake_image_override(rolling):
+    record = rolling.admission.owner("a")
+    for operation, owner, fields in (
+        ("roll", None, {"image": rolling.new}),
+        ("drain", None, {"uid": record["uid"]}),
+        ("wake", "a", {"record": record, "scheduled": False, "image": rolling.new}),
+    ):
+        with pytest.raises(BoxError):
+            rolling.control(operation, owner, **fields)
+    assert not rolling.runtime.starts
+    assert rolling.manager.images.current == rolling.old
+
+
+def test_deploy_cannot_stop_a_deletion_drain_after_the_last_turn(rolling):
     uid = rolling.wake("a")
-    entered, ready = threading.Event(), threading.Event()
-    original = manager._rpc
-
-    def rpc(box, operation="status", **body):
-        if box.uid == uid and box.image == rolling.new and operation == "status":
-            entered.set()
-            if not ready.is_set():
-                raise OSError("synthetic startup not ready yet")
-        return original(box, operation, **body)
-
-    monkeypatch.setattr(manager, "_rpc", rpc)
-    drive(rolling.routing.roll(rolling.new))
-    results = []
-    thread = threading.Thread(
-        target=lambda: results.append(drive(rolling.routing.roll(rolling.new, uid))))
-    thread.start()
-    assert entered.wait(2)
-    try:
-        other = rolling.wake("b")
-        assert manager.boxes[other].image == rolling.new
-        assert not results
-    finally:
-        ready.set()
-        thread.join(5)
-    assert results == [{"uid": uid, "outcome": "rolled"}]
-
-
-@pytest.mark.parametrize("previous_present", [True, False])
-def test_failed_candidate_running_turn_is_not_killed_even_when_rollback_cannot_drain(
-    rolling, monkeypatch, previous_present,
-):
-    manager = rolling.manager
-    uid = rolling.wake("a")
-    manager.wake_timeout = manager.roll_wait = .05
-    original_start, original_rpc = rolling.runtime.start, manager._rpc
-    gates = []
-
-    def start(*args, **kwargs):
-        original_start(*args, **kwargs)
-        if kwargs["rootfs"].name == rolling.new:
-            gate = rolling.states[uid].enter()
-            gate.__enter__()
-            gates.append(gate)
-
-    def rpc(box, operation="status", **body):
-        if box.image == rolling.new and operation == "status":
-            raise OSError("synthetic failed health")
-        return original_rpc(box, operation, **body)
-
-    monkeypatch.setattr(rolling.runtime, "start", start)
-    monkeypatch.setattr(manager, "_rpc", rpc)
-    drive(rolling.routing.roll(rolling.new))
-    if not previous_present:
-        (rolling.root / rolling.old).rename(rolling.root / "missing-rollback-image")
-    try:
-        with pytest.raises(RuntimeError, match="candidate cannot safely drain"):
-            drive(rolling.routing.roll(rolling.new, uid))
-        assert rolling.runtime.live == {uid}
-        assert rolling.runtime.stops == [uid]  # only the original drained image
-        manager.maintain()
-        assert rolling.runtime.live == {uid}
-        assert manager.boxes[uid].roll_failed
-    finally:
-        for gate in gates:
-            gate.__exit__(None, None, None)
-    manager.maintain()
-    assert rolling.runtime.live == {uid}  # C15: cleanup needs a broker decision.
-    drive(rolling.routing.sleep("a"))
-    assert not rolling.runtime.live
-
-
-def test_roll_cannot_stop_a_deletion_drain_after_the_last_turn(rolling):
-    manager = rolling.manager
-    uid = rolling.wake("a")
-    state = rolling.states[uid]
-    with state.enter():
-        state.status(deleting=True)
-    drive(rolling.routing.roll(rolling.new))
-    assert drive(rolling.routing.roll(rolling.new, uid)) == {"uid": uid, "outcome": "deferred_busy"}
-    assert not rolling.runtime.stops
-    assert rolling.runtime.live == {uid}
-    assert manager.boxes[uid].image == rolling.old
+    with rolling.states[uid].enter():
+        rolling.states[uid].status(deleting=True)
+    assert drive(rolling.routing.deploy(rolling.new))["incomplete"] == 1
+    assert not rolling.runtime.stops and rolling.runtime.live == {uid}
+    assert rolling.manager.boxes[uid].image == rolling.old
