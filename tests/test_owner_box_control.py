@@ -49,8 +49,10 @@ def test_control_socket_uses_kernel_router_identity_and_returns_bounded_errors()
     assert os.geteuid() == 0, "run this file with linux_oracle.py --as-root"
     calls = []
 
-    def wake(owner, *, scheduled):
-        calls.append((owner, scheduled))
+    launch = {"uid": 300001, "secret": "s" * 43, "volume_generation": 1}
+
+    def wake(owner, *, scheduled, launch):
+        calls.append((owner, scheduled, launch))
         if owner == "unknown":
             raise LookupError("unadmitted")
         if owner == "broken":
@@ -76,40 +78,59 @@ def test_control_socket_uses_kernel_router_identity_and_returns_bounded_errors()
             while not (path / "daemon.sock").exists() and time.monotonic() < deadline:
                 time.sleep(.01)
             code = '''
-import os
-os.setgroups([])
-os.setgid(1001)
-os.setuid(1001)
-from tinyassets.boxes.daemon_control import ensure_awake, request
-assert ensure_awake("alice", scheduled=True) == 300001
-assert request("resolve", "alice", cleanup=False) == {"uid": 300001, "lease": "l" * 43}
-assert request("release", "alice", lease="l" * 43) == {"released": True}
-try:
-    request("destroy", "alice", uid=300001)
-except RuntimeError:
-    pass
-else:
-    raise AssertionError("router destroyed a box")
-for owner, expected in (("unknown", LookupError), ("broken", RuntimeError)):
+import json, os, sys
+role = int(sys.argv[1])
+record = json.loads(sys.argv[2])
+os.setgroups([1001])
+os.setgid(role)
+os.setuid(role)
+from tinyassets.boxes.daemon_control import request
+if role == 1001:
+    for operation, fields in (
+        ("wake", {"scheduled": True, "record": record}),
+        ("resolve", {"cleanup": False}),
+        ("release", {"lease": "l" * 43}),
+        ("destroy", {"uid": 300001}),
+        ("retire", {"uid": 300001}),
+    ):
+        try:
+            request(operation, "alice", **fields)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("router gained lifecycle authority: " + operation)
+    sys.exit(0)
+assert request("wake", "alice", scheduled=True, record=record) == {"uid": 300001}
+for owner, expected, message in (
+    ("unknown", LookupError, "owner has no live admission"),
+    ("broken", RuntimeError, "owner box lifecycle failed: startup failed"),
+):
     try:
-        ensure_awake(owner)
-    except expected:
-        pass
+        request("wake", owner, scheduled=False, record=record)
+    except expected as error:
+        assert str(error) == message
     else:
         raise AssertionError(owner)
 try:
-    request("retire", "alice", uid=300001)
+    request("wake", "alice", scheduled=False)
 except RuntimeError:
     pass
 else:
-    raise AssertionError("router retired a box")
+    raise AssertionError("unbound broker wake was accepted")
 '''
-            result = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                                    text=True, timeout=20,
-                                    env={**os.environ, "TINYASSETS_BOXES_RUN": directory})
-            assert result.returncode == 0, result.stderr
-            assert calls == [("alice", True), ("unknown", False), ("broken", False)]
-            assert leases == [("alice", "l" * 43)]
+            import json
+
+            for role in (1001, 1002):
+                result = subprocess.run(
+                    [sys.executable, "-c", code, str(role), json.dumps(launch)],
+                    capture_output=True, text=True, timeout=20,
+                    env={**os.environ, "TINYASSETS_BOXES_RUN": directory})
+                assert result.returncode == 0, result.stderr
+                if role == 1001:
+                    assert calls == []
+            assert calls == [("alice", True, launch), ("unknown", False, launch),
+                             ("broken", False, launch)]
+            assert leases == []
         finally:
             stop.set()
             listener.join(5)
@@ -232,9 +253,14 @@ os.setgroups([1102])
 os.setgid(role)
 os.setuid(role)
 if role == 1001:
-    lease = request("resolve", "a", cleanup=False)
-    assert lease["uid"] == 300001 and len(lease["lease"]) == 43
-    assert request("release", "a", lease=lease["lease"]) == {"released": True}
+    for operation, fields in (("resolve", {"cleanup": False}),
+                              ("release", {"lease": "l" * 43})):
+        try:
+            request(operation, "a", **fields)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("router gained lifecycle authority: " + operation)
     try:
         request("roll", image=image)
     except RuntimeError:

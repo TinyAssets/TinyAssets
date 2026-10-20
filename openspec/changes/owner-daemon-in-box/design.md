@@ -306,6 +306,37 @@ read-only runtime copy, kept separate from the owner volume. Neither provider
 credentials nor another box's secret is ever stored in an owner volume. Recovery
 and explicit revocation retire every previously accepted copy.
 
+**As built (b4):** `broker/routing.py` publishes the complete admission map,
+keyed by the admission identity digest, including terminal records whose identity
+row is gone. A durable sequence orders atomic installations in
+`routing_snapshot.py`; the router incarnation nonce prevents an old delivery from
+initializing a restarted router. The broker retries delivery to a new incarnation;
+installed healthy routes never expire. An uninitialized router refuses serving.
+The router authenticates and selects its installed route; an awake request makes
+no broker or lifecycle call. Cold wake and explicit revocation belong to the
+broker's per-owner lifecycle authority. Wake republishes current admission and
+supplies boxhostd with the bound launch record, never a replacement route in its
+reply. Admission changes use that same lock. Withdrawal publishes first and
+closes channels and old ingress before acknowledgement; failed delivery can
+complete only after ingress stops, and failed stopping remains pending.
+Revocation stops the old ingress before replacing the durable secret and
+publishing it. The broker identity store owns the persistent credential;
+boxhostd supplies only its one-box read-only runtime copy outside the volume.
+
+The router resolve/release host RPCs, direct host wake helper, per-request route
+and release calls, and start-triggered secret replacement are deleted. The waker
+receives the broker lifecycle function explicitly. The credential listener has
+a separate broker-authenticated snapshot operation, unavailable to a box's
+credential requests. No shared owner-volume reader or deployment path is added.
+Real broker/router and owner-process tests cover offline-control-plane forwarding,
+stale publication, restart refusal, cold wake, withdrawal and rotation ordering,
+and missing, forged or wrong-box ingress credentials. Separate-root connection
+fixtures receive the existing broker's projection rather than starting another
+broker in the router root; kernel-role host tests refuse router lifecycle
+operations and admit only broker-bound wakes. Residual internal lease helpers
+have no production router caller; their lifecycle/roll cleanup is outside b4.
+Platform recovery ordering remains b5, and this note claims no deployment.
+
 ### C6. Admission is one record; deletion is one control-plane job (T5, T9)
 **One admission record per owner,** in the broker's identity database, with one
 writer (the broker's admission authority). Its state is `admitted`, or

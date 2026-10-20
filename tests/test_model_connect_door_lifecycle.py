@@ -169,6 +169,17 @@ def _broker_process(root, socket_path, relay_socket, pipe, kind):
                 command = pipe.recv()
                 if command == "stop":
                     return
+                if command == "publish_routes":
+                    # The fixture pipe stands in for the private router transport;
+                    # the existing broker still constructs the entire projection.
+                    def router_request(request):
+                        pipe.send(request)
+                        return pipe.recv()
+
+                    door_server.routing._router = router_request
+                    door_server.routing.publish()
+                    pipe.send("routes_published")
+                    continue
                 if command == "expire":
                     keeper = ConnectionTokens(universe_dir=root / "center", owner_user_id="owner")
                     bundle = tokens.decode(keeper._read("fixture"))
@@ -213,6 +224,21 @@ def lifecycle(tmp_path, monkeypatch, request):
     live = SimpleNamespace(socket_path=broker_socket, fence=lambda: fence,
                            verify_broker=lambda _: None)
     monkeypatch.setattr(supervisor, "get_supervisor", lambda _: live)
+    from tinyassets.router_credentials import routing_dispatch
+    from tinyassets.routing_snapshot import RoutingSnapshot, _snapshots
+
+    # This router has its own root and an already-running external broker.
+    # Initialize it from that broker, never the generic in-process bootstrap.
+    monkeypatch.setitem(_snapshots, router, RoutingSnapshot())
+    parent.send("publish_routes")
+    while True:
+        assert parent.poll(10), "broker routing publication timed out"
+        publication = parent.recv()
+        if publication == "routes_published":
+            break
+        parent.send(routing_dispatch(router, publication))
+    assert _snapshots[router].route("owner").state == "admitted"
+    assert not (router / ".broker").exists()
 
     class Admission:
         broker_socket = relay_socket
