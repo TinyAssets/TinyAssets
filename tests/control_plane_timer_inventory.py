@@ -44,10 +44,10 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
 
     "tinyassets/broker/waker.py::Waker.run": (
         CONTROL_PLANE, "broker clock wakes admitted, unsuspended owners from timestamp-only "
-        "reports and the 24-hour floor; boxhostd queues scheduled wakes behind interactive",
+        "reports and the 24-hour floor; the broker reserves wake capacity",
     ),
-    "tinyassets/boxes/owner_daemons.py::OwnerDaemons.ensure_awake": (
-        CALL_SCOPED, "one wake's bounded priority/capacity and crash-backoff wait",
+    "tinyassets/broker/routing.py::RoutingAuthority.wake": (
+        CALL_SCOPED, "one broker wake waits for capacity notifications until its fixed deadline",
     ),
     "tinyassets/boxes/owner_daemons.py::OwnerDaemons.withdraw": (
         CALL_SCOPED, "C6 withdrawal waits at most 20 seconds for admitted work to drain",
@@ -130,8 +130,7 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/auto_ship_ledger.py::_file_lock": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/boxes/host_service.py::_serve": (
         CONTROL_PLANE,
-        "root box host drains idle daemons and restarts crashed boxes with bounded backoff; "
-        "no owner task or inference scheduling",
+        "root box host observes exited processes; only the broker selects lifecycle work",
     ),
     "tinyassets/boxes/boxd.py::BoxdCore.destroy": (
         CALL_SCOPED,

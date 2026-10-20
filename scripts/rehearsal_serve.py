@@ -184,9 +184,6 @@ def owner(root, relay, secret, socket, uid, generation, centers, inherited_mount
 
 
 def broker(directory, *, register=False):
-    import faulthandler
-
-    faulthandler.dump_traceback_later(60, repeat=True)
     os.environ.setdefault("BACKUP_DEST", ":local:/snapshots/owner-snapshots")
     from tinyassets.broker.fence import Fence
     from tinyassets.broker.ops import OpStore
@@ -211,7 +208,7 @@ def broker(directory, *, register=False):
     server = BrokerServer(
         ledger_for=dispatch.ledger_for,
         dispatch_for=dispatch.dispatch_for,
-        ops=OpStore(run / "ops.db"),
+        ops=OpStore(Path("/data/.broker/state/ops.db")),
         fence=Fence(
             run / "fence.json",
             verify_lease_proof=lambda _, proof: proof == "synthetic-rehearsal-proof" * 2,

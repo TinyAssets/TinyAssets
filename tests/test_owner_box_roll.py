@@ -210,6 +210,8 @@ def test_failed_candidate_running_turn_is_not_killed_even_when_rollback_cannot_d
         for gate in gates:
             gate.__exit__(None, None, None)
     manager.maintain()
+    assert rolling.runtime.live == {uid}  # C15: cleanup needs a broker decision.
+    drive(rolling.routing.sleep("a"))
     assert not rolling.runtime.live
 
 

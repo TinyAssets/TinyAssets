@@ -9,7 +9,6 @@ import os
 import socket
 import threading
 import time
-from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -50,7 +49,6 @@ class OwnerDaemons:
         self.boxes: dict[int, Box] = {}
         self.condition = threading.Condition(threading.RLock())
         self.images, self.roll_wait = images, roll_wait
-        self.idle_guard = lambda uid: nullcontext(True)
 
     def _rpc(self, box, operation="status", **body):
         client = http.client.HTTPConnection("owner", timeout=2)
@@ -183,8 +181,7 @@ class OwnerDaemons:
     def _sleep(self, box, *, idle, stop=True):
         if box.restarting:
             return False
-        with self.idle_guard(box.uid) as allowed:
-            return self._drain(box, idle=idle, stop=stop) if allowed else False
+        return self._drain(box, idle=idle, stop=stop)
 
     def _activity(self, box):
         try:

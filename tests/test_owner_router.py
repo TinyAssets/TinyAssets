@@ -990,12 +990,13 @@ def test_bound_center_retirement_uses_relay_owner_and_stops_its_daemon(boxes, ad
 
 
 def test_box_admitted_request_blocks_eviction_until_disconnect(
-    boxes, admitted, broker,  # noqa: F811
+    boxes, admitted, broker, monkeypatch,  # noqa: F811
 ):
     import threading
 
     from tinyassets.owner_router import forward, resolve_box
 
+    monkeypatch.setenv("BACKUP_DEST", ":local:" + str(boxes.run / "snapshots"))
     manager = boxes.manager
     a, b = (admitted.owner_machine(owner) for owner in ("alice", "bob"))
     with manager.condition:

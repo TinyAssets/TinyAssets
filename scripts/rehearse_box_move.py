@@ -258,14 +258,23 @@ print(json.dumps(key))
         return next(sub for sub in subscriptions if path == 'subscriptions/' + sub['id'])
 
     async def startup():
+        from tinyassets import router_credentials
+
         with tempfile.TemporaryDirectory(prefix='/tmp/s6-recovery-broker-') as run:
             listener = await server.serve(Path(run) / 'broker.sock')
-            async with listener:
-                await platform_recovery(server, backup_time=backup_time,
-                                        now=backup_time + 1, identity_exists=lambda owner: True,
-                                        revoke_sessions=lambda owner: None)
-                assert not admits(staged, owner)
-                finish_platform(staged)
+            # This offline recovery venue runs both services as its disposable
+            # root UID; retain real socket peer checks and snapshot installation.
+            with patch.object(router_credentials, 'BROKER_UID', os.getuid()), \
+                    patch.object(router_credentials, 'DAEMON_UID', os.getuid()):
+                async with listener, router_credentials.serving(staged):
+                    await platform_recovery(server, backup_time=backup_time,
+                                            now=backup_time + 1, identity_exists=lambda owner: True,
+                                            revoke_sessions=lambda owner: None)
+                    from tinyassets.routing_snapshot import snapshot
+
+                    assert snapshot(staged).record(owner) is None
+                    assert not admits(staged, owner)
+                    finish_platform(staged)
 
     with patch.dict(os.environ, {'STRIPE_SECRET_KEY': 'sk_test_synthetic',
                                 'STRIPE_WEBHOOK_SECRET': secret}), \

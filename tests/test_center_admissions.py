@@ -142,6 +142,7 @@ def test_owner_channel_admission_retry_and_refusals(broker, tmp_path, monkeypatc
     assert request(broker) == refused  # no map is never initialized at runtime
     identities = store(tmp_path, "alice")
     broker.server._owner_identities = identities
+    broker.server._routing = projection(identities.path)
     stops = []
 
     def stopped(operation, **fields):

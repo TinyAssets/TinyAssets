@@ -123,6 +123,7 @@ def box(broker, tmp_path, monkeypatch):  # noqa: F811
     broker.server._roles = {os.getuid(): BOX_HOST}
     broker.server._owner_identities = identities
     broker.server._data_root = shared
+    broker.server._routing = projection(identities.path)
     broker.server._ledger_for = ledger_for
     broker.server._dispatch_for = dispatch_for
     broker.server._policy_store = PolicyStore(shared, identities)

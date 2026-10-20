@@ -281,3 +281,6 @@ class RoutingAuthority:
 
         for owner in await asyncio.to_thread(pending, self.identities):
             self.start(owner, self.volumes.tick_owner)
+        # A snapshot may have stopped its process while still copying bytes.
+        # Recheck capacity on this existing clock, without waiting for that copy.
+        await self._capacity_changed()

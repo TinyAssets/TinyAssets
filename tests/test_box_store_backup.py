@@ -83,8 +83,10 @@ if len(sys.argv) > 1 and sys.argv[1].endswith('/platform-recovery.py'):
     sys.path.insert(0, str(Path(sys.argv[1]).resolve().parents[1]))
     from tinyassets import restore_recovery as recovery
     if os.environ.get('TEST_AUTHORITIES') == 'available':
-        recovery.resume_deletion_jobs = lambda *args, **kwargs: None
-        recovery.reconcile_authority = lambda *args: None
+        async def recovered(*args, **kwargs):
+            return None
+        recovery.resume_deletion_jobs = recovered
+        recovery.reconcile_authority = recovered
         from tinyassets import router_account_deletion as identity
         identity.workos_user_exists = lambda owner: owner == 'alice'
         identity.revoke_workos_sessions = lambda owner: None
@@ -97,8 +99,11 @@ if len(sys.argv) > 1 and sys.argv[1].endswith('/platform-recovery.py'):
         layout = json.loads((root / '.layout.json').read_text())
         server = SimpleNamespace(_data_root=root, _owner_identities=SimpleNamespace(
             _connect=lambda **kwargs: sqlite3.connect(root / '.broker/state/owner-identities.db')))
-        recovery.platform_recovery(server, backup_time=layout['recovery']['backup_time'],
-                                   now=layout['recovery']['restore_time'])
+        import asyncio
+        server.routing = SimpleNamespace(changed=lambda owner: None)
+        asyncio.run(recovery.platform_recovery(
+            server, backup_time=layout['recovery']['backup_time'],
+            now=layout['recovery']['restore_time']))
     sys.argv = sys.argv[1:]
     runpy.run_path(sys.argv[0], run_name='__main__')
 else:

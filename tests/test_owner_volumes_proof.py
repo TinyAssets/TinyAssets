@@ -25,8 +25,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.support.admission import drive, projection
-
 
 def command(*args, **kwargs):
     result = subprocess.run(args, capture_output=True, text=True, timeout=600, **kwargs)
@@ -263,6 +261,7 @@ def integrated_lifecycle(root, volumes, rootfs, size):
     while the existing owner-daemon process tests exercise its HTTP drain gate.
     The caller's mount-root instrumentation stays enabled for this entire proof.
     """
+    import asyncio
     import socket
     import sqlite3
     from types import SimpleNamespace
@@ -272,6 +271,9 @@ def integrated_lifecycle(root, volumes, rootfs, size):
     from tinyassets.broker import box_admission, owner_volumes
     from tinyassets.broker.owner_identities import OwnerIdentities
     from tinyassets.owner_activity import Activity
+
+    def projection(path):
+        return SimpleNamespace(changed=lambda owner: None)
 
     data = root / "metadata"
     broker = data / ".broker"
@@ -341,6 +343,12 @@ def integrated_lifecycle(root, volumes, rootfs, size):
     daemon_control.request = execute
     routing = RoutingAuthority(SimpleNamespace(_owner_identities=identities, _data_root=root))
     routing.publish = lambda **kwargs: None
+    loop = asyncio.new_event_loop()
+    worker = threading.Thread(target=loop.run_forever)
+    worker.start()
+
+    def drive(coroutine):
+        return asyncio.run_coroutine_threadsafe(coroutine, loop).result(300)
 
     def status(box, operation="status", **body):
         return states[box.uid].status(drain=operation == "drain",
@@ -382,7 +390,10 @@ def integrated_lifecycle(root, volumes, rootfs, size):
             return drive(routing.wake("proof-owner"))
         volumes.delete = paused_delete
         with ThreadPoolExecutor(2) as pool:
-            eviction = pool.submit(routing.volumes.evict, "proof-owner")
+            from tinyassets.broker.admission import owner_call
+
+            eviction = pool.submit(drive, owner_call(
+                identities.path, "proof-owner", routing.volumes.evict, "proof-owner"))
             assert deleting.wait(30)
             request = pool.submit(wake)
             assert waking.wait(30)
@@ -437,6 +448,10 @@ def integrated_lifecycle(root, volumes, rootfs, size):
         assert not (volumes.store / f"{uid}.img").exists()
         print("PROOF integrated lifecycle map/runsc/generation/no-traversal PASS", flush=True)
     finally:
+        drive(routing.close())
+        loop.call_soon_threadsafe(loop.stop)
+        worker.join(5)
+        loop.close()
         daemon_control.request = original_request
         runtime.stop(uid)
         volumes.detach(uid)

@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from tests.support.admission import projection
+from tests.support.admission import drive, projection
 from tinyassets.broker import vault
 from tinyassets.credential_vault import custody_metadata_path
 
@@ -33,11 +33,12 @@ def write(home, owner=OWNER):
 
 
 def delete(root):
-    from tinyassets.broker.admission import local_mutate, owner_lock
+    from tinyassets.broker.admission import local_mutate, owner_call
     path = root / ".broker/state/owner-identities.db"
-    with owner_lock(path, OWNER):
+    def erase():
         local_mutate(path, OWNER, "erase", routing=projection(path))
         vault.erase_owner(root, OWNER)
+    drive(owner_call(path, OWNER, erase))
 
 
 def assert_no_credentials(home):

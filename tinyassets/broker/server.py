@@ -545,8 +545,7 @@ class _Connection:
             answer = await asyncio.to_thread(self._owner_identity, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "CENTER_ADMISSION":
-            answer = await owner_call(self._server._owner_identities.path, doc["principal"],
-                                      self._center_admission, doc)
+            answer = await self._center_admission(doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "ADMITTED_OWNER":
             answer = await asyncio.to_thread(self._admitted_owner, doc)
@@ -798,34 +797,36 @@ class _Connection:
         except Exception:  # noqa: BLE001 - no persisted state on refusal
             return {"op": "SOLE_CENTER_REFUSED"}
 
-    def _center_admission(self, doc: dict[str, Any]) -> dict[str, Any]:
+    async def _center_admission(self, doc: dict[str, Any]) -> dict[str, Any]:
         """DA1: append-only admit/retire; machine always from the reservation."""
         from tinyassets.broker.owner_identities import CenterUnadmitted
 
         try:
-            if set(doc) != {"op", "event", "principal", "center", "generation", "token"}:
-                raise ValueError("unsupported admission fields")
-            if (not isinstance(doc["event"], str) or type(doc["generation"]) is not int
-                    or not isinstance(doc["token"], str)):
-                raise ValueError("invalid admission request")
-            with self._server._fence.send(doc["generation"], doc["token"]):
-                if self._server._owner_identities is None:
-                    raise RuntimeError("owner identities are not initialized")
-                row = self._server._owner_identities.admission(
-                    doc["event"], doc["principal"], doc["center"], routing=self._server.routing)
-                if doc["event"] == "retire":
-                    self._stop_owner_box(doc["principal"])
-                if doc["event"] == "admit" and self._server._policy_store is not None:
-                    self._server._policy_store.bootstrap_owner(doc["principal"])
-                if doc["event"] == "admit" and self._server._provision_box is not None:
-                    self._server._provision_box(doc["principal"], doc["center"])
-                return {"op": "CENTER_ADMISSION_IS", "generation": row.generation,
-                        "machine": row.machine}
+            return await owner_call(self._server._owner_identities.path, doc["principal"],
+                                    self._center_admission_locked, doc)
         except CenterUnadmitted:
             # D218 retires a tree-less center only if the log admitted it.
             return {"op": "CENTER_ADMISSION_UNADMITTED"}
         except Exception:  # noqa: BLE001 - retry completes durable partial admission
             return {"op": "CENTER_ADMISSION_REFUSED"}
+
+    def _center_admission_locked(self, doc):
+        if set(doc) != {"op", "event", "principal", "center", "generation", "token"}:
+            raise ValueError("unsupported admission fields")
+        if (not isinstance(doc["event"], str) or type(doc["generation"]) is not int
+                or not isinstance(doc["token"], str)):
+            raise ValueError("invalid admission request")
+        with self._server._fence.send(doc["generation"], doc["token"]):
+            row = self._server._owner_identities.admission(
+                doc["event"], doc["principal"], doc["center"], routing=self._server.routing)
+            if doc["event"] == "retire":
+                self._stop_owner_box(doc["principal"])
+            if doc["event"] == "admit" and self._server._policy_store is not None:
+                self._server._policy_store.bootstrap_owner(doc["principal"])
+            if doc["event"] == "admit" and self._server._provision_box is not None:
+                self._server._provision_box(doc["principal"], doc["center"])
+            return {"op": "CENTER_ADMISSION_IS", "generation": row.generation,
+                    "machine": row.machine}
 
     def _model_source(self, doc):
         from tinyassets.broker.owner_sources import publish

@@ -307,6 +307,58 @@ def test_repeated_cancellation_cannot_release_owner_before_worker_finishes(tmp_p
     asyncio.run(exercise())
 
 
+def test_existing_tick_releases_wake_capacity_before_snapshot_copy_finishes(authority, monkeypatch):
+    from tinyassets.broker.waker import Waker
+
+    a = authority
+    lifecycle = a.server.routing.volumes
+    lifecycle.volume("alice", "created")
+    lifecycle.volume("alice", "sleep")
+    awake = {"alice": True, "bob": False}
+    owners = {a.identities.owner_machine(owner): owner for owner in awake}
+    entered, stop, stopped, finish = (threading.Event() for _ in range(4))
+
+    def host(operation, owner=None, **fields):
+        bound = owner if owner is not None else owners[fields["uid"]]
+        if operation == "status":
+            return {"awake": awake[bound], "awake_count": sum(awake.values()),
+                    "awake_cap": 1, "wake_timeout": 10, "active": 0,
+                    "idle_seconds": 0, "idle_limit": 900, "uptime": 0,
+                    "volume_size": 1024**3}
+        if operation == "snapshot":
+            entered.set()
+            assert stop.wait(10)
+            awake[bound] = False
+            stopped.set()
+            assert finish.wait(10)
+        if operation == "wake":
+            awake[bound] = True
+        return a.host(operation, owner, **fields)
+
+    lifecycle.execute = host
+    monkeypatch.setattr("tinyassets.boxes.daemon_control.request", host)
+    index = SimpleNamespace(identities=a.identities, due=lambda **kwargs: ["bob"],
+                            woken=lambda owner, **kwargs: None)
+    waker = Waker(index, None, wake=a.server.routing.wake, lifecycle_tick=a.server.routing.tick)
+
+    async def exercise():
+        await waker.tick()
+        assert await asyncio.to_thread(entered.wait, 2)
+        async def waiting():
+            while not a.server.routing._capacity._waiters:
+                await asyncio.sleep(0)
+        await asyncio.wait_for(waiting(), 2)
+        assert not waker.pending["bob"].done()
+        stop.set()
+        assert await asyncio.to_thread(stopped.wait, 2)
+        await waker.tick()
+        await asyncio.wait_for(waker.pending["bob"], 2)
+        assert awake["bob"] and not a.server.routing.tasks["alice"].done()
+        finish.set()
+        await a.server.routing.close()
+    asyncio.run(exercise())
+
+
 def test_mutation_without_routing_fails_before_changing_admission(authority):
     a = authority
     with pytest.raises(RuntimeError, match="requires routing"):
