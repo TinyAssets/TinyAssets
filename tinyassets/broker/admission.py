@@ -130,15 +130,3 @@ def local_mutate(path, owner, action, **arguments):
         db.execute("PRAGMA synchronous=FULL")
         db.execute("BEGIN IMMEDIATE")
         mutate(db, owner, action, **arguments)
-
-
-def remote(root, owner):
-    """Router authentication reads erased only; work readers require admitted."""
-    from tinyassets.broker.owner_identities import _owner_request
-
-    answer = _owner_request(root, {"op": "OWNER_ADMISSION", "principal": owner})
-    if (set(answer) != {"op", "state", "reasons"}
-            or answer["op"] != "OWNER_ADMISSION_IS"
-            or answer["state"] not in {"absent", "admitted", "suspended", "erased"}):
-        raise PermissionError("owner admission unavailable")
-    return OwnerAdmissionRecord(answer["state"], frozenset(answer["reasons"]))

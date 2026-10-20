@@ -355,6 +355,18 @@ def _owner_request(data_root: Path, request: dict) -> dict:
         return frame.control()
 
 
+def owner_admission(data_root: Path, owner: str):
+    """Read the sole admission record through authenticated broker IPC (C6)."""
+    from tinyassets.broker.admission import OwnerAdmissionRecord
+
+    answer = _owner_request(data_root, {"op": "OWNER_ADMISSION", "principal": owner})
+    if (set(answer) != {"op", "state", "reasons"}
+            or answer["op"] != "OWNER_ADMISSION_IS"
+            or answer["state"] not in {"absent", "admitted", "suspended", "erased"}):
+        raise PermissionError("owner admission unavailable")
+    return OwnerAdmissionRecord(answer["state"], frozenset(answer["reasons"]))
+
+
 def retire_owner(data_root: Path, *, principal: str):
     validate_principal(principal)
     answer = _owner_request(data_root, {"op": "RETIRE_OWNER", "principal": principal})

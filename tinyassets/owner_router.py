@@ -61,12 +61,11 @@ class BoxRoute:
 
 def resolve_box(owner: str, *, cleanup=False) -> BoxRoute:
     from tinyassets.boxes.daemon_control import request
-    from tinyassets.broker.admission import remote
-    from tinyassets.broker.owner_identities import owner_box_route
+    from tinyassets.broker.owner_identities import owner_admission, owner_box_route
     from tinyassets.storage import data_dir
 
     if not cleanup:
-        remote(data_dir(), owner).require_work()
+        owner_admission(data_dir(), owner).require_work()
     result = request("resolve", owner, cleanup=cleanup)
     expected = {"uid", "lease", "secret"} if cleanup else {"uid", "lease"}
     if (set(result) != expected or type(result["uid"]) is not int

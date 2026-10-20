@@ -1121,7 +1121,7 @@ class _Connection:
             return {"op": "USAGE_REFUSED"}
 
     def _http_connect(self, doc: dict[str, Any]) -> dict[str, Any]:
-        from tinyassets.broker.admission import require_admitted
+        from tinyassets.broker.admission import OwnerErased, require_admitted
         from tinyassets.broker.http_connect import local_operation, validate
 
         try:
@@ -1156,6 +1156,8 @@ class _Connection:
                 answer = {"op": "HTTP_CONNECT_RESULT", "result": result}
                 rf.control(rf.CONNECTION, answer)
                 return answer
+        except OwnerErased:
+            return {"op": "HTTP_CONNECT_RESULT", "result": {"error": "deposit_failed"}}
         except Exception as exc:  # noqa: BLE001 - fixed refusal, no persisted values on wire
             return {"op": "HTTP_CONNECT_REFUSED", "error_class":
                     "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"

@@ -340,14 +340,14 @@ def _start_checkout(*, owner: str, origin: str) -> dict[str, Any]:
         checkout_params,
         key_is_live,
     )
-    from tinyassets.broker.admission import remote
+    from tinyassets.broker.owner_identities import owner_admission
     from tinyassets.storage import data_dir
     from tinyassets.storage.subscription_state import (
         CHECKOUT_SESSION_SECONDS,
         CHECKOUT_WINDOW_SECONDS,
     )
 
-    if remote(data_dir(), owner).state == "erased":
+    if owner_admission(data_dir(), owner).state == "erased":
         return {"error": "account_deleted"}
     plans = BillingPlans(data_dir())
     if plans.read(owner)["tier"] == "paid":
