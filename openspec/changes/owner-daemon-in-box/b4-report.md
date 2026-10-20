@@ -14,6 +14,8 @@ test is research.md:117. No shared owner-volume content access is permitted.
 | Mutate admission; serialize cold wake, withdrawal and explicit revocation | Broker admission/lifecycle authority | C5, C6 |
 | Publish ordered admission, socket and secret projections | Broker admission/lifecycle authority | C5 |
 | Atomically install projections and refuse stale updates | Router/map | C5 |
+| Admit an owner channel or public egress stream | Egress proxy | C6, T5 |
+| Select a scheduled owner wake | Waker | T1, C5 |
 | Accept the bound caller credential | Owner box ingress | T1 |
 | Store the persistent box credential | Private broker identity store | C5 secret custody |
 | Supply the one-box read-only runtime credential copy | boxhostd | C5 secret custody |
@@ -22,8 +24,8 @@ test is research.md:117. No shared owner-volume content access is permitted.
 
 Baseline ranges (inclusive) removed or replaced by this lane:
 
-- `tinyassets/owner_router.py:61-93`: synchronous admission, host resolve/release,
-  and `OWNER_BOX_ROUTE` lookup (33 lines replaced with snapshot selection).
+- `tinyassets/owner_router.py:61-63,66-93`: synchronous admission, host resolve/release,
+  and `OWNER_BOX_ROUTE` lookup (31 lines replaced with snapshot selection).
 - `tinyassets/owner_router.py:194-195,217-220`: per-request release calls (6 lines).
 - `tinyassets/boxes/host_service.py:138-146`: router resolve/release RPCs (9 lines).
 - `tinyassets/boxes/host_service.py:156-158`: router-originated wake dispatch
@@ -31,8 +33,8 @@ Baseline ranges (inclusive) removed or replaced by this lane:
 - `tinyassets/boxes/volume_lifecycle.py:46`: per-start rotation request (1 line).
 - `tinyassets/broker/owner_identities.py:228-232`: start-triggered credential
   replacement (5 lines).
-- `tinyassets/broker/owner_identities.py:403-417`: route/rotate client protocol
-  (15 lines replaced with cold-wake-only request).
+- `tinyassets/broker/owner_identities.py:403-405,407-408,411-417`: route/rotate client protocol
+  (12 lines replaced with cold-wake-only request).
 - `tinyassets/boxes/daemon_control.py:30-37`: direct host wake helper (8 lines).
 - `tinyassets/broker/waker.py:9-10`: direct host-wake import (2 lines); C5 now
   requires the injected broker lifecycle function.
@@ -95,8 +97,8 @@ Passed: current changed-file ruff and strict OpenSpec validation.
 Running: root Linux oracle touched tests, pinned-runtime
 synthetic archive rehearsal, and full four-shard reproduction.
 Passed: final shape registry and background-authority inventory closure.
-Pending: hygiene against
-`conv/c6-owner-daemon-s3c`.
+Passed: hygiene against `conv/c6-owner-daemon-s3c` exits 0.
+The committed-tree rerun also passes ruff and strict OpenSpec.
 
 No production, external API, production credential, deployment, git-config or
 branch-changing operation is authorized in this lane. Independent delegation
@@ -120,3 +122,49 @@ is prohibited by the lane brief.
   launch and real broker/router tests exercise authenticated snapshot delivery.
 
 Test-Removal: retired -- C5 retires per-start rotation and router resolve/lease RPC behavior; replacement proofs cover stable credentials, broker-only cold wake and box-admitted work. Earlier lane-b changes retire the independent C6 authorities and router deletion orchestration.
+
+## Exact shared deletion/replacement audit
+
+Old line numbers against `51b0005594d`; replaced lines count as removals here.
+New modules have no old ranges. This is a literal diff audit, not a net-size claim.
+
+| File | Removed old ranges | Lines |
+|---|---|---:|
+| `tinyassets/box_layout_migration.py` | 161, 2165 | 2 |
+| `tinyassets/boxes/admission.py` | 80, 89, 100, 109-110, 112-114 | 8 |
+| `tinyassets/boxes/daemon_control.py` | 30-37 | 8 |
+| `tinyassets/boxes/host_service.py` | 138-146, 153, 156-158, 165 | 14 |
+| `tinyassets/boxes/owner_daemons.py` | 114, 117, 125, 128, 258, 264, 313, 351 | 8 |
+| `tinyassets/boxes/volume_lifecycle.py` | 37, 46 | 2 |
+| `tinyassets/broker/admission.py` | 132-136 | 5 |
+| `tinyassets/broker/box_admission.py` | 11, 24, 31-34, 39-40, 42 | 9 |
+| `tinyassets/broker/owner_identities.py` | 215, 228-232, 236, 244-247, 249, 324, 403-405, 407-408, 411-417 | 25 |
+| `tinyassets/broker/process.py` | 177 | 1 |
+| `tinyassets/broker/server.py` | 589-590, 814, 816-819, 821-823, 827, 873 | 12 |
+| `tinyassets/broker/waker.py` | 9-10, 18, 32 | 4 |
+| `tinyassets/owner_router.py` | 1, 3-4, 10, 57-58, 61-63, 66-93, 173, 187, 194-195, 217-220 | 45 |
+| `tinyassets/router_credentials.py` | 32, 36, 109-111, 212-213, 215-216 | 9 |
+
+Total old shared lines removed or replaced: 152.
+
+- Corrected root cutover/real-volume/outage run: 62 passed, 0 failures/errors
+  (`cutover-volume.xml`), including both Docker-engine proofs omitted earlier.
+- Hygiene against `conv/c6-owner-daemon-s3c`: exit 0. The baseline spans prior
+  lanes as requested; retired contracts are explained above.
+- The affected-test selector returns ALL because the broker fixture is in the
+  conftest import closure. Its 34 heavy files are also running in the required
+  runner's Linux venues, in addition to the requested four-shard reproduction.
+
+- Connection-door IPC fixture now receives a real broker publication before
+  serving its separate router root; all 10 tests pass with the unchanged
+  no-owner-state assertion.
+- Full first-contact file: 57 passed after serializing synthetic broker startup,
+  so concurrent fixture callers cannot observe its pre-install snapshot.
+- The first heavy run had 1,357 passes and that startup-race failure. It also
+  reported nine stale quarantine entries in the pre-existing deploy-fence
+  ledger. Those entries are outside b4; no gate or quarantine was changed.
+- Rehearsal venue: the generic oracle image lacked `/opt/venv`; the older launch
+  image lacked `rclone`. A network-disabled disposable image now derives from
+  `tinyassets-linux-oracle:bf4b7c48e0f6`, adds a real `/opt/venv` with its existing
+  site packages, and verifies the interpreter, app dependencies and rclone.
+  Image: `ta-b4-rehearsal:3b4dc70`. Production source/configuration is unchanged.

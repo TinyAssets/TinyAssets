@@ -1,6 +1,7 @@
 """Connection inventory and disconnect at an empty router root, through real IPC."""
 import asyncio
 import json
+import os
 
 import httpx
 import pytest
@@ -31,6 +32,19 @@ def door(discovery, tmp_path, monkeypatch):  # noqa: F811
         identities.resolve(owner, allocate=True)
         identities.admission("admit", owner, "cc-" + owner)
     discovery.broker.server._owner_identities = identities
+    discovery.broker.server._data_root = root
+    from tinyassets import router_credentials
+    from tinyassets.routing_snapshot import RoutingSnapshot, _snapshots
+
+    # This venue has a separate shared router root. Deliver the broker's actual
+    # projection over its credential socket before exercising the door.
+    monkeypatch.setitem(_snapshots, root, RoutingSnapshot())
+    monkeypatch.setattr(router_credentials, "BROKER_UID", os.getuid())
+    monkeypatch.setattr(router_credentials, "DAEMON_UID", os.getuid())
+    credentials = router_credentials.serving(root)
+    asyncio.run_coroutine_threadsafe(
+        credentials.__aenter__(), discovery.broker.loop).result(5)
+    discovery.broker.server.routing.publish()
 
     def forbidden(*args, **kwargs):
         raise AssertionError("the connection door must not read a home or resolve a box")
@@ -57,7 +71,11 @@ def door(discovery, tmp_path, monkeypatch):  # noqa: F811
         assert admission.read_text() == '{"ordinary":true}\n'
         return result
 
-    return call, identities, discovery
+    try:
+        yield call, identities, discovery
+    finally:
+        asyncio.run_coroutine_threadsafe(
+            credentials.__aexit__(None, None, None), discovery.broker.loop).result(5)
 
 
 def test_protected_cookie_and_bearer_must_name_the_same_owner(door):

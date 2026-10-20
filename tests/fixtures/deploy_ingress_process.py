@@ -66,6 +66,7 @@ def main():
     seed_owner_admission(runtime, principal=SCOPE.principal_id, center=SCOPE.command_center_id)
     brokers = _Registry()
     supervisor.get_supervisor = brokers.supervisor_for
+    brokers.supervisor_for(runtime)  # C5 startup installs the snapshot before serving.
     listener = socket.socket(fileno=int(sys.argv[2]))
     middleware.set_provider(FixtureAuth())
     # Isolated observation ONLY; never an environment bypass in product code.

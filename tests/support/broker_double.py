@@ -306,11 +306,15 @@ def in_process_broker(request, monkeypatch):
 
     def started_snapshot(root):
         root = Path(root)
-        exists = root in routing_snapshot._snapshots
-        result = snapshot(root)
-        if not exists:
-            registry.supervisor_for(root)
-        return result
+        # Concurrent synthetic router clients share one completed startup, just
+        # as they share the registry's broker. Do not expose its empty projection
+        # while the first caller is still installing the startup snapshot.
+        with registry._lock:
+            exists = root in routing_snapshot._snapshots
+            result = snapshot(root)
+            if not exists:
+                registry.supervisor_for(root)
+            return result
 
     monkeypatch.setattr(routing_snapshot, "snapshot", started_snapshot)
     try:
