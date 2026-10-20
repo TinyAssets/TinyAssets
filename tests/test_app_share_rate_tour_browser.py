@@ -53,7 +53,17 @@ def _chat(browser, app_url, *, init="", width=390, permissions=()):
         context.add_init_script(init)
     page = context.new_page()
     _enter_chat(page, app_url)
+    _new_owner(page)
     return context, page
+
+
+def _new_owner(page):
+    """Signed in, and the history read succeeds with an empty thread: that
+    successful empty read is what marks a first run."""
+    page.evaluate("""() => {
+        sessionStorage.setItem('ta_access_token','test');
+        Owner.getConversation = async () => ({recent_conversation: {turns: []}});
+    }""")
 
 
 def _open_menu(page):
@@ -251,8 +261,10 @@ def test_the_walkthrough_is_shown_once_per_device(app_url, browser):
         _tour_button(page, "Skip").click()
         assert page.locator("#first-run-tour").is_hidden()
         # A real reload, so the decision is read back out of localStorage.
+        page.evaluate("sessionStorage.removeItem('ta_access_token')")
         page.reload()
         _enter_chat(page, app_url)
+        _new_owner(page)
         assert page.evaluate("offerFirstRunWalkthrough()") is False
         assert page.locator("#first-run-tour").is_hidden()
     finally:
@@ -305,6 +317,20 @@ def test_a_returning_owner_is_never_stopped_by_the_walkthrough(app_url, browser,
     context, page = _chat(browser, app_url)
     try:
         page.evaluate(f"() => {{ {returning} = true; }}")
+        assert page.evaluate("offerFirstRunWalkthrough()") is False
+        assert page.locator("#first-run-tour").is_hidden()
+    finally:
+        context.close()
+
+
+def test_a_history_read_that_fails_never_opens_the_walkthrough(app_url, browser):
+    """An outage is not a new owner: the modal must not cover recovery controls."""
+    context, page = _chat(browser, app_url)
+    try:
+        page.evaluate("""() => {
+            historyLoaded = false;
+            Owner.getConversation = async () => { throw new Error('history is down'); };
+        }""")
         assert page.evaluate("offerFirstRunWalkthrough()") is False
         assert page.locator("#first-run-tour").is_hidden()
     finally:

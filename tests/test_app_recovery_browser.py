@@ -75,8 +75,10 @@ def page(server):
         browser = p.chromium.launch(executable_path=os.environ.get("TINYASSETS_TEST_CHROMIUM"))
         context = browser.new_context(viewport={"width": 1280, "height": 850})
         # Scripted HTTP responses, not replacements for the app's recovery/boot.
+        # A returning owner: the first-run walkthrough is already behind them.
         context.add_init_script("""sessionStorage.setItem('ta_access_token','test');
-            sessionStorage.setItem('ta_access_exp',String(Date.now()+3600000));""")
+            sessionStorage.setItem('ta_access_exp',String(Date.now()+3600000));
+            localStorage.setItem('app.tour.seen','1');""")
 
         def api(route):
             path = route.request.url.split("?", 1)[0]

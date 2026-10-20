@@ -4745,7 +4745,8 @@
     if(dialog && dialog.open) dialog.close();
   }
   function maybeStartFirstRunTour(){
-    if(tourSeen() || historyLoaded || hasMessages) return false;
+    // Only a thread READ as empty marks a new owner; a failed read is unknown.
+    if(tourSeen() || !historyEmpty || historyLoaded || hasMessages) return false;
     return startFirstRunTour();
   }
   // The one way in, used by enterSignedIn. The walkthrough waits for the
@@ -9694,9 +9695,10 @@
   // had forgotten everything — it had not; the app just never asked for it.
   // Accepted intent is returned alongside saved pairs until projection commits.
   // The heartbeat merges both by stable identity after this initial page.
-  let historyLoaded = false;
+  let historyLoaded = false, historyEmpty = false;
   async function loadHistory(){
     if(historyLoaded || !token()) return;
+    historyEmpty = false;
     // The account and home this peek is FOR. A response that lands after a
     // sign-out or an account change is the PREVIOUS account's conversation: it
     // paints nothing, renames no home, and does not mark this page loaded.
@@ -9721,7 +9723,7 @@
       historyFailed(null);
       turns = (conv && Array.isArray(conv.turns)) ? conv.turns : [];
       turns = turns.concat(conv&&Array.isArray(conv.pending)?conv.pending:[]);
-      if(!turns.length){ restoreInflight(turns); return; }
+      if(!turns.length){ historyEmpty = true; restoreInflight(turns); return; }
       historyLoaded = true;
       drawHistoryTurns(turns);
       offerEarlier(conv.has_more===true ? conv.next_before : null, stillOwner);
