@@ -1694,7 +1694,7 @@ async def _handle_turn_pending(request: Any) -> Any:
 
 
 async def _handle_account_delete(request: Any) -> Any:
-    """Validate the owner's deletion request and orchestrate it at the shared door.
+    """Authenticate the owner and enqueue the broker deletion job (C5/C6).
 
     The app's Account view posts here; same-origin JSON and explicit confirmation
     prevent a cross-site post or stray click from deleting the owner's data.
@@ -1717,38 +1717,30 @@ async def _handle_account_delete(request: Any) -> Any:
     data = await _read_small_json(request)
     if data is None:
         return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
-    if str(data.get("confirm", "")).strip() != "DELETE":
+    if data.get("confirm") != "DELETE":
         return JSONResponse(
             {"error": "confirmation_required"}, status_code=400, headers=_NO_STORE
         )
-    session_ref = str(data.get("session_ref", "")).strip()
-    if not _valid_handle(session_ref):
-        session_ref = ""
-    identity = current_identity()
+    from tinyassets.broker.deletion_jobs import WithdrawalPending
+    from tinyassets.broker.deletion_jobs import request as job_request
+    from tinyassets.storage import data_dir
 
-    import json
+    try:
+        result = await run_in_threadpool(job_request, data_dir(), "enqueue",
+                                        owner=current_identity().user_id)
+    except WithdrawalPending as pending:
+        return JSONResponse({"error": "deletion_pending", **pending.progress}, status_code=503,
+                            headers={**_NO_STORE, "location": pending.progress["status_url"]})
+    except Exception:
+        return JSONResponse({"error": "deletion_pending"}, status_code=503, headers=_NO_STORE)
+    return JSONResponse(result, status_code=202, headers={**_NO_STORE,
+                                                        "location": result["status_url"]})
 
-    from tinyassets.owner_router import delete_owner_account
 
-    result = await delete_owner_account(identity)
-    if result.status_code != 200:
-        return result
-    receipt = json.loads(result.body)
-    if session_ref:
-        await run_in_threadpool(_drop_refresh_session, session_ref)
-    response = JSONResponse(
-        {
-            "deleted": True,
-            "home_removed": bool(receipt.get("home_removed")),
-            "billing": str(receipt.get("billing") or ""),
-            "identity": str(receipt.get("identity") or ""),
-            "unfinished": list(receipt.get("unfinished_phases") or []),
-        },
-        headers=_NO_STORE,
-    )
-    response.delete_cookie(_REFRESH_COOKIE, path=_REFRESH_COOKIE_PATH,
-                           secure=True, httponly=True, samesite="strict")
-    return response
+async def _handle_deletion_status(request):
+    from tinyassets.onboarding.deletion_status import handle
+
+    return await handle(request)
 
 
 def _billing_surface(request: Any):
@@ -2079,6 +2071,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/billing/cancel", _handle_billing_cancel, methods=["POST"]),
         Route("/app/billing/webhook", _handle_billing_webhook, methods=["POST"]),
         Route("/app/account/delete", _handle_account_delete, methods=["POST"]),
+        Route("/app/account/deletion/{key}/{token}", _handle_deletion_status, methods=["GET"]),
         Route("/app/account/timezone", _handle_account_timezone, methods=["POST"]),
         Route("/app/ui-prefs", _handle_ui_prefs, methods=["GET", "POST"]),
         Route("/app/api/policy", _handle_policy, methods=["GET", "POST"]),

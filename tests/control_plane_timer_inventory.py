@@ -45,8 +45,8 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/broker/public_egress.py::watch_erasure": (
         CONTROL_PLANE, "broker revokes active and idle owner streams after erasure fencing",
     ),
-    "tinyassets/router_credentials.py::serving.retry_deletions": (
-        CONTROL_PLANE, "router retries fenced account deletion until shared cleanup completes",
+    "tinyassets/broker/deletion_jobs.py::DeletionJobs.run": (
+        CONTROL_PLANE, "C6 broker resumes off-host deletion jobs until every step has a receipt",
     ),
 
     "tinyassets/broker/waker.py::Waker.run": (
@@ -55,6 +55,9 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     ),
     "tinyassets/boxes/owner_daemons.py::OwnerDaemons.ensure_awake": (
         CALL_SCOPED, "one wake's bounded priority/capacity and crash-backoff wait",
+    ),
+    "tinyassets/boxes/owner_daemons.py::OwnerDaemons.withdraw": (
+        CALL_SCOPED, "C6 withdrawal waits at most 20 seconds for admitted work to drain",
     ),
     "tinyassets/boxes/owner_daemons.py::OwnerDaemons.retire": (
         CALL_SCOPED, "one retirement waits at most 600 seconds for an in-flight restart",

@@ -69,3 +69,44 @@ SHALL refuse wake without creating an empty volume.
 - **AND** the default maximum is 100 GiB, a larger cap is refused, and no shrink is possible
 - **AND** a step exceeding the cap or a failed API call alerts and stops without growing the filesystem
 - **AND** no log contains the token
+
+### Requirement: Deletion is a broker-owned durable job
+
+Account deletion SHALL run as one resumable broker job. Its record SHALL be
+written durably off-host before withdrawal. Step 1 SHALL set terminal erased
+admission, serialize with wake and open, drain the owner's admitted work and
+close existing ingress and egress before acknowledging. The remaining ordered
+steps SHALL delete the opaque volume through boxhostd, delete off-host snapshots,
+erase custody, cancel billing and expire open checkout, revoke router keys,
+hooks and sessions, delete the identity-provider user, and write the receipt.
+Each step SHALL be idempotent. Progress, retries and billing receipts SHALL live
+only in job records. A missing required authority SHALL leave the job pending.
+
+#### Scenario: The router hands deletion to the broker
+- **WHEN** an authenticated owner sends same-origin JSON with `confirm == "DELETE"`
+- **THEN** the router enqueues the broker job and returns 202 with a capability status URL only after withdrawal completes
+- **AND** a durable job whose withdrawal is pending returns 503 with its status URL
+- **AND** the status page remains available after the job revokes the owner's credentials
+
+#### Scenario: An interrupted job resumes without sign-in
+- **WHEN** the broker restarts between any two deletion effects
+- **THEN** it resumes unfinished jobs from off-host records and repeats incomplete effects idempotently
+- **AND** no snapshot can publish after erased admission
+
+#### Scenario: Recovery loads jobs independently of its historical backup
+- **WHEN** recovery calls `load_unfinished_jobs()` and passes a loaded job to the running broker
+- **THEN** the job reloads its authoritative off-host record and resumes through the normal execution path
+- **AND** the historical shared database cannot discard the newer job
+
+### Requirement: Cutover completes legacy deletion obligations before publication
+
+The one-shot cutover SHALL finish every imported legacy deletion or quarantine
+obligation before publishing the new layout. It SHALL write receipts into the
+off-host job records and refuse publication if any obligation cannot complete.
+Census SHALL report their count. Runtime broker jobs SHALL operate only on
+permanent volume bindings and SHALL never receive executable legacy owner paths.
+
+#### Scenario: A legacy quarantine has no volume binding
+- **WHEN** cutover imports a pending quarantine without an owner_volumes record
+- **THEN** the one-shot migration deletes the recorded old tree and writes its job receipt before publication
+- **AND** missing billing or identity authority refuses cutover rather than inferring completion

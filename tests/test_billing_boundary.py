@@ -907,6 +907,9 @@ def test_the_checkout_route_actually_applies_the_origin_allowlist(
     from tinyassets.broker.owner_reads import Plans
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    from tests.support.broker_double import seed_owner_admission
+
+    seed_owner_admission(tmp_path, principal=current_identity().user_id, center="u-origin")
     Plans(tmp_path).set_plan(current_identity().user_id, "free", event_created=0)
     sent: dict = {}
 

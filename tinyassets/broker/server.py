@@ -176,6 +176,15 @@ class BrokerServer:
         self._streams_lock = threading.Lock()
         self._ops.recover()
         self._next_wakes = None
+        self._deletion_jobs = None
+
+    @property
+    def deletion_jobs(self):
+        if self._deletion_jobs is None:
+            from tinyassets.broker.deletion_jobs import DeletionJobs
+
+            self._deletion_jobs = DeletionJobs(self)
+        return self._deletion_jobs
 
     @property
     def next_wakes(self):
@@ -370,7 +379,12 @@ class _Connection:
                     raise Fenced("invalid fence")
                 await asyncio.to_thread(local_mutate, self._server._owner_identities.path,
                                         doc["principal"], "erase")
+                closing = [task for task, (owner, _) in self._server._public_egress.channels.items()
+                           if owner == doc["principal"]]
+                closing.extend(c._handler for c in self._server._connections
+                               if doc["principal"] in c._principals)
                 self._server.close_owner(doc["principal"])
+                await asyncio.gather(*closing, return_exceptions=True)
                 answer = {"op": "OWNER_ADMISSION_ERASED"}
             except Exception:
                 answer = {"op": "BOX_REFUSED"}
@@ -397,6 +411,9 @@ class _Connection:
             answer = await asyncio.to_thread(self._retire_box_admission, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
             return
+        if self._role == BOX_HOST and op in {"BOX_CHANNEL", "BOX_SHARED"}:
+            # C6: withdrawal also cancels an admission still resolving.
+            self._principals.add(doc.get("principal"))
         if self._role in {BOX_HOST, BOX}:
             from tinyassets.broker.admission import require_admitted
 
@@ -531,7 +548,26 @@ class _Connection:
             doc = self._box_scope(doc)
         elif self._role != OWNER:
             raise rf.FrameError("only the owner channel may send connection operations")
-        if op == "BILLING_PLAN":
+        if op == "DELETION_JOB":
+            from tinyassets.broker.deletion_jobs import WithdrawalPending
+
+            try:
+                if set(doc) != {"op", "operation", "arguments", "generation", "token"}:
+                    raise ValueError("invalid deletion request")
+                if not self._server._fence.admits(doc["generation"], doc["token"]):
+                    raise Fenced("invalid fence")
+                operations = {"enqueue": self._server.deletion_jobs.enqueue,
+                              "status": self._server.deletion_jobs.status,
+                              "billing_receipt": self._server.deletion_jobs.record_billing}
+                result = await asyncio.to_thread(operations[doc["operation"]], **doc["arguments"])
+                answer = {"op": "DELETION_JOB_IS", "result": result}
+            except WithdrawalPending as pending:
+                answer = {"op": "DELETION_JOB_PENDING", "result": pending.progress}
+            except Exception:
+                _LOG.exception("deletion job request remains pending")
+                answer = {"op": "DELETION_JOB_REFUSED"}
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "BILLING_PLAN":
             answer = await asyncio.to_thread(self._billing_plan, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "OWNER_IDENTITY":
@@ -741,7 +777,16 @@ class _Connection:
                     "apply_tier_event", "set_suspension", "bind_checkout_subscription",
                     "current_checkout_attempt", "begin_checkout_attempt",
                     "record_checkout_session", "settle_checkout_attempt", "checkout_settlements")}
-                result = operations[doc["action"]](**doc["args"])
+                if doc["action"] == "begin_checkout_attempt":
+                    from tinyassets.broker.admission import read, transition_lock
+
+                    with transition_lock:
+                        if read(self._server._owner_identities,
+                                doc["args"]["owner"]).state not in {"admitted", "suspended"}:
+                            raise PermissionError("checkout requires an account admission")
+                        result = operations[doc["action"]](**doc["args"])
+                else:
+                    result = operations[doc["action"]](**doc["args"])
                 return {"op": "BILLING_RESULT", "result": result}
         except PlanMissing:
             return {"op": "PLAN_MISSING"}

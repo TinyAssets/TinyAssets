@@ -168,18 +168,22 @@ async def serve(args: argparse.Namespace) -> None:
             if receive(channel, identity) != {"ready": True}:
                 raise RuntimeError("host did not accept broker readiness")
         waker_task = None
+        deletion_task = None
         if registration:
             from tinyassets.broker.waker import Waker
 
             plans.initialize()
             waker_task = asyncio.create_task(Waker(
                 server.next_wakes, plans, poll_seconds=args.wake_poll_seconds).run(stop))
+            deletion_task = asyncio.create_task(server.deletion_jobs.run(stop))
         try:
             await stop.wait()
         finally:
             stop.set()
             if waker_task is not None:
                 await waker_task
+            if deletion_task is not None:
+                await deletion_task
             if registration:
                 registration[0].close()
 

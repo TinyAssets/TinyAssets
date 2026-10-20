@@ -59,5 +59,5 @@ WORKDIR /work
 
 # Explicit --as-root --docker-engine venue creates disposable XFS containers.
 RUN apt-get update -qq \
-    && apt-get install -y -qq --no-install-recommends docker-cli xfsprogs util-linux \
+    && apt-get install -y -qq --no-install-recommends docker-cli docker-compose xfsprogs util-linux rclone \
     && rm -rf /var/lib/apt/lists/*

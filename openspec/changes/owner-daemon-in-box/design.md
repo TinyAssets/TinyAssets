@@ -391,6 +391,23 @@ The overlapping ledger, plan, revocation and center-eligibility reader decisions
 are removed. This completes neither the b2 authority deletion nor b3 deletion job,
 b4 routing snapshot/secret persistence or b5 recovery. Those remain lane b work.
 
+**Lane b2a implementation (local validation in progress):** deletion is now a
+broker job whose authoritative records and billing receipts are transported by
+rclone to the backup destination. The router's orchestration and retry loop are
+deleted. The HTTP door returns 202 only after erased admission and ingress/egress
+closure; pending withdrawal returns 503 with the durable status URL. Owner work
+drains inside the box before stop. Job progress is absent from the remaining
+legacy ledger, which holds erased facts only and is marked for b2b.
+
+**Legacy obligations, lead decision:** the one-shot cutover completes all legacy
+deletion/quarantine obligations before publication, writes a job receipt for each,
+and refuses publication if any cannot finish. Census reports pending counts.
+Only this T4 exception reads old path obligations; broker jobs use volume bindings.
+The recovery API loads unfinished off-host jobs and resumes them through the
+running broker. Recovery locks, startup and admission-reopen ordering remain b5;
+`resume_deletion_jobs` still fails closed. Routing snapshots/secret persistence
+remain b4. This paragraph does not claim those lanes or deployment complete.
+
 ### C7. One per-box egress allowlist at the proxy (T6)
 Each owner has one egress allowlist. Its default is derived from the owner's
 connected sources (the endpoints of their admitted connections and model

@@ -1,20 +1,24 @@
 """Synthetic reproductions of cutover money loss and deletion races."""
+import hashlib
 import json
 import sqlite3
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from tests.test_billing_boundary import SECRET, _subscription_event
+from tests.test_broker_deletion_jobs import Remote
 from tests.test_owner_cutover_census import source as source
 from tinyassets.billing import stripe_adapter as stripe
 from tinyassets.billing.events import apply_event
 from tinyassets.billing.plan_action import _start_checkout
 from tinyassets.box_layout_migration import census
+from tinyassets.broker.admission import local_mutate
+from tinyassets.broker.deletion_jobs import DeletionJobs
 from tinyassets.broker.owner_reads import Plans
 from tinyassets.erasure_ledger import ErasureLedger
-from tinyassets.router_credentials import tombstone
 
 
 def attempt(now=None):
@@ -94,11 +98,23 @@ def test_legacy_checkout_refuses_ambiguity(source, mutation, reason):
 @pytest.fixture
 def billing(tmp_path, monkeypatch):
     ErasureLedger(tmp_path).initialize()
+    from tests.support.broker_double import seed_owner_admission
+
+    seed_owner_admission(tmp_path, principal="alice", center="cc-alice")
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_synthetic")
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)
     plans = Plans(tmp_path)
     plans.set_plan("alice", "free", event_created=0)
+    remote = Remote(tmp_path / "off-host")
+    job = {"id": hashlib.sha256(b"alice").hexdigest(),
+           "billing_cleanup": {}, "completed_steps": []}
+    remote.save(job)
+    service = DeletionJobs(SimpleNamespace(), records=remote)
+    def record_request(root, operation, **args):
+        assert operation == "billing_receipt"
+        service.record_billing(args["owner"], args["key"], args["value"])
+    monkeypatch.setattr("tinyassets.broker.deletion_jobs.request", record_request)
     value = attempt()
     with sqlite3.connect(plans.path) as db:
         db.execute("UPDATE plans SET attempt=?", (json.dumps(value),))
@@ -146,7 +162,7 @@ def test_deletion_cancels_every_completed_session_after_attempts_are_cleared(bil
             "subscription": "sub_" + value["session_id"],
         }}}) == {"settled": True}
     assert plans.read("alice")["attempt"] is None
-    tombstone(root, "alice", {})
+    local_mutate(plans.admission_path, "alice", "erase")
     cancelled = []
 
     def get(path):
@@ -171,7 +187,7 @@ def test_deletion_cancels_every_completed_session_after_attempts_are_cleared(bil
 
 def test_tombstone_refuses_checkout_and_expires_open_session(billing, monkeypatch):
     root, plans, value = billing
-    tombstone(root, "alice", {})
+    local_mutate(plans.admission_path, "alice", "erase")
     calls = []
     monkeypatch.setattr(stripe, "_get", lambda path: {
         "id": value["session_id"], "status": "open"})
@@ -187,7 +203,9 @@ def test_tombstone_refuses_checkout_and_expires_open_session(billing, monkeypatc
     assert stripe.cancel_account_billing(root, "alice") == "attempt_expired"
     assert calls == ["checkout/sessions/cs_synthetic/expire"]
     assert plans.read("alice")["attempt"] is None
-    assert ErasureLedger(root).receipt("alice")["billing_cleanup"] == {"cs_synthetic": "expired"}
+    saved = Remote(root / "off-host").load(hashlib.sha256(b"alice").hexdigest())
+    cleanup = saved["billing_cleanup"]
+    assert cleanup == {"cs_synthetic": "expired"}
 
 
 @pytest.mark.parametrize("status", ["open", "complete", "wrong_id", "outage"])
@@ -228,7 +246,7 @@ def test_completed_checkout_cancels_subscription_before_settling(billing, monkey
 
 def test_late_signed_subscription_is_cancelled_and_recorded(billing, monkeypatch):
     root, plans, _ = billing
-    tombstone(root, "alice", {"completed_phases": ["billing"]})
+    local_mutate(plans.admission_path, "alice", "erase")
     event = _subscription_event(owner_id="alice")
     event["created"] = 90
     event["data"]["object"]["customer"] = "cus_late"
@@ -240,7 +258,9 @@ def test_late_signed_subscription_is_cancelled_and_recorded(billing, monkeypatch
     assert apply_event(root, event) == {"applied": False, "cancelled": True}
     assert calls == [("subscriptions/sub_tinyassets", "DELETE")]
     assert plans.read("alice")["tier"] == "free"
-    assert ErasureLedger(root).receipt("alice")["billing_cleanup"]["sub_tinyassets"] == "cancelled"
+    saved = Remote(root / "off-host").load(hashlib.sha256(b"alice").hexdigest())
+    cleanup = saved["billing_cleanup"]
+    assert cleanup["sub_tinyassets"] == "cancelled"
 
 
 def test_completion_before_subscription_event_retains_cancellation_authority(billing, monkeypatch):
@@ -251,7 +271,7 @@ def test_completion_before_subscription_event_retains_cancellation_authority(bil
     assert plans.read("alice")["tier"] == "free"
     assert plans.read("alice")["event_created"] == 0
     assert plans.read("alice")["subscription_id"] == "sub_completed"
-    tombstone(root, "alice", {})
+    local_mutate(plans.admission_path, "alice", "erase")
     monkeypatch.setattr(stripe, "_get", lambda path: {
         "id": value["session_id"], "status": "complete", "subscription": "sub_completed",
         "customer": "cus_completed"} if path.startswith("checkout/") else {
@@ -293,7 +313,7 @@ def test_malformed_attempt_never_disappears_during_deletion(billing, monkeypatch
     assert plans.read("alice")["attempt"] is not None
 
 
-def test_tombstone_waits_for_inflight_checkout_then_cleanup_sees_it(billing, monkeypatch):
+def test_erasure_preserves_inflight_checkout_until_confirmed_cleanup(billing, monkeypatch):
     from tinyassets import billing as adapter
 
     root, plans, value = billing
@@ -314,7 +334,7 @@ def test_tombstone_waits_for_inflight_checkout_then_cleanup_sees_it(billing, mon
         _start_checkout(owner="alice", origin="https://tinyassets.io")))
 
     def delete():
-        tombstone(root, "alice", {})
+        local_mutate(plans.admission_path, "alice", "erase")
         deleted.set()
 
     checkout.start()
@@ -322,13 +342,22 @@ def test_tombstone_waits_for_inflight_checkout_then_cleanup_sees_it(billing, mon
     deletion = threading.Thread(target=delete)
     deletion.start()
     try:
-        assert not deleted.wait(.1)
+        assert deleted.wait(2)
+        monkeypatch.setattr(stripe, "_get", lambda _: {"data": [], "has_more": False})
+        with pytest.raises(stripe.BillingUnavailable, match="unresolved"):
+            stripe._attempt_session(value)
+        assert plans.read("alice")["attempt"] is not None
     finally:
         release.set()
         checkout.join(5)
         deletion.join(5)
     assert deleted.is_set() and result[0]["id"] == "cs_synthetic"
     assert json.loads(plans.read("alice")["attempt"])["session_id"] == "cs_synthetic"
+    monkeypatch.setattr(stripe, "_get", lambda _: {"id": "cs_synthetic", "status": "open"})
+    monkeypatch.setattr(stripe, "_post", lambda *a, **k: {
+        "id": "cs_synthetic", "status": "expired"})
+    assert stripe.cancel_account_billing(root, "alice") == "attempt_expired"
+    assert plans.read("alice")["attempt"] is None
 
 
 @pytest.mark.parametrize("status,tier,suspended", [("active", "paid", False),

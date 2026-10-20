@@ -794,6 +794,16 @@ def test_seeded_tombstones_block_broker_custody_without_old_metadata(cutover):
         CREATE TABLE deleted_principals (founder_sub TEXT PRIMARY KEY, deleted_at REAL);
         INSERT INTO deleted_principals VALUES ('{digest}', 123);
     """)
+    # A digest-only fence cannot prove pending external cleanup. Supply the
+    # historical completion receipt, which the cutover must preserve off-host.
+    from tinyassets.cutover_deletions import PHASES
+
+    _sql(data / '.router-deleted-owners.sqlite3', """
+        CREATE TABLE deleted_owners (owner TEXT PRIMARY KEY, receipt TEXT);
+    """)
+    with sqlite3.connect(data / '.router-deleted-owners.sqlite3') as db:
+        db.execute("INSERT INTO deleted_owners VALUES (?,?)",
+                   ('retired-account', json.dumps({'completed_phases': list(PHASES)})))
     migration.apply(*cutover)
     assert not (data / '.tinyassets.db').exists()
     with closing(metadata_connection(data)) as db:
@@ -973,10 +983,11 @@ def test_migrated_owner_processes_serve_history_requests_and_pause(
 
 
 
-def test_cutover_imports_router_custody_and_host_erasure_facts(cutover):
-    from tinyassets.erasure_ledger import ErasureLedger, principal_digest
+def test_cutover_imports_legacy_facts_and_refuses_unfinishable_obligations(cutover):
+    from tinyassets.cutover_deletions import collect
+    from tinyassets.erasure_ledger import principal_digest
 
-    data, *_ = cutover
+    data, store, *_ = cutover
     _sql(data / ".router-deleted-owners.sqlite3", "CREATE TABLE deleted_owners "
          "(owner TEXT PRIMARY KEY, deleted_at REAL, receipt TEXT);"
          "INSERT INTO deleted_owners VALUES ('router-only',1,NULL);")
@@ -994,14 +1005,46 @@ def test_cutover_imports_router_custody_and_host_erasure_facts(cutover):
                               "quarantine": "/box-store/.old/300003"}]}))
     report = migration.census(data)
     assert report["ready"], report["refusals"]
-    migration.apply(*cutover)
-    ledger = ErasureLedger(data)
-    assert all(ledger.contains(owner) for owner in ("router-only", "custody-only", "host-only"))
-    assert not (data / ".router-deleted-owners.sqlite3").exists()
-    assert not (data / ".boxhost").exists()
-    assert not (data / ".disaster-restore.json").exists()
-    assert any(work["quarantine"] == ".old/300003" for entry in ledger.entries()
+    facts = collect(data, store_root=store)
+    assert all(facts.contains(owner) for owner in ("router-only", "custody-only", "host-only"))
+    assert any(work["quarantine"] == ".old/300003" for entry in facts.entries()
                for work in entry["work"].values())
+    assert report["legacy_deletions"]["pending_deletions"] >= 2
+    # A digest alone cannot complete unknown identity/billing obligations.
+    with pytest.raises(RuntimeError, match="legacy deletion incomplete"):
+        migration.apply(*cutover)
+    assert json.loads((data / ".owner-cutover.json").read_text())["phase"] == "build"
+    assert (data / ".router-deleted-owners.sqlite3").exists()
+
+
+def test_cutover_publishes_legacy_receipt_only_after_path_cleanup(cutover):
+    from tinyassets.boxes.deletion_records import RemoteRecords
+    from tinyassets.broker.admission import digest
+    from tinyassets.broker.deletion_jobs import STEPS
+    from tinyassets.cutover_deletions import PHASES
+    from tinyassets.erasure_ledger import ErasureLedger
+
+    data, store, *_ = cutover
+    target = store / ".old/300003"
+    target.mkdir(parents=True)
+    (target / "private").write_bytes(b"synthetic erased bytes")
+    (data / ".boxhost").mkdir(exist_ok=True)
+    with sqlite3.connect(data / ".boxhost/boxhost.db") as db:
+        db.execute("CREATE TABLE owner_destroys (owner_id TEXT, uid INTEGER, receipt TEXT)")
+        db.execute("INSERT INTO owner_destroys VALUES (?,?,?)", ("host-only", 300003, json.dumps({
+            "completed_phases": [p for p in PHASES if p != "owner_tree"],
+            "quarantines": [".old/300003"]})))
+    migration.apply(*cutover)
+    assert not target.exists()
+    assert not (data / ".boxhost").exists()
+    records = RemoteRecords(migration._volumes(store).remote)
+    job = records.load(digest("host-only"))
+    assert job["completed_steps"] == list(STEPS)
+    assert job["results"]["receipt"]["deleted"]
+    # b2b will remove these erased-only facts; no progress is published here.
+    assert ErasureLedger(data).contains("host-only")
+    assert all(set(entry) == {"digest", "principal", "uids"}
+               for entry in ErasureLedger(data).entries())
 
 
 @pytest.mark.parametrize("relative", ["knowledge.db", "a1/local.db"])

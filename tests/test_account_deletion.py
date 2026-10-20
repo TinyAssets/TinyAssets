@@ -953,14 +953,14 @@ def app_route(monkeypatch, tmp_path):
     )
     monkeypatch.setattr("tinyassets.api.helpers._base_path", lambda: tmp_path)
     calls: dict[str, list] = {"deleted": [], "dropped": []}
-    async def delete_owner(identity):
-        from starlette.responses import JSONResponse
+    def enqueue(root, operation, **arguments):
+        assert operation == "enqueue"
+        calls["deleted"].append((root, arguments["owner"]))
+        return {"status": "deletion_in_progress", "status_url": "/app/account/deletion/job/token",
+                "completed_steps": ["withdrawal"], "pending_steps": ["volume"]}
 
-        calls["deleted"].append((tmp_path, identity.user_id))
-        return JSONResponse({"home_removed": True, "billing": "none", "identity": "deleted",
-                             "unfinished_phases": []})
-
-    monkeypatch.setattr("tinyassets.owner_router.delete_owner_account", delete_owner)
+    monkeypatch.setattr("tinyassets.broker.deletion_jobs.request", enqueue)
+    monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
     monkeypatch.setattr(
         onboarding, "_drop_refresh_session", lambda h: calls["dropped"].append(h)
     )
@@ -999,60 +999,49 @@ def test_route_refuses_cross_origin_and_unconfirmed_posts(app_route):
     assert calls["deleted"] == []
 
 
-def test_route_deletes_the_signed_in_principal_and_ends_the_session(app_route, tmp_path):
+def test_route_enqueues_only_the_signed_in_principal_and_returns_durable_status(
+    app_route, tmp_path,
+):
     onboarding, calls = app_route
-    handle = "a" * 43  # a well-formed session handle
     with _as(A):
         resp = asyncio.run(onboarding._handle_account_delete(
-            _Request({"confirm": "DELETE", "session_ref": handle})))
-    assert resp.status_code == 200
+            _Request({"confirm": "DELETE", "owner": B})))
+    assert resp.status_code == 202
     body = json.loads(resp.body)
-    assert body["deleted"] is True and body["identity"] == "deleted"
-    assert body["unfinished"] == []
+    assert body["status"] == "deletion_in_progress"
+    assert body["completed_steps"] == ["withdrawal"]
+    assert resp.headers["location"] == body["status_url"]
     assert calls["deleted"] == [(tmp_path, A)]
-    assert calls["dropped"] == [handle]
-    set_cookie = resp.headers.get("set-cookie", "")
-    assert "ta_rt=" in set_cookie
-    assert "Max-Age=0" in set_cookie or "expires=" in set_cookie.lower()
-    assert all(attribute in set_cookie for attribute in
-               ("Secure", "HttpOnly", "SameSite=strict", "Path=/app/token"))
+    assert calls["dropped"] == []  # credential revocation is job step 6
     assert resp.headers.get("cache-control") == "no-store"
 
 
-def test_route_reports_a_block_with_its_reasons(app_route, monkeypatch):
+def test_route_reports_pending_withdrawal_without_acknowledging_it(app_route, monkeypatch):
+    from tinyassets.broker.deletion_jobs import WithdrawalPending
+
     onboarding, calls = app_route
-
-    async def blocked(identity):
-        from starlette.responses import JSONResponse
-
-        return JSONResponse({"error": "deletion_blocked", "reasons": [
-            "another founder is bound to this universe", "a vote is still open"]}, status_code=409)
-
-    monkeypatch.setattr("tinyassets.owner_router.delete_owner_account", blocked)
+    def pending(*args, **kwargs):
+        raise WithdrawalPending({"status_url": "/app/account/deletion/job/token",
+                                 "completed_steps": [], "failed_step": "withdrawal"})
+    monkeypatch.setattr("tinyassets.broker.deletion_jobs.request", pending)
     with _as(A):
         resp = asyncio.run(onboarding._handle_account_delete(_Request({"confirm": "DELETE"})))
-    assert resp.status_code == 409
+    assert resp.status_code == 503
     body = json.loads(resp.body)
-    assert body["error"] == "deletion_blocked"
-    assert body["reasons"] == [
-        "another founder is bound to this universe", "a vote is still open",
-    ]
-    assert calls["dropped"] == [], "a blocked deletion must not sign the user out"
+    assert body["error"] == "deletion_pending" and body["completed_steps"] == []
+    assert resp.headers["location"] == body["status_url"]
+    assert calls["dropped"] == []
 
 
 def test_route_reports_a_refusal_without_pretending(app_route, monkeypatch):
     onboarding, calls = app_route
-
-    async def refused(identity):
-        from starlette.responses import JSONResponse
-
-        return JSONResponse({"error": "deletion_refused", "detail": "unsafe path"}, status_code=409)
-
-    monkeypatch.setattr("tinyassets.owner_router.delete_owner_account", refused)
+    def refused(*args, **kwargs):
+        raise RuntimeError("off-host record unavailable")
+    monkeypatch.setattr("tinyassets.broker.deletion_jobs.request", refused)
     with _as(A):
         resp = asyncio.run(onboarding._handle_account_delete(_Request({"confirm": "DELETE"})))
-    assert resp.status_code == 409
-    assert json.loads(resp.body)["error"] == "deletion_refused"
+    assert resp.status_code == 503
+    assert json.loads(resp.body) == {"error": "deletion_pending"}
     assert calls["dropped"] == []
 
 

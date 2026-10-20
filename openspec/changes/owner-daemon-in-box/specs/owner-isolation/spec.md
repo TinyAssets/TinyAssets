@@ -97,6 +97,8 @@ wake and open, and close the owner's existing ingress and egress before erasure
 is acknowledged. It then deletes the volume and snapshots, erases custody,
 cancels billing, revokes router credentials, deletes the identity and writes a
 receipt. Snapshot publication, restore and deletion SHALL be serialized per owner.
+Progress, retries and billing receipts SHALL live only in off-host job records.
+Missing required authority SHALL leave the job pending.
 
 #### Scenario: Retiring a center leaves the owner admitted
 - **WHEN** an owner retires one of their centers
@@ -117,6 +119,22 @@ receipt. Snapshot publication, restore and deletion SHALL be serialized per owne
 - **WHEN** the shared layer is restored from a backup taken before an unfinished deletion job
 - **THEN** recovery loads the job from its off-host record and resumes it before admitting any owner
 - **AND** the owner's admission stays withdrawn
+
+#### Scenario: The router hands deletion to the broker
+- **WHEN** an authenticated owner sends same-origin JSON with `confirm == "DELETE"`
+- **THEN** the router enqueues the broker job and returns 202 with a capability status URL only after withdrawal completes
+- **AND** a durable job whose withdrawal is pending returns 503 with its status URL
+- **AND** the status page remains available after the job revokes the owner's credentials
+
+#### Scenario: An interrupted job resumes without sign-in
+- **WHEN** the broker restarts between any two deletion effects
+- **THEN** it resumes unfinished jobs from off-host records and repeats incomplete effects idempotently
+- **AND** no snapshot can publish after erased admission
+
+#### Scenario: Recovery loads jobs independently of its historical backup
+- **WHEN** recovery calls `load_unfinished_jobs()` and passes a loaded job to the running broker
+- **THEN** the job reloads its authoritative off-host record and resumes through the normal execution path
+- **AND** the historical shared database cannot discard the newer job
 
 ### Requirement: Every egress path checks the owner's allowlist at the proxy
 Every outbound connection from a box SHALL pass one proxy allowlist check
@@ -648,3 +666,16 @@ before publishing the staged database.
 - **AND** stopped apply takes root custody of existing single-link regular WAL/SHM files without discarding their bytes or relaxing modes, and refuses aliases before changing custody
 - **AND** interruption after an owner tree or shared seeding can resume on the same host
 - **AND** independent archive rehearsal trials restore the archived data-root ownership and mode as well as its contents
+
+### Requirement: Cutover completes legacy deletion obligations before publication
+
+The one-shot cutover SHALL finish every imported legacy deletion or quarantine
+obligation before publishing the new layout. It SHALL write receipts into the
+off-host job records and refuse publication if any obligation cannot complete.
+Census SHALL report their count. Runtime broker jobs SHALL operate only on
+permanent volume bindings and SHALL never receive executable legacy owner paths.
+
+#### Scenario: A legacy quarantine has no volume binding
+- **WHEN** cutover imports a pending quarantine without an owner_volumes record
+- **THEN** the one-shot migration deletes the recorded old tree and writes its job receipt before publication
+- **AND** missing billing or identity authority refuses cutover rather than inferring completion

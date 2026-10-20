@@ -343,6 +343,22 @@ class OwnerDaemons:
                 self._stop(box, retire=True)
             self.condition.notify_all()
 
+    def withdraw(self, owner):
+        """C5/C6: close work and drain before making old ingress unreachable."""
+        with self.condition:
+            uid = self.admission.volume(owner)["uid"]
+            with self.volumes.operation(uid):
+                self.admission.erase_admission(owner)
+                box = self.boxes.get(uid)
+                if box is not None and box.awake and self.runtime.alive(uid):
+                    box.deletion_only, box.wanted = True, False
+                    deadline = time.monotonic() + 20
+                    while self._rpc(box, "delete-admission")["active"]:
+                        if time.monotonic() >= deadline:
+                            raise BoxBusy("owner work did not drain before withdrawal")
+                        time.sleep(.02)
+                self.retire(owner, uid)
+
     def destroy(self, owner, uid):
         """Account retirement, unlike center retirement, erases the entire volume."""
         from tinyassets.boxes.destroy import socket_tree

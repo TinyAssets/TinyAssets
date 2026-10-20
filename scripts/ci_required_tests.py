@@ -48,6 +48,8 @@ QUARANTINE = REPO_ROOT / ".github" / "known-failing-tests.txt"
 # Root-only proofs (shared backup and lifecycle authority run as root on the host).
 # These files still belong to their ordinary shard and selection receipt.
 ROOT_TEST_FILES = frozenset({
+    "tests/test_broker_deletion_jobs.py",
+    "tests/test_cutover_deletion_jobs.py",
     "tests/test_backup_owner_box.py",
     "tests/test_backup_script.py",
     "tests/test_owner_cutover_apply.py",

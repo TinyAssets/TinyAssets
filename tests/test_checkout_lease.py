@@ -23,6 +23,9 @@ OWNER = "billing-owner"
 
 @pytest.fixture(autouse=True)
 def plans(tmp_path, monkeypatch):
+    from tests.support.broker_double import seed_owner_admission
+
+    seed_owner_admission(tmp_path, principal=OWNER, center="billing-home")
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     store = Plans(tmp_path)
     store.set_plan(OWNER, "free", event_created=0)

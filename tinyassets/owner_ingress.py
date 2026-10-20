@@ -36,13 +36,15 @@ class OwnerIngress:
                     if name in headers:
                         raise ValueError("duplicate router header")
                     headers[name] = value
-            if activity.revoked or not hmac.compare_digest(
+            if not hmac.compare_digest(
                     headers.get(b"x-box-secret", b""), self.secret):
                 raise ValueError("router secret required")
-            if scope["path"] == "/_box/status" and scope["method"] == "GET":
-                return await JSONResponse(activity.status())(scope, receive, send)
             if scope["path"] == "/_box/delete-admission" and scope["method"] == "POST":
                 activity.admit_deletion_only()
+                return await JSONResponse(activity.status())(scope, receive, send)
+            if activity.revoked:
+                raise ValueError("owner ingress is withdrawn")
+            if scope["path"] == "/_box/status" and scope["method"] == "GET":
                 return await JSONResponse(activity.status())(scope, receive, send)
             if (scope["path"] in {"/_box/drain", "/_box/revoke", "/_box/snapshot-stop"}
                     and scope["method"] == "POST"):

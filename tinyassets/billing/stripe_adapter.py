@@ -544,15 +544,11 @@ def _cancel_confirmed(subscription):
 
 
 def _record_deleted_billing(root, owner, key, value):
-    from tinyassets.erasure_ledger import ErasureLedger
-
-    deleted = ErasureLedger(root)
+    from tinyassets.broker.deletion_jobs import request
     from tinyassets.broker.owner_identities import owner_admission
 
     if owner_admission(root, owner).state == "erased":
-        receipt = deleted.receipt(owner)
-        receipt.setdefault("billing_cleanup", {})[key] = value
-        deleted.save_receipt(owner, receipt)
+        request(root, "billing_receipt", owner=owner, key=key, value=value)
 
 
 @serialized
@@ -593,11 +589,13 @@ def _attempt_session(attempt):
 
 
 @serialized
-def cancel_account_billing(root, owner: str) -> str:
+def cancel_account_billing(root, owner: str, *, plans=None, record_cleanup=None) -> str:
     """Deletion uses the shared owner mapping, including after admission retirement."""
     from tinyassets.billing.plan_store import BillingPlans
 
-    plans = BillingPlans(root)
+    plans = plans if plans is not None else BillingPlans(root)
+    record_cleanup = record_cleanup or (lambda key, value: _record_deleted_billing(
+        root, owner, key, value))
     plan = plans.read(owner)
     expired = False
     cancelled = False
@@ -633,7 +631,7 @@ def cancel_account_billing(root, owner: str) -> str:
                     raise BillingUnavailable("completed checkout has no subscription mapping")
                 _cancel_confirmed(subscription)
                 cancelled_subscriptions.add(subscription)
-                _record_deleted_billing(root, owner, subscription, "cancelled")
+                record_cleanup(subscription, "cancelled")
                 plans.bind_checkout_subscription(owner, customer_id=session.get("customer"),
                                                   subscription_id=subscription)
                 cancelled = True
@@ -641,7 +639,7 @@ def cancel_account_billing(root, owner: str) -> str:
                 expired = True
             else:
                 raise BillingUnavailable("checkout expiry not confirmed")
-            _record_deleted_billing(root, owner, session_id, session["status"])
+            record_cleanup(session_id, session["status"])
         if not plans.settle_checkout_attempt(owner, attempt_id=attempt["attempt_id"]):
             raise BillingUnavailable("checkout settlement not confirmed")
     subscription = plan["subscription_id"]
@@ -653,7 +651,7 @@ def cancel_account_billing(root, owner: str) -> str:
     # committed it, but before either our plan or deletion receipt was saved.
     if subscription not in cancelled_subscriptions:
         _cancel_confirmed(subscription)
-    _record_deleted_billing(root, owner, subscription, "cancelled")
+    record_cleanup(subscription, "cancelled")
     plans.apply_tier_event(owner, tier="free",
                            event_created=max(_time.time(), plan["event_created"]),
                            ends_at=None)

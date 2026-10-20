@@ -235,7 +235,8 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/serving/bind", "/app/models/preferences",
         "/app/billing/status", "/app/billing/checkout",
         "/app/billing/cancel", "/app/billing/webhook",
-        "/app/account/delete", "/app/account/timezone", "/app/ui-prefs",
+        "/app/account/delete", "/app/account/deletion/{key}/{token}",
+        "/app/account/timezone", "/app/ui-prefs",
         "/app/api/policy", "/app/profile", "/app/memory", "/app/soul", "/app/wakes",
         "/app/turn/interrupt", "/app/turn/steer", "/app/turn/pending",
         # The activities live projection (harness D2a).

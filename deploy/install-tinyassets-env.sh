@@ -834,7 +834,9 @@ write_daemon_env() {
         selected=0
         if parse_env_assignment "${line}"; then
             classify_env_value || true # Already validated by render_daemon_content.
-            if [[ "${ENV_KEY}" =~ ^TINYASSETS_OAUTH_[A-Z0-9_]+$ ]]; then
+            # C6: the broker deletion job invokes billing and identity erasure.
+            if [[ "${ENV_KEY}" =~ ^TINYASSETS_OAUTH_[A-Z0-9_]+$ ||
+                  "${ENV_KEY}" == STRIPE_SECRET_KEY || "${ENV_KEY}" == WORKOS_API_KEY ]]; then
                 selected=1
                 out+="${line}"$'\n'
             fi

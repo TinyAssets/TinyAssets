@@ -116,6 +116,12 @@ class HostService:
         from tinyassets.broker.owner_identities import validate_principal
 
         try:
+            if (uid == 1002 and document.get("lifecycle") == "deletion_records"
+                    and set(document) == {"lifecycle", "action", "arguments"}):
+                from tinyassets.boxes.deletion_records import RemoteRecords
+
+                return {"result": RemoteRecords(self.volumes.remote).execute(
+                    document["action"], document["arguments"])}
             if document.get("lifecycle") == "erasure":
                 from tinyassets.erasure_ledger import ErasureLedger
 
@@ -123,19 +129,14 @@ class HostService:
                                         in {"contains", "contains_many"}))
                         or set(document) != {"lifecycle", "ledger_op", "arguments"}
                         or document["ledger_op"] not in {
-                            "contains", "contains_many", "add", "receipt", "save", "pending_page"}):
+                            "contains", "contains_many", "add"}):
                     raise BoxError("erasure operation refused for this peer")
                 if document["ledger_op"] == "add":
                     # lane-b2: delete with the old authority
                     self.admission.erase_admission(document["arguments"]["principal"])
+                # lane-b2: delete with the old authority
                 result = ErasureLedger(self.admission.data_root).execute(
                     document["ledger_op"], document["arguments"])
-                if document["ledger_op"] == "receipt":
-                    # Paths and accumulated billing receipts stay in root custody;
-                    # the router needs only the pending-path fence and phase state.
-                    result.pop("billing_cleanup", None)
-                    result.pop("erasure_failures", None)
-                    result["quarantines"] = ["pending"] if result["quarantines"] else []
                 return {"result": result}
             if self.daemons is None:
                 raise BoxError("owner lifecycle is unavailable")
@@ -144,6 +145,18 @@ class HostService:
                 return self.daemons.roll(document["image"], document.get("uid"))
             validate_principal(document.get("owner"))
             operation, owner = document["lifecycle"], document["owner"]
+            if (uid == 1002 and operation == "withdraw"
+                    and set(document) == {"lifecycle", "owner"}):
+                self.daemons.withdraw(owner)
+                return {"withdrawn": True}
+            if (uid == 1002 and operation == "delete_snapshots"
+                    and set(document) == {"lifecycle", "owner"}):
+                from tinyassets.boxes.deletion_records import RemoteRecords
+
+                owner_uid = self.admission.volume(owner)["uid"]
+                with self.volumes.operation(owner_uid):
+                    RemoteRecords(self.volumes.remote).delete_snapshots(owner_uid)
+                return {"deleted": True}
             if (uid == 1001 and operation == "resolve"
                     and set(document) == {"lifecycle", "owner", "cleanup"}
                     and type(document["cleanup"]) is bool):
@@ -161,9 +174,11 @@ class HostService:
                 from tinyassets.erasure_ledger import ErasureLedger, principal_digest
 
                 owner_uid = self.admission.volume(owner)["uid"]
+                # lane-b2: delete with the old authority
                 ledger = ErasureLedger(self.admission.data_root)
                 # lane-b2: delete with the old authority
                 self.admission.erase_admission(owner)
+                # lane-b2: delete with the old authority
                 ledger.execute("add", {"digest": principal_digest(owner), "principal": owner,
                                        "uids": [owner_uid]})
                 self.daemons.destroy(owner, owner_uid)

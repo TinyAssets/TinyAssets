@@ -7060,25 +7060,13 @@
         if(r.status===401 && await refreshAccessToken()) r = await post();
         if(r.status===401){ sessionExpired(); return; }
         const body = await r.json().catch(()=>({}));
-        if(body && body.error==="deletion_blocked"){
-          // Someone else's data or live work is in scope. Say which, plainly:
-          // "try again shortly" is true for in-flight work, and the email route
-          // is the answer for the rest.
-          st.textContent="We can't delete your account yet: "
-            + (body.reasons||["something is still in use"]).join("; ")
-            + ". If this doesn't clear on its own, email legal@tinyassets.io and we'll finish it by hand.";
+        if(![202,503].includes(r.status) || !/^\/app\/account\/deletion\/[0-9a-f]{64}\/[A-Za-z0-9_-]{43}$/.test(body.status_url||"")){
+          st.textContent="Your deletion request is pending. Try again shortly.";
           btn.disabled=false; return;
         }
-        if(!r.ok || body.deleted!==true){
-          st.textContent="Couldn't delete your account just now ("+(body.error||("HTTP "+r.status))+"). Try again, or email legal@tinyassets.io and we'll do it by hand.";
-          btn.disabled=false; return;
-        }
-        sessionStorage.setItem("ta_force_login","1"); clearSessionRef(); enterSignedOut();
-        let note="Your account and command center were deleted.";
-        if(body.identity!=="deleted") note+=" Your sign-in identity couldn't be removed automatically — email legal@tinyassets.io and we'll finish it.";
-        if(body.billing==="error"||body.billing==="unavailable") note+=" We couldn't reach the payment processor to cancel a paid plan — email legal@tinyassets.io so we can.";
-        if((body.unfinished||[]).length) note+=" Some of it needs finishing by hand; we've recorded exactly what, and legal@tinyassets.io can complete it.";
-        $("signin-notice").textContent=note;
+        st.textContent="Deletion in progress";
+        sessionStorage.setItem("ta_force_login","1"); clearSessionRef();
+        window.location.assign(body.status_url);
       }catch(_e){ st.textContent="Couldn't reach the server. Try again in a moment."; btn.disabled=false; }
     }
     // The credential box follows the chosen scheme so the user knows exactly what to

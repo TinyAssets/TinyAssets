@@ -5,9 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+
+# C6: checkout intent must commit before erasure, or observe the erased record.
+transition_lock = threading.RLock()
 
 
 class OwnerSuspended(PermissionError):
@@ -125,7 +129,7 @@ def local_read(root, owner):
 
 
 def local_mutate(path, owner, action, **arguments):
-    with closing(sqlite3.connect(Path(path).as_uri() + "?mode=rw", uri=True,
+    with transition_lock, closing(sqlite3.connect(Path(path).as_uri() + "?mode=rw", uri=True,
                                  timeout=30)) as db, db:
         db.execute("PRAGMA synchronous=FULL")
         db.execute("BEGIN IMMEDIATE")

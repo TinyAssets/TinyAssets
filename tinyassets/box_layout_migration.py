@@ -821,7 +821,10 @@ def _census(data: Path, *, _inventory: dict | None = None,
                               published_owner_copies=published_owner_copies,
                               centers=admitted, dropped_centers=dropped_centers, labels=labels,
                               file_targets=file_targets, histories=histories, billing=billing)
+        from tinyassets.cutover_deletions import census_count
+
         return {
+            "legacy_deletions": census_count(data),
             "version": 1, "ready": not any(refusals.values()), "owners": len(owners),
             "admitted_centers": len(admitted), "explicit_centers": len(known_centers),
             "databases": len(database_files), "tables": table_report, "row_totals": dict(totals),
@@ -1841,8 +1844,26 @@ def _owner_move_preconditions(data: Path, store: Path, marker: dict) -> list[Own
         raise RuntimeError("owner daemon migration requires owner-split")
     plan = _owner_plan(data)
     _owner_inode_preflight(data, plan)
-    if any(entry.name != "lost+found" for entry in store.iterdir()):
-        raise RuntimeError("box store must be empty before the cutover")
+    from tinyassets.cutover_deletions import collect
+
+    legacy = collect(data, store_root=store)
+    targets = {store / str(uid) for entry in legacy.entries() for uid in entry["uids"]}
+    targets.update(store / target["quarantine"] for entry in legacy.entries()
+                   for target in entry["work"].values())
+
+    def known_legacy(path):
+        if path in targets:
+            return
+        if path.is_dir() and not path.is_symlink() and any(
+                target.is_relative_to(path) for target in targets):
+            for child in path.iterdir():
+                known_legacy(child)
+            return
+        raise RuntimeError("box store must be empty except recorded legacy deletion targets")
+
+    for entry in store.iterdir():
+        if entry.name != "lost+found":
+            known_legacy(entry)
     report = census(data)
     if not report["ready"]:
         raise RuntimeError(f"cutover census refused: {report['refusals']}")
@@ -2286,16 +2307,11 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, destination)
         _seed_shared(data, shared, inventory, report, plan)
-        from tinyassets.erasure_ledger import NAME, ErasureLedger, carry_forward, seed_legacy
+        from tinyassets.cutover_deletions import collect
 
-        if (shared / NAME).exists():
-            os.chown(shared / NAME, 0, 0)
-            (shared / NAME).chmod(0o600)
-        ErasureLedger(shared).initialize()
-        ledger = carry_forward(data, shared)
-        seed_legacy(data, ledger, store_root=store)
-        _reserve_erasures(ledger, shared)
-        _seed_owner_admission(shared, ledger)
+        legacy = collect(data, store_root=store)
+        _reserve_erasures(legacy, shared)
+        _seed_owner_admission(shared, legacy)
         _crash_at("after_seeding")
         from tinyassets.boxes.layout import BROKER_READ_GID, BROKER_UID, DAEMON_UID
         from tinyassets.boxes.state import BoxHostState
@@ -2338,6 +2354,23 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
                 "op": "BOX_VOLUME", "principal": owner.principal, "action": "publish",
                 "arguments": {"snapshot_id": snapshot_id, "sha256": digest}})
             _crash_at(f"after_owner_snapshot:{owner.uid}")
+    from tinyassets.boxes.deletion_records import RemoteRecords
+    from tinyassets.cutover_deletions import finish
+    from tinyassets.erasure_ledger import NAME, ErasureLedger
+
+    report["legacy_deletion_receipts"] = finish(
+        legacy, shared, store, RemoteRecords(volumes.remote))
+    # lane-b2: delete with the old authority
+    # Publish only erasure facts. No phase, retry or receipt survives in the ledger.
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        (shared / (NAME + suffix)).unlink(missing_ok=True)
+    # lane-b2: delete with the old authority
+    ledger = ErasureLedger(shared)
+    # lane-b2: delete with the old authority
+    ledger.initialize()
+    for entry in legacy.entries():
+        # lane-b2: delete with the old authority
+        ledger.execute("add", {k: entry[k] for k in ("digest", "principal", "uids")})
     for directory, dirs, files in os.walk(shared, followlinks=False):
         for path in (Path(directory), *(Path(directory) / name for name in dirs + files)):
             relative = path.relative_to(shared).parts

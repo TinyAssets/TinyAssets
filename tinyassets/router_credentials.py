@@ -18,7 +18,6 @@ from pathlib import Path
 
 from tinyassets import rpc_frames as rf
 from tinyassets.boxes.layout import BROKER_READ_GID, BROKER_UID, DAEMON_UID
-from tinyassets.erasure_ledger import ErasureLedger
 
 #: Router rows one owner may hold, so no box can grow the shared map unbounded.
 MAX_HOOKS_PER_OWNER = 200
@@ -123,19 +122,15 @@ def dispatch(root: Path, owner: str, request: dict) -> dict:
     validate_principal(owner)
     if not isinstance(request, dict):
         raise ValueError("invalid credential operation")
+    if request == {"operation": "revoke_account"}:
+        revoke_account(root, owner)
+        return {"revoked": True}
     with _DISPATCH:
         from tinyassets.broker.owner_identities import owner_admission
 
         if owner_admission(root, owner).state == "erased":
             raise PermissionError("owner account is deleted")
         return _dispatch(root, owner, request)
-
-
-def tombstone(root: Path, owner: str, receipt: dict):
-    from tinyassets.billing.lifecycle import lock
-
-    with lock, _DISPATCH:
-        ErasureLedger(root).add(owner, receipt)
 
 
 def revoke_account(root: Path, owner: str):
@@ -243,30 +238,9 @@ async def serving(root: Path):
         if BROKER_READ_GID in os.getgroups():
             os.chown(path, -1, BROKER_READ_GID)
         os.chmod(path, 0o660)
-        from tinyassets.owner_router import resume_deleted_accounts
+        async with server:
+            yield
 
-        stopped = asyncio.Event()
-
-        async def retry_deletions():
-            while not stopped.is_set():
-                try:
-                    await resume_deleted_accounts(root)
-                except Exception:
-                    import logging
-
-                    logging.getLogger(__name__).exception("account deletion retry failed")
-                try:
-                    await asyncio.wait_for(stopped.wait(), timeout=60)
-                except TimeoutError:
-                    pass
-
-        retry_task = asyncio.create_task(retry_deletions())
-        try:
-            async with server:
-                yield
-        finally:
-            stopped.set()
-            await retry_task
     finally:
         server.close()
         await server.wait_closed()

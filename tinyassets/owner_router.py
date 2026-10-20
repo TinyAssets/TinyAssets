@@ -8,7 +8,6 @@ from __future__ import annotations
 import base64
 import json
 import os
-import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -21,7 +20,6 @@ from starlette.responses import JSONResponse
 _HOP = {b"connection", b"keep-alive", b"proxy-authenticate", b"proxy-authorization",
         b"te", b"trailer", b"transfer-encoding", b"upgrade"}
 _TRUSTED = {b"x-owner", b"x-box-secret", b"x-owner-identity"}
-_DELETIONS = threading.Lock()
 _SHARED_APP = {
     "/app/account/delete",
     "/app", "/app/client-error", "/app/token", "/app/native-sign-in",
@@ -31,7 +29,8 @@ _SHARED_APP = {
     "/app/approval-handoff", "/app/connections",
 }
 _SHARED_APP_PREFIXES = ("/app/billing/", "/app/run/", "/app/m/", "/app/model-callback/",
-                        "/app/approval-handoff/", "/app/model-connect/")
+                        "/app/approval-handoff/", "/app/model-connect/",
+                        "/app/account/deletion/")
 
 
 def hook_token(path: str) -> str | None:
@@ -219,156 +218,3 @@ async def forward(scope, receive, send, identity, route: BoxRoute):
         if not released:
             with anyio.CancelScope(shield=True):
                 await run_in_threadpool(release_route, route)
-
-
-async def resume_deleted_accounts(root):
-    """Retry durable deletions without requiring the deleted owner to sign in."""
-    from tinyassets.auth.provider import Identity
-    from tinyassets.erasure_ledger import ErasureLedger
-
-    for entry in await run_in_threadpool(ErasureLedger(root).pending):
-        owner = entry["principal"]
-        if owner is None:
-            import logging
-
-            logging.getLogger(__name__).error(
-                "erasure phases await principal recovery for digest %s", entry["digest"])
-            continue
-        await delete_owner_account(Identity(user_id=owner, username=owner))
-
-
-async def delete_owner_account(identity):
-    # One router writer serializes receipt updates and concurrent deletion
-    # retries. Never hold the credential dispatch lock across network calls.
-    with anyio.CancelScope(shield=True):
-        await run_in_threadpool(_DELETIONS.acquire)
-        try:
-            return await _delete_owner_account(identity)
-        finally:
-            _DELETIONS.release()
-
-
-async def _delete_owner_account(identity):
-    """The door records each shared phase; a tombstone never blocks cleanup."""
-    from tinyassets.billing.stripe_adapter import cancel_account_billing
-    from tinyassets.broker.account_erasure import close_channels, erase_account
-    from tinyassets.broker.owner_identities import retire_owner
-    from tinyassets.erasure_ledger import PHASES, ErasureLedger
-    from tinyassets.router_account_deletion import delete_workos_user
-    from tinyassets.router_credentials import revoke_account, tombstone
-    from tinyassets.storage import data_dir
-
-    root, owner = data_dir(), identity.user_id
-    deleted = ErasureLedger(root)
-    receipt = None
-    try:
-        await run_in_threadpool(tombstone, root, owner, {"local_cleanup": "pending"})
-        receipt = await run_in_threadpool(deleted.receipt, owner)
-
-        receipt.setdefault("billing", "pending")
-        receipt.setdefault("identity", "pending")
-        done = receipt.setdefault("completed_phases", [])
-        failures = []
-
-        async def phase(name, operation):
-            if name in done:
-                return
-            try:
-                result = await run_in_threadpool(operation)
-                if name in {"billing", "identity"}:
-                    receipt[name] = result
-                    accepted = {"cancelled", "none", "attempt_expired"} if name == "billing" else {
-                        "deleted", "not_applicable"}
-                    if result not in accepted:
-                        raise RuntimeError("external deletion remains unfinished")
-                done.append(name)
-            except Exception:
-                failures.append(name)
-                if name in {"billing", "identity"} and receipt[name] == "pending":
-                    receipt[name] = "error"
-            receipt["unfinished_phases"] = sorted(set(failures + [
-                step for step in PHASES
-                if step not in done]))
-            await run_in_threadpool(deleted.save_receipt, owner, receipt)
-
-        await phase("broker_channels", lambda: close_channels(root, principal=owner))
-        # Box cleanup is one retryable phase; shared phases never depend on it.
-        if "owner_tree" not in done and not receipt.get("quarantines"):
-            try:
-                if receipt.get("local_cleanup") == "pending":
-                    try:
-                        route = await run_in_threadpool(resolve_box, owner, cleanup=True)
-                    except LookupError:
-                        # No admission is not absence: retirement below must still
-                        # stop the runtime and prove erasure on the mounted store.
-                        pass
-                    else:
-                        response = await delete_box_data(identity, route)
-                        if response.status_code != 200:
-                            raise RuntimeError("box cleanup remains unfinished")
-                        local = json.loads(response.body)
-                        receipt.update(local_cleanup="done",
-                                       local_unfinished=local.get("unfinished_phases", []))
-                        await run_in_threadpool(deleted.save_receipt, owner, receipt)
-                await phase("owner_tree", lambda: retire_owner(root, principal=owner))
-            except Exception:
-                import logging
-
-                logging.getLogger(__name__).exception("box cleanup failed; shared phases continue")
-                failures.append("owner_tree")
-                await run_in_threadpool(deleted.save_receipt, owner, receipt)
-        if "owner_tree" in done:
-            receipt["home_removed"] = True
-            receipt["local_unfinished"] = []
-            receipt["box_destroy"] = {"destroyed": True}
-        await phase("broker_egress", lambda: erase_account(root, principal=owner))
-        # Money cleanup must run even when stopping or erasing the box failed.
-        await phase("billing", lambda: cancel_account_billing(root, owner))
-        await phase("credentials", lambda: revoke_account(root, owner))
-        # External identity is the last phase. Read the authority again: a
-        # receipt save can retain owner_tree work that a caller tried to finish.
-        recorded = await run_in_threadpool(deleted.receipt, owner)
-        if all(step in recorded["completed_phases"] for step in PHASES if step != "identity"):
-            await phase("identity", lambda: delete_workos_user(owner))
-        receipt["unfinished_phases"] = [step for step in PHASES
-            if step not in done]
-        await run_in_threadpool(deleted.save_receipt, owner, receipt)
-        if receipt["unfinished_phases"]:
-            return JSONResponse({"error": "deletion_incomplete", "receipt": receipt},
-                                status_code=503, headers={"cache-control": "no-store"})
-        return JSONResponse(receipt, headers={"cache-control": "no-store"})
-    except Exception:
-        import logging
-
-        logging.getLogger(__name__).exception("account deletion failed")
-        return JSONResponse({"error": "account_deletion_failed", "receipt": receipt},
-                            status_code=503,
-                            headers={"cache-control": "no-store"})
-
-
-async def delete_box_data(identity, route):
-    """Use the normal secret-authenticated forwarder, retaining the box outcome."""
-    import asyncio
-
-    path = "/_box/account/delete"
-    scope = {"type": "http", "method": "POST", "path": path, "raw_path": path.encode(),
-             "query_string": b"", "headers": [], "http_version": "1.1"}
-    delivered = False
-    messages = []
-
-    async def receive():
-        nonlocal delivered
-        if not delivered:
-            delivered = True
-            return {"type": "http.request", "body": b"", "more_body": False}
-        await asyncio.Future()
-
-    async def send(message):
-        messages.append(message)
-
-    await forward(scope, receive, send, identity, route)
-    from starlette.responses import Response
-
-    return Response(b"".join(m.get("body", b"") for m in messages),
-                    status_code=messages[0]["status"], media_type="application/json",
-                    headers={"cache-control": "no-store"})

@@ -16,6 +16,9 @@ def contents(store):
 class MigrationVolumes:
     def __init__(self, store):
         self.store, self.mount_root = store, contents(store)
+        remote = store.parent / (store.name + ".fake-remote")
+        remote.mkdir(exist_ok=True)
+        self.remote = ":local:" + str(remote)
         self.mount_root.mkdir(exist_ok=True)
         self.attached = set()
         self.events = []

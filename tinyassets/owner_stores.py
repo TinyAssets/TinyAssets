@@ -35,6 +35,10 @@ INFRASTRUCTURE: frozenset[str] = frozenset({
     "tinyassets/broker/owner_reads.py",
     # C6/T9: the broker's sole shared owner-admission writer.
     "tinyassets/broker/admission.py",
+    # C6: job-owned snapshot catalog cleanup; no owner data.
+    "tinyassets/broker/deletion_jobs.py",
+    # T4 one-shot migration consumes old deletion obligations before publication.
+    "tinyassets/cutover_deletions.py",
     "tinyassets/broker/next_wake.py",
     "tinyassets/broker/owner_sources.py",
     # T3/C2: broker-only permanent volume binding and snapshot publication.

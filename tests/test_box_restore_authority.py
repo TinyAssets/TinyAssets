@@ -645,16 +645,15 @@ def test_non_index_fault_after_110_damaged_indexes_refuses_before_erasure(source
 
     from tests.test_box_layout_migration import _archive
     from tests.test_cutover_index_integrity import damage_many_indexes
+    from tinyassets.cutover_deletions import LegacyFacts, seed_legacy
     from tinyassets.cutover_restore import restore_old_layout
-    from tinyassets.erasure_ledger import ErasureLedger, seed_legacy
 
     damage_many_indexes(source / ".tinyassets.db", corrupt_table=True)
     before = fingerprint(source)
     if caller == "seed":
         ledger_root = tmp_path / "ledger"
         ledger_root.mkdir()
-        ledger = ErasureLedger(ledger_root)
-        ledger.initialize()
+        ledger = LegacyFacts(ledger_root)
         with pytest.raises(ValueError, match="not index-only"):
             seed_legacy(source, ledger, store_root=tmp_path)
         assert ledger.entries() == []

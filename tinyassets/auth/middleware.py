@@ -669,6 +669,10 @@ def _auth_challenge_path(path: str) -> bool:
     """
     if path in _DISCOVERY_PATHS or path in _LOCAL_OAUTH_PATHS:
         return False
+    from tinyassets.onboarding.deletion_status import status_path
+
+    if status_path(path):
+        return False  # C5: the status handler checks the off-host job capability.
     from tinyassets.onboarding.public_run import public_path
 
     if public_path(path):
