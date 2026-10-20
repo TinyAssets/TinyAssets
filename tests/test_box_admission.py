@@ -342,11 +342,13 @@ def test_runtime_restart_does_not_recreate_missing_admission_schema(authority):
 
 @pytest.mark.parametrize("damage", ["missing", "empty", "corrupt", "schema"])
 def test_damaged_record_authority_denies_authentication_and_work(authority, tmp_path, damage):
+    from tinyassets.api_keys import ApiKeyStore
     from tinyassets.router_credentials import active_owner
     from tinyassets.routing_snapshot import RoutingSnapshot, _snapshots
 
-    local_mutate(authority.path, "alice", "erase", routing=projection(authority.path))
-    assert not active_owner("alice", tmp_path)  # Start the fixture broker before authority loss.
+    keys = ApiKeyStore(tmp_path)
+    key = keys.mint("alice", name="fixture", scopes=[], authority=None)["key"]
+    assert keys.resolve(key) is not None  # Start the fixture broker before authority loss.
     if damage == "missing":
         authority.path.unlink()
     elif damage in {"empty", "corrupt"}:
@@ -358,6 +360,7 @@ def test_damaged_record_authority_denies_authentication_and_work(authority, tmp_
     # C5: a restarted router has no current projection. An already installed
     # healthy projection instead survives the control-plane outage.
     _snapshots[tmp_path] = RoutingSnapshot()
+    assert keys.resolve(key) is None
     assert not active_owner("alice", tmp_path)
     assert not active_owner("bob", tmp_path)
     with pytest.raises(sqlite3.Error):
@@ -397,13 +400,18 @@ def test_suspension_write_does_not_recreate_a_missing_identity_database(authorit
 
 
 def test_suspended_owner_authenticates_but_cannot_work(authority, tmp_path):
-    from tinyassets.router_credentials import active_owner
+    from tinyassets.api_keys import ApiKeyStore
+    from tinyassets.router_credentials import revoke_account
 
+    keys = ApiKeyStore(tmp_path)
+    key = keys.mint("alice", name="fixture", scopes=[], authority=None)["key"]
     suspend(authority.plans, "alice", reason="abuse", suspended=True)
-    assert active_owner("alice", tmp_path)
+    assert keys.resolve(key) is not None
     assert not allowed(lambda: authority.box_route("alice"))
     local_mutate(authority.path, "alice", "erase", routing=projection(authority.path))
-    assert not active_owner("alice", tmp_path)
+    revoke_account(tmp_path, "alice")
+    assert keys.resolve(key) is None
+    assert not allowed(lambda: authority.box_route("alice"))
 
 
 def test_concurrent_sources_keep_both_reasons(authority):
