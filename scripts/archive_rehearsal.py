@@ -631,12 +631,12 @@ def archive_rehearsal(image, archive, *, store_bytes):
         step = 'normal_restore_after_traffic_refuses'
         venue.restore(refuse=True, refusal_reason='consumed')
         passed(step, refusals=1)
-        step = 'platform_recovery_lane_b_pending'
+        step = 'platform_recovery'
         result = json.loads(venue.helper(
             "import json, runpy; print(json.dumps(runpy.run_path('/support/rehearse_box_move.py')"
             "['platform_recovery_probe']()))").stdout)
         if result != {'unchanged_volumes': census['owners'], 'stale_credentials': 3,
-                      'admission_closed': 1, 'lane_b_pending_refusals': 1}:
+                      'admission_open': 1, 'startup_reconciled': 1}:
             raise RuntimeError('incomplete platform recovery refusal proof')
         passed(step, **result)
     except BaseException:

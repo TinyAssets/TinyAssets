@@ -117,7 +117,7 @@ def rehearsal_manifests():
 
 
 def platform_recovery_probe():
-    """Recover shared credentials only; C3's missing deletion authority stays closed."""
+    """C3 startup reaches open admission with fake external authorities."""
     import hashlib
     import json
     import os
@@ -130,7 +130,7 @@ def platform_recovery_probe():
 
     from tinyassets.api_keys import _KEY_RE, ApiKeyStore
     from tinyassets.onboarding import owner_sessions
-    from tinyassets.restore_recovery import RecoveryUnavailable, platform_recovery
+    from tinyassets.restore_recovery import finish_platform, platform_recovery, prepare_platform
     from tinyassets.router_credentials import HookOwners
     from tinyassets.router_traffic import admits
 
@@ -211,14 +211,69 @@ print(json.dumps(key))
     staged = Path('/backup/platform-stage')
     shutil.copytree(root, staged)
     os.environ['TINYASSETS_DATA_DIR'] = str(staged)
-    try:
-        platform_recovery(staged, backup_time=1)
-    except RecoveryUnavailable as error:
-        assert 'deletion-job recovery is not implemented' in str(error)
-    else:
-        raise AssertionError('missing lane-b authority reopened platform')
-    assert not admits(staged, owner)
-    assert json.loads((staged / '.layout.json').read_text())['state'] == 'recovering'
+    import asyncio
+    from unittest.mock import patch
+
+    from tinyassets.billing import stripe_adapter as stripe
+    from tinyassets.broker.fence import Fence
+    from tinyassets.broker.ops import OpStore
+    from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.owner_reads import Plans
+    from tinyassets.broker.process import _Dispatchers
+    from tinyassets.broker.server import BrokerServer
+
+    backup_time = time.time()
+    prepare_platform(staged, backup_time=backup_time, now=backup_time + 1)
+    assert not admits(staged, owner) and not admits(staged, 'canary')
+    identities = OwnerIdentities(staged / '.broker/state/owner-identities.db', plans=Plans(staged))
+    identities.work_ready = False
+    dispatch = _Dispatchers(staged, allow_test_fixtures=False)
+    server = BrokerServer(
+        ledger_for=dispatch.ledger_for, dispatch_for=dispatch.dispatch_for,
+        ops=OpStore(staged / '.broker/ops.db'),
+        fence=Fence(staged / '.broker/rehearsal-fence.json',
+                    verify_lease_proof=lambda *args: False, lease_sha256='0' * 64),
+        roles={}, owner_identities=identities, data_root=staged)
+    with closing(identities.plans._connect()) as db:
+        plans = [dict(row) for row in db.execute('SELECT * FROM plans')]
+    secret = 'synthetic-recovery-webhook'
+    price = {'id': 'price_rehearsal', 'lookup_key': stripe.PRICE_LOOKUP_KEY,
+             'unit_amount': 2000, 'currency': 'usd',
+             'recurring': {'interval': 'month', 'interval_count': 1, 'usage_type': 'licensed'}}
+    subscriptions = []
+    for plan in plans:
+        if plan['tier'] == 'paid':
+            subscriptions.append({
+                'id': plan['subscription_id'] or 'sub_' + plan['owner'], 'status': 'active',
+                'customer': plan['customer_id'],
+                'metadata': {'owner_id': plan['owner'], 'tinyassets_entitlement_version': '1',
+                             'tinyassets_entitlement_claim': stripe._entitlement_claim(
+                                 plan['owner'], price['id'], secret=secret, version='1')},
+                'items': {'data': [{'quantity': 1, 'price': price}]}})
+
+    def fake_stripe(path):
+        assert not admits(staged, owner)
+        if path.startswith('subscriptions?'):
+            return {'data': subscriptions, 'has_more': False}
+        return next(sub for sub in subscriptions if path == 'subscriptions/' + sub['id'])
+
+    async def startup():
+        with tempfile.TemporaryDirectory(prefix='/tmp/s6-recovery-broker-') as run:
+            listener = await server.serve(Path(run) / 'broker.sock')
+            async with listener:
+                await asyncio.to_thread(platform_recovery, server, backup_time=backup_time,
+                                        now=backup_time + 1, identity_exists=lambda owner: True,
+                                        revoke_sessions=lambda owner: None)
+                assert not admits(staged, owner)
+                finish_platform(staged)
+
+    with patch.dict(os.environ, {'STRIPE_SECRET_KEY': 'sk_test_synthetic',
+                                'STRIPE_WEBHOOK_SECRET': secret,
+                                'BACKUP_DEST': ':local:/snapshots/owner-snapshots'}), \
+            patch.object(stripe, '_get', fake_stripe):
+        asyncio.run(startup())
+    assert admits(staged, owner)
+    assert json.loads((staged / '.layout.json').read_text())['state'] == 'stable'
     assert ApiKeyStore(staged).resolve(key) is None
     assert HookOwners(staged).resolve('rehearsal-hook') is None
     assert owner_sessions.lookup('rehearsal-session') is None
@@ -230,7 +285,7 @@ print(json.dumps(key))
             assert db.execute('SELECT COUNT(*) FROM ' + table).fetchone() == (0,)
     assert images() == before
     return {'unchanged_volumes': len(before), 'stale_credentials': 3,
-            'admission_closed': 1, 'lane_b_pending_refusals': 1}
+            'admission_open': 1, 'startup_reconciled': 1}
 
 
 def archive_rehearsal(image, archive, *, store_bytes):

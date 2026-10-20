@@ -503,6 +503,8 @@ def test_a_source_that_cannot_be_read_installs_nothing(tmp_path):
 def test_broker_receives_exact_oauth_and_deletion_adapter_environment(tmp_path):
     source, daemon = tmp_path / "env", tmp_path / "daemon.env"
     source.write_text("STRIPE_SECRET_KEY=synthetic-billing\n"
+                      "STRIPE_WEBHOOK_SECRET=synthetic-webhook\n"
+                      "TINYASSETS_BILLING_ENTITLEMENT_KEY=synthetic-entitlement\n"
                       "WORKOS_API_KEY=synthetic-identity\n"
                       "BACKUP_DEST=fixture:owner-snapshots\n"
                       "TINYASSETS_OAUTH_EXAMPLE_CLIENT_ID=client\n"
@@ -523,6 +525,7 @@ def test_broker_receives_exact_oauth_and_deletion_adapter_environment(tmp_path):
     assert _assigned(broker) == {"TINYASSETS_OAUTH_EXAMPLE_CLIENT_ID",
                                  "TINYASSETS_OAUTH_EXAMPLE_SECRET",
                                  "TINYASSETS_OAUTH_DIRECTORY", "STRIPE_SECRET_KEY",
+                                 "STRIPE_WEBHOOK_SECRET", "TINYASSETS_BILLING_ENTITLEMENT_KEY",
                                  "WORKOS_API_KEY", "BACKUP_DEST", "RCLONE_CONFIG"}
     copied_config = tmp_path / "broker-rclone.conf"
     assert copied_config.read_bytes() == backup_config.read_bytes()

@@ -165,8 +165,13 @@ external connections from a box SHALL be impossible.
 
 ### Requirement: Platform recovery is separate from owner restore
 Restoring the shared layer SHALL leave owner volumes untouched. Before
-admission reopens, it SHALL resume every unfinished deletion job and reconcile
-billing, spend, suspension and identities. It SHALL also invalidate every
+admission reopens, services SHALL start with admission closed for every owner.
+The running broker SHALL import current off-host job rows and resume unfinished
+jobs through its normal execution path, then reconcile billing and identities.
+Completed jobs newer than the backup SHALL restore terminal erasure without
+repeating completed destructive steps. Stripe SHALL set or clear the billing
+reason for every retained account regardless of its original writer; every
+non-billing reason SHALL remain unchanged. No spend reconciliation exists. It SHALL also invalidate every
 pre-restore bearer credential (sessions, API keys, hooks, identity-provider
 sessions, operational credentials and box secrets), drop custody and advance
 the broker replay cutoff. It SHALL install one current credential source with
@@ -177,6 +182,16 @@ admission closed.
 - **WHEN** the shared layer is restored from a backup
 - **THEN** no session, API key, hook token or operational credential issued before the restore is accepted
 - **AND** owners reconnect their model sources
+
+#### Scenario: Stripe decides billing while other reasons survive
+- **WHEN** recovery restores billing and non-billing suspension reasons
+- **THEN** current Stripe state sets or clears only billing, and every other reason remains
+- **AND** unconfigured or unavailable Stripe prevents admission from opening
+
+#### Scenario: A completed deletion cannot be resurrected
+- **WHEN** a job completed after the restored platform backup
+- **THEN** its current off-host receipt restores terminal erasure before any admission opens
+- **AND** completed destructive steps are not executed again
 
 ### Requirement: Cutover rollback requires durable pre-traffic eligibility
 Old-layout rollback SHALL be possible only while ordinary writable admission has

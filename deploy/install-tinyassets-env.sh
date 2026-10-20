@@ -836,7 +836,9 @@ write_daemon_env() {
             classify_env_value || true # Already validated by render_daemon_content.
             # C6: the broker deletion job invokes billing and identity erasure.
             if [[ "${ENV_KEY}" =~ ^TINYASSETS_OAUTH_[A-Z0-9_]+$ ||
-                  "${ENV_KEY}" == STRIPE_SECRET_KEY || "${ENV_KEY}" == WORKOS_API_KEY ||
+                  "${ENV_KEY}" == STRIPE_SECRET_KEY || "${ENV_KEY}" == STRIPE_WEBHOOK_SECRET ||
+                  "${ENV_KEY}" == TINYASSETS_BILLING_ENTITLEMENT_KEY ||
+                  "${ENV_KEY}" == WORKOS_API_KEY ||
                   "${ENV_KEY}" == BACKUP_DEST ]]; then
                 selected=1
                 out+="${line}"$'\n'

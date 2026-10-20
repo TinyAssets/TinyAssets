@@ -673,7 +673,7 @@ finally:
             "serving",
             "normal_restore_after_traffic_refuses",
             "single_owner_restore",
-            "platform_recovery_lane_b_pending",
+            "platform_recovery",
             "cleanup",
         }
         assert all(step["status"] == "PASS" for step in result.values())
@@ -693,9 +693,9 @@ finally:
         assert result["normal_restore_after_traffic_refuses"] == {"status": "PASS", "refusals": 1}
         assert result['single_owner_restore'] == {
             'status': 'PASS', 'replay_refusals': 3, 'new_operations': 2, 'revoked_keys': 1}
-        assert result['platform_recovery_lane_b_pending'] == {
+        assert result['platform_recovery'] == {
             'status': 'PASS', 'unchanged_volumes': 2, 'stale_credentials': 3,
-            'admission_closed': 1, 'lane_b_pending_refusals': 1}
+            'admission_open': 1, 'startup_reconciled': 1}
         captured = capsys.readouterr()
         assert captured.err == ""
         assert len(captured.out.splitlines()) == len(result)

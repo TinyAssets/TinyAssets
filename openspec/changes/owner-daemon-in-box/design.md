@@ -192,39 +192,22 @@ own backup. Restoring it never touches owner volumes.
   so a missing current credential can never select an old environment value.
   Unavailable authority leaves the affected admission closed.
 
-**As built (a2a-2):** `backup-restore.sh` stages and installs only the shared
-layer and accepts no owner-volume input. It stops shared consumers and boxhostd;
-`platform-recovery.py` durably closes the live layout before preparation. Recovery
-invalidates local credentials and custody, advances only the broker replay cutoff,
-then calls the single `resume_deletion_jobs(staged, backup_time=...)` seam. Lane b
-must recover current lifecycle authority, permanent bindings and unfinished jobs
-there; its body currently raises, so recovery cannot complete or reopen admission.
-After that seam, recovery rotates box secrets, reconciles billing/spend/suspension,
-and confirms identities and revokes provider sessions for the positively admitted
-map records. A missing authority fails closed. The current billing adapter has no
-current spend or abuse-suspension source; subscription refresh alone explicitly
-refuses recovery, even after lane b implements deletion recovery. No provider
-reconciliation success is fabricated.
-The two operational doors now read only `.router-credentials.json`; absent,
-invalid or incomplete current credentials deny even with old environment values.
-The owner carry/union/tree scheduling, project-quota restore, fleet restore epoch
-and next-day spend fence are deleted from recovery. Old-layout database validation
-is confined to the one-shot cutover; `restore_old_layout` only extracts a verified
-pre-cutover archive into private staging. Durable rollback eligibility and live
-installation are implemented by C4's deployment control. The backup producer is now split (a2a-3): platform publication uses a verified
-manifest and excludes owner volumes. Shared restore preserves the archived root's
-ownership and mode. Recovery atomically replaces and fsyncs the shared layout
-marker before changing authority, including when the service-owned marker is
-under a sticky shared root. The root Linux proof reaches the pending deletion-job
-refusal with admission closed and local credentials invalidated.
-The archive rehearsal now invokes separate C2/C3/C4 operations. Its C3 step
-requires the labelled lane-b-pending refusal, invalidated local credentials,
-unchanged opaque image bytes and closed admission. The complete rehearsal now
-passes, including serving two owners across four centers and cleanup with no
-mount, loop-device, container or volume residue. Credential seeding runs as the
-owning service UID, and direct table readback proves invalidation rather than
-treating an unreadable credential store as success. This is not end-to-end platform recovery acceptance until the named current
-authorities are available.
+**As built (b5):** `backup-restore.sh` prepares and installs only the shared
+layer with admission closed for every owner, including the canary. Preparation
+invalidates local credentials and custody, rotates box secrets and advances the
+broker replay cutoff. It releases exclusive layout locks before restarting the
+services. The broker's existing waker tick runs startup reconciliation before
+ordinary lifecycle work; recovery adds no execution RPC or periodic scheduler.
+`resume_deletion_jobs` imports the current off-host rows. Every unfinished job
+and every completed receipt newer than the backup uses the normal broker resume
+path. Older completed receipts replace stale local progress without executing
+again. Completion comes from job receipts, never admission state.
+Stripe refreshes billing for all retained admitted or suspended owners, preserving
+non-billing reasons. The identity provider confirms those owners and revokes their
+sessions. A durable startup receipt lets root publish stable layout and open
+admission; any missing authority leaves admission closed. The archive C3 probe
+uses fake external authorities and asserts open admission, invalidated credentials
+and unchanged opaque images.
 
 **Settled for b5 (2026-10-20): which sources are "current authority".**
 - **Suspension:** the only runtime writer of a suspension is billing

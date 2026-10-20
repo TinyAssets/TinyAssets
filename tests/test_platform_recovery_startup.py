@@ -84,6 +84,7 @@ def test_jobs_newer_than_backup_finish_before_any_owner_is_admitted(startup, com
     job = new_job("alice", a.identities.owner_machine("alice"), clock=lambda: 3)
     if complete:
         job["completed_steps"] = list(STEPS)
+        job["results"]["receipt"] = {"deleted": True, "completed_at": 4}
     a.remote.save(job)
     # Neither the erased fact nor the newer job exists in the restored DB.
     assert a.server.deletion_jobs.records.records() == []

@@ -189,12 +189,21 @@ def resume_deletion_jobs(server, *, backup_time):
     Completed receipts matter too: an older backup may predate their erasure.
     The normal path reasserts withdrawal but skips every completed effect.
     """
+    from tinyassets.broker.deletion_jobs import STEPS
+
     jobs = server.deletion_jobs
     current = {job["id"]: job for job in jobs.records.remote.records()}
     for local in jobs.records.records():
         if local["id"] not in current:
             raise RecoveryUnavailable("current off-host deletion record missing")
     for job in current.values():
+        jobs.records.save(job)
+        # C3 requires every unfinished job and every completion newer than the
+        # backup. Older completed receipts are already terminal at that point;
+        # importing their exact progress also replaces any stale local retry.
+        if (job["completed_steps"] == list(STEPS)
+                and job["results"]["receipt"]["completed_at"] <= backup_time):
+            continue
         jobs.resume_loaded_job(job)
 
 

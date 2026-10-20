@@ -153,3 +153,38 @@ through to an off-host copy.
 - **WHEN** sleep, pending recovery, restore or eviction runs
 - **THEN** the broker holds the owner lock and commits map transitions from executor results
 - **AND** the existing waker tick collects results of already-authorized host execution without callbacks or an additional clock
+
+### Requirement: Platform recovery is separate from owner restore
+Restoring the shared layer SHALL leave owner volumes untouched. Before
+admission reopens, services SHALL start with admission closed for every owner.
+The running broker SHALL import current off-host job rows and resume unfinished
+jobs through its normal execution path, then reconcile billing and identities.
+Completed jobs newer than the backup SHALL restore terminal erasure without
+repeating completed destructive steps. Stripe SHALL set or clear the billing
+reason for every retained account regardless of its original writer; every
+non-billing reason SHALL remain unchanged. No spend reconciliation exists. It SHALL also invalidate every
+pre-restore bearer credential (sessions, API keys, hooks, identity-provider
+sessions, operational credentials and box secrets), drop custody and advance
+the broker replay cutoff. It SHALL install one current credential source with
+no fallback to old values. Unavailable authority SHALL keep the affected
+admission closed.
+
+#### Scenario: Shared-layer restore invalidates old bearer credentials
+- **WHEN** the shared layer is restored from a backup
+- **THEN** no session, API key, hook token or operational credential issued before the restore is accepted
+- **AND** owners reconnect their model sources
+
+#### Scenario: Stripe decides billing while other reasons survive
+- **WHEN** recovery restores billing and non-billing suspension reasons
+- **THEN** current Stripe state sets or clears only billing, and every other reason remains
+- **AND** unconfigured or unavailable Stripe prevents admission from opening
+
+#### Scenario: A completed deletion cannot be resurrected
+- **WHEN** a job completed after the restored platform backup
+- **THEN** its current off-host receipt restores terminal erasure before any admission opens
+- **AND** completed destructive steps are not executed again
+
+#### Scenario: Recovery finishes deletions before admitting anyone
+- **WHEN** the shared layer is restored and services start with admission closed
+- **THEN** unfinished deletion jobs run through the normal broker path
+- **AND** admission opens only after they complete and current billing and identities reconcile
