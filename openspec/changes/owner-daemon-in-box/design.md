@@ -229,10 +229,12 @@ authorities are available.
 **Settled for b5 (2026-10-20): which sources are "current authority".**
 - **Suspension:** the only runtime writer of a suspension is billing
   (`stripe_adapter.py`, reason `billing`), and Stripe is its current source.
-  Recovery refreshes every admitted owner's billing suspension from Stripe. If
-  Stripe is unavailable or unconfigured, admission stays closed. Suspension
-  reasons carried in by the one-shot migration stay in the admission record,
-  and recovery never clears them.
+  Recovery refreshes every admitted owner's `billing` reason from Stripe,
+  setting or clearing it, whatever wrote it first (the migration included):
+  Stripe is the one source for that reason. If Stripe is unavailable or
+  unconfigured, admission stays closed. Every other restored reason (`abuse`
+  and any migration-carried non-billing reason) has no refreshable source, so
+  recovery keeps it unchanged. No provenance column is added.
 - **Spend:** no runtime spend fence or spend ledger exists (the fence was
   deleted from recovery above), so recovery has no spend authority to reconcile.
   Recovery does not fabricate one.
