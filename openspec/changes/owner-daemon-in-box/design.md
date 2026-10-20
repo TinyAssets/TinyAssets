@@ -667,8 +667,14 @@ another on `conv/c6-research-shape`, each after the previous lane has merged:
 - **(a2b) C10 storage scaling,** plus the remnants of the paired model.
 - **(b) C5, C6, C14:** the routing-only router, one admission record, the
   deletion job, then (b6) broker-owned lifecycle serialization with no callbacks,
-  and (b5) recovery's startup mode.
-- **(d) C11–C13:** an owner-keyed shared layer, image-at-wake deploys, fewer mechanisms.
+  and (b5) recovery's startup mode. b6 also takes C13's "one call direction" for
+  lifecycle and volumes (sleep snapshots, pending-work recovery, cold restore,
+  eviction), because one broker lock over wake, publication and restore cannot
+  coexist with boxhostd calling back into the broker. The broker learns results
+  from the return of its own call or from the waker's existing tick, never from a
+  callback.
+- **(d) C11–C13:** an owner-keyed shared layer, image-at-wake deploys, and C13's
+  remaining mechanisms.
 - **(c) C7–C9:** the egress allowlist, owner policy in the box, the wake index.
   It runs after d, because policy and allowlists are keyed by owner.
 
