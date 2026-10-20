@@ -225,6 +225,14 @@ and unchanged opaque images.
   spend cap) records each change in the broker's identity database and writes it
   through to the off-host copy, as deletion jobs do (C14). Recovery replays those
   rows like deletion jobs. Until such a writer exists there is nothing to replay.
+- **Receipt (round 4):** the broker's startup receipt carries only facts the
+  broker established (jobs resumed, billing reconciled, owners reconciled).
+  Root's offline preparation facts (credential roots reset, replay cutoff
+  advanced) live in root's layout document, and root checks them there.
+  Recovery failures are logged as recovery failures. Recovery's resumed
+  deletion jobs run as the same per-owner broker tasks as on any other tick,
+  not inline on the tick, so the rule "volume work does not run on the clock"
+  holds during startup too.
 - **Startup order (C14, b5):** restore the shared layer → start services with
   admission closed for every owner → resume unfinished deletion jobs through the
   normal broker path → reconcile billing suspension and identities → open
@@ -613,7 +621,8 @@ a separate lifecycle path. **Deleted** (round-3 review, 2026-10-20; b6 moved the
 roll into the broker): `RoutingAuthority.roll` and its rollback, the
 `LIFECYCLE_ADMIN` roll entry, `OwnerDaemons.roll`, `Images.last`/`ran`, the
 `restarting`/`roll_failed` state and its wait loops in `owner_daemons.py`, the
-`wake(image=)` override in `host_service.py`, and the per-UID loop in
+`wake(image=)` override in `host_service.py`, the `image` field of boxhostd's
+`status` (read only by the roll), and the per-UID loop in
 `scripts/roll_owner_boxes.py`. Every wake starts `images.current`. Cutover
 rollback (C4) is unchanged.
 
@@ -657,7 +666,8 @@ deleted. The image registry retains only `current`. No owner-content path is add
 - **Shared clocks.** The deletions in C5, C6 and the spend fence leave two
   lifecycle clocks, boxhostd's maintain loop and the waker, plus C10's host
   storage-growth timer, which only grows the host's block store and makes no
-  owner decision. No other clock.
+  owner decision. No other clock. Root's platform-recovery finish is a bounded
+  one-shot wait for the broker's receipt, not a clock.
 - **The mint reads the installed snapshot.** Identity checks admission from the
   routing snapshot the broker already installs, not by a per-call admission IPC
   (`router_credentials.py` ~137–152 is deleted).
@@ -747,13 +757,39 @@ Target:
 - **Orphans.** Delete `OWNER_BOX_REVOKE` if it has no caller. The `abuse` reason
   stays as migrated data with no new writer (C3 "Settled for b5").
 
+**Round-4 amendments (2026-10-20, from the round-4 structural review).**
+- **Capacity is a broker counter, not a status query.** The broker counts awake
+  slots from the results of its own wake, stop and snapshot calls. Waiting for a
+  slot never holds a global lock across a host RPC. Victim facts come from the
+  `status` that idle-sleep selection (`recover`) already fetches. The capacity
+  constants (`idle_limit`, `awake_cap`, `wake_timeout`) are broker configuration.
+  boxhostd holds no cap check and exports none of them. **Deleted:** boxhostd's
+  `awake_cap` check in `ensure_awake`, those three `status` fields, and the
+  per-candidate `status` RPC loop under `_capacity`.
+- **Notification stays on the broker loop.** Admission-change notification runs
+  on the broker loop; a worker thread never calls back into the loop. The async
+  caller awaits `routing.changed` after the mutation returns. **Deleted:**
+  `run_coroutine_threadsafe` in `changed`.
+- **Step 1 runs once.** Deletion step 1 executes once per enqueue. A resume
+  re-runs it only if the record is not `erased` or its publication did not
+  install. **Deleted:** the forced step-1 re-run in `_resume_owner`.
+- **No publication lock.** Revision order comes from the identity database's
+  `BEGIN IMMEDIATE` and the router's monotonic install. **Deleted:**
+  `RoutingAuthority._publication`. (`_DISPATCH` goes with C13's one-hop mint.)
+- **Names match responsibilities.** `RoutingAuthority` is split or renamed so
+  each class names what it owns: publication, lifecycle and capacity, deletion
+  and recovery. This is a move, not new code. Eviction candidates come from an
+  explicit awake-owner query, not from `pending()`. A failed publication on the
+  tick is logged, not swallowed.
+
 ### Build order and lanes
 Lane a (C1–C4) and step 1 are complete. The remaining lanes run one after
 another on `conv/c6-research-shape`, each after the previous lane has merged:
 - **(a2b) C10 storage scaling,** plus the remnants of the paired model.
 - **(b) C5, C6, C14:** the routing-only router, one admission record, the
   deletion job, then (b6) broker-owned lifecycle serialization with no callbacks,
-  and (b5) recovery's startup mode, then (b7) C15. b6 also takes C13's "one call direction" for
+  and (b5) recovery's startup mode, then (b7) C15, then (b8) C15's round-4
+  amendments and C3's receipt rule, after lane d. b6 also takes C13's "one call direction" for
   lifecycle and volumes (sleep snapshots, pending-work recovery, cold restore,
   eviction), because one broker lock over wake, publication and restore cannot
   coexist with boxhostd calling back into the broker. The broker learns results
