@@ -226,6 +226,26 @@ owning service UID, and direct table readback proves invalidation rather than
 treating an unreadable credential store as success. This is not end-to-end platform recovery acceptance until the named current
 authorities are available.
 
+**Settled for b5 (2026-10-20): which sources are "current authority".**
+- **Suspension:** the only runtime writer of a suspension is billing
+  (`stripe_adapter.py`, reason `billing`), and Stripe is its current source.
+  Recovery refreshes every admitted owner's billing suspension from Stripe. If
+  Stripe is unavailable or unconfigured, admission stays closed. Suspension
+  reasons carried in by the one-shot migration stay in the admission record,
+  and recovery never clears them.
+- **Spend:** no runtime spend fence or spend ledger exists (the fence was
+  deleted from recovery above), so recovery has no spend authority to reconcile.
+  Recovery does not fabricate one.
+- **Rule for later writers:** any future control-plane suspension writer (abuse,
+  spend cap) records each change in the broker's identity database and writes it
+  through to the off-host copy, as deletion jobs do (C14). Recovery replays those
+  rows like deletion jobs. Until such a writer exists there is nothing to replay.
+- **Startup order (C14, b5):** restore the shared layer → start services with
+  admission closed for every owner → resume unfinished deletion jobs through the
+  normal broker path → reconcile billing suspension and identities → open
+  admission. `resume_deletion_jobs` and `reconcile_authority` stop raising and
+  implement this order.
+
 ### C4. Cutover rollback is the old system's restore, gated by durable eligibility
 Before ordinary traffic opens, rollback means stopping the new image, restoring
 the pre-cutover backup (old layout) and starting the old image. Deployment
