@@ -222,11 +222,6 @@ per-box rollback.
 - **WHEN** a new image is published and a sleeping owner's box next wakes
 - **THEN** the box starts on the new image, and the canary acceptance runs on that path
 
-#### Scenario: Canary proves sleep and public wake on the image
-- **WHEN** deployment acceptance runs
-- **THEN** public preflight wakes the configured canary, and the normal deployment drain completes its sleep
-- **AND** only a complete drain proceeds to a public router wake on the published immutable image, revision proof and a successful model turn
-
 
 #### Scenario: Canary proves sleep and public wake on the image
 - **WHEN** deployment acceptance runs
@@ -238,7 +233,13 @@ The owner-bound relay SHALL forward key and hook operations directly to identity
 Identity SHALL authenticate the relay service, take the owner only from its fixed
 binding and read admission from its installed routing snapshot. Missing admission
 SHALL deny. Mints, withdrawal and credential revocation SHALL serialize. The broker
-SHALL NOT forward owner mints and identity SHALL NOT query admission per mint.
+SHALL NOT forward owner mints and identity SHALL NOT query admission per mint. The broker
+credential operation SHALL only revoke an account, never mint or list credentials.
+
+#### Scenario: Broker credential authority only revokes an account
+- **WHEN** the authenticated broker requests a key or hook mint or lists keys
+- **THEN** identity refuses the operation
+- **AND** the broker's fixed account-revocation call still completes
 
 #### Scenario: An admitted owner mints with broker lookups unavailable
 - **WHEN** the owner's routing snapshot is installed and all broker lookups are unavailable

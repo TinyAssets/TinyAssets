@@ -876,6 +876,18 @@ def test_snapshot_withdrawal_waits_for_inflight_mint_then_retires_relay(
         assert not boxes.runtime.alive(admitted.owner_machine("alice"))
 
 
+def test_broker_credential_frame_only_revokes_and_cannot_mint(boxes, tmp_path):
+    from tinyassets.router_credentials import _request, revoke_request
+
+    for request in ({"operation": "key_mint", "name": "key", "request_ref": "request"},
+                    {"operation": "key_list"}, {"operation": "hook_mint"}):
+        answer = _request(tmp_path, {"op": "ROUTER_CREDENTIAL", "owner": "alice",
+                                    "request": request})
+        assert answer == {"op": "ROUTER_CREDENTIAL_REFUSED"}
+    assert revoke_request(tmp_path, "alice") == {
+        "op": "ROUTER_CREDENTIAL_IS", "result": {"revoked": True}}
+
+
 def test_router_credential_socket_refuses_a_non_broker_peer(boxes, tmp_path, monkeypatch):
     from tinyassets import router_credentials
 

@@ -254,10 +254,9 @@ class DeletionJobs:
         return result
 
     def _credentials(self, job):
-        from tinyassets.router_credentials import broker_request
+        from tinyassets.router_credentials import revoke_request
 
-        if broker_request(self.server._data_root, job["owner"],
-                          {"operation": "revoke_account"}) != {
+        if revoke_request(self.server._data_root, job["owner"]) != {
                               "op": "ROUTER_CREDENTIAL_IS", "result": {"revoked": True}}:
             raise RuntimeError("router credential revocation remains pending")
 

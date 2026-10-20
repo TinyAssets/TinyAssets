@@ -93,9 +93,10 @@ def credential_socket(root: Path) -> Path:
     return root / ".runtime" / "router-credentials.sock"
 
 
-def broker_request(root: Path, owner: str, request: dict) -> dict:
-    """Broker's account-revocation seam; owner mints come directly from the relay."""
-    return _request(root, {"op": "ROUTER_CREDENTIAL", "owner": owner, "request": request})
+def revoke_request(root: Path, owner: str) -> dict:
+    """The broker can revoke an account; owner mints enter through the relay."""
+    return _request(root, {"op": "ROUTER_CREDENTIAL", "owner": owner,
+                           "request": {"operation": "revoke_account"}})
 
 
 def relay_request(root: Path, owner: str, request: dict) -> dict:
@@ -142,7 +143,7 @@ def dispatch(root: Path, owner: str, request: dict) -> dict:
 
 
 def revoke_account(root: Path, owner: str):
-    """Door-only cleanup; never exposed on the box credential channel."""
+    """Identity cleanup for the broker's fixed account-revocation operation."""
     from tinyassets.api_keys import ApiKeyStore
 
     with _DISPATCH:
@@ -241,7 +242,8 @@ async def serving(root: Path):
                 result = routing_dispatch(root, doc["request"])
                 answer = {"op": "ROUTING_SNAPSHOT_IS", "result": result}
             elif (set(doc) == {"op", "owner", "request"} and
-                  ((caller == BROKER_UID and doc["op"] == "ROUTER_CREDENTIAL")
+                  ((caller == BROKER_UID and doc["op"] == "ROUTER_CREDENTIAL"
+                    and doc["request"] == {"operation": "revoke_account"})
                    or (caller == RELAY_UID and doc["op"] == "RELAY_CREDENTIAL"))):
                 if doc["op"] == "RELAY_CREDENTIAL" and doc["request"].get("operation") not in {
                         "key_mint", "key_list", "key_revoke", "hook_mint", "hook_revoke"}:

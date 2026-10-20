@@ -670,7 +670,8 @@ The relay's existing binding-registry lock serializes accepted mints with endpoi
 retirement; broker withdrawal waits for retirement, including when publication
 failed and stopping ingress is the acknowledgement path (T5/C13). The broker's
 `BOX_CREDENTIAL` handler and identity's admission IPC are deleted. Broker account
-revocation remains an authenticated identity operation, unavailable to a box.
+revocation is a fixed authenticated identity operation, unavailable to a box;
+the broker credential frame cannot mint or list credentials.
 Lifecycle call direction remains broker to host; the clocks remain boxhostd's
 maintain loop, the waker and C10's host-only growth timer.
 
