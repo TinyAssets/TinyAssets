@@ -637,7 +637,7 @@ def archive_rehearsal(image, archive, *, store_bytes):
             "['platform_recovery_probe']()))").stdout)
         if result != {'unchanged_volumes': census['owners'], 'stale_credentials': 3,
                       'admission_open': 1, 'startup_reconciled': 1}:
-            raise RuntimeError('incomplete platform recovery refusal proof')
+            raise RuntimeError('incomplete platform recovery startup proof')
         passed(step, **result)
     except BaseException:
         report[step] = {"status": "FAIL"}

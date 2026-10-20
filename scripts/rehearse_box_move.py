@@ -268,8 +268,7 @@ print(json.dumps(key))
                 finish_platform(staged)
 
     with patch.dict(os.environ, {'STRIPE_SECRET_KEY': 'sk_test_synthetic',
-                                'STRIPE_WEBHOOK_SECRET': secret,
-                                'BACKUP_DEST': ':local:/snapshots/owner-snapshots'}), \
+                                'STRIPE_WEBHOOK_SECRET': secret}), \
             patch.object(stripe, '_get', fake_stripe):
         asyncio.run(startup())
     assert admits(staged, owner)
