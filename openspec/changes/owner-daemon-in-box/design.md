@@ -660,7 +660,8 @@ deleted. The image registry retains only `current`. No owner-content path is add
     credential socket.
   - Identity authenticates the relay service, takes the owner only from the
     relay's fixed binding, and uses the broker-authored admission projection.
-  - Minting is serialized with owner withdrawal and credential revocation.
+  - Minting is ordered against withdrawal and revocation without a lock (see
+    "Mint ordering" below).
   - The broker forwarding operation is deleted, and identity remains the only
     writer of keys and hooks.
 - **Shared clocks.** The deletions in C5, C6 and the spend fence leave two
@@ -671,6 +672,24 @@ deleted. The image registry retains only `current`. No owner-content path is add
 - **The mint reads the installed snapshot.** Identity checks admission from the
   routing snapshot the broker already installs, not by a per-call admission IPC
   (`router_credentials.py` ~137–152 is deleted).
+- **Mint ordering (2026-10-20, after lane d's repeated lock re-entry).** No
+  credential lock spans snapshot installation, mint and revocation.
+  - Installation takes only the snapshot's own atomic swap.
+  - A mint writes its credential, then reads the installed snapshot again. If the
+    owner is no longer admitted, it deletes the credential it just wrote and
+    refuses.
+  - Deletion step 6 revokes the owner's credentials only after the router has
+    acknowledged installing a revision at or after the withdrawal revision. If
+    publication is unavailable, the step does not run, and the deletion job
+    retries on the existing tick.
+  - Correctness: a mint whose re-check comes after the install sees the owner
+    absent and removes its own credential; a mint whose re-check came before the
+    install wrote before step 6, which revokes it.
+  - The relay's endpoint retirement does not serialize with mints either; the
+    same ordering covers relay mints.
+  - **Deleted:** `router_credentials._DISPATCH` and every use of it, including in
+    `routing_install`, `dispatch` and `revoke_account`, and the relay registry
+    lock's serialization of accepted mints with retirement.
 
 **As built (lane d, remaining C13):** the root relay sends the owner from its
 fixed binding directly to identity's credential socket. Identity authenticates
