@@ -601,7 +601,7 @@ and `RETIRE_CENTER`, per-center vault directories, `_namespace`,
 **Deleted:** the shared center tables, ops, environment and per-center
 directories listed above.
 
-**As-built, d2 checkpoint (2026-10-20; validation in progress):** owner admission
+**As-built, d2 (2026-10-20; validated at 6635aa489c6):** owner admission
 and owner channels replace shared center admission and relay namespaces. Centers
 are in the box's `.centers.db`; startup reads that table. Grants, custody,
 source publication, replay and shared accounting select authenticated owners.
@@ -611,7 +611,13 @@ and receipt. No credential ownership join, binding rebuild or service merge is
 implemented. Shared sign-in flow records contain only the authenticated owner
 and opaque handle, with no center column or comparison. Root owner-boundary
 proofs (real shared-store diffs and migration): 16 passed; all 35 structural
-guards: 966 passed. Full shard and archive validation remains pending.
+guards: 966 passed. Four required-runner shards: 25,188 passed, 19 existing
+skips, zero failures and errors. No skip was added. The final pinned-runsc
+archive rehearsal passed. Retirement uses the existing startup-admitted box
+requirement; its root structural/lifecycle proof has 93 passes. Ruff,
+check_shapes, strict change/main OpenSpec and hygiene passed. Protocol ops fell
+from 97 to 85; boxhostd ops (11), callbacks (0), clocks (3) and global lock
+resources (5) did not grow. No production action was taken.
 
 ### C12. Deploys are image-at-wake (T2)
 The research has no per-box rolling deploy. A deploy publishes the new image,
