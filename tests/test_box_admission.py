@@ -226,10 +226,13 @@ def test_record_only_for_every_work_reader(authority, state, tmp_path):
     if state == "policy-erased":
         from tinyassets.broker.policy import PolicyStore
 
+        # C14: step 1 withdraws admission before custody cleanup starts.
+        local_mutate(identities.path, owner, "erase")
         PolicyStore(tmp_path, identities).erase(owner)
     if state == "vault-erased":
         from tinyassets.broker.vault import erase_owner
 
+        local_mutate(identities.path, owner, "erase")
         erase_owner(tmp_path, owner)
     terminal = state in {"account-retired", "erased", "policy-erased", "vault-erased"}
     expected = state in {"admitted", "center-retired"}

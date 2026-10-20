@@ -108,8 +108,13 @@ def billing(tmp_path, monkeypatch):
     remote = Remote(tmp_path / "off-host")
     job = {"id": hashlib.sha256(b"alice").hexdigest(),
            "billing_cleanup": {}, "completed_steps": []}
-    remote.save(job)
-    service = DeletionJobs(SimpleNamespace(), records=remote)
+    from tinyassets.broker.owner_identities import OwnerIdentities
+
+    service = DeletionJobs(
+        SimpleNamespace(_owner_identities=OwnerIdentities(plans.admission_path)),
+        records=remote,
+    )
+    service.records.save(job)
     def record_request(root, operation, **args):
         assert operation == "billing_receipt"
         service.record_billing(args["owner"], args["key"], args["value"])

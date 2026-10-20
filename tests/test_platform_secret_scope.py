@@ -208,6 +208,7 @@ def _helper(tmp_path: Path, args: list[str], source: Path, daemon: Path, stdin: 
         "TINYASSETS_ENV_READ_USER": "",
         "TINYASSETS_DAEMON_ENV_SOURCE": str(source),
         "TINYASSETS_DAEMON_ENV_FILE": str(daemon),
+        "TINYASSETS_RCLONE_CONFIG": str(tmp_path / "rclone.conf"),
     })
     return subprocess.run(
         ["bash", str(HELPER), *args], input=stdin, text=True, capture_output=True,
@@ -503,10 +504,13 @@ def test_broker_receives_exact_oauth_and_deletion_adapter_environment(tmp_path):
     source, daemon = tmp_path / "env", tmp_path / "daemon.env"
     source.write_text("STRIPE_SECRET_KEY=synthetic-billing\n"
                       "WORKOS_API_KEY=synthetic-identity\n"
+                      "BACKUP_DEST=fixture:owner-snapshots\n"
                       "TINYASSETS_OAUTH_EXAMPLE_CLIENT_ID=client\n"
                       "TINYASSETS_OAUTH_EXAMPLE_SECRET=private-fixture\n"
                       "TINYASSETS_OAUTH_DIRECTORY=/app/providers.json\n"
                       "UNRELATED='line one\nTINYASSETS_OAUTH_FAKE_SECRET=not-a-variable'\n")
+    backup_config = tmp_path / "rclone.conf"
+    backup_config.write_bytes(b"[fixture]\ntype = local\n\n")
     result = _helper(tmp_path, ["render-daemon-env"], source, daemon)
     assert result.returncode == 0, result.stderr
     # The rendered daemon copy assigns none of the registered OAuth names (the
@@ -519,7 +523,10 @@ def test_broker_receives_exact_oauth_and_deletion_adapter_environment(tmp_path):
     assert _assigned(broker) == {"TINYASSETS_OAUTH_EXAMPLE_CLIENT_ID",
                                  "TINYASSETS_OAUTH_EXAMPLE_SECRET",
                                  "TINYASSETS_OAUTH_DIRECTORY", "STRIPE_SECRET_KEY",
-                                 "WORKOS_API_KEY"}
+                                 "WORKOS_API_KEY", "BACKUP_DEST", "RCLONE_CONFIG"}
+    copied_config = tmp_path / "broker-rclone.conf"
+    assert copied_config.read_bytes() == backup_config.read_bytes()
+    assert copied_config.stat().st_mode & 0o777 == 0o440
     assert all(secret not in result.stdout + result.stderr
                for secret in ("private-fixture", "synthetic-billing", "synthetic-identity"))
     service = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]["broker"]

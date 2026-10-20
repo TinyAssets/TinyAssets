@@ -847,12 +847,14 @@ write_daemon_env() {
     # This is configuration, not a second lifecycle authority or root RPC.
     local backup_config="${TINYASSETS_RCLONE_CONFIG-/root/.config/rclone/rclone.conf}"
     local broker_config="${BROKER_ENV_FILE%/*}/broker-rclone.conf"
+    local owner_args=()
+    if [ -n "${ENV_OWNER}" ]; then owner_args=(-o root -g 1002); fi
     if [ -f "${backup_config}" ]; then
-        install -m 0440 -o root -g 1002 -- "${backup_config}" "${broker_config}"
+        install -m 0440 "${owner_args[@]}" -- "${backup_config}" "${broker_config}"
     else
         # Local synthetic destinations need no remote credentials. A configured
         # remote without credentials still fails closed at the first write.
-        install -m 0440 -o root -g 1002 /dev/null "${broker_config}"
+        install -m 0440 "${owner_args[@]}" /dev/null "${broker_config}"
     fi
     out+="RCLONE_CONFIG=/etc/tinyassets/broker-rclone.conf"$'\n'
     ( ENV_FILE="${BROKER_ENV_FILE}"; atomic_install "${out}"; assert_readable )

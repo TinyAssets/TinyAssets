@@ -194,12 +194,13 @@ class DeletionJobs:
     def _withdrawal(self, job):
         from tinyassets.broker.admission import local_mutate
 
+        routing = self.server.routing
         # The admission row is the durable receipt for this mutation even if
         # the process died before writing the step's completion receipt.
         if read(self.server._owner_identities, job["owner"]).state != "erased":
             local_mutate(self.server._owner_identities.path, job["owner"], "erase")
         else:
-            self.server.routing.changed(job["owner"])
+            routing.changed(job["owner"])
 
     def _uid(self, job):
         from tinyassets.broker.owner_volumes import binding

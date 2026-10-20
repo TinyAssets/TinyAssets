@@ -739,8 +739,10 @@ async def probe():
             assert status['uid'] >= 300001 and status['awake']
 asyncio.run(probe())
 """
-            result = subprocess.run([sys.executable, '-c', code, json.dumps(owners)],
-                                    user=1001, group=1001, extra_groups=[1100, 1101, 1102],
+            result = subprocess.run(['setpriv', '--reuid=1001', '--regid=1001',
+                                    '--groups=1100,1101,1102', '--bounding-set=-all',
+                                    '--no-new-privs',
+                                    sys.executable, '-c', code, json.dumps(owners)],
                                     capture_output=True, text=True, timeout=180)
             if result.returncode:
                 output.seek(0)

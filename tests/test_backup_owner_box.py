@@ -134,15 +134,13 @@ def test_referenced_snapshot_survives_pruning(shared_backup, monkeypatch):
     volumes = object.__new__(OwnerVolumes)
     volumes.remote = str(remote)
     monkeypatch.setattr(volumes, "_lock", lambda uid: nullcontext())
-    forgotten = []
-    assert volumes.delete_snapshot(300001, "a" * 32, lambda: forgotten.append("a")) is False
+    assert volumes.delete_snapshot(300001, "a" * 32) is False
     assert snapshot.read_bytes() == b"retained snapshot"
-    assert volumes.delete_snapshot(300001, "c" * 32, lambda: forgotten.append("c")) is True
-    assert forgotten == ["c"]
+    assert volumes.delete_snapshot(300001, "c" * 32) is True
     assert not stale.exists()
     next((remote / "platform").glob("*.json")).write_text("corrupt catalog")
     with pytest.raises(ValueError):
-        volumes.delete_snapshot(300001, "a" * 32, lambda: forgotten.append("a"))
+        volumes.delete_snapshot(300001, "a" * 32)
     assert snapshot.read_bytes() == b"retained snapshot"
 
 
@@ -167,8 +165,7 @@ def test_map_capture_and_pruning_serialize(shared_backup, monkeypatch):
 
     def prune():
         deleting.set()
-        return volumes.delete_snapshot(300001, "a" * 32,
-                                       lambda: pytest.fail("captured reference forgotten"))
+        return volumes.delete_snapshot(300001, "a" * 32)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         publication = pool.submit(backup.publish, root, str(remote))
