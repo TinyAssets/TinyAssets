@@ -597,11 +597,7 @@ def test_apply_splits_databases_seeds_stores_and_resumes(cutover, monkeypatch, c
     with closing(sqlite3.connect(data / '.published/.tinyassets.db')) as db:
         assert db.execute('SELECT id FROM author_definitions').fetchall() == [
             ('public-definition',)]
-    for path in (data / '.platform/credential-vaults').rglob('.credential-vault.json'):
-        assert path.stat().st_uid == 1002
-        assert path.stat().st_mode & 0o777 == 0o600
-        records = json.loads(path.read_text())['credentials']
-        assert [r['credential_type'] for r in records] == ['http']
+    assert not (data / '.platform/credential-vaults').exists()
     after = _fingerprint(data), _fingerprint(store)
     migration.apply(*cutover)
     assert (_fingerprint(data), _fingerprint(store)) == after

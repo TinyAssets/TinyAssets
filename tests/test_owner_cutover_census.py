@@ -101,7 +101,8 @@ def test_two_owner_census_preserves_totals_and_source_bytes(source):
         "account-0002": {"tier": "free", "paid_sources": 0},
     }
     assert list(report["credentials"].values()) == [
-        {"dropped_cli": 1, "carried_http": 1}, {"dropped_cli": 1, "carried_http": 1},
+        {"dropped_cli": 1, "dropped_http": 1, "dropped_other": 0},
+        {"dropped_cli": 1, "dropped_http": 1, "dropped_other": 0},
     ]
     assert _fingerprint(source) == before
     serialized = json.dumps(report)
@@ -179,7 +180,6 @@ def test_census_predicts_apply_workflow_resolution(source, tmp_path, database, t
     ("ambiguous_parent", "unattributed_owner_rows"),
     ("unknown_file", "unattributed_files"),
     ("paid_orphan", "unattributed_paid_tier"),
-    ("http_orphan", "http_slot_without_unique_owner_connection"),
 ])
 def test_census_refuses_without_guessing_or_mutating(source, mutation, reason):
     if mutation == "unknown_table":
@@ -199,8 +199,6 @@ def test_census_refuses_without_guessing_or_mutating(source, mutation, reason):
             CREATE TABLE subscription_meta (key TEXT, value TEXT);
             INSERT INTO subscription_meta VALUES ('tier','paid');
         """)
-    elif mutation == "http_orphan":
-        _sql(source / "outbound.db", "DELETE FROM outbound_connections")
     before = _fingerprint(source)
     report = census(source)
     if mutation == "unknown_owner":
@@ -250,7 +248,7 @@ def test_dry_run_never_enters_apply_even_when_apply_is_requested(source):
     assert _fingerprint(source) == before
 
 
-def test_census_checks_custody_even_without_a_center_tree(source):
+def test_census_counts_dropped_custody_even_without_a_center_tree(source):
     vault = source / ".platform/credential-vaults/orphan/.credential-vault.json"
     vault.parent.mkdir(parents=True)
     vault.write_text(json.dumps({"credentials": [{
@@ -259,7 +257,10 @@ def test_census_checks_custody_even_without_a_center_tree(source):
     }]}))
     before = _fingerprint(source)
     report = census(source)
-    assert report["refusals"]["unattributed_credential"] == 1
+    assert report["ready"], report["refusals"]
+    assert report["credentials"]["unattributed"] == {
+        "dropped_http": 1, "dropped_cli": 0, "dropped_other": 0}
+    assert report["center_custody_drops"]["credentials"] == 5
     assert _fingerprint(source) == before
     assert "never-reported" not in json.dumps(report)
 
@@ -352,7 +353,7 @@ def test_explicit_classes_cover_legacy_rows_and_never_admitted_tree(source):
         '.owner_leases.db': ('fence_high_water', 'owner_lease', 'owner_store_catalog'),
         '.storage_accounting.db': ('commons_log_bytes', 'counter', 'measurements'),
         '.broker/accounts/synthetic-account/policy.db':
-            ('once_approvals', 'policy', 'receipts', 'spend_reservations'),
+            ('once_approvals', 'receipts', 'spend_reservations'),
         '.broker/outbound.db': ('agent_model_launches', 'agent_request_attempts',
             'agent_request_dispatches', 'agent_request_usage', 'agent_request_usage_links'),
         '.runtime/owner-sessions.db': ('approval_handoffs', 'inline_model_flows'),
@@ -360,6 +361,13 @@ def test_explicit_classes_cover_legacy_rows_and_never_admitted_tree(source):
         _sql(source / database, ''.join(
             f'CREATE TABLE {name} (value INT); INSERT INTO {name} VALUES (1);'
             for name in names))
+    from tinyassets.broker.policy import _canonical, _digest
+
+    policy = {"entries": [], "egress": {"mode": "allowlist", "allowlist": []},
+              "spend": {"daily": 1}}
+    with sqlite3.connect(source / '.broker/accounts/synthetic-account/policy.db') as db:
+        db.execute('CREATE TABLE policy(generation INTEGER, digest TEXT, document TEXT)')
+        db.execute('INSERT INTO policy VALUES (1,?,?)', (_digest(policy), _canonical(policy)))
     _sql(source / '.outside-client-authority.sqlite3', """
         CREATE TABLE authenticated_connections (owner TEXT);
         INSERT INTO authenticated_connections VALUES ('alice'), ('bob');
@@ -373,7 +381,7 @@ def test_explicit_classes_cover_legacy_rows_and_never_admitted_tree(source):
     before = _fingerprint(source)
     report = census(source)
     assert report['ready'], report['refusals']
-    assert report['files']['dropped'] == 3
+    assert report['files']['dropped'] == 5
     assert report['row_totals']['regenerated'] == 8
     assert report['tables']['.runs.db/runs']['dropped'] == 1
     assert report['tables']['.runs.db/runs']['per_owner'] == {'account-0001': 1}
@@ -589,7 +597,7 @@ def test_files_have_masked_patterns_and_legacy_vaults_are_unopened_drops(source)
     assert report['ready'], report['refusals']
     assert report['credential_custody']['outside_broker_files_dropped'] == 1
     assert report['files']['regenerated'] == 2
-    assert report['files']['dropped'] == 5
+    assert report['files']['dropped'] == 7
     assert sum(sum(group.values()) for group in report['file_patterns'].values()) == sum(
         report['files'].values())
     assert report['file_patterns']['dropped']['<id>/<id>/<file>'] == 1
@@ -625,8 +633,8 @@ def test_zero_carried_sources_is_explicit_for_every_account(source):
     assert report['ready'], report['refusals']
     assert report['account_model_source_summary'] == 'every account reconnects a model source'
     assert report['credentials'] == {
-        'account-0001': {'dropped_cli': 1, 'carried_http': 0},
-        'account-0002': {'dropped_cli': 1, 'carried_http': 0},
+        'account-0001': {'dropped_cli': 1, 'dropped_http': 0, 'dropped_other': 0},
+        'account-0002': {'dropped_cli': 1, 'dropped_http': 0, 'dropped_other': 0},
     }
     assert 'post-cutover owner writes' in report['restore_write_loss']
 
@@ -769,7 +777,7 @@ def test_founder_loss_summary_counts_cli_files_per_account(source):
         assert report['loss_summary'][label]['retired_cli_state']['CLI login state'] == {
             'class': 'dropped', 'rows': 0, 'files': count,
         }
-    assert report['files']['dropped'] == 4
+    assert report['files']['dropped'] == 6
     summary = json.dumps(report['loss_summary'])
     assert '/' not in summary
     assert '300001' not in summary
@@ -1107,3 +1115,13 @@ def test_history_split_verification_refuses_changed_counts_or_content(source, tm
         monkeypatch.setattr(migration, '_history_entries', corrupt)
     with pytest.raises(RuntimeError, match='history'):
         migration._split_histories(source, store, inventory)
+
+
+def test_discarded_http_slots_need_no_connection_ownership_join(source):
+    _sql(source / "outbound.db", "DELETE FROM outbound_connections")
+    before = _fingerprint(source)
+    report = census(source)
+    assert report["ready"], report["refusals"]
+    assert report["center_custody_drops"]["credentials"] == 4
+    assert report["center_custody_drops"]["connections"] == 0
+    assert _fingerprint(source) == before

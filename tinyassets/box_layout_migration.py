@@ -76,8 +76,9 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
 
     main = ".tinyassets.db"
     add(main, "user_accounts user_sessions", "router")
-    add(main, "deleted_principals llm_credential_deposit_owners llm_credential_custody "
-        "llm_credential_deposit_commits llm_credential_refresh_state", "broker")
+    add(main, "deleted_principals", "broker")
+    add(main, "llm_credential_deposit_owners llm_credential_custody "
+        "llm_credential_deposit_commits llm_credential_refresh_state", "dropped")
     add(main, "author_definitions author_forks agent_definitions agent_component_lineage "
         "commons_bundles commons_bundle_sources commons_bundle_versions "
         "command_center_release_series command_center_releases command_center_release_evidence",
@@ -163,17 +164,19 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
         "broker")
     add(".broker/plans.db", "plans checkout_settlements", "broker")
     add(".broker/state/next-wake.db", "next_wakes", "broker")
+    add(".broker/credential-custody.db", "deleted_principals", "broker")
     add(".broker/credential-custody.db", "llm_credential_deposit_owners llm_credential_custody "
-        "llm_credential_deposit_commits llm_credential_refresh_state deleted_principals", "broker")
+        "llm_credential_deposit_commits llm_credential_refresh_state", "dropped")
     add("outbound.db", "outbound_connections outbound_connection_grants "
         "outbound_connector_artifacts outbound_connector_artifact_edges connection_capabilities "
-        "broker_schema_migrations box_model_sources", "broker")
+        "broker_schema_migrations box_model_sources", "dropped")
     rules[".broker/outbound.db"] = dict(rules["outbound.db"])
     add(".broker/outbound.db", "agent_model_launches agent_request_attempts "
         "agent_request_dispatches agent_request_usage agent_request_usage_links", "broker")
-    add(".broker/accounts/*/policy.db", "once_approvals policy receipts spend_reservations",
+    add(".broker/accounts/*/policy.db", "policy receipts spend_reservations",
         "broker")
-    add(".broker/state/ops.db", "ops meta", "broker")
+    add(".broker/state/ops.db", "ops meta", "dropped")
+    add(".broker/accounts/*/policy.db", "once_approvals", "dropped")
     add(".control_plane.db", "triggers", "owner", principals=("owner_principal_id",),
         centers=("command_center_id",))
     add(".control_plane.db", "trigger_fires", "owner", principals=("owner_principal_id",),
@@ -351,6 +354,8 @@ def _census_columns(database: str, table: str) -> set[str]:
         columns.update(("token_hash", "revoked_at"))
     if (database, table) == (".tinyassets.db", "agent_interchange_idempotency"):
         columns.add("operation")
+    if database.startswith(".broker/accounts/") and table == "policy":
+        columns.update(("document", "digest", "generation"))
     return columns
 
 
@@ -651,6 +656,10 @@ def _census(data: Path, *, _inventory: dict | None = None,
         policy_labels = {account: f"policy-account-{index:04d}"
                          for index, account in enumerate(policy_accounts, 1)}
         table_report = {}
+        custody_drops = Counter(dict.fromkeys(("credentials", "connections", "grants",
+                                               "policy_scopes", "source_descriptors",
+                                               "replay_operations", "custody_metadata",
+                                               "policy_approvals"), 0))
         totals: Counter = Counter(dict.fromkeys(
             ("owner", "router", "broker", "published", "dropped", "regenerated"), 0))
         assignments = {}
@@ -666,6 +675,25 @@ def _census(data: Path, *, _inventory: dict | None = None,
                 placement = "dropped"
                 reasons["retired_store"] += len(rows)
             dropped = len(rows) if placement == "dropped" else 0
+            if database.startswith(".broker/accounts/") and table == "policy":
+                from tinyassets.broker.policy import _digest
+
+                for row in rows:
+                    document = json.loads(row["document"])
+                    if _digest(document) != row["digest"]:
+                        refusals["policy_digest_mismatch"] += 1
+                    custody_drops["policy_scopes"] += sum(
+                        entry["scope"] != "account" for entry in document["entries"])
+            if placement == "dropped":
+                kind = {"outbound_connections": "connections",
+                        "outbound_connection_grants": "grants",
+                        "box_model_sources": "source_descriptors", "ops": "replay_operations",
+                        "once_approvals": "policy_approvals"}.get(table)
+                if table.startswith("llm_credential_"):
+                    kind = "custody_metadata"
+                if kind:
+                    custody_drops[kind] += len(rows)
+                    reasons["center_custody_reconnect"] += len(rows)
             targets = [placement] * len(rows)
             if rule is None and placement != "dropped":
                 refusals["unknown_table"] += 1
@@ -750,9 +778,13 @@ def _census(data: Path, *, _inventory: dict | None = None,
 
         plan_report, credential_report, billing, billing_refusals = _census_accounts(
             data, known_centers, labels, tables, refusals)
+        custody_drops["credentials"] = sum(
+            sum(row.values()) for row in credential_report.values())
         for (database, table), rows in tables.items():
             rule = _census_rule(database, table)
-            if rule and rule.placement == "dropped":
+            if rule and rule.placement == "dropped" and table in {
+                    "external_agent_catalogue_receipts", "external_agent_cli_invocations",
+                    "external_agent_job_receipts"}:
                 for index in range(len(rows)):
                     candidates = row_owners(database, table, index)
                     if len(candidates) == 1 and next(iter(candidates)) in labels:
@@ -830,6 +862,7 @@ def _census(data: Path, *, _inventory: dict | None = None,
             "admitted_centers": len(admitted), "explicit_centers": len(known_centers),
             "databases": len(database_files), "tables": table_report, "row_totals": dict(totals),
             "plans": plan_report, "credentials": credential_report, "files": file_report,
+            "center_custody_drops": dict(custody_drops),
             "billing_refusals": billing_refusals,
             "repairable_indexes": repairable_indexes,
             "file_patterns": patterns, "file_pattern_kinds": file_kinds,
@@ -853,9 +886,7 @@ def _census(data: Path, *, _inventory: dict | None = None,
                 "Local image descriptions are dropped.",
                 "Billing status no longer shows usage figures.",
             ],
-            "account_model_source_summary": ("every account reconnects a model source" if not any(
-                row["carried_http"] for row in credential_report.values())
-                else "accounts without a carried model source reconnect"),
+            "account_model_source_summary": "every account reconnects a model source",
             "restore_write_loss": "Restoring the paired pre-cutover backup loses all "
                                   "post-cutover owner writes, including chats, requests and pause.",
             "reconnect_path": "shared door model-connect, then model-use confirmation",
@@ -864,11 +895,8 @@ def _census(data: Path, *, _inventory: dict | None = None,
                     1 for relative, target in file_targets.items()
                     if target == "dropped" and len(PurePosixPath(relative).parts) == 2
                     and PurePosixPath(relative).name == ".credential-vault.json"),
-                "explanation": "credentials_outside_broker_custody counted center-local "
-                    ".credential-vault.json files, not slots or accounts. These legacy files "
-                    "are dropped without opening or copying them. Only validated HTTP slots "
-                    "in .platform/credential-vaults carry, with .broker/credential-custody.db "
-                    "metadata and broker uid ownership.",
+                "explanation": "All center-keyed custody is dropped. No credential, "
+                    "connection, grant or policy scope is carried; owners reconnect.",
             },
             "refusals": {key: value for key, value in sorted(refusals.items()) if value},
         }
@@ -930,7 +958,8 @@ def _census_accounts(data, centers, labels, tables, refusals):
     from collections import Counter
 
     plans = {label: {"tier": "free", "paid_sources": 0} for label in labels.values()}
-    credentials = {label: {"dropped_cli": 0, "carried_http": 0} for label in labels.values()}
+    credentials = {label: {"dropped_cli": 0, "dropped_http": 0, "dropped_other": 0}
+                   for label in labels.values()}
     # Scan every center, including unowned centers: a paid orphan must refuse.
     directory_names = {path.name for path in data.iterdir()
                        if path.is_dir() and not path.is_symlink()
@@ -980,41 +1009,23 @@ def _census_accounts(data, centers, labels, tables, refusals):
                     plans[label] = {"tier": "paid", "paid_sources": paid[label]}
                     if paid[label] > 1:
                         refusals["multiple_paid_sources"] += 1
-        # Historical center-local vaults are explicit file losses. Never read
-        # or copy them: only the existing platform custody can carry a slot.
-        vaults = [data / ".platform/credential-vaults" / directory.name / ".credential-vault.json"]
-        if any(path.is_symlink() or path.parent.is_symlink() for path in vaults):
+        # C11: count platform slots, then drop every kind without ownership joins.
+        # Center-local legacy files remain counted file losses, never opened.
+        vault = data / ".platform/credential-vaults" / directory.name / ".credential-vault.json"
+        if vault.is_symlink() or vault.parent.is_symlink():
             raise RuntimeError("census vault path is a symlink")
-        present = [path for path in vaults if path.is_file()]
-        for path in present:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+        if vault.is_file():
+            raw = json.loads(vault.read_text(encoding="utf-8"))
             records = raw.get("credentials") if isinstance(raw, dict) else None
-            if not isinstance(records, list):
+            if not isinstance(records, list) or any(not isinstance(r, dict) for r in records):
                 refusals["invalid_vault_document"] += 1
                 continue
+            counts = credentials.setdefault(label or "unattributed", {
+                "dropped_cli": 0, "dropped_http": 0, "dropped_other": 0})
             for record in records:
-                if not isinstance(record, dict):
-                    refusals["invalid_vault_record"] += 1
-                    continue
-                kind = record.get("credential_type")
-                if label is None:
-                    refusals["unattributed_credential"] += 1
-                elif kind == "llm_subscription":
-                    credentials[label]["dropped_cli"] += 1
-                elif kind == "http":
-                    connections = [row for database in ("outbound.db", ".broker/outbound.db")
-                                   for row in tables.get((database, "outbound_connections"), [])]
-                    matching = [row for row in connections
-                                if row.get("destination") == record.get("destination")
-                                and row.get("owner_user_id") in owners]
-                    if len(matching) != 1:
-                        refusals["http_slot_without_unique_owner_connection"] += 1
-                    else:
-                        credentials[label]["carried_http"] += 1
-                else:
-                    # VCS/social custody needs an explicit carry/drop contract;
-                    # never silently treat those secrets as HTTP slots.
-                    refusals["unclassified_credential_type"] += 1
+                key = {"llm_subscription": "dropped_cli", "http": "dropped_http"}.get(
+                    record.get("credential_type"), "dropped_other")
+                counts[key] += 1
     for row in tables.get((".broker/plans.db", "plans"), []):
         owner, tier = row.get("owner"), row.get("tier")
         if owner not in labels and row.get("attempt") is not None:
@@ -1319,11 +1330,10 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
             return "broker"
         if parts[0] in published:
             return "published"
-        if (len(parts) >= 4 and parts[:2] == (".platform", "credential-vaults")
-                and len(centers.get(parts[2], set())) == 1):
+        if len(parts) >= 4 and parts[:2] == (".platform", "credential-vaults"):
             # credential_vault and credential_refresh are the only writers.
             if len(parts) == 4 and parts[3] == ".credential-vault.json":
-                return "broker"
+                return "dropped"
             if ((len(parts) == 4 and parts[3] == ".custody.lock") or
                     (len(parts) == 5 and parts[3] == ".oauth-refresh"
                      and re.fullmatch(r"[a-f0-9]{32}\.lock", parts[4]))):
@@ -2106,26 +2116,30 @@ def _seed_shared(data: Path, shared: Path, inventory: dict, report: dict, plan) 
                     raise RuntimeError("hook digest has conflicting owners")
                 db.execute("INSERT OR IGNORE INTO hook_owners VALUES (?,?)",
                            (row["token_hash"], owner))
-    # HTTP custody is already in its final directory. Stage a filtered document
-    # there; subscription records are counted drops, never copied into custody.
-    # A source-free archive still needs the broker's writable custody parent;
-    # the broker cannot create it under the daemon-owned platform directory.
-    (shared / ".platform/credential-vaults").mkdir(parents=True, exist_ok=True)
-    vaults = data / ".platform/credential-vaults"
-    if vaults.is_dir():
-        for source in vaults.rglob("*"):
-            if source.is_symlink():
-                raise RuntimeError("credential custody contains a symlink")
-            if source.is_file():
-                target = shared / source.relative_to(data)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                if source.name == ".credential-vault.json":
-                    document = json.loads(source.read_text())
-                    document["credentials"] = [record for record in document["credentials"]
-                                               if record["credential_type"] == "http"]
-                    target.write_text(json.dumps(document), encoding="utf-8")
-                else:
-                    shutil.copy2(source, target)
+    # C11: policy is already owner-keyed. Only center entries are discarded.
+    from tinyassets.broker.policy import _canonical, _digest
+
+    for owner in plan:
+        account = hashlib.sha256(owner.principal.encode()).hexdigest()
+        path = shared / ".broker/accounts" / account / "policy.db"
+        if not path.exists():
+            continue
+        with closing(sqlite3.connect(path)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            generation, old_digest, raw = db.execute(
+                "SELECT generation,digest,document FROM policy WHERE singleton=1").fetchone()
+            document = json.loads(raw)
+            if _digest(document) != old_digest:
+                raise RuntimeError("policy digest mismatch")
+            document["entries"] = [entry for entry in document["entries"]
+                                   if entry["scope"] == "account"]
+            digest = _digest(document)
+            db.execute("UPDATE policy SET generation=?,digest=?,document=? WHERE singleton=1",
+                       (generation + 1, digest, _canonical(document)))
+            db.execute("INSERT INTO receipts(at,kind,owner,old_digest,new_digest,"
+                       "generation,outcome) VALUES (?,?,?,?,?,?,?)",
+                       (time.time(), "migration", owner.principal, old_digest, digest,
+                        generation + 1, "committed"))
 
 
 def _durable_tree(root: Path, *, exclude=()) -> dict[str, str]:
@@ -2325,6 +2339,11 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
 
         for owner in plan:
             tree = mounts / str(owner.uid)
+            from tinyassets.owner_centers import Centers
+
+            centers = Centers(tree)
+            for center in owner.centers:
+                centers.create(center)
             _repair_staged_databases(tree)
             state = BoxHostState(tree / ".owner-boxd/boxhost.db")
             state.epoch(owner.principal)
@@ -2459,13 +2478,7 @@ def _publish_cutover(data: Path, store: Path, journal: dict) -> None:
             raise RuntimeError("unsafe discarded cutover path")
         path.unlink(missing_ok=True)
     (data / ".tinyassets.db.prebudgetrepair.bak").unlink(missing_ok=True)
-    from tinyassets.boxes.layout import BROKER_UID
-
-    vaults = data / ".platform/credential-vaults"
-    if vaults.exists():
-        for directory, dirs, files in os.walk(vaults):
-            for path in (Path(directory), *(Path(directory) / name for name in dirs + files)):
-                os.chown(path, BROKER_UID, BROKER_UID, follow_symlinks=False)
+    _remove_tree(data / ".platform/credential-vaults", data)
     _remove_tree(data / ".boxhost", data)
     _durable_tree(data)
     _atomic_json(storage_layout.marker_path(data), {
