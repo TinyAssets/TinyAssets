@@ -183,7 +183,10 @@ class DeletionJobs:
         record = binding(self.server._owner_identities, owner)
         if loaded["id"] != digest(owner) or loaded["uid"] != record["uid"]:
             raise PermissionError("deletion job must match the permanent owner binding")
-        await thread_work(self.records.save, loaded)
+        def imported():
+            with self.record_lock:
+                self.records.save(loaded)
+        await thread_work(imported)
         return await self._resume_owner(owner)
 
     async def _resume_owner(self, owner):

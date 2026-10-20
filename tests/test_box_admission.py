@@ -418,7 +418,7 @@ def test_concurrent_sources_keep_both_reasons(authority):
     from concurrent.futures import ThreadPoolExecutor
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(authority.plans.set_suspension, "alice", reason=reason,
+        futures = [pool.submit(suspend, authority.plans, "alice", reason=reason,
                                suspended=True) for reason in ("billing", "abuse")]
         for future in futures:
             future.result()

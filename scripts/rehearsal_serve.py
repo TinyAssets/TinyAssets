@@ -307,6 +307,8 @@ def smoke(confirm=False):
     os.environ["TINYASSETS_ONBOARDING_APP"] = "1"
     os.environ["UNIVERSE_SERVER_URL"] = "https://rehearsal.invalid/mcp"
     journal = json.loads(Path("/data/.owner-cutover.json").read_text())
+    # C15 moves the venue's existing limit from the host to broker configuration.
+    os.environ["TINYASSETS_BOX_AWAKE_CAP"] = str(max(1, len(journal["plan"])))
     counts = dict.fromkeys(
         ("owners", "centers", "history", "history_turns", "pending", "pending_saved",
          "controls", "plans", "writes", "reconnect", "production_launch"), 0
