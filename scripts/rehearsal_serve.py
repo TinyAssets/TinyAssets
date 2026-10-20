@@ -700,6 +700,12 @@ print(json.dumps(key))
                         counts['restore_replay_refusals'] = restored['replay_refusals']
                         counts['restore_new_operations'] = restored['new_operations']
                         counts['restore_revoked_keys'] = 1
+            # C2/C13: finish the venue's ordinary sleep and publish its map
+            # before stopping the broker and cloning shared state for reconnect.
+            # Killing a running fixture leaves crash-recovery snapshot work on
+            # the next wake, whose deadline is deliberately not a copy deadline.
+            for item in journal['plan']:
+                lifecycle_request('sleep', owner=item['principal'])
         except BaseException:
             import faulthandler
             import signal
