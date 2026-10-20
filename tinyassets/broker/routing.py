@@ -137,7 +137,7 @@ class BrokerLifecycle:
                     if not scheduled:
                         candidates = [(self.facts[candidate]["idle_seconds"], candidate)
                             for candidate in awake_owners(self.identities)
-                            if candidate != owner and candidate in self.awake
+                            if candidate in self.awake
                             and candidate not in self._reservations.values()
                             and self.facts.get(candidate, {}).get("active") == 0
                             and self.facts[candidate]["idle_seconds"] is not None]
