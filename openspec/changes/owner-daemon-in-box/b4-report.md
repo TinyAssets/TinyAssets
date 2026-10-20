@@ -49,6 +49,11 @@ admission locks/callbacks and the broker process's publication task. This task
 only establishes/retries delivery to a router incarnation: installed routes have
 no expiry. A durable sequence orders broker publications; a router incarnation
 nonce prevents pre-restart deliveries from initializing a fresh router.
+The snapshot uses the admission record's identity digest as its key, so the
+same projection also preserves C6's digest-only erasures after identity removal.
+It contains the complete admission map, not just owners with live box bindings.
+The authenticated identity derives that key locally; no additional lookup or
+exclusion authority is introduced.
 
 C5 secret custody requires the initial cutover secret, persistent broker store,
 and broker-authenticated snapshot transport in `router_credentials.py`.

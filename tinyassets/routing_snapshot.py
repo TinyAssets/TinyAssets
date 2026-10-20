@@ -1,6 +1,7 @@
 """C5/T1: the router's atomic, process-local projection of broker admission."""
 from __future__ import annotations
 
+import hashlib
 import secrets
 import threading
 from dataclasses import dataclass
@@ -44,7 +45,7 @@ class RoutingSnapshot:
     def record(self, owner):
         with self._lock:
             self.require_current()
-            return self._installed[1].get(owner)
+            return self._installed[1].get(hashlib.sha256(owner.encode()).hexdigest())
 
     def require_current(self):
         if self._installed is None:

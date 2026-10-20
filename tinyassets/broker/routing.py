@@ -45,16 +45,20 @@ class RoutingAuthority:
                 db.execute("BEGIN IMMEDIATE")
                 db.execute("UPDATE routing_sequence SET revision=revision+1")
                 revision = db.execute("SELECT revision FROM routing_sequence").fetchone()[0]
-                from tinyassets.broker.admission import admission
+                from tinyassets.broker.admission import admission, digest
 
                 run = Path(os.environ.get("TINYASSETS_BOXES_RUN", "/run/tinyassets-boxhostd"))
+                # C6 retains digest-only erasures after identity removal. Project
+                # the entire admission map, including records with no live box.
+                records = {key: {"state": state, "socket": None, "secret": None}
+                           for key, state in db.execute("SELECT digest,state FROM owner_admission")}
                 for owner, uid, secret in db.execute(
                         "SELECT i.principal,i.machine_id,s.secret FROM owner_identities i "
                         "LEFT JOIN owner_box_secrets s ON s.principal=i.principal"):
                     state = admission(db, owner).state
                     if state == "admitted" and not secret:
                         raise RuntimeError("admitted owner is missing its ingress credential")
-                    records[owner] = {"state": state,
+                    records[digest(owner)] = {"state": state,
                                       "socket": str(run / str(uid) / "app.sock"),
                                       "secret": secret if state == "admitted" else None}
             installed = self._router({"operation": "routing_install", "instance": instance,

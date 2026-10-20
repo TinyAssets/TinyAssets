@@ -601,7 +601,9 @@ def test_rotation_stops_old_ingress_before_publishing_replacement(
     def publication(request):
         if request["operation"] == "routing_install":
             assert not boxes.runtime.alive(uid)
-            assert request["records"]["alice"]["secret"] != old
+            from tinyassets.broker.admission import digest
+
+            assert request["records"][digest("alice")]["secret"] != old
         return send(request)
 
     with monkeypatch.context() as patch:

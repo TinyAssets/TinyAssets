@@ -397,13 +397,14 @@ def smoke(confirm=False):
         # This native content venue uses its local launcher instead of boxhostd.
         # Seed its router fixture with real broker-bound lifecycle records. The
         # production-launch proof above exercises authenticated snapshot push.
+        from tinyassets.broker.admission import digest
         from tinyassets.routing_snapshot import snapshot
 
         projection = snapshot(Path('/data'))
         records = {}
         for item in journal['plan']:
             record = admission.owner(item['principal'])
-            records[item['principal']] = {
+            records[digest(item['principal'])] = {
                 'state': 'admitted', 'socket': str(run / 'apps' / str(record['uid']) / 'app.sock'),
                 'secret': record['secret']}
         projection.install(projection.instance, 1, records)

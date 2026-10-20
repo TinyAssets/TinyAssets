@@ -512,7 +512,7 @@ def test_disaster_stale_key_session_hook_and_secret_all_fail(platform, monkeypat
             (owner_sessions.hashed("session"), json.dumps({"user_id": "alice"}), 3000000000),
         )
     with sqlite3.connect(staged / ".broker/state/owner-identities.db") as db:
-        db.execute("UPDATE owner_box_secrets SET secret='old-secret'")
+        db.execute("UPDATE owner_box_secrets SET secret=?", ("o" * 43,))
     assert ApiKeyStore(staged).resolve(key) is not None
     assert HookOwners(staged).resolve("hook") == "alice"
     assert owner_sessions.lookup("session") is not None
@@ -521,7 +521,7 @@ def test_disaster_stale_key_session_hook_and_secret_all_fail(platform, monkeypat
     assert HookOwners(staged).resolve("hook") is None
     assert owner_sessions.lookup("session") is None
     with sqlite3.connect(staged / ".broker/state/owner-identities.db") as db:
-        assert db.execute("SELECT secret FROM owner_box_secrets").fetchone()[0] != "old-secret"
+        assert db.execute("SELECT secret FROM owner_box_secrets").fetchone()[0] != "o" * 43
     assert report["credential_roots_reset"] and report["broker_replay_cutoff_advanced"]
     assert "spend" in events and "suspension" in events
 
