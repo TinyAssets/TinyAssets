@@ -120,16 +120,16 @@ together with owner data and produced four review rounds of carry-forward fixes.
   reconciliation logic, `router_traffic.py`'s fail-open predicates, and the
   restore-day spend fence.
 
-**As built (a1 runtime):** the broker identity database holds permanent
+**As built (b6 runtime):** the broker identity database holds permanent
 `owner_volumes` bindings (`uid`, `volume_generation`, nullable `snapshot_id` and
 `snapshot_sha256`), pending lifecycle work, and `owner_snapshots`. Only the broker
 writes them. Sleep records a retryable snapshot ID before shutdown; publication
 requires the positive owner-to-box record in the publication transaction. Account
-retirement removes that record while retaining the permanent volume binding. Uploads use
-`BACKUP_DEST/<uid>/<snapshot_id>.img.gz`; readback precedes publication. Maintenance
-retries pending work and seven-snapshot retention without starting an agent.
+deletion sets admission to `erased` while retaining the permanent volume binding. Uploads use
+`BACKUP_DEST/<uid>/<snapshot_id>.img.gz`; readback precedes publication. The broker
+waker tick retries pending work and retention under the owner lock, without an agent.
 After 24 hours, the box closes new work admission and drains its current turn.
-Root-only `restore(owner, snapshot_id)` resumes installation after interruption,
+Root administration enters the broker; its `restore(owner, snapshot_id)` resumes installation,
 commits the new generation and recovery reference together, and leaves the box
 asleep for its next ordinary wake.
 The in-box operation journal keys IDs by that generation and validates owner
@@ -897,12 +897,13 @@ then disconnect at the door or on the box channel and prove the next call fails.
   deposits and rotations; keyless connects remain available.
 - Vault writers and erasers live in `broker/vault.py`. Their lock files live
   under `.platform/credential-vaults/<center>/`, never in owner trees or
-  provider-assignment state. Ownership rows and deletion tombstones live in
-  `.broker/credential-custody.db`. Task 6 migrates that metadata and changes
+  provider-assignment state. Ownership rows live in `.broker/credential-custody.db`;
+  C6 deleted custody tombstones. Task 6 migrates that metadata and changes
   directory ownership; there is no runtime compatibility reader.
 - `DISCONNECT` erase removes custody before deleting the fenced ledger rows.
-  Account erasure tombstones the principal in broker metadata and erases its
-  vaults under the same locks as deposits and refresh. The daemon no longer
+  C14 job step 1 writes erased admission once. Custody cleanup then erases
+  vaults under the same locks as deposits and refresh, without another admission
+  mutation. The daemon no longer
   stages credential directories during account deletion.
 - `broker/tokens.py` resolves and refreshes OAuth credentials locally, under
   broker vault admission. The REFRESH/REFRESH_ACK protocol, daemon callback

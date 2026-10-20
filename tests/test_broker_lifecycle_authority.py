@@ -216,3 +216,15 @@ def test_snapshot_and_restore_hold_owner_lock_until_map_commit(authority, monkey
     assert not first.is_alive() and not deleting.is_alive() and not errors
     assert a.events.count("mutation") == 1
     assert admission.read(a.identities, "alice").state == "erased"
+
+
+def test_only_job_step_one_requests_runtime_admission_erasure():
+    root = Path(__file__).resolve().parents[1] / "tinyassets/broker"
+    writers = []
+    for path in root.glob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "local_mutate" and len(node.args) >= 3
+                    and isinstance(node.args[2], ast.Constant) and node.args[2].value == "erase"):
+                writers.append(path.name)
+    assert writers == ["deletion_jobs.py"]
