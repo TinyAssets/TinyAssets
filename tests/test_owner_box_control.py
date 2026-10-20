@@ -225,7 +225,7 @@ def test_host_control_rejects_the_deleted_file_admission_operation():
     assert not hasattr(service, "host")
 
 
-def test_roll_socket_pins_broker_and_deploy_identity_and_refuses_router(rolling):  # noqa: F811
+def test_image_selection_socket_pins_broker_identity_and_refuses_router(rolling):  # noqa: F811
     if not hasattr(os, "geteuid") or os.geteuid() != 0:
         pytest.skip(
             "requires linux_oracle.py --as-root; owner=c6-owner-box runs-in=linux_oracle.py"
@@ -262,19 +262,26 @@ if role in (0, 1001):
         else:
             raise AssertionError("router gained lifecycle authority: " + operation)
     try:
-        request("roll", image=image)
+        request("select_image", image=image)
     except RuntimeError:
         pass
     else:
         raise AssertionError("router gained deploy authority")
 else:
-    assert request("roll", image=image) == {"uids": [300001], "asleep": 0}
+    assert request("select_image", image=image) == {"selected": image}
     try:
-        request("roll", image=image, uid=300001)
+        request("select_image", image=image, uid=300001)
     except RuntimeError:
         pass
     else:
         raise AssertionError("executor orchestrated owner rollout")
+for operation, fields in (("roll", {"image": image}), ("drain", {"uid": 300001})):
+    try:
+        request(operation, **fields)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("retired lifecycle operation survived: " + operation)
 '''
             for role in (0, 1001, 1002):
                 result = subprocess.run([sys.executable, "-c", code, str(role), rolling.new],
@@ -282,6 +289,7 @@ else:
                                         env={**os.environ, "TINYASSETS_BOXES_RUN": directory})
                 assert result.returncode == 0, result.stderr
             assert manager.boxes[uid].image == rolling.old
+            assert manager.images.current == rolling.new
 
         finally:
             stop.set()
