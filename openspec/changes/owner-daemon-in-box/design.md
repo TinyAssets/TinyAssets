@@ -587,8 +587,15 @@ and `RETIRE_CENTER`, per-center vault directories, `_namespace`,
     and the census counts the drops per kind; owners reconnect through the
     door's ordinary connection flow, which already shows a missing connection
     as not connected;
+  - each owner's policy document is already owner-keyed and stays: the
+    migration deletes only its center-scoped entries and keeps the account
+    rules and the egress and spend controls. It writes the document's recomputed
+    digest under the next generation with an ordinary migration receipt. This
+    is the policy document's own digest, not a credential binding (settled
+    2026-10-20, d2's stop);
   - nothing is carried that could be attributed to the wrong owner, so there is
-    no ownership join, digest rebuild or same-service merge question;
+    no ownership join, credential-binding digest rebuild or same-service merge
+    question;
   - the center-keyed stores and lookup paths are deleted.
 
 **Deleted:** the shared center tables, ops, environment and per-center
