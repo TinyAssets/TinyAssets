@@ -275,6 +275,31 @@ def test_skip_is_on_every_step_and_escape_skips_too(app_url, browser):
         context.close()
 
 
+def test_every_step_fits_a_phone_with_all_three_controls_reachable(app_url, browser):
+    """A tour nobody can finish on a phone is worse than no tour at all."""
+    context, page = _chat(browser, app_url, width=390)
+    try:
+        _tour(page)
+        total = page.evaluate("tourStepList.length")
+        for step in range(total):
+            box = page.locator("#first-run-tour").bounding_box()
+            assert box["x"] >= 0 and box["x"] + box["width"] <= 390, step
+            assert box["y"] >= 0 and box["y"] + box["height"] <= 844, step
+            # No sideways scroll inside it, and no step taller than the phone.
+            assert page.evaluate(
+                "() => { const d = document.getElementById('first-run-tour');"
+                " return [d.scrollWidth <= d.clientWidth, d.scrollHeight <= d.clientHeight]; }"
+            ) == [True, True], step
+            for name in ("Skip", "Back", "Done" if step == total - 1 else "Next"):
+                control = _tour_button(page, name).bounding_box()
+                assert control["y"] + control["height"] <= box["y"] + box["height"], (step, name)
+                assert control["height"] >= 44, (step, name)
+            if step < total - 1:
+                _tour_button(page, "Next").click()
+    finally:
+        context.close()
+
+
 @pytest.mark.parametrize("returning", ["historyLoaded", "hasMessages"])
 def test_a_returning_owner_is_never_stopped_by_the_walkthrough(app_url, browser, returning):
     context, page = _chat(browser, app_url)
