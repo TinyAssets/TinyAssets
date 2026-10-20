@@ -112,6 +112,9 @@ class OwnerIdentities:
                            "SELECT RAISE(ABORT, 'center admissions are append-only'); END")
             db.execute("CREATE TABLE IF NOT EXISTS owner_box_secrets ("
                        "principal TEXT PRIMARY KEY NOT NULL, secret TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS routing_sequence (revision INTEGER NOT NULL)")
+            db.execute("INSERT INTO routing_sequence SELECT 0 WHERE NOT EXISTS "
+                       "(SELECT 1 FROM routing_sequence)")
             from tinyassets.broker.owner_volumes import schema
 
             schema(db)
@@ -154,6 +157,14 @@ class OwnerIdentities:
                                uri=True, timeout=30)
 
     def admission(self, event: str, principal: str, center: str) -> AdmissionRow:
+        from tinyassets.broker.admission import changed, owner_lock
+
+        with owner_lock(self.path, principal):
+            row = self._admission(event, principal, center)
+            changed(self.path, principal)
+            return row
+
+    def _admission(self, event: str, principal: str, center: str) -> AdmissionRow:
         """Append (or return the identical existing) admit/retire row; DA1."""
         if event not in ADMISSION_EVENTS:
             raise ValueError("invalid admission event")
@@ -212,7 +223,7 @@ class OwnerIdentities:
             raise RuntimeError("invalid durable owner identity")
         return found[0]
 
-    def box_route(self, principal: str, *, rotate: bool = False) -> tuple[int, str]:
+    def box_route(self, principal: str) -> tuple[int, str]:
         """An admitted owner's socket identity and secret; never allocate a machine."""
         validate_principal(principal)
         with closing(self._connect(write=True)) as db, db:
@@ -225,15 +236,10 @@ class OwnerIdentities:
                              (principal,)).fetchone()
             if row is None:
                 raise LookupError("owner identity is missing")
-            # The next start mints a secret missing after the cutover.
-            if rotate:
-                db.execute("INSERT INTO owner_box_secrets VALUES (?, ?) "
-                           "ON CONFLICT(principal) DO UPDATE SET secret=excluded.secret",
-                           (principal, secrets.token_urlsafe(32)))
             secret = db.execute("SELECT secret FROM owner_box_secrets WHERE principal=?",
                                 (principal,)).fetchone()
             if secret is None:
-                raise LookupError("owner box has not started")
+                raise LookupError("owner ingress credential is missing")
             return row[0], secret[0]
 
     def retire_owner(self, principal: str) -> int:
@@ -241,12 +247,9 @@ class OwnerIdentities:
         uid = self.owner_machine(principal)
         if uid is None:
             raise LookupError("unknown owner")
-        with closing(self._connect(write=True)) as db, db:
-            db.execute("PRAGMA synchronous=FULL")
-            db.execute("BEGIN IMMEDIATE")
-            from tinyassets.broker.admission import mutate
+        from tinyassets.broker.admission import local_mutate
 
-            mutate(db, principal, "erase")
+        local_mutate(self.path, principal, "erase")
         return uid
 
     def center_state(self, center: str) -> str:
@@ -321,7 +324,7 @@ def _owner_request(data_root: Path, request: dict) -> dict:
     generation, token = supervisor.fence()
     request = {**request, "generation": generation, "token": token}
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
-        channel.settimeout(30)
+        channel.settimeout(70 if request["op"] == "OWNER_BOX_WAKE" else 30)
         channel.connect(os.fspath(supervisor.socket_path))
         supervisor.verify_broker(channel)
         channel.sendall(rf.control(rf.CONNECTION, request))
@@ -400,18 +403,11 @@ def connection_center(data_root: Path, *, principal: str, center: str = "") -> s
     return answer["center"]
 
 
-def owner_box_route(data_root: Path, *, principal: str,
-                    rotate: bool = False) -> tuple[int, str]:
-    """Fenced router/lifecycle operation. No owner file or database is opened here."""
+def wake_owner(data_root: Path, *, principal: str) -> None:
+    """Cold wake only. Awake forwarding never calls the control plane."""
     validate_principal(principal)
-    answer = _owner_request(data_root, {"op": "OWNER_BOX_ROUTE", "principal": principal,
-                                        "rotate": rotate})
+    answer = _owner_request(data_root, {"op": "OWNER_BOX_WAKE", "principal": principal})
     if answer == {"op": "OWNER_BOX_UNADMITTED"}:
         raise LookupError("owner has no live admission")
-    if (set(answer) != {"op", "uid", "secret"} or answer["op"] != "OWNER_BOX_ROUTE_IS"
-            or type(answer["uid"]) is not int
-            or not OWNER_ID_FIRST <= answer["uid"] <= OWNER_ID_LAST
-            or not isinstance(answer["secret"], str)
-            or not re.fullmatch(r"[A-Za-z0-9_-]{43}", answer["secret"])):
-        raise RuntimeError("owner box route refused")
-    return answer["uid"], answer["secret"]
+    if answer != {"op": "OWNER_LIFECYCLE_DONE"}:
+        raise RuntimeError("owner wake refused")

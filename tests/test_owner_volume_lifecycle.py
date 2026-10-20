@@ -87,8 +87,8 @@ class Admission:
             "op": "BOX_VOLUME", "principal": owner, "action": action,
             "arguments": arguments})
 
-    def owner(self, owner, *, rotate=False):
-        return box_admission.owner_record(self.identities, owner, rotate=rotate)
+    def owner(self, owner):
+        return box_admission.owner_record(self.identities, owner)
 
     def retire(self, owner, uid):
         assert self.identities.owner_machine(owner) == uid

@@ -6,8 +6,6 @@ import logging
 import math
 import time
 
-from tinyassets.boxes.daemon_control import ensure_awake
-
 log = logging.getLogger(__name__)
 POLL_SECONDS = 30
 # Two of boxhostd's four broker workers remain available for retirement.
@@ -15,7 +13,7 @@ MAX_PENDING = 2
 
 
 class Waker:
-    def __init__(self, index, plans, *, wake=ensure_awake, clock=time.time,
+    def __init__(self, index, plans, *, wake, clock=time.time,
                  poll_seconds=POLL_SECONDS):
         if not math.isfinite(poll_seconds) or poll_seconds <= 0:
             raise ValueError("waker interval must be positive and finite")
@@ -29,7 +27,7 @@ class Waker:
 
         if read(self.index.identities, owner).state != "admitted":
             return
-        # boxhostd rechecks both admission and suspension after capacity waits.
+        # C5: the broker lifecycle authority serializes this wake with withdrawal.
         self.wake(owner, scheduled=True)
         self.index.woken(owner, now=self.clock())
 

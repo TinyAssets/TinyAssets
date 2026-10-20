@@ -193,7 +193,7 @@ def test_owner_retirement_is_fenced_complete_and_retryable(broker, tmp_path, mon
 
         assert read(identities, owner).state == "erased"
         with pytest.raises(LookupError):
-            identities.box_route("alice", rotate=True)
+            identities.box_route("alice")
         stopped.append(owner)
         if len(stopped) == 1:
             raise OSError("destroy acknowledgement lost")

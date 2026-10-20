@@ -111,10 +111,10 @@ class OwnerDaemons:
             os.fchown(stream.fileno(), uid, uid)
         return directory, path
 
-    def _start(self, box, deadline, *, image=None, cleanup=True):
+    def _start(self, box, deadline, *, image=None, cleanup=True, launch=None):
         with self.volumes.operation(box.uid):
             try:
-                return self._launch(box, deadline, image=image)
+                return self._launch(box, deadline, image=image, launch=launch)
             except Exception:
                 if cleanup:
                     self.runtime.stop(box.uid)
@@ -122,10 +122,10 @@ class OwnerDaemons:
                     box.awake = False
                 raise
 
-    def _launch(self, box, deadline, *, image=None):
+    def _launch(self, box, deadline, *, image=None, launch=None):
         if box.deletion_only:
             raise BoxAuthError("deleting owner cannot restart")
-        record, volume_mount = self.storage.prepare(box.owner)
+        record, volume_mount = self.storage.prepare(box.owner, launch)
         if record["uid"] != box.uid:
             raise BoxError("broker owner reservation changed")
         relay = self.relays.bind(box.owner, box.uid)
@@ -255,13 +255,13 @@ class OwnerDaemons:
                     box.leases.pop(token, None)
             self.condition.notify_all()
 
-    def ensure_awake(self, owner, *, scheduled=False):
+    def ensure_awake(self, owner, *, scheduled=False, launch=None):
         if type(scheduled) is not bool:
             raise ValueError("scheduled must be boolean")
         deadline = time.monotonic() + self.wake_timeout
         with self.condition:
             self.storage.recover(owner)
-            record = self.admission.owner(owner)
+            record = launch if launch is not None else self.admission.owner(owner)
             uid = record["uid"]
             box = self.boxes.setdefault(uid, Box(owner, uid))
             if box.owner != owner:
@@ -310,7 +310,7 @@ class OwnerDaemons:
                                self.boxes.values()) < self.awake_cap:
                             box.wanted = True
                             try:
-                                self._start(box, deadline)
+                                self._start(box, deadline, launch=record)
                                 return uid
                             except Exception as exc:
                                 self._failed(box, exc)
@@ -348,7 +348,6 @@ class OwnerDaemons:
         with self.condition:
             uid = self.admission.volume(owner)["uid"]
             with self.volumes.operation(uid):
-                self.admission.erase_admission(owner)
                 box = self.boxes.get(uid)
                 if box is not None and box.awake and self.runtime.alive(uid):
                     box.deletion_only, box.wanted = True, False

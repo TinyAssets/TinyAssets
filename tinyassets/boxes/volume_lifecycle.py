@@ -34,7 +34,7 @@ class VolumeLifecycle:
             self._snapshot(owner, uid)
             return self.admission.volume(owner)
 
-    def prepare(self, owner):
+    def prepare(self, owner, launch=None):
         record = self.admission.volume(owner)
         uid = record["uid"]
         with self.volumes.operation(uid):
@@ -43,8 +43,10 @@ class VolumeLifecycle:
             if not binding["local"]:
                 self.admission.volume(owner, "restore", snapshot_id=binding["snapshot_id"])
                 self.recover(owner)
-            record = self.admission.owner(owner, rotate=True)
+            record = launch if launch is not None else self.admission.owner(owner)
             binding = self.admission.volume(owner)
+            record = {**record, **{key: binding[key] for key in (
+                "volume_generation", "snapshot_id", "snapshot_sha256")}}
             if binding["work"] == {"kind": "create"}:
                 try:
                     self.volumes.create(uid, record["quota"])

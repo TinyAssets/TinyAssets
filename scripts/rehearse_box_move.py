@@ -97,6 +97,16 @@ def rehearsal_manifests():
             cursor = db.execute('SELECT * FROM "' + name.replace('"', '""') + '"')
             columns = [column[0] for column in cursor.description]
             rows = cursor.fetchall()
+            if name == 'owner_box_secrets':
+                # C5 creates one durable random credential at admission. Each
+                # independent restored trial must create its own credentials.
+                import re
+
+                owners = {row[0] for row in db.execute('SELECT principal FROM owner_identities')}
+                assert {row[0] for row in rows} == owners
+                assert len({row[1] for row in rows}) == len(rows)
+                assert all(re.fullmatch(r'[A-Za-z0-9_-]{43}', row[1]) for row in rows)
+                rows = [(owner, 'verified unique ingress credential') for owner, _ in rows]
             if name in {'owner_volumes', 'owner_snapshots'}:
                 rows = [tuple('verified snapshot' if column in {'snapshot_id', 'snapshot_sha256'}
                               else 'recent snapshot publication' if column == 'asleep_at'
@@ -140,16 +150,22 @@ root, owner = Path('/data'), sys.argv[1]
 supervisor = BrokerSupervisor.from_boxhost(
     root, socket_path=Path(sys.argv[2]), proof='synthetic-rehearsal-proof' * 2)
 supervisor.start()
-key = ApiKeyStore(root).mint(owner, name='synthetic platform recovery',
-                           scopes=[], authority=None)['key']
-HookOwners(root).publish(hashlib.sha256(b'rehearsal-hook').hexdigest(), owner)
-with owner_sessions.store() as db:
-    db.execute('INSERT INTO owner_sessions VALUES (?,?,?)',
-               (owner_sessions.hashed('rehearsal-session'),
-                json.dumps({'user_id': owner}), 4000000000))
-assert ApiKeyStore(root).resolve(key) is not None
-assert HookOwners(root).resolve('rehearsal-hook') == owner
-assert owner_sessions.lookup('rehearsal-session') is not None
+sys.path.insert(0, '/support')
+from rehearsal_serve import router_snapshot_call
+
+def execute():
+    key = ApiKeyStore(root).mint(owner, name='synthetic platform recovery',
+                               scopes=[], authority=None)['key']
+    HookOwners(root).publish(hashlib.sha256(b'rehearsal-hook').hexdigest(), owner)
+    with owner_sessions.store() as db:
+        db.execute('INSERT INTO owner_sessions VALUES (?,?,?)',
+                   (owner_sessions.hashed('rehearsal-session'),
+                    json.dumps({'user_id': owner}), 4000000000))
+    assert ApiKeyStore(root).resolve(key) is not None
+    assert HookOwners(root).resolve('rehearsal-hook') == owner
+    assert owner_sessions.lookup('rehearsal-session') is not None
+    return key
+key = router_snapshot_call(owner, execute)
 print(json.dumps(key))
 """
     with tempfile.TemporaryDirectory(prefix='/tmp/s6-recovery-') as directory:

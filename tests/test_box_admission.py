@@ -236,7 +236,7 @@ def test_record_only_for_every_work_reader(authority, state, tmp_path):
     readers = {
         "admission": lambda: require_admitted(identities, owner),
         "router": lambda: identities.box_route(owner),
-        "boxhostd": lambda: owner_record(identities, owner, rotate=False),
+        "boxhostd": lambda: owner_record(identities, owner),
         "channel-admission": lambda: resolve(identities, {"op": "BOX_ADMISSION",
                                                          "principal": owner, "center": "center"}),
         "public-egress": lambda: resolve_owner(identities, {"op": "BOX_PUBLIC",
@@ -290,7 +290,7 @@ def test_center_retirement_keeps_record_and_secret_and_zero_center_wake(authorit
     before = authority.box_route("alice")
     authority.admission("retire", "alice", "center")
     assert authority.box_route("alice") == before
-    assert owner_record(authority, "alice", rotate=False)["centers"] == []
+    assert owner_record(authority, "alice")["centers"] == []
     from tinyassets.broker.next_wake import NextWakeIndex
 
     assert NextWakeIndex(authority).due(now=1) == ["alice"]
@@ -316,7 +316,7 @@ def test_absent_record_is_not_created_by_read(authority):
     with sqlite3.connect(authority.path) as db:
         db.execute("DELETE FROM owner_admission")
     assert not allowed(lambda: authority.box_route("alice"))
-    assert not allowed(lambda: owner_record(authority, "alice", rotate=False))
+    assert not allowed(lambda: owner_record(authority, "alice"))
     assert not allowed(lambda: resolve_owner(authority, {"op": "BOX_PUBLIC", "principal": "alice"}))
 
 
@@ -331,6 +331,7 @@ def test_runtime_restart_does_not_recreate_missing_admission_schema(authority):
 @pytest.mark.parametrize("damage", ["missing", "empty", "corrupt", "schema"])
 def test_damaged_record_authority_denies_authentication_and_work(authority, tmp_path, damage):
     from tinyassets.router_credentials import active_owner
+    from tinyassets.routing_snapshot import RoutingSnapshot, _snapshots
 
     authority.retire_owner("alice")
     assert not active_owner("alice", tmp_path)  # Start the fixture broker before authority loss.
@@ -342,6 +343,9 @@ def test_damaged_record_authority_denies_authentication_and_work(authority, tmp_
         with sqlite3.connect(authority.path) as db:
             db.execute("DROP TABLE owner_admission")
     before = authority.path.read_bytes() if authority.path.exists() else None
+    # C5: a restarted router has no current projection. An already installed
+    # healthy projection instead survives the control-plane outage.
+    _snapshots[tmp_path] = RoutingSnapshot()
     assert not active_owner("alice", tmp_path)
     assert not active_owner("bob", tmp_path)
     with pytest.raises(sqlite3.Error):
@@ -429,7 +433,7 @@ def test_cutover_drops_center_revocation_and_seeds_terminal_and_source_reasons(a
     assert not {"billing_suspended", "abuse_suspended"} & authority.plans.read("alice").keys()
     for reason in ("billing", "abuse"):
         authority.plans.set_suspension("alice", reason=reason, suspended=False)
-    assert len(authority.box_route("alice", rotate=True)[1]) == 43
+    assert len(authority.box_route("alice")[1]) == 43
     authority.retire_owner("alice")
     _seed_owner_admission(tmp_path, legacy)
     assert read(authority, "alice").state == "erased"

@@ -20,7 +20,7 @@ import pytest
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_broker_server import broker  # noqa: F401
 from tinyassets.auth.provider import Identity
-from tinyassets.broker.owner_identities import OwnerIdentities, owner_box_route
+from tinyassets.broker.owner_identities import OwnerIdentities, _owner_request
 
 
 @pytest.fixture(autouse=True)
@@ -58,28 +58,31 @@ def admitted(in_process_broker, broker, tmp_path, monkeypatch):  # noqa: F811
     return identities
 
 
-def test_secret_mint_rotation_and_admission_through_real_broker(admitted, tmp_path):
-    first = owner_box_route(tmp_path, principal="alice")
-    assert first == owner_box_route(tmp_path, principal="alice")
+def test_secret_mint_rotation_and_admission_through_real_broker(admitted, boxes, tmp_path):
+    first = admitted.box_route("alice")
+    assert first == admitted.box_route("alice")
     assert first == OwnerIdentities(admitted.path).box_route("alice")
-    bob = owner_box_route(tmp_path, principal="bob")
+    bob = admitted.box_route("bob")
     assert first[0] != bob[0] and first[1] != bob[1]
-    rotated = owner_box_route(tmp_path, principal="alice", rotate=True)
+    assert _owner_request(tmp_path, {"op": "OWNER_BOX_REVOKE", "principal": "alice"}) == {
+        "op": "OWNER_LIFECYCLE_DONE"}
+    rotated = admitted.box_route("alice")
     assert rotated[0] == first[0] and rotated[1] != first[1]
+    assert not boxes.runtime.alive(first[0])
     for owner in ("unknown", "reserved"):
         with pytest.raises(LookupError):
-            owner_box_route(tmp_path, principal=owner)
+            admitted.box_route(owner)
     admitted.admission("retire", "alice", "cc-alice")
-    assert owner_box_route(tmp_path, principal="alice") == rotated
+    assert admitted.box_route("alice") == rotated
 
 
 def test_route_operation_rejects_forged_authority_or_socket_overrides(
-    admitted, broker, tmp_path,  # noqa: F811
+    admitted, broker, boxes, tmp_path,  # noqa: F811
 ):
     from tinyassets import rpc_frames as rf
 
-    before = owner_box_route(tmp_path, principal="alice")
-    request = {"op": "OWNER_BOX_ROUTE", "principal": "alice", "rotate": True,
+    before = admitted.box_route("alice")
+    request = {"op": "OWNER_BOX_REVOKE", "principal": "alice",
                "generation": broker.state["generation"], "token": broker.state["token"]}
     for changes in ({"uid": 300002}, {"socket": "/foreign/app.sock"}, {"token": "old"},
                     {"generation": True}, {"rotate": 1}, {"principal": ""}):
@@ -87,8 +90,8 @@ def test_route_operation_rejects_forged_authority_or_socket_overrides(
             channel.settimeout(5)
             channel.connect(str(broker.path))
             channel.sendall(rf.control(rf.CONNECTION, request | changes))
-            assert rf.read_frame_blocking(channel).control() == {"op": "OWNER_BOX_ROUTE_REFUSED"}
-    assert before == owner_box_route(tmp_path, principal="alice")
+            assert rf.read_frame_blocking(channel).control() == {"op": "OWNER_LIFECYCLE_REFUSED"}
+    assert before == admitted.box_route("alice")
 
 
 @pytest.fixture
@@ -109,6 +112,10 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
         ops=broker.ops, fence=broker.fence, roles={os.getuid(): BOX_HOST},
         owner_identities=admitted, data_root=tmp_path,
     )
+    # Two same-UID listeners model the production server's two kernel roles;
+    # their channels belong to the same admission authority.
+    host_broker._connections = broker.server._connections
+    host_broker._public_egress = broker.server._public_egress
     host_path = tmp_path / "host.sock"
     listener = asyncio.run_coroutine_threadsafe(host_broker.serve(host_path),
                                                broker.loop).result(5)
@@ -165,11 +172,12 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
         monkeypatch.setattr(manager, "_paths", paths)
 
         def control(operation, owner, **fields):
-            if operation == "resolve":
-                return manager.resolve(owner, **fields)
-            if operation == "release":
-                manager.release(owner, fields["lease"])
-                return {"released": True}
+            if operation == "wake":
+                return {"uid": manager.ensure_awake(
+                    owner, launch=fields["record"], scheduled=fields["scheduled"])}
+            if operation == "withdraw":
+                manager.withdraw(owner)
+                return {"withdrawn": True}
             if operation == "destroy":
                 manager.destroy(owner, admission.volume(owner)["uid"])
                 return {"destroyed": True}
@@ -179,8 +187,12 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
 
         monkeypatch.setattr(daemon_control, "request", control)
         try:
+            broker.server.routing.publish()
+            from tinyassets.broker.admission import register_authority
+
+            register_authority(admitted.path, broker.server.routing)
             for owner in roots:
-                manager.ensure_awake(owner)
+                broker.server.routing.wake(owner)
             secrets = {owner: manager.boxes[admitted.owner_machine(owner)].secret
                        for owner in roots}
             keys = {owner: json.loads((root / "key.json").read_text())["key"]
@@ -377,7 +389,7 @@ def test_router_only_routes_need_no_box(tmp_path, monkeypatch, cloud_runtime):  
     def no_box(*args, **kwargs):
         raise AssertionError("router-only route resolved a box")
 
-    monkeypatch.setattr(owner_identities, "owner_box_route", no_box)
+    monkeypatch.setattr(owner_identities, "wake_owner", no_box)
     listing = publish_definition(tmp_path / ".published", author_id="alice",
                                  payload=_definition("Public item"))
     app = universe_server.create_streamable_http_app()
@@ -429,6 +441,183 @@ def test_owner_socket_requires_current_secret(boxes, admitted):
             assert client.post("/_box/account/delete", headers=selected).status_code == 401
         assert client.get("/mcp", headers=headers | {
             "x-box-secret": boxes.secrets["alice"]}).status_code == 200
+
+
+def test_awake_forwarding_survives_every_control_plane_rpc_outage(router, boxes, monkeypatch):
+    from tinyassets.boxes import daemon_control
+    from tinyassets.broker import owner_identities
+
+    def unavailable(*args, **kwargs):
+        raise AssertionError("awake forwarding called the control plane")
+
+    monkeypatch.setattr(owner_identities, "_owner_request", unavailable)
+    monkeypatch.setattr(daemon_control, "request", unavailable)
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=router),
+                                     base_url="http://test") as client:
+            response = await client.post("/app/api/file", headers={
+                "authorization": "Bearer alice"},
+                json={"graph_id": "cc-alice", "path": "hello.txt"})
+            assert response.status_code == 200 and response.text == "alice private data"
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("pending_restore", [False, True])
+def test_cold_request_uses_broker_and_keeps_credential(
+    router, boxes, admitted, broker, monkeypatch, pending_restore,  # noqa: F811
+):
+    uid, secret = admitted.box_route("alice")
+    with boxes.manager.condition:
+        assert boxes.manager._sleep(boxes.manager.boxes[uid], idle=0)
+    assert not boxes.runtime.alive(uid)
+    binding = boxes.manager.admission.volume("alice")
+    if pending_restore:
+        boxes.manager.admission.volume("alice", "restore", snapshot_id=binding["snapshot_id"])
+        with pytest.raises(PermissionError, match="restore"):
+            boxes.manager.admission.owner("alice")
+    launches = []
+    start = boxes.runtime.start
+
+    def launched(*args, **fields):
+        launches.append(fields["volume_generation"])
+        return start(*args, **fields)
+
+    monkeypatch.setattr(boxes.runtime, "start", launched)
+    wake = broker.server.routing.wake
+    wakes = []
+
+    def observed(owner, **fields):
+        wakes.append(owner)
+        return wake(owner, **fields)
+
+    monkeypatch.setattr(broker.server.routing, "wake", observed)
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=router),
+                                     base_url="http://test") as client:
+            response = await client.post("/app/api/file", headers={
+                "authorization": "Bearer alice"},
+                json={"graph_id": "cc-alice", "path": "hello.txt"})
+            assert response.status_code == 200 and response.text == "alice private data"
+
+    asyncio.run(exercise())
+    assert wakes == ["alice"]
+    assert admitted.box_route("alice") == (uid, secret)
+    assert boxes.manager.boxes[uid].secret == secret
+    assert launches == [binding["volume_generation"] + int(pending_restore)]
+    assert boxes.manager.admission.volume("alice")["work"] is None
+
+
+def test_withdrawn_route_rejects_delayed_snapshot_and_wake(
+    router, boxes, admitted, broker, tmp_path, monkeypatch,  # noqa: F811
+):
+    from tinyassets.owner_router import resolve_box
+    from tinyassets.routing_snapshot import snapshot
+
+    publication = []
+    send = broker.server.routing._router
+
+    def capture(request):
+        if request["operation"] == "routing_install":
+            publication.append(request)
+        return send(request)
+
+    monkeypatch.setattr(broker.server.routing, "_router", capture)
+    broker.server.routing.publish()
+    old = publication[-1]
+    admitted.plans.set_suspension("alice", reason="abuse", suspended=True)
+    assert not boxes.runtime.alive(admitted.owner_machine("alice"))
+    current = snapshot(tmp_path)
+    assert current.install(old["instance"], old["revision"], old["records"]) > old["revision"]
+    with pytest.raises(PermissionError):
+        resolve_box("alice")
+    with pytest.raises(PermissionError):
+        broker.server.routing.wake("alice")
+    assert not boxes.runtime.alive(admitted.owner_machine("alice"))
+
+
+def test_router_restart_needs_snapshot_from_its_own_incarnation(
+    router, boxes, broker, tmp_path, monkeypatch,  # noqa: F811
+):
+    from tinyassets.routing_snapshot import RoutingSnapshot, _snapshots, snapshot
+
+    old = snapshot(tmp_path)
+    restarted = RoutingSnapshot()
+    monkeypatch.setitem(_snapshots, tmp_path, restarted)
+    with pytest.raises(ValueError):
+        restarted.install(old.instance, 100000, {})
+
+    async def request():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=router),
+                                     base_url="http://test") as client:
+            if restarted._installed is None:
+                assert (await client.get("/app")).status_code == 503
+            return await client.post("/app/api/file", headers={"authorization": "Bearer alice"},
+                                     json={"graph_id": "cc-alice", "path": "hello.txt"})
+
+    assert asyncio.run(request()).status_code != 200
+    with pytest.raises(RuntimeError, match="snapshot"):
+        restarted.route("alice")
+    broker.server.routing.publish()
+    assert asyncio.run(request()).status_code == 200
+
+
+def test_withdrawal_without_router_delivery_stops_old_ingress(
+    router, boxes, admitted, broker, tmp_path, monkeypatch,  # noqa: F811
+):
+    from tinyassets.routing_snapshot import snapshot
+
+    before = snapshot(tmp_path).route("alice")
+
+    def unavailable(request):
+        raise OSError("synthetic router publication outage")
+
+    monkeypatch.setattr(broker.server.routing, "_router", unavailable)
+    admitted.plans.set_suspension("alice", reason="abuse", suspended=True)
+    assert snapshot(tmp_path).route("alice") == before
+    assert not boxes.runtime.alive(admitted.owner_machine("alice"))
+
+    async def request():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=router),
+                                     base_url="http://test") as client:
+            response = await client.post("/app/api/file", headers={"authorization": "Bearer alice"},
+                                         json={"graph_id": "cc-alice", "path": "hello.txt"})
+            assert response.status_code == 503
+
+    asyncio.run(request())
+    assert not boxes.runtime.alive(admitted.owner_machine("alice"))
+
+
+def test_rotation_stops_old_ingress_before_publishing_replacement(
+    boxes, admitted, broker, tmp_path, monkeypatch,  # noqa: F811
+):
+    from tinyassets.routing_snapshot import snapshot
+
+    uid, old = admitted.box_route("alice")
+    send = broker.server.routing._router
+
+    def publication(request):
+        if request["operation"] == "routing_install":
+            assert not boxes.runtime.alive(uid)
+            assert request["records"]["alice"]["secret"] != old
+        return send(request)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(broker.server.routing, "_router", publication)
+        broker.server.routing.revoke("alice")
+    fresh = snapshot(tmp_path).route("alice").secret
+    assert fresh != old
+    broker.server.routing.wake("alice")
+    identity = Identity(user_id="alice", username="alice")
+    headers = {"x-owner": "alice", "x-owner-identity": base64.urlsafe_b64encode(
+        json.dumps(asdict(identity)).encode()).decode()}
+    path = boxes.run / str(uid) / "app.sock"
+    with httpx.Client(transport=httpx.HTTPTransport(uds=str(path)),
+                      base_url="http://owner") as client:
+        assert client.get("/mcp", headers=headers | {"x-box-secret": old}).status_code == 401
+        assert client.get("/mcp", headers=headers | {"x-box-secret": fresh}).status_code == 200
 
 
 def test_owner_box_refuses_a_request_for_any_other_owner(boxes, admitted):
@@ -553,6 +742,11 @@ def test_box_channel_cannot_supply_owner_or_revoke_another_owners_credentials(
         "op": "ROUTER_CREDENTIAL_REFUSED"}
     assert request("alice", {"operation": "account_revoke", "owner": "bob"}) == {
         "op": "ROUTER_CREDENTIAL_REFUSED"}
+    assert request("alice", {"operation": "routing_instance"}) == {
+        "op": "ROUTER_CREDENTIAL_REFUSED"}
+    assert request("alice", {"operation": "routing_install", "instance": "forged",
+                              "revision": 999999, "records": {}}) == {
+        "op": "ROUTER_CREDENTIAL_REFUSED"}
     token = request("alice", {"operation": "hook_mint"})["result"]["token"]
     request("bob", {"operation": "hook_revoke", "token_hash": hashlib.sha256(token.encode())
             .hexdigest()})
@@ -565,18 +759,13 @@ def test_box_channel_cannot_supply_owner_or_revoke_another_owners_credentials(
 
 def test_router_credential_socket_refuses_a_non_broker_peer(boxes, tmp_path, monkeypatch):
     from tinyassets import router_credentials
-    from tinyassets import rpc_frames as rf
 
     monkeypatch.setattr(router_credentials, "BROKER_UID", os.getuid() + 1)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
         channel.settimeout(5)
         channel.connect(str(router_credentials.credential_socket(tmp_path)))
-        channel.sendall(rf.control(0, {"op": "ROUTER_CREDENTIAL", "owner": "alice",
-                                       "request": {"operation": "key_list"}}))
-        try:
-            assert rf.read_frame_blocking(channel) is None
-        except ConnectionResetError:
-            pass
+        # Kernel peer rejection precedes parsing any caller-controlled frame.
+        assert channel.recv(1) == b""
 
 
 def test_default_socket_is_under_the_existing_compose_mount(admitted, monkeypatch):
@@ -586,6 +775,13 @@ def test_default_socket_is_under_the_existing_compose_mount(admitted, monkeypatc
     from tinyassets.owner_router import resolve_box
 
     monkeypatch.delenv("TINYASSETS_BOXES_RUN", raising=False)
+    from tinyassets.broker.routing import RoutingAuthority
+    from tinyassets.router_credentials import routing_dispatch
+
+    routing = RoutingAuthority(SimpleNamespace(_owner_identities=admitted,
+                                               _data_root=admitted.path.parent.parent.parent))
+    routing._router = lambda request: routing_dispatch(routing.root, request)
+    routing.publish()
     route = resolve_box("alice")
     assert route.socket == Path("/run/tinyassets-boxhostd") / str(
         admitted.owner_machine("alice")) / "app.sock"
@@ -679,26 +875,30 @@ def test_a_deleted_owner_can_never_mint_again(tmp_path, monkeypatch):
 
 
 
-def test_boxhostd_real_process_restart_rotates_secret_and_serves_again(boxes, admitted):
-    from tinyassets.owner_router import release_route, resolve_box
+def test_boxhostd_real_process_restart_keeps_secret_and_serves_again(
+    boxes, admitted, broker,  # noqa: F811
+):
+    from tinyassets.owner_router import resolve_box
 
     first = resolve_box("alice")
-    release_route(first)
     uid = admitted.owner_machine("alice")
     process = boxes.runtime.processes[uid]
     with boxes.manager.condition:
         assert boxes.manager._sleep(boxes.manager.boxes[uid], idle=0)
     assert process.poll() == 0  # SIGTERM completed the actual app lifespan.
+    broker.server.routing.wake("alice")
     second = resolve_box("alice")
-    assert first.socket == second.socket and first.secret != second.secret
+    assert first.socket == second.socket and first.secret == second.secret
     with httpx.Client(transport=httpx.HTTPTransport(uds=str(first.socket)),
                       base_url="http://owner") as client:
-        assert client.get("/_box/status", headers={"x-box-secret": first.secret}).status_code == 401
+        assert client.get("/_box/status", headers={"x-box-secret": first.secret}).status_code == 200
         ready = client.get("/_box/status", headers={"x-box-secret": second.secret})
         assert ready.status_code == 200
 
 
-def test_broker_retirement_stops_real_daemon_and_stale_forward_fails(boxes, admitted, tmp_path):
+def test_center_retirement_stops_old_daemon_and_admitted_owner_wakes_again(
+    boxes, admitted, tmp_path,
+):
     from tinyassets.broker.owner_identities import _owner_request
     from tinyassets.owner_router import BoxRoute, forward, resolve_box
 
@@ -716,15 +916,14 @@ def test_broker_retirement_stops_real_daemon_and_stale_forward_fails(boxes, admi
     async def exercise():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(proxy),
                                      base_url="http://router") as client:
-            assert (await client.get("/app/api/file")).status_code == 503
+            response = await client.post("/app/api/file",
+                                         json={"graph_id": "cc-alice", "path": "hello.txt"})
+            assert response.status_code == 200
     asyncio.run(exercise())
     # C6: lifecycle stop updates the center list; the owner remains wakeable.
-    fresh = resolve_box("alice")
+    assert resolve_box("alice").secret == stale.secret
     assert boxes.runtime.alive(uid)
     assert boxes.manager.admission.owner("alice")["centers"] == []
-    from tinyassets.owner_router import release_route
-
-    release_route(fresh)
 
 
 def test_root_lifecycle_broker_operation_uses_admission_and_box_record(
@@ -739,17 +938,17 @@ def test_root_lifecycle_broker_operation_uses_admission_and_box_record(
             channel.sendall(rf.control(0, document))
             return rf.read_frame_blocking(channel).control()
 
-    request = {"op": "BOX_LIFECYCLE", "principal": "alice", "rotate": False}
+    request = {"op": "BOX_LIFECYCLE", "principal": "alice"}
     assert call(request) == {"op": "BOX_LIFECYCLE_IS", "uid": admitted.owner_machine("alice"),
                              "quota": 2 * 1024**3, "centers": ["cc-alice"],
-                             "volume_generation": 1, "snapshot_id": None, "snapshot_sha256": None}
+                             "volume_generation": 1, "snapshot_id": None, "snapshot_sha256": None,
+                             "secret": admitted.box_route("alice")[1]}
     for override in ({"uid": 300002}, {"rotate": 1}, {"quota": 1}):
         assert call(request | override) == {"op": "BOX_REFUSED"}
     assert call(request | {"principal": "reserved"}) == {"op": "BOX_UNADMITTED"}
     old = admitted.box_route("alice")[1]
-    rotated = call(request | {"rotate": True})
-    assert rotated["secret"] != old
-    assert admitted.box_route("alice")[1] == rotated["secret"]
+    assert call(request | {"rotate": True}) == {"op": "BOX_REFUSED"}
+    assert admitted.box_route("alice")[1] == old
     admitted.plans.set_suspension("alice", reason="abuse", suspended=True)
     assert call(request) == {"op": "BOX_SUSPENDED"}
     assert call(request | {"deletion_only": True}) == {"op": "BOX_REFUSED"}
@@ -791,7 +990,9 @@ def test_bound_center_retirement_uses_relay_owner_and_stops_its_daemon(boxes, ad
 
 
 
-def test_resolve_lease_protects_real_request_against_concurrent_wake(boxes, admitted):
+def test_box_admitted_request_blocks_eviction_until_disconnect(
+    boxes, admitted, broker,  # noqa: F811
+):
     import threading
 
     from tinyassets.owner_router import forward, resolve_box
@@ -804,32 +1005,37 @@ def test_resolve_lease_protects_real_request_against_concurrent_wake(boxes, admi
     manager.wake_timeout = 10
     route = resolve_box("alice")
     result = []
-    waiter = threading.Thread(target=lambda: result.append(manager.ensure_awake("bob")))
-    waiter.start()
+    waiter = threading.Thread(target=lambda: result.append(broker.server.routing.wake("bob")))
+
+    async def exercise():
+        incoming = asyncio.Queue()
+        await incoming.put({"type": "http.request", "body": b"", "more_body": False})
+        messages = []
+
+        async def send(message):
+            messages.append(message)
+            if message.get("body"):
+                assert message["body"] == b"data: first\n\n"
+                waiter.start()
+                deadline = time.monotonic() + 5
+                while not manager.waiting and time.monotonic() < deadline:
+                    await asyncio.sleep(.01)
+                assert manager.waiting and not result
+                assert boxes.runtime.alive(a)
+                await incoming.put({"type": "http.disconnect"})
+
+        scope = {"type": "http", "method": "GET", "path": "/app/api/test-stream",
+                 "headers": [], "query_string": b""}
+        await forward(scope, incoming.get, send,
+                      Identity(user_id="alice", username="alice", capabilities=["read"]), route)
+        assert messages[0]["status"] == 200
+
     try:
-        deadline = time.monotonic() + 5
-        while not manager.waiting and time.monotonic() < deadline:
-            time.sleep(.01)
-        assert manager.waiting and not result
-        assert boxes.runtime.alive(a)
-
-        async def proxy(scope, receive, send):
-            await forward(scope, receive, send,
-                          Identity(user_id="alice", username="alice", capabilities=["read"]), route)
-
-        async def exercise():
-            async with httpx.AsyncClient(transport=httpx.ASGITransport(proxy),
-                                         base_url="http://test") as client:
-                response = await client.post("/app/api/file",
-                                             json={"graph_id": "cc-alice", "path": "hello.txt"})
-                assert response.status_code == 200, response.text
-                assert response.text == "alice private data"
         asyncio.run(exercise())
     finally:
-        waiter.join(15)
+        if waiter.ident is not None:
+            waiter.join(15)
     assert not waiter.is_alive() and result == [b]
-
-
 
 
 @pytest.mark.parametrize("op", ["BOX_ADMISSION", "BOX_CHANNEL", "BOX_SHARED", "BOX_PUBLIC",
@@ -852,9 +1058,11 @@ def test_running_fenced_box_is_refused_on_every_broker_operation(boxes, admitted
         document = {"op": op, "principal": "alice"}
         if op in {"BOX_ADMISSION", "BOX_CHANNEL", "BOX_SHARED"}:
             document["center"] = "cc-alice"
-        if op == "BOX_LIFECYCLE":
-            document["rotate"] = False
-        channel.sendall(rf.control(rf.CONNECTION, document))
-        assert rf.read_frame_blocking(channel).control() == {"op": "BOX_REFUSED"}
-    assert boxes.runtime.alive(uid)
+        if op in {"BOX_IDENTITY", "BOX_PING", "BOX_PUBLISH", "BOX_READ"}:
+            assert channel.recv(1) == b""  # Withdrawal closed the previously bound channel.
+        else:
+            channel.sendall(rf.control(rf.CONNECTION, document))
+            reply = rf.read_frame_blocking(channel)
+            assert reply.control() == {"op": "BOX_REFUSED"}
+    assert not boxes.runtime.alive(uid)
     assert admitted.admitted_owner("cc-alice") == "alice"

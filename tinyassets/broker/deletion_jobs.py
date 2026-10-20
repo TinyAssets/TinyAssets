@@ -169,6 +169,9 @@ class DeletionJobs:
                 pass
 
     def _withdrawal(self, job):
+        from tinyassets.broker.admission import local_mutate
+
+        local_mutate(self.server._owner_identities.path, job["owner"], "erase")
         from tinyassets.boxes.daemon_control import request
 
         if request("withdraw", job["owner"]) != {"withdrawn": True}:

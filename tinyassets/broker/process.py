@@ -149,6 +149,7 @@ async def serve(args: argparse.Namespace) -> None:
         data_root=Path(args.data_root),
     )
     socket_path = Path(args.socket)
+    routing = server.routing if registration else None
     socket_path.unlink(missing_ok=True)
     old_umask = os.umask(0o117)  # 0660 in the role-split IPC directory
     try:
@@ -169,13 +170,16 @@ async def serve(args: argparse.Namespace) -> None:
                 raise RuntimeError("host did not accept broker readiness")
         waker_task = None
         deletion_task = None
+        routing_task = None
         if registration:
             from tinyassets.broker.waker import Waker
 
             plans.initialize()
             waker_task = asyncio.create_task(Waker(
-                server.next_wakes, plans, poll_seconds=args.wake_poll_seconds).run(stop))
+                server.next_wakes, plans, wake=routing.wake,
+                poll_seconds=args.wake_poll_seconds).run(stop))
             deletion_task = asyncio.create_task(server.deletion_jobs.run(stop))
+            routing_task = asyncio.create_task(routing.run(stop))
         try:
             await stop.wait()
         finally:
@@ -184,6 +188,8 @@ async def serve(args: argparse.Namespace) -> None:
                 await waker_task
             if deletion_task is not None:
                 await deletion_task
+            if routing_task is not None:
+                await routing_task
             if registration:
                 registration[0].close()
 

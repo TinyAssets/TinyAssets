@@ -96,7 +96,7 @@ def test_suspension_and_missing_launch_plan_refuse_but_retired_center_wakes(inde
     from tinyassets.broker.box_admission import owner_record
 
     def wake(owner, **kw):
-        owner_record(index.identities, owner, rotate=False)
+        owner_record(index.identities, owner)
         calls.append(owner)
 
     waker = Waker(index, plans, wake=wake)
@@ -112,7 +112,7 @@ def test_suspension_and_missing_launch_plan_refuse_but_retired_center_wakes(inde
 
     asyncio.run(exercise())
     with pytest.raises(PlanMissing):
-        owner_record(index.identities, "b", rotate=False)
+        owner_record(index.identities, "b")
 
 
 def test_due_delivery_retries_without_consuming_report_and_failed_wake_has_no_ack(index):
@@ -202,14 +202,14 @@ def test_production_layout_uses_one_plan_store_for_admission_billing_and_launch(
     plans.set_plan("a", "paid", event_created=10)
     plans.set_suspension("a", reason="billing", suspended=False)
     with pytest.raises(PermissionError, match="suspended"):
-        owner_record(identities, "a", rotate=True)
+        owner_record(identities, "a")
     with closing(sqlite3.connect(plans.path)) as db, db:
         db.execute("DELETE FROM plans WHERE owner='a'")
     with pytest.raises(PermissionError, match="suspended"):
-        owner_record(identities, "a", rotate=True)
+        owner_record(identities, "a")
 
 
-def test_broker_can_only_request_scheduled_wakes():
+def test_only_broker_can_request_bound_interactive_or_scheduled_wakes():
     from tinyassets.boxes.host_service import HostService
 
     calls = []
@@ -219,11 +219,15 @@ def test_broker_can_only_request_scheduled_wakes():
         return 300001
 
     service = HostService(None, None, None, SimpleNamespace(ensure_awake=wake))
-    request = {"lifecycle": "ensure_awake", "owner": "a", "scheduled": True}
+    record = {"uid": 300001, "secret": "s" * 43}
+    request = {"lifecycle": "wake", "owner": "a", "scheduled": True, "record": record}
     assert service.lifecycle(request, 1002) == {"uid": 300001}
-    for changes in ({"scheduled": False}, {"scheduled": 1}, {"uid": 300002}):
+    assert service.lifecycle(request | {"scheduled": False}, 1002) == {"uid": 300001}
+    assert "error" in service.lifecycle(request, 1001)
+    for changes in ({"scheduled": 1}, {"uid": 300002}):
         assert "error" in service.lifecycle(request | changes, 1002)
-    assert calls == [("a", {"scheduled": True})]
+    assert calls == [("a", {"scheduled": True, "launch": record}),
+                     ("a", {"scheduled": False, "launch": record})]
 
 
 def test_waker_starts_without_request_and_shutdown_joins_control_calls(index):

@@ -176,6 +176,17 @@ class BrokerServer:
         self._ops.recover()
         self._next_wakes = None
         self._deletion_jobs = None
+        self._routing = None
+
+    @property
+    def routing(self):
+        if self._routing is None:
+            from tinyassets.broker.admission import register_authority
+            from tinyassets.broker.routing import RoutingAuthority
+
+            self._routing = RoutingAuthority(self)
+            register_authority(self._owner_identities.path, self._routing)
+        return self._routing
 
     @property
     def deletion_jobs(self):
@@ -194,6 +205,7 @@ class BrokerServer:
         return self._next_wakes
 
     async def serve(self, path: Path) -> asyncio.AbstractServer:
+        self._loop = asyncio.get_running_loop()
         return await asyncio.start_unix_server(self._connection, path=str(path), limit=16384)
 
     async def _connection(self, reader: asyncio.StreamReader,
@@ -243,6 +255,14 @@ class BrokerServer:
         for connection in tuple(self._connections):
             if principal in connection._principals:
                 connection.close()
+
+    async def withdraw_channels(self, principal):
+        """C5: acknowledge closure on the event loop that owns the channels."""
+        closing = [task for task, (owner, _) in self._public_egress.channels.items()
+                   if owner == principal]
+        closing.extend(c._handler for c in self._connections if principal in c._principals)
+        self.close_owner(principal)
+        await asyncio.gather(*closing, return_exceptions=True)
 
     def _cancel_older(self, generation: int) -> None:
         with self._streams_lock:
@@ -586,8 +606,8 @@ class _Connection:
             except Exception:
                 answer = {"op": "OWNER_ADMISSION_REFUSED"}
             await self.send_async(rf.control(rf.CONNECTION, answer))
-        elif op == "OWNER_BOX_ROUTE":
-            answer = await asyncio.to_thread(self._owner_box_route, doc)
+        elif op in {"OWNER_BOX_WAKE", "OWNER_BOX_REVOKE"}:
+            answer = await asyncio.to_thread(self._owner_lifecycle, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "LEDGER_QUERY":
             answer = await asyncio.to_thread(self._ledger_query, doc)
@@ -811,20 +831,21 @@ class _Connection:
         except Exception:  # noqa: BLE001 - do not expose broker state on refusal
             return {'op': 'ADMITTED_OWNER_REFUSED'}
 
-    def _owner_box_route(self, doc: dict[str, Any]) -> dict[str, Any]:
+    def _owner_lifecycle(self, doc: dict[str, Any]) -> dict[str, Any]:
         try:
-            if (set(doc) != {"op", "principal", "rotate", "generation", "token"}
-                    or type(doc["generation"]) is not int or type(doc["token"]) is not str
-                    or type(doc["rotate"]) is not bool):
-                raise ValueError("invalid box route request")
+            if (set(doc) != {"op", "principal", "generation", "token"}
+                    or type(doc["generation"]) is not int or type(doc["token"]) is not str):
+                raise ValueError("invalid owner lifecycle request")
             with self._server._fence.send(doc["generation"], doc["token"]):
-                uid, secret = self._server._owner_identities.box_route(
-                    doc["principal"], rotate=doc["rotate"])
-                return {"op": "OWNER_BOX_ROUTE_IS", "uid": uid, "secret": secret}
+                if doc["op"] == "OWNER_BOX_WAKE":
+                    self._server.routing.wake(doc["principal"])
+                else:
+                    self._server.routing.revoke(doc["principal"])
+                return {"op": "OWNER_LIFECYCLE_DONE"}
         except LookupError:
             return {"op": "OWNER_BOX_UNADMITTED"}
         except Exception:  # noqa: BLE001 - never expose broker state on refusal
-            return {"op": "OWNER_BOX_ROUTE_REFUSED"}
+            return {"op": "OWNER_LIFECYCLE_REFUSED"}
 
     def _sole_center(self, doc: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -870,7 +891,6 @@ class _Connection:
             uid = identities.owner_machine(doc["principal"])
             if uid != doc["uid"]:
                 raise PermissionError("retirement reservation differs")
-            identities.retire_owner(doc["principal"])
             return {"op": "BOX_ADMISSION_RETIRED"}
         except Exception:
             return {"op": "BOX_REFUSED"}

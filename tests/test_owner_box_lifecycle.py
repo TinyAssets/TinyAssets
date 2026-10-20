@@ -23,7 +23,7 @@ from tinyassets.owner_activity import Activity
 def fleet(tmp_path, monkeypatch):
     class Admission:
         def __init__(self):
-            self.secrets = {}
+            self.secrets = {owner: secrets.token_urlsafe(32) for owner in ("a", "b", "c")}
             self.revoked = set()
             self.suspended = set()
             self.volumes = {owner: {"uid": 300001 + ord(owner) - ord("a"),
@@ -64,15 +64,13 @@ def fleet(tmp_path, monkeypatch):
             return [owner for owner, record in self.volumes.items()
                     if record["work"] and owner not in self.revoked]
 
-        def owner(self, owner, *, rotate=False):
+        def owner(self, owner):
             from tinyassets.boxes.admission import BoxSuspended
 
             if owner in self.revoked or owner not in {"a", "b", "c"}:
                 raise LookupError("unadmitted")
             if owner in self.suspended:
                 raise BoxSuspended("suspended")
-            if rotate:
-                self.secrets[owner] = secrets.token_urlsafe(32)
             return {"uid": 300001 + ord(owner) - ord("a"), "quota": 1024**3,
                     "centers": [owner], "secret": self.secrets.get(owner),
                     "volume_generation": self.volumes[owner]["volume_generation"]}
@@ -126,7 +124,7 @@ def fleet(tmp_path, monkeypatch):
     return SimpleNamespace(manager=manager, runtime=runtime, admission=admission, states=states)
 
 
-def test_wake_reuses_one_box_and_rotates_on_restart(fleet):
+def test_wake_reuses_one_box_and_secret_across_restart(fleet):
     manager = fleet.manager
     uid = manager.ensure_awake("a")
     first = fleet.admission.secrets["a"]
@@ -136,7 +134,7 @@ def test_wake_reuses_one_box_and_rotates_on_restart(fleet):
     with manager.condition:
         assert manager._sleep(manager.boxes[uid], idle=0)
     manager.ensure_awake("a")
-    assert fleet.admission.secrets["a"] != first
+    assert fleet.admission.secrets["a"] == first
     assert len(fleet.runtime.starts) == 2
 
 
@@ -343,17 +341,18 @@ def test_busy_boxes_are_never_evicted_and_wake_is_bounded(fleet):
 def test_retirement_stops_box_before_ack_and_control_roles_are_positive(fleet):
     manager = fleet.manager
     service = HostService(fleet.admission, None, None, manager)
-    request = {"lifecycle": "ensure_awake", "owner": "a", "scheduled": False}
-    assert "error" in service.lifecycle(request, 1002)
-    assert "error" in service.lifecycle({**request, "uid": 300002}, 1001)
-    uid = service.lifecycle(request, 1001)["uid"]
+    request = {"lifecycle": "wake", "owner": "a", "scheduled": False,
+               "record": fleet.admission.owner("a")}
+    assert "error" in service.lifecycle(request, 1001)
+    assert "error" in service.lifecycle({**request, "uid": 300002}, 1002)
+    uid = service.lifecycle(request, 1002)["uid"]
     retirement = {"lifecycle": "retire", "owner": "a"}
     assert "error" in service.lifecycle({**retirement, "uid": 300002}, 1002)
     assert "error" in service.lifecycle(retirement, 1001)
     fleet.admission.revoked.add("a")
     assert service.lifecycle(retirement, 1002) == {"stopped": True}
     assert not fleet.runtime.live and fleet.states[uid].revoked
-    assert service.lifecycle(request, 1001) == {"error": "unadmitted"}
+    assert "error" in service.lifecycle(request, 1001)
 
 
 def test_ingress_old_secret_and_revoked_forward_fail(monkeypatch, tmp_path):

@@ -27,14 +27,6 @@ def request(operation: str, owner: str | None = None, **fields) -> dict:
     return result
 
 
-def ensure_awake(owner: str, *, scheduled: bool = False) -> int:
-    result = request("ensure_awake", owner, scheduled=scheduled)
-    uid = result.get("uid")
-    if set(result) != {"uid"} or type(uid) is not int or not 300001 <= uid <= 399999:
-        raise RuntimeError("invalid box wake response")
-    return uid
-
-
 def broker_bootstrap():
     """Adopt the registered broker before starting the persistent router."""
     from tinyassets.boxes.bootstrap import RUNTIME

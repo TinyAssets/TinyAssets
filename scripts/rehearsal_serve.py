@@ -19,6 +19,28 @@ from pathlib import Path
 sys.path.insert(0, "/app")
 
 
+def router_snapshot_call(owner, action):
+    """Run a synthetic router action only after real broker snapshot delivery."""
+    from tinyassets.router_credentials import serving
+    from tinyassets.routing_snapshot import snapshot
+
+    async def run():
+        root = Path('/data')
+        async with serving(root):
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    snapshot(root).record(owner)
+                    break
+                except RuntimeError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    await asyncio.sleep(.01)
+            return await asyncio.to_thread(action)
+
+    return asyncio.run(run())
+
+
 def owner(root, relay, secret, socket, uid, generation, centers, inherited_mounts):
     import fcntl
     import socket as sockets
@@ -206,9 +228,13 @@ def broker(directory, *, register=False):
                 channel, identity = registration
                 send(channel, {"ready": True})
                 assert receive(channel, identity) == {"ready": True}
+            stop = asyncio.Event()
+            publication = asyncio.create_task(server.routing.run(stop))
             try:
                 await listener.serve_forever()
             finally:
+                stop.set()
+                await publication
                 if registration:
                     registration[0].close()
 
@@ -368,6 +394,19 @@ def smoke(confirm=False):
         if not confirm:
             admit(Path('/deployment/cutover'), Path('/data'))
         assert admits(Path('/data'), journal['plan'][0]['principal'])
+        # This native content venue uses its local launcher instead of boxhostd.
+        # Seed its router fixture with real broker-bound lifecycle records. The
+        # production-launch proof above exercises authenticated snapshot push.
+        from tinyassets.routing_snapshot import snapshot
+
+        projection = snapshot(Path('/data'))
+        records = {}
+        for item in journal['plan']:
+            record = admission.owner(item['principal'])
+            records[item['principal']] = {
+                'state': 'admitted', 'socket': str(run / 'apps' / str(record['uid']) / 'app.sock'),
+                'secret': record['secret']}
+        projection.install(projection.instance, 1, records)
         router = OwnerRouter(Starlette(), resolver=resolve)
         try:
             if confirm:
@@ -547,14 +586,21 @@ supervisor = BrokerSupervisor.from_boxhost(
     Path('/data'), socket_path=Path(sys.argv[1]), proof='synthetic-rehearsal-proof' * 2)
 supervisor.start()
 action, owner, key = json.load(sys.stdin)
-keys = ApiKeyStore('/data')
-if action == 'mint':
-    key = keys.mint(owner, name='synthetic restore proof', scopes=[], authority=None)
-    assert keys.resolve(key['key']) is not None
-else:
-    if action == 'revoke':
-        keys.revoke(owner, key['key_id'], authority=None)
-    assert keys.resolve(key['key']) is None
+sys.path.insert(0, '/support')
+from rehearsal_serve import router_snapshot_call
+
+def execute():
+    keys = ApiKeyStore('/data')
+    selected = key
+    if action == 'mint':
+        selected = keys.mint(owner, name='synthetic restore proof', scopes=[], authority=None)
+        assert keys.resolve(selected['key']) is not None
+    else:
+        if action == 'revoke':
+            keys.revoke(owner, selected['key_id'], authority=None)
+        assert keys.resolve(selected['key']) is None
+    return selected
+key = router_snapshot_call(owner, execute)
 print(json.dumps(key))
 """
                         result = subprocess.run(

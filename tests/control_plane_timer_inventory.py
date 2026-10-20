@@ -45,6 +45,10 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/broker/deletion_jobs.py::DeletionJobs.run": (
         CONTROL_PLANE, "C6 broker resumes off-host deletion jobs until every step has a receipt",
     ),
+    "tinyassets/broker/routing.py::RoutingAuthority.run": (
+        CONTROL_PLANE, "C5 snapshot delivery retry and router restart bootstrap; "
+        "installed healthy routes never expire and no owner work runs here",
+    ),
 
     "tinyassets/broker/waker.py::Waker.run": (
         CONTROL_PLANE, "broker clock wakes admitted, unsuspended owners from timestamp-only "

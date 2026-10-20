@@ -539,7 +539,10 @@ def test_apply_splits_databases_seeds_stores_and_resumes(cutover, monkeypatch, c
     assert identity.stat().st_mode & 0o777 == 0o600
     assert identity.parent.stat().st_mode & 0o777 == 0o700
     with closing(sqlite3.connect(data / '.broker/state/owner-identities.db')) as db:
-        assert db.execute('SELECT * FROM owner_box_secrets').fetchall() == []
+        secrets = dict(db.execute('SELECT * FROM owner_box_secrets'))
+        assert set(secrets) == {'alice', 'bob'}
+        assert len(set(secrets.values())) == 2
+        assert all(len(secret) == 43 for secret in secrets.values())
         assert db.execute("SELECT name FROM sqlite_master "
                           "WHERE name='owner_box_revocations'").fetchall() == []
         with pytest.raises(sqlite3.IntegrityError, match='permanent'):
@@ -892,7 +895,7 @@ def test_migrated_owner_processes_serve_history_requests_and_pause(
                 app = run / str(uid)
                 app.mkdir()
                 secret = app / 'secret'
-                secret.write_text(identities.box_route(owner, rotate=True)[1])
+                secret.write_text(identities.box_route(owner)[1])
                 secret.chmod(0o400)
                 runtime.start(uid, uid, relay=relays.bind(owner, uid), app_dir=app,
                               secret_file=secret, memory_bytes=1024**3,

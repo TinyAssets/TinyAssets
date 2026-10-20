@@ -29,11 +29,12 @@ _DISPATCH = threading.Lock()
 
 def active_owner(owner: str, root: Path | None = None) -> bool:
     """One identity fence shared by every router authentication entry point."""
-    from tinyassets.broker.owner_identities import owner_admission
+    from tinyassets.routing_snapshot import snapshot
     from tinyassets.storage import data_dir
 
     try:
-        erased = owner_admission(root if root is not None else data_dir(), owner).state == "erased"
+        record = snapshot(root if root is not None else data_dir()).record(owner)
+        erased = record is not None and record.state == "erased"
     except Exception:
         return False
     if erased:
@@ -99,6 +100,15 @@ def credential_socket(root: Path) -> Path:
 
 def broker_request(root: Path, owner: str, request: dict) -> dict:
     """Broker forwarding only: the router remains the sole credential writer."""
+    return _request(root, {"op": "ROUTER_CREDENTIAL", "owner": owner, "request": request})
+
+
+def routing_request(root: Path, request: dict) -> dict:
+    """C5 broker publication is separate from owner-bound credential operations."""
+    return _request(root, {"op": "ROUTING_SNAPSHOT", "request": request})
+
+
+def _request(root, document):
     from tinyassets.broker.server import peer_uid
 
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
@@ -106,9 +116,7 @@ def broker_request(root: Path, owner: str, request: dict) -> dict:
         channel.connect(str(credential_socket(root)))
         if peer_uid(channel) != DAEMON_UID:
             raise PermissionError("credential peer is not the router")
-        channel.sendall(rf.control(rf.CONNECTION, {
-            "op": "ROUTER_CREDENTIAL", "owner": owner, "request": request,
-        }))
+        channel.sendall(rf.control(rf.CONNECTION, document))
         answer = rf.read_frame_blocking(channel)
     if answer is None or answer.kind != rf.CONTROL or answer.stream != rf.CONNECTION:
         raise ValueError("invalid router credential reply")
@@ -194,6 +202,19 @@ def _dispatch(root: Path, owner: str, request: dict) -> dict:
     raise ValueError("invalid credential operation")
 
 
+def routing_dispatch(root, request):
+    from tinyassets.routing_snapshot import snapshot
+
+    if request == {"operation": "routing_instance"}:
+        return {"instance": snapshot(root).instance}
+    if (request.get("operation") == "routing_install"
+            and set(request) == {"operation", "instance", "revision", "records"}):
+        revision = snapshot(root).install(request["instance"], request["revision"],
+                                          request["records"])
+        return {"revision": revision}
+    raise ValueError("invalid routing publication")
+
+
 @asynccontextmanager
 async def serving(root: Path):
     """Private router RPC: only the broker's kernel identity may supply an owner."""
@@ -209,11 +230,15 @@ async def serving(root: Path):
             if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
                 return
             doc = frame.control()
-            if (set(doc) != {"op", "owner", "request"}
-                    or doc["op"] != "ROUTER_CREDENTIAL"):
+            if set(doc) == {"op", "request"} and doc["op"] == "ROUTING_SNAPSHOT":
+                result = routing_dispatch(root, doc["request"])
+                answer = {"op": "ROUTING_SNAPSHOT_IS", "result": result}
+            elif (set(doc) == {"op", "owner", "request"}
+                    and doc["op"] == "ROUTER_CREDENTIAL"):
+                result = await asyncio.to_thread(dispatch, root, doc["owner"], doc["request"])
+                answer = {"op": "ROUTER_CREDENTIAL_IS", "result": result}
+            else:
                 raise ValueError("invalid router request")
-            result = await asyncio.to_thread(dispatch, root, doc["owner"], doc["request"])
-            answer = {"op": "ROUTER_CREDENTIAL_IS", "result": result}
         except (ValueError, PermissionError, sqlite3.Error, OSError, TimeoutError):
             answer = {"op": "ROUTER_CREDENTIAL_REFUSED"}
         finally:

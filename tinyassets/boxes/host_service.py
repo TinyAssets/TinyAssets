@@ -135,34 +135,24 @@ class HostService:
                 with self.volumes.operation(owner_uid):
                     RemoteRecords(self.volumes.remote).delete_snapshots(owner_uid)
                 return {"deleted": True}
-            if (uid == 1001 and operation == "resolve"
-                    and set(document) == {"lifecycle", "owner", "cleanup"}
-                    and type(document["cleanup"]) is bool):
-                return self.daemons.resolve(owner, cleanup=document["cleanup"])
-            if (uid == 1001 and operation == "release"
-                    and set(document) == {"lifecycle", "owner", "lease"}
-                    and isinstance(document["lease"], str)):
-                self.daemons.release(owner, document["lease"])
-                return {"released": True}
             if (uid == 0 and operation == "restore"
                     and set(document) == {"lifecycle", "owner", "snapshot_id"}):
                 return self.daemons.restore(owner, document["snapshot_id"])
             if (uid == 1002 and operation == "destroy"
                     and set(document) == {"lifecycle", "owner"}):
                 owner_uid = self.admission.volume(owner)["uid"]
-                self.admission.erase_admission(owner)
                 self.daemons.destroy(owner, owner_uid)
                 return {"destroyed": True}
-            if ((uid == 1001 or (uid == 1002 and document.get("scheduled") is True))
-                    and operation == "ensure_awake"
-                    and set(document) == {"lifecycle", "owner", "scheduled"}):
+            if (uid == 1002 and operation == "wake"
+                    and set(document) == {"lifecycle", "owner", "scheduled", "record"}):
                 scheduled = document["scheduled"]
                 if type(scheduled) is not bool:
                     raise ValueError("scheduled must be boolean")
                 if scheduled and not self._scheduled_slots.acquire(blocking=False):
                     raise BoxError("scheduled wake queue is full")
                 try:
-                    return {"uid": self.daemons.ensure_awake(owner, scheduled=scheduled)}
+                    return {"uid": self.daemons.ensure_awake(
+                        owner, scheduled=scheduled, launch=document["record"])}
                 finally:
                     if scheduled:
                         self._scheduled_slots.release()

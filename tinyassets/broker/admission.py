@@ -6,12 +6,31 @@ import hashlib
 import json
 import sqlite3
 import threading
+import weakref
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
 # C6: checkout intent must commit before erasure, or observe the erased record.
 transition_lock = threading.RLock()
+_owners = {}
+_authorities = weakref.WeakValueDictionary()
+
+
+def owner_lock(path, owner):
+    """C5: wake and every admission/credential transition share one owner lock."""
+    with transition_lock:
+        return _owners.setdefault((Path(path), owner), threading.RLock())
+
+
+def register_authority(path, authority):
+    _authorities[Path(path)] = authority
+
+
+def changed(path, owner):
+    authority = _authorities.get(Path(path))
+    if authority is not None:
+        authority.changed(owner)
 
 
 class OwnerSuspended(PermissionError):
@@ -129,8 +148,10 @@ def local_read(root, owner):
 
 
 def local_mutate(path, owner, action, **arguments):
-    with transition_lock, closing(sqlite3.connect(Path(path).as_uri() + "?mode=rw", uri=True,
-                                 timeout=30)) as db, db:
-        db.execute("PRAGMA synchronous=FULL")
-        db.execute("BEGIN IMMEDIATE")
-        mutate(db, owner, action, **arguments)
+    with owner_lock(path, owner):
+        with transition_lock, closing(sqlite3.connect(Path(path).as_uri() + "?mode=rw", uri=True,
+                                     timeout=30)) as db, db:
+            db.execute("PRAGMA synchronous=FULL")
+            db.execute("BEGIN IMMEDIATE")
+            mutate(db, owner, action, **arguments)
+        changed(path, owner)

@@ -144,6 +144,16 @@ class _InProcessBroker:
             policy_store=policy_store,
             data_root=data_root,
         )
+        # Synthetic shared processes exchange the production snapshot through
+        # the real router dispatcher; process suites exercise kernel IPC.
+        from tinyassets.router_credentials import routing_dispatch
+        from tinyassets.routing_snapshot import RoutingSnapshot, _snapshots
+
+        _snapshots.setdefault(data_root, RoutingSnapshot())
+        routing = self.server.routing
+        routing._router = lambda request: routing_dispatch(data_root, request)
+        routing.changed = lambda owner: routing.publish()
+        routing.publish()
         self._loop = asyncio.new_event_loop()
         self._listener: asyncio.AbstractServer | None = None
         listening = threading.Event()
@@ -290,6 +300,19 @@ def in_process_broker(request, monkeypatch):
 
     registry = _Registry()
     monkeypatch.setattr(supervisor, "get_supervisor", registry.supervisor_for)
+    from tinyassets import routing_snapshot
+
+    snapshot = routing_snapshot.snapshot
+
+    def started_snapshot(root):
+        root = Path(root)
+        exists = root in routing_snapshot._snapshots
+        result = snapshot(root)
+        if not exists:
+            registry.supervisor_for(root)
+        return result
+
+    monkeypatch.setattr(routing_snapshot, "snapshot", started_snapshot)
     try:
         yield registry
     finally:

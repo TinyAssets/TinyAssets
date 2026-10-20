@@ -8,7 +8,7 @@ from tinyassets.broker.admission import OwnerSuspended, require_admitted  # noqa
 from tinyassets.broker.owner_identities import validate_center, validate_principal
 
 
-def owner_record(identities, owner: str, *, rotate: bool) -> dict:
+def owner_record(identities, owner: str, *, for_wake=False) -> dict:
     """Root boxhostd's launch inputs; no center or UID is selected by a caller."""
     require_admitted(identities, owner)
     with identities._connect(write=False) as db:
@@ -21,25 +21,25 @@ def owner_record(identities, owner: str, *, rotate: bool) -> dict:
     from tinyassets.broker.owner_volumes import binding
 
     volume = binding(identities, owner)
-    if volume["work"] and volume["work"]["kind"] == "restore":
+    if not for_wake and volume["work"] and volume["work"]["kind"] == "restore":
         raise PermissionError("owner restore has not committed")
+    # C5 binds the wake before boxhostd resumes pending volume work. The host
+    # commits recovery and uses that resulting generation before any launch.
     result.update({key: volume[key] for key in (
         "volume_generation", "snapshot_id", "snapshot_sha256")})
     from tinyassets.usage_policy import limits_for
 
     result["quota"] = int(limits_for(identities.plans.read(owner)["tier"]).storage_bytes)
-    if rotate:
-        uid, result["secret"] = identities.box_route(owner, rotate=True)
-        if uid != result["uid"]:
-            raise RuntimeError("owner reservation changed")
+    uid, result["secret"] = identities.box_route(owner)
+    if uid != result["uid"]:
+        raise RuntimeError("owner reservation changed")
     return result
 
 
 def lifecycle(identities, doc):
-    if (set(doc) != {"op", "principal", "rotate"}
-            or doc["op"] != "BOX_LIFECYCLE" or type(doc["rotate"]) is not bool):
+    if set(doc) != {"op", "principal"} or doc["op"] != "BOX_LIFECYCLE":
         raise ValueError("invalid lifecycle request")
-    return owner_record(identities, doc["principal"], rotate=doc["rotate"])
+    return owner_record(identities, doc["principal"])
 
 
 def resolve(identities, request: dict) -> dict:

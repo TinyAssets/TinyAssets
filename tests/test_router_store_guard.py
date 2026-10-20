@@ -85,14 +85,11 @@ def test_policy_session_reader_refuses_in_box(tmp_path, monkeypatch):
 _ROUTER_IMPORTS = {
     "tinyassets.auth.middleware",
     "tinyassets.auth.provider",
-    "tinyassets.billing.stripe_adapter",  # Shared subscription cancellation.
-    "tinyassets.broker.account_erasure",  # Shared credential custody erasure.
-    "tinyassets.boxes.daemon_control",
     "tinyassets.broker.owner_identities",
     "tinyassets.onboarding.owner_sessions",
     "tinyassets.router_credentials",
+    "tinyassets.routing_snapshot",  # C5 in-memory projection; no store access.
     "tinyassets.router_traffic",  # Router-owned shared admission marker.
-    "tinyassets.router_account_deletion",  # Shared identity erasure.
     "tinyassets.storage",  # data_dir is passed only to the shared store APIs.
 }
 

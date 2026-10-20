@@ -158,7 +158,8 @@ def _census_rules() -> dict[str, dict[str, CensusRule]]:
     add(".owner_devices.db", "owner_devices owner_notify_settings request_notifications", "owner",
         principals=("owner_user_id",))
     add(".broker/state/owner-identities.db", "owner_identities center_admissions box_records "
-        "owner_box_secrets owner_box_revocations owner_volumes owner_snapshots owner_admission",
+        "owner_box_secrets owner_box_revocations owner_volumes owner_snapshots owner_admission "
+        "routing_sequence",
         "broker")
     add(".broker/plans.db", "plans checkout_settlements", "broker")
     add(".broker/state/next-wake.db", "next_wakes", "broker")
@@ -2162,7 +2163,7 @@ def cutover_identity_manifest(root: Path) -> str:
             "SELECT type,name,sql FROM sqlite_master ORDER BY type,name"
         ):
             evidence.append((kind, name, ddl))
-            if kind == "table" and name != "owner_box_secrets":
+            if kind == "table" and name not in {"owner_box_secrets", "routing_sequence"}:
                 rows = [json.dumps(list(row), sort_keys=True) for row in db.execute(
                     f"SELECT * FROM {_quoted(name)}")]
                 evidence.append((name, sorted(rows)))
@@ -2629,6 +2630,10 @@ def _seed_owner_admission(shared, ledger):
             if box is None or plan is None:
                 continue
             mutate(db, owner, "admit")
+            import secrets
+
+            db.execute("INSERT OR IGNORE INTO owner_box_secrets VALUES (?,?)",
+                       (owner, secrets.token_urlsafe(32)))
             for reason, suspended in zip(("billing", "abuse"), plan, strict=True):
                 mutate(db, owner, "suspend", reason=reason, suspended=bool(suspended))
         for key in erased:

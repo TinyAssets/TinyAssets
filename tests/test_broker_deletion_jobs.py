@@ -329,7 +329,7 @@ def test_door_deletion_removes_only_bound_owners_data_and_router_state(
             assert admitted.center_state("cc-alice-extra") == "admitted"
             assert rejected == [401]
             with pytest.raises(LookupError):
-                admitted.box_route("alice", rotate=True)
+                admitted.box_route("alice")
             for owner in ("alice", "bob"):
                 session = await client.post("/app/test-session", headers={
                     "cookie": owner_sessions.COOKIE + "=" + owner + "-cookie",

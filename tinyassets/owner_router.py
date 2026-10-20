@@ -1,13 +1,12 @@
-"""The shared door: authenticated identity -> broker admission -> Unix HTTP stream.
+"""The shared door: authenticated identity -> installed snapshot -> Unix HTTP stream.
 
-This module never imports an owner store. Boxhostd
-owns the wake step; the router never manages a process.
+This module never imports an owner store. The broker
+owns the cold wake step; the router never manages a process.
 """
 from __future__ import annotations
 
 import base64
 import json
-import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -54,43 +53,14 @@ def forwarded_path(path: str) -> bool:
 class BoxRoute:
     socket: Path
     secret: str
-    owner: str = ""
-    lease: str = ""
 
 
-def resolve_box(owner: str, *, cleanup=False) -> BoxRoute:
-    from tinyassets.boxes.daemon_control import request
-    from tinyassets.broker.owner_identities import owner_admission, owner_box_route
+def resolve_box(owner: str) -> BoxRoute:
+    from tinyassets.routing_snapshot import snapshot
     from tinyassets.storage import data_dir
 
-    if not cleanup:
-        owner_admission(data_dir(), owner).require_work()
-    result = request("resolve", owner, cleanup=cleanup)
-    expected = {"uid", "lease", "secret"} if cleanup else {"uid", "lease"}
-    if (set(result) != expected or type(result["uid"]) is not int
-            or not isinstance(result["lease"], str) or len(result["lease"]) != 43):
-        raise RuntimeError("invalid box lease response")
-    try:
-        if cleanup:
-            uid, secret = result["uid"], result["secret"]
-            if not isinstance(secret, str) or len(secret) != 43:
-                raise RuntimeError("invalid cleanup route secret")
-        else:
-            uid, secret = owner_box_route(data_dir(), principal=owner)
-        if uid != result["uid"]:
-            raise RuntimeError("owner box identity changed during wake")
-    except BaseException:
-        request("release", owner, lease=result["lease"])
-        raise
-    root = Path(os.environ.get("TINYASSETS_BOXES_RUN", "/run/tinyassets-boxhostd"))
-    return BoxRoute(root / str(uid) / "app.sock", secret, owner, result["lease"])
-
-
-def release_route(route):
-    if route.lease:
-        from tinyassets.boxes.daemon_control import request
-
-        request("release", route.owner, lease=route.lease)
+    route = snapshot(data_dir()).route(owner)
+    return BoxRoute(route.socket, route.secret)
 
 
 def _headers(headers, *, private=False):
@@ -115,8 +85,14 @@ class OwnerRouter:
             return await self.app(scope, receive, send)
         from tinyassets.auth.middleware import current_identity_or_none
         from tinyassets.router_traffic import admits
+        from tinyassets.routing_snapshot import snapshot
         from tinyassets.storage import data_dir
 
+        try:
+            snapshot(data_dir()).require_current()
+        except RuntimeError:
+            return await JSONResponse({"error": "routing_unavailable"}, status_code=503)(
+                scope, receive, send)
         identity = current_identity_or_none()
         if not forwarded_path(scope["path"]):
             # Only immutable public app assets and the independently keyed
@@ -170,7 +146,7 @@ class OwnerRouter:
         await forward(scope, receive, send, identity, route)
 
 
-async def forward(scope, receive, send, identity, route: BoxRoute):
+async def forward(scope, receive, send, identity, route: BoxRoute, *, cold=True):
     """One reverse proxy for every owner door, with bounded streaming and cancellation."""
     headers = _headers(scope["headers"], private=True)
     headers.extend([
@@ -184,15 +160,12 @@ async def forward(scope, receive, send, identity, route: BoxRoute):
         target += b"?" + scope["query_string"]
     url = httpx.URL("http://owner").copy_with(raw_path=target)
     started = False
-    released = False
     try:
         transport = httpx.AsyncHTTPTransport(uds=str(route.socket))
         timeout = httpx.Timeout(connect=5, read=None, write=30, pool=5)
         async with httpx.AsyncClient(transport=transport, timeout=timeout) as client:
             async with client.stream(scope["method"], url, headers=headers,
                                      content=Request(scope, receive).stream()) as response:
-                await run_in_threadpool(release_route, route)
-                released = True
                 await send({"type": "http.response.start", "status": response.status_code,
                             "headers": _headers(response.headers.raw)})
                 started = True
@@ -210,11 +183,23 @@ async def forward(scope, receive, send, identity, route: BoxRoute):
                     tasks.cancel_scope.cancel()
     except ClientDisconnect:
         return
+    except httpx.ConnectError:
+        if not cold:
+            return await JSONResponse({"error": "box_unavailable"}, status_code=503)(
+                scope, receive, send)
+        from tinyassets.broker.owner_identities import wake_owner
+        from tinyassets.storage import data_dir
+
+        try:
+            await run_in_threadpool(wake_owner, data_dir(), principal=identity.user_id)
+            route = resolve_box(identity.user_id)
+        except (LookupError, OSError, RuntimeError):
+            return await JSONResponse({"error": "box_unavailable"}, status_code=503)(
+                scope, receive, send)
+        # ConnectError occurs before HTTP headers or the request body are sent.
+        # Wake replies contain no route: always select the current projection.
+        await forward(scope, receive, send, identity, route, cold=False)
     except httpx.HTTPError:
         if started:
             raise  # A truncated stream must never look like a successful response.
         await JSONResponse({"error": "box_unavailable"}, status_code=503)(scope, receive, send)
-    finally:
-        if not released:
-            with anyio.CancelScope(shield=True):
-                await run_in_threadpool(release_route, route)

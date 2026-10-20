@@ -82,8 +82,8 @@ async def probe():
                     "op": "BOX_VOLUME", "principal": owner,
                     "action": action, "arguments": arguments})
 
-            def owner(self, owner, *, rotate=False):
-                return owner_record(identities, owner, rotate=rotate)
+            def owner(self, owner):
+                return owner_record(identities, owner)
 
             def retire(self, owner, uid):
                 assert channel._retire_box_admission({
@@ -116,7 +116,7 @@ async def probe():
             uid = identities.resolve(owner, allocate=True).uid
             identities.admission("admit", owner, owner)
             box_admission.provision(identities, shared, owner, owner)
-            identities.box_route(owner, rotate=True)
+            identities.box_route(owner)
             identities.plans.apply(owner, tier="paid", event_created=1)
             if owner == "suspended":
                 identities.plans.set_suspension(owner, reason="billing", suspended=True)

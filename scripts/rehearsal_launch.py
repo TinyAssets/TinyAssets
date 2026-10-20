@@ -113,7 +113,7 @@ os.execve(sys.executable, [sys.executable, '-B', '/support/deploy/boxhostd.py',
 
 
 def production_launch(owner_name):
-    """Wake through the UID1001 socket using production quota, relay and runsc."""
+    """UID1001 asks the broker to wake, using production volumes, relay and runsc."""
     import sqlite3
     from contextlib import closing
 
@@ -136,16 +136,31 @@ def production_launch(owner_name):
                         raise RuntimeError("launch broker did not start")
                     time.sleep(.05)
                 code = """
-import json, sys
+import asyncio, json, sys
+from pathlib import Path
 from tinyassets.boxes.daemon_control import request
+from tinyassets.broker.owner_identities import wake_owner
+from tinyassets.broker.supervisor import BrokerSupervisor
+from tinyassets.router_credentials import serving
+supervisor = BrokerSupervisor.from_boxhost(
+    Path('/data'), socket_path=Path('/run/tinyassets-boxhostd/broker/broker.sock'),
+    proof='synthetic-rehearsal-proof' * 2)
+supervisor.start()
 owner = sys.argv[1]
-uid = request('ensure_awake', owner, scheduled=False)['uid']
-assert request('status', owner)['awake']
-print(json.dumps({'uid': uid}))
+async def launch():
+    async with serving(Path('/data')):
+        await asyncio.to_thread(wake_owner, Path('/data'), principal=owner)
+        status = await asyncio.to_thread(request, 'status', owner)
+        assert status['awake']
+        print(json.dumps({'uid': status['uid']}))
+asyncio.run(launch())
 """
-                # ensure_awake returns only after authenticated owner app readiness.
-                result = subprocess.run([sys.executable, "-B", "-c", code, owner_name],
-                    user=1001, group=1001, extra_groups=[1102], env={**env, "PYTHONPATH": "/app"},
+                # The broker returns only after authenticated owner app readiness.
+                result = subprocess.run([
+                    "setpriv", "--reuid=1001", "--regid=1001", "--groups=1100,1101,1102",
+                    "--bounding-set=-all", "--no-new-privs",
+                    sys.executable, "-B", "-c", code, owner_name],
+                    env={**env, "PYTHONPATH": "/app"},
                     capture_output=True, text=True, timeout=90, check=True)
                 uid = json.loads(result.stdout)["uid"]
                 owner = cgroup / f"owner-{uid}"
