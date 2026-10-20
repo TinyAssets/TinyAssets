@@ -23,6 +23,9 @@ STORE_SRC = pathlib.Path(session_store.__file__).read_text(encoding="utf-8")
 @pytest.fixture(autouse=True)
 def _data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    from tests.support.broker_double import seed_owner_admission
+
+    seed_owner_admission(tmp_path, principal="owner", center="cc-owner")
     # The seal key is a process singleton and now also keys the filename digest.
     session_store._reset_for_tests()
     yield tmp_path

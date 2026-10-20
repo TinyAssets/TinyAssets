@@ -27,6 +27,9 @@ from tinyassets.onboarding import session_store
 @pytest.fixture(autouse=True)
 def _data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    from tests.support.broker_double import seed_owner_admission
+
+    seed_owner_admission(tmp_path, principal="owner", center="cc-owner")
     # The seal key is a process singleton: without the reset, a key minted for a
     # previous tmp dir seals records this test cannot open.
     session_store._reset_for_tests()
