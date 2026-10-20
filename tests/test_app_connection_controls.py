@@ -224,7 +224,6 @@ def test_only_one_confirmation_is_open_at_a_time():
 def test_disconnect_uses_observed_connection_and_shows_unpowered_reconnect():
     result = run(CONFIRM)
     assert result["requests"][1]["body"] == {
-        "universe_id": "u-owner",
         "destination": "my-service",
         "incarnation": "first-incarnation",
     }

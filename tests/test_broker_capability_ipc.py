@@ -34,9 +34,14 @@ def test_capability_real_ipc_configures_reads_and_disables(discovery):
     {"grant_id": "missing"}, {"connection_id": "foreign"},
 ])
 def test_capability_real_ipc_refuses_foreign_scope(discovery, change):
-    with pytest.raises(GrantResolutionError):
-        operation(discovery, **change)
-    assert discovery.ledger.get_connection_capability("conn-a", "constant_headers") is None
+    if "command_center" in change:
+        assert operation(discovery, **change).descriptor() == document()["descriptor"]
+        assert discovery.ledger.get_connection_capability(
+            "conn-a", "constant_headers").descriptor() == document()["descriptor"]
+    else:
+        with pytest.raises(GrantResolutionError):
+            operation(discovery, **change)
+        assert discovery.ledger.get_connection_capability("conn-a", "constant_headers") is None
     assert not (discovery.root / "outbound.db").exists()
 
 

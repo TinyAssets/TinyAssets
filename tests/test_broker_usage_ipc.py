@@ -163,8 +163,11 @@ def test_unavailable_authority_never_grants_capacity(source, monkeypatch, change
     else:
         budget.universe = "cc-bob"
     try:
-        with pytest.raises(ProviderAuthorityHeldError):
-            reference(source, budget, ordinal)
+        if change == "center":
+            assert reference(source, budget, ordinal)
+        else:
+            with pytest.raises(ProviderAuthorityHeldError):
+                reference(source, budget, ordinal)
         assert not (source.root / ".tinyassets.db").exists()
     finally:
         budget._lease.close()
@@ -194,12 +197,13 @@ def test_joined_child_attempt_settles_once_on_parent(source):
         parent.close()
 
 
-def test_join_rejects_another_owner_or_center_before_reservation(source):
+def test_join_is_owner_bound_across_local_centers(source):
     parent = make_budget(source)
     try:
-        for owner, center in (("bob", "cc-alice"), ("alice", "cc-bob")):
-            with pytest.raises(ProviderAuthorityHeldError):
-                TurnRequestBudget.join(source.root, owner, center, parent.usage_id)
+        with pytest.raises(ProviderAuthorityHeldError):
+            TurnRequestBudget.join(source.root, "bob", "cc-alice", parent.usage_id)
+        child = TurnRequestBudget.join(source.root, "alice", "cc-bob", parent.usage_id)
+        assert child.usage_id == parent.usage_id
         assert parent.receipt()["reserved"] == 0
     finally:
         parent.close()
@@ -228,8 +232,8 @@ def test_model_launch_reference_is_allocation_scoped_and_revoked_on_close(source
             parent.issue_launch_reference("turn", "turn-b", "agent-a", 1)
         with pytest.raises(ProviderAuthorityHeldError):
             store.resolve_launch_reference("bob", "cc-alice", reference)
-        with pytest.raises(ProviderAuthorityHeldError):
-            store.resolve_launch_reference("alice", "cc-bob", reference)
+        assert store.resolve_launch_reference("alice", "cc-bob", reference) == (
+            store.resolve_launch_reference("alice", "cc-alice", reference))
         assert store.resolve_launch_reference("alice", "cc-alice", reference) == {
             "usage_id": parent.usage_id, "authority_kind": "turn",
             "authority_id": "turn-a", "agent_binding_id": "agent-a",

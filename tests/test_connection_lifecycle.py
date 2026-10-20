@@ -247,7 +247,6 @@ def test_app_lists_and_removes_without_llm(rig, monkeypatch):
     row = doc["connections"][0]
     status, result = post_connections(
         {
-            "universe_id": "u-owner",
             "destination": row["destination"],
             "incarnation": row["incarnation"],
         },
@@ -277,7 +276,6 @@ def test_cross_origin_cannot_disconnect(rig, monkeypatch):
     _home(monkeypatch, "u-owner")
     status, _ = post_connections(
         {
-            "universe_id": "u-owner",
             "destination": "model:mine",
             "incarnation": ledger.incarnation(conn["connection_id"]),
         },
