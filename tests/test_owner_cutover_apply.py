@@ -867,12 +867,13 @@ def test_migrated_owner_processes_serve_history_requests_and_pause(
             assert request is not None
             requests[center] = request['request_id']
         set_founder_home(data, founder_sub=owner, universe_id=centers[0], platform_generated=True)
+    # Seeding uses the production initializers in this process. Release their
+    # cyclic SQLite handles before the census reads the stopped-writer tree, so
+    # a collected handle cannot remove a WAL file mid-read.
+    gc.collect()
     report = migration.census(data)
     assert report['ready'], report['refusals']
     # The paired backup must contain the actual seeded pre-cutover generation.
-    # Seeding uses the production initializers in this process. Release their
-    # cyclic SQLite handles before modeling the stopped-writer snapshot.
-    gc.collect()
     before = _fingerprint(data)
     with tarfile.open(cutover[2], 'w:gz') as archive:
         archive.add(data, arcname='_data')
