@@ -140,8 +140,11 @@ def _ledger(base: Path, actor: str) -> Any:
 
 def _http_records(udir: Path) -> list[dict[str, Any]]:
     from tinyassets.credential_vault import custody_namespace, load_credential_vault
+    from tinyassets.daemon_server import list_universe_acl
 
-    return [r for r in load_credential_vault(custody_namespace(udir.parent, "founder"))
+    owner = next(row["actor_id"] for row in list_universe_acl(udir.parent, universe_id=udir.name)
+                 if row["permission"] == "admin")
+    return [r for r in load_credential_vault(custody_namespace(udir.parent, owner))
             if r.get("credential_type") == "http"]
 
 

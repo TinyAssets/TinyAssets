@@ -234,7 +234,11 @@ def test_cross_user_and_context_spoofing_fail_closed(tmp_path):
     assert invoke(service, op="catalog")["error"] == "research_is_read_only"
     other = tmp_path / "other-universe"
     other.mkdir()
-    assert call(backend(other))["error"] == "unknown capability"
+    from tinyassets.daemon_server import grant_universe_ownership
+
+    grant_universe_ownership(tmp_path, universe_id=other.name, owner_id="user-1")
+    assert [item["name"] for item in invoke(backend(other), op="catalog")["capabilities"]] == [
+        "policy:show", "policy:propose", "browser", "connection:conn-http:POST"]
 
 
 def test_context_is_rechecked_below_catalog_and_packet_cannot_override_it(tmp_path):

@@ -226,7 +226,7 @@ def test_an_agent_source_ask_returns_a_door_link_without_discovery(hf, app):
 
 def test_source_sign_in_commits_the_broker_grant(hf, app, monkeypatch):
     from tinyassets.connection_oauth.tokens import decode
-    from tinyassets.credential_vault import load_credential_vault
+    from tinyassets.credential_vault import custody_namespace, load_credential_vault
 
     done = _sign_in(hf, _tap())
     assert done.status_code == 200, done.text
@@ -239,13 +239,13 @@ def test_source_sign_in_commits_the_broker_grant(hf, app, monkeypatch):
     authorize = hf.authorize_queries[0]
     assert authorize["client_id"] == CIMD and authorize["redirect_uri"] == REDIRECT
     assert authorize["scope"] == "openid profile inference-api"
-    records = [r for r in load_credential_vault(app / UID)
+    records = [r for r in load_credential_vault(custody_namespace(app, OWNER))
                if r.get("destination") == "model-huggingface"]
     assert len(records) == 1
     bundle = decode(records[0]["token"])
     assert bundle.token_url == f"https://{ISSUER}/oauth/token" and bundle.client_id == CIMD
     assert bundle.access_token == hf.issued[0] and bundle.refresh_token
-    assert body["model_confirmation"] == {"grant_id": body["grant_id"], "universe_id": UID}
+    assert body["model_confirmation"] == {"grant_id": body["grant_id"]}
 
     from tinyassets.onboarding.source_connect import offer_connection_access, sign_in_action
     from tinyassets.provider_assignment import load_provider_assignment

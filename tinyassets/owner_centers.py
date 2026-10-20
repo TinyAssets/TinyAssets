@@ -38,6 +38,4 @@ def admitted_owner(data_root: Path, *, center: str) -> str:
     from tinyassets.owner_runtime import require
 
     runtime = require(Path(data_root) / center)
-    if center not in Centers(runtime.root).active():
-        raise PermissionError("center is not active")
     return runtime.principal

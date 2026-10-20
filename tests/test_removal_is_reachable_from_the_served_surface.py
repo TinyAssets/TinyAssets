@@ -50,9 +50,9 @@ def base(tmp_path, monkeypatch):
 
 
 def _vault_http(udir):
-    from tinyassets.credential_vault import load_credential_vault
+    from tests.test_http_connection_provisioning import _http_records
 
-    return [r for r in load_credential_vault(udir) if r["credential_type"] == "http"]
+    return _http_records(udir)
 
 
 # --------------------------------------------------------------- the flow

@@ -39,7 +39,7 @@ def local_operation(ledger, *, principal, command_center, document):
                 if document["action"] == "erase" else 0)
             return {"resource": None, "incarnation": "", "removed": False,
                     "secrets_removed": removed, "revocation_message": ""}
-        # Deterministic center/destination identity also permits recovery of a
+        # Deterministic owner/destination identity also permits recovery of a
         # revoked connection or interrupted deposit with no surviving grant.
         if (row["owner_user_id"] != principal or row["connection_type"] != "http"
                 or row["connection_class"] != "http" or row["provider"] != "http"

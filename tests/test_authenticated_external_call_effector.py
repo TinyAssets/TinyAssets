@@ -93,6 +93,9 @@ def _setup(
     from tests.support.broker_double import seed_owner_admission
 
     seed_owner_admission(data_root, principal="user-1", center=universe_id)
+    from tinyassets.daemon_server import grant_universe_ownership
+
+    grant_universe_ownership(data_root, universe_id=universe_id, owner_id="user-1")
     universe_dir = data_root / universe_id
     write_credential_vault(
         custody_namespace(data_root, "user-1"),

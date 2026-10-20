@@ -10,7 +10,7 @@ from tests.test_owner_cutover_census import _fingerprint, source  # noqa: F401
 from tinyassets import box_layout_migration as migration
 from tinyassets.boxes.lifecycle import admit_center, retire_center
 from tinyassets.broker.policy import _canonical, _digest
-from tinyassets.owner_centers import Centers
+from tinyassets.owner_centers import Centers, admitted_owner
 
 
 def test_center_operations_change_only_the_box(tmp_path, monkeypatch):
@@ -49,11 +49,13 @@ def test_center_operations_change_only_the_box(tmp_path, monkeypatch):
         pid=os.getpid(), root=box, principal="alice"))
     centers = Centers(box)
     assert centers.active() == []
+    assert admitted_owner(box, center="one") == "alice"
     for name in ("one", "two", "three"):
         admit_center(box, principal="alice", center=name)
     assert centers.active() == ["one", "three", "two"]
     retire_center("two")
     assert Centers(box).active() == ["one", "three"]
+    assert admitted_owner(box, center="two") == "alice"
     after = _fingerprint(shared), sorted(p.relative_to(shared) for p in shared.rglob("*"))
     assert after == before
 

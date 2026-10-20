@@ -7,13 +7,12 @@ an unmapped uid is refused before a frame is read. Frames are
 
 A stream's life, for an ``OPEN`` on an owner channel:
 
-1. the frame is checked for the role (an owner names principal and command
-   center; a box channel is not served yet and is refused);
+1. the frame is checked for its role and bound to the authenticated owner;
 2. the grant is authorized with ``ConnectionLedger.authorize_exact``, the same
    checks ``resolve_exact_scoped_proxy`` runs, as that principal;
 3. the stream's ``(generation, token)`` must equal the persisted fence;
-4. the operation is admitted in the op store (namespace = principal and
-   command center, bound to a digest of the request). A known operation is
+4. the operation is admitted in the op store (namespace = authenticated owner,
+   bound to a digest of the request). A known operation is
    never sent again: the stream ends ``refused``/``duplicate`` carrying the
    operation's recorded state;
 5. on the stream's thread: ``may_have_sent`` is written durably and
