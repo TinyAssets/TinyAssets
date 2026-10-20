@@ -4616,6 +4616,161 @@
     $("btn-cloud-menu").setAttribute("aria-expanded","false");
     if(!(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement))) focusCommandCenter();
   }
+  // ---- Telling someone else about it: Share, and Rate on the store ----------
+  //
+  // Google Play closed test, 2026-10-20: two of the four tester suggestions were
+  // a Rate option and a Share option. Both are entries in the ⋯ menu beside
+  // Apps and Account, which is where everything else about this install lives.
+  const APP_SITE_URL="https://tinyassets.io";
+  const PLAY_LISTING_URL="https://play.google.com/store/apps/details?id=io.tinyassets.app";
+  const SHARE_TEXT="TinyAssets gives you your own agent that gets things done.";
+  // Only Android has a store listing to rate. There is no iOS or web store
+  // target yet, so a Rate button on those surfaces would lead nowhere: it is
+  // hidden rather than shown-and-broken.
+  function rateSurface(){
+    if(!NATIVE || !window.Capacitor || typeof window.Capacitor.getPlatform!=="function") return "";
+    return window.Capacitor.getPlatform()==="android" ? "android" : "";
+  }
+  // The share confirmation uses the one status line under the composer, like
+  // every other notice this page writes. It clears itself after a while, but
+  // ONLY if it is still the line on screen: whatever wrote next owns it.
+  let shareNoticeTimer=null;
+  function shareNotice(text){
+    setStatusLine(text);
+    clearTimeout(shareNoticeTimer);
+    shareNoticeTimer=setTimeout(()=>{
+      if($("status-line").textContent===text) setStatusLine("");
+    },8000);
+  }
+  async function rateApp(){
+    try{ await openExternal(PLAY_LISTING_URL); }
+    catch(error){
+      setStatusLine("Could not open the Play Store page: "+((error&&error.message)||"unknown error")
+        +". It is "+PLAY_LISTING_URL);
+    }
+  }
+  async function shareApp(){
+    // navigator.share must be called in the click's own task, so nothing is
+    // awaited before it.
+    if(typeof navigator.share==="function"){
+      try{ await navigator.share({title:"TinyAssets",text:SHARE_TEXT,url:APP_SITE_URL}); return; }
+      catch(error){
+        // Closing the share sheet is a decision, not a failure: say nothing.
+        if(error && error.name==="AbortError") return;
+        setStatusLine("Could not share: "+((error&&error.message)||"unknown error")
+          +". The link is "+APP_SITE_URL);
+        return;
+      }
+    }
+    try{
+      if(!navigator.clipboard || typeof navigator.clipboard.writeText!=="function")
+        throw new Error("this browser has no share sheet and no clipboard");
+      await navigator.clipboard.writeText(APP_SITE_URL);
+      shareNotice("Link copied: "+APP_SITE_URL);
+    }catch(error){
+      // Never a silent no-op: the owner asked to share and must be told it did
+      // not happen, with the link they can copy by hand.
+      setStatusLine("Could not copy the link: "+((error&&error.message)||"unknown error")
+        +". It is "+APP_SITE_URL);
+    }
+  }
+
+  // ---- The first-run walkthrough -------------------------------------------
+  //
+  // The third tester suggestion. Shown once per device, the first time a
+  // signed-in owner reaches the chat, and never to someone who already has a
+  // conversation here: a returning owner lands in their chat, not in a tour.
+  const TOUR_SEEN_KEY="app.tour.seen";
+  // Storage that throws (a locked-down WebView, a private window) means the
+  // tour is simply offered again next time. It never blocks the chat.
+  function tourSeen(){
+    try{ return localStorage.getItem(TOUR_SEEN_KEY)==="1"; }catch(_error){ return false; }
+  }
+  function markTourSeen(){
+    try{ localStorage.setItem(TOUR_SEEN_KEY,"1"); }catch(_error){ /* shown again next time */ }
+  }
+  // Each step describes controls that are REALLY on this screen, and the ⋯ step
+  // names Rate only where the Rate button exists, so the tour never points at
+  // something the surface does not have.
+  function tourSteps(){
+    const rateShown=!$("btn-rate-app").hidden;
+    return [
+      {head:"Tell your agent what you want done",
+       text:"Type it in the box at the bottom marked “Message your agent” and press Send. "+
+         "Enter sends; Shift and Enter start a new line. The paperclip attaches a file. "+
+         "While your agent works, the line under the box says what it is doing, and Stop ends the turn."},
+      {head:"Connect the AI your agent thinks with",
+       text:"Your agent thinks with an AI source you connect, running on your own account there. "+
+         "The first time it needs one, the chat opens a “Connect free AI” panel: choose a "+
+         "source, sign in there and approve. You can open it again whenever you like from "+
+         "⋯ → Account → Connect free AI."},
+      {head:"Share what you build, and copy what others built",
+       text:"Ask your agent in the chat to build you a screen, an app or a game. "+
+         "“Browse / Switch command centers” at the top of the chat opens “Try someone "+
+         "else’s” for what other people have shared. To share yours, ask your agent to "+
+         "publish it: it sends you a Publish request, you confirm it under “Needs you”, and "+
+         "your conversations, keys and automation inputs are never part of it."},
+      {head:"The ⋯ menu has the rest",
+       text:"The ⋯ button at the top of the chat opens the command center menu: Apps for your "+
+         "installed screens, Account for your connections, your agent and your settings, and "+
+         "Share TinyAssets to send someone the link."+
+         (rateShown ? " Rate TinyAssets is there too; it opens this app’s Play Store page." : "")},
+    ];
+  }
+  let tourStep=0, tourStepList=[];
+  function paintTourStep(){
+    const step=tourStepList[tourStep], total=tourStepList.length;
+    if(!step) return;
+    $("tour-progress").textContent="Step "+(tourStep+1)+" of "+total;
+    $("tour-step-head").textContent=step.head;
+    $("tour-step-text").textContent=step.text;
+    $("btn-tour-back").disabled=tourStep===0;
+    $("btn-tour-next").textContent=tourStep===total-1 ? "Done" : "Next";
+    $("tour-step-head").focus();
+  }
+  function startFirstRunTour(){
+    const dialog=$("first-run-tour");
+    if(!dialog || dialog.open) return false;
+    tourStepList=tourSteps(); tourStep=0;
+    // showModal, not an overlay div: it stacks above the connect request an
+    // unconnected first run already has open, and it traps Tab for free.
+    dialog.showModal();
+    paintTourStep();
+    return true;
+  }
+  // Skip, Done and Escape are all the same decision: do not show it again.
+  function endFirstRunTour(){
+    markTourSeen();
+    const dialog=$("first-run-tour");
+    if(dialog && dialog.open) dialog.close();
+  }
+  function maybeStartFirstRunTour(){
+    if(tourSeen() || historyLoaded || hasMessages) return false;
+    return startFirstRunTour();
+  }
+  // The one way in, used by enterSignedIn. The walkthrough waits for the
+  // history peek, because the peek is what says whether this owner is new
+  // here; an owner with a conversation already is never stopped by it.
+  function offerFirstRunWalkthrough(){
+    return loadHistory().then(()=>maybeStartFirstRunTour());
+  }
+  function wireFirstRunTour(){
+    $("btn-share-app").addEventListener("click",()=>{ shareApp(); });
+    $("btn-rate-app").hidden=rateSurface()!=="android";
+    $("btn-rate-app").addEventListener("click",()=>{ rateApp(); });
+    $("btn-tour-next").addEventListener("click",()=>{
+      if(tourStep>=tourStepList.length-1){ endFirstRunTour(); return; }
+      tourStep++; paintTourStep();
+    });
+    $("btn-tour-back").addEventListener("click",()=>{
+      if(tourStep===0) return;
+      tourStep--; paintTourStep();
+    });
+    $("btn-tour-skip").addEventListener("click",()=>{ endFirstRunTour(); });
+    // Escape reaches the dialog's own cancel; let it close, and remember it.
+    $("first-run-tour").addEventListener("cancel",()=>{ markTourSeen(); });
+  }
+
   function wireCommandCenter(){
     $("view-chat").addEventListener("pointerdown",event=>{
       if(!event.target.closest("#chat-cloud, #chat-cloud-bubble")){
@@ -5065,7 +5220,9 @@
     // reachable until a later store submission declares and verifies that surface.
     if(!NATIVE) Voice.refreshCapability();
     loadPlan();
-    loadHistory();
+    // Not awaited: nothing about the chat waits on the history peek, and the
+    // walkthrough rides on it rather than on a timer.
+    offerFirstRunWalkthrough();
     HostedModelConnect.paint();
     if(connected){ $("composer-input").focus(); refreshRail(); return; }
     if(HostedModelConnect.setup==="unavailable")
@@ -6515,6 +6672,8 @@
     });
     $("btn-plan").addEventListener("click", onPlanClick);
     $("btn-signin").addEventListener("click",beginSignIn);
+    // The ⋯ menu's Share and Rate entries, and the first-run walkthrough.
+    if(typeof wireFirstRunTour === "function") wireFirstRunTour();
     // ---- File attachments (paperclip). Every accepted file is uploaded
     // through POST /app/files and its server-issued reference travels in
     // the turn; small text that round-trips byte-for-byte also rides inline
