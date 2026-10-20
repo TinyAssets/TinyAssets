@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.support.admission import Plans, projection
+from tests.support.admission import Plans, drive, projection
 from tests.test_billing_boundary import SECRET, _subscription_event
 from tests.test_broker_deletion_jobs import Remote
 from tests.test_owner_cutover_census import source as source
@@ -392,7 +392,7 @@ def test_disaster_resync_reads_current_subscription_through_adapter(
         assert path == "subscriptions/sub_tinyassets"
         return obj
     monkeypatch.setattr(stripe, "_get", get)
-    report = stripe.restore_billing(tmp_path, 100)
+    report = drive(stripe.restore_billing(tmp_path, 100, routing=plans.routing))
     assert report["plans_synced"] == 1
     assert calls == ["subscriptions?status=all&limit=100", "subscriptions/sub_tinyassets"]
     plan = plans.read("alice")
@@ -427,7 +427,8 @@ def test_disaster_resync_migrated_signed_universe_subscription(tmp_path, monkeyp
         return {"subscriptions/sub_backup": cancelled, "subscriptions/sub_current": obj}[path]
 
     monkeypatch.setattr(stripe, "_get", get)
-    assert stripe.restore_billing(tmp_path, 100)["plans_synced"] == 1
+    assert drive(stripe.restore_billing(tmp_path, 100,
+                                       routing=plans.routing))["plans_synced"] == 1
     assert calls == ["subscriptions?status=all&limit=100", "subscriptions/sub_current"]
     plan = plans.read("alice")
     assert plan["tier"] == "paid"
@@ -454,7 +455,7 @@ def test_disaster_discovery_refuses_signed_owner_conflicting_with_customer(billi
 
     monkeypatch.setattr(stripe, "_get", get)
     with pytest.raises(stripe.BillingUnavailable, match="identity mismatch"):
-        stripe.restore_billing(root, 100)
+        drive(stripe.restore_billing(root, 100, routing=plans.routing))
     assert calls == ["subscriptions?status=all&limit=100"]
     assert {owner: plans.read(owner) for owner in before} == before
 

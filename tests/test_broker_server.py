@@ -729,7 +729,7 @@ def test_async_client_reconnects_after_broker_eof(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("damage", ["erased", "operation"])
 def test_record_withdrawal_closes_idle_streams(broker, tmp_path, damage, monkeypatch):
-    from tinyassets.broker.admission import local_mutate
+    from tinyassets.broker.admission import local_mutate, owner_call
 
     monkeypatch.setattr(broker.server.routing, "publish", lambda **kw: None)
     monkeypatch.setattr("tinyassets.boxes.daemon_control.request",
@@ -769,8 +769,10 @@ def test_record_withdrawal_closes_idle_streams(broker, tmp_path, damage, monkeyp
             assert rf.read_frame_blocking(client).control()["op"] == "HEAD"
         started = time.monotonic()
         if damage == "erased":
-            local_mutate(broker.server._owner_identities.path, "alice", "erase",
-                routing=projection(broker.server._owner_identities.path))
+            asyncio.run_coroutine_threadsafe(owner_call(
+                broker.server._owner_identities.path, "alice", local_mutate,
+                broker.server._owner_identities.path, "alice", "erase",
+                routing=broker.server.routing), broker.server._loop).result(3)
         else:
             asyncio.run_coroutine_threadsafe(
                 broker.server.withdraw_channels("alice"), broker.server._loop).result(3)
