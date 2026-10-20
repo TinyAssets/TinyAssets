@@ -577,19 +577,19 @@ and `RETIRE_CENTER`, per-center vault directories, `_namespace`,
   channels by **owner**;
 - centers are a table inside the box, so creating and retiring a center are box
   operations;
-- the stopped cutover migration (the one-shot exception) re-keys custody:
-  - it derives each credential's, connection's and grant's owner from verified
-    ownership records, and checks that this agrees with the admitted
+- the stopped cutover migration (the one-shot exception) does **not** re-key
+  custody (amended 2026-10-20; founder rules: "reconnecting, signing in again
+  or re-creating are acceptable user costs", and every account already
+  reconnects a model source):
+  - it writes each owner's center table into that owner's box from the admitted
     center-to-owner mapping;
-  - missing or conflicting ownership refuses the migration, and directory names
-    alone never assign custody;
-  - re-keying keeps credentials and connections distinct when several of one
-    owner's centers use the same service, preserves revocations and credential
-    scopes, and rebuilds the affected references and binding digests without
-    widening any grant;
-  - center-local authorization moves into the owner's box;
-  - publication is restartable and exposes only the complete owner-keyed layout,
-    and then the center-keyed stores and lookup paths are deleted.
+  - it drops every center-keyed credential, connection, grant and policy scope,
+    and the census counts the drops per kind; owners reconnect through the
+    door's ordinary connection flow, which already shows a missing connection
+    as not connected;
+  - nothing is carried that could be attributed to the wrong owner, so there is
+    no ownership join, digest rebuild or same-service merge question;
+  - the center-keyed stores and lookup paths are deleted.
 
 **Deleted:** the shared center tables, ops, environment and per-center
 directories listed above.

@@ -288,10 +288,11 @@ and relay channels by owner. An owner's centers SHALL be a table inside
 the owner's box, and creating or retiring a center SHALL be a box operation. The
 shared layer SHALL hold no center admission table and no per-center store.
 
-#### Scenario: Re-keying never widens or merges credentials
-- **WHEN** the cutover migration re-keys custody from center to owner
-- **THEN** each credential's owner comes from verified ownership records that agree with the center-to-owner mapping
-- **AND** missing or conflicting ownership refuses the migration, and same-service credentials of different centers stay distinct
+#### Scenario: The cutover drops center-keyed custody
+- **WHEN** the cutover migration runs
+- **THEN** each owner's center table is written into that owner's box from the admitted center-to-owner mapping
+- **AND** every center-keyed credential, connection, grant and policy scope is dropped and counted, and no custody is carried into the owner-keyed stores
+- **AND** owners reconnect through the door's ordinary connection flow
 
 #### Scenario: Creating a center touches no shared store
 - **WHEN** an owner creates a new center
