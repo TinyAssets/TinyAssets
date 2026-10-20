@@ -432,20 +432,24 @@ def create_checkout_session(
 
 
 def restore_billing(root, now):
-    """Offline staging writer; remote reads use the ordinary Stripe adapter seam."""
+    """C3 startup refresh of every retained account's billing reason."""
     from contextlib import closing
 
     from tinyassets.billing.events import subscription_owner
+    from tinyassets.broker.admission import admission
     from tinyassets.broker.owner_reads import Plans
 
     plans = Plans(root)
     if not plans.path.exists():
-        return {"plans": "source unavailable", "abuse_suspension": "no external source"}
+        raise BillingUnavailable("restore billing source unavailable")
     if not _secret_key():
-        return {"plans": "Stripe not configured", "abuse_suspension": "no external source"}
-    plans.initialize()
-    with closing(plans._connect()) as db:
-        rows = db.execute("SELECT * FROM plans").fetchall()
+        raise BillingUnavailable("Stripe not configured")
+    import sqlite3
+
+    with closing(sqlite3.connect(plans.admission_path.as_uri() + "?mode=ro", uri=True)) as db:
+        owners = [owner for (owner,) in db.execute("SELECT principal FROM owner_identities")
+                  if admission(db, owner).state in {"admitted", "suspended"}]
+    rows = [plans.read(owner) for owner in owners]
     synced = 0
     for row in rows:
         subscription = find_active_subscription(row["owner"], plans=plans) or row["subscription_id"]
@@ -466,7 +470,7 @@ def restore_billing(root, now):
         plans.set_suspension(row["owner"], reason="billing",
                              suspended=obj.get("status") in {"unpaid", "past_due"})
         synced += 1
-    return {"plans_synced": synced, "abuse_suspension": "no external source"}
+    return {"plans_synced": synced}
 
 
 def cancel_subscription(subscription_id: str, *, immediately: bool = False) -> dict:

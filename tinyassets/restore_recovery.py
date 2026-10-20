@@ -1,4 +1,4 @@
-"""Offline shared-layer recovery; no owner-volume paths or content."""
+"""C3/C14 shared-layer preparation and broker startup; no owner content."""
 
 from __future__ import annotations
 
@@ -148,7 +148,7 @@ def reset_credentials(staged, now):
     from tinyassets.router_traffic import NAME
 
     _safe(staged, NAME)
-    close_admission(staged)
+    close_admission(staged, recovering=True)
 
 
 def rotate_box_secrets(staged):
@@ -183,25 +183,26 @@ class RecoveryUnavailable(RuntimeError):
     """Current platform authority is unavailable; admission stays closed."""
 
 
-def resume_deletion_jobs(staged, *, backup_time):
-    """C3 lane-b seam: recover off-host lifecycle authority and finish its jobs.
+def resume_deletion_jobs(server, *, backup_time):
+    """Import current off-host receipts and execute the broker's normal path.
 
-    Called after credential invalidation and before provider reconciliation or
-    committing a stable layout. Lane b must recover permanent bindings, erased
-    admission and all later unfinished jobs. No historical snapshot is enough.
+    Completed receipts matter too: an older backup may predate their erasure.
+    The normal path reasserts withdrawal but skips every completed effect.
     """
-    raise RecoveryUnavailable("deletion-job recovery is not implemented; admission remains closed")
+    jobs = server.deletion_jobs
+    current = {job["id"]: job for job in jobs.records.remote.records()}
+    for local in jobs.records.records():
+        if local["id"] not in current:
+            raise RecoveryUnavailable("current off-host deletion record missing")
+    for job in current.values():
+        jobs.resume_loaded_job(job)
 
 
 def reconcile_authority(staged, now):
-    """Recover current billing, spend and suspension facts from their authorities."""
+    """Stripe owns billing; non-billing reasons remain as restored (C3)."""
     from tinyassets.billing.stripe_adapter import restore_billing
 
-    billing = restore_billing(staged, now)
-    # C3 requires current spend and abuse authority too. The existing billing
-    # adapter reports no external abuse source and has no spend reconciliation.
-    # Its subscription refresh alone cannot authorize restored admission.
-    raise RecoveryUnavailable(f"current spend and suspension authority unavailable: {billing}")
+    return restore_billing(staged, now)
 
 
 def write_layout(root, document):
@@ -228,38 +229,44 @@ def write_layout(root, document):
         os.close(directory)
 
 
-def platform_recovery(
-    staged, *, backup_time, now=None, authority=None, identity_exists=None, revoke_sessions=None
-):
-    """Prepare only the shared stage while every service is stopped.
-
-    The layout remains non-admitting across every failure and process restart.
-    A caller may publish the stage only after this function returns. Authorities
-    are injected solely by offline callers/tests, never by a request payload.
-    """
-    from tinyassets.router_account_deletion import revoke_workos_sessions, workos_user_exists
-
+def prepare_platform(staged, *, backup_time, now=None):
+    """Offline root phase; install this shared layer before starting services."""
     now = time.time() if now is None else now
     marker = _safe(staged, ".layout.json")
     layout = json.loads(marker.read_text())
     if layout.get("box_layout") != "owner-box":
         raise RecoveryUnavailable("platform recovery requires a shared-layer backup")
     layout["state"] = "recovering"
+    layout["recovery"] = {"backup_time": backup_time, "restore_time": now}
     write_layout(staged, layout)
     reset_credentials(staged, now)
     fence_ops(staged, now)
-    resume_deletion_jobs(staged, backup_time=backup_time)
     rotate_box_secrets(staged)
     _read(staged, ".broker/plans.db")
+    report_path = _safe(staged, ".platform-recovery.json")
+    report_path.unlink(missing_ok=True)
+    report_path.write_text("{}")
+    report_path.chmod(0o600)
+    os.chown(report_path, 1002, 1002)
+    return layout["recovery"]
+
+
+def platform_recovery(server, *, backup_time, now=None, authority=None,
+                      identity_exists=None, revoke_sessions=None):
+    """Running-broker startup phase, before ordinary admission or lifecycle ticks."""
+    from tinyassets.broker.admission import read
+    from tinyassets.router_account_deletion import revoke_workos_sessions, workos_user_exists
+
+    staged = server._data_root
+    now = time.time() if now is None else now
+    resume_deletion_jobs(server, backup_time=backup_time)
     (authority or reconcile_authority)(staged, now)
-    identities = _read(staged, ".broker/state/owner-identities.db")
-    if not {"owner_identities", "box_records"} <= identities.keys():
-        raise RecoveryUnavailable("current identity authority unavailable")
     reconciled = 0
-    # Current admission, installed by lane b, positively selects the accounts
-    # to reconcile. Permanent identities include terminally erased accounts.
-    for row in identities["box_records"][3]:
-        owner = row["principal"]
+    with closing(server._owner_identities._connect(write=False)) as db:
+        owners = [row[0] for row in db.execute("SELECT principal FROM owner_identities")]
+    for owner in owners:
+        if read(server._owner_identities, owner).state not in {"admitted", "suspended"}:
+            continue
         if not (identity_exists or workos_user_exists)(owner):
             raise RecoveryUnavailable("identity provider did not confirm current identity")
         (revoke_sessions or revoke_workos_sessions)(owner)
@@ -272,8 +279,29 @@ def platform_recovery(
         "owners_reconciled": reconciled,
     }
     report_path = _safe(staged, ".platform-recovery.json")
-    report_path.write_text(json.dumps(report, sort_keys=True))
-    report_path.chmod(0o600)
+    with report_path.open("r+") as stream:
+        json.dump(report, stream, sort_keys=True)
+        stream.truncate()
+        stream.flush()
+        os.fsync(stream.fileno())
+    return report
+
+
+def finish_platform(root):
+    """Root publishes admission only after the running broker's durable receipt."""
+    from tinyassets.cutover_control import _root, _write
+    from tinyassets.router_traffic import NAME
+
+    _root()
+    layout = json.loads(_safe(root, ".layout.json").read_text())
+    report = json.loads(_safe(root, ".platform-recovery.json").read_text())
+    expected = layout["recovery"]
+    if (layout["state"] not in {"recovering", "stable"}
+            or any(report.get(key) != value for key, value in expected.items())
+            or report.get("credential_roots_reset") is not True
+            or report.get("broker_replay_cutoff_advanced") is not True):
+        raise RecoveryUnavailable("broker startup recovery has not completed")
     layout["state"] = "stable"
-    write_layout(staged, layout)
+    write_layout(root, layout)
+    _write(root / NAME, {"ordinary": True}, mode=0o644)
     return report

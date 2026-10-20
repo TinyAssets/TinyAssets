@@ -88,6 +88,17 @@ if len(sys.argv) > 1 and sys.argv[1].endswith('/platform-recovery.py'):
         from tinyassets import router_account_deletion as identity
         identity.workos_user_exists = lambda owner: owner == 'alice'
         identity.revoke_workos_sessions = lambda owner: None
+    if '--finish' in sys.argv:
+        if not (os.environ.get('TEST_AUTHORITIES') == 'available'):
+            raise recovery.RecoveryUnavailable('synthetic startup authority unavailable')
+        import json, sqlite3
+        from types import SimpleNamespace
+        root = Path(sys.argv[sys.argv.index('--current') + 1])
+        layout = json.loads((root / '.layout.json').read_text())
+        server = SimpleNamespace(_data_root=root, _owner_identities=SimpleNamespace(
+            _connect=lambda **kwargs: sqlite3.connect(root / '.broker/state/owner-identities.db')))
+        recovery.platform_recovery(server, backup_time=layout['recovery']['backup_time'],
+                                   now=layout['recovery']['restore_time'])
     sys.argv = sys.argv[1:]
     runpy.run_path(sys.argv[0], run_name='__main__')
 else:
@@ -124,8 +135,8 @@ else:
     assert not log.exists()
     pending = restore()
     assert pending.returncode == 4, pending.stdout + pending.stderr
-    assert "deletion-job recovery" in pending.stderr
-    assert (volume / "record.txt").read_text() == "newer shared bytes"
+    assert "synthetic startup authority unavailable" in pending.stderr
+    assert (volume / "record.txt").read_text() == "backup shared bytes"
     assert json.loads((volume / ".layout.json").read_text())["state"] == "recovering"
     assert fingerprint(owners) == before
     completed = restore(TEST_AUTHORITIES="available")
@@ -134,7 +145,7 @@ else:
     assert fingerprint(owners) == before
     with sqlite3.connect(volume / ".api-keys.sqlite3") as db:
         assert db.execute("SELECT * FROM api_keys").fetchall() == []
-    assert log.read_text().splitlines() == ["stop boxhostd.service"] * 2
+    assert log.read_text().splitlines() == ["stop boxhostd.service", "start boxhostd.service"] * 2
     assert list(volume.parent.glob(".tinyassets-restore-old.*/record.txt"))
     (volume / "record.txt").write_text("retained on failed swap")
     failed = restore(TEST_AUTHORITIES="available", FAIL_DATA_SWAP="1")
@@ -147,7 +158,8 @@ else:
     assert damaged.returncode == 4, damaged.stdout + damaged.stderr
     assert (volume / "record.txt").read_text() == "retained on failed swap"
     assert fingerprint(owners) == before
-    assert log.read_text().splitlines() == ["stop boxhostd.service"] * 3
+    assert log.read_text().splitlines() == (
+        ["stop boxhostd.service", "start boxhostd.service"] * 2 + ["stop boxhostd.service"])
 
 
 def test_store_unit_contract_and_installer_guards() -> None:

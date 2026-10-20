@@ -18,7 +18,8 @@ def check_layout(data: Path) -> None:
     if not stat.S_ISREG(info.st_mode):
         raise RuntimeError("data layout marker is not a regular file")
     document = json.loads(marker.read_text(encoding="utf-8"))
-    if not isinstance(document, dict) or document.get("state") != "stable":
+    if (not isinstance(document, dict)
+            or document.get("state") not in {"stable", "recovering"}):
         raise RuntimeError("data layout migration is incomplete")
     box_layout = document.get("box_layout")
     if box_layout == "owner-box":

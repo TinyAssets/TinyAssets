@@ -166,6 +166,9 @@ def read(identities, owner):
 
 
 def require_admitted(identities, owner):
+    # C14: a restored identity map cannot admit work before startup reconciliation.
+    if identities is not None and not identities.work_ready:
+        raise OwnerUnadmitted("platform recovery admission is closed")
     read(identities, owner).require_work()
 
 

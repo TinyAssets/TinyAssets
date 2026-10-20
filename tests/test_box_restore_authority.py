@@ -41,11 +41,23 @@ def seed(root):
     initialize(root)
 
 
+def run_recovery(root, *, backup_time, now=None, **adapters):
+    from types import SimpleNamespace
+
+    recovery.prepare_platform(root, backup_time=backup_time, now=now)
+    identities = SimpleNamespace(
+        _connect=lambda **kwargs: sqlite3.connect(root / ".broker/state/owner-identities.db"))
+    server = SimpleNamespace(_data_root=root, _owner_identities=identities)
+    report = recovery.platform_recovery(server, backup_time=backup_time, now=now, **adapters)
+    recovery.finish_platform(root)
+    return report
+
+
 def fingerprint(root):
     return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
 
 
-def test_platform_recovery_closes_service_owned_marker_under_sticky_root(tmp_path):
+def test_platform_recovery_closes_service_owned_marker_under_sticky_root(tmp_path, monkeypatch):
     import os
 
     seed(tmp_path)
@@ -53,8 +65,11 @@ def test_platform_recovery_closes_service_owned_marker_under_sticky_root(tmp_pat
     marker = tmp_path / ".layout.json"
     os.chown(marker, 1001, 1001)
     marker.chmod(0o644)
-    with pytest.raises(recovery.RecoveryUnavailable, match="deletion-job recovery"):
-        recovery.platform_recovery(tmp_path, backup_time=1, now=2000000000)
+    def unavailable(*args, **kwargs):
+        raise recovery.RecoveryUnavailable("deletion transport unavailable")
+    monkeypatch.setattr(recovery, "resume_deletion_jobs", unavailable)
+    with pytest.raises(recovery.RecoveryUnavailable, match="deletion transport unavailable"):
+        run_recovery(tmp_path, backup_time=1, now=2000000000)
     assert json.loads(marker.read_text())["state"] == "recovering"
     assert marker.stat().st_uid == 0
     assert not list(tmp_path.glob(".platform-layout-*"))
@@ -72,7 +87,8 @@ def platform(tmp_path, monkeypatch):
 
 
 def providers(monkeypatch, events):
-    def resume(staged, *, backup_time):
+    def resume(server, *, backup_time):
+        staged = server._data_root
         assert json.loads((staged / ".layout.json").read_text())["state"] == "recovering"
         assert backup_time == 1
         events.append("deletion")
@@ -81,7 +97,7 @@ def providers(monkeypatch, events):
 
     def authority(staged, now):
         assert json.loads((staged / ".layout.json").read_text())["state"] == "recovering"
-        events.extend(["billing", "spend", "suspension"])
+        events.append("billing")
 
     def identity(owner):
         assert owner == "alice"
@@ -125,9 +141,9 @@ def test_platform_recovery_resets_credentials_without_owner_access(platform, tmp
         guard.setattr(Path, "open", guarded_open)
         guard.setattr(Path, "stat", guarded_stat)
         guard.setattr(Path, "iterdir", guarded_iterdir)
-        report = recovery.platform_recovery(platform, backup_time=1, now=2000000000, **adapters)
+        report = run_recovery(platform, backup_time=1, now=2000000000, **adapters)
     assert fingerprint(owners) == before
-    assert events == ["deletion", "billing", "spend", "suspension", "identity", "revoke"]
+    assert events == ["deletion", "billing", "identity", "revoke"]
     assert report["credential_roots_reset"]
     assert report["broker_replay_cutoff_advanced"]
     assert report["owners_reconciled"] == 1
@@ -146,21 +162,25 @@ def test_platform_recovery_resets_credentials_without_owner_access(platform, tmp
     assert json.loads((platform / ".layout.json").read_text())["state"] == "stable"
 
 
-def test_platform_recovery_waits_for_deletion_jobs(platform):
-    with pytest.raises(recovery.RecoveryUnavailable, match="deletion-job recovery"):
-        recovery.platform_recovery(platform, backup_time=1, now=2000000000)
+def test_platform_recovery_waits_for_deletion_jobs(platform, monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise recovery.RecoveryUnavailable("deletion transport unavailable")
+    monkeypatch.setattr(recovery, "resume_deletion_jobs", unavailable)
+    with pytest.raises(recovery.RecoveryUnavailable, match="deletion transport unavailable"):
+        run_recovery(platform, backup_time=1, now=2000000000)
     assert json.loads((platform / ".layout.json").read_text())["state"] == "recovering"
-    assert not (platform / ".platform-recovery.json").exists()
+    assert json.loads((platform / ".platform-recovery.json").read_text()) == {}
     from tinyassets.boxes.layout import hold
-    with pytest.raises(RuntimeError, match="committed owner-box layout"):
-        with hold(platform):
-            pytest.fail("incomplete recovery admitted a shared service")
+    from tinyassets.router_traffic import admits
+    with hold(platform):
+        assert not admits(platform, "alice")
+        assert not admits(platform, "canary")
     with sqlite3.connect(platform / ".api-keys.sqlite3") as db:
         assert db.execute("SELECT * FROM api_keys").fetchall() == []
 
 
 @pytest.mark.parametrize(
-    "failed", ["deletion", "billing", "spend", "suspension", "identity", "revoke"]
+    "failed", ["deletion", "billing", "identity", "revoke"]
 )
 def test_platform_recovery_authority_failure_never_reopens(platform, monkeypatch, failed):
     events = []
@@ -171,16 +191,16 @@ def test_platform_recovery_authority_failure_never_reopens(platform, monkeypatch
 
     if failed == "deletion":
         monkeypatch.setattr(recovery, "resume_deletion_jobs", unavailable)
-    elif failed in {"billing", "spend", "suspension"}:
+    elif failed == "billing":
         adapters["authority"] = unavailable
     elif failed == "identity":
         adapters["identity_exists"] = unavailable
     else:
         adapters["revoke_sessions"] = unavailable
     with pytest.raises(recovery.RecoveryUnavailable, match=failed):
-        recovery.platform_recovery(platform, backup_time=1, now=2000000000, **adapters)
+        run_recovery(platform, backup_time=1, now=2000000000, **adapters)
     assert json.loads((platform / ".layout.json").read_text())["state"] == "recovering"
-    assert not (platform / ".platform-recovery.json").exists()
+    assert json.loads((platform / ".platform-recovery.json").read_text()) == {}
 
 
 @pytest.mark.parametrize("identity", [False, None])
@@ -188,18 +208,15 @@ def test_platform_recovery_missing_identity_denies(platform, monkeypatch, identi
     adapters = providers(monkeypatch, [])
     adapters["identity_exists"] = lambda owner: identity
     with pytest.raises(recovery.RecoveryUnavailable, match="identity provider"):
-        recovery.platform_recovery(platform, backup_time=1, now=2000000000, **adapters)
+        run_recovery(platform, backup_time=1, now=2000000000, **adapters)
     assert json.loads((platform / ".layout.json").read_text())["state"] == "recovering"
 
 
-def test_platform_recovery_billing_refresh_is_not_spend_or_suspension_authority(
-    platform, monkeypatch
-):
-    monkeypatch.setattr(
-        "tinyassets.billing.stripe_adapter.restore_billing",
-        lambda root, now: {"plans_synced": 1, "abuse_suspension": "no external source"},
-    )
-    with pytest.raises(recovery.RecoveryUnavailable, match="spend and suspension"):
+def test_platform_recovery_requires_configured_stripe(platform, monkeypatch):
+    from tinyassets.billing.stripe_adapter import BillingUnavailable
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "")
+    with pytest.raises(BillingUnavailable):
         recovery.reconcile_authority(platform, 2000000000)
 
 
@@ -481,9 +498,9 @@ def test_platform_recovery_uses_current_admission_not_erased_identity_history(
         db.execute("INSERT INTO owner_identities VALUES ('erased', 300002)")
     calls = []
     adapters = providers(monkeypatch, calls)
-    report = recovery.platform_recovery(platform, backup_time=1, now=2000000000, **adapters)
+    report = run_recovery(platform, backup_time=1, now=2000000000, **adapters)
     assert report["owners_reconciled"] == 1
-    assert calls == ["deletion", "billing", "spend", "suspension", "identity", "revoke"]
+    assert calls == ["deletion", "billing", "identity", "revoke"]
     with sqlite3.connect(platform / ".broker/state/owner-identities.db") as db:
         assert db.execute(
             "SELECT machine_id FROM owner_identities WHERE principal='erased'"
@@ -516,14 +533,14 @@ def test_disaster_stale_key_session_hook_and_secret_all_fail(platform, monkeypat
     assert ApiKeyStore(staged).resolve(key) is not None
     assert HookOwners(staged).resolve("hook") == "alice"
     assert owner_sessions.lookup("session") is not None
-    report = recovery.platform_recovery(staged, backup_time=1, now=2000000000, **adapters)
+    report = run_recovery(staged, backup_time=1, now=2000000000, **adapters)
     assert ApiKeyStore(staged).resolve(key) is None
     assert HookOwners(staged).resolve("hook") is None
     assert owner_sessions.lookup("session") is None
     with sqlite3.connect(staged / ".broker/state/owner-identities.db") as db:
         assert db.execute("SELECT secret FROM owner_box_secrets").fetchone()[0] != "o" * 43
     assert report["credential_roots_reset"] and report["broker_replay_cutoff_advanced"]
-    assert "spend" in events and "suspension" in events
+    assert "billing" in events
 
 
 def test_disaster_revokes_every_surviving_owner_and_fails_closed(platform, monkeypatch):
@@ -539,12 +556,12 @@ def test_disaster_revokes_every_surviving_owner_and_fails_closed(platform, monke
         raise AccountDeletionError("provider unavailable")
 
     with pytest.raises(AccountDeletionError):
-        recovery.platform_recovery(
+        run_recovery(
             staged, backup_time=1, now=2000000000, **{**adapters, "revoke_sessions": revoke}
         )
     assert calls == ["alice"]
-    assert not (staged / ".platform-recovery.json").exists()
-    report = recovery.platform_recovery(
+    assert json.loads((staged / ".platform-recovery.json").read_text()) == {}
+    report = run_recovery(
         staged, backup_time=1, now=2000000000, **{**adapters, "revoke_sessions": calls.append}
     )
     assert calls == ["alice", "alice"]
@@ -569,7 +586,7 @@ def test_disaster_drops_provider_custody_and_outbound_authority(platform, monkey
         ):
             db.execute(f"CREATE TABLE {table} (authority TEXT)")
             db.execute(f"INSERT INTO {table} VALUES ('external-authority')")
-    recovery.platform_recovery(staged, backup_time=1, now=2000000000, **adapters)
+    run_recovery(staged, backup_time=1, now=2000000000, **adapters)
     with sqlite3.connect(staged / ".broker/credential-custody.db") as db:
         assert db.execute("SELECT * FROM llm_credential_custody").fetchall() == []
     with sqlite3.connect(staged / ".broker/outbound.db") as db:
@@ -606,7 +623,7 @@ def test_disaster_never_follows_staged_authority_links(
     path.symlink_to(outside)
     adapters = providers(monkeypatch, [])
     with pytest.raises(ValueError, match="symlink"):
-        recovery.platform_recovery(platform, backup_time=1, now=2000000000, **adapters)
+        run_recovery(platform, backup_time=1, now=2000000000, **adapters)
     assert outside.read_bytes() == b"untouched"
     assert path.is_symlink()
 
@@ -674,4 +691,4 @@ def test_pre_cutover_pair_is_not_a_disaster_source(platform, layout):
     else:
         marker.write_text(json.dumps(layout))
     with pytest.raises(FileNotFoundError if layout is None else recovery.RecoveryUnavailable):
-        recovery.platform_recovery(platform, backup_time=1, now=2000000000)
+        run_recovery(platform, backup_time=1, now=2000000000)

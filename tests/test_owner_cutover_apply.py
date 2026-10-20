@@ -980,10 +980,10 @@ def test_migrated_owner_processes_serve_history_requests_and_pause(
     admit(tmp_path / "deployment", data)
     live_before = _fingerprint(data), _fingerprint(store)
     from tinyassets.cutover_restore import restore_old_layout
-    from tinyassets.restore_recovery import RecoveryUnavailable, platform_recovery
+    from tinyassets.restore_recovery import RecoveryUnavailable, prepare_platform
     staged = restore_old_layout(cutover[2], tmp_path / "old-layout")
     with pytest.raises(RecoveryUnavailable, match="shared-layer backup") as refused:
-        platform_recovery(staged, backup_time=1)
+        prepare_platform(staged, backup_time=1)
     assert "shared-layer backup" in str(refused.value)
     assert (staged / "a1/notes.txt").read_text() == "private history for a1"
     assert (_fingerprint(data), _fingerprint(store)) == live_before

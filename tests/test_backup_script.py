@@ -514,6 +514,7 @@ def _fake_restore_bin(tmp_path: Path, volume_dir: Path) -> Path:
         '    if [[ -n "${DOCKER_STOP_MARKER:-}" ]]; then touch "$DOCKER_STOP_MARKER"; fi\n'
         "    exit 0\n"
         "fi\n"
+        'if [[ "$1" == "start" ]]; then exit 0; fi\n'
         "exit 1\n",
         encoding="utf-8",
         newline="\n",
@@ -539,6 +540,17 @@ if len(sys.argv) > 1 and sys.argv[1].endswith('/platform-recovery.py'):
         from tinyassets import router_account_deletion as identity
         identity.workos_user_exists = lambda owner: owner == 'alice'
         identity.revoke_workos_sessions = lambda owner: None
+    if '--finish' in sys.argv:
+        if not (os.environ.get('TEST_RECOVERY_PENDING') != '1'):
+            raise recovery.RecoveryUnavailable('synthetic startup authority unavailable')
+        import json, sqlite3
+        from types import SimpleNamespace
+        root = Path(sys.argv[sys.argv.index('--current') + 1])
+        layout = json.loads((root / '.layout.json').read_text())
+        server = SimpleNamespace(_data_root=root, _owner_identities=SimpleNamespace(
+            _connect=lambda **kwargs: sqlite3.connect(root / '.broker/state/owner-identities.db')))
+        recovery.platform_recovery(server, backup_time=layout['recovery']['backup_time'],
+                                   now=layout['recovery']['restore_time'])
     sys.argv = sys.argv[1:]
     runpy.run_path(sys.argv[0], run_name='__main__')
 else:
@@ -630,9 +642,10 @@ def test_platform_restore_without_deletion_authority_refuses_before_swap(tmp_pat
     env["TEST_RECOVERY_PENDING"] = "1"
     result = _run(RESTORE_SH, env)
     assert result.returncode == 4, result.stdout + result.stderr
-    assert "deletion-job recovery is not implemented" in result.stderr
-    assert (target / "prior").read_text() == "unchanged"
-    assert not list(target.parent.glob(".tinyassets-restore-old.*"))
+    assert "synthetic startup authority unavailable" in result.stderr
+    assert not (target / "prior").exists()
+    retained, = target.parent.glob(".tinyassets-restore-old.*/prior")
+    assert retained.read_text() == "unchanged"
 
 
 def test_restore_corrupt_archive_leaves_volume_and_containers_intact(tmp_path):

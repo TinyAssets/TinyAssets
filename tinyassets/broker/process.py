@@ -125,8 +125,10 @@ async def serve(args: argparse.Namespace) -> None:
         from tinyassets.boxes.bootstrap import register_broker
 
         marker = json.loads((Path(args.data_root) / ".layout.json").read_text())
-        if marker.get("state") != "stable" or marker.get("box_layout") != "owner-box":
+        if (marker.get("state") not in {"stable", "recovering"}
+                or marker.get("box_layout") != "owner-box"):
             raise RuntimeError("owner-box broker requires committed migration")
+        identities.work_ready = marker["state"] == "stable"
         if args.proof_sha256:
             raise RuntimeError("owner-box broker cannot adopt legacy bootstrap")
         proof = secrets.token_urlsafe(48)

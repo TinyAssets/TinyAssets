@@ -54,10 +54,11 @@ def owner_box_committed(root: Path) -> bool:
         info = marker.lstat()
     except FileNotFoundError:
         return False  # a fresh preflight host still serves nothing
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != 1001:
-        raise RuntimeError("data layout marker is not the daemon-owned regular file")
+    if not stat.S_ISREG(info.st_mode) or info.st_uid not in {0, 1001}:
+        raise RuntimeError("data layout marker is not the platform-owned regular file")
     document = json.loads(marker.read_text(encoding="utf-8"))
-    if not isinstance(document, dict) or document.get("state") != "stable":
+    if (not isinstance(document, dict)
+            or document.get("state") not in {"stable", "recovering"}):
         raise RuntimeError("data layout is not stable; refusing box service")
     box_layout = document.get("box_layout")
     if box_layout in (None, "owner-split"):

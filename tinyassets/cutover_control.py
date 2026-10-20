@@ -48,12 +48,13 @@ def _write(path, document, *, mode=0o600):
         Path(temporary).unlink(missing_ok=True)
 
 
-def close_admission(root):
+def close_admission(root, *, recovering=False):
     """Migration/recovery may close admission; only consumed eligibility opens it."""
     from tinyassets.router_traffic import NAME
 
     _root()
-    _write(root / NAME, {"ordinary": False}, mode=0o644)
+    # C14 recovery admits nobody, including the cutover canary.
+    _write(root / NAME, {"ordinary": None if recovering else False}, mode=0o644)
 
 
 def admit(directory, root):

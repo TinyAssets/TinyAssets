@@ -67,6 +67,7 @@ class OwnerIdentities:
         from tinyassets.broker.owner_reads import Plans
 
         self.path = Path(path)
+        self.work_ready = True
         self.plans = plans if plans is not None else Plans(broker_dir=self.path.parent)
         self.plans.admission_path = self.path
         parent = self.path.parent.lstat()

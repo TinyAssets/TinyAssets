@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # backup-restore.sh — stage and restore tinyassets-data from its independent platform backup (C3).
 #
-# The script restores data only. It stops containers that mount the selected
-# volume, but it never starts services; the caller owns startup and health
-# verification after inspecting the retained pre-restore directory.
+# The script installs the shared layer, starts services behind closed admission,
+# and opens admission only after the broker's startup reconciliation completes.
 #
 # Usage:
 #   sudo bash deploy/backup-restore.sh
@@ -22,7 +21,7 @@
 #   BACKUP_LOG       log file (default: /var/log/tinyassets-backup.log)
 #
 # Exit codes:
-#   0  restore complete (or DRY_RUN=1); caller starts services
+#   0  recovery complete (or DRY_RUN=1)
 #   1  configuration, argument, path, or lock failure
 #   2  archive not found
 #   3  remote download failed
@@ -303,8 +302,7 @@ if [[ -n "${CONTAINER_OUTPUT}" ]]; then
     log "ERROR: running volume consumers remain after stop"
     exit 4
 fi
-# C3: shared services and boxhostd remain stopped until current authority is
-# recovered. The recovery command never receives an owner store or volume path.
+# C3: only credential preparation runs offline. Reconciliation runs in the broker.
 systemctl stop boxhostd.service
 # Exclude service restarts on both sides of the volume rename. The staged
 # lock becomes the live lock; keep both descriptors until restore exits.
@@ -349,6 +347,19 @@ if ! mv -- "${STAGE_DIR}" "${VOLUME_DIR}"; then
 fi
 STAGE_DIR=""
 sync -f "$VOLUME_PARENT"
+# C14: the running broker must acquire its lifetime layout lock. Recovery never
+# holds an exclusive layout lock while executing broker jobs.
+flock -u 7
+flock -u 8
+systemctl start boxhostd.service
+if [[ "${#containers[@]}" -gt 0 ]]; then
+    docker start "${containers[@]}"
+fi
+if ! python3 "$(dirname "$(realpath "$0")")/platform-recovery.py" \
+        --current "$VOLUME_DIR" --finish; then
+    log "ERROR: broker startup recovery incomplete; admission remains closed"
+    exit 4
+fi
 log "shared-layer restore complete. Data installed at ${VOLUME_DIR}."
 log "pre-restore shared layer retained at ${OLD_DIR} until caller health verification."
 exit 0

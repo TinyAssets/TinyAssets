@@ -58,7 +58,8 @@ class RoutingAuthority:
                 for owner, uid, secret in db.execute(
                         "SELECT i.principal,i.machine_id,s.secret FROM owner_identities i "
                         "LEFT JOIN owner_box_secrets s ON s.principal=i.principal"):
-                    state = admission(db, owner).state
+                    state = (admission(db, owner).state if self.identities.work_ready
+                             else "absent")
                     if state == "admitted" and not secret:
                         raise RuntimeError("admitted owner is missing its ingress credential")
                     records[digest(owner)] = {"state": state,
@@ -161,6 +162,25 @@ class RoutingAuthority:
                 return {**result, "outcome": "rolled_back", "reason": "health_failed"}
 
     def tick(self):
+        # C3/C14: reuse the existing tick for startup retries, before any
+        # ordinary lifecycle work. No recovery execution RPC or extra clock.
+        if not self.identities.work_ready:
+            import json
+
+            from tinyassets.restore_recovery import platform_recovery
+
+            layout = json.loads((self.root / ".layout.json").read_text())
+            if layout["state"] == "recovering":
+                report = json.loads((self.root / ".platform-recovery.json").read_text())
+                expected = layout["recovery"]
+                if any(report.get(key) != value for key, value in expected.items()):
+                    platform_recovery(self.server, backup_time=expected["backup_time"],
+                                      now=expected["restore_time"])
+                return
+            if layout["state"] != "stable":
+                raise RuntimeError("platform recovery admission is closed")
+            self.identities.work_ready = True
+            self._instance = None
         try:
             self.publish(only_restart=True)
         except Exception:

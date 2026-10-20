@@ -43,7 +43,7 @@ def hold(data):
         with os.fdopen(marker) as stream:
             document = json.load(stream)
         if (not isinstance(document, dict) or document.get("layout") not in (1, 2)
-                or document.get("state") != "stable"
+                or document.get("state") not in {"stable", "recovering"}
                 or document.get("box_layout") != "owner-box"):
             raise RuntimeError("box service requires a committed owner-box layout")
         yield
