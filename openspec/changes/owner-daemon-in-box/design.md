@@ -607,9 +607,14 @@ draining again; it is never a per-box operation.
 router on the published immutable image, prove that image's revision, and
 complete a model turn before acceptance.
 
-Republishing an older image keeps the existing layout-compatibility boundary. **Deleted:** the per-box roll
-and roll-back (`owner_daemons.py` ~385–475), the last-launch tracking in
-`images.py`, and the per-UID loop in `scripts/roll_owner_boxes.py`. Cutover
+Republishing an older image keeps the existing layout-compatibility boundary.
+The deploy drain uses the broker's ordinary sleep under the owner lock; it is not
+a separate lifecycle path. **Deleted** (round-3 review, 2026-10-20; b6 moved the
+roll into the broker): `RoutingAuthority.roll` and its rollback, the
+`LIFECYCLE_ADMIN` roll entry, `OwnerDaemons.roll`, `Images.last`/`ran`, the
+`restarting`/`roll_failed` state and its wait loops in `owner_daemons.py`, the
+`wake(image=)` override in `host_service.py`, and the per-UID loop in
+`scripts/roll_owner_boxes.py`. Every wake starts `images.current`. Cutover
 rollback (C4) is unchanged.
 
 ### C13. Fewer shared mechanisms (T2)
@@ -622,7 +627,10 @@ rollback (C4) is unchanged.
   - boxhostd executes the operations it is given and returns results. It never
     selects or commits the next lifecycle transition.
   - boxhostd's maintain loop observes runtime state and moves forward only
-    execution that was already authorized.
+    execution that was already authorized. It may stop a box whose process
+    exited; it never selects sleep, restart, eviction or wake, and holds no
+    lifecycle intent (no `wanted`/`sleeping` flags, no `resume` request). Only
+    the broker commits sleep, publication, restore, eviction and wake (C15).
   - The broker collects results through its existing lifecycle coordination; no
     additional authority store or polling clock is introduced.
 - **One hop for credential mints.**
@@ -633,8 +641,13 @@ rollback (C4) is unchanged.
   - Minting is serialized with owner withdrawal and credential revocation.
   - The broker forwarding operation is deleted, and identity remains the only
     writer of keys and hooks.
-- **Shared clocks.** The deletions in C5, C6 and the spend fence leave two:
-  boxhostd's maintain loop and the waker.
+- **Shared clocks.** The deletions in C5, C6 and the spend fence leave two
+  lifecycle clocks, boxhostd's maintain loop and the waker, plus C10's host
+  storage-growth timer, which only grows the host's block store and makes no
+  owner decision. No other clock.
+- **The mint reads the installed snapshot.** Identity checks admission from the
+  routing snapshot the broker already installs, not by a per-call admission IPC
+  (`router_credentials.py` ~137–152 is deleted).
 
 ### C14. The broker owns each owner's lifecycle; deletion records live in the broker (T2, T5, T9)
 The round-2 structural review (2026-10-20) found that the deletion job decides in
@@ -667,13 +680,48 @@ UID flock. Target:
   through the normal broker path, and only then does admission open.
   `resume_deletion_jobs` is that phase, not a lock-holding offline step.
 
+### C15. One lifecycle intent, one lock, one path per job (T2, T4, T9)
+The round-3 structural review (2026-10-20) confirmed that C14 holds (0 callbacks,
+3 clocks, one deletion job) and found the remaining lane-b structure problems.
+Target:
+- **One lifecycle intent.** The map's durable `running`/`work` record is the only
+  lifecycle intent. The broker selects idle sleep from facts boxhostd reports in
+  `status` (process running or exited, last activity) and commits it (stop,
+  snapshot, publish) under the owner lock. A box whose process exited is stopped;
+  the next request or scheduled wake cold-wakes it. **Deleted:** boxhostd's
+  `wanted`, `sleeping`, `status.resume`, the `resume` wake in `volumes.tick`, the
+  crash-restart branch, and executor-side LRU victim selection (the broker picks
+  eviction victims).
+- **Volume work does not run on the clock.** The waker tick only notices pending
+  work and starts per-owner broker tasks; snapshot, restore and eviction never
+  run serially on the tick, so scheduled wakes are never starved.
+- **One writer to the volume map, one snapshot-deletion op.** Deletion's snapshot
+  cleanup goes through the map's own transition (an `erase` action), not raw SQL.
+  boxhostd has one snapshot-deletion op; erasure first releases the owner's pins
+  through the map, so the op never bypasses a pin it was not told to release.
+- **One owner lock, no bridges.** The owner lock is asyncio-native; thread work is
+  scheduled from inside it. Admission mutation takes routing as an explicit
+  dependency, and mutating without it fails loudly. **Deleted:** `channel_lock`'s
+  holder thread, the `_authorities` registry, `transition_lock`; any remaining
+  global lock beside the owner lock must name the shared resource it protects.
+- **Enqueue is not execute.** Deletion enqueue runs step 1 (job record, `erased`,
+  close channels, publish) under the owner lock and returns; steps 2–8 run as a
+  broker task, with retries on the existing tick. The door's latency never waits
+  on volume work.
+- **The routing snapshot holds routes, not history.** It carries admitted and
+  suspended owners only; erased owners are absent. Credentials revoked at
+  deletion step 6 are the authentication fence. **Deleted:** the erased branch of
+  `active_owner` and the tombstone projection in `publish`.
+- **Orphans.** Delete `OWNER_BOX_REVOKE` if it has no caller. The `abuse` reason
+  stays as migrated data with no new writer (C3 "Settled for b5").
+
 ### Build order and lanes
 Lane a (C1–C4) and step 1 are complete. The remaining lanes run one after
 another on `conv/c6-research-shape`, each after the previous lane has merged:
 - **(a2b) C10 storage scaling,** plus the remnants of the paired model.
 - **(b) C5, C6, C14:** the routing-only router, one admission record, the
   deletion job, then (b6) broker-owned lifecycle serialization with no callbacks,
-  and (b5) recovery's startup mode. b6 also takes C13's "one call direction" for
+  and (b5) recovery's startup mode, then (b7) C15. b6 also takes C13's "one call direction" for
   lifecycle and volumes (sleep snapshots, pending-work recovery, cold restore,
   eviction), because one broker lock over wake, publication and restore cannot
   coexist with boxhostd calling back into the broker. The broker learns results
