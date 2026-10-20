@@ -187,6 +187,24 @@ SHALL permit neither rollback nor opening traffic.
 - **WHEN** a deploy workflow is re-run after ordinary admission has opened
 - **THEN** old-layout rollback is refused
 
+### Requirement: The broker serializes each owner's lifecycle and boxhostd only executes
+The broker SHALL hold a per-owner lock that serializes admission changes, wake,
+channel open, snapshot publication, restore and deletion for that owner.
+boxhostd SHALL execute stop, destroy and snapshot deletion as plain operations
+and SHALL NOT call back into the broker to change admission. Deletion job
+records SHALL live in the broker's identity database, with each change written
+through to an off-host copy.
+
+#### Scenario: Deletion erases once, in the broker
+- **WHEN** an owner's deletion job runs step 1
+- **THEN** the broker sets the admission record to `erased` once, under its per-owner lock, before calling boxhostd
+- **AND** no boxhostd operation calls back into the broker to change admission
+
+#### Scenario: Recovery finishes deletions before admitting anyone
+- **WHEN** the shared layer is restored and services start with admission closed
+- **THEN** unfinished deletion jobs run through the normal broker path
+- **AND** admission opens only after they complete
+
 ### Requirement: The shared layer is keyed by owner, not center
 The shared layer SHALL key admission, credential custody, grants, egress policy
 and relay channels by owner. An owner's centers SHALL be a table inside
