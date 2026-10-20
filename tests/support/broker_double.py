@@ -228,6 +228,10 @@ class _Registry:
         self._lock = threading.RLock()
 
     def supervisor_for(self, data_root) -> _InProcessBroker:
+        from tinyassets.owner_runtime import broker_egress, current
+
+        if current() is not None:
+            return broker_egress()
         root = Path(data_root).resolve()
         with self._lock:
             broker = self._brokers.get(root)

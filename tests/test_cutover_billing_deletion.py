@@ -335,8 +335,10 @@ def test_tombstone_waits_for_inflight_checkout_then_cleanup_sees_it(billing, mon
                                                   ("past_due", "free", True)])
 def test_disaster_resync_reads_current_subscription_through_adapter(
         tmp_path, monkeypatch, status, tier, suspended):
+    from tests.support.broker_double import seed_owner_admission
     from tests.test_billing_boundary import _subscription_object
 
+    seed_owner_admission(tmp_path, principal="alice", center="legacy-center")
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_synthetic")
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)
     monkeypatch.setenv("STRIPE_PRICE_ID", "price_test")
@@ -362,8 +364,10 @@ def test_disaster_resync_reads_current_subscription_through_adapter(
 
 
 def test_disaster_resync_migrated_signed_universe_subscription(tmp_path, monkeypatch):
+    from tests.support.broker_double import seed_owner_admission
     from tests.test_billing_boundary import _subscription_object
 
+    seed_owner_admission(tmp_path, principal="alice", center="legacy-center")
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_synthetic")
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)
     obj = _subscription_object(owner_id="legacy-center")

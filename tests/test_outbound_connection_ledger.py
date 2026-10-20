@@ -23,6 +23,13 @@ from tinyassets.storage.outbound_connections import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def admitted_connection_owner(tmp_path):
+    from tests.support.broker_double import seed_owner_admission
+
+    seed_owner_admission(tmp_path, principal="user-1", center="universe-1")
+
+
 @dataclass
 class _JsonlDispatch:
     path: str

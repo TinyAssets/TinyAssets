@@ -100,11 +100,11 @@ def test_bearer_fetch_cannot_start_interactive_login(setup):
 def test_policy_bearer_write_cannot_bypass_owner_session(
         setup, monkeypatch, tmp_path):
     from tinyassets.broker.client import BrokerRefused
+    from tinyassets.broker.owner_identities import OwnerIdentities
     from tinyassets.broker.policy import PolicyRefused, PolicyStore
 
-    admissions = SimpleNamespace(admissions_after=lambda _generation: [
-        SimpleNamespace(center="alpha", principal="alice", event="admit")])
     seed_owner_admission(tmp_path, principal="alice", center="alpha")
+    admissions = OwnerIdentities(tmp_path / ".broker/state/owner-identities.db")
     store = PolicyStore(tmp_path, admissions)
     store.bootstrap()
     current = store.read("alice")

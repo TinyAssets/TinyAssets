@@ -60,21 +60,12 @@ def main():
     root = Path(sys.argv[1])
     runtime = root / "runtime"
     os.environ["TINYASSETS_DATA_DIR"] = str(runtime)
-    from tinyassets.erasure_ledger import ErasureLedger
+    from tests.support.broker_double import _Registry, seed_owner_admission
+    from tinyassets.broker import supervisor
 
-    original_call = ErasureLedger._call
-
-    def empty_host(ledger, operation, **fields):
-        # This child has isolated auth/cloud observations and no host process.
-        # Only its synthetic root has an empty erasure authority; real or
-        # explicitly supplied authorities and every mutation retain their path.
-        if (ledger.root == runtime and not ledger.path.exists()
-                and "TINYASSETS_BOXES_RUN" not in os.environ
-                and operation in {"contains", "contains_many"}):
-            return False if operation == "contains" else []
-        return original_call(ledger, operation, **fields)
-
-    ErasureLedger._call = empty_host
+    seed_owner_admission(runtime, principal=SCOPE.principal_id, center=SCOPE.command_center_id)
+    brokers = _Registry()
+    supervisor.get_supervisor = brokers.supervisor_for
     listener = socket.socket(fileno=int(sys.argv[2]))
     middleware.set_provider(FixtureAuth())
     # Isolated observation ONLY; never an environment bypass in product code.
@@ -87,7 +78,11 @@ def main():
         return HTMLResponse('<textarea id="draft"></textarea><output id="status"></output>')
 
     app.routes.insert(0, Route("/fixture-browser", page))
-    uvicorn.Server(uvicorn.Config(app, lifespan="off", log_level="info")).run(sockets=[listener])
+    try:
+        config = uvicorn.Config(app, lifespan="off", log_level="info")
+        uvicorn.Server(config).run(sockets=[listener])
+    finally:
+        brokers.close()
 
 
 if __name__ == "__main__":

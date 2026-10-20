@@ -78,6 +78,9 @@ def _ledger_with_cap(
     *,
     verify_authenticated_principal=None,
 ) -> tuple[ConnectionLedger, object]:
+    from tests.support.broker_double import seed_owner_admission
+
+    seed_owner_admission(tmp_path, principal="user-1", center="universe-1")
     runtime_id = hashlib.sha256(b"grant-1").hexdigest()
     dispatch_class = type(dispatch) if dispatch is not None else _RecordedDispatch
     calls = dispatch_class(
