@@ -304,7 +304,9 @@ def test_slow_volume_work_does_not_delay_another_scheduled_wake(authority, opera
     asyncio.run(exercise())
 
 
-def test_repeated_cancellation_cannot_release_owner_before_worker_finishes(tmp_path):
+@pytest.mark.parametrize("async_operation", [False, True])
+def test_repeated_cancellation_cannot_release_owner_before_worker_finishes(
+        tmp_path, async_operation):
     entered, release = threading.Event(), threading.Event()
 
     def blocking():
@@ -312,7 +314,14 @@ def test_repeated_cancellation_cannot_release_owner_before_worker_finishes(tmp_p
         assert release.wait(5)
 
     async def exercise():
-        first = asyncio.create_task(admission.owner_call(tmp_path, "alice", blocking))
+        notified = []
+
+        async def mutation_and_notification():
+            await admission.thread_work(blocking)
+            notified.append("installed")
+
+        operation = mutation_and_notification if async_operation else blocking
+        first = asyncio.create_task(admission.owner_call(tmp_path, "alice", operation))
         assert await asyncio.to_thread(entered.wait, 2)
         second = asyncio.create_task(admission.owner_call(tmp_path, "alice", lambda: "second"))
         for _ in range(2):
@@ -322,6 +331,7 @@ def test_repeated_cancellation_cannot_release_owner_before_worker_finishes(tmp_p
         release.set()
         with pytest.raises(asyncio.CancelledError):
             await first
+        assert notified == (["installed"] if async_operation else [])
         assert await second == "second"
 
     asyncio.run(exercise())

@@ -513,7 +513,7 @@ def local_hook_channel(request, monkeypatch, tmp_path):
     def dispatch(owner, document):
         token = scope.set(None)
         try:
-            return router_credentials._dispatch(shared, owner, document)
+            return router_credentials.dispatch(shared, owner, document)
         finally:
             scope.reset(token)
 
@@ -523,6 +523,16 @@ def local_hook_channel(request, monkeypatch, tmp_path):
         admitted = scope.get()
         if operation == "hook_mint" and admitted:
             shared.mkdir(exist_ok=True)
+            # The fixture promises an admitted owner: create its real mapping
+            # before exercising both production mint admission checks.
+            from tinyassets.broker.admission import digest
+
+            token = scope.set(None)
+            try:
+                seed_owner_admission(shared, principal=admitted[1],
+                                     center="hook-" + digest(admitted[1])[:16])
+            finally:
+                scope.reset(token)
             result = dispatch(admitted[1], {"operation": operation})
             routes[webhook_hooks._hash_token(result["token"])] = admitted[1]
             return result

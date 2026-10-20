@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import gzip
 import hashlib
 import json
@@ -14,6 +15,7 @@ import sys
 import tarfile
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tinyassets.platform_backup import validate_manifest  # noqa: E402
@@ -50,7 +52,7 @@ def select(manifest, archive, directory):
 def restore(manifest, archive, directory, selected):
     from tinyassets.boxes.volumes import OwnerVolumes
     from tinyassets.broker.owner_identities import OwnerIdentities
-    from tinyassets.broker.volume_lifecycle import VolumeLifecycle
+    from tinyassets.broker.routing import BrokerLifecycle
 
     owner, uid, snapshot_id, sha256, generation, registry = selected
     snapshot = manifest.parent / str(uid) / f"{snapshot_id}.img.gz"
@@ -78,12 +80,19 @@ def restore(manifest, archive, directory, selected):
         volumes = OwnerVolumes(store, directory / "owner-mounts", ":local:" + str(manifest.parent))
         identities = OwnerIdentities(registry)
         def execute(operation, **fields):
+            if operation == "sleep":
+                # This disposable store has no owner processes. Complete the
+                # same detach acknowledgement before the copy-only restore.
+                volumes.detach(fields["uid"])
+                return {"stopped": True}
             assert operation == "restore"
             volumes.restore(fields["uid"], fields["snapshot_id"], fields["sha256"])
             return {"restored": True}
         # The broker orchestrates the map; this private drill has no process to stop.
-        lifecycle = VolumeLifecycle(identities, execute)
-        restored = lifecycle.restore(owner, snapshot_id)
+        lifecycle = BrokerLifecycle(SimpleNamespace(
+            _owner_identities=identities, _data_root=directory))
+        lifecycle.volumes.execute = execute
+        restored = asyncio.run(lifecycle.restore(owner, snapshot_id))
         assert restored["volume_generation"] == generation + 1
         with (store / f"{uid}.img").open("rb") as stream:
             assert hashlib.file_digest(stream, "sha256").hexdigest() == sha256

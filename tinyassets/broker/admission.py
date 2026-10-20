@@ -26,13 +26,18 @@ async def owner_call(path, owner, function, *args, **kwargs):
     """Keep serialization until a worker finishes, including on cancellation."""
     async with owner_lock(path, owner):
         if inspect.iscoroutinefunction(function):
-            return await function(*args, **kwargs)
+            return await _finish_work(asyncio.create_task(function(*args, **kwargs)))
         return await thread_work(function, *args, **kwargs)
 
 
 async def thread_work(function, *args, **kwargs):
     """A cancelled caller must still wait for its blocking operation to finish."""
     worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    return await _finish_work(worker)
+
+
+async def _finish_work(worker):
+    # C15 keeps the existing cancellation fence across awaited notification too.
     try:
         return await asyncio.shield(worker)
     except asyncio.CancelledError:
