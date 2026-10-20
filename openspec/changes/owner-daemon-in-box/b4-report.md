@@ -1,7 +1,7 @@
 # Lane b4: routing snapshot
 
 Baseline: `51b0005594d8af17ff25b5dd662a957adb20a62c`, branch
-`conv/c6-research-shape`. Status: implemented; validation in progress. No completion claimed.
+`conv/c6-research-shape`. Status: implementation committed; incomplete, handoff required. Five integration tests fail.
 
 Binding scope: C5, T1 and T5; C6 supplies the admission record. The research
 test is research.md:117. No shared owner-volume content access is permitted.
@@ -81,50 +81,121 @@ lease/cleanup helpers are exercised only by older lifecycle/roll tests; they
 have no production caller. That dead-code cleanup is reported outside this
 lane rather than expanding b4 into the roll/cleanup test contracts.
 
-## Proof required
+## Real-path proof
 
-The real broker/two-process router tests pass the core C5 paths: awake
-forwarding with all control-plane RPCs unavailable, stale snapshot rejection,
-broker cold wake, stable secrets across sleep/wake, stop-before-rotation, fresh
-router snapshot requirement, and missing/forged/wrong-box ingress refusal. The
-full touched-file rerun also exercises a broker wake with pending restore work.
+`tests/test_owner_router.py` uses a real broker, its authenticated credential
+listener and two separate owner processes. The decisive cases are:
 
-The first broader root run reported 187 passes and 5 failures. Fixes retained
-the existing restore-read refusal, published withdrawal before draining, and
-made the kernel-peer refusal test assert rejection before parsing a frame. Its
-focused rerun passed all 14 cases; no test was skipped or xfailed.
+| Requirement | Proof |
+|---|---|
+| Awake traffic survives control-plane outage | `test_awake_forwarding_survives_every_control_plane_rpc_outage` |
+| Withdrawal cannot be undone by old publication/wake | `test_withdrawn_route_rejects_delayed_snapshot_and_wake` |
+| Failed withdrawal delivery stops ingress before acknowledgment | `test_withdrawal_without_router_delivery_stops_old_ingress` |
+| Cold wake uses broker; credentials survive sleep/wake | `test_cold_request_uses_broker_and_keeps_credential` (including pending restore) |
+| Rotation retires acceptance before publication | `test_rotation_stops_old_ingress_before_publishing_replacement` |
+| Restart cannot serve without a current snapshot | `test_router_restart_needs_snapshot_from_its_own_incarnation` |
+| Missing, forged and other-box credentials fail | `test_owner_socket_requires_current_secret` |
+| Bound box channel cannot inject routing snapshots | `test_box_channel_cannot_supply_owner_or_revoke_another_owners_credentials` |
 
-Passed: all 35 structural guard files plus router-store guard (1,021 tests),
-and focused real-path withdrawal/channel-closure checks (2 tests).
+The existing deleted-authentication file also proves that digest-only erasures
+remain effective after projection, without a synchronous broker read.
 
-Passed: current changed-file ruff and strict OpenSpec validation.
+## Validation receipts
 
-Running: root Linux oracle touched tests, pinned-runtime
-synthetic archive rehearsal, and full four-shard reproduction.
-Passed: final shape registry and background-authority inventory closure.
-Passed: hygiene against `conv/c6-owner-daemon-s3c` exits 0.
-The committed-tree rerun also passes ruff and strict OpenSpec.
+Runtime source commit: `902b9567957`. Receipts are outside the repository at
+`%TEMP%/ta-b4-proof/`. The full reproduction has completed: 25,103 passed, 5 failed, 0 errors,
+and 18 existing venue skips. The affected heavy tests have zero failures/errors.
+No completion claimed; no skip or xfail was added by this lane.
 
-No production, external API, production credential, deployment, git-config or
-branch-changing operation is authorized in this lane. Independent delegation
-is prohibited by the lane brief.
+| Check | Result / receipt |
+|---|---|
+| Root Linux: final router, deleted authentication and disaster recovery | 53 passed; `digest-snapshot.xml` |
+| Root Linux: router, waker and store boundary | 107 passed; `router-final.xml` |
+| Root Linux + Docker engine: cutover, real volumes, cold deletion, delivery outage | 62 passed; `cutover-volume.xml` |
+| Connection-door IPC | 10 passed; `connection-door-fixed.xml` |
+| First-contact concurrency | 57 passed; `first-contact-fixed.xml` |
+| Concurrent-owner isolation | 5 passed; `concurrent-owners-fixed.xml` |
+| Real HTTP ingress process | 1 passed; `deploy-ingress-fixed.xml` |
+| All 35 structural guard files plus router-store guard | 1,021 passed; `guards-final.xml` |
+| Pinned-runsc synthetic archive | 1 passed in 935s before the digest-key change; `archive-complete-image.xml`; rerun needed on final source (normal shards deselect this slow proof) |
+| Changed-file ruff; shapes; background-authority closure; strict OpenSpec | Passed |
+| Hygiene, base `conv/c6-owner-daemon-s3c` | Exit 0; `hygiene-complete.log` |
+| Full shard 1 | 5,513 passed / 3 failed, 0 errors, gate exit 1; `junit-final-1.xml` |
+| Full shard 2 | 7,867 passed, 0 failures/errors, gate exit 0; `junit-final-2.xml` |
+| Full shard 3 | 5,925 passed / 2 failed, 0 errors, gate exit 1; `junit-final-3.xml` |
+| Full shard 4 | 5,798 passed, 0 failures/errors, gate exit 0; `junit-final-4.xml` |
+| All 34 affected heavy files | 1,358 passed, zero failures/errors; `heavy-final.xml`; gate exits 1 solely for nine stale quarantine entries |
 
-## Validation progress
+The affected selector returns ALL because the broker fixture is in the conftest
+import closure. Both normal shards and all heavy files therefore run. Earlier
+failures exposed incomplete synthetic startup and an incomplete admission
+projection; their assertions remain in force. No skip, xfail or quarantine was
+added, and no gate was weakened.
 
-- Latest router/waker/store-guard root run: 107 passed (router-final.xml).
-- Expanded root touched run: 310 passed, 6 failed. Four failures were the
-  superseded cutover expectation of no initial secret; it now asserts one
-  unique credential for each admitted owner and retains byte-identical resume
-  verification. Two proofs require the Docker-engine venue, omitted from that
-  invocation; both are being rerun with the required venue.
-- First pinned-runtime archive run passed setup, census, apply, verify,
-  restore-before-write, crash-resume, and host startup; serving refused the
-  synthetic router child because its role groups/capabilities were incomplete.
-  The child now uses the same complete role retirement as the other router
-  proof children; no production identity check was relaxed. Cleanup passed.
-- Native content smoke retains its existing local launcher. Its router fixture
-  is initialized from actual broker-bound records; the separate production
-  launch and real broker/router tests exercise authenticated snapshot delivery.
+Rehearsal uses the pinned runsc and a network-disabled disposable image,
+`ta-b4-rehearsal:3b4dc70`, derived from the Linux oracle image with a real
+`/opt/venv` using its existing packages. The interpreter, app dependencies and
+rclone were verified. This fixes the test venue, not production configuration.
+The native content smoke retains its local launcher; separate production
+launcher and real broker/router proofs exercise authenticated snapshot delivery.
+
+## Required handoff
+
+AGENTS.md:51 requires: "Same error thrice or same finding twice: hand off,
+don't patch." The final shard 1 receipt repeats the connection-door fixture
+finding: synthetic snapshot initialization starts a second in-process broker
+under a router root that already belongs to a real broker/process fixture.
+Patch work stops here. No new agent was dispatched.
+
+Failures in `tests/test_model_connect_door_lifecycle.py:442`:
+
+- `test_door_exchange_box_call_refresh_disconnect[dcr]`
+- `test_door_exchange_box_call_refresh_disconnect[registered]`
+- `test_door_exchange_box_call_refresh_disconnect[preset]`
+
+All three finish their exchange, owner call, refresh/revoke and disconnect
+assertions, then fail the existing router-directory boundary assertion because
+`.broker` was created there. Evidence: `junit-final-1.xml`. The failure is in
+this lane's test bootstrap, not a pre-existing failure or an out-of-scope waiver.
+
+Relevant seam: `tests/support/broker_double.py:307-317` wraps snapshot lookup
+and unconditionally starts its own registry for a new root. The model-connect
+fixture supplies a real subprocess broker rooted at `custody`, overrides the
+supervisor, and serves a separate `router` root, but does not initialize its
+projection from that broker. The earlier connection-door proof was corrected
+individually; this recurrence needs a fresh review of the fixture bootstrap
+contract. Keep the router-directory assertion unchanged. Do not add a production
+check, fallback, filesystem permission exception or per-request broker call.
+
+The completed shard 3 also exposes two remaining b4 protocol-test updates in
+`tests/test_owner_box_control.py` (these are not out-of-scope waivers):
+
+- `test_control_socket_uses_kernel_router_identity_and_returns_bounded_errors`
+  fails at line 110: the child imports the deleted `daemon_control.ensure_awake`
+  and still expects router `resolve`/`release` success.
+- `test_roll_socket_pins_broker_and_deploy_identity_and_refuses_router` fails at
+  line 252: its router child expects `resolve`/`release` success, now refused.
+
+Those tests must prove the C5 replacement: broker-only bound wake and router
+refusal of lifecycle/lease operations, retaining the existing roll-role and
+error-boundary assertions. Do not restore the deleted API to satisfy them.
+
+Remaining work: resolve the test bootstrap contract and these two protocol
+expectations, run their root Linux proofs, rerun the failed full shards (and any
+other affected checks), and run the pinned archive on the final source. The earlier archive receipt predates the digest-key
+projection change. The standard `not slow` shard command does not rerun it.
+
+## Scope and remaining drift
+
+The final heavy run reported nine passing tests still listed in the existing
+quarantine for `test_retire_cheat_loop_deploy_fence.py`. That ledger is outside
+b4 (`.github/known-failing-tests.txt:22-30`) and remains unchanged. The gate exits 1 solely for stale quarantine entries;
+pytest has zero failures and errors. This is not reported as a green gate.
+
+Residual internal host lease helpers have no production router caller, as
+explained above; their cleanup belongs to the lifecycle/roll test lane. Parent
+lane b remains open for b5. No production, external API, production credential,
+deploy workflow, git configuration, branch switch or agent delegation was used.
 
 Test-Removal: retired -- C5 retires per-start rotation and router resolve/lease RPC behavior; replacement proofs cover stable credentials, broker-only cold wake and box-admitted work. Earlier lane-b changes retire the independent C6 authorities and router deletion orchestration.
 
@@ -151,25 +222,3 @@ New modules have no old ranges. This is a literal diff audit, not a net-size cla
 | `tinyassets/router_credentials.py` | 32, 36, 109-111, 212-213, 215-216 | 9 |
 
 Total old shared lines removed or replaced: 152.
-
-- Corrected root cutover/real-volume/outage run: 62 passed, 0 failures/errors
-  (`cutover-volume.xml`), including both Docker-engine proofs omitted earlier.
-- Hygiene against `conv/c6-owner-daemon-s3c`: exit 0. The baseline spans prior
-  lanes as requested; retired contracts are explained above.
-- The affected-test selector returns ALL because the broker fixture is in the
-  conftest import closure. Its 34 heavy files are also running in the required
-  runner's Linux venues, in addition to the requested four-shard reproduction.
-
-- Connection-door IPC fixture now receives a real broker publication before
-  serving its separate router root; all 10 tests pass with the unchanged
-  no-owner-state assertion.
-- Full first-contact file: 57 passed after serializing synthetic broker startup,
-  so concurrent fixture callers cannot observe its pre-install snapshot.
-- The first heavy run had 1,357 passes and that startup-race failure. It also
-  reported nine stale quarantine entries in the pre-existing deploy-fence
-  ledger. Those entries are outside b4; no gate or quarantine was changed.
-- Rehearsal venue: the generic oracle image lacked `/opt/venv`; the older launch
-  image lacked `rclone`. A network-disabled disposable image now derives from
-  `tinyassets-linux-oracle:bf4b7c48e0f6`, adds a real `/opt/venv` with its existing
-  site packages, and verifies the interpreter, app dependencies and rclone.
-  Image: `ta-b4-rehearsal:3b4dc70`. Production source/configuration is unchanged.
