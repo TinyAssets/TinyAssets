@@ -67,8 +67,11 @@ def test_secret_mint_rotation_and_admission_through_real_broker(admitted, boxes,
     assert first == OwnerIdentities(admitted.path).box_route("alice")
     bob = admitted.box_route("bob")
     assert first[0] != bob[0] and first[1] != bob[1]
-    assert _owner_request(tmp_path, {"op": "OWNER_BOX_REVOKE", "principal": "alice"}) == {
-        "op": "OWNER_LIFECYCLE_DONE"}
+    from tinyassets.restore_recovery import rotate_box_secrets
+
+    boxes.manager.retire("alice", first[0])
+    boxes.manager.retire("bob", bob[0])
+    rotate_box_secrets(tmp_path)
     rotated = admitted.box_route("alice")
     assert rotated[0] == first[0] and rotated[1] != first[1]
     assert not boxes.runtime.alive(first[0])
@@ -86,7 +89,7 @@ def test_route_operation_rejects_forged_authority_or_socket_overrides(
     from tinyassets import rpc_frames as rf
 
     before = admitted.box_route("alice")
-    request = {"op": "OWNER_BOX_REVOKE", "principal": "alice",
+    request = {"op": "OWNER_BOX_WAKE", "principal": "alice",
                "generation": broker.state["generation"], "token": broker.state["token"]}
     for changes in ({"uid": 300002}, {"socket": "/foreign/app.sock"}, {"token": "old"},
                     {"generation": True}, {"rotate": 1}, {"principal": ""}):
@@ -218,11 +221,17 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
 @pytest.fixture
 def router(boxes, cloud_runtime, monkeypatch):  # noqa: F811
     from tinyassets import universe_server
+    from tinyassets.api_keys import ApiKeyStore
     from tinyassets.auth import middleware
+    from tinyassets.storage import data_dir
 
+    keys = ApiKeyStore(data_dir())
+    tokens = {owner: keys.mint(owner, name="authentication fixture", scopes=[],
+                              authority=None)["key"]
+              for owner in ("alice", "bob", "reserved", "unknown")}
     class Provider:
         def resolve_token(self, token):
-            if token in {"alice", "bob", "reserved", "unknown"}:
+            if token in tokens and keys.resolve(tokens[token]) is not None:
                 return Identity(user_id=token, username=token, capabilities=["read", "list"])
 
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
@@ -611,7 +620,12 @@ def test_rotation_stops_old_ingress_before_publishing_replacement(
 
     with monkeypatch.context() as patch:
         patch.setattr(broker.server.routing, "_router", publication)
-        broker.server.routing.revoke("alice")
+        from tinyassets.restore_recovery import rotate_box_secrets
+
+        boxes.manager.retire("alice", uid)
+        boxes.manager.retire("bob", admitted.owner_machine("bob"))
+        rotate_box_secrets(tmp_path)
+        broker.server.routing.publish()
     fresh = snapshot(tmp_path).route("alice").secret
     assert fresh != old
     drive(broker.server.routing.wake("alice"))
@@ -905,7 +919,6 @@ def test_boxhostd_real_process_restart_keeps_secret_and_serves_again(
 def test_center_retirement_stops_old_daemon_and_admitted_owner_wakes_again(
     boxes, admitted, tmp_path,
 ):
-    from tinyassets.broker.owner_identities import _owner_request
     from tinyassets.owner_router import BoxRoute, forward, resolve_box
 
     stale = resolve_box("alice")
@@ -1005,9 +1018,9 @@ def test_box_admitted_request_blocks_eviction_until_disconnect(
                 assert message["body"] == b"data: first\n\n"
                 waiter.start()
                 deadline = time.monotonic() + 5
-                while not manager.waiting and time.monotonic() < deadline:
+                while not broker.server.routing._capacity._waiters and time.monotonic() < deadline:
                     await asyncio.sleep(.01)
-                assert manager.waiting and not result
+                assert broker.server.routing._capacity._waiters and not result
                 assert boxes.runtime.alive(a)
                 await incoming.put({"type": "http.disconnect"})
 
@@ -1016,6 +1029,10 @@ def test_box_admitted_request_blocks_eviction_until_disconnect(
         await forward(scope, incoming.get, send,
                       Identity(user_id="alice", username="alice", capabilities=["read"]), route)
         assert messages[0]["status"] == 200
+        # The existing tick observes the completed turn and selects idle sleep.
+        manager.idle_seconds = 0
+        await asyncio.to_thread(drive, broker.server.routing.tick())
+        await asyncio.to_thread(drive, broker.server.routing.close())
 
     try:
         asyncio.run(exercise())

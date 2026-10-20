@@ -127,7 +127,7 @@ def test_cutover_boundary_refuses_previous_image_and_never_starts_it(rolling, mo
     with pytest.raises(BoxError, match="cutover boundary.*backup-restore"):
         drive(rolling.routing.roll(rolling.new, uid))
     assert len(rolling.runtime.starts) == 2
-    assert not rolling.runtime.live and not manager.boxes[uid].wanted
+    assert not rolling.runtime.live and not hasattr(manager.boxes[uid], "wanted")
     with pytest.raises(BoxError, match="cutover boundary"):
         drive(rolling.routing.roll(rolling.old))
 

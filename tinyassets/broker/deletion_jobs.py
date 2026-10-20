@@ -168,8 +168,12 @@ class DeletionJobs:
         record = binding(self.server._owner_identities, owner)
         if loaded["id"] != digest(owner) or loaded["uid"] != record["uid"]:
             raise PermissionError("deletion job must match the permanent owner binding")
-        self.records.save(loaded)
-        job = self.records.load(loaded["id"])
+        with self.record_lock:
+            self.records.save(loaded)
+        return self._resume_owner(owner)
+
+    def _resume_owner(self, owner):
+        job = self.records.load(digest(owner))
         self._step(job, "withdrawal", force=True)
         for step in STEPS:
             self._step(job, step)
@@ -183,9 +187,6 @@ class DeletionJobs:
     async def resume_loaded_job(self, loaded):
         return await owner_call(self.server._owner_identities.path, loaded["owner"],
                                 self._resume_loaded_job, loaded)
-
-    def _resume_owner(self, owner):
-        return self._resume_loaded_job(self.records.load(digest(owner)))
 
     def tick(self):
         for job in load_unfinished_jobs(self.records):

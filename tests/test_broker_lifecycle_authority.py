@@ -62,7 +62,7 @@ def authority(tmp_path, monkeypatch):
 
     def host(operation, owner=None, **fields):
         if operation == "status":
-            return {"awake": False, "awake_count": 0, "awake_cap": 6}
+            return {"awake": False, "awake_count": 0, "wake_timeout": 60, "awake_cap": 6}
         if operation == "wake":
             events.append("wake:" + owner)
             return {"uid": fields["record"]["uid"]}
@@ -247,20 +247,27 @@ def test_only_job_step_one_requests_runtime_admission_erasure():
     assert writers == ["deletion_jobs.py"]
 
 
-def test_slow_volume_work_does_not_delay_another_scheduled_wake(authority):
+@pytest.mark.parametrize("operation", ["snapshot", "restore"])
+def test_slow_volume_work_does_not_delay_another_scheduled_wake(authority, operation):
     from tinyassets.broker.waker import Waker
 
     a = authority
     lifecycle = a.server.routing.volumes
     lifecycle.volume("alice", "created")
-    lifecycle.volume("alice", "sleep")
+    pending = lifecycle.volume("alice", "sleep")
+    if operation == "restore":
+        reference = pending["work"]["snapshot_id"]
+        lifecycle.volume("alice", "publish", snapshot_id=reference, sha256="b" * 64)
+        lifecycle.volume("alice", "restore", snapshot_id=reference)
     entered, release = threading.Event(), threading.Event()
 
-    def host(operation, owner=None, **fields):
-        if operation == "snapshot":
+    def host(action, owner=None, **fields):
+        if action == operation:
             entered.set()
             assert release.wait(10)
-        return a.host(operation, owner, **fields)
+        if action == "restore":
+            return {"restored": True}
+        return a.host(action, owner, **fields)
     lifecycle.execute = host
     index = SimpleNamespace(identities=a.identities, due=lambda **kwargs: ["bob"],
                             woken=lambda owner, **kwargs: None)
@@ -274,6 +281,29 @@ def test_slow_volume_work_does_not_delay_another_scheduled_wake(authority):
         assert not a.server.routing.tasks["alice"].done()
         release.set()
         await a.server.routing.close()
+    asyncio.run(exercise())
+
+
+def test_repeated_cancellation_cannot_release_owner_before_worker_finishes(tmp_path):
+    entered, release = threading.Event(), threading.Event()
+
+    def blocking():
+        entered.set()
+        assert release.wait(5)
+
+    async def exercise():
+        first = asyncio.create_task(admission.owner_call(tmp_path, "alice", blocking))
+        assert await asyncio.to_thread(entered.wait, 2)
+        second = asyncio.create_task(admission.owner_call(tmp_path, "alice", lambda: "second"))
+        for _ in range(2):
+            first.cancel()
+            await asyncio.sleep(0)
+        assert not first.done() and not second.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        assert await second == "second"
+
     asyncio.run(exercise())
 
 

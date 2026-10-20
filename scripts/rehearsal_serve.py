@@ -184,6 +184,9 @@ def owner(root, relay, secret, socket, uid, generation, centers, inherited_mount
 
 
 def broker(directory, *, register=False):
+    import faulthandler
+
+    faulthandler.dump_traceback_later(60, repeat=True)
     os.environ.setdefault("BACKUP_DEST", ":local:/snapshots/owner-snapshots")
     from tinyassets.broker.fence import Fence
     from tinyassets.broker.ops import OpStore

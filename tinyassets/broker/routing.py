@@ -12,7 +12,7 @@ import threading
 from contextlib import closing
 from pathlib import Path
 
-from tinyassets.broker.admission import owner_call, read
+from tinyassets.broker.admission import owner_call, owner_lock, read, thread_work
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +28,10 @@ class RoutingAuthority:
         # Orders revisions and delivery of the shared routing snapshot.
         self._publication = threading.Lock()
         self.tasks = {}
+        # Shared awake-slot reservation: scheduled waiters release this condition;
+        # an interactive eviction and its replacement launch reserve one slot.
+        self._capacity = asyncio.Condition()
+        self._reservations = {}
         self._instance = None
 
     def _router(self, request):
@@ -93,23 +97,24 @@ class RoutingAuthority:
             if request("stop", uid=uid) != {"stopped": True}:
                 raise RuntimeError("admission withdrawal remains pending")
 
-    def _wake(self, owner, *, scheduled=False, image=None):
-        from tinyassets.boxes.daemon_control import request
+    def _prepare(self, owner):
         from tinyassets.broker.box_admission import owner_record
 
         record = owner_record(self.identities, owner, for_wake=True)
-        # A new process cannot accept stale ingress after a failed withdrawal
-        # delivery. Reinstallation precedes every cold lifecycle operation.
         self.publish()
-        record = self.volumes.prepare(owner, record)
+        return self.volumes.prepare(owner, record)
+
+    def _launch(self, owner, record, *, scheduled=False, image=None):
+        from tinyassets.boxes.daemon_control import request
+
         fields = {"image": image} if image is not None else {}
         result = request("wake", owner, record=record, scheduled=scheduled, **fields)
-        if result == {"asleep": True}:
-            record = self.volumes.prepare(owner, record)
-            result = request("wake", owner, record=record, scheduled=scheduled, **fields)
         if result != {"uid": record["uid"]}:
             raise RuntimeError("broker-bound box did not become ready")
         return result["uid"]
+
+    def _wake(self, owner, *, scheduled=False, image=None):
+        return self._launch(owner, self._prepare(owner), scheduled=scheduled, image=image)
 
     def _roll(self, image, uid=None):
         from tinyassets.boxes.daemon_control import request
@@ -145,25 +150,61 @@ class RoutingAuthority:
             return {**result, "outcome": "rolled_back", "reason": "health_failed"}
 
     async def wake(self, owner, *, scheduled=False, image=None):
-        if not scheduled:
-            read(self.identities, owner).require_work()
-            status = await asyncio.to_thread(self.volumes.host, owner, "status")
-            if not status["awake"] and status["awake_count"] >= status["awake_cap"]:
-                from tinyassets.broker.owner_volumes import pending
+        from tinyassets.broker.owner_volumes import pending
 
-                candidates = []
-                for candidate in await asyncio.to_thread(pending, self.identities):
-                    facts = await asyncio.to_thread(self.volumes.host, candidate, "status")
-                    if facts["awake"] and facts["idle_seconds"] is not None:
-                        candidates.append((facts["idle_seconds"], candidate))
-                for _, candidate in sorted(candidates, reverse=True):
-                    try:
-                        await self.sleep(candidate)
+        async with owner_lock(self.identities.path, owner):
+            record = await thread_work(self._prepare, owner)
+            victim = None
+            deadline = None
+            async with self._capacity:
+                while True:
+                    status = await asyncio.to_thread(self.volumes.host, owner, "status")
+                    if deadline is None:
+                        deadline = asyncio.get_running_loop().time() + status["wake_timeout"]
+                    if status["awake"]:
                         break
-                    except Exception:
-                        log.info("capacity candidate has not drained owner=%s", candidate)
-        return await owner_call(self.identities.path, owner, self._wake, owner,
-                                scheduled=scheduled, image=image)
+                    # Reservations are in-flight slot use, never lifecycle intent.
+                    # The map's running/work record remains the only durable intent.
+                    reserved = len(self._reservations)
+                    for replacing in self._reservations.values():
+                        if replacing is not None:
+                            facts = await asyncio.to_thread(self.volumes.host, replacing, "status")
+                            reserved -= int(facts["awake"])
+                    if status["awake_count"] + reserved < status["awake_cap"]:
+                        self._reservations[owner] = None
+                        break
+                    if not scheduled:
+                        candidates = []
+                        for candidate in await asyncio.to_thread(pending, self.identities):
+                            facts = await asyncio.to_thread(self.volumes.host, candidate, "status")
+                            if (facts["awake"] and facts["active"] == 0
+                                    and facts["idle_seconds"] is not None
+                                    and candidate not in self._reservations.values()):
+                                candidates.append((facts["idle_seconds"], candidate))
+                        if candidates:
+                            victim = max(candidates)[1]
+                            self._reservations[owner] = victim
+                            break
+                    try:
+                        await asyncio.wait_for(self._capacity.wait(),
+                            max(0, deadline - asyncio.get_running_loop().time()))
+                    except TimeoutError:
+                        from tinyassets.boxes.provider import BoxBusy
+
+                        raise BoxBusy("owner wake capacity deadline exceeded") from None
+            try:
+                if victim is not None:
+                    await owner_call(self.identities.path, victim, self.volumes.sleep, victim)
+                return await thread_work(self._launch, owner, record,
+                                         scheduled=scheduled, image=image)
+            finally:
+                async with self._capacity:
+                    self._reservations.pop(owner, None)
+                    self._capacity.notify_all()
+
+    async def _capacity_changed(self):
+        async with self._capacity:
+            self._capacity.notify_all()
 
     async def roll(self, image, uid=None):
         if uid is None:
@@ -176,7 +217,10 @@ class RoutingAuthority:
         return await owner_call(self.identities.path, row[0], self._roll, image, uid)
 
     async def sleep(self, owner):
-        return await owner_call(self.identities.path, owner, self.volumes.sleep, owner)
+        try:
+            return await owner_call(self.identities.path, owner, self.volumes.sleep, owner)
+        finally:
+            await self._capacity_changed()
 
     async def restore(self, owner, snapshot_id):
         return await owner_call(self.identities.path, owner, self.volumes.restore,
@@ -196,6 +240,8 @@ class RoutingAuthority:
             await owner_call(self.identities.path, owner, operation, owner)
         except Exception:
             log.exception("owner lifecycle work remains pending owner=%s", owner)
+        finally:
+            await self._capacity_changed()
 
     async def close(self):
         await asyncio.gather(*self.tasks.values(), return_exceptions=True)

@@ -1,4 +1,4 @@
-"""Deletion is an identity refusal even while old credentials remain stored."""
+"""C15: credential revocation fences authentication without routing tombstones."""
 
 import asyncio
 import hashlib
@@ -16,9 +16,9 @@ from tests.support.admission import projection
 from tests.test_onboarding_session_refresh import _drive, _ok
 from tests.test_workos_provider import _provider, _sign
 from tinyassets.auth import middleware
-from tinyassets.auth.provider import Identity
 from tinyassets.broker.admission import local_mutate
 from tinyassets.onboarding import owner_sessions, session_store
+from tinyassets.router_credentials import revoke_account
 
 
 @pytest.fixture
@@ -27,6 +27,7 @@ def deleted(tmp_path, monkeypatch, in_process_broker):
     live = in_process_broker.supervisor_for(tmp_path)
     local_mutate(live.identities.path, "alice", "erase",
         routing=projection(live.identities.path))
+    revoke_account(tmp_path, "alice")
     return tmp_path
 
 
@@ -43,10 +44,10 @@ def test_fresh_workos_bearer_and_claims_refuse_deleted_owner(deleted, keypair, m
         [{"id": "session_test"}] if owner == "bob" else []))
     provider = _provider(keypair)
     token = _sign(keypair, sub="alice", sid="brand-new-session")
-    assert provider.verified_claims(token) is None
+    assert provider.verified_claims(token)["sub"] == "alice"
     assert provider.resolve_token(token) is None
-    assert rejection_category() == "account_deleted"
-    assert "Account deleted" in rejection_description(rejection_category())
+    assert rejection_category() == "expired"
+    assert "expired" in rejection_description(rejection_category())
     assert provider.resolve_token(_sign(keypair, sub="bob")) is not None
 
 
@@ -80,7 +81,7 @@ def test_fresh_workos_callback_stores_no_session(deleted, monkeypatch, keypair, 
     monkeypatch.setattr(httpx, "AsyncClient", Client)
     response = asyncio.run(owner_sessions.callback(req))
     assert response.status_code == 403
-    assert b"Account deleted" in response.body
+    assert b"Sign-in" in response.body
     with owner_sessions.store() as db:
         assert db.execute("SELECT COUNT(*) FROM owner_sessions").fetchone()[0] == 0
     assert "new-refresh" not in str(response.headers)
@@ -95,13 +96,12 @@ def test_token_exchange_and_refresh_refused_without_persisting(
         cookie="ta_rt=old-refresh", data_dir=str(deleted), monkeypatch=monkeypatch,
         provider=_provider(keypair),
         upstream=lambda _: _ok(_sign(keypair, sub="alice", sid="fresh-session"), "rotated"))
-    assert status == 401 and body["error"] == "account_deleted"
-    assert "Account deleted" in body["message"]
+    assert status == 401 and body["error"] == "identity_unresolved"
     assert not cookies
     assert not list(deleted.glob(".runtime/app_refresh_sessions/*.json"))
 
 
-def test_api_key_and_hook_token_refuse_before_revocation(deleted):
+def test_api_key_and_hook_token_refuse_after_credential_revocation(deleted):
     from tinyassets.api_keys import ApiKeyStore, resolve_identity
     from tinyassets.router_credentials import HookOwners
 
@@ -109,6 +109,7 @@ def test_api_key_and_hook_token_refuse_before_revocation(deleted):
     key = keys.mint("alice", name="fixture", scopes=[], authority=None)["key"]
     hooks = HookOwners(deleted)
     hooks.publish(hashlib.sha256(b"hook").hexdigest(), "alice")
+    revoke_account(deleted, "alice")
     assert keys.resolve(key) is None
     assert resolve_identity(key) is None
     assert hooks.resolve("hook") is None
@@ -116,24 +117,25 @@ def test_api_key_and_hook_token_refuse_before_revocation(deleted):
         assert db.execute("SELECT last_used_at FROM api_keys").fetchone()[0] is None
 
 
-def test_stored_sessions_and_provider_independent_bearers_are_fenced(deleted, monkeypatch):
+def test_stored_sessions_and_provider_bearers_are_revoked(deleted, monkeypatch, keypair):
     with owner_sessions.store() as db:
         db.execute("INSERT INTO owner_sessions VALUES (?,?,?)", (
             owner_sessions.hashed("old-cookie"), json.dumps({"user_id": "alice"}), time.time()+300))
+    handle = session_store.mint("refresh", owner="alice")
+    revoke_account(deleted, "alice")
     assert owner_sessions.lookup("old-cookie") is None
-    monkeypatch.setattr(middleware, "_get_provider", lambda: SimpleNamespace(
-        resolve_token=lambda _: Identity(user_id="alice", username="alice")))
-    assert middleware.auth_middleware("fresh-provider-token") is None
-    with pytest.raises(PermissionError, match="Account deleted"):
-        session_store.mint("refresh", owner="alice")
+    monkeypatch.setattr(middleware, "_get_provider", lambda: _provider(keypair))
+    assert middleware.auth_middleware(_sign(keypair, sub="alice", sid="session_old")) is None
+    assert session_store.read(handle) == ("", "")
 
 
-def test_existing_refresh_handle_and_rotation_refuse_after_tombstone(tmp_path, monkeypatch):
+def test_existing_refresh_handle_and_rotation_refuse_after_revocation(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     handle = session_store.mint("refresh", owner="alice")
     assert session_store.read(handle)[0] == "refresh"
     local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase",
         routing=projection(tmp_path / ".broker/state/owner-identities.db"))
+    revoke_account(tmp_path, "alice")
     assert session_store.rotate(handle, "new-refresh") == ""
     assert session_store.read(handle) == ("", "")
 
@@ -143,11 +145,12 @@ def test_deleted_refresh_handle_is_explained_without_contacting_workos(tmp_path,
     handle = session_store.mint("refresh", owner="alice")
     local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase",
         routing=projection(tmp_path / ".broker/state/owner-identities.db"))
+    revoke_account(tmp_path, "alice")
     status, body, cookies, calls = _drive(
         {"grant_type": "refresh_token", "session_ref": handle},
         data_dir=str(tmp_path), monkeypatch=monkeypatch,
         upstream=lambda _: pytest.fail("deleted refresh reached WorkOS"))
-    assert status == 401 and body["error"] == "account_deleted"
+    assert status == 401 and body["error"] == "no_refresh_token"
     assert not cookies and not calls
 
 
@@ -170,6 +173,7 @@ def test_local_oauth_authorize_exchange_and_bearer_are_fenced(
     if deleted_before_exchange:
         local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase",
             routing=projection(tmp_path / ".broker/state/owner-identities.db"))
+        revoke_account(tmp_path, "alice")
     tokens = provider.exchange_code(code, client, redirect, verifier)
     if deleted_before_exchange:
         assert tokens is None
@@ -177,6 +181,9 @@ def test_local_oauth_authorize_exchange_and_bearer_are_fenced(
         assert provider.resolve_token(tokens["access_token"]) is not None
         local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase",
             routing=projection(tmp_path / ".broker/state/owner-identities.db"))
+        revoke_account(tmp_path, "alice")
         assert provider.resolve_token(tokens["access_token"]) is None
-    with pytest.raises(ValueError, match="Account deleted"):
-        provider.create_authorization(client, redirect, "read", "", challenge, "S256")
+    with provider._connect() as db:
+        for table in ("authorization_codes", "access_tokens", "refresh_tokens"):
+            assert db.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE user_id='alice'").fetchone()[0] == 0

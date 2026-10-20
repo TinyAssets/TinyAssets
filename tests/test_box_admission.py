@@ -277,7 +277,7 @@ def test_record_only_for_every_work_reader(authority, state, tmp_path):
     else:
         assert expected and scope["principal"] == owner and scope["command_center"] == "center"
     record = read(identities, owner)
-    assert active_owner(owner, tmp_path) == (record.state != "erased")
+    assert active_owner(owner, tmp_path)  # Authentication has no erasure-history read.
     assert (record.state == "admitted") == expected
     assert (record.state == "erased") == terminal
 

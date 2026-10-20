@@ -122,7 +122,8 @@ def storage(tmp_path):
     live = set()
     manager = SimpleNamespace(condition=threading.Condition(threading.RLock()), runtime=runtime,
                               boxes={}, status=lambda uid: {"uid": uid, "awake": uid in live,
-                                  "idle_seconds": 0, "idle_limit": 900, "uptime": 0})
+                                  "idle_seconds": 0, "idle_limit": 900, "uptime": 0,
+                                  "volume_size": images.sizes.get(uid)})
     service = HostService(None, images, None, manager)
     def execute(operation, **fields):
         result = service.lifecycle({"lifecycle": operation, **fields}, 1002)

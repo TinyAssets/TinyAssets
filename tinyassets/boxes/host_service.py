@@ -32,9 +32,6 @@ class HostService:
         self.broker_ready = threading.Event()
         self._slots = threading.BoundedSemaphore(32)
         self._broker_slots = threading.BoundedSemaphore(4)
-        # Waiting scheduled wakes cannot consume every listener worker and
-        # prevent an interactive request from entering the priority queue.
-        self._scheduled_slots = threading.BoundedSemaphore(8)
         self.daemons = daemons
 
     def register(self, sock):
@@ -174,16 +171,10 @@ class HostService:
                 scheduled = document["scheduled"]
                 if type(scheduled) is not bool:
                     raise ValueError("scheduled must be boolean")
-                if scheduled and not self._scheduled_slots.acquire(blocking=False):
-                    raise BoxError("scheduled wake queue is full")
-                try:
-                    ready = self.daemons.ensure_awake(
-                        owner, scheduled=scheduled, launch=document["record"],
-                        **({"image": document["image"]} if "image" in document else {}))
-                    return {"uid": ready} if ready is not None else {"asleep": True}
-                finally:
-                    if scheduled:
-                        self._scheduled_slots.release()
+                ready = self.daemons.ensure_awake(
+                    owner, scheduled=scheduled, launch=document["record"],
+                    **({"image": document["image"]} if "image" in document else {}))
+                return {"uid": ready}
             if (uid == 1001 and operation == "status"
                     and set(document) == {"lifecycle", "owner"}):
                 box = next(box for box in self.daemons.boxes.values() if box.owner == owner)

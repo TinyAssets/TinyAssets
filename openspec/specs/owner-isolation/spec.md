@@ -188,3 +188,20 @@ admission closed.
 - **WHEN** the shared layer is restored and services start with admission closed
 - **THEN** unfinished deletion jobs run through the normal broker path
 - **AND** admission opens only after they complete and current billing and identities reconcile
+
+### Requirement: The broker holds the only lifecycle intent
+The broker SHALL be the only component that selects or commits sleep, restore,
+eviction and wake, from the map's durable record and facts boxhostd reports.
+boxhostd SHALL hold no lifecycle intent and SHALL NOT request a wake. Deletion
+enqueue SHALL return after its first step; later steps SHALL run as broker tasks.
+
+#### Scenario: An idle box sleeps by the broker's decision
+- **WHEN** boxhostd reports a box idle
+- **THEN** the broker stops, snapshots and publishes it under the owner lock
+- **AND** boxhostd holds no flag that could restart it on its own
+
+#### Scenario: Deletion enqueue returns before volume work
+- **WHEN** an owner's deletion is enqueued
+- **THEN** the call returns after the owner is erased, channels are closed and routing is withdrawn
+- **AND** destroy and snapshot deletion run afterwards as a broker task
+

@@ -162,7 +162,7 @@ def test_platform_recovery_resets_credentials_without_owner_access(platform, tmp
     with sqlite3.connect(platform / ".broker/state/owner-identities.db") as db:
         assert db.execute("SELECT secret FROM owner_box_secrets").fetchone()[0] != "old-box-secret"
     assert json.loads((platform / ".router-credentials.json").read_text())
-    ops = OpStore(platform / ".broker/ops.db", clock=lambda: 2000000001)
+    ops = OpStore(platform / ".broker/state/ops.db", clock=lambda: 2000000001)
     assert ops.admit("outbound", new_op_id(lambda: 1999999999), "digest").kind == "expired"
     assert ops.admit("outbound", new_op_id(lambda: 2000000301), "digest").kind == "new"
     assert not (platform / ".restore-epoch").exists()
@@ -616,7 +616,7 @@ def test_disaster_drops_provider_custody_and_outbound_authority(platform, monkey
     "relative",
     [
         ".ordinary-admission.json",
-        ".broker/ops.db",
+        ".broker/state/ops.db",
         ".broker/plans.db",
         ".platform-recovery.json",
         ".router-credentials.json",

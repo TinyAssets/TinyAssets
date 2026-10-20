@@ -49,7 +49,6 @@ class OwnerDaemons:
         self.memory_bytes, self.wake_timeout = memory_bytes, wake_timeout
         self.boxes: dict[int, Box] = {}
         self.condition = threading.Condition(threading.RLock())
-        self.waiting: list[tuple[bool, object]] = []
         self.images, self.roll_wait = images, roll_wait
         self.idle_guard = lambda uid: nullcontext(True)
 
@@ -135,6 +134,7 @@ class OwnerDaemons:
         directory, secret = self._paths(box.uid, box.secret)
         # Reserve capacity before touching runsc; failed cleanup keeps the slot.
         box.awake = True
+        box.started = time.monotonic()
         self.runtime.start(box.uid, box.uid, relay=relay, memory_bytes=self.memory_bytes,
                            app_dir=directory, secret_file=secret,
                            volume_mount=volume_mount,
@@ -223,63 +223,39 @@ class OwnerDaemons:
             box.launch = record
             if box.owner != owner:
                 raise BoxError("broker owner reservation changed")
-            ticket = (scheduled, object())
-            self.waiting.append(ticket)
+            if box.restarting:
+                raise BoxBusy("owner image operation is still executing")
+            if box.awake and self.runtime.alive(uid):
+                if box.error:
+                    raise BoxError("owner sandbox has an unverified launch or stop")
+                if self._rpc(box)["draining"]:
+                    raise BoxError("owner daemon is still draining")
+                box.last = time.monotonic()
+                return uid
+            if box.awake:
+                self.runtime.stop(uid)
+                box.awake = False
+                self._failed(box, BoxError("owner daemon crashed"))
+            if sum(item.awake or item.restarting for item in self.boxes.values()) >= self.awake_cap:
+                raise BoxBusy("owner wake capacity deadline exceeded")
             try:
-                while True:
-                    if box.restarting:
-                        left = deadline - time.monotonic()
-                        if left <= 0:
-                            raise BoxBusy("owner roll readiness deadline exceeded")
-                        self.condition.wait(min(left, .1))
-                        continue
-                    if box.awake and self.runtime.alive(uid):
-                        if record["quota"] > self.volumes.size(uid):
-                            if not self._sleep(box, idle=0):
-                                raise BoxBusy("owner work must drain before volume growth")
-                            return None
-                        if box.error:
-                            raise BoxError("owner sandbox has an unverified launch or stop")
-                        if self._rpc(box)["draining"]:
-                            raise BoxError("owner daemon is still draining")
-                        box.last = time.monotonic()
-                        return uid
-                    if box.awake:
-                        self.runtime.stop(uid)
-                        box.awake = False
-                        self._failed(box, BoxError("owner daemon crashed"))
-                    first = min(self.waiting, key=lambda item: item[0])
-                    ready = first is ticket
-                    if ready:
-                        if sum(item.awake or item.restarting for item in
-                               self.boxes.values()) < self.awake_cap:
-                            self.waiting.remove(ticket)
-                            try:
-                                if image is None:
-                                    self._start(box, deadline, launch=record)
-                                else:
-                                    box.restarting = True
-                                    self.condition.release()
-                                    try:
-                                        self._start(box, deadline, launch=record, image=image,
-                                                    cleanup=False)
-                                    finally:
-                                        self.condition.acquire()
-                                        box.restarting = False
-                                return uid
-                            except Exception as exc:
-                                if image is not None:
-                                    box.roll_failed = True
-                                self._failed(box, exc)
-                                raise BoxError(f"owner daemon startup failed: {exc}") from exc
-                    left = deadline - time.monotonic()
-                    if left <= 0:
-                        raise BoxBusy("owner wake capacity deadline exceeded")
-                    self.condition.wait(min(left, 1))
-                    # The broker holds this owner's lifecycle lock for the entire call.
+                if image is None:
+                    self._start(box, deadline, launch=record)
+                else:
+                    box.restarting = True
+                    self.condition.release()
+                    try:
+                        self._start(box, deadline, launch=record, image=image, cleanup=False)
+                    finally:
+                        self.condition.acquire()
+                        box.restarting = False
+                return uid
+            except Exception as exc:
+                if image is not None:
+                    box.roll_failed = True
+                self._failed(box, exc)
+                raise BoxError(f"owner daemon startup failed: {exc}") from exc
             finally:
-                if ticket in self.waiting:
-                    self.waiting.remove(ticket)
                 self.condition.notify_all()
 
     def retire(self, owner, uid):
@@ -327,6 +303,9 @@ class OwnerDaemons:
             self.boxes.pop(uid, None)
 
     def status(self, uid):
+        # Read opaque image size outside the shared runtime registry lock.
+        # Snapshot execution owns the volume lock and may notify this registry.
+        size = self.volumes.size(uid) if (uid in self.boxes and self.boxes[uid].awake) else None
         with self.condition:
             box = self.boxes.get(uid)
             awake = bool(box and box.awake and self.runtime.alive(uid))
@@ -335,10 +314,12 @@ class OwnerDaemons:
                     "failures": box.failures if box else 0,
                     "error": box.error if box else "",
                     "idle_seconds": time.monotonic() - box.last if activity else None,
+                    "active": activity["active"] if activity else None,
                     "idle_limit": self.idle_seconds,
                     "uptime": time.monotonic() - box.started if awake else 0,
                     "awake_count": sum(item.awake for item in self.boxes.values()),
-                    "awake_cap": self.awake_cap,
+                    "awake_cap": self.awake_cap, "wake_timeout": self.wake_timeout,
+                    "volume_size": size if awake else None,
                     "image": (box.image if box else
                               self.images.last.get(str(uid), "") if self.images else "")}
 
@@ -369,10 +350,6 @@ class OwnerDaemons:
         """Observe exited processes; only the broker selects the next transition."""
         with self.condition:
             for box in self.boxes.values():
-                if box.awake and box.error and not box.restarting:
-                    # Complete cleanup of an already authorized failed operation.
-                    self.runtime.stop(box.uid)
-                    box.awake = False
                 if box.awake and not box.restarting and not self.runtime.alive(box.uid):
                     self.runtime.stop(box.uid)
                     box.awake = False

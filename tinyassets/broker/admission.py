@@ -24,12 +24,22 @@ def owner_lock(path, owner):
 async def owner_call(path, owner, function, *args, **kwargs):
     """Keep serialization until a worker finishes, including on cancellation."""
     async with owner_lock(path, owner):
-        worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
-        try:
-            return await asyncio.shield(worker)
-        except asyncio.CancelledError:
-            await worker
-            raise
+        return await thread_work(function, *args, **kwargs)
+
+
+async def thread_work(function, *args, **kwargs):
+    """A cancelled caller must still wait for its blocking operation to finish."""
+    worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                pass
+        worker.result()
+        raise
 
 
 class OwnerSuspended(PermissionError):

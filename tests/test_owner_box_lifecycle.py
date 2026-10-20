@@ -201,7 +201,7 @@ def test_broker_admission_failure_refuses_wake_without_host_callback(fleet, monk
         assert fleet.runtime.live == {b, c}
         assert fleet.states[b].active == fleet.states[c].active == 1
         assert not fleet.states[b].draining and not fleet.states[c].draining
-    assert not manager.boxes[a].wanted
+    assert "wanted" not in vars(manager.boxes[a])
 
 
 @pytest.mark.parametrize("awake", [False, True])
@@ -283,8 +283,7 @@ def test_interactive_evicts_lru_idle_and_scheduled_waits_behind_it(fleet):
     fleet.wake("c")
     assert b not in fleet.runtime.live and a in fleet.runtime.live
     c = fleet.admission.owner("c")["uid"]
-    with manager.condition:
-        manager._stop(manager.boxes[c])
+    drive(fleet.routing.sleep("c"))
     manager.awake_cap = 1
     manager.wake_timeout = 5
     result = []
@@ -295,14 +294,13 @@ def test_interactive_evicts_lru_idle_and_scheduled_waits_behind_it(fleet):
     thread = threading.Thread(target=scheduled)
     thread.start()
     deadline = time.monotonic() + 2
-    while not manager.waiting and time.monotonic() < deadline:
+    while not fleet.routing._capacity._waiters and time.monotonic() < deadline:
         time.sleep(.01)
-    assert manager.waiting and not result
+    assert fleet.routing._capacity._waiters and not result
     # Interactive callers bypass the older scheduled ticket and can evict.
     fleet.wake("c")
     assert fleet.runtime.live == {c} and not result
-    with manager.condition:
-        manager._stop(manager.boxes[c])
+    drive(fleet.routing.sleep("c"))
     thread.join(5)
     assert result == [b] and not thread.is_alive()
 

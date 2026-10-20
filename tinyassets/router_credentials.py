@@ -165,6 +165,13 @@ def _revoke_account(root: Path, owner: str, keys):
         if key["revoked_at"] is None:
             keys.revoke(owner, key["key_id"], authority=None)
     HookOwners(root).revoke_owner(owner)
+    # C15: credentials are the authentication fence after routes omit erasures.
+    # Retire local OAuth codes and both bearer types in their one identity store.
+    oauth = root / ".auth.db"
+    if oauth.exists():
+        with closing(sqlite3.connect(oauth.as_uri() + "?mode=rw", uri=True)) as db, db:
+            for table in ("authorization_codes", "access_tokens", "refresh_tokens"):
+                db.execute(f"DELETE FROM {table} WHERE user_id=?", (owner,))
 
 
 def _dispatch(root: Path, owner: str, request: dict) -> dict:

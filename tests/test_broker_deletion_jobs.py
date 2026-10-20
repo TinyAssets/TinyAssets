@@ -305,8 +305,9 @@ def test_door_deletion_removes_only_bound_owners_data_and_router_state(
             revoked = await client.post("/app/account/delete", headers={
                 "authorization": "Bearer alice", "origin": origin}, json={"confirm": "DELETE"})
             assert revoked.status_code == 202, revoked.text
-            await asyncio.to_thread(jobs.service.resume_loaded_job,
-                                    jobs.remote.load(digest("alice")))
+            await asyncio.to_thread(drive, jobs.server.routing.close())
+            await asyncio.to_thread(drive, jobs.service.resume_loaded_job(
+                                    jobs.remote.load(digest("alice"))))
             assert (await client.get(revoked.json()["status_url"] + "?format=json")).json()[
                 "status"] == "deleted"
             assert read(admitted, "alice").state == "erased"
@@ -404,7 +405,8 @@ def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
         "socket": (destroy, "socket_tree"),
         "broker_egress": (account_erasure, "local_erase"),
         "billing": (stripe_adapter, "_get"),
-        "plan": (Plans, "apply_tier_event"),
+        "plan": (__import__("tinyassets.broker.owner_reads", fromlist=["Plans"]).Plans,
+                     "apply_tier_event"),
         "credentials": (router_credentials, "revoke_account"),
         "identity": (router_account_deletion, "delete_workos_user"),
     }
@@ -436,6 +438,7 @@ def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
                     json={"confirm": "DELETE"})
 
             first = await delete()
+            await asyncio.to_thread(drive, jobs.server.routing.close())
             if failure == "stop":
                 assert first.status_code == 503, first.text
                 assert first.headers["location"] == first.json()["status_url"]
@@ -451,9 +454,14 @@ def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
                 assert job["failed_step"] == expected
                 assert read(admitted, "alice").state == "erased"
                 assert "identity" not in calls
-                assert (await delete()).status_code == 401
-            result = await asyncio.to_thread(jobs.service.resume_loaded_job,
-                                             jobs.remote.load(digest("alice")))
+                # Before credential revocation, authentication survives but the
+                # absent route still denies all work; deletion enqueue is idempotent.
+                repeated = await delete()
+                assert repeated.status_code == (401 if "credentials" in job["completed_steps"]
+                                                 else 202)
+            await asyncio.to_thread(drive, jobs.server.routing.close())
+            result = await asyncio.to_thread(drive, jobs.service.resume_loaded_job(
+                                             jobs.remote.load(digest("alice"))))
             assert result["status"] == "deleted"
             job = jobs.remote.load(digest("alice"))
             assert job["results"]["billing"] == "cancelled"
@@ -512,8 +520,9 @@ def test_suspended_owner_deletion_sweeps_real_box_and_expires_checkout(
                 "origin": resource.scheme + "://" + resource.netloc},
                 json={"confirm": "DELETE"})
             assert response.status_code == 202, response.text
-            await asyncio.to_thread(jobs.service.resume_loaded_job,
-                                    jobs.remote.load(digest("alice")))
+            await asyncio.to_thread(drive, jobs.server.routing.close())
+            await asyncio.to_thread(drive, jobs.service.resume_loaded_job(
+                                    jobs.remote.load(digest("alice"))))
             assert jobs.remote.load(digest("alice"))["results"]["billing"] == "attempt_expired"
             assert (await client.get(response.json()["status_url"] + "?format=json")).json()[
                 "pending_steps"] == []
@@ -558,7 +567,8 @@ def test_deletion_drains_real_turn_before_sweep_and_destroys_late_writes(
                     assert status.json()["draining"] and status.json()["active"] == 1
                 refused = await client.post("/app/api/file", headers=headers,
                                              json={"graph_id": "cc-alice", "path": "hello.txt"})
-                assert refused.status_code == 401
+                assert refused.status_code == 404
+                assert read(admitted, "alice").state == "erased"
                 assert not deleting.done() and root.exists()
                 if timeout:
                     result = await asyncio.wait_for(deleting, 25)
@@ -567,15 +577,16 @@ def test_deletion_drains_real_turn_before_sweep_and_destroys_late_writes(
                     assert root.exists() and boxes.runtime.alive(uid)
                 (root / "release-turn").touch()
                 if timeout:
-                    await asyncio.to_thread(jobs.service.resume_loaded_job,
-                                            jobs.remote.load(digest("alice")))
+                    await asyncio.to_thread(drive, jobs.service.resume_loaded_job(
+                                            jobs.remote.load(digest("alice"))))
                     assert jobs.remote.load(digest("alice"))["completed_steps"] == list(STEPS)
                     return
                 else:
                     result = await asyncio.wait_for(deleting, 10)
                 assert result.status_code == 202, result.text
-                await asyncio.to_thread(jobs.service.resume_loaded_job,
-                                        jobs.remote.load(digest("alice")))
+                await asyncio.to_thread(drive, jobs.server.routing.close())
+                await asyncio.to_thread(drive, jobs.service.resume_loaded_job(
+                                        jobs.remote.load(digest("alice"))))
                 assert jobs.remote.load(digest("alice"))["completed_steps"] == list(STEPS)
             finally:
                 if root.exists():
@@ -597,7 +608,10 @@ def test_worker_restart_retries_from_local_rows_on_existing_waker_tick(jobs, mon
     restarted = DeletionJobs(jobs.server, records=jobs.remote, clock=lambda: time.time() + 3601)
     monkeypatch.setattr(jobs.remote, "records", lambda: pytest.fail("remote read on restart"))
     monkeypatch.setattr(jobs.remote, "load", lambda key: pytest.fail("remote read on restart"))
-    restarted.tick()
+    async def retry():
+        restarted.tick()
+        await jobs.server.routing.close()
+    asyncio.run_coroutine_threadsafe(retry(), jobs.server._loop).result(30)
     assert restarted.status(digest("alice"), token)["completed_steps"] == list(STEPS)
 
 
@@ -775,15 +789,15 @@ def test_queued_wake_serializes_before_withdrawal(jobs, boxes, admitted, monkeyp
     errors, results = [], []
     def wake():
         try:
-            results.append(drive(jobs.server.routing.wake("alice")))
+            results.append(drive(jobs.server.routing.wake("alice", scheduled=True)))
         except Exception as error:
             errors.append(error)
     thread = threading.Thread(target=wake)
     thread.start()
     deadline = time.monotonic() + 5
-    while not manager.waiting and time.monotonic() < deadline:
+    while not jobs.server.routing._capacity._waiters and time.monotonic() < deadline:
         time.sleep(.01)
-    assert manager.waiting
+    assert jobs.server.routing._capacity._waiters
     complete_deletion(jobs.service, "alice")
     thread.join(5)
     assert not thread.is_alive() and errors and not results

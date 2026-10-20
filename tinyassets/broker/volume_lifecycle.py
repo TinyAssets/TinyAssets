@@ -50,6 +50,9 @@ class VolumeLifecycle:
         return self.volume(owner)
 
     def prepare(self, owner, launch):
+        status = self.host(owner, "status")
+        if status["awake"] and launch["quota"] > status["volume_size"]:
+            self.sleep(owner)
         record = self.recover(owner)
         if not record["local"]:
             self.volume(owner, "restore", snapshot_id=record["snapshot_id"])
