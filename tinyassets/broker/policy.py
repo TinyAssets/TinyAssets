@@ -73,7 +73,7 @@ class PolicyStore:
         account = hashlib.sha256(owner.encode()).hexdigest()
         return self._root / ".broker" / "accounts" / account / "policy.db"
 
-    def _connect(self, owner: str, *, allow_deleted: bool = False) -> sqlite3.Connection:
+    def _connect(self, owner: str) -> sqlite3.Connection:
         if owner in self._unavailable:
             raise PolicyRefused(self._unavailable[owner])
         path = self._path(owner)
@@ -81,13 +81,12 @@ class PolicyStore:
         broker.mkdir(mode=0o700, exist_ok=True)
         path.parent.parent.mkdir(mode=0o700, exist_ok=True)
         path.parent.mkdir(mode=0o700, exist_ok=True)
-        if not allow_deleted:
-            from tinyassets.broker.admission import read
+        from tinyassets.broker.admission import read
 
-            try:
-                read(self._admissions, owner).require_work()
-            except (PermissionError, LookupError) as exc:
-                raise PolicyRefused("account policy is not admitted") from exc
+        try:
+            read(self._admissions, owner).require_work()
+        except (PermissionError, LookupError) as exc:
+            raise PolicyRefused("account policy is not admitted") from exc
         if os.name == "posix":
             for directory in (broker, path.parent.parent, path.parent):
                 info = directory.lstat()
@@ -131,22 +130,12 @@ class PolicyStore:
         return db
 
     def erase(self, owner: str) -> int:
-        """Erase policy data at account deletion and fence later stale requests."""
+        """Erase policy custody under terminal admission."""
         from tinyassets.broker.admission import local_mutate
 
-        # lane-b2: delete with the old authority
         local_mutate(self._admissions.path, owner, "erase")
         path = self._path(owner)
-        marker = path.parent / ".deleted"
-        if marker.exists() and not path.exists():
-            return 0
         existed = path.exists()
-        with closing(self._connect(owner, allow_deleted=True)) as db:
-            db.execute("BEGIN EXCLUSIVE")
-            if not marker.exists():
-                fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                os.close(fd)
-            db.commit()
         for suffix in ("", "-wal", "-shm", "-journal"):
             path.with_name(path.name + suffix).unlink(missing_ok=True)
         return int(existed)

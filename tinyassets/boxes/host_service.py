@@ -81,10 +81,7 @@ class HostService:
                 os.close(pidfd)
             sock.close()
 
-    def erasure(self, sock):
-        self.daemon(sock, erasure_only=True)
-
-    def daemon(self, sock, *, erasure_only=False):
+    def daemon(self, sock):
         identity = peer(sock)
         pidfd = None
         try:
@@ -94,8 +91,6 @@ class HostService:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
             sock.settimeout(30)
             document = receive(sock, identity, pidfd)
-            if erasure_only != (document.get("lifecycle") == "erasure"):
-                raise BoxError("wrong control channel for erasure operation")
             if document == {"bootstrap": True} and identity[1] == 1001:
                 with self._broker_lock:
                     broker = self._broker
@@ -122,22 +117,6 @@ class HostService:
 
                 return {"result": RemoteRecords(self.volumes.remote).execute(
                     document["action"], document["arguments"])}
-            if document.get("lifecycle") == "erasure":
-                from tinyassets.erasure_ledger import ErasureLedger
-
-                if ((uid != 1001 and not (uid == 1002 and document.get("ledger_op")
-                                        in {"contains", "contains_many"}))
-                        or set(document) != {"lifecycle", "ledger_op", "arguments"}
-                        or document["ledger_op"] not in {
-                            "contains", "contains_many", "add"}):
-                    raise BoxError("erasure operation refused for this peer")
-                if document["ledger_op"] == "add":
-                    # lane-b2: delete with the old authority
-                    self.admission.erase_admission(document["arguments"]["principal"])
-                # lane-b2: delete with the old authority
-                result = ErasureLedger(self.admission.data_root).execute(
-                    document["ledger_op"], document["arguments"])
-                return {"result": result}
             if self.daemons is None:
                 raise BoxError("owner lifecycle is unavailable")
             if (uid in {0, 1002} and document.get("lifecycle") == "roll"
@@ -171,16 +150,8 @@ class HostService:
                 return self.daemons.restore(owner, document["snapshot_id"])
             if (uid == 1002 and operation == "destroy"
                     and set(document) == {"lifecycle", "owner"}):
-                from tinyassets.erasure_ledger import ErasureLedger, principal_digest
-
                 owner_uid = self.admission.volume(owner)["uid"]
-                # lane-b2: delete with the old authority
-                ledger = ErasureLedger(self.admission.data_root)
-                # lane-b2: delete with the old authority
                 self.admission.erase_admission(owner)
-                # lane-b2: delete with the old authority
-                ledger.execute("add", {"digest": principal_digest(owner), "principal": owner,
-                                       "uids": [owner_uid]})
                 self.daemons.destroy(owner, owner_uid)
                 return {"destroyed": True}
             if ((uid == 1001 or (uid == 1002 and document.get("scheduled") is True))
@@ -322,7 +293,7 @@ def _serve(*, rootfs: Path, data_root: Path, cgroup_parent: Path) -> None:
         bundle_root=state / "bundles",
         cgroup_parent=cgroup_parent)
     recover_daemons(runtime)
-    from tinyassets.erasure_ledger import protect_root
+    from tinyassets.cutover_control import protect_root
 
     protect_root(data_root)
 
@@ -341,8 +312,7 @@ def _serve(*, rootfs: Path, data_root: Path, cgroup_parent: Path) -> None:
         signal.signal(sig, lambda *_: stop.set())
     listeners = [threading.Thread(target=service.serve, args=(
         RUNTIME / name, uid, handler, stop), daemon=True)
-        for name, uid, handler in (("erasure.sock", 1102, service.erasure),
-                                  ("broker-registration.sock", 1002, service.register),
+        for name, uid, handler in (("broker-registration.sock", 1002, service.register),
                                   ("daemon.sock", 1102, service.daemon))]
     try:
         # The broker registers before serving. Recovery must not block that

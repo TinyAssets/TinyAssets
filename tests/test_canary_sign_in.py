@@ -66,8 +66,7 @@ class _WorkOS:
 def rig(tmp_path, monkeypatch):
     """A configured door with fake upstreams; returns the WorkOS stub."""
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    from tinyassets.erasure_ledger import ErasureLedger
-    ErasureLedger(tmp_path).initialize()
+
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     (tmp_path / ".router-credentials.json").write_text(json.dumps({door.KEY_ENV: KEY}))
     monkeypatch.setenv(door.USER_ENV, CANARY)

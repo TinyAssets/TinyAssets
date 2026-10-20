@@ -259,10 +259,8 @@ def sleeping_box(tmp_path, monkeypatch, in_process_broker, cloud_runtime):  # no
     from tinyassets.boxes.relay import OwnerRelays
     from tinyassets.broker.owner_volumes import provision as bind_volume
     from tinyassets.broker.server import BOX_HOST
-    from tinyassets.erasure_ledger import ErasureLedger
     from tinyassets.storage import db_path
 
-    ErasureLedger(tmp_path).initialize()
     # This process fixture shares the router and owner roots. Keep the owner's
     # admission-lock base private after root-ledger setup protects the router root.
     tmp_path.chmod(0o700)

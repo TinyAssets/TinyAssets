@@ -12,7 +12,7 @@ def request(operation: str, owner: str | None = None, **fields) -> dict:
     root = Path(os.environ.get("TINYASSETS_BOXES_RUN", "/run/tinyassets-boxhostd"))
     timeout = (.4 if operation == "erasure" and fields.get("ledger_op") == "contains_many"
                else 600 if operation == "roll" else 65)
-    sock, identity = connect(root / ("erasure.sock" if operation == "erasure" else "daemon.sock"),
+    sock, identity = connect(root / "daemon.sock",
                              timeout=timeout)
     with sock:
         sock.settimeout(timeout)

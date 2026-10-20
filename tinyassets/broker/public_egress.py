@@ -8,26 +8,6 @@ from tinyassets import rpc_frames as rf
 from tinyassets.boxes.network import EgressRefused, _checked_addresses, _destination
 from tinyassets.broker.box_admission import resolve_owner
 
-ERASURE_CHECK_SECONDS = 0.5
-
-
-async def watch_erasure(identities, principals, close):
-    """Bound idle streams too; a stuck authority read is a refusal."""
-    from tinyassets.broker.admission import read
-
-    while True:
-        for owner in tuple(principals()):
-            try:
-                record = await asyncio.wait_for(
-                    asyncio.to_thread(read, identities, owner), ERASURE_CHECK_SECONDS)
-                if record.state == "admitted":
-                    continue
-            except Exception:
-                pass
-            close(owner)
-        await asyncio.sleep(ERASURE_CHECK_SECONDS)
-
-
 
 class PublicEgress:
     def __init__(self, identities, data_root=None):

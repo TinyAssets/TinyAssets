@@ -42,9 +42,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CONTROL_PLANE, "C2 boxhostd lifecycle: snapshot retries and the 24-hour snapshot cycle",
     ),
 
-    "tinyassets/broker/public_egress.py::watch_erasure": (
-        CONTROL_PLANE, "broker revokes active and idle owner streams after erasure fencing",
-    ),
     "tinyassets/broker/deletion_jobs.py::DeletionJobs.run": (
         CONTROL_PLANE, "C6 broker resumes off-host deletion jobs until every step has a receipt",
     ),

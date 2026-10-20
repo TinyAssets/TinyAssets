@@ -1,7 +1,6 @@
 """Credential custody writer. Only broker operations may import this module."""
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -437,7 +436,6 @@ def metadata_connection(data_root):
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     conn = sqlite3.connect(path, isolation_level=None)
     _ensure_credential_owner_schema(conn)
-    conn.execute("CREATE TABLE IF NOT EXISTS deleted_principals (digest TEXT PRIMARY KEY)")
     return conn
 
 
@@ -448,15 +446,12 @@ def check_not_deleted(data_root, owner):
 
 
 def erase_owner(data_root, principal):
-    """Tombstone before locking vaults: a delayed writer cannot resurrect custody."""
+    """Withdraw admission before locking and removing credential custody."""
     from tinyassets.broker.admission import local_mutate
 
-    # lane-b2: delete with the old authority
     local_mutate(Path(data_root) / ".broker/state/owner-identities.db", principal, "erase")
     conn = metadata_connection(data_root)
     try:
-        conn.execute("INSERT OR IGNORE INTO deleted_principals VALUES (?)",
-                     (hashlib.sha256(principal.encode()).hexdigest(),))
         centers = [row[0] for row in conn.execute(
             "SELECT DISTINCT universe_id FROM llm_credential_deposit_owners WHERE owner_user_id=?",
             (principal,))]

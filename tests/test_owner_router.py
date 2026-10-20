@@ -25,9 +25,7 @@ from tinyassets.broker.owner_identities import OwnerIdentities, owner_box_route
 
 @pytest.fixture(autouse=True)
 def initialized_ledger(tmp_path):
-    from tinyassets.erasure_ledger import ErasureLedger
 
-    ErasureLedger(tmp_path).initialize()
     (tmp_path / ".ordinary-admission.json").write_text(json.dumps({"ordinary": True}))
 
 
@@ -656,16 +654,16 @@ def test_retired_hook_door_never_delivers_a_valid_token(router, monkeypatch):
 
 def test_a_deleted_owner_can_never_mint_again(tmp_path, monkeypatch):
     from tinyassets import router_credentials
-    from tinyassets.erasure_ledger import ErasureLedger
+    from tinyassets.broker.owner_identities import _owner_request, owner_admission
     from tinyassets.router_credentials import dispatch
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     mint = {"operation": "key_mint", "name": "k", "request_ref": "ref-1"}
     token = dispatch(tmp_path, "alice", {"operation": "hook_mint"})["token"]
     assert token
-    ErasureLedger(tmp_path).add("alice")
+    _owner_request(tmp_path, {"op": "OWNER_ADMISSION_ERASE", "principal": "alice"})
     router_credentials.revoke_account(tmp_path, "alice")
-    assert ErasureLedger(tmp_path).contains("alice")
+    assert owner_admission(tmp_path, "alice").state == "erased"
     # The door's revocation removed the hook the owner minted before deletion.
     assert router_credentials.HookOwners(tmp_path).resolve(token) is None
     # The tombstone is durable and checked under the dispatch lock, so a box
@@ -839,7 +837,7 @@ def test_resolve_lease_protects_real_request_against_concurrent_wake(boxes, admi
                                 "BOX_PING", "BOX_PUBLISH", "BOX_READ"])
 def test_running_fenced_box_is_refused_on_every_broker_operation(boxes, admitted, tmp_path, op):
     from tinyassets import rpc_frames as rf
-    from tinyassets.erasure_ledger import ErasureLedger
+    from tinyassets.broker.owner_identities import _owner_request
 
     uid = admitted.owner_machine("alice")
     assert boxes.runtime.alive(uid)
@@ -850,7 +848,7 @@ def test_running_fenced_box_is_refused_on_every_broker_operation(boxes, admitted
             channel.sendall(rf.control(rf.CONNECTION, {
                 "op": "BOX_CHANNEL", "principal": "alice", "center": "cc-alice"}))
             assert rf.read_frame_blocking(channel).control()["op"] == "BOX_ADMITTED"
-        ErasureLedger(tmp_path).add("alice")
+        _owner_request(tmp_path, {"op": "OWNER_ADMISSION_ERASE", "principal": "alice"})
         document = {"op": op, "principal": "alice"}
         if op in {"BOX_ADMISSION", "BOX_CHANNEL", "BOX_SHARED"}:
             document["center"] = "cc-alice"

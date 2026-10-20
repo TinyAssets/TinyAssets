@@ -171,7 +171,6 @@ class BrokerServer:
 
         self._public_egress = PublicEgress(owner_identities, data_root)
         self._connections = set()
-        self._erasure_watch = None
         self._streams: dict[tuple[int, int], _Stream] = {}
         self._streams_lock = threading.Lock()
         self._ops.recover()
@@ -212,14 +211,6 @@ class BrokerServer:
         handler = asyncio.current_task()
         self._connections.add(connection)
         connection._handler = handler
-        from tinyassets.broker.public_egress import watch_erasure
-
-        if self._erasure_watch is None or self._erasure_watch.done():
-            self._erasure_watch = asyncio.create_task(watch_erasure(
-                self._owner_identities,
-                lambda: set(self._public_egress.active).union(
-                    *(c._principals for c in self._connections)),
-                self.close_owner))
 
         def pump_ended(task: asyncio.Task) -> None:
             # A write that failed means the peer is gone: tear the connection
@@ -244,9 +235,6 @@ class BrokerServer:
             self._connections.discard(connection)
             connection.abandon()
             pump.cancel()
-            if not self._connections:
-                self._erasure_watch.cancel()
-                self._erasure_watch = None
             await asyncio.gather(pump, return_exceptions=True)
             writer.close()
 
@@ -857,11 +845,10 @@ class _Connection:
                     or type(doc["generation"]) is not int or not isinstance(doc["token"], str)):
                 raise ValueError("invalid owner retirement")
             with self._server._fence.send(doc["generation"], doc["token"]):
-                # A ledger tombstone can predate (or outlive) an identity row.
-                # Missing authority cannot prove absence on the mounted store.
+                # Opaque lifecycle operations require the permanent owner binding.
                 identities = self._server._owner_identities
                 if identities.owner_machine(doc["principal"]) is None:
-                    raise RuntimeError("owner tree absence requires its permanent reservation")
+                    raise RuntimeError("owner deletion requires its permanent reservation")
                 from tinyassets.boxes.daemon_control import request
 
                 if request("destroy", doc["principal"]) != {"destroyed": True}:
@@ -882,18 +869,8 @@ class _Connection:
             identities = self._server._owner_identities
             uid = identities.owner_machine(doc["principal"])
             if uid != doc["uid"]:
-                # The root host supplies ledger-recorded historical UIDs. An
-                # absent reservation must not conceal another owner's mapping.
-                from contextlib import closing
-
-                with closing(identities._connect(write=False)) as db:
-                    conflicting = db.execute(
-                        "SELECT 1 FROM owner_identities WHERE machine_id=?",
-                        (doc["uid"],)).fetchone()
-                if uid is not None or conflicting:
-                    raise PermissionError("retirement reservation differs")
-            else:
-                identities.retire_owner(doc["principal"])
+                raise PermissionError("retirement reservation differs")
+            identities.retire_owner(doc["principal"])
             return {"op": "BOX_ADMISSION_RETIRED"}
         except Exception:
             return {"op": "BOX_REFUSED"}

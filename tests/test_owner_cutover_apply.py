@@ -138,7 +138,7 @@ os._exit(0)
         for suffix in ('-wal', '-shm'):
             os.chown(data / ('.tinyassets.db' + suffix), 1001, 1001)
     if protected:
-        from tinyassets.erasure_ledger import protect_root
+        from tinyassets.cutover_control import protect_root
 
         assert Path('/proc/sys/fs/protected_regular').read_text().strip() == '2'
         os.chown(data / '.tinyassets.db', 1001, 1001)
@@ -540,7 +540,8 @@ def test_apply_splits_databases_seeds_stores_and_resumes(cutover, monkeypatch, c
     assert identity.parent.stat().st_mode & 0o777 == 0o700
     with closing(sqlite3.connect(data / '.broker/state/owner-identities.db')) as db:
         assert db.execute('SELECT * FROM owner_box_secrets').fetchall() == []
-        assert db.execute('SELECT * FROM owner_box_revocations').fetchall() == []
+        assert db.execute("SELECT name FROM sqlite_master "
+                          "WHERE name='owner_box_revocations'").fetchall() == []
         with pytest.raises(sqlite3.IntegrityError, match='permanent'):
             db.execute("UPDATE owner_identities SET machine_id=300009 WHERE principal='alice'")
     for owner, uid in [('alice', 300001), ('bob', 300002)]:
@@ -807,8 +808,11 @@ def test_seeded_tombstones_block_broker_custody_without_old_metadata(cutover):
     migration.apply(*cutover)
     assert not (data / '.tinyassets.db').exists()
     with closing(metadata_connection(data)) as db:
-        assert [row[1] for row in db.execute('PRAGMA table_info(deleted_principals)')] == ['digest']
-        assert db.execute('SELECT digest FROM deleted_principals').fetchall() == [(digest,)]
+        assert db.execute("SELECT name FROM sqlite_master "
+                          "WHERE name='deleted_principals'").fetchall() == []
+        from tinyassets.broker.admission import local_read
+
+        assert local_read(data, 'retired-account').state == 'erased'
         with pytest.raises(PermissionError, match='deleted'):
             check_not_deleted(data, 'retired-account')
         check_not_deleted(data, 'bob')
@@ -984,8 +988,8 @@ def test_migrated_owner_processes_serve_history_requests_and_pause(
 
 
 def test_cutover_imports_legacy_facts_and_refuses_unfinishable_obligations(cutover):
+    from tinyassets.broker.admission import digest as principal_digest
     from tinyassets.cutover_deletions import collect
-    from tinyassets.erasure_ledger import principal_digest
 
     data, store, *_ = cutover
     _sql(data / ".router-deleted-owners.sqlite3", "CREATE TABLE deleted_owners "
@@ -1019,10 +1023,9 @@ def test_cutover_imports_legacy_facts_and_refuses_unfinishable_obligations(cutov
 
 def test_cutover_publishes_legacy_receipt_only_after_path_cleanup(cutover):
     from tinyassets.boxes.deletion_records import RemoteRecords
-    from tinyassets.broker.admission import digest
+    from tinyassets.broker.admission import digest, local_read
     from tinyassets.broker.deletion_jobs import STEPS
     from tinyassets.cutover_deletions import PHASES
-    from tinyassets.erasure_ledger import ErasureLedger
 
     data, store, *_ = cutover
     target = store / ".old/300003"
@@ -1041,10 +1044,8 @@ def test_cutover_publishes_legacy_receipt_only_after_path_cleanup(cutover):
     job = records.load(digest("host-only"))
     assert job["completed_steps"] == list(STEPS)
     assert job["results"]["receipt"]["deleted"]
-    # b2b will remove these erased-only facts; no progress is published here.
-    assert ErasureLedger(data).contains("host-only")
-    assert all(set(entry) == {"digest", "principal", "uids"}
-               for entry in ErasureLedger(data).entries())
+    assert local_read(data, "host-only").state == "erased"
+    assert not (data / ".erasure-ledger.sqlite3").exists()
 
 
 @pytest.mark.parametrize("relative", ["knowledge.db", "a1/local.db"])
@@ -1156,3 +1157,32 @@ def _restore_old_layout(cutover, tmp_path):
     data.rename(tmp_path / "retained-shared")
     shutil.move(restored, data)
     return subprocess.CompletedProcess([], 0, "", "")
+
+
+def test_cutover_converts_and_removes_legacy_erasure_ledger(cutover):
+    from tinyassets.broker.admission import digest, local_read
+    from tinyassets.cutover_deletions import PHASES
+
+    data, store, *_ = cutover
+    ledger = data / ".erasure-ledger.sqlite3"
+    with sqlite3.connect(ledger) as db:
+        db.execute("CREATE TABLE initialized (version INTEGER PRIMARY KEY)")
+        db.execute("INSERT INTO initialized VALUES (1)")
+        db.execute("CREATE TABLE events (id TEXT PRIMARY KEY, digest TEXT, at REAL, payload TEXT)")
+        db.execute("INSERT INTO events VALUES (?,?,?,?)", (
+            "historical", digest("ledger-only"), 1,
+            json.dumps({"principal": "ledger-only", "uids": [],
+                        "receipt": {"completed_phases": list(PHASES)}})))
+    migration.apply(*cutover)
+    assert local_read(data, "ledger-only").state == "erased"
+    assert not ledger.exists()
+    assert not list(data.glob(".erasure-ledger.sqlite3-*"))
+    with sqlite3.connect(data / ".broker/state/owner-identities.db") as db:
+        assert db.execute("SELECT name FROM sqlite_master "
+                          "WHERE name='owner_box_revocations'").fetchall() == []
+    from tinyassets.boxes.deletion_records import RemoteRecords
+    from tinyassets.broker.deletion_jobs import STEPS
+
+    job = RemoteRecords(migration._volumes(store).remote).load(digest("ledger-only"))
+    assert job["completed_steps"] == list(STEPS)
+    assert job["results"]["receipt"]["deleted"]

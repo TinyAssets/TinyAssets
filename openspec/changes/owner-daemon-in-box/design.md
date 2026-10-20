@@ -408,6 +408,15 @@ running broker. Recovery locks, startup and admission-reopen ordering remain b5;
 `resume_deletion_jobs` still fails closed. Routing snapshots/secret persistence
 remain b4. This paragraph does not claim those lanes or deployment complete.
 
+**Lane b2 authority deletion:** the root erasure ledger and listener, box
+revocations, deletion of box-record rows as an admission signal, plan suspension
+columns, policy deletion markers, vault tombstones and polling stream watcher are
+removed. Account retirement writes only terminal admission. Authentication reads
+only the record's erased state through b2. Cutover converts the legacy facts and
+removes their stores; progress remains in b2a's off-host jobs. Record-only tests
+replace the temporary equivalence matrix. Routing snapshot/secret persistence
+and platform recovery ordering remain later lane work.
+
 ### C7. One per-box egress allowlist at the proxy (T6)
 Each owner has one egress allowlist. Its default is derived from the owner's
 connected sources (the endpoints of their admitted connections and model

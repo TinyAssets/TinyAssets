@@ -479,8 +479,7 @@ def test_owner_restore_keeps_revoked_key_and_refuses_write_and_bash_replay(stora
 
     storage.lifecycle.prepare("alice")
     published = sleep(storage)
-    from tinyassets.erasure_ledger import ErasureLedger
-    ErasureLedger(tmp_path).initialize()
+
     keys = ApiKeyStore(tmp_path)
     key = keys.mint("alice", name="snapshot key", scopes=[], authority=None)
     assert keys.resolve(key["key"]) is not None

@@ -570,13 +570,12 @@ STORES: dict[str, Store] = {
 #: code creates at the data root must appear here -- the completeness test reads
 #: the source for them.
 ROOT_ENTRIES: dict[str, str] = {
-    "credential-custody.db": "platform: broker credential ownership and deletion tombstones",
+    "credential-custody.db": "platform: broker credential ownership",
     "plans.db": "platform: broker billing plan state",
     "next-wake.db": "platform: broker next-wake index and last successful wake timestamps",
     ".published": "platform: shared copies of explicitly published definitions",
     ".custody.lock": "platform: broker credential publication and erasure lock",
     ".hook-owners.sqlite3": "platform: router hook token digests and authenticated owners",
-    ".erasure-ledger.sqlite3": "platform: root-owned append-only account erasure ledger",
     ".ordinary-admission.json": "platform: deployment's ordinary admission decision",
     ".router-credentials.json": "platform: rotated operational credentials after disaster",
     ".platform-recovery.json": "platform: shared-layer recovery completion report (C3)",
@@ -622,7 +621,6 @@ ROOT_ENTRIES: dict[str, str] = {
     ".deploy-pending.json": "platform: a waiting deploy's expiring status marker",
     ".runtime": "platform: provider runtime",
     "policy.db": "platform: broker-owned account policy under .broker/accounts",
-    ".deleted": "platform: broker-owned account deletion marker under .broker/accounts",
     ".universe_seats.db": "platform: seat leases",
     ".account_seats.db": "platform: per-account seat leases",
     ".engine_run_admissions.db": "platform: admission ledger",

@@ -100,9 +100,7 @@ def test_deposit_is_written_in_broker_process(tmp_path, monkeypatch, scheme, sec
     path = tmp_path / "broker.sock"
     root = tmp_path / "shared"
     root.mkdir()
-    from tinyassets.erasure_ledger import ErasureLedger
 
-    ErasureLedger(root).initialize()
     process = ctx.Process(target=_broker_process, args=(str(root), str(path), child))
     process.start()
     child.close()

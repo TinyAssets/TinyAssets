@@ -40,7 +40,7 @@ def test_missing_image_refuses_before_setup(monkeypatch):
 
 def test_reset_fixture_restores_archived_root_custody(tmp_path, monkeypatch):
     from scripts import archive_rehearsal as harness
-    from tinyassets.erasure_ledger import protect_root
+    from tinyassets.cutover_control import protect_root
 
     if not hasattr(os, 'geteuid') or os.geteuid() != 0:
         pytest.skip('requires root Linux oracle; owner=c6-owner-box runs-in=linux_oracle.py')
@@ -622,7 +622,7 @@ assert not Path('/data/.erasure-ledger.sqlite3').exists()
                 # Resume must also work on a host whose root was protected by
                 # erasure initialization; resetting an independent trial must
                 # not be the only reason the retry can open its databases.
-                venue.helper("from tinyassets.erasure_ledger import protect_root; "
+                venue.helper("from tinyassets.cutover_control import protect_root; "
                              "protect_root(Path('/data'))")
             if mode in {"apply", "verify"} and result.returncode == 0:
                 venue.helper("""

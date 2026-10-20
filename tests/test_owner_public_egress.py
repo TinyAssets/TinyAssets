@@ -34,9 +34,7 @@ def native(broker, tmp_path, monkeypatch, request):  # noqa: F811
 
     shared = tmp_path / "shared"
     (shared / ".broker/state").mkdir(parents=True, mode=0o700)
-    from tinyassets.erasure_ledger import ErasureLedger
 
-    ErasureLedger(shared).initialize()
     identities = OwnerIdentities(shared / ".broker/state/owner-identities.db", initialize=True,
                                  plans=Plans(shared))
     uid = identities.resolve("alice", allocate=True).uid
@@ -220,7 +218,7 @@ def test_native_proxy_refuses_without_opening_any_upstream(native, monkeypatch, 
         with sqlite3.connect(native.identities.path) as db:
             db.execute("DELETE FROM box_records")
     elif refusal == "tombstone":
-        native.identities.revoke_box("alice")
+        native.identities.retire_owner("alice")
     elif refusal in {"billing", "abuse"}:
         native.identities.plans.set_suspension("alice", reason=refusal, suspended=True)
     elif refusal == "owner_cap":
@@ -421,7 +419,7 @@ def test_authenticated_git_uses_real_registry_relay_alongside_public_proxy(nativ
 
 @pytest.mark.parametrize("op", ["BOX_CONNECT", "BOX_SHARED", "BOX_PUBLIC"])
 def test_relay_bootstrap_refuses_fenced_owner_with_retained_admission(native, monkeypatch, op):
-    from tinyassets.erasure_ledger import ErasureLedger
+    from tinyassets.broker.owner_identities import _owner_request
 
     document = {"op": op}
     if op == "BOX_CONNECT":
@@ -438,6 +436,7 @@ def test_relay_bootstrap_refuses_fenced_owner_with_retained_admission(native, mo
     # This rig combines host and box Python contexts. Fence from the host side.
     with monkeypatch.context() as host:
         host.setattr(owner_runtime, "_runtime", None)
-        ErasureLedger(native.identities.path.parents[2]).add("alice")
+        _owner_request(native.identities.path.parents[2],
+                       {"op": "OWNER_ADMISSION_ERASE", "principal": "alice"})
     assert native.identities.admitted_owner("center") == "alice"
     assert connect() is None

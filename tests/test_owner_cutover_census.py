@@ -717,7 +717,7 @@ def test_budget_parent_reason_propagates_without_losing_conflicts(source, parent
     ('.broker/state/private-file', 'platform_store', 'unattributed'),
     ('.platform/private-file', 'platform_store', 'unattributed'),
     ('private-file', 'root_file', 'unattributed'),
-    ('.broker/accounts/private-account/.deleted', 'broker_account', 'broker'),
+    ('.broker/accounts/private-account/.deleted', 'broker_account', 'regenerated'),
     ('.broker/state/fence.json', 'platform_store', 'broker'),
     ('release-state.json', 'root_file', 'router'),
     ('.run_recovery.lock', 'root_file', 'regenerated'),

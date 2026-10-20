@@ -15,6 +15,21 @@ be refused, and an absent record SHALL deny. Billing and abuse suspension SHALL 
 separate reasons: clearing one SHALL NOT clear the other, and `erased` SHALL be
 terminal.
 
+
+#### Scenario: Legacy authorities are converted once and removed
+- **WHEN** the stopped cutover seeds owner admission
+- **THEN** legacy erasures and terminal revocations become terminal erased records, and billing and abuse flags become independent suspension reasons
+- **AND** the ledger, revocations, plan suspension columns, policy markers and vault tombstones are deleted before publication and are never read at runtime
+
+#### Scenario: Account retirement writes only admission
+- **WHEN** an account is retired or erased
+- **THEN** only its admission record becomes terminally erased; permanent bindings and center history are retained
+- **AND** clearing either suspension reason cannot clear erasure or the other source's reason
+
+#### Scenario: No record or a substituted identity cannot admit work
+- **WHEN** the admission record is absent or a caller substitutes an owner or box
+- **THEN** router, proxy and waker refuse work without creating an admission record
+
 #### Scenario: Retiring a center leaves the owner admitted
 - **WHEN** an owner retires one of their centers
 - **THEN** the owner's admission record stays `admitted`, and the broker stops the box so that its next start receives the updated center list

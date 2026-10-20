@@ -8,7 +8,9 @@ import json
 import uuid
 from pathlib import Path
 
-from tinyassets.erasure_ledger import NAME, principal_digest
+from tinyassets.broker.admission import digest as principal_digest
+
+NAME = ".erasure-ledger.sqlite3"
 
 PHASES = ("broker_channels", "owner_tree", "broker_egress", "billing", "credentials", "identity")
 

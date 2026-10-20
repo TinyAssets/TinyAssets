@@ -452,20 +452,18 @@ def test_background_work_blocks_drain_without_renewing_user_idle(monkeypatch):
     assert gate.status(drain=True, idle=900)["draining"]
 
 
-def test_ledger_fenced_cleanup_409_keeps_existing_box_drained(fleet, tmp_path, monkeypatch):
+def test_erased_record_cleanup_409_keeps_existing_box_drained(fleet, tmp_path, monkeypatch):
     import base64
     import json
 
     from starlette.responses import JSONResponse
 
     from tinyassets import owner_activity, owner_ingress, owner_runtime
-    from tinyassets.erasure_ledger import ErasureLedger
+    from tinyassets.broker.owner_identities import _owner_request
 
     manager = fleet.manager
     uid = manager.ensure_awake("a")
-    ledger = ErasureLedger(tmp_path)
-    ledger.initialize()
-    ledger.add("a")
+    _owner_request(tmp_path, {"op": "OWNER_ADMISSION_ERASE", "principal": "a"})
     route = manager.resolve("a", cleanup=True)
     gate = fleet.states[uid]
     assert gate.deletion_only and manager.boxes[uid].deletion_only

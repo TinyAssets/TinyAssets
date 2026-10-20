@@ -20,9 +20,7 @@ def broker_proxy(identities, root):
 
 @pytest.fixture
 def proxy(tmp_path):
-    from tinyassets.erasure_ledger import ErasureLedger
 
-    ErasureLedger(tmp_path).initialize()
     tmp_path.chmod(0o700)
     from tinyassets.broker.owner_reads import Plans
 
@@ -143,10 +141,9 @@ async def test_public_proxy_refuses_unknown_or_unadmitted_owner(proxy, monkeypat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("damage", ["fenced", "corrupt", "missing", "close"])
-async def test_established_idle_tunnel_closes_within_erasure_bound(proxy, monkeypatch, damage):
-    from tinyassets.broker.public_egress import ERASURE_CHECK_SECONDS
-    from tinyassets.erasure_ledger import ErasureLedger
+@pytest.mark.parametrize("damage", ["erased", "close"])
+async def test_record_withdrawal_closes_established_idle_tunnel(proxy, monkeypatch, damage):
+    from tinyassets.broker.admission import read
 
     upstream_closed = asyncio.Event()
     handlers = set()
@@ -182,16 +179,20 @@ async def test_established_idle_tunnel_closes_within_erasure_bound(proxy, monkey
         writer.write(f"CONNECT example.test:{port} HTTP/1.1\r\n\r\n".encode())
         await writer.drain()
         assert b"200" in await reader.readuntil(b"\r\n\r\n")
-        ledger = ErasureLedger(proxy._data_root)
-        if damage == "fenced":
-            ledger.add("alice")
-        elif damage == "corrupt":
-            proxy._owner_identities.path.write_bytes(b"corrupt admission")
-        elif damage == "missing":
-            proxy._owner_identities.path.unlink()
+        if damage == "erased":
+            control_read, control_write = await asyncio.open_connection(
+                "127.0.0.1", listener.sockets[0].getsockname()[1])
+            control_write.write(rf.control(rf.CONNECTION, {
+                "op": "BOX_ADMISSION_ERASE", "principal": "alice"}))
+            await control_write.drain()
+            assert (await rf.read_frame(control_read)).control() == {
+                "op": "OWNER_ADMISSION_ERASED"}
+            assert read(proxy._owner_identities, "alice").state == "erased"
+            control_write.close()
+            await control_write.wait_closed()
         else:
             proxy.close_owner("alice")
-        async with asyncio.timeout(2 * ERASURE_CHECK_SECONDS + .25):
+        async with asyncio.timeout(1.25):
             assert await reader.read() == b""
             await upstream_closed.wait()
             await asyncio.gather(*handlers, return_exceptions=True)

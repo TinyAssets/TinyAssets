@@ -12,7 +12,6 @@ from tinyassets.api_keys import ApiKeyStore
 from tinyassets.auth.provider import OAuthProvider
 from tinyassets.broker.owner_reads import Plans
 from tinyassets.connection_oauth.pkce import flows_db
-from tinyassets.erasure_ledger import ErasureLedger
 from tinyassets.onboarding import (
     approval_handoff,
     canary_sign_in,
@@ -41,7 +40,6 @@ OPENERS = [
     ("oauth_pkce", flows_db),
     ("api_keys", lambda root: ApiKeyStore(root).db()),
     ("hook_owners", HookOwners),
-    ("erasure_ledger", ErasureLedger),
     ("mcp_oauth", lambda root: OAuthProvider(root / ".auth.db")),
     ("mcp_oauth", oauth_connection),
 ]
@@ -49,7 +47,7 @@ OPENERS = [
 
 @pytest.mark.parametrize("name,opener", OPENERS, ids=[
     "plans", "owner_sessions", "inline_flows", "handoffs", "refresh_sessions", "native_sign_in",
-    "canary_sign_in", "oauth_pkce", "api_keys", "hook_owners", "erasure_ledger", "mcp_oauth",
+    "canary_sign_in", "oauth_pkce", "api_keys", "hook_owners", "mcp_oauth",
     "mcp_oauth_connect",
 ])
 @pytest.mark.parametrize("inside", [True, False], ids=["box", "router"])
@@ -93,7 +91,6 @@ _ROUTER_IMPORTS = {
     "tinyassets.broker.owner_identities",
     "tinyassets.onboarding.owner_sessions",
     "tinyassets.router_credentials",
-    "tinyassets.erasure_ledger",
     "tinyassets.router_traffic",  # Router-owned shared admission marker.
     "tinyassets.router_account_deletion",  # Shared identity erasure.
     "tinyassets.storage",  # data_dir is passed only to the shared store APIs.
@@ -235,9 +232,6 @@ _ROLE_DISPATCH = {
     ),
     ('onboarding/session_store.py', 'store_dir'): (
         'Router owns refresh sessions; direct box access must refuse.'
-    ),
-    ('erasure_ledger.py', 'ErasureLedger.__init__'): (
-        'Router owns deletion tombstones; direct box access must refuse.'
     ),
     ('router_credentials.py', 'HookOwners.__init__'): (
         'Router owns hook digests; boxes reach it through credential RPC.'

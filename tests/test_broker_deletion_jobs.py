@@ -63,14 +63,6 @@ class Remote:
         return [self.load(key) for key in self.transport.execute("list", {})]
 
 
-@pytest.fixture(autouse=True)
-def no_legacy_erasure_polling(monkeypatch):
-    # C6 closure must work even after b2b deletes the old polling watcher.
-    async def dormant(*args):
-        await asyncio.Event().wait()
-    monkeypatch.setattr("tinyassets.broker.public_egress.watch_erasure", dormant)
-
-
 @pytest.fixture
 def jobs(boxes, broker, admitted, tmp_path, monkeypatch):  # noqa: F811
     from tinyassets.boxes import daemon_control
@@ -332,8 +324,9 @@ def test_door_deletion_removes_only_bound_owners_data_and_router_state(
             assert not (boxes.roots["alice"] / "cc-alice").exists()
             assert not boxes.runtime.alive(admitted.owner_machine("alice"))
             assert boxes.runtime.alive(admitted.owner_machine("bob"))
-            assert admitted.center_state("cc-alice") == "retired"
-            assert admitted.center_state("cc-alice-extra") == "retired"
+            # C6 erases the owner record; center history is not an authority.
+            assert admitted.center_state("cc-alice") == "admitted"
+            assert admitted.center_state("cc-alice-extra") == "admitted"
             assert rejected == [401]
             with pytest.raises(LookupError):
                 admitted.box_route("alice", rotate=True)

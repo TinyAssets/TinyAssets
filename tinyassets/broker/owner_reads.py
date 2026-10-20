@@ -38,26 +38,12 @@ class Plans:
                        "json_extract(attempt, '$.attempt_id'), owner, attempt FROM plans "
                        "WHERE json_valid(attempt) AND json_extract(attempt, '$.session_id') "
                        "IS NOT NULL")
-            columns = {row[1] for row in db.execute("PRAGMA table_info(plans)")}
-            for name in ("billing_suspended", "abuse_suspended"):
-                if name not in columns:
-                    db.execute(f"ALTER TABLE plans ADD COLUMN {name} INTEGER NOT NULL "
-                               f"DEFAULT 0 CHECK ({name} IN (0, 1))")
 
     def set_suspension(self, owner, *, reason, suspended):
-        if reason not in {"billing", "abuse"} or type(suspended) is not bool:
-            raise ValueError("invalid account suspension")
-        self.read(owner)
-        with closing(self._connect()) as db, db:
-            db.execute("ATTACH DATABASE ? AS admission_authority",
-                       (self.admission_path.as_uri() + "?mode=rw",))
-            db.execute("BEGIN IMMEDIATE")
-            from tinyassets.broker.admission import mutate
+        from tinyassets.broker.admission import local_mutate
 
-            # lane-b2: delete with the old authority
-            mutate(db, owner, "suspend", reason=reason, suspended=suspended)
-            db.execute(f"UPDATE plans SET {reason}_suspended=? WHERE owner=?",
-                       (int(suspended), owner))
+        local_mutate(self.admission_path, owner, "suspend", reason=reason,
+                     suspended=suspended)
 
     def attach_admission(self, db):
         """Attach before BEGIN so the identity and first plan commit together."""

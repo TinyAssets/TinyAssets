@@ -281,7 +281,10 @@ def test_box_account_retired_during_connect_refuses_before_credential_send(box):
         assert end["op"] == "END" and end["error_class"] == "ProxyRequestError"
         assert end["outcome"] == "failed"
         assert end["stream_sent"] is False
-    assert box.identities.center_state("center") == "retired"
+    assert box.identities.center_state("center") == "admitted"
+    from tinyassets.broker.admission import read
+
+    assert read(box.identities, "owner").state == "erased"
     assert box.events == ["resolve_credential"]
     assert not box.calls
 

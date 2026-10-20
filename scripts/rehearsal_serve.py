@@ -13,7 +13,6 @@ import os
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from pathlib import Path
 
@@ -359,20 +358,6 @@ def smoke(confirm=False):
             run / "apps",
             awake_cap=max(1, len(journal["plan"])),
         )
-
-        from tinyassets.boxes.host_service import HostService
-
-        authority = HostService(admission, None, None, None)
-        stop = threading.Event()
-        erasure = threading.Thread(target=authority.serve,
-                                   args=(run / "erasure.sock", 1102, authority.erasure, stop))
-        erasure.start()
-        deadline = time.monotonic() + 5
-        while not (run / "erasure.sock").exists():
-            if not erasure.is_alive() or time.monotonic() > deadline:
-                raise RuntimeError("rehearsal erasure authority failed")
-            time.sleep(.01)
-
         def resolve(name):
             uid = manager.ensure_awake(name)
             return BoxRoute(run / "apps" / str(uid) / "app.sock", manager.boxes[uid].secret)
@@ -618,8 +603,6 @@ print(json.dumps(key))
             for uid in runtime.processes:
                 volumes.detach(uid)
             relays.close()
-            stop.set()
-            erasure.join(5)
             for stream in logs:
                 stream.close()
         if not confirm:

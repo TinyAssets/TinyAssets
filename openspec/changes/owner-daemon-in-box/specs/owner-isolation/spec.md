@@ -100,6 +100,21 @@ receipt. Snapshot publication, restore and deletion SHALL be serialized per owne
 Progress, retries and billing receipts SHALL live only in off-host job records.
 Missing required authority SHALL leave the job pending.
 
+
+#### Scenario: Legacy authorities are converted once and removed
+- **WHEN** the stopped cutover seeds owner admission
+- **THEN** legacy erasures and terminal revocations become terminal erased records, and billing and abuse flags become independent suspension reasons
+- **AND** the ledger, revocations, plan suspension columns, policy markers and vault tombstones are deleted before publication and are never read at runtime
+
+#### Scenario: Account retirement writes only admission
+- **WHEN** an account is retired or erased
+- **THEN** only its admission record becomes terminally erased; permanent bindings and center history are retained
+- **AND** clearing either suspension reason cannot clear erasure or the other source's reason
+
+#### Scenario: No record or a substituted identity cannot admit work
+- **WHEN** the admission record is absent or a caller substitutes an owner or box
+- **THEN** router, proxy and waker refuse work without creating an admission record
+
 #### Scenario: Retiring a center leaves the owner admitted
 - **WHEN** an owner retires one of their centers
 - **THEN** the owner's admission record stays `admitted`, and the broker stops the box so that its next start receives the updated center list
@@ -295,7 +310,7 @@ prevent sleep, and deletion-only startup SHALL start no background dispatchers.
 
 #### Scenario: Suspended owner can delete without ordinary wake authority
 - **WHEN** an authenticated suspended owner confirms account deletion at the door
-- **THEN** the ledger entry is durable before deletion-only cleanup and shared phase execution
+- **THEN** the off-host job is durable before erased admission and deletion-only cleanup
 - **AND** the outer lifespan starts no scheduler, delivery, consumer or maintenance loop
 - **AND** every background execution holds the activity gate; pending delivery stays unexecuted and deletion drain reports zero work
 

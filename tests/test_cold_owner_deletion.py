@@ -48,7 +48,6 @@ async def probe():
     from tinyassets.broker.owner_identities import OwnerIdentities
     from tinyassets.broker.owner_reads import Plans
     from tinyassets.broker.server import BOX_HOST, _Connection
-    from tinyassets.erasure_ledger import ErasureLedger, principal_digest
 
     root, store = Path("/venue"), Path("/venue/owners")
     store.mkdir(parents=True)
@@ -67,8 +66,6 @@ async def probe():
         shared, sockets = root / "shared", root / "sockets"
         shared.mkdir()
         sockets.mkdir()
-        ledger = ErasureLedger(shared)
-        ledger.initialize()
         broker = shared / ".broker/state"
         broker.mkdir(parents=True, mode=0o700)
         identities = OwnerIdentities(broker / "identities.db", initialize=True,
@@ -133,8 +130,6 @@ async def probe():
             app.bind(str(directory / "app.sock"))
             app.close()
             local_mutate(identities.path, owner, "erase")
-            ledger.execute("add", {"digest": principal_digest(owner), "principal": owner,
-                                   "uids": [uid]})
             try:
                 manager.resolve(owner, cleanup=True)
             except LookupError:
@@ -146,9 +141,12 @@ async def probe():
             assert not any(path.exists() for path in (image, relay, directory, secret))
             volumes._detached(uid)
             assert Admission().volume(owner)["uid"] == uid
-            assert identities.center_state(owner) == "retired"
+            assert identities.center_state(owner) == "admitted"
+            from tinyassets.broker.admission import read
+
+            assert read(identities, owner).state == "erased"
             with sqlite3.connect(identities.path) as db:
-                assert not db.execute("SELECT 1 FROM owner_box_secrets WHERE principal=?",
+                assert db.execute("SELECT 1 FROM owner_box_secrets WHERE principal=?",
                                       (owner,)).fetchall()
             print("PASS", owner, "opaque volume sockets secret admission; zero starts")
         assert commands and all(cmd[0] in {"kill", "delete", "list"} for cmd in commands)

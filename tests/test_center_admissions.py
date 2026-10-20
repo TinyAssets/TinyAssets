@@ -164,10 +164,9 @@ def test_owner_retirement_is_fenced_complete_and_retryable(broker, tmp_path, mon
     from types import SimpleNamespace
 
     from tinyassets.boxes.host_service import HostService
-    from tinyassets.erasure_ledger import ErasureLedger
 
     identities = store(tmp_path, "alice", "bob")
-    ErasureLedger(tmp_path).initialize()
+
     broker.server._owner_identities = identities
     for owner, center in (("alice", "a"), ("alice", "a2"), ("bob", "b")):
         identities.admission("admit", owner, center)
@@ -189,7 +188,10 @@ def test_owner_retirement_is_fenced_complete_and_retryable(broker, tmp_path, mon
         # the synthetic volume destruction and lost acknowledgement.
         assert owner == "alice" and uid == 300001
         assert identities.retire_owner(owner) == uid
-        assert identities.center_state("a") == identities.center_state("a2") == "retired"
+        assert identities.center_state("a") == identities.center_state("a2") == "admitted"
+        from tinyassets.broker.admission import read
+
+        assert read(identities, owner).state == "erased"
         with pytest.raises(LookupError):
             identities.box_route("alice", rotate=True)
         stopped.append(owner)

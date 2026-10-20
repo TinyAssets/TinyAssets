@@ -452,12 +452,6 @@ layout_allows_candidate() {  # $1 = marker path; $2 = immutable candidate image;
     --entrypoint python "$candidate" -c 'import json; from tinyassets import storage_layout as l; print(json.dumps({"layouts": sorted(l.KNOWN_LAYOUTS), "boxes": sorted(getattr(l, "SUPPORTED_BOX_LAYOUTS", {"owner-split"}))}))')" || return 1
   dir="$(dirname "$marker")"
   [ -d "$dir" ] || return 1
-  # A fresh installation initializes erasure authority explicitly, before the
-  # layout lock adds its first file. Existing data never takes this path.
-  if [[ "$supported" == *'"owner-box"'* ]] && [ -z "$(find "$dir" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
-    timeout 90 docker run --rm --network=none --user 0:0 -v "$dir:/data" \
-      --entrypoint python "$candidate" -m tinyassets.erasure_ledger /data || return 1
-  fi
   (
     # Avoid O_CREAT on a service-owned lock under the root-sticky data root
     # (fs.protected_regular); create only absent legacy/fresh-install locks.

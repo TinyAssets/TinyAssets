@@ -24,7 +24,7 @@ def test_delayed_commit_after_erasure_writes_no_rows(removal, monkeypatch):
 
     from tinyassets.broker.account_erasure import ACCOUNT_SCOPE, local_erase
     from tinyassets.broker.http_connect import local_operation
-    from tinyassets.erasure_ledger import ErasureLedger
+    from tinyassets.broker.owner_identities import _owner_request
 
     ledger = removal.ledger
     document = {"action": "prepare", "destination": "fresh", "expected": "", "secret": "",
@@ -51,7 +51,7 @@ def test_delayed_commit_after_erasure_writes_no_rows(removal, monkeypatch):
         pending = executor.submit(call, {**document, "action": "commit", "expected": revision})
         try:
             assert entered.wait(5)
-            ErasureLedger(removal.root).add("alice")
+            _owner_request(removal.root, {"op": "OWNER_ADMISSION_ERASE", "principal": "alice"})
             local_erase(ledger, principal="alice", command_center=ACCOUNT_SCOPE,
                         erase_external_keys=False)
         finally:

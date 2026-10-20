@@ -15,6 +15,12 @@ class CutoverRefused(RuntimeError):
     pass
 
 
+def protect_root(root):
+    """C4: shared services cannot replace deployment-owned admission."""
+    os.chown(root, 0, 1001)
+    root.chmod(0o1775)
+
+
 def _root():
     if os.geteuid() != 0:
         raise CutoverRefused("cutover control requires root")

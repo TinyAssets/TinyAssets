@@ -101,12 +101,7 @@ def _no_revocations():
 
 @pytest.fixture
 def broker(tmp_path, monkeypatch):
-    from tinyassets.erasure_ledger import ErasureLedger
 
-    # Protocol-only consumers use the shared empty-host authority double when
-    # unprivileged. Native custody tests run this fixture in the root venue.
-    if os.geteuid() == 0:
-        ErasureLedger(tmp_path).initialize()
     tmp_path.chmod(0o700)  # Same-UID protocol fixture, including assignment locks.
     lease = Lease()
     fence = Fence(tmp_path / "fence.json", verify_lease_proof=lease.verify)
@@ -731,11 +726,10 @@ def test_async_client_reconnects_after_broker_eof(tmp_path, monkeypatch):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("damage", ["fenced", "corrupt", "missing", "operation"])
-def test_idle_streams_close_on_erasure_or_explicit_owner_close(broker, tmp_path, damage):
+@pytest.mark.parametrize("damage", ["erased", "operation"])
+def test_record_withdrawal_closes_idle_streams(broker, tmp_path, damage):
     from tinyassets.broker.account_erasure import ACCOUNT_SCOPE
-    from tinyassets.broker.public_egress import ERASURE_CHECK_SECONDS
-    from tinyassets.erasure_ledger import ErasureLedger
+    from tinyassets.broker.admission import local_mutate
 
     upstream_peers = []
 
@@ -770,27 +764,26 @@ def test_idle_streams_close_on_erasure_or_explicit_owner_close(broker, tmp_path,
                 **broker.state}))
             assert rf.read_frame_blocking(client).control()["op"] == "ADMITTED"
             assert rf.read_frame_blocking(client).control()["op"] == "HEAD"
-        ledger = ErasureLedger(tmp_path)
         started = time.monotonic()
-        if damage in {"fenced", "operation"}:
-            ledger.add("alice")
-        elif damage == "corrupt":
-            broker.server._owner_identities.path.write_bytes(b"broken admission")
-        else:
-            broker.server._owner_identities.path.unlink()
-        if damage == "operation":
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as control:
-                control.settimeout(3)
-                control.connect(str(broker.path))
-                control.sendall(rf.control(rf.CONNECTION, {
-                    "op": "CLOSE_OWNER_CHANNELS", "principal": "alice",
-                    "command_center": ACCOUNT_SCOPE, **broker.state}))
-                assert rf.read_frame_blocking(control).control() == {"op": "OWNER_CHANNELS_CLOSED"}
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as control:
+            control.settimeout(3)
+            control.connect(str(broker.path))
+            if damage == "erased":
+                document = {"op": "OWNER_ADMISSION_ERASE", "principal": "alice",
+                            **broker.state}
+                expected = {"op": "OWNER_ADMISSION_ERASED"}
+            else:
+                local_mutate(broker.server._owner_identities.path, "alice", "erase")
+                document = {"op": "CLOSE_OWNER_CHANNELS", "principal": "alice",
+                            "command_center": ACCOUNT_SCOPE, **broker.state}
+                expected = {"op": "OWNER_CHANNELS_CLOSED"}
+            control.sendall(rf.control(rf.CONNECTION, document))
+            assert rf.read_frame_blocking(control).control() == expected
         for client in clients:
             assert client.recv(1) == b""
         for peer in upstream_peers:
             assert peer.recv(1) == b""
-        assert time.monotonic() - started < 2 * ERASURE_CHECK_SECONDS + .25
+        assert time.monotonic() - started < 1.25
     finally:
         for client in clients:
             client.close()

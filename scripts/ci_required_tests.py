@@ -68,8 +68,6 @@ ROOT_TEST_FILES = frozenset({
     "tests/test_cold_owner_deletion.py",
     "tests/test_deleted_authentication.py",
     "tests/test_deploy_bundle_transaction.py",
-    "tests/test_erasure_ledger.py",
-    "tests/test_erasure_fail_closed.py",
     "tests/test_gvisor_runtime.py",
     "tests/test_model_connect_door_lifecycle.py",
     "tests/test_owner_box_control.py",

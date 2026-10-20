@@ -501,9 +501,7 @@ def test_disaster_stale_key_session_hook_and_secret_all_fail(platform, monkeypat
     events = []
     adapters = providers(monkeypatch, events)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(staged))
-    from tinyassets.erasure_ledger import ErasureLedger
 
-    ErasureLedger(staged).initialize()
     for relative in (".api-keys.sqlite3", ".hook-owners.sqlite3", ".runtime/owner-sessions.db"):
         (staged / relative).unlink()
     key = ApiKeyStore(staged).mint("alice", name="fixture", scopes=[], authority=None)["key"]

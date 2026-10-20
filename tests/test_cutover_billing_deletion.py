@@ -18,7 +18,6 @@ from tinyassets.box_layout_migration import census
 from tinyassets.broker.admission import local_mutate
 from tinyassets.broker.deletion_jobs import DeletionJobs
 from tinyassets.broker.owner_reads import Plans
-from tinyassets.erasure_ledger import ErasureLedger
 
 
 def attempt(now=None):
@@ -97,7 +96,7 @@ def test_legacy_checkout_refuses_ambiguity(source, mutation, reason):
 
 @pytest.fixture
 def billing(tmp_path, monkeypatch):
-    ErasureLedger(tmp_path).initialize()
+
     from tests.support.broker_double import seed_owner_admission
 
     seed_owner_admission(tmp_path, principal="alice", center="cc-alice")
@@ -388,7 +387,9 @@ def test_disaster_resync_reads_current_subscription_through_adapter(
     assert calls == ["subscriptions?status=all&limit=100", "subscriptions/sub_tinyassets"]
     plan = plans.read("alice")
     assert plan["tier"] == tier
-    assert bool(plan["billing_suspended"]) is suspended
+    from tinyassets.broker.admission import local_read
+
+    assert ("billing" in local_read(tmp_path, "alice").reasons) is suspended
     assert plan["subscription_id"] == "sub_tinyassets"
 
 

@@ -1344,7 +1344,9 @@ def _census_files(data, centers, labels, databases, refusals, dropped_centers=()
         if parts[0] in dropped_roots:
             return "dropped"
         if (len(parts) == 4 and parts[:2] == (".broker", "accounts")
-                and parts[3] == ".deleted") or relative.as_posix() == ".broker/state/fence.json":
+                and parts[3] == ".deleted"):
+            return "regenerated"
+        if relative.as_posix() == ".broker/state/fence.json":
             return "broker"
         if len(parts) >= 3 and parts[0] in {".agent-sessions", ".universe-sidecars"}:
             if stat.S_ISSOCK(path.lstat().st_mode):
@@ -2355,22 +2357,17 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
                 "arguments": {"snapshot_id": snapshot_id, "sha256": digest}})
             _crash_at(f"after_owner_snapshot:{owner.uid}")
     from tinyassets.boxes.deletion_records import RemoteRecords
-    from tinyassets.cutover_deletions import finish
-    from tinyassets.erasure_ledger import NAME, ErasureLedger
+    from tinyassets.cutover_deletions import NAME, finish
 
     report["legacy_deletion_receipts"] = finish(
         legacy, shared, store, RemoteRecords(volumes.remote))
-    # lane-b2: delete with the old authority
-    # Publish only erasure facts. No phase, retry or receipt survives in the ledger.
+    # C6: legacy authorities have been converted and their jobs completed.
     for suffix in ("", "-wal", "-shm", "-journal"):
         (shared / (NAME + suffix)).unlink(missing_ok=True)
-    # lane-b2: delete with the old authority
-    ledger = ErasureLedger(shared)
-    # lane-b2: delete with the old authority
-    ledger.initialize()
-    for entry in legacy.entries():
-        # lane-b2: delete with the old authority
-        ledger.execute("add", {k: entry[k] for k in ("digest", "principal", "uids")})
+    with closing(sqlite3.connect(shared / ".broker/credential-custody.db")) as db, db:
+        db.execute("DROP TABLE IF EXISTS deleted_principals")
+    for marker in (shared / ".broker/accounts").glob("*/.deleted"):
+        marker.unlink()
     for directory, dirs, files in os.walk(shared, followlinks=False):
         for path in (Path(directory), *(Path(directory) / name for name in dirs + files)):
             relative = path.relative_to(shared).parts
@@ -2385,13 +2382,9 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
             if relative == (".platform",):
                 mode = 0o711
             os.chmod(path, mode if path.is_dir() else (0o600 if private else 0o640))
-    from tinyassets.erasure_ledger import protect_root
+    from tinyassets.cutover_control import protect_root
 
-    ledger = shared / ".erasure-ledger.sqlite3"
-    if ledger.exists():
-        protect_root(shared)
-        os.chown(ledger, 0, 0)
-        ledger.chmod(0o600)
+    protect_root(shared)
     # C4: deployment owns admission. Publish after service-custody assignment
     # so neither the router nor broker can reopen the closed cutover gate.
     from tinyassets.cutover_control import close_admission
@@ -2415,11 +2408,10 @@ def _build_cutover(data: Path, store: Path, journal: dict) -> None:
 
 
 def _publish_cutover(data: Path, store: Path, journal: dict) -> None:
-    from tinyassets.erasure_ledger import protect_root
+    from tinyassets.cutover_control import protect_root
 
     shared = store / ".cutover-shared"
-    if (shared / ".erasure-ledger.sqlite3").exists():
-        protect_root(data)
+    protect_root(data)
     if _durable_tree(shared) != journal["shared"]:
         raise RuntimeError("staged shared manifest changed")
     _verify_owner_volumes(store, journal)
@@ -2611,25 +2603,29 @@ def _reserve_erasures(ledger, staged):
 
 def _seed_owner_admission(shared, ledger):
     """C6 one-shot conversion; old authorities never participate in runtime reads."""
+    from tinyassets.broker.admission import digest as principal_digest
     from tinyassets.broker.admission import mutate, schema
-    from tinyassets.erasure_ledger import principal_digest
 
     identity = shared / ".broker/state/owner-identities.db"
     with closing(sqlite3.connect(identity)) as db, db:
         db.execute("ATTACH DATABASE ? AS billing", (str(shared / ".broker/plans.db"),))
         db.execute("BEGIN IMMEDIATE")
         schema(db)
-        # lane-b2: delete with the old authority
-        db.execute("DELETE FROM owner_box_revocations WHERE deleted=0")
         erased = {entry["digest"] for entry in ledger.entries()}
-        erased.update(principal_digest(row[0]) for row in db.execute(
-            "SELECT principal FROM owner_box_revocations WHERE deleted=1"))
+        erased.update(row[0] for row in db.execute(
+            "SELECT digest FROM owner_admission WHERE state='erased'"))
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='owner_box_revocations'").fetchone():
+            erased.update(principal_digest(row[0]) for row in db.execute(
+                "SELECT principal FROM owner_box_revocations WHERE deleted=1"))
+        columns = {row[1] for row in db.execute("PRAGMA billing.table_info(plans)")}
+        flags = [name if name in columns else "0" for name in
+                 ("billing_suspended", "abuse_suspended")]
         for owner, in db.execute("SELECT principal FROM owner_identities").fetchall():
             if principal_digest(owner) in erased:
                 continue
             box = db.execute("SELECT 1 FROM box_records WHERE principal=?", (owner,)).fetchone()
-            plan = db.execute("SELECT billing_suspended,abuse_suspended FROM billing.plans "
-                              "WHERE owner=?", (owner,)).fetchone()
+            plan = db.execute(f"SELECT {','.join(flags)} FROM billing.plans WHERE owner=?",
+                              (owner,)).fetchone()
             if box is None or plan is None:
                 continue
             mutate(db, owner, "admit")
@@ -2637,6 +2633,10 @@ def _seed_owner_admission(shared, ledger):
                 mutate(db, owner, "suspend", reason=reason, suspended=bool(suspended))
         for key in erased:
             mutate(db, None, "erase", erased_digest=key)
+        db.execute("DROP TABLE IF EXISTS owner_box_revocations")
+        for name in ("billing_suspended", "abuse_suspended"):
+            if name in columns:
+                db.execute(f"ALTER TABLE billing.plans DROP COLUMN {name}")
 
 
 

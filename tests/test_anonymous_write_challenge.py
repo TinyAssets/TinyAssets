@@ -587,8 +587,7 @@ def test_canary_authority_is_isolated_between_concurrent_requests(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _current_credential_source(tmp_path, monkeypatch):
-    from tinyassets.erasure_ledger import ErasureLedger
-    ErasureLedger(tmp_path).initialize()
+
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
 

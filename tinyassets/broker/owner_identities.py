@@ -112,8 +112,6 @@ class OwnerIdentities:
                            "SELECT RAISE(ABORT, 'center admissions are append-only'); END")
             db.execute("CREATE TABLE IF NOT EXISTS owner_box_secrets ("
                        "principal TEXT PRIMARY KEY NOT NULL, secret TEXT NOT NULL)")
-            db.execute("CREATE TABLE IF NOT EXISTS owner_box_revocations ("
-                       "principal TEXT PRIMARY KEY NOT NULL, deleted INTEGER NOT NULL)")
             from tinyassets.broker.owner_volumes import schema
 
             schema(db)
@@ -175,7 +173,6 @@ class OwnerIdentities:
             if event == "admit":
                 from tinyassets.broker.admission import mutate
 
-                # lane-b2: delete with the old authority
                 mutate(db, principal, "admit")
                 if "retire" in rows:
                     raise PermissionError("a retired center is never admitted again")
@@ -239,8 +236,8 @@ class OwnerIdentities:
                 raise LookupError("owner box has not started")
             return row[0], secret[0]
 
-    def revoke_box(self, principal: str) -> int:
-        """Durable fence before boxhostd stops the process; retries stay revoked."""
+    def retire_owner(self, principal: str) -> int:
+        """Terminal owner admission; permanent identity and volume bindings stay."""
         uid = self.owner_machine(principal)
         if uid is None:
             raise LookupError("unknown owner")
@@ -249,28 +246,7 @@ class OwnerIdentities:
             db.execute("BEGIN IMMEDIATE")
             from tinyassets.broker.admission import mutate
 
-            # lane-b2: delete with the old authority
             mutate(db, principal, "erase")
-            db.execute("INSERT INTO owner_box_revocations VALUES (?, ?) "
-                       "ON CONFLICT(principal) DO UPDATE SET "
-                       "deleted=MAX(deleted, excluded.deleted)",
-                       (principal, 1))
-            db.execute("DELETE FROM owner_box_secrets WHERE principal=?", (principal,))
-        return uid
-
-    def retire_owner(self, principal: str) -> int:
-        """Fence new admissions, retire every center, and keep retries possible."""
-        uid = self.revoke_box(principal)
-        with closing(self._connect(write=True)) as db, db:
-            db.execute("PRAGMA synchronous=FULL")
-            # C2: withdraw the positive runtime admission in the same database
-            # transaction used by snapshot publication. Permanent bindings stay.
-            db.execute("DELETE FROM box_records WHERE principal=?", (principal,))
-            db.execute("INSERT INTO center_admissions (event, principal, center, machine) "
-                       "SELECT 'retire', a.principal, a.center, a.machine "
-                       "FROM center_admissions a WHERE a.principal=? AND a.event='admit' "
-                       "AND NOT EXISTS (SELECT 1 FROM center_admissions r "
-                       "WHERE r.center=a.center AND r.event='retire')", (principal,))
         return uid
 
     def center_state(self, center: str) -> str:

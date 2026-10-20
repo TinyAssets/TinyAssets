@@ -290,21 +290,6 @@ def in_process_broker(request, monkeypatch):
 
     registry = _Registry()
     monkeypatch.setattr(supervisor, "get_supervisor", registry.supervisor_for)
-    if os.getuid() != 0:
-        from tinyassets.erasure_ledger import ErasureLedger
-
-        original_call = ErasureLedger._call
-
-        def empty_host_authority(ledger, operation, **fields):
-            # These same-UID unit fixtures have no root boxhostd. Their synthetic
-            # host starts with no erasures; real custody/IPC proofs run as root
-            # or opt out with role_split. Never replace a supplied authority.
-            if (not ledger.path.exists() and "TINYASSETS_BOXES_RUN" not in os.environ
-                    and operation in {"contains", "contains_many"}):
-                return False if operation == "contains" else []
-            return original_call(ledger, operation, **fields)
-
-        monkeypatch.setattr(ErasureLedger, "_call", empty_host_authority)
     try:
         yield registry
     finally:

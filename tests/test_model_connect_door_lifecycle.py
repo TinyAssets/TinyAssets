@@ -196,10 +196,8 @@ def lifecycle(tmp_path, monkeypatch, request):
     (router / ".ordinary-admission.json").write_text('{"ordinary":true}\n')
     custody = tmp_path / "custody"
     custody.mkdir()
-    from tinyassets.erasure_ledger import ErasureLedger
 
-    for root in (router, custody):
-        ErasureLedger(root).initialize()
+
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(router))
     monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
     monkeypatch.setattr(onboarding, "app_config", lambda: {"resource": ORIGIN + "/mcp"})
@@ -443,7 +441,7 @@ def test_door_exchange_box_call_refresh_disconnect(lifecycle):
     assert not (rig.router / ".platform").exists()
     assert {p.name for p in rig.router.iterdir()} <= {
         ".runtime", ".hosted-model-auth.db", ".hosted-model-auth.db-wal",
-        ".hosted-model-auth.db-shm", ".erasure-ledger.sqlite3", ".ordinary-admission.json"}
+        ".hosted-model-auth.db-shm", ".ordinary-admission.json"}
     assert (rig.router / ".ordinary-admission.json").read_text() == '{"ordinary":true}\n'
 
 
