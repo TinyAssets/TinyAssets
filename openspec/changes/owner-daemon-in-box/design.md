@@ -778,8 +778,19 @@ Target:
 
 **Round-4 amendments (2026-10-20, from the round-4 structural review).**
 - **Capacity is a broker counter, not a status query.** The broker counts awake
-  slots from the results of its own wake, stop and snapshot calls. Waiting for a
-  slot never holds a global lock across a host RPC. Victim facts come from the
+  slots from the results of its own wake, sleep and stop calls. Waiting for a
+  slot never holds a global lock across a host RPC.
+  - **Sleep is two host calls.** The broker's sleep first calls a graceful `sleep`:
+    snapshot-stop, drain, process exit and detach, refusing if work does not
+    drain (C2). It then calls `snapshot`, which only copies and refuses a box
+    that is not stopped and detached. `restore` has the same precondition.
+  - The slot frees when `sleep` returns, so another owner can wake while the
+    copy runs. That is b7's done check, now proven by call completion rather
+    than a status observation.
+  - `stop` stays the forced withdrawal used by deletion.
+  - This moves the graceful branch out of `snapshot`/`restore` into its own
+    operation; no new behaviour.
+  - (Settled 2026-10-20, from b8's stop under rule 4.) Victim facts come from the
   `status` that idle-sleep selection (`recover`) already fetches. The capacity
   constants (`idle_limit`, `awake_cap`, `wake_timeout`) are broker configuration.
   boxhostd holds no cap check and exports none of them. **Deleted:** boxhostd's
