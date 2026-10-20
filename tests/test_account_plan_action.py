@@ -26,8 +26,8 @@ PARAMS = {
 
 @pytest.fixture
 def home(tmp_path, monkeypatch, _signed_in_operator):
+    from tests.support.admission import Plans
     from tests.support.broker_double import seed_owner_admission
-    from tinyassets.broker.owner_reads import Plans
 
     seed_owner_admission(tmp_path, principal=_signed_in_operator.user_id, center="test-home")
 

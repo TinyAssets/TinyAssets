@@ -160,13 +160,12 @@ class OwnerIdentities:
         return sqlite3.connect(self.path.as_uri() + ("?mode=rw" if write else "?mode=ro"),
                                uri=True, timeout=30)
 
-    def admission(self, event: str, principal: str, center: str) -> AdmissionRow:
-        from tinyassets.broker.admission import changed, owner_lock
-
-        with owner_lock(self.path, principal):
-            row = self._admission(event, principal, center)
-            changed(self.path, principal)
-            return row
+    def admission(self, event: str, principal: str, center: str, *, routing) -> AdmissionRow:
+        if routing is None:
+            raise RuntimeError("admission mutation requires routing")
+        row = self._admission(event, principal, center)
+        routing.changed(principal)
+        return row
 
     def _admission(self, event: str, principal: str, center: str) -> AdmissionRow:
         """Append (or return the identical existing) admit/retire row; DA1."""

@@ -677,7 +677,7 @@ def test_universes_share_their_owners_pool_but_not_another_accounts(tmp_path):
 
 def test_the_seat_count_is_the_owners_tier(tmp_path, monkeypatch):
     """The owner's broker plan covers every command center in their box."""
-    from tinyassets.broker.owner_reads import Plans
+    from tests.support.admission import Plans
     from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
 
     plans = Plans(tmp_path)

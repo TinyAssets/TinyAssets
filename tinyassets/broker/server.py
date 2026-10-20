@@ -57,6 +57,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from tinyassets import rpc_frames as rf
+from tinyassets.broker.admission import owner_call
 from tinyassets.broker.fence import Fence, Fenced
 from tinyassets.broker.ops import OpIdInvalid, OpStore
 from tinyassets.storage.outbound_connections import BrokerStreamStop
@@ -181,11 +182,9 @@ class BrokerServer:
     @property
     def routing(self):
         if self._routing is None:
-            from tinyassets.broker.admission import register_authority
             from tinyassets.broker.routing import RoutingAuthority
 
             self._routing = RoutingAuthority(self)
-            register_authority(self._owner_identities.path, self._routing)
         return self._routing
 
     @property
@@ -380,9 +379,9 @@ class _Connection:
                     raise ValueError("invalid lifecycle command")
                 operations = {"roll": self._server.routing.roll,
                               "wake": self._server.routing.wake,
-                              "sleep": self._server.routing.volumes.sleep,
-                              "restore": self._server.routing.volumes.restore}
-                result = await asyncio.to_thread(operations[doc["operation"]], **doc["arguments"])
+                              "sleep": self._server.routing.sleep,
+                              "restore": self._server.routing.restore}
+                result = await operations[doc["operation"]](**doc["arguments"])
                 answer = {"op": "LIFECYCLE_RESULT", "result": result}
             except Exception:
                 answer = {"op": "LIFECYCLE_REFUSED"}
@@ -407,11 +406,11 @@ class _Connection:
                 return
             if op not in {"BOX_ADMISSION", "BOX_CHANNEL", "BOX_SHARED"}:
                 raise rf.FrameError("box host channel is read-only admission")
-            from tinyassets.broker.admission import channel_lock
+            from tinyassets.broker.admission import owner_lock
             from tinyassets.broker.box_admission import resolve
 
             try:
-                async with channel_lock(self._server._owner_identities.path, doc["principal"]):
+                async with owner_lock(self._server._owner_identities.path, doc["principal"]):
                     if op == "BOX_SHARED":
                         await asyncio.to_thread(self._server._owner_identities.box_route,
                                                 doc["principal"])
@@ -442,11 +441,13 @@ class _Connection:
                 await self.send_async(rf.control(rf.CONNECTION, answer))
                 return
             if op == "RETIRE_CENTER":
-                answer = await asyncio.to_thread(self._box_retire_center, doc)
+                answer = await owner_call(self._server._owner_identities.path, self._box_owner,
+                                          self._box_retire_center, doc)
                 await self.send_async(rf.control(rf.CONNECTION, answer))
                 return
             if op == "ADMIT_CENTER":
-                answer = await asyncio.to_thread(self._box_admit_center, doc)
+                answer = await owner_call(self._server._owner_identities.path, self._box_owner,
+                                          self._box_admit_center, doc)
                 await self.send_async(rf.control(rf.CONNECTION, answer))
                 return
             if op == "BOX_IDENTITY":
@@ -521,7 +522,11 @@ class _Connection:
                 operations = {"enqueue": self._server.deletion_jobs.enqueue,
                               "status": self._server.deletion_jobs.status,
                               "billing_receipt": self._server.deletion_jobs.record_billing}
-                result = await asyncio.to_thread(operations[doc["operation"]], **doc["arguments"])
+                if doc["operation"] == "enqueue":
+                    result = await operations["enqueue"](**doc["arguments"])
+                else:
+                    result = await asyncio.to_thread(operations[doc["operation"]],
+                                                     **doc["arguments"])
                 answer = {"op": "DELETION_JOB_IS", "result": result}
             except WithdrawalPending as pending:
                 answer = {"op": "DELETION_JOB_PENDING", "result": pending.progress}
@@ -530,13 +535,18 @@ class _Connection:
                 answer = {"op": "DELETION_JOB_REFUSED"}
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "BILLING_PLAN":
-            answer = await asyncio.to_thread(self._billing_plan, doc)
+            if doc.get("action") in {"set_suspension", "begin_checkout_attempt"}:
+                answer = await owner_call(self._server._owner_identities.path,
+                                          doc["args"]["owner"], self._billing_plan, doc)
+            else:
+                answer = await asyncio.to_thread(self._billing_plan, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "OWNER_IDENTITY":
             answer = await asyncio.to_thread(self._owner_identity, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "CENTER_ADMISSION":
-            answer = await asyncio.to_thread(self._center_admission, doc)
+            answer = await owner_call(self._server._owner_identities.path, doc["principal"],
+                                      self._center_admission, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "ADMITTED_OWNER":
             answer = await asyncio.to_thread(self._admitted_owner, doc)
@@ -557,8 +567,8 @@ class _Connection:
             except Exception:
                 answer = {"op": "OWNER_ADMISSION_REFUSED"}
             await self.send_async(rf.control(rf.CONNECTION, answer))
-        elif op in {"OWNER_BOX_WAKE", "OWNER_BOX_REVOKE"}:
-            answer = await asyncio.to_thread(self._owner_lifecycle, doc)
+        elif op == "OWNER_BOX_WAKE":
+            answer = await self._owner_lifecycle(doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "LEDGER_QUERY":
             answer = await asyncio.to_thread(self._ledger_query, doc)
@@ -620,7 +630,8 @@ class _Connection:
             with self._server._fence.send(
                     self._server._fence.generation, self._server._fence.token):
                 identities.box_route(self._box_owner)
-                row = identities.admission("admit", self._box_owner, doc["center"])
+                row = identities.admission("admit", self._box_owner, doc["center"],
+                                           routing=self._server.routing)
             return {"op": "BOX_RESULT", "result": {
                 "generation": row.generation, "machine": row.machine}}
         except Exception:  # noqa: BLE001 - no identity or persisted state on refusal
@@ -628,26 +639,21 @@ class _Connection:
 
     def _stop_owner_box(self, owner):
         from tinyassets.boxes.daemon_control import request
-        from tinyassets.broker.admission import owner_lock
-
-        with owner_lock(self._server._owner_identities.path, owner):
-            uid = self._server._owner_identities.owner_machine(owner)
-            if uid is None:
-                raise LookupError("owner lifecycle binding missing")
-            if request("stop", uid=uid) != {"stopped": True}:
-                raise RuntimeError("boxhostd did not acknowledge retirement")
+        uid = self._server._owner_identities.owner_machine(owner)
+        if uid is None:
+            raise LookupError("owner lifecycle binding missing")
+        if request("stop", uid=uid) != {"stopped": True}:
+            raise RuntimeError("boxhostd did not acknowledge retirement")
 
     def _box_retire_center(self, doc):
         try:
             if set(doc) != {"op", "center"}:
                 raise ValueError("invalid retirement")
-            from tinyassets.broker.admission import owner_lock
-            with owner_lock(self._server._owner_identities.path, self._box_owner):
-                row = self._server._owner_identities.admission(
-                    "retire", self._box_owner, doc["center"])
-                self._stop_owner_box(self._box_owner)
-                return {"op": "BOX_RESULT", "result": {
-                    "generation": row.generation, "machine": row.machine}}
+            row = self._server._owner_identities.admission(
+                "retire", self._box_owner, doc["center"], routing=self._server.routing)
+            self._stop_owner_box(self._box_owner)
+            return {"op": "BOX_RESULT", "result": {
+                "generation": row.generation, "machine": row.machine}}
         except Exception:
             return {"op": "BOX_REFUSED"}
 
@@ -715,20 +721,19 @@ class _Connection:
                     or not isinstance(doc["args"], dict)):
                 raise ValueError("invalid billing operation")
             with self._server._fence.send(doc["generation"], doc["token"]):
-                plans = Plans(self._server._data_root)
+                plans = Plans(self._server._data_root, routing=self._server.routing)
                 operations = {name: getattr(plans, name) for name in (
                     "read", "owner_for", "owner_for_checkout",
                     "apply_tier_event", "set_suspension", "bind_checkout_subscription",
                     "current_checkout_attempt", "begin_checkout_attempt",
                     "record_checkout_session", "settle_checkout_attempt", "checkout_settlements")}
                 if doc["action"] == "begin_checkout_attempt":
-                    from tinyassets.broker.admission import read, transition_lock
+                    from tinyassets.broker.admission import read
 
-                    with transition_lock:
-                        if read(self._server._owner_identities,
-                                doc["args"]["owner"]).state not in {"admitted", "suspended"}:
-                            raise PermissionError("checkout requires an account admission")
-                        result = operations[doc["action"]](**doc["args"])
+                    if read(self._server._owner_identities,
+                            doc["args"]["owner"]).state not in {"admitted", "suspended"}:
+                        raise PermissionError("checkout requires an account admission")
+                    result = operations[doc["action"]](**doc["args"])
                 else:
                     result = operations[doc["action"]](**doc["args"])
                 return {"op": "BILLING_RESULT", "result": result}
@@ -767,16 +772,13 @@ class _Connection:
         except Exception:  # noqa: BLE001 - do not expose broker state on refusal
             return {'op': 'ADMITTED_OWNER_REFUSED'}
 
-    def _owner_lifecycle(self, doc: dict[str, Any]) -> dict[str, Any]:
+    async def _owner_lifecycle(self, doc: dict[str, Any]) -> dict[str, Any]:
         try:
             if (set(doc) != {"op", "principal", "generation", "token"}
                     or type(doc["generation"]) is not int or type(doc["token"]) is not str):
                 raise ValueError("invalid owner lifecycle request")
             with self._server._fence.send(doc["generation"], doc["token"]):
-                if doc["op"] == "OWNER_BOX_WAKE":
-                    self._server.routing.wake(doc["principal"])
-                else:
-                    self._server.routing.revoke(doc["principal"])
+                await self._server.routing.wake(doc["principal"])
                 return {"op": "OWNER_LIFECYCLE_DONE"}
         except LookupError:
             return {"op": "OWNER_BOX_UNADMITTED"}
@@ -809,18 +811,16 @@ class _Connection:
             with self._server._fence.send(doc["generation"], doc["token"]):
                 if self._server._owner_identities is None:
                     raise RuntimeError("owner identities are not initialized")
-                from tinyassets.broker.admission import owner_lock
-                with owner_lock(self._server._owner_identities.path, doc["principal"]):
-                    row = self._server._owner_identities.admission(
-                        doc["event"], doc["principal"], doc["center"])
-                    if doc["event"] == "retire":
-                        self._stop_owner_box(doc["principal"])
-                    if doc["event"] == "admit" and self._server._policy_store is not None:
-                        self._server._policy_store.bootstrap_owner(doc["principal"])
-                    if doc["event"] == "admit" and self._server._provision_box is not None:
-                        self._server._provision_box(doc["principal"], doc["center"])
-                    return {"op": "CENTER_ADMISSION_IS", "generation": row.generation,
-                            "machine": row.machine}
+                row = self._server._owner_identities.admission(
+                    doc["event"], doc["principal"], doc["center"], routing=self._server.routing)
+                if doc["event"] == "retire":
+                    self._stop_owner_box(doc["principal"])
+                if doc["event"] == "admit" and self._server._policy_store is not None:
+                    self._server._policy_store.bootstrap_owner(doc["principal"])
+                if doc["event"] == "admit" and self._server._provision_box is not None:
+                    self._server._provision_box(doc["principal"], doc["center"])
+                return {"op": "CENTER_ADMISSION_IS", "generation": row.generation,
+                        "machine": row.machine}
         except CenterUnadmitted:
             # D218 retires a tree-less center only if the log admitted it.
             return {"op": "CENTER_ADMISSION_UNADMITTED"}
@@ -1180,8 +1180,8 @@ class _Connection:
             await refuse("refused")
             return
         self._principals.add(principal)
-        from tinyassets.broker.admission import channel_lock
-        async with channel_lock(self._server._owner_identities.path, principal):
+        from tinyassets.broker.admission import owner_lock
+        async with owner_lock(self._server._owner_identities.path, principal):
             try:
                 from tinyassets.broker.admission import require_admitted
 

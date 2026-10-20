@@ -117,12 +117,12 @@ def synthetic(tmp_path, monkeypatch):
                                        network_request=lambda **_: None).dispatch
     fence = Fence(tmp_path / "fence.json", verify_lease_proof=lambda g, p: True)
     generation = fence.barrier(1, "proof")
+    from tests.support.admission import Plans
     from tests.support.broker_double import seed_owner_admission
 
     # This fixture models another broker even when its client is an owner runtime.
     from tinyassets import owner_runtime
     from tinyassets.broker.owner_identities import OwnerIdentities
-    from tinyassets.broker.owner_reads import Plans
 
     with monkeypatch.context() as broker_context:
         broker_context.setattr(owner_runtime, "_runtime", None)

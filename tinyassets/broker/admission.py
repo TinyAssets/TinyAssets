@@ -6,60 +6,30 @@ import asyncio
 import hashlib
 import json
 import sqlite3
-import threading
-import weakref
-from contextlib import asynccontextmanager, closing
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-# C6: checkout intent must commit before erasure, or observe the erased record.
-transition_lock = threading.RLock()
+# Only the broker event loop accesses this registry. SQL transactions serialize
+# the shared database; lifecycle work is serialized per owner, never globally.
 _owners = {}
-_authorities = weakref.WeakValueDictionary()
 
 
 def owner_lock(path, owner):
-    """C5: wake and every admission/credential transition share one owner lock."""
-    with transition_lock:
-        return _owners.setdefault((Path(path), owner), threading.RLock())
+    """C15: one asyncio lock, shared by lifecycle and channel admission."""
+    key = (asyncio.get_running_loop(), Path(path), owner)
+    return _owners.setdefault(key, asyncio.Lock())
 
 
-@asynccontextmanager
-async def channel_lock(path, owner):
-    """Hold the same thread-owned lifecycle lock across an async channel open."""
-    lock = owner_lock(path, owner)
-    loop = asyncio.get_running_loop()
-    acquired = asyncio.Event()
-    released = threading.Event()
-    finished = asyncio.Event()
-
-    def hold():
-        with lock:
-            if not released.is_set():
-                loop.call_soon_threadsafe(acquired.set)
-                released.wait()
-        if not loop.is_closed():
-            loop.call_soon_threadsafe(finished.set)
-
-    threading.Thread(target=hold, daemon=True).start()
-    try:
-        await acquired.wait()
-        yield
-    finally:
-        released.set()
-        # A cancelled waiter must not delay withdrawal while it owns the lock.
-        if acquired.is_set():
-            await finished.wait()
-
-
-def register_authority(path, authority):
-    _authorities[Path(path)] = authority
-
-
-def changed(path, owner):
-    authority = _authorities.get(Path(path))
-    if authority is not None:
-        authority.changed(owner)
+async def owner_call(path, owner, function, *args, **kwargs):
+    """Keep serialization until a worker finishes, including on cancellation."""
+    async with owner_lock(path, owner):
+        worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            await worker
+            raise
 
 
 class OwnerSuspended(PermissionError):
@@ -179,11 +149,13 @@ def local_read(root, owner):
         return admission(db, owner)
 
 
-def local_mutate(path, owner, action, **arguments):
-    with owner_lock(path, owner):
-        with transition_lock, closing(sqlite3.connect(Path(path).as_uri() + "?mode=rw", uri=True,
-                                     timeout=30)) as db, db:
-            db.execute("PRAGMA synchronous=FULL")
-            db.execute("BEGIN IMMEDIATE")
-            mutate(db, owner, action, **arguments)
-        changed(path, owner)
+def local_mutate(path, owner, action, *, routing, **arguments):
+    """Caller holds the async owner lock; database work runs on its worker."""
+    if routing is None:
+        raise RuntimeError("admission mutation requires routing")
+    with closing(sqlite3.connect(Path(path).as_uri() + "?mode=rw", uri=True,
+                                 timeout=30)) as db, db:
+        db.execute("PRAGMA synchronous=FULL")
+        db.execute("BEGIN IMMEDIATE")
+        mutate(db, owner, action, **arguments)
+    routing.changed(owner)

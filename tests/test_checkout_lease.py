@@ -13,9 +13,9 @@ import time
 
 import pytest
 
+from tests.support.admission import Plans
 from tinyassets import onboarding
 from tinyassets.billing import stripe_adapter
-from tinyassets.broker.owner_reads import Plans
 from tinyassets.storage.subscription_state import CHECKOUT_WINDOW_SECONDS
 
 OWNER = "billing-owner"

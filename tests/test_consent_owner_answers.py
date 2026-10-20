@@ -147,8 +147,8 @@ def test_bearer_cannot_mint_retry_or_write_authority(home, monkeypatch, door):
         from tests.support.broker_double import seed_owner_admission
 
         seed_owner_admission(home.parent, principal="owner", center=home.name)
+        from tests.support.admission import Plans
         from tinyassets.broker.owner_identities import OwnerIdentities
-        from tinyassets.broker.owner_reads import Plans
         from tinyassets.broker.supervisor import get_supervisor
 
         get_supervisor(home.parent).server._owner_identities = OwnerIdentities(

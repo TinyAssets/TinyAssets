@@ -486,7 +486,7 @@ def test_checkout_sends_an_idempotency_key(monkeypatch, checkout_anchor):
 
 def test_a_stale_event_cannot_resurrect_a_cancelled_tier(tmp_path):
     """Stripe does not guarantee delivery order and retries deliveries."""
-    from tinyassets.broker.owner_reads import Plans
+    from tests.support.admission import Plans
 
     def apply_tier_event(root, **kw):
         return Plans(root).apply("owner", **kw)
@@ -502,7 +502,7 @@ def test_a_stale_event_cannot_resurrect_a_cancelled_tier(tmp_path):
 
 def test_a_same_second_cancel_beats_a_same_second_activate(tmp_path):
     """Stripe timestamps are second-granularity, so ties are ordinary."""
-    from tinyassets.broker.owner_reads import Plans
+    from tests.support.admission import Plans
 
     def apply_tier_event(root, **kw):
         return Plans(root).apply("owner", **kw)
@@ -517,7 +517,7 @@ def test_a_same_second_cancel_beats_a_same_second_activate(tmp_path):
 def test_an_unreadable_shared_plan_fails_loudly(tmp_path):
     import sqlite3
 
-    from tinyassets.broker.owner_reads import Plans
+    from tests.support.admission import Plans
 
     plans = Plans(tmp_path)
     plans.initialize()
@@ -903,8 +903,8 @@ def test_the_checkout_route_actually_applies_the_origin_allowlist(
     monkeypatch.setattr(onboarding, "_read_home", lambda _i: "u-origin")
     monkeypatch.setattr(helpers, "_universe_dir", lambda u: tmp_path / u)
 
+    from tests.support.admission import Plans
     from tinyassets.auth.middleware import current_identity
-    from tinyassets.broker.owner_reads import Plans
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     from tests.support.broker_double import seed_owner_admission
@@ -992,7 +992,7 @@ def test_an_unclaimed_subscription_cannot_inject_an_end_date():
 
 
 def test_the_end_date_is_stored_and_cleared_with_the_tier(tmp_path):
-    from tinyassets.broker.owner_reads import Plans
+    from tests.support.admission import Plans
 
     plans = Plans(tmp_path)
     plans.set_plan("owner", "paid", event_created=100, ends_at=500)
@@ -1014,7 +1014,7 @@ def test_the_end_date_is_stored_and_cleared_with_the_tier(tmp_path):
 
 def test_a_rejected_event_cannot_leave_its_end_date_behind(tmp_path):
     """The date must never outlive the tier decision it belonged to."""
-    from tinyassets.broker.owner_reads import Plans
+    from tests.support.admission import Plans
 
     def apply_tier_event(root, **kw):
         return Plans(root).apply("owner", **kw)
@@ -1034,8 +1034,8 @@ def test_the_webhook_persists_the_end_date_through_the_route(tmp_path, monkeypat
     import json as _json
 
     import tinyassets.api.helpers as helpers
+    from tests.support.admission import Plans
     from tinyassets import onboarding
-    from tinyassets.broker.owner_reads import Plans
 
     monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
     monkeypatch.setattr(helpers, "_universe_dir", lambda u: tmp_path / u)
@@ -1094,8 +1094,8 @@ def test_an_event_from_the_wrong_stripe_mode_is_refused(tmp_path, monkeypatch):
     import json as _json
 
     import tinyassets.api.helpers as helpers
+    from tests.support.admission import Plans
     from tinyassets import onboarding
-    from tinyassets.broker.owner_reads import Plans
 
     monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
     monkeypatch.setattr(helpers, "_universe_dir", lambda u: tmp_path / u)
@@ -1129,8 +1129,8 @@ def test_a_test_mode_event_cannot_entitle_a_live_deployment(tmp_path, monkeypatc
     import json as _json
 
     import tinyassets.api.helpers as helpers
+    from tests.support.admission import Plans
     from tinyassets import onboarding
-    from tinyassets.broker.owner_reads import Plans
 
     monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
     monkeypatch.setattr(helpers, "_universe_dir", lambda u: tmp_path / u)

@@ -13,12 +13,13 @@ import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
+from tests.support.admission import Plans, projection
 from tests.support.broker_double import seed_owner_admission
 from tests.support.broker_ipc import broker  # noqa: F401
 from tests.test_billing_boundary import SECRET, _sign, _subscription_event
 from tests.test_owner_broker_egress import box  # noqa: F401
 from tinyassets import onboarding, owner_runtime
-from tinyassets.broker.owner_reads import PlanMissing, Plans
+from tinyassets.broker.owner_reads import PlanMissing
 
 BOX_CODE = """
 import json, os, sys
@@ -201,12 +202,14 @@ def test_admission_creates_free_atomically_and_never_repairs_missing_existing_pl
     identities = OwnerIdentities(
         tmp_path / ".broker/state/owner-identities.db", plans=Plans(tmp_path))
     plans.set_plan("owner", "paid", event_created=5)
-    identities.admission("admit", "owner", "second")
+    identities.admission("admit", "owner", "second",
+     routing=projection(identities.path))
     assert plans.read("owner")["tier"] == "paid"
     with sqlite3.connect(plans.path) as db:
         db.execute("DELETE FROM plans WHERE owner='owner'")
     with pytest.raises(PlanMissing):
-        identities.admission("admit", "owner", "third")
+        identities.admission("admit", "owner", "third",
+        routing=projection(identities.path))
     assert identities.center_state("third") == "unadmitted"
 
 
@@ -239,7 +242,8 @@ def test_admission_failure_rolls_back_the_free_row(tmp_path):
         db.execute("CREATE TRIGGER refuse_new_center BEFORE INSERT ON center_admissions "
                    "WHEN NEW.principal='new-owner' BEGIN SELECT RAISE(ABORT, 'fixture'); END")
     with pytest.raises(sqlite3.IntegrityError, match="fixture"):
-        identities.admission("admit", "new-owner", "new-center")
+        identities.admission("admit", "new-owner", "new-center",
+            routing=projection(identities.path))
     with pytest.raises(PlanMissing):
         Plans(tmp_path).read("new-owner")
     assert identities.center_state("new-center") == "unadmitted"

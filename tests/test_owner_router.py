@@ -18,6 +18,7 @@ import httpx
 import pytest
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.support.admission import drive, projection, suspend
 from tests.test_broker_server import broker  # noqa: F401
 from tinyassets.auth.provider import Identity
 from tinyassets.broker.admission import local_mutate
@@ -37,7 +38,7 @@ def admitted(in_process_broker, broker, tmp_path, monkeypatch):  # noqa: F811
     tmp_path.chmod(0o700)
     state = tmp_path / ".broker"
     state.mkdir(mode=0o700, exist_ok=True)
-    from tinyassets.broker.owner_reads import Plans
+    from tests.support.admission import Plans
 
     identities = OwnerIdentities(state / "state/owner-identities.db", plans=Plans(tmp_path))
     broker.server._owner_identities = identities
@@ -50,7 +51,8 @@ def admitted(in_process_broker, broker, tmp_path, monkeypatch):  # noqa: F811
     for name in ("alice", "bob", "reserved"):
         identities.resolve(name, allocate=True)
     for name in ("alice", "bob"):
-        identities.admission("admit", name, "cc-" + name)
+        identities.admission("admit", name, "cc-" + name,
+          routing=projection(identities.path))
     live = SimpleNamespace(socket_path=broker.path,
                            fence=lambda: (broker.state["generation"], broker.state["token"]),
                            verify_broker=lambda channel: None)
@@ -73,7 +75,8 @@ def test_secret_mint_rotation_and_admission_through_real_broker(admitted, boxes,
     for owner in ("unknown", "reserved"):
         with pytest.raises(LookupError):
             admitted.box_route(owner)
-    admitted.admission("retire", "alice", "cc-alice")
+    admitted.admission("retire", "alice", "cc-alice",
+      routing=projection(admitted.path))
     assert admitted.box_route("alice") == rotated
 
 
@@ -187,11 +190,11 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
         monkeypatch.setattr(daemon_control, "request", control)
         try:
             broker.server.routing.publish()
-            from tinyassets.broker.admission import register_authority
+            from tests.support.admission import bind
 
-            register_authority(admitted.path, broker.server.routing)
+            bind(admitted.path, broker.server.routing)
             for owner in roots:
-                broker.server.routing.wake(owner)
+                drive(broker.server.routing.wake(owner))
             secrets = {owner: manager.boxes[admitted.owner_machine(owner)].secret
                        for owner in roots}
             keys = {owner: json.loads((root / "key.json").read_text())["key"]
@@ -527,14 +530,14 @@ def test_withdrawn_route_rejects_delayed_snapshot_and_wake(
     monkeypatch.setattr(broker.server.routing, "_router", capture)
     broker.server.routing.publish()
     old = publication[-1]
-    admitted.plans.set_suspension("alice", reason="abuse", suspended=True)
+    suspend(admitted.plans, "alice", reason="abuse", suspended=True)
     assert not boxes.runtime.alive(admitted.owner_machine("alice"))
     current = snapshot(tmp_path)
     assert current.install(old["instance"], old["revision"], old["records"]) > old["revision"]
     with pytest.raises(PermissionError):
         resolve_box("alice")
     with pytest.raises(PermissionError):
-        broker.server.routing.wake("alice")
+        drive(broker.server.routing.wake("alice"))
     assert not boxes.runtime.alive(admitted.owner_machine("alice"))
 
 
@@ -575,7 +578,7 @@ def test_withdrawal_without_router_delivery_stops_old_ingress(
         raise OSError("synthetic router publication outage")
 
     monkeypatch.setattr(broker.server.routing, "_router", unavailable)
-    admitted.plans.set_suspension("alice", reason="abuse", suspended=True)
+    suspend(admitted.plans, "alice", reason="abuse", suspended=True)
     assert snapshot(tmp_path).route("alice") == before
     assert not boxes.runtime.alive(admitted.owner_machine("alice"))
 
@@ -611,7 +614,7 @@ def test_rotation_stops_old_ingress_before_publishing_replacement(
         broker.server.routing.revoke("alice")
     fresh = snapshot(tmp_path).route("alice").secret
     assert fresh != old
-    broker.server.routing.wake("alice")
+    drive(broker.server.routing.wake("alice"))
     identity = Identity(user_id="alice", username="alice")
     headers = {"x-owner": "alice", "x-owner-identity": base64.urlsafe_b64encode(
         json.dumps(asdict(identity)).encode()).decode()}
@@ -753,9 +756,9 @@ def test_box_channel_cannot_supply_owner_or_revoke_another_owners_credentials(
     request("bob", {"operation": "hook_revoke", "token_hash": hashlib.sha256(token.encode())
             .hexdigest()})
     assert HookOwners(tmp_path).resolve(token) == "alice"
-    admitted.admission("retire", "bob", "cc-bob")
+    admitted.admission("retire", "bob", "cc-bob", routing=projection(admitted.path))
     assert request("bob", {"operation": "key_list"})["op"] == "ROUTER_CREDENTIAL_IS"
-    local_mutate(admitted.path, "bob", "erase")
+    local_mutate(admitted.path, "bob", "erase", routing=projection(admitted.path))
     assert request("bob", {"operation": "key_list"}) == {"op": "BOX_REFUSED"}
 
 
@@ -859,7 +862,8 @@ def test_a_deleted_owner_can_never_mint_again(tmp_path, monkeypatch):
     mint = {"operation": "key_mint", "name": "k", "request_ref": "ref-1"}
     token = dispatch(tmp_path, "alice", {"operation": "hook_mint"})["token"]
     assert token
-    local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase")
+    local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase",
+        routing=projection(tmp_path / ".broker/state/owner-identities.db"))
     router_credentials.revoke_account(tmp_path, "alice")
     assert owner_admission(tmp_path, "alice").state == "erased"
     # The door's revocation removed the hook the owner minted before deletion.
@@ -888,7 +892,7 @@ def test_boxhostd_real_process_restart_keeps_secret_and_serves_again(
     with boxes.manager.condition:
         assert boxes.manager._sleep(boxes.manager.boxes[uid], idle=0)
     assert process.poll() == 0  # SIGTERM completed the actual app lifespan.
-    broker.server.routing.wake("alice")
+    drive(broker.server.routing.wake("alice"))
     second = resolve_box("alice")
     assert first.socket == second.socket and first.secret == second.secret
     with httpx.Client(transport=httpx.HTTPTransport(uds=str(first.socket)),
@@ -987,7 +991,8 @@ def test_box_admitted_request_blocks_eviction_until_disconnect(
     manager.wake_timeout = 10
     route = resolve_box("alice")
     result = []
-    waiter = threading.Thread(target=lambda: result.append(broker.server.routing.wake("bob")))
+    waiter = threading.Thread(
+        target=lambda: result.append(drive(broker.server.routing.wake("bob"))))
 
     async def exercise():
         incoming = asyncio.Queue()
@@ -1035,7 +1040,8 @@ def test_running_fenced_box_is_refused_on_every_broker_operation(boxes, admitted
             channel.sendall(rf.control(rf.CONNECTION, {
                 "op": "BOX_CHANNEL", "principal": "alice", "center": "cc-alice"}))
             assert rf.read_frame_blocking(channel).control()["op"] == "BOX_ADMITTED"
-        local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase")
+        local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase",
+            routing=projection(tmp_path / ".broker/state/owner-identities.db"))
         document = {"op": op, "principal": "alice"}
         if op in {"BOX_ADMISSION", "BOX_CHANNEL", "BOX_SHARED"}:
             document["center"] = "cc-alice"

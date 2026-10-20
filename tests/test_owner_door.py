@@ -58,8 +58,8 @@ def _headers(owner=A):
 
 @pytest.fixture
 def door(tmp_path, monkeypatch):
+    from tests.support.admission import Plans
     from tinyassets.broker import owner_reads
-    from tinyassets.broker.owner_reads import Plans
     from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
 
     plans = Plans(tmp_path)
@@ -274,7 +274,7 @@ def _normalized(document):
 
 
 def test_free_and_subscription_accounts_read_the_same_data_identically(door):
-    from tinyassets.broker.owner_reads import Plans
+    from tests.support.admission import Plans
     from tinyassets.universe_owner import account_type_of
     from tinyassets.usage_policy import AccountType
 
@@ -303,7 +303,7 @@ def test_free_and_subscription_accounts_read_the_same_data_identically(door):
 
 def test_a_subscribers_second_universe_is_a_subscription_universe(door):
     """Each local center reads its admitted account's shared broker plan."""
-    from tinyassets.broker.owner_reads import Plans
+    from tests.support.admission import Plans
     from tinyassets.daemon_server import grant_universe_ownership
     from tinyassets.universe_owner import account_type_for_universe
     from tinyassets.usage_policy import AccountType, limits_for, limits_for_universe

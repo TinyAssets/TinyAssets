@@ -17,6 +17,7 @@ import time
 
 import pytest
 
+from tests.support.admission import projection
 from tests.support.broker_double import broker_process
 from tinyassets import rpc_frames as rf
 from tinyassets.broker.client import BrokerClient, BrokerRefused
@@ -125,9 +126,9 @@ def broker(tmp_path, monkeypatch):
 
         return dispatch
 
+    from tests.support.admission import Plans
     from tinyassets.broker.admission import local_mutate
     from tinyassets.broker.owner_identities import OwnerIdentities
-    from tinyassets.broker.owner_reads import Plans
 
     state_dir = tmp_path / ".broker/state"
     state_dir.mkdir(parents=True, mode=0o700)
@@ -135,7 +136,7 @@ def broker(tmp_path, monkeypatch):
     identities = OwnerIdentities(state_dir / "owner-identities.db", initialize=True,
                                  plans=Plans(tmp_path))
     identities.resolve("alice", allocate=True)
-    local_mutate(identities.path, "alice", "admit")
+    local_mutate(identities.path, "alice", "admit", routing=projection(identities.path))
     server = BrokerServer(ledger_for=Ledger, dispatch_for=dispatch_for, ops=ops, fence=fence,
                           roles={os.getuid(): OWNER}, data_root=tmp_path,
                           owner_identities=identities)
@@ -768,7 +769,8 @@ def test_record_withdrawal_closes_idle_streams(broker, tmp_path, damage, monkeyp
             assert rf.read_frame_blocking(client).control()["op"] == "HEAD"
         started = time.monotonic()
         if damage == "erased":
-            local_mutate(broker.server._owner_identities.path, "alice", "erase")
+            local_mutate(broker.server._owner_identities.path, "alice", "erase",
+                routing=projection(broker.server._owner_identities.path))
         else:
             asyncio.run_coroutine_threadsafe(
                 broker.server.withdraw_channels("alice"), broker.server._loop).result(3)

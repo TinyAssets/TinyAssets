@@ -29,7 +29,7 @@ class RoutingSnapshot:
         for owner, row in records.items():
             if (not isinstance(owner, str) or not owner
                     or set(row) != {"state", "socket", "secret"}
-                    or row["state"] not in {"admitted", "suspended", "erased", "absent"}):
+                    or row["state"] not in {"admitted", "suspended"}):
                 raise ValueError("invalid routing snapshot record")
             if row["state"] == "admitted":
                 if (not isinstance(row["socket"], str) or not row["socket"]

@@ -6,6 +6,7 @@ import httpx
 import pytest
 from starlette.applications import Starlette
 
+from tests.support.admission import projection
 from tests.support.model_connect import rig  # noqa: F401 - shared real-store fixture
 from tests.test_hosted_model_auth import CHALLENGE, VERIFIER, pending
 from tinyassets import onboarding
@@ -168,8 +169,8 @@ def test_callback_is_nonmutating_shell_with_private_headers(monkeypatch):
 
 
 def test_retirement_between_ingress_and_durable_begin_cannot_create_flow(monkeypatch):
+    from tests.support.admission import Plans
     from tinyassets.broker.owner_identities import OwnerIdentities
-    from tinyassets.broker.owner_reads import Plans
     from tinyassets.storage import data_dir
 
     original = hosted.begin_flow
@@ -177,7 +178,8 @@ def test_retirement_between_ingress_and_durable_begin_cannot_create_flow(monkeyp
     def delayed_begin(**kwargs):
         identities = OwnerIdentities(data_dir() / ".broker/state/owner-identities.db",
                                      plans=Plans(data_dir()))
-        identities.admission("retire", kwargs["owner"], kwargs["universe_id"])
+        identities.admission("retire", kwargs["owner"], kwargs["universe_id"],
+            routing=projection(identities.path))
         return original(**kwargs)
 
     monkeypatch.setattr(hosted, "begin_flow", delayed_begin)

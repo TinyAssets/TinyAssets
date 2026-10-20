@@ -17,11 +17,12 @@ from types import SimpleNamespace
 import pytest
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.support.admission import Plans, async_call, drive, projection, suspend
 from tinyassets import rpc_frames as rf
 from tinyassets.broker.admission import local_mutate
 from tinyassets.broker.next_wake import FLOOR_SECONDS, NextWakeIndex
 from tinyassets.broker.owner_identities import OwnerIdentities
-from tinyassets.broker.owner_reads import PlanMissing, Plans
+from tinyassets.broker.owner_reads import PlanMissing
 from tinyassets.broker.waker import MAX_PENDING, Waker
 
 
@@ -36,11 +37,13 @@ def index(tmp_path):
     for owner in ("a", "b", "c", "retired", "reserved"):
         identities.resolve(owner, allocate=True)
         if owner != "reserved":
-            identities.admission("admit", owner, "cc-" + owner)
+            identities.admission("admit", owner, "cc-" + owner,
+                routing=projection(identities.path))
             from tinyassets.broker.box_admission import provision
 
             provision(identities, tmp_path, owner, "cc-" + owner)
-    local_mutate(identities.path, "retired", "erase")
+    local_mutate(identities.path, "retired", "erase",
+      routing=projection(identities.path))
     return NextWakeIndex(identities)
 
 
@@ -59,7 +62,7 @@ def test_floor_includes_never_reported_and_preserves_reports_across_restart(inde
     index.report("b", None, now=90)
     index.report("c", 1000000, now=90)
     waker = Waker(index, plan_store(index), clock=lambda: clock[0],
-                  wake=lambda owner, **kw: calls.append((owner, kw)))
+                  wake=async_call(lambda owner, **kw: calls.append((owner, kw))))
 
     async def exercise():
         await settled_tick(waker)
@@ -87,12 +90,13 @@ def test_floor_includes_never_reported_and_preserves_reports_across_restart(inde
 def test_suspension_and_missing_launch_plan_refuse_but_retired_center_wakes(index, reason, caplog):
     plans = plan_store(index)
     index.report("a", 0, now=0)
-    plans.set_suspension("a", reason=reason, suspended=True)
+    suspend(plans, "a", reason=reason, suspended=True)
     with pytest.raises(PermissionError, match="suspended"):
         index.report("a", 0, now=0)
     with closing(sqlite3.connect(plans.path)) as db, db:
         db.execute("DELETE FROM plans WHERE owner='b'")
-    index.identities.admission("retire", "c", "cc-c")
+    index.identities.admission("retire", "c", "cc-c",
+      routing=projection(index.identities.path))
     calls = []
     from tinyassets.broker.box_admission import owner_record
 
@@ -100,14 +104,14 @@ def test_suspension_and_missing_launch_plan_refuse_but_retired_center_wakes(inde
         owner_record(index.identities, owner)
         calls.append(owner)
 
-    waker = Waker(index, plans, wake=wake)
+    waker = Waker(index, plans, wake=async_call(wake))
 
     async def exercise():
         await settled_tick(waker)
         await settled_tick(waker)
         assert calls == ["c"]
         assert "PlanMissing" in caplog.text
-        plans.set_suspension("a", reason=reason, suspended=False)
+        suspend(plans, "a", reason=reason, suspended=False)
         await settled_tick(waker)
         assert calls == ["c", "a"]
 
@@ -130,7 +134,7 @@ def test_due_delivery_retries_without_consuming_report_and_failed_wake_has_no_ac
         if len(calls) == 3:
             index.report(owner, None, now=102)
 
-    waker = Waker(index, plan_store(index), wake=wake, clock=lambda: 101)
+    waker = Waker(index, plan_store(index), wake=async_call(wake), clock=lambda: 101)
 
     async def exercise():
         await settled_tick(waker)
@@ -154,7 +158,7 @@ def test_slow_wakes_do_not_block_the_timer_and_are_bounded(index):
         entered.put(owner)
         assert release.wait(10)
 
-    waker = Waker(index, plan_store(index), wake=wake)
+    waker = Waker(index, plan_store(index), wake=async_call(wake))
 
     async def exercise():
         try:
@@ -195,13 +199,13 @@ def test_production_layout_uses_one_plan_store_for_admission_billing_and_launch(
     plans = Plans(tmp_path)
     identities = OwnerIdentities(state / "owner-identities.db", initialize=True, plans=plans)
     identities.resolve("a", allocate=True)
-    identities.admission("admit", "a", "cc-a")
+    identities.admission("admit", "a", "cc-a", routing=projection(identities.path))
     assert plans.read("a")["tier"] == "free"
     assert not (state / "plans.db").exists()
     for reason in ("billing", "abuse"):
-        plans.set_suspension("a", reason=reason, suspended=True)
+        suspend(plans, "a", reason=reason, suspended=True)
     plans.set_plan("a", "paid", event_created=10)
-    plans.set_suspension("a", reason="billing", suspended=False)
+    suspend(plans, "a", reason="billing", suspended=False)
     with pytest.raises(PermissionError, match="suspended"):
         owner_record(identities, "a")
     with closing(sqlite3.connect(plans.path)) as db, db:
@@ -242,7 +246,7 @@ def test_waker_starts_without_request_and_shutdown_joins_control_calls(index):
             calls.append(owner)
             loop.call_soon_threadsafe(stop.set)
 
-        waker = Waker(index, plan_store(index), wake=wake)
+        waker = Waker(index, plan_store(index), wake=async_call(wake))
         assert waker.poll_seconds == 30
         await asyncio.wait_for(waker.run(stop), timeout=5)
         assert calls
@@ -346,7 +350,7 @@ def sleeping_box(tmp_path, monkeypatch, in_process_broker, cloud_runtime):  # no
         routing.volumes.execute = control
         monkeypatch.setattr(routing, "publish", lambda **kwargs: None)
         try:
-            routing.wake(owner)
+            drive(routing.wake(owner))
             yield SimpleNamespace(root=tmp_path, owner=owner, uid=uid, manager=manager,
                                   runtime=runtime, index=index, reports=reports, wake=routing.wake,
                                   relays=relays, at=moment.timestamp() + 600,
@@ -388,7 +392,7 @@ def test_sleeping_box_runs_without_request_and_duplicate_wake_is_idempotent(slee
     assert not box.runtime.alive(box.uid)
     assert not (box.root / "executed").exists()
     (box.root / "clock").write_text(str(box.at))
-    waker = Waker(box.index, plan_store(box.index), wake=box.wake,
+    waker = Waker(box.index, plan_store(box.index), wake=async_call(box.wake),
                   clock=lambda: box.at)
     asyncio.run(settled_tick(waker))
     await_report(box, box.at + 600)
@@ -398,7 +402,7 @@ def test_sleeping_box_runs_without_request_and_duplicate_wake_is_idempotent(slee
     sleep_when_quiet(box)
     while not box.reports.empty():
         box.reports.get_nowait()
-    box.wake(box.owner, scheduled=True)
+    drive(box.wake(box.owner, scheduled=True))
     await_report(box, box.at + 600)
     assert (box.root / "executed").read_text().splitlines() == [box.automation.automation_id]
     with closing(sqlite3.connect(box.root / ".automations.db")) as db:
@@ -409,7 +413,8 @@ def test_bound_report_cannot_name_another_owner(sleeping_box):
     box = sleeping_box
     await_report(box, box.at)
     victim = box.index.identities.resolve("victim", allocate=True)
-    box.index.identities.admission("admit", "victim", "cc-victim")
+    box.index.identities.admission("admit", "victim", "cc-victim",
+        routing=projection(box.index.identities.path))
     box.index.report("victim", box.at + 99, now=0)
     path = box.relays.bind(box.owner, box.uid)
     for field in ("owner", "principal", "uid"):

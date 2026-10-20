@@ -166,8 +166,8 @@ def fence_ops(staged, now):
     from tinyassets.broker.ops import MAX_FUTURE_SKEW_S
 
     cutoff = int(now * 1000) + MAX_FUTURE_SKEW_S * 1000 + 1
-    _read(staged, ".broker/ops.db")
-    path = _safe(staged, ".broker/ops.db")
+    _read(staged, ".broker/state/ops.db")
+    path = _safe(staged, ".broker/state/ops.db")
     path.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(path)) as db, db:
         db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER)")
@@ -183,7 +183,7 @@ class RecoveryUnavailable(RuntimeError):
     """Current platform authority is unavailable; admission stays closed."""
 
 
-def resume_deletion_jobs(server, *, backup_time):
+async def resume_deletion_jobs(server, *, backup_time):
     """Import current off-host receipts and execute the broker's normal path.
 
     Completed receipts matter too: an older backup may predate their erasure.
@@ -204,14 +204,14 @@ def resume_deletion_jobs(server, *, backup_time):
         if (job["completed_steps"] == list(STEPS)
                 and job["results"]["receipt"]["completed_at"] <= backup_time):
             continue
-        jobs.resume_loaded_job(job)
+        await jobs.resume_loaded_job(job)
 
 
-def reconcile_authority(staged, now):
+async def reconcile_authority(staged, now, *, routing):
     """Stripe owns billing; non-billing reasons remain as restored (C3)."""
     from tinyassets.billing.stripe_adapter import restore_billing
 
-    return restore_billing(staged, now)
+    return await restore_billing(staged, now, routing=routing)
 
 
 def write_layout(root, document):
@@ -260,7 +260,7 @@ def prepare_platform(staged, *, backup_time, now=None):
     return layout["recovery"]
 
 
-def platform_recovery(server, *, backup_time, now=None, authority=None,
+async def platform_recovery(server, *, backup_time, now=None, authority=None,
                       identity_exists=None, revoke_sessions=None):
     """Running-broker startup phase, before ordinary admission or lifecycle ticks."""
     from tinyassets.broker.admission import read
@@ -268,8 +268,11 @@ def platform_recovery(server, *, backup_time, now=None, authority=None,
 
     staged = server._data_root
     now = time.time() if now is None else now
-    resume_deletion_jobs(server, backup_time=backup_time)
-    (authority or reconcile_authority)(staged, now)
+    await resume_deletion_jobs(server, backup_time=backup_time)
+    if authority is not None:
+        authority(staged, now)
+    else:
+        await reconcile_authority(staged, now, routing=server.routing)
     reconciled = 0
     with closing(server._owner_identities._connect(write=False)) as db:
         owners = [row[0] for row in db.execute("SELECT principal FROM owner_identities")]

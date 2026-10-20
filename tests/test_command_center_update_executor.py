@@ -438,7 +438,7 @@ def test_actual_reservation_or_tier_change_prevents_write(published, monkeypatch
     def reserve(*args, **kwargs):
         value = actual(*args, **kwargs)
         if mutation == "tier":
-            from tinyassets.broker.owner_reads import Plans
+            from tests.support.admission import Plans
 
             Plans(published["base"]).apply(published["owner"], tier="paid", event_created=1)
         else:

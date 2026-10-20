@@ -33,14 +33,8 @@ def active_owner(owner: str, root: Path | None = None) -> bool:
     from tinyassets.storage import data_dir
 
     try:
-        record = snapshot(root if root is not None else data_dir()).record(owner)
-        erased = record is not None and record.state == "erased"
+        snapshot(root if root is not None else data_dir()).require_current()
     except Exception:
-        return False
-    if erased:
-        from tinyassets.auth.workos_provider import _log_token_rejection
-
-        _log_token_rejection("account_deleted")
         return False
     return True
 

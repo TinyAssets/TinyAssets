@@ -9,6 +9,7 @@ import httpx
 import pytest
 from starlette.applications import Starlette
 
+from tests.support.admission import projection
 from tests.support.model_connect import rig  # noqa: F401
 from tests.test_onboarding_model_connect import ingress, post  # noqa: F401
 from tinyassets import onboarding
@@ -234,7 +235,8 @@ def test_manual_deleted_account_cannot_deposit(rig):
     from tinyassets.broker.admission import local_mutate
     from tinyassets.credential_vault import load_credential_vault
 
-    local_mutate(rig / ".broker/state/owner-identities.db", "owner", "erase")
+    local_mutate(rig / ".broker/state/owner-identities.db", "owner", "erase",
+        routing=projection(rig / ".broker/state/owner-identities.db"))
     response = deposit()
     assert response.status_code == 409
     assert load_credential_vault(rig / "u-owner") == []

@@ -431,15 +431,15 @@ def create_checkout_session(
     return {"id": str(session["id"]), "url": str(session["url"])}
 
 
-def restore_billing(root, now):
+async def restore_billing(root, now, *, routing):
     """C3 startup refresh of every retained account's billing reason."""
     from contextlib import closing
 
     from tinyassets.billing.events import subscription_owner
-    from tinyassets.broker.admission import admission
+    from tinyassets.broker.admission import admission, owner_call
     from tinyassets.broker.owner_reads import Plans
 
-    plans = Plans(root)
+    plans = Plans(root, routing=routing)
     if not plans.path.exists():
         raise BillingUnavailable("restore billing source unavailable")
     if not _secret_key():
@@ -456,7 +456,8 @@ def restore_billing(root, now):
         if not subscription:
             if row["tier"] != "free":
                 raise BillingUnavailable("restore paid plan has no subscription mapping")
-            plans.set_suspension(row["owner"], reason="billing", suspended=False)
+            await owner_call(plans.admission_path, row["owner"], plans.set_suspension,
+                             row["owner"], reason="billing", suspended=False)
             continue
         obj = _get("subscriptions/" + urllib.parse.quote(subscription, safe=""))
         event = {"type": "customer.subscription.updated", "data": {"object": obj}}
@@ -467,8 +468,9 @@ def restore_billing(root, now):
         plans.set_plan(row["owner"], state[1], event_created=max(now, row["event_created"] + 1),
                        ends_at=subscription_end_from_event(event),
                        customer_id=obj.get("customer"), subscription_id=subscription)
-        plans.set_suspension(row["owner"], reason="billing",
-                             suspended=obj.get("status") in {"unpaid", "past_due"})
+        await owner_call(plans.admission_path, row["owner"], plans.set_suspension,
+                         row["owner"], reason="billing",
+                         suspended=obj.get("status") in {"unpaid", "past_due"})
         synced += 1
     return {"plans_synced": synced}
 

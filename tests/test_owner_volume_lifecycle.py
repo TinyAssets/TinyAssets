@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.support.admission import projection
 from tinyassets.broker import box_admission, owner_volumes
 from tinyassets.broker.admission import local_mutate
 from tinyassets.broker.owner_identities import OwnerIdentities
@@ -73,8 +74,10 @@ class Images:
         self.images.pop(uid, None)
         self.events.append(("delete", uid))
 
-    def delete_snapshot(self, uid, snapshot_id):
-        self.remote.pop((uid, snapshot_id), None)
+    def delete_snapshots(self, uid, snapshot_ids, released):
+        for key in list(self.remote):
+            if key[0] == uid and (snapshot_ids is None or key[1] in snapshot_ids):
+                self.remote.pop(key)
         return True
 
 
@@ -105,7 +108,7 @@ def storage(tmp_path):
                    "project_id INT, bhard_bytes INT)")
     for owner in ("alice", "bob"):
         identities.resolve(owner, allocate=True)
-        identities.admission("admit", owner, owner)
+        identities.admission("admit", owner, owner, routing=projection(identities.path))
         box_admission.provision(identities, tmp_path, owner, owner)
 
     events = []
@@ -118,7 +121,8 @@ def storage(tmp_path):
     runtime.box_id = GvisorRuntime.box_id
     live = set()
     manager = SimpleNamespace(condition=threading.Condition(threading.RLock()), runtime=runtime,
-                              boxes={}, status=lambda uid: {"uid": uid, "awake": uid in live})
+                              boxes={}, status=lambda uid: {"uid": uid, "awake": uid in live,
+                                  "idle_seconds": 0, "idle_limit": 900, "uptime": 0})
     service = HostService(None, images, None, manager)
     def execute(operation, **fields):
         result = service.lifecycle({"lifecycle": operation, **fields}, 1002)
@@ -194,7 +198,8 @@ def test_inflight_upload_cannot_publish_after_erasure(storage, monkeypatch):
 
     def erase_during_upload(uid, snapshot_id):
         result = upload(uid, snapshot_id)
-        local_mutate(storage.identities.path, "alice", "erase")
+        local_mutate(storage.identities.path, "alice", "erase",
+            routing=projection(storage.identities.path))
         return result
 
     monkeypatch.setattr(storage.volumes, "snapshot", erase_during_upload)
@@ -281,7 +286,8 @@ def test_restore_old_snapshot_repoints_map_and_retention_preserves_it(storage, m
 def test_permanent_binding_and_erasure_survive_volume_deletion(storage):
     record, _ = start(storage)
     uid = record["uid"]
-    local_mutate(storage.identities.path, "alice", "erase")
+    local_mutate(storage.identities.path, "alice", "erase",
+        routing=projection(storage.identities.path))
     storage.runtime.stop(uid)
     storage.volumes.delete(uid)
     assert uid not in storage.volumes.images
@@ -298,7 +304,8 @@ def test_permanent_binding_and_erasure_survive_volume_deletion(storage):
 def test_center_retirement_preserves_account_volume_recovery(storage):
     start(storage)
     snapshot = sleep(storage)
-    storage.identities.admission("retire", "alice", "alice")
+    storage.identities.admission("retire", "alice", "alice",
+        routing=projection(storage.identities.path))
     restored = storage.lifecycle.restore("alice", snapshot["snapshot_id"])
     assert restored["uid"] == snapshot["uid"]
     assert restored["volume_generation"] == snapshot["volume_generation"] + 1
@@ -313,7 +320,8 @@ def test_missing_admission_cannot_reprovision_an_existing_volume_binding(storage
                                 "alice", "alice")
     from tinyassets.broker.admission import local_mutate
 
-    local_mutate(storage.identities.path, "alice", "erase")
+    local_mutate(storage.identities.path, "alice", "erase",
+        routing=projection(storage.identities.path))
     with pytest.raises(PermissionError, match="erased"):
         storage.lifecycle.recover("alice")
 
@@ -412,7 +420,8 @@ def test_eviction_requires_completed_sleep_and_published_snapshot(storage, state
     elif state == "restore":
         storage.lifecycle.volume("alice", "restore", snapshot_id=before["snapshot_id"])
     elif state == "erased":
-        local_mutate(storage.identities.path, "alice", "erase")
+        local_mutate(storage.identities.path, "alice", "erase",
+            routing=projection(storage.identities.path))
     elif state == "unverified":
         with sqlite3.connect(storage.identities.path) as db:
             db.execute("UPDATE owner_volumes SET snapshot_id=NULL,snapshot_sha256=NULL")
@@ -464,7 +473,9 @@ def test_interrupted_eviction_resumes_before_cold_wake(storage, monkeypatch):
 
 @pytest.mark.parametrize("first", ["wake", "evict"])
 def test_concurrent_wake_and_eviction_share_owner_serialization(storage, monkeypatch, first):
-    from concurrent.futures import ThreadPoolExecutor
+    import asyncio
+
+    from tinyassets.broker.admission import owner_call
 
     start(storage)
     before = sleep(storage)
@@ -481,18 +492,19 @@ def test_concurrent_wake_and_eviction_share_owner_serialization(storage, monkeyp
 
     monkeypatch.setattr(storage.lifecycle, "volume", paused)
     methods = {"wake": lambda owner: start(storage, owner), "evict": storage.lifecycle.evict}
-    def second():
+    async def exercise():
+        one = asyncio.create_task(owner_call(storage.identities.path, "alice", methods[first],
+                                             "alice"))
+        assert await asyncio.to_thread(entered.wait, 10)
         second_started.set()
-        return methods["evict" if first == "wake" else "wake"]("alice")
-    with ThreadPoolExecutor(2) as pool:
-        one = pool.submit(methods[first], "alice")
-        assert entered.wait(10)
-        two = pool.submit(second)
-        assert second_started.wait(10)
-        assert not two.done()
+        two = asyncio.create_task(owner_call(storage.identities.path, "alice",
+                                             methods["evict" if first == "wake" else "wake"],
+                                             "alice"))
+        await asyncio.sleep(0)
+        assert second_started.is_set() and not two.done()
         release.set()
-        one.result(timeout=10)
-        two.result(timeout=10)
+        await asyncio.gather(one, two)
+    asyncio.run(exercise())
     assert storage.volumes.images[before["uid"]] == b"initial"
     assert storage.lifecycle.volume("alice")["local"]
     assert before["uid"] in storage.volumes.attached

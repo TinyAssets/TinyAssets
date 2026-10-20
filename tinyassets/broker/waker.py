@@ -23,18 +23,20 @@ class Waker:
         self.pending = {}
         self.attempted = {}
 
-    def _wake(self, owner):
+    async def _wake(self, owner):
         from tinyassets.broker.admission import read
 
         if read(self.index.identities, owner).state != "admitted":
             return
         # C5: the broker lifecycle authority serializes this wake with withdrawal.
-        self.wake(owner, scheduled=True)
+        await self.wake(owner, scheduled=True)
         self.index.woken(owner, now=self.clock())
 
     async def tick(self):
         if self.lifecycle_tick is not None:
-            await asyncio.to_thread(self.lifecycle_tick)
+            await self.lifecycle_tick()
+            if not self.index.identities.work_ready:
+                return
         for owner, task in list(self.pending.items()):
             if task.done():
                 del self.pending[owner]
@@ -50,7 +52,7 @@ class Waker:
                 break
             if owner not in self.pending:
                 self.attempted[owner] = self.clock()
-                self.pending[owner] = asyncio.create_task(asyncio.to_thread(self._wake, owner))
+                self.pending[owner] = asyncio.create_task(self._wake(owner))
 
     async def run(self, stop):
         try:

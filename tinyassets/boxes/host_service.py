@@ -120,11 +120,11 @@ class HostService:
                 owner_uid = document["uid"]
                 self.daemons.runtime.box_id(owner_uid)
                 fields = {
-                    "stop": set(), "destroy": set(), "delete_snapshots": set(),
+                    "stop": set(), "destroy": set(),
+                    "delete_snapshots": {"snapshot_ids", "released"},
                     "drain": set(),
                     "status": set(), "create": {"quota"}, "snapshot": {"snapshot_id"},
                     "restore": {"snapshot_id", "sha256"}, "evict": set(),
-                    "delete_snapshot": {"snapshot_id"},
                 }
                 if (operation not in fields
                         or set(document) != {"lifecycle", "uid"} | fields[operation]):
@@ -133,7 +133,7 @@ class HostService:
                     return self.daemons.drain(owner_uid)
                 if operation == "status":
                     return self.daemons.status(owner_uid)
-                with self.daemons.condition, self.volumes.operation(owner_uid):
+                with self.volumes.operation(owner_uid):
                     if operation == "stop":
                         self.daemons.withdraw(owner_uid)
                         return {"stopped": True}
@@ -141,18 +141,14 @@ class HostService:
                         self.daemons.destroy(owner_uid)
                         return {"destroyed": True}
                     if operation == "delete_snapshots":
-                        self.volumes._run("rclone", "delete", self.volumes.remote,
-                                          "--include", f"/{owner_uid}/**")
-                        return {"deleted": True}
+                        return {"deleted": self.volumes.delete_snapshots(
+                            owner_uid, document["snapshot_ids"], document["released"])}
                     if operation == "create":
                         try:
                             self.volumes.create(owner_uid, document["quota"])
                         except FileExistsError:
                             pass  # Publication may have completed before a broker restart.
                         return {"created": True}
-                    if operation == "delete_snapshot":
-                        return {"deleted": self.volumes.delete_snapshot(
-                            owner_uid, document["snapshot_id"])}
                     if operation == "evict":
                         self.volumes.delete(owner_uid)
                         return {"evicted": True}

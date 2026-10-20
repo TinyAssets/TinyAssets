@@ -58,9 +58,9 @@ def _admission_transport(data, broker, monkeypatch):  # noqa: F811
     """Serve migrated authority in the same-UID protocol venue."""
     from types import SimpleNamespace
 
+    from tests.support.admission import Plans
     from tinyassets.broker import supervisor
     from tinyassets.broker.owner_identities import OwnerIdentities
-    from tinyassets.broker.owner_reads import Plans
 
     path = data / ".broker/state/owner-identities.db"
     # Production custody was asserted by apply. This fixture's broker is root.
@@ -76,9 +76,9 @@ def _admission_transport(data, broker, monkeypatch):  # noqa: F811
 def test_cutover_preserves_cancellation_mapping_and_resumes_payable_checkout(
     cutover, broker, monkeypatch,  # noqa: F811
 ):
+    from tests.support.admission import Plans
     from tests.test_cutover_billing_deletion import attempt, legacy_attempt
     from tinyassets.billing.plan_action import _start_checkout
-    from tinyassets.broker.owner_reads import Plans
 
     data, store, *_ = cutover
     original = attempt()
@@ -587,7 +587,7 @@ def test_apply_splits_databases_seeds_stores_and_resumes(cutover, monkeypatch, c
         assert db.execute('SELECT * FROM outside_switch').fetchall() == [(1, 1)]
     assert before['tables']['.runs.db/runs']['dropped'] == 2
     assert before['tables']['.langgraph_runs.db/checkpoints']['dropped'] == 1
-    from tinyassets.broker.owner_reads import Plans
+    from tests.support.admission import Plans
 
     assert Plans(data).read('alice')['tier'] == 'paid'
     assert Plans(data).read('bob')['tier'] == 'free'

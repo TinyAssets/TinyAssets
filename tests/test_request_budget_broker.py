@@ -328,9 +328,9 @@ def uds_broker(rig):
     fence = Fence(rig.base / "fence.json", verify_lease_proof=lambda g, p: (g, p) == (1, "proof"))
     ops = OpStore(rig.base / "ops.db")
     state = {}
+    from tests.support.admission import Plans
     from tests.support.broker_double import seed_owner_admission
     from tinyassets.broker.owner_identities import OwnerIdentities
-    from tinyassets.broker.owner_reads import Plans
 
     seed_owner_admission(rig.base, principal=OWNER_ID, center=UNIVERSE)
     identities = OwnerIdentities(rig.base / ".broker/state/owner-identities.db",

@@ -48,9 +48,9 @@ def _broker_process(root, path, channel):
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
     dispatchers = _Dispatchers(root, allow_test_fixtures=True)
     fence = Fence(state / "fence.json", verify_lease_proof=lambda *_: True)
+    from tests.support.admission import Plans
     from tests.support.broker_double import seed_owner_admission
     from tinyassets.broker.owner_identities import OwnerIdentities
-    from tinyassets.broker.owner_reads import Plans
 
     seed_owner_admission(root, principal="owner", center="center")
     identities = OwnerIdentities(state / "state/owner-identities.db", plans=Plans(root))

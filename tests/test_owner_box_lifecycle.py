@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from tests.support.admission import drive, projection
 from tests.test_owner_volume_lifecycle import Images as Volumes
 from tinyassets.boxes.gvisor_runtime import GvisorRuntime
 from tinyassets.boxes.host_service import HostService
@@ -57,7 +58,7 @@ def fleet(tmp_path, monkeypatch):
                    "project_id INT, bhard_bytes INT)")
     for owner in "abc":
         identities.resolve(owner, allocate=True)
-        identities.admission("admit", owner, owner)
+        identities.admission("admit", owner, owner, routing=projection(identities.path))
         box_admission.provision(identities, tmp_path, owner, owner)
     admission, runtime = Admission(identities), Runtime()
     admission.secrets = {owner: identities.box_route(owner)[1] for owner in "abc"}
@@ -98,9 +99,25 @@ def fleet(tmp_path, monkeypatch):
     server = SimpleNamespace(_owner_identities=identities, _data_root=tmp_path)
     routing = RoutingAuthority(server)
     routing.publish = lambda **kwargs: None
-    return SimpleNamespace(manager=manager, runtime=runtime, admission=admission, states=states,
-                           identities=identities, routing=routing, wake=routing.wake,
-                           control=control)
+    server.routing = routing
+    server.deletion_jobs = SimpleNamespace(tick=lambda: None)
+    loop = asyncio.new_event_loop()
+    server._loop = loop
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    def tick():
+        drive(routing.tick())
+        drive(routing.close())
+    try:
+        yield SimpleNamespace(manager=manager, runtime=runtime, admission=admission, states=states,
+                              identities=identities, routing=routing,
+                              wake=lambda *a, **kw: drive(routing.wake(*a, **kw)),
+                              tick=tick, control=control)
+    finally:
+        drive(routing.close())
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(5)
+        loop.close()
 
 
 def test_wake_reuses_one_box_and_secret_across_restart(fleet):
@@ -117,23 +134,27 @@ def test_wake_reuses_one_box_and_secret_across_restart(fleet):
     assert len(fleet.runtime.starts) == 2
 
 
-def test_snapshot_deadline_drains_current_turn_before_sleep_and_restart(fleet):
+def test_snapshot_deadline_drains_current_turn_then_sleeps_until_a_new_wake(fleet):
     manager = fleet.manager
     uid = fleet.wake("a")
     activity = fleet.states[uid]
     manager.boxes[uid].started -= 86401
     with activity.enter():
         manager.maintain()
+        assert not activity.draining  # The executor cannot select sleep.
+        fleet.tick()
         assert activity.draining and activity.active == 1
         assert not fleet.runtime.stops
         with pytest.raises(RuntimeError, match="draining"):
             with activity.enter():
                 pytest.fail("new turn admitted after snapshot deadline")
-    manager.maintain()
+    fleet.tick()
     assert fleet.runtime.stops == [uid]
-    fleet.routing.volumes.tick(fleet.wake)
-    assert len(fleet.runtime.starts) == 2
+    manager.maintain()
+    assert len(fleet.runtime.starts) == 1
     assert fleet.admission.volume("a")["snapshot_id"]
+    fleet.wake("a")
+    assert len(fleet.runtime.starts) == 2
 
 
 def test_center_retirement_has_no_volume_operation(fleet):
@@ -189,7 +210,8 @@ def test_suspended_owner_cannot_wake_but_broker_can_stop_bound_box(fleet, awake)
     uid = fleet.identities.owner_machine("a")
     if awake:
         fleet.wake("a")
-    local_mutate(fleet.identities.path, "a", "suspend", reason="abuse", suspended=True)
+    local_mutate(fleet.identities.path, "a", "suspend", reason="abuse", suspended=True,
+        routing=projection(fleet.identities.path))
     for scheduled in (False, True):
         with pytest.raises(PermissionError):
             fleet.wake("a", scheduled=scheduled)
@@ -225,36 +247,32 @@ def test_idle_never_stops_a_running_turn_and_drain_refuses_new_turns(fleet):
         fleet.manager.boxes[uid].last -= 10
         activity.last -= 10
         fleet.manager.maintain()
+        assert uid in fleet.runtime.live and not activity.draining
+        fleet.tick()
         assert uid in fleet.runtime.live
     activity.last -= 10
-    fleet.manager.maintain()
+    fleet.manager.boxes[uid].last -= 10
+    fleet.tick()
     assert uid not in fleet.runtime.live
     with pytest.raises(RuntimeError, match="draining"):
         with activity.enter():
             pytest.fail("drained box admitted a turn")
 
 
-def test_crash_restart_backoff_caps_and_repeated_failures_are_loud(fleet):
-    manager = fleet.manager
-    manager.backoff_cap = 2
+def test_crashed_process_never_restarts_without_a_broker_wake(fleet):
     uid = fleet.wake("a")
-    for failure in range(1, manager.failure_limit + 1):
+    for _ in range(6):
+        starts = len(fleet.runtime.starts)
         fleet.runtime.live.clear()
-        before = time.monotonic()
-        manager.maintain()
-        box = manager.boxes[uid]
-        assert box.failures == failure
-        assert box.retry_at >= before + min(manager.backoff_cap, 2 ** (failure - 1))
-        manager.maintain()
+        fleet.manager.maintain()
+        assert "crashed" in fleet.manager.status(uid)["error"]
+        fleet.manager.maintain()
+        fleet.tick()
         assert not fleet.runtime.live
-        if failure == manager.failure_limit:
-            with pytest.raises(BoxError, match="repeatedly"):
-                fleet.wake("a")
-            assert manager.status(uid)["error"] == "owner daemon failed repeatedly"
-        box.retry_at = 0
-        manager.maintain()
-        assert fleet.runtime.live == {uid}  # Recovery needs no human after the loud threshold.
-    assert manager.status(fleet.identities.owner_machine("a"))["error"] == ""
+        assert len(fleet.runtime.starts) == starts
+        assert fleet.wake("a") == uid
+        assert fleet.runtime.live == {uid}
+    assert fleet.manager.status(uid)["error"] == ""
 
 
 def test_interactive_evicts_lru_idle_and_scheduled_waits_behind_it(fleet):
@@ -449,12 +467,13 @@ def test_erased_record_cleanup_409_keeps_existing_box_drained(fleet, tmp_path, m
 def test_erasure_refuses_broker_restart_and_host_has_no_restart_intent(fleet):
     from tinyassets.broker.admission import local_mutate
     uid = fleet.wake("a")
-    local_mutate(fleet.identities.path, "a", "erase")
+    local_mutate(fleet.identities.path, "a", "erase",
+      routing=projection(fleet.identities.path))
     fleet.control("stop", uid=uid)
     for scheduled in (False, True):
         with pytest.raises(PermissionError):
             fleet.wake("a", scheduled=scheduled)
     fleet.manager.maintain()
-    fleet.routing.volumes.tick(fleet.wake)
+    fleet.tick()
     assert not fleet.runtime.live
     assert len(fleet.runtime.starts) == 1

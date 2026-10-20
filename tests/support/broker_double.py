@@ -36,6 +36,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.support.admission import projection
+
 #: The broker reads peer credentials off a Unix socket. Everything in this
 #: module is inert where that does not exist; the suite is proven on Linux.
 SUPPORTED = sys.platform != "win32" and hasattr(socket, "SO_PEERCRED")
@@ -89,12 +91,13 @@ def seed_owner_admission(data_root: Path, *, principal: str, center: str) -> Non
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
     state.chmod(0o700)
     state.parent.chmod(0o700)
-    from tinyassets.broker.owner_reads import Plans
+    from tests.support.admission import Plans
 
     identities = OwnerIdentities(state / "owner-identities.db", initialize=True,
                                  plans=Plans(data_root))
     identities.resolve(principal, allocate=True)
-    identities.admission("admit", principal, center)
+    identities.admission("admit", principal, center,
+     routing=projection(identities.path))
 
 
 def _peer_uid(sock: socket.socket) -> int:
@@ -118,7 +121,7 @@ class _InProcessBroker:
         state = data_root / ".broker"
         state.mkdir(parents=True, exist_ok=True)
         state.chmod(0o700)
-        from tinyassets.broker.owner_reads import Plans
+        from tests.support.admission import Plans
 
         identity_path = state / "state/owner-identities.db"
         seeded_admission = identity_path.exists()

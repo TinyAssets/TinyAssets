@@ -6,6 +6,8 @@ import subprocess
 import uuid
 from pathlib import Path
 
+from tests.support.admission import projection, suspend
+
 
 def test_sleeping_and_suspended_deletion_without_box_starts():
     """Run through linux_oracle --as-root --docker-engine; never skip a missing venue."""
@@ -37,6 +39,7 @@ async def probe():
     import socket
     import sqlite3
 
+    from tests.support.admission import Plans
     from tinyassets.boxes.gvisor_runtime import GvisorRuntime
     from tinyassets.boxes.owner_daemons import OwnerDaemons
     from tinyassets.boxes.relay import OwnerRelays
@@ -45,7 +48,6 @@ async def probe():
     from tinyassets.broker.admission import local_mutate
     from tinyassets.broker.box_admission import owner_record
     from tinyassets.broker.owner_identities import OwnerIdentities
-    from tinyassets.broker.owner_reads import Plans
 
     root, store = Path("/venue"), Path("/venue/owners")
     store.mkdir(parents=True)
@@ -106,12 +108,13 @@ async def probe():
         manager = OwnerDaemons(runtime, Admission(), volumes, relays, sockets)
         for owner in ("sleeping", "suspended"):
             uid = identities.resolve(owner, allocate=True).uid
-            identities.admission("admit", owner, owner)
+            identities.admission("admit", owner, owner,
+        routing=projection(identities.path))
             box_admission.provision(identities, shared, owner, owner)
             identities.box_route(owner)
             identities.plans.apply(owner, tier="paid", event_created=1)
             if owner == "suspended":
-                identities.plans.set_suspension(owner, reason="billing", suspended=True)
+                suspend(identities.plans, owner, reason="billing", suspended=True)
             volumes.create(uid, 2 * 1024**3)
             Admission().volume(owner, "created")
             image = store / f"{uid}.img"
@@ -121,7 +124,8 @@ async def probe():
             app = socket.socket(socket.AF_UNIX)
             app.bind(str(directory / "app.sock"))
             app.close()
-            local_mutate(identities.path, owner, "erase")
+            local_mutate(identities.path, owner, "erase",
+          routing=projection(identities.path))
             try:
                 owner_record(identities, owner, for_wake=True)
             except PermissionError:

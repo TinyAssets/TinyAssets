@@ -230,7 +230,7 @@ print(json.dumps(key))
     dispatch = _Dispatchers(staged, allow_test_fixtures=False)
     server = BrokerServer(
         ledger_for=dispatch.ledger_for, dispatch_for=dispatch.dispatch_for,
-        ops=OpStore(staged / '.broker/ops.db'),
+        ops=OpStore(staged / '.broker/state/ops.db'),
         fence=Fence(staged / '.broker/rehearsal-fence.json',
                     verify_lease_proof=lambda *args: False, lease_sha256='0' * 64),
         roles={}, owner_identities=identities, data_root=staged)
@@ -261,7 +261,7 @@ print(json.dumps(key))
         with tempfile.TemporaryDirectory(prefix='/tmp/s6-recovery-broker-') as run:
             listener = await server.serve(Path(run) / 'broker.sock')
             async with listener:
-                await asyncio.to_thread(platform_recovery, server, backup_time=backup_time,
+                await platform_recovery(server, backup_time=backup_time,
                                         now=backup_time + 1, identity_exists=lambda owner: True,
                                         revoke_sessions=lambda owner: None)
                 assert not admits(staged, owner)

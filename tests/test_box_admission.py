@@ -7,11 +7,11 @@ import sqlite3
 
 import pytest
 
+from tests.support.admission import Plans, async_call, drive, projection, suspend
 from tinyassets.boxes.layout import hold
 from tinyassets.broker.admission import local_mutate, read, require_admitted
 from tinyassets.broker.box_admission import owner_record, resolve, resolve_owner
 from tinyassets.broker.owner_identities import OwnerIdentities
-from tinyassets.broker.owner_reads import Plans
 
 
 @pytest.fixture(autouse=True)
@@ -26,7 +26,7 @@ def owner_box(tmp_path):
     uid = identities.resolve("alice", allocate=True).uid
     from tinyassets.broker.admission import local_mutate
 
-    local_mutate(identities.path, "alice", "admit")
+    local_mutate(identities.path, "alice", "admit", routing=projection(identities.path))
     identities.plans.apply("alice", tier="paid", event_created=1)
     with sqlite3.connect(identities.path) as db:
         db.execute("CREATE TABLE box_records (principal TEXT, machine INT, "
@@ -87,7 +87,7 @@ def test_owner_public_admission_refuses_missing_identity_plan_or_schema(owner_bo
         resolve_owner(identities, request)
     from tinyassets.broker.admission import local_mutate
 
-    local_mutate(identities.path, "alice", "admit")
+    local_mutate(identities.path, "alice", "admit", routing=projection(identities.path))
     with sqlite3.connect(identities.path) as db:
         db.execute("DROP TABLE box_records")
     with pytest.raises(sqlite3.OperationalError):
@@ -98,7 +98,7 @@ def test_broker_admission_requires_permanent_mapping_center_binding_and_migrated
     tmp_path.chmod(0o700)
     identities = OwnerIdentities(tmp_path / "identities.db", initialize=True)
     identity = identities.resolve("alice", allocate=True)
-    identities.admission("admit", "alice", "a")
+    identities.admission("admit", "alice", "a", routing=projection(identities.path))
     with sqlite3.connect(identities.path) as db:
         db.execute("CREATE TABLE box_records (principal TEXT, machine INT, "
                    "project_id INT, bhard_bytes INT)")
@@ -117,7 +117,7 @@ def test_broker_admission_requires_permanent_mapping_center_binding_and_migrated
         resolve(identities, request)
     with sqlite3.connect(identities.path) as db:
         db.execute("UPDATE box_records SET project_id=machine")
-    identities.admission("retire", "alice", "a")
+    identities.admission("retire", "alice", "a", routing=projection(identities.path))
     assert resolve(identities, request)["uid"] == identity.uid
 
 
@@ -152,7 +152,7 @@ def test_new_owner_box_reservation_is_canonical_idempotent_and_fail_closed(tmp_p
     state.mkdir(mode=0o700)
     identities = OwnerIdentities(state / "owner-identities.db", initialize=True)
     uid = identities.resolve("alice", allocate=True).uid
-    identities.admission("admit", "alice", "a")
+    identities.admission("admit", "alice", "a", routing=projection(identities.path))
     def no_owner_read(*args):
         raise AssertionError("broker provisioning must read only shared plans")
 
@@ -187,7 +187,8 @@ def authority(tmp_path):
     identities = OwnerIdentities(state / "owner-identities.db", initialize=True,
                                  plans=Plans(tmp_path))
     uid = identities.resolve("alice", allocate=True).uid
-    identities.admission("admit", "alice", "center")
+    identities.admission("admit", "alice", "center",
+     routing=projection(identities.path))
     with sqlite3.connect(identities.path) as db:
         db.execute("CREATE TABLE box_records (principal TEXT PRIMARY KEY, machine INT, "
                    "project_id INT, bhard_bytes INT)")
@@ -214,25 +215,30 @@ def test_record_only_for_every_work_reader(authority, state, tmp_path):
     identities = authority
     owner = "missing" if state == "absent" else "alice"
     if state in {"billing", "both"}:
-        identities.plans.set_suspension(owner, reason="billing", suspended=True)
+        suspend(identities.plans, owner, reason="billing", suspended=True)
     if state in {"abuse", "both"}:
-        identities.plans.set_suspension(owner, reason="abuse", suspended=True)
+        suspend(identities.plans, owner, reason="abuse", suspended=True)
     if state == "center-retired":
-        identities.admission("retire", owner, "center")
+        identities.admission("retire", owner, "center",
+        routing=projection(identities.path))
     if state == "account-retired":
-        local_mutate(identities.path, owner, "erase")
+        local_mutate(identities.path, owner, "erase",
+      routing=projection(identities.path))
     if state == "erased":
-        local_mutate(identities.path, owner, "erase")
+        local_mutate(identities.path, owner, "erase",
+      routing=projection(identities.path))
     if state == "policy-erased":
         from tinyassets.broker.policy import PolicyStore
 
         # C14: step 1 withdraws admission before custody cleanup starts.
-        local_mutate(identities.path, owner, "erase")
+        local_mutate(identities.path, owner, "erase",
+      routing=projection(identities.path))
         PolicyStore(tmp_path, identities).erase(owner)
     if state == "vault-erased":
         from tinyassets.broker.vault import erase_owner
 
-        local_mutate(identities.path, owner, "erase")
+        local_mutate(identities.path, owner, "erase",
+      routing=projection(identities.path))
         erase_owner(tmp_path, owner)
     terminal = state in {"account-retired", "erased", "policy-erased", "vault-erased"}
     expected = state in {"admitted", "center-retired"}
@@ -257,7 +263,8 @@ def test_record_only_for_every_work_reader(authority, state, tmp_path):
     index = NextWakeIndex(identities)
     assert (owner in index.due(now=0)) == expected
     woke = []
-    Waker(index, identities.plans, wake=lambda owner, **kw: woke.append(owner))._wake(owner)
+    drive(Waker(index, identities.plans,
+                wake=async_call(lambda owner, **kw: woke.append(owner)))._wake(owner))
     assert woke == ([owner] if expected else [])
     channel = SimpleNamespace(_box_owner=owner, _box_center="center", _server=SimpleNamespace(
         _owner_identities=identities, _fence=SimpleNamespace(generation=1, token="test")))
@@ -278,20 +285,22 @@ def test_record_only_for_every_work_reader(authority, state, tmp_path):
 def test_sources_cannot_clear_each_other_or_terminal_erasure(authority):
     plans = authority.plans
     for reason in ("billing", "abuse"):
-        plans.set_suspension("alice", reason=reason, suspended=True)
-    plans.set_suspension("alice", reason="billing", suspended=False)
+        suspend(plans, "alice", reason=reason, suspended=True)
+    suspend(plans, "alice", reason="billing", suspended=False)
     assert read(authority, "alice").reasons == {"abuse"}
-    local_mutate(authority.path, "alice", "erase")
+    local_mutate(authority.path, "alice", "erase", routing=projection(authority.path))
     for reason in ("billing", "abuse"):
-        plans.set_suspension("alice", reason=reason, suspended=False)
+        suspend(plans, "alice", reason=reason, suspended=False)
         assert read(authority, "alice").state == "erased"
     with pytest.raises(PermissionError):
-        local_mutate(authority.path, "alice", "admit")
+        local_mutate(authority.path, "alice", "admit",
+       routing=projection(authority.path))
 
 
 def test_center_retirement_keeps_record_and_secret_and_zero_center_wake(authority):
     before = authority.box_route("alice")
-    authority.admission("retire", "alice", "center")
+    authority.admission("retire", "alice", "center",
+     routing=projection(authority.path))
     assert authority.box_route("alice") == before
     assert owner_record(authority, "alice")["centers"] == []
     from tinyassets.broker.next_wake import NextWakeIndex
@@ -307,7 +316,7 @@ def test_retirement_writes_only_the_terminal_record(authority):
                           "WHERE name='owner_box_revocations'").fetchall() == []
     assert set(authority.plans.read("alice")) == {
         "owner", "tier", "event_created", "ends_at", "customer_id", "subscription_id", "attempt"}
-    local_mutate(authority.path, "alice", "erase")
+    local_mutate(authority.path, "alice", "erase", routing=projection(authority.path))
     assert read(authority, "alice").state == "erased"
     assert not allowed(lambda: authority.box_route("alice"))
     with sqlite3.connect(authority.path) as db:
@@ -336,7 +345,7 @@ def test_damaged_record_authority_denies_authentication_and_work(authority, tmp_
     from tinyassets.router_credentials import active_owner
     from tinyassets.routing_snapshot import RoutingSnapshot, _snapshots
 
-    local_mutate(authority.path, "alice", "erase")
+    local_mutate(authority.path, "alice", "erase", routing=projection(authority.path))
     assert not active_owner("alice", tmp_path)  # Start the fixture broker before authority loss.
     if damage == "missing":
         authority.path.unlink()
@@ -381,7 +390,7 @@ def test_admission_mutation_has_one_runtime_writer():
 def test_suspension_write_does_not_recreate_a_missing_identity_database(authority):
     authority.path.unlink()
     with pytest.raises(sqlite3.OperationalError):
-        authority.plans.set_suspension("alice", reason="billing", suspended=True)
+        suspend(authority.plans, "alice", reason="billing", suspended=True)
     assert not authority.path.exists()
     assert "billing_suspended" not in authority.plans.read("alice")
 
@@ -390,10 +399,10 @@ def test_suspension_write_does_not_recreate_a_missing_identity_database(authorit
 def test_suspended_owner_authenticates_but_cannot_work(authority, tmp_path):
     from tinyassets.router_credentials import active_owner
 
-    authority.plans.set_suspension("alice", reason="abuse", suspended=True)
+    suspend(authority.plans, "alice", reason="abuse", suspended=True)
     assert active_owner("alice", tmp_path)
     assert not allowed(lambda: authority.box_route("alice"))
-    local_mutate(authority.path, "alice", "erase")
+    local_mutate(authority.path, "alice", "erase", routing=projection(authority.path))
     assert not active_owner("alice", tmp_path)
 
 
@@ -435,9 +444,9 @@ def test_cutover_drops_center_revocation_and_seeds_terminal_and_source_reasons(a
                           "WHERE name='owner_box_revocations'").fetchall() == []
     assert not {"billing_suspended", "abuse_suspended"} & authority.plans.read("alice").keys()
     for reason in ("billing", "abuse"):
-        authority.plans.set_suspension("alice", reason=reason, suspended=False)
+        suspend(authority.plans, "alice", reason=reason, suspended=False)
     assert len(authority.box_route("alice")[1]) == 43
-    local_mutate(authority.path, "alice", "erase")
+    local_mutate(authority.path, "alice", "erase", routing=projection(authority.path))
     _seed_owner_admission(tmp_path, legacy)
     assert read(authority, "alice").state == "erased"
 
@@ -454,6 +463,6 @@ def test_deletion_resume_requires_positive_permanent_binding(authority, owner, u
             pytest.fail("unbound job was written")
     jobs = DeletionJobs(SimpleNamespace(_owner_identities=authority), records=Remote())
     with pytest.raises((LookupError, PermissionError)):
-        jobs.resume_loaded_job(new_job(owner, uid))
+        drive(jobs.resume_loaded_job(new_job(owner, uid)))
     assert read(authority, "alice").state == "admitted"
     assert authority.owner_machine("unknown") is None

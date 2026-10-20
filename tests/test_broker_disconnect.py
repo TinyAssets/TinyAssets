@@ -23,9 +23,9 @@ def removal(discovery, monkeypatch):
     from tinyassets.daemon_server import grant_universe_access
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(discovery.root))
+    from tests.support.admission import Plans
     from tests.support.broker_double import seed_owner_admission
     from tinyassets.broker.owner_identities import OwnerIdentities
-    from tinyassets.broker.owner_reads import Plans
 
     seed_owner_admission(discovery.root, principal="alice", center="cc-alice")
     discovery.broker.server._owner_identities = OwnerIdentities(

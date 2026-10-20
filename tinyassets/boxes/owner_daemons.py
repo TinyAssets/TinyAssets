@@ -1,4 +1,4 @@
-"""boxhostd owns the persistent sandbox, its capacity and its restart clock."""
+"""boxhostd executes broker-authorized sandbox operations and reports facts."""
 from __future__ import annotations
 
 import http.client
@@ -24,33 +24,29 @@ class Box:
     uid: int
     secret: str = ""
     awake: bool = False
-    wanted: bool = False
     last: float = 0
     started: float = 0
     failures: int = 0
-    retry_at: float = 0
     error: str = ""
     image: str = ""
     restarting: bool = False
     roll_failed: bool = False
     launch: dict = field(default_factory=dict)
-    sleeping: bool = False
 
 
 class OwnerDaemons:
     def __init__(self, runtime, admission, volumes, relays, directory: Path, *,
                  idle_seconds=900, awake_cap=6, memory_bytes=1024**3,
-                 wake_timeout=60, backoff_cap=60, failure_limit=5, images=None,
+                 wake_timeout=60, images=None,
                  roll_wait=60):
         if (not 0 < idle_seconds <= 86400 or awake_cap < 1 or wake_timeout <= 0
-                or backoff_cap < 1 or failure_limit < 1 or not 0 < roll_wait <= 60):
+                or not 0 < roll_wait <= 60):
             raise ValueError("positive owner lifecycle limits required")
         self.runtime, self.admission = runtime, admission
         self.volumes, self.relays = volumes, relays
         self.directory = Path(directory)
         self.idle_seconds, self.awake_cap = idle_seconds, awake_cap
         self.memory_bytes, self.wake_timeout = memory_bytes, wake_timeout
-        self.backoff_cap, self.failure_limit = backoff_cap, failure_limit
         self.boxes: dict[int, Box] = {}
         self.condition = threading.Condition(threading.RLock())
         self.waiting: list[tuple[bool, object]] = []
@@ -162,15 +158,10 @@ class OwnerDaemons:
 
     def _failed(self, box, error):
         box.failures += 1
-        delay = min(self.backoff_cap, 2 ** min(box.failures - 1, 16))
-        box.retry_at = time.monotonic() + delay
-        box.error = ("owner daemon failed repeatedly" if box.failures >= self.failure_limit
-                     else str(error))
-        log.error("owner daemon uid=%s failures=%s retry_in=%s: %s",
-                  box.uid, box.failures, delay, box.error)
+        box.error = str(error)
+        log.error("owner daemon uid=%s failures=%s: %s", box.uid, box.failures, box.error)
 
     def _stop(self, box, *, retire=False):
-        box.wanted = False
         if box.awake:
             if retire:
                 try:
@@ -181,10 +172,9 @@ class OwnerDaemons:
             else:
                 self.runtime.shutdown(box.uid)
                 self.volumes.detach(box.uid)
-                box.sleeping = True
             box.awake = False
         box.secret = ""
-        box.error, box.failures, box.retry_at = "", 0, 0
+        box.error, box.failures = "", 0
         (self.directory / "secrets" / str(box.uid)).unlink(missing_ok=True)
         (self.directory / str(box.uid) / "app.sock").unlink(missing_ok=True)
         with self.condition:
@@ -231,7 +221,6 @@ class OwnerDaemons:
             uid = record["uid"]
             box = self.boxes.setdefault(uid, Box(owner, uid))
             box.launch = record
-            box.sleeping = False
             if box.owner != owner:
                 raise BoxError("broker owner reservation changed")
             ticket = (scheduled, object())
@@ -259,22 +248,11 @@ class OwnerDaemons:
                         self.runtime.stop(uid)
                         box.awake = False
                         self._failed(box, BoxError("owner daemon crashed"))
-                    if box.failures >= self.failure_limit:
-                        raise BoxError(box.error)
                     first = min(self.waiting, key=lambda item: item[0])
-                    ready = first is ticket and time.monotonic() >= box.retry_at
+                    ready = first is ticket
                     if ready:
-                        awake = [item for item in self.boxes.values()
-                                 if item.awake or item.restarting]
-                        if len(awake) >= self.awake_cap and not scheduled:
-                            for candidate in awake:
-                                self._activity(candidate)
-                            for victim in sorted(awake, key=lambda item: item.last):
-                                if self._sleep(victim, idle=0):
-                                    break
                         if sum(item.awake or item.restarting for item in
                                self.boxes.values()) < self.awake_cap:
-                            box.wanted = True
                             self.waiting.remove(ticket)
                             try:
                                 if image is None:
@@ -291,12 +269,12 @@ class OwnerDaemons:
                                 return uid
                             except Exception as exc:
                                 if image is not None:
-                                    box.roll_failed, box.wanted = True, False
+                                    box.roll_failed = True
                                 self._failed(box, exc)
                                 raise BoxError(f"owner daemon startup failed: {exc}") from exc
                     left = deadline - time.monotonic()
                     if left <= 0:
-                        raise BoxBusy("owner wake capacity/backoff deadline exceeded")
+                        raise BoxBusy("owner wake capacity deadline exceeded")
                     self.condition.wait(min(left, 1))
                     # The broker holds this owner's lifecycle lock for the entire call.
             finally:
@@ -328,7 +306,6 @@ class OwnerDaemons:
             with self.volumes.operation(uid):
                 box = self.boxes.get(uid)
                 if box is not None and box.awake and self.runtime.alive(uid):
-                    box.wanted = False
                     deadline = time.monotonic() + 20
                     while self._rpc(box, "delete-admission")["active"]:
                         if time.monotonic() >= deadline:
@@ -352,10 +329,16 @@ class OwnerDaemons:
     def status(self, uid):
         with self.condition:
             box = self.boxes.get(uid)
-            return {"uid": uid, "awake": bool(box and box.awake),
+            awake = bool(box and box.awake and self.runtime.alive(uid))
+            activity = self._activity(box) if awake else None
+            return {"uid": uid, "awake": awake,
                     "failures": box.failures if box else 0,
                     "error": box.error if box else "",
-                    "resume": bool(box and box.sleeping and box.wanted),
+                    "idle_seconds": time.monotonic() - box.last if activity else None,
+                    "idle_limit": self.idle_seconds,
+                    "uptime": time.monotonic() - box.started if awake else 0,
+                    "awake_count": sum(item.awake for item in self.boxes.values()),
+                    "awake_cap": self.awake_cap,
                     "image": (box.image if box else
                               self.images.last.get(str(uid), "") if self.images else "")}
 
@@ -383,51 +366,17 @@ class OwnerDaemons:
             return {"drained": True}
 
     def maintain(self):
-        """One host clock handles idle sleep and bounded crash restart."""
+        """Observe exited processes; only the broker selects the next transition."""
         with self.condition:
             for box in self.boxes.values():
-                if box.restarting:
-                    continue
-                if box.roll_failed:
-                    if box.awake:
-                        self._sleep(box, idle=0)
-                    continue
-                if box.awake and box.error:
-                    # A failed launch/cleanup retains capacity, never readiness.
-                    # Prove it absent before retrying; do not advertise an
-                    # app whose resource-floor verification failed.
+                if box.awake and box.error and not box.restarting:
+                    # Complete cleanup of an already authorized failed operation.
                     self.runtime.stop(box.uid)
                     box.awake = False
-                if box.awake:
-                    if not self.runtime.alive(box.uid):
-                        self.runtime.stop(box.uid)
-                        box.awake = False
-                        self._failed(box, BoxError("owner daemon crashed"))
-                    else:
-                        status = self._activity(box)
-                        if (status and not status["draining"]
-                                and time.monotonic() - box.started >= self.idle_seconds):
-                            box.failures = 0
-                        if time.monotonic() - box.started >= 86400:
-                            try:
-                                self._rpc(box, "snapshot-stop")
-                            except (OSError, http.client.HTTPException):
-                                continue
-                            resume = box.wanted
-                            if self._sleep(box, idle=0):
-                                box.wanted = resume
-                        elif (time.monotonic() - box.last >= self.idle_seconds
-                                and time.monotonic() >= box.retry_at
-                                and box.failures < self.failure_limit):
-                            self._sleep(box, idle=self.idle_seconds)
-                if (box.wanted and not box.awake and not box.sleeping
-                        and time.monotonic() >= box.retry_at and not self.waiting
-                        and sum(item.awake or item.restarting for item in
-                                self.boxes.values()) < self.awake_cap):
-                    try:
-                        self._start(box, time.monotonic() + self.wake_timeout)
-                    except Exception as exc:
-                        self._failed(box, exc)
+                if box.awake and not box.restarting and not self.runtime.alive(box.uid):
+                    self.runtime.stop(box.uid)
+                    box.awake = False
+                    self._failed(box, BoxError("owner daemon crashed"))
             self.condition.notify_all()
 
     def close(self):

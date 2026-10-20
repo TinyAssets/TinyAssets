@@ -58,7 +58,7 @@ def test_a_signup_with_no_home_gets_one(monkeypatch):
 
 def test_a_free_subject_may_create_a_second_universe(monkeypatch, tmp_path):
     """The removed limit, asserted gone: free tier, one home already, still yes."""
-    from tinyassets.broker.owner_reads import Plans
+    from tests.support.admission import Plans
 
     _actor(monkeypatch, "user_01ALREADY")
     _home(monkeypatch, "u-existing")

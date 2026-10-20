@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from tests.support.admission import projection
 from tinyassets.broker import vault
 from tinyassets.credential_vault import custody_metadata_path
 
@@ -16,9 +17,9 @@ RECORD = {"credential_type": "http", "service": "model:example",
 
 @pytest.fixture(autouse=True)
 def admitted(tmp_path):
+    from tests.support.admission import Plans
     from tests.support.broker_double import seed_owner_admission
     from tinyassets.broker.owner_identities import OwnerIdentities
-    from tinyassets.broker.owner_reads import Plans
 
     for owner, center in ((OWNER, HOME), ("another-owner", "another")):
         seed_owner_admission(tmp_path, principal=owner, center=center)
@@ -35,7 +36,7 @@ def delete(root):
     from tinyassets.broker.admission import local_mutate, owner_lock
     path = root / ".broker/state/owner-identities.db"
     with owner_lock(path, OWNER):
-        local_mutate(path, OWNER, "erase")
+        local_mutate(path, OWNER, "erase", routing=projection(path))
         vault.erase_owner(root, OWNER)
 
 

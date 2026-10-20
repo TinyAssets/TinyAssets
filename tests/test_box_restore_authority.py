@@ -9,13 +9,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.support.admission import Plans, drive, projection
 from tests.test_owner_cutover_census import source as source
 from tinyassets import restore_recovery as recovery
 from tinyassets.billing import stripe_adapter as stripe
 from tinyassets.broker import admission
 from tinyassets.broker.deletion_jobs import STEPS, DeletionJobs, new_job
 from tinyassets.broker.owner_identities import OwnerIdentities
-from tinyassets.broker.owner_reads import Plans
 from tinyassets.broker.routing import RoutingAuthority
 
 
@@ -56,7 +56,7 @@ def run_recovery(root, *, backup_time, now=None, **adapters):
     identities = SimpleNamespace(
         _connect=lambda **kwargs: sqlite3.connect(root / ".broker/state/owner-identities.db"))
     server = SimpleNamespace(_data_root=root, _owner_identities=identities)
-    report = recovery.platform_recovery(server, backup_time=backup_time, now=now, **adapters)
+    report = drive(recovery.platform_recovery(server, backup_time=backup_time, now=now, **adapters))
     recovery.finish_platform(root)
     return report
 
@@ -73,7 +73,7 @@ def test_platform_recovery_closes_service_owned_marker_under_sticky_root(tmp_pat
     marker = tmp_path / ".layout.json"
     os.chown(marker, 1001, 1001)
     marker.chmod(0o644)
-    def unavailable(*args, **kwargs):
+    async def unavailable(*args, **kwargs):
         raise recovery.RecoveryUnavailable("deletion transport unavailable")
     monkeypatch.setattr(recovery, "resume_deletion_jobs", unavailable)
     with pytest.raises(recovery.RecoveryUnavailable, match="deletion transport unavailable"):
@@ -95,7 +95,7 @@ def platform(tmp_path, monkeypatch):
 
 
 def providers(monkeypatch, events):
-    def resume(server, *, backup_time):
+    async def resume(server, *, backup_time):
         staged = server._data_root
         assert json.loads((staged / ".layout.json").read_text())["state"] == "recovering"
         assert backup_time == 1
@@ -171,7 +171,7 @@ def test_platform_recovery_resets_credentials_without_owner_access(platform, tmp
 
 
 def test_platform_recovery_waits_for_deletion_jobs(platform, monkeypatch):
-    def unavailable(*args, **kwargs):
+    async def unavailable(*args, **kwargs):
         raise recovery.RecoveryUnavailable("deletion transport unavailable")
     monkeypatch.setattr(recovery, "resume_deletion_jobs", unavailable)
     with pytest.raises(recovery.RecoveryUnavailable, match="deletion transport unavailable"):
@@ -225,7 +225,9 @@ def test_platform_recovery_requires_configured_stripe(platform, monkeypatch):
 
     monkeypatch.setenv("STRIPE_SECRET_KEY", "")
     with pytest.raises(BillingUnavailable):
-        recovery.reconcile_authority(platform, 2000000000)
+        drive(recovery.reconcile_authority(platform, 2000000000,
+            routing=projection(
+            platform / ".broker/state/owner-identities.db")))
 
 
 def test_future_dated_consumed_operation_cannot_replay_after_restore(platform):
@@ -233,15 +235,18 @@ def test_future_dated_consumed_operation_cannot_replay_after_restore(platform):
 
     start = 2000000000
     op_id = new_op_id(lambda: start + 240)
-    live_ops = OpStore(platform / ".broker/ops.db", clock=lambda: start)
+    live_ops = OpStore(platform / ".broker/state/ops.db", clock=lambda: start)
     assert live_ops.admit("outbound", op_id, "digest").kind == "new"
     live_ops.mark_may_have_sent("outbound", op_id)
     live_ops.finish("outbound", op_id, "completed")
-    recovery.fence_ops(platform, start + 60)
-    restored = OpStore(platform / ".broker/ops.db", clock=lambda: start + 60)
+    recovery.prepare_platform(platform, backup_time=start, now=start + 60)
+    restored = OpStore(platform / ".broker/state/ops.db", clock=lambda: start + 60)
     assert restored.admit("outbound", op_id, "digest").kind == "expired"
     boundary = new_op_id(lambda: start + 60 + MAX_FUTURE_SKEW_S)
     assert restored.admit("outbound", boundary, "digest").kind == "expired"
+    unseen = new_op_id(lambda: start + 30)
+    assert restored.admit("outbound", unseen, "digest").kind == "expired"
+    assert not (platform / ".broker/ops.db").exists()
 
 
 @pytest.mark.parametrize("failure", [None, "list", "revoke"])
@@ -738,7 +743,9 @@ def startup(tmp_path, monkeypatch):
         if admission.read(identities, owner).state == "erased":
             events.append("withdrawal")
     monkeypatch.setattr(server.routing, "changed", changed)
-    admission.register_authority(identities.path, server.routing)
+    from tests.support.admission import bind
+
+    bind(identities.path, server.routing)
     for step in STEPS[1:]:
         def execute(self, job, step=step):
             assert not identities.work_ready
@@ -780,7 +787,7 @@ def test_jobs_newer_than_backup_finish_before_any_owner_is_admitted(startup, com
         assert not admits(a.root, owner)
         with pytest.raises(admission.OwnerUnadmitted):
             admission.require_admitted(a.identities, owner)
-    a.server.routing.tick()
+    drive(a.server.routing.tick())
     assert admission.read(a.identities, "alice").state == "erased"
     assert a.server.deletion_jobs.records.load(job["id"])["completed_steps"] == list(STEPS)
     assert a.events[0] == "withdrawal"
@@ -797,8 +804,8 @@ def test_jobs_newer_than_backup_finish_before_any_owner_is_admitted(startup, com
     # Publish and volume work are already separately covered; prove this tick
     # only opens work after root consumed the matching completion receipt.
     a.server.routing.publish = lambda **kwargs: None
-    a.server.routing.volumes.tick = lambda wake: None
-    a.server.routing.tick()
+    a.server.routing.volumes.tick_owner = lambda owner: None
+    drive(a.server.routing.tick())
     admission.require_admitted(a.identities, "bob")
     with pytest.raises(admission.OwnerErased):
         admission.require_admitted(a.identities, "alice")
@@ -821,7 +828,7 @@ def test_unavailable_authority_keeps_every_owner_closed(startup, monkeypatch, fa
         a.server.deletion_jobs.records.save(job)
         a.remote.rows.clear()
     with pytest.raises((OSError, stripe.BillingUnavailable, recovery.RecoveryUnavailable)):
-        a.server.routing.tick()
+        drive(a.server.routing.tick())
     with pytest.raises(recovery.RecoveryUnavailable):
         recovery.finish_platform(a.root)
     assert not a.identities.work_ready
@@ -838,18 +845,19 @@ def test_billing_follows_stripe_and_abuse_survives(startup, monkeypatch, billing
     # Seed migration-style reasons through the sole admission writer.
     for reason in ("billing", "abuse"):
         admission.local_mutate(a.identities.path, "bob", "suspend",
-                               reason=reason, suspended=True)
+                               reason=reason, suspended=True,
+              routing=projection(a.identities.path))
     obj = _subscription_object(owner_id="bob", status="past_due" if billing else "active")
     monkeypatch.setattr(stripe, "find_active_subscription",
                         lambda owner, **kwargs: obj["id"] if owner == "bob" else None)
     monkeypatch.setattr(stripe, "_get", lambda path: obj)
-    a.server.routing.tick()
+    drive(a.server.routing.tick())
     assert admission.read(a.identities, "bob").reasons == (
         frozenset({"abuse", "billing"}) if billing else frozenset({"abuse"}))
     recovery.finish_platform(a.root)
     a.server.routing.publish = lambda **kwargs: None
-    a.server.routing.volumes.tick = lambda wake: None
-    a.server.routing.tick()
+    a.server.routing.volumes.tick_owner = lambda owner: None
+    drive(a.server.routing.tick())
     admission.require_admitted(a.identities, "alice")
     with pytest.raises(admission.OwnerSuspended):
         admission.require_admitted(a.identities, "bob")
@@ -862,26 +870,27 @@ def test_recovery_tick_retries_provider_failure_and_interrupted_receipt(startup,
         raise stripe.BillingUnavailable("synthetic unavailable")
     monkeypatch.setattr(stripe, "_get", unavailable)
     with pytest.raises(stripe.BillingUnavailable):
-        a.server.routing.tick()
+        drive(a.server.routing.tick())
     assert not a.identities.work_ready
     with pytest.raises(recovery.RecoveryUnavailable):
         recovery.finish_platform(a.root)
     (a.root / ".platform-recovery.json").write_text('{"backup_time":')
     monkeypatch.setattr(stripe, "_get", available)
-    a.server.routing.tick()
+    drive(a.server.routing.tick())
     assert not a.identities.work_ready
     assert recovery.finish_platform(a.root)["owners_reconciled"] == 2
 
 
 def test_prebackup_completed_receipt_import_never_executes_or_allocates(startup):
     a = startup
-    admission.local_mutate(a.identities.path, "gone", "erase")
+    admission.local_mutate(a.identities.path, "gone", "erase",
+        routing=projection(a.identities.path))
     job = new_job("gone", None, clock=lambda: 0)
     job.update(completed_steps=list(STEPS))
     job["results"]["receipt"] = {"deleted": True, "completed_at": .5}
     a.remote.save(job)
     a.events.clear()
-    a.server.routing.tick()
+    drive(a.server.routing.tick())
     assert a.server.deletion_jobs.records.load(job["id"]) == job
     assert admission.read(a.identities, "gone").state == "erased"
     assert a.identities.owner_machine("gone") is None

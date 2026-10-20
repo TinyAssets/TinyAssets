@@ -134,13 +134,13 @@ def test_referenced_snapshot_survives_pruning(shared_backup, monkeypatch):
     volumes = object.__new__(OwnerVolumes)
     volumes.remote = str(remote)
     monkeypatch.setattr(volumes, "_lock", lambda uid: nullcontext())
-    assert volumes.delete_snapshot(300001, "a" * 32) is False
+    assert volumes.delete_snapshots(300001, ["a" * 32], []) is False
     assert snapshot.read_bytes() == b"retained snapshot"
-    assert volumes.delete_snapshot(300001, "c" * 32) is True
+    assert volumes.delete_snapshots(300001, ["c" * 32], []) is True
     assert not stale.exists()
     next((remote / "platform").glob("*.json")).write_text("corrupt catalog")
     with pytest.raises(ValueError):
-        volumes.delete_snapshot(300001, "a" * 32)
+        volumes.delete_snapshots(300001, ["a" * 32], [])
     assert snapshot.read_bytes() == b"retained snapshot"
 
 
@@ -165,7 +165,7 @@ def test_map_capture_and_pruning_serialize(shared_backup, monkeypatch):
 
     def prune():
         deleting.set()
-        return volumes.delete_snapshot(300001, "a" * 32)
+        return volumes.delete_snapshots(300001, ["a" * 32], [])
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         publication = pool.submit(backup.publish, root, str(remote))
@@ -224,3 +224,23 @@ def test_shared_sqlite_copy_is_consistent_and_failure_is_fatal(shared_backup, mo
     with pytest.raises(OSError, match="read failed"):
         backup.publish(root, str(remote))
     assert backup.manifests(str(remote)) == {}
+
+def test_erasure_preserves_a_pin_not_explicitly_released(shared_backup, monkeypatch):
+    root, remote, _, _ = shared_backup
+    backup.publish(root, str(remote))
+    manifest = next((remote / "platform").glob("*.json"))
+    document = json.loads(manifest.read_text())
+    document["snapshots"].append({"uid": 300001, "snapshot_id": "c" * 32, "sha256": "d" * 64})
+    manifest.write_text(json.dumps(document))
+    namespace = remote / "300001"
+    namespace.mkdir()
+    released = namespace / ("a" * 32 + ".img.gz")
+    retained = namespace / ("c" * 32 + ".img.gz")
+    released.write_bytes(b"map released this reference")
+    retained.write_bytes(b"unreleased pin")
+    volumes = object.__new__(OwnerVolumes)
+    volumes.remote = str(remote)
+    monkeypatch.setattr(volumes, "_lock", lambda uid: nullcontext())
+    assert not volumes.delete_snapshots(300001, ["a" * 32, "c" * 32], ["a" * 32])
+    assert not released.exists()
+    assert retained.read_bytes() == b"unreleased pin"

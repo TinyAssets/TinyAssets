@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.support.admission import Plans, projection, suspend
 from tests.support.broker_ipc import broker  # noqa: F401
 from tests.support.synthetic_git import synthetic
 from tinyassets import owner_runtime
@@ -23,7 +24,6 @@ from tinyassets.boxes.boxd import OwnerBoxd
 from tinyassets.boxes.relay import OwnerRelays
 from tinyassets.broker.admission import local_mutate
 from tinyassets.broker.owner_identities import OwnerIdentities
-from tinyassets.broker.owner_reads import Plans
 from tinyassets.broker.public_egress import PublicEgress
 from tinyassets.broker.server import BOX_HOST
 from tinyassets.owner_public_egress import JAIL_PROXY_URL, PROXY_ENV
@@ -40,13 +40,15 @@ def native(broker, tmp_path, monkeypatch, request):  # noqa: F811
                                  plans=Plans(shared))
     uid = identities.resolve("alice", allocate=True).uid
     if getattr(request, "param", True):
-        identities.admission("admit", "alice", "center")
+        identities.admission("admit", "alice", "center",
+         routing=projection(identities.path))
     from tinyassets.broker.admission import local_mutate
 
-    local_mutate(identities.path, "alice", "admit")
+    local_mutate(identities.path, "alice", "admit", routing=projection(identities.path))
     Plans(shared).apply("alice", tier="paid", event_created=1)
     if getattr(request, "param", True) == "retired":
-        identities.admission("retire", "alice", "center")
+        identities.admission("retire", "alice", "center",
+          routing=projection(identities.path))
     with sqlite3.connect(identities.path) as db:
         db.execute("CREATE TABLE box_records (principal TEXT, machine INT, "
                    "project_id INT, bhard_bytes INT)")
@@ -219,9 +221,10 @@ def test_native_proxy_refuses_without_opening_any_upstream(native, monkeypatch, 
         with sqlite3.connect(native.identities.path) as db:
             db.execute("DELETE FROM box_records")
     elif refusal == "tombstone":
-        local_mutate(native.identities.path, "alice", "erase")
+        local_mutate(native.identities.path, "alice", "erase",
+            routing=projection(native.identities.path))
     elif refusal in {"billing", "abuse"}:
-        native.identities.plans.set_suspension("alice", reason=refusal, suspended=True)
+        suspend(native.identities.plans, "alice", reason=refusal, suspended=True)
     elif refusal == "owner_cap":
         native.proxy.active["alice"] = 32
     elif refusal == "host_cap":
@@ -437,6 +440,7 @@ def test_relay_bootstrap_refuses_fenced_owner_with_retained_admission(native, mo
     # This rig combines host and box Python contexts. Fence from the host side.
     with monkeypatch.context() as host:
         host.setattr(owner_runtime, "_runtime", None)
-        local_mutate(native.identities.path, "alice", "erase")
+        local_mutate(native.identities.path, "alice", "erase",
+            routing=projection(native.identities.path))
     assert native.identities.admitted_owner("center") == "alice"
     assert connect() is None

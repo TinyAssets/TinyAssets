@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.support.admission import drive, projection
+
 
 def command(*args, **kwargs):
     result = subprocess.run(args, capture_output=True, text=True, timeout=600, **kwargs)
@@ -276,7 +278,8 @@ def integrated_lifecycle(root, volumes, rootfs, size):
     broker.mkdir(parents=True, mode=0o700)
     identities = OwnerIdentities(broker / "owner-identities.db", initialize=True)
     uid = identities.resolve("proof-owner", allocate=True).uid
-    identities.admission("admit", "proof-owner", "proof-center")
+    identities.admission("admit", "proof-owner", "proof-center",
+        routing=projection(identities.path))
     with sqlite3.connect(identities.path) as db:
         db.execute("CREATE TABLE box_records (principal TEXT PRIMARY KEY, machine INT, "
                    "project_id INT, bhard_bytes INT)")
@@ -296,7 +299,8 @@ def integrated_lifecycle(root, volumes, rootfs, size):
         def retire(self, owner, expected_uid):
             assert identities.owner_machine(owner) == expected_uid
             from tinyassets.broker.admission import local_mutate
-            local_mutate(identities.path, owner, "erase")
+            local_mutate(identities.path, owner, "erase",
+          routing=projection(identities.path))
 
     runtime = GvisorRuntime(runsc=Path("/gvisor/runsc"), rootfs=rootfs,
                             state_root=root / "integrated-state",
@@ -346,7 +350,7 @@ def integrated_lifecycle(root, volumes, rootfs, size):
 
     manager._rpc = status
     try:
-        assert routing.wake("proof-owner") == uid
+        assert drive(routing.wake("proof-owner")) == uid
         assert volumes.size(uid) == size
         runtime.exec(uid, ["/bin/sh", "-c", "printf integrated > /home/owner/content; sync"],
                      timeout=30)
@@ -375,7 +379,7 @@ def integrated_lifecycle(root, volumes, rootfs, size):
             delete_image(owner_uid)
         def wake():
             waking.set()
-            return routing.wake("proof-owner")
+            return drive(routing.wake("proof-owner"))
         volumes.delete = paused_delete
         with ThreadPoolExecutor(2) as pool:
             eviction = pool.submit(routing.volumes.evict, "proof-owner")
@@ -420,12 +424,13 @@ def integrated_lifecycle(root, volumes, rootfs, size):
             db.execute("DELETE FROM owner_snapshots")
         assert routing.volumes.restore("proof-owner", published["snapshot_id"])[
             "volume_generation"] == published["volume_generation"] + 1
-        routing.wake("proof-owner")
+        drive(routing.wake("proof-owner"))
         assert generations == [1, 2, 3]
         result = runtime.exec(uid, ["/bin/cat", "/home/owner/content"], timeout=30)
         assert result.stdout == "integrated"
         from tinyassets.broker.admission import local_mutate
-        local_mutate(identities.path, "proof-owner", "erase")
+        local_mutate(identities.path, "proof-owner", "erase",
+            routing=projection(identities.path))
         assert execute("destroy", uid=uid) == {"destroyed": True}
         assert not runtime.alive(uid)
         volumes._detached(uid)

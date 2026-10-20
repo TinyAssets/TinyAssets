@@ -14,7 +14,7 @@ import threading
 import time
 from contextlib import closing
 
-from tinyassets.broker.admission import digest, owner_lock, read
+from tinyassets.broker.admission import digest, owner_call, read
 from tinyassets.broker.deletion_records import RemoteRecords
 
 STEPS = ("withdrawal", "volume", "snapshots", "custody", "billing",
@@ -85,31 +85,25 @@ class DeletionJobs:
         self.records = JobRows(server._owner_identities, records or RemoteRecords(
             os.environ["BACKUP_DEST"]))
         self.clock = clock
+        # Serializes local/off-host job-row updates with billing webhook receipts.
+        # Never held during a host operation or billing cancellation.
         self.record_lock = threading.RLock()
 
-    def enqueue(self, owner):
+    def _enqueue(self, owner):
         from tinyassets.broker.owner_volumes import binding
 
-        with owner_lock(self.server._owner_identities.path, owner):
-            key = digest(owner)
-            try:
-                job = self.records.load(key)
-            except LookupError:
-                record = binding(self.server._owner_identities, owner)
-                job = new_job(owner, record["uid"], clock=self.clock)
-                self.records.save(job)
-            try:
-                self._step(job, "withdrawal", force=True)
-            except Exception as error:
-                raise WithdrawalPending(self.public(job, include_url=True)) from error
-            # C14: enqueue executes immediately; failures after withdrawal are
-            # durable progress, retried by the existing waker tick.
-            try:
-                for step in STEPS[1:]:
-                    self._step(job, step)
-            except Exception:
-                log.exception("deletion job remains pending")
-            return self.public(job, include_url=True)
+        key = digest(owner)
+        try:
+            job = self.records.load(key)
+        except LookupError:
+            record = binding(self.server._owner_identities, owner)
+            job = new_job(owner, record["uid"], clock=self.clock)
+            self.records.save(job)
+        try:
+            self._step(job, "withdrawal", force=True)
+        except Exception as error:
+            raise WithdrawalPending(self.public(job, include_url=True)) from error
+        return self.public(job, include_url=True)
 
     @staticmethod
     def public(job, *, include_url=False):
@@ -162,7 +156,7 @@ class DeletionJobs:
                 self.records.save(job)
             raise
 
-    def resume_loaded_job(self, loaded):
+    def _resume_loaded_job(self, loaded):
         """b5 imports trusted off-host authority, then uses the normal job path.
 
         Ordinary restart/tick supplies local rows. Recovery supplies the newer
@@ -171,25 +165,32 @@ class DeletionJobs:
         from tinyassets.broker.owner_volumes import binding
 
         owner = loaded["owner"]
-        with owner_lock(self.server._owner_identities.path, owner):
-            record = binding(self.server._owner_identities, owner)
-            if loaded["id"] != digest(owner) or loaded["uid"] != record["uid"]:
-                raise PermissionError("deletion job must match the permanent owner binding")
-            self.records.save(loaded)
-            job = self.records.load(loaded["id"])
-            self._step(job, "withdrawal", force=True)
-            for step in STEPS:
-                self._step(job, step)
-            return self.public(job)
+        record = binding(self.server._owner_identities, owner)
+        if loaded["id"] != digest(owner) or loaded["uid"] != record["uid"]:
+            raise PermissionError("deletion job must match the permanent owner binding")
+        self.records.save(loaded)
+        job = self.records.load(loaded["id"])
+        self._step(job, "withdrawal", force=True)
+        for step in STEPS:
+            self._step(job, step)
+        return self.public(job)
+
+    async def enqueue(self, owner):
+        result = await owner_call(self.server._owner_identities.path, owner, self._enqueue, owner)
+        self.server.routing.start(owner, self._resume_owner)
+        return result
+
+    async def resume_loaded_job(self, loaded):
+        return await owner_call(self.server._owner_identities.path, loaded["owner"],
+                                self._resume_loaded_job, loaded)
+
+    def _resume_owner(self, owner):
+        return self._resume_loaded_job(self.records.load(digest(owner)))
 
     def tick(self):
         for job in load_unfinished_jobs(self.records):
             if job["retry_at"] <= self.clock():
-                try:
-                    with owner_lock(self.server._owner_identities.path, job["owner"]):
-                        self.resume_loaded_job(self.records.load(job["id"]))
-                except Exception:
-                    log.exception("deletion job remains pending")
+                self.server.routing.start(job["owner"], self._resume_owner)
 
     def _withdrawal(self, job):
         from tinyassets.broker.admission import local_mutate
@@ -198,7 +199,7 @@ class DeletionJobs:
         # The admission row is the durable receipt for this mutation even if
         # the process died before writing the step's completion receipt.
         if read(self.server._owner_identities, job["owner"]).state != "erased":
-            local_mutate(self.server._owner_identities.path, job["owner"], "erase")
+            local_mutate(self.server._owner_identities.path, job["owner"], "erase", routing=routing)
         else:
             routing.changed(job["owner"])
 
@@ -215,13 +216,13 @@ class DeletionJobs:
 
     def _snapshots(self, job):
         from tinyassets.boxes.daemon_control import request
+        from tinyassets.broker.owner_volumes import dispatch
 
-        if request("delete_snapshots", uid=self._uid(job)) != {"deleted": True}:
+        record = dispatch(self.server._owner_identities, {
+            "op": "BOX_VOLUME", "principal": job["owner"], "action": "erase", "arguments": {}})
+        if request("delete_snapshots", uid=record["uid"], snapshot_ids=None,
+                   released=record["work"]["released"]) != {"deleted": True}:
             raise RuntimeError("owner snapshot deletion remains pending")
-        with closing(self.server._owner_identities._connect(write=True)) as db, db:
-            db.execute("DELETE FROM owner_snapshots WHERE principal=?", (job["owner"],))
-            db.execute("UPDATE owner_volumes SET snapshot_id=NULL,snapshot_sha256=NULL,"
-                       "work=NULL,local=0 WHERE principal=?", (job["owner"],))
 
     def _custody(self, job):
         from tinyassets.broker.account_erasure import ACCOUNT_SCOPE, local_erase

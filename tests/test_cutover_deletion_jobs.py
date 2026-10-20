@@ -4,6 +4,7 @@ import sqlite3
 
 import pytest
 
+from tests.support.admission import projection
 from tests.test_broker_deletion_jobs import Remote
 from tinyassets.broker.admission import digest
 from tinyassets.broker.deletion_jobs import STEPS, load_unfinished_jobs
@@ -90,9 +91,9 @@ def test_census_counts_digest_only_obligations_and_deduplicates_quarantines(tmp_
 
 
 def test_cutover_finishes_all_pending_legacy_phases_without_volume_binding(tmp_path, monkeypatch):
+    from tests.support.admission import Plans
     from tinyassets.broker.admission import local_mutate
     from tinyassets.broker.owner_identities import OwnerIdentities
-    from tinyassets.broker.owner_reads import Plans
     from tinyassets.broker.policy import PolicyStore
 
     source, store, shared, target = legacy(tmp_path)
@@ -101,7 +102,7 @@ def test_cutover_finishes_all_pending_legacy_phases_without_volume_binding(tmp_p
     identity = shared / ".broker/state/owner-identities.db"
     identity.parent.mkdir(parents=True, mode=0o700)
     identities = OwnerIdentities(identity, initialize=True)
-    local_mutate(identity, "later", "erase")
+    local_mutate(identity, "later", "erase", routing=projection(identity))
     plans = Plans(shared)
     plans.initialize()
     plans.set_plan("later", "free", event_created=0)

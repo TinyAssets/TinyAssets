@@ -57,7 +57,7 @@ def source(tmp_path):
         CREATE TABLE subscription_meta (key TEXT PRIMARY KEY, value TEXT);
         INSERT INTO subscription_meta VALUES ('tier','paid'), ('tier_event_at','42');
     """)
-    from tinyassets.broker.owner_reads import Plans
+    from tests.support.admission import Plans
 
     Plans(root).set_plan("alice", "paid", event_created=42,
                          customer_id="cus_legacy", subscription_id="sub_legacy")

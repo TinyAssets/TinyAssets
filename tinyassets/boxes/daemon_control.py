@@ -13,7 +13,7 @@ def request(operation: str, owner: str | None = None, **fields) -> dict:
     # Opaque volume commands include compression and two bounded transfers.
     # Keep the broker call alive through execution, then commit its result.
     volume_ops = {"create", "snapshot", "restore", "evict", "destroy",
-                  "delete_snapshot", "delete_snapshots"}
+                  "delete_snapshots"}
     timeout = 4 * 3600 if operation in volume_ops else 65
     sock, identity = connect(root / "daemon.sock",
                              timeout=timeout)

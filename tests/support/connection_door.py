@@ -23,8 +23,8 @@ def post(operation, body):
               if row["permission"] == "admin"]
     if admins:
         seed_owner_admission(base, principal=admins[0], center=center)
+        from tests.support.admission import Plans
         from tinyassets.broker.owner_identities import OwnerIdentities
-        from tinyassets.broker.owner_reads import Plans
         from tinyassets.broker.supervisor import get_supervisor
 
         broker = get_supervisor(base)

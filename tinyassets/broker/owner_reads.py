@@ -13,11 +13,12 @@ class PlanMissing(LookupError):
 class Plans:
     """Shared billing writer and reader, keyed by authenticated owner."""
 
-    def __init__(self, root=None, *, broker_dir=None):
+    def __init__(self, root=None, *, broker_dir=None, routing=None):
         from tinyassets.owner_runtime import refuse_router_store
 
         refuse_router_store("plans")
         state = Path(broker_dir) if broker_dir is not None else Path(root) / ".broker"
+        self.routing = routing
         self.path = state.resolve() / "plans.db"
         self.admission_path = (state / "owner-identities.db" if broker_dir is not None
                                else state / "state/owner-identities.db").resolve()
@@ -43,7 +44,7 @@ class Plans:
         from tinyassets.broker.admission import local_mutate
 
         local_mutate(self.admission_path, owner, "suspend", reason=reason,
-                     suspended=suspended)
+                     suspended=suspended, routing=self.routing)
 
     def attach_admission(self, db):
         """Attach before BEGIN so the identity and first plan commit together."""

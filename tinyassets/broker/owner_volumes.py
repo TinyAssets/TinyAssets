@@ -47,9 +47,7 @@ def transaction(identities, owner, *, active=True):
     from tinyassets.broker.owner_identities import validate_principal
 
     validate_principal(owner)
-    from tinyassets.broker.admission import owner_lock
-
-    with owner_lock(identities.path, owner), closing(identities._connect(write=True)) as db, db:
+    with closing(identities._connect(write=True)) as db, db:
         db.execute("PRAGMA synchronous=FULL")
         db.execute("BEGIN IMMEDIATE")
         row = db.execute(
@@ -109,14 +107,31 @@ def dispatch(identities, document):
               "publish": {"snapshot_id", "sha256"},
               "restore": {"snapshot_id"}, "restored": {"snapshot_id"}, "pending": set(),
               "snapshots": set(), "forget": {"snapshot_id"},
-              "wake": set(), "evict": set(), "evicted": set()}
+              "wake": set(), "evict": set(), "evicted": set(), "erase": set()}
     if action not in fields or not isinstance(arguments, dict) or set(arguments) != fields[action]:
         raise ValueError("invalid volume lifecycle arguments")
     if action == "binding":
         return binding(identities, owner)
-    with transaction(identities, owner) as (db, record):
+    with transaction(identities, owner, active=action != "erase") as (db, record):
         work = record["work"]
-        if action == "evict":
+        if action == "erase":
+            from tinyassets.broker.admission import admission
+
+            if admission(db, owner).state != "erased":
+                raise PermissionError("snapshot release requires erased admission")
+            if work is None or work["kind"] != "erase":
+                released = {row[0] for row in db.execute(
+                    "SELECT snapshot_id FROM owner_snapshots WHERE principal=?", (owner,))}
+                if record["snapshot_id"]:
+                    released.add(record["snapshot_id"])
+                if work and work.get("snapshot_id"):
+                    released.add(work["snapshot_id"])
+                work = {"kind": "erase", "released": sorted(released)}
+                db.execute("DELETE FROM owner_snapshots WHERE principal=?", (owner,))
+                db.execute("UPDATE owner_volumes SET snapshot_id=NULL,snapshot_sha256=NULL,"
+                           "local=0 WHERE principal=?", (owner,))
+                record.update(snapshot_id=None, snapshot_sha256=None, local=False)
+        elif action == "evict":
             # C10: only the admitted binding's published snapshot permits eviction.
             if (work is not None or not record["local"] or record["asleep_at"] is None
                     or record["asleep_at"] >= time.time() - COLD_AFTER):

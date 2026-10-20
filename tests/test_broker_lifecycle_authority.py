@@ -1,5 +1,6 @@
-"""C14: one broker lifecycle writer, local jobs, and no executor callbacks."""
+"""C14/C15: broker lifecycle authority, asynchronous serialization and local jobs."""
 import ast
+import asyncio
 import copy
 import sqlite3
 import threading
@@ -8,9 +9,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from tinyassets.broker import admission, box_admission
+from tests.support.admission import projection
+from tinyassets.broker import admission, box_admission, owner_volumes
 from tinyassets.broker.deletion_jobs import STEPS, DeletionJobs
 from tinyassets.broker.owner_identities import OwnerIdentities
+from tinyassets.broker.routing import RoutingAuthority
 
 
 class Remote:
@@ -31,26 +34,24 @@ def authority(tmp_path, monkeypatch):
     root = tmp_path / ".broker"
     root.mkdir(mode=0o700)
     identities = OwnerIdentities(root / "identities.db", initialize=True)
-    identities.resolve("alice", allocate=True)
-    identities.admission("admit", "alice", "alice")
     with sqlite3.connect(identities.path) as db:
         db.execute("CREATE TABLE box_records (principal TEXT PRIMARY KEY, machine INT, "
                    "project_id INT, bhard_bytes INT)")
-    box_admission.provision(identities, tmp_path, "alice", "alice")
-    events = []
-    remote = Remote()
+    for owner in ("alice", "bob"):
+        identities.resolve(owner, allocate=True)
+        identities.admission("admit", owner, owner, routing=projection(identities.path))
+        box_admission.provision(identities, tmp_path, owner, owner)
+    events, remote = [], Remote()
     server = SimpleNamespace(_owner_identities=identities, _data_root=tmp_path)
+    server.routing = RoutingAuthority(server)
+    server.routing.publish = lambda **kwargs: None
 
     def changed(owner):
         assert admission.read(identities, owner).state == "erased"
         assert remote.rows[admission.digest(owner)]
         events.extend(["channels_closed", "withdrawal_published"])
 
-    class Projection:
-        pass
-    server.routing = Projection()
     server.routing.changed = changed
-    admission.register_authority(identities.path, server.routing)
     original = admission.mutate
 
     def mutate(*args, **kwargs):
@@ -59,45 +60,68 @@ def authority(tmp_path, monkeypatch):
 
     monkeypatch.setattr(admission, "mutate", mutate)
 
-    def host(operation, **fields):
+    def host(operation, owner=None, **fields):
+        if operation == "status":
+            return {"awake": False, "awake_count": 0, "awake_cap": 6}
+        if operation == "wake":
+            events.append("wake:" + owner)
+            return {"uid": fields["record"]["uid"]}
+        if operation == "create":
+            return {"created": True}
+        if operation == "snapshot":
+            return {"snapshot_id": fields["snapshot_id"], "sha256": "b" * 64}
         assert admission.read(identities, "alice").state == "erased"
         assert "withdrawal_published" in events
-        assert fields == {"uid": identities.owner_machine("alice")}
+        assert fields["uid"] == identities.owner_machine("alice")
+        if operation == "delete_snapshots":
+            assert fields["snapshot_ids"] is None
+            assert fields["released"] == []
         events.append(operation)
         return {"destroyed" if operation == "destroy" else "deleted": True}
 
     monkeypatch.setattr("tinyassets.boxes.daemon_control.request", host)
-    jobs = DeletionJobs(server, records=remote)
+    server.routing.volumes.execute = host
+    jobs = server.deletion_jobs = DeletionJobs(server, records=remote)
     for step in ("custody", "billing", "credentials", "identity"):
         monkeypatch.setattr(DeletionJobs, "_" + step, lambda self, job: "done")
     return SimpleNamespace(jobs=jobs, remote=remote, identities=identities,
-                           events=events, server=server)
+                           events=events, server=server, host=host)
 
 
 def test_enqueue_and_status_never_read_remote_and_erasure_mutates_once(authority):
     a = authority
-    result = a.jobs.enqueue("alice")
-    assert result["status"] == "deleted"
-    key, token = result["status_url"].split("/")[-2:]
-    assert a.jobs.status(key, token)["completed_steps"] == list(STEPS)
-    assert a.jobs.enqueue("alice")["status"] == "deleted"
-    assert a.events.count("mutation") == 1
-    assert a.events.index("mutation") < a.events.index("destroy")
-    assert a.remote.reads == 0
+
+    async def exercise():
+        result = await a.jobs.enqueue("alice")
+        assert result["status"] == "deletion_in_progress"
+        assert result["completed_steps"] == ["withdrawal"]
+        assert "destroy" not in a.events
+        await a.server.routing.close()
+        key, token = result["status_url"].split("/")[-2:]
+        assert a.jobs.status(key, token)["completed_steps"] == list(STEPS)
+        assert (await a.jobs.enqueue("alice"))["status"] == "deleted"
+        await a.server.routing.close()
+        assert a.events.count("mutation") == 1
+        assert a.events.index("mutation") < a.events.index("destroy")
+        assert a.remote.reads == 0
+    asyncio.run(exercise())
 
 
 def test_restart_resumes_local_job_when_remote_reads_are_unavailable(authority, monkeypatch):
     a = authority
-    def fail(self, job):
-        raise OSError("interrupted volume deletion")
-    original = DeletionJobs._volume
-    monkeypatch.setattr(DeletionJobs, "_volume", fail)
-    assert a.jobs.enqueue("alice")["failed_step"] == "volume"
-    monkeypatch.setattr(DeletionJobs, "_volume", original)
+    start = a.server.routing.start
+    monkeypatch.setattr(a.server.routing, "start", lambda *args: None)
+    result = asyncio.run(a.jobs.enqueue("alice"))
+    assert result["completed_steps"] == ["withdrawal"]
+    assert "destroy" not in a.events
+    monkeypatch.setattr(a.server.routing, "start", start)
     restarted = DeletionJobs(a.server, records=a.remote, clock=lambda: 10**15)
-    restarted.tick()
-    job = restarted.records.load(admission.digest("alice"))
-    assert job["completed_steps"] == list(STEPS)
+
+    async def exercise():
+        restarted.tick()
+        await a.server.routing.close()
+    asyncio.run(exercise())
+    assert restarted.records.load(admission.digest("alice"))["completed_steps"] == list(STEPS)
     assert a.events.count("mutation") == 1
     assert a.remote.reads == 0
 
@@ -107,62 +131,54 @@ def test_historical_platform_copy_recovers_from_offhost_job(authority, tmp_path)
     backup = tmp_path / "old.db"
     with sqlite3.connect(a.identities.path) as src, sqlite3.connect(backup) as dst:
         src.backup(dst)
-    a.jobs.enqueue("alice")
+
+    async def erase():
+        await a.jobs.enqueue("alice")
+        await a.server.routing.close()
+    asyncio.run(erase())
     with sqlite3.connect(backup) as src, sqlite3.connect(a.identities.path) as dst:
         src.backup(dst)
     assert admission.read(a.identities, "alice").state == "admitted"
     recovered = DeletionJobs(a.server, records=a.remote)
     loaded, = a.remote.records()
-    assert recovered.resume_loaded_job(loaded)["status"] == "deleted"
+    assert asyncio.run(recovered.resume_loaded_job(loaded))["status"] == "deleted"
     assert admission.read(a.identities, "alice").state == "erased"
     assert recovered.records.load(loaded["id"])["completed_steps"] == list(STEPS)
 
 
 def test_wake_and_deletion_share_the_broker_owner_lock(authority, monkeypatch):
-    from tinyassets.broker.routing import RoutingAuthority
-
     a = authority
-    routing = RoutingAuthority(a.server)
     entered, release = threading.Event(), threading.Event()
-    routing.publish = lambda **kwargs: None
-    routing.volumes.prepare = lambda owner, record: record
-    original = __import__("tinyassets.boxes.daemon_control", fromlist=["request"]).request
 
     def host(operation, owner=None, **fields):
-        if operation != "wake":
-            return original(operation, **fields)
-        entered.set()
-        assert release.wait(10)
-        assert admission.read(a.identities, owner).state == "admitted"
-        return {"uid": fields["record"]["uid"]}
-
+        if operation == "wake":
+            entered.set()
+            assert release.wait(10)
+            assert admission.read(a.identities, owner).state == "admitted"
+        return a.host(operation, owner, **fields)
     monkeypatch.setattr("tinyassets.boxes.daemon_control.request", host)
-    errors = []
-    def run(function):
-        try:
-            function("alice")
-        except BaseException as error:
-            errors.append(error)
-    wake = threading.Thread(target=run, args=(routing.wake,))
-    deletion = threading.Thread(target=run, args=(a.jobs.enqueue,))
-    wake.start()
-    assert entered.wait(5)
-    deletion.start()
-    assert admission.read(a.identities, "alice").state == "admitted"
-    release.set()
-    wake.join(10)
-    deletion.join(10)
-    assert not wake.is_alive() and not deletion.is_alive() and not errors
-    assert a.events.count("mutation") == 1
-    with pytest.raises(PermissionError):
-        routing.wake("alice")
+
+    async def exercise():
+        waking = asyncio.create_task(a.server.routing.wake("alice"))
+        assert await asyncio.to_thread(entered.wait, 5)
+        deleting = asyncio.create_task(a.jobs.enqueue("alice"))
+        await asyncio.sleep(0)
+        assert not deleting.done()
+        assert admission.read(a.identities, "alice").state == "admitted"
+        release.set()
+        await asyncio.gather(waking, deleting)
+        await a.server.routing.close()
+        assert a.events.count("mutation") == 1
+        with pytest.raises(PermissionError):
+            await a.server.routing.wake("alice")
+    asyncio.run(exercise())
 
 
 def test_host_lifecycle_has_no_broker_state_callbacks():
     root = Path(__file__).resolve().parents[1]
     removed = {"BOX_ADMISSION_ERASE", "BOX_RETIRE_ADMISSION", "BOX_VOLUME",
                "BOX_VOLUME_PENDING", "BOX_LIFECYCLE", "RETIRE_OWNER", "ERASE_ACCOUNT",
-               "CLOSE_OWNER_CHANNELS", "OWNER_ADMISSION_ERASE"}
+               "CLOSE_OWNER_CHANNELS", "OWNER_ADMISSION_ERASE", "OWNER_BOX_REVOKE"}
     for relative in ("boxes/admission.py", "boxes/owner_daemons.py", "boxes/host_service.py",
                      "broker/server.py"):
         tree = ast.parse((root / "tinyassets" / relative).read_text())
@@ -170,18 +186,23 @@ def test_host_lifecycle_has_no_broker_state_callbacks():
                     and isinstance(n.value, str)} & removed
     assert not (root / "tinyassets/boxes/volume_lifecycle.py").exists()
     assert not (root / "tinyassets/boxes/deletion_records.py").exists()
+    tree = ast.parse((root / "tinyassets/boxes/owner_daemons.py").read_text())
+    assert not {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)} & {
+        "wanted", "sleeping", "resume"}
+    maintain = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+                    and n.name == "maintain")
+    assert not {n.attr for n in ast.walk(maintain) if isinstance(n, ast.Attribute)} & {
+        "_start", "_sleep", "ensure_awake"}
 
 
 @pytest.mark.parametrize("action", ["sleep", "restore"])
 def test_snapshot_and_restore_hold_owner_lock_until_map_commit(authority, monkeypatch, action):
-    from tinyassets.broker import owner_volumes
-    from tinyassets.broker.volume_lifecycle import VolumeLifecycle
-
     a = authority
-    owner_volumes.dispatch(a.identities, {"op": "BOX_VOLUME", "principal": "alice",
-        "action": "created", "arguments": {}})
+    lifecycle = a.server.routing.volumes
+    lifecycle.volume("alice", "created")
     entered, release = threading.Event(), threading.Event()
     snapshot_id = "a" * 32
+
     def execute(operation, **fields):
         if operation in {"snapshot", "restore"}:
             entered.set()
@@ -189,33 +210,29 @@ def test_snapshot_and_restore_hold_owner_lock_until_map_commit(authority, monkey
             assert admission.read(a.identities, "alice").state == "admitted"
             return ({"snapshot_id": fields["snapshot_id"], "sha256": "b" * 64}
                     if operation == "snapshot" else {"restored": True})
-        raise AssertionError(operation)
-    lifecycle = VolumeLifecycle(a.identities, execute)
+        return a.host(operation, **fields)
+    lifecycle.execute = execute
     if action == "restore":
         with sqlite3.connect(a.identities.path) as db:
             db.execute("UPDATE owner_volumes SET snapshot_id=?,snapshot_sha256=?",
                        (snapshot_id, "b" * 64))
-    errors = []
-    def transition():
-        try:
-            if action == "sleep":
-                lifecycle.sleep("alice")
-            else:
-                lifecycle.restore("alice", snapshot_id)
-        except BaseException as error:
-            errors.append(error)
-    first = threading.Thread(target=transition)
-    deleting = threading.Thread(target=lambda: a.jobs.enqueue("alice"))
-    first.start()
-    assert entered.wait(5)
-    deleting.start()
-    assert admission.read(a.identities, "alice").state == "admitted"
-    release.set()
-    first.join(10)
-    deleting.join(10)
-    assert not first.is_alive() and not deleting.is_alive() and not errors
-    assert a.events.count("mutation") == 1
-    assert admission.read(a.identities, "alice").state == "erased"
+    # The completed snapshot is now explicitly released through the map.
+    monkeypatch.setattr(a.jobs, "_snapshots", lambda job: None)
+
+    async def exercise():
+        first = asyncio.create_task(a.server.routing.sleep("alice") if action == "sleep"
+                                    else a.server.routing.restore("alice", snapshot_id))
+        assert await asyncio.to_thread(entered.wait, 5)
+        deleting = asyncio.create_task(a.jobs.enqueue("alice"))
+        await asyncio.sleep(0)
+        assert not deleting.done()
+        assert admission.read(a.identities, "alice").state == "admitted"
+        release.set()
+        await asyncio.gather(first, deleting)
+        await a.server.routing.close()
+        assert a.events.count("mutation") == 1
+        assert admission.read(a.identities, "alice").state == "erased"
+    asyncio.run(exercise())
 
 
 def test_only_job_step_one_requests_runtime_admission_erasure():
@@ -228,3 +245,78 @@ def test_only_job_step_one_requests_runtime_admission_erasure():
                     and isinstance(node.args[2], ast.Constant) and node.args[2].value == "erase"):
                 writers.append(path.name)
     assert writers == ["deletion_jobs.py"]
+
+
+def test_slow_volume_work_does_not_delay_another_scheduled_wake(authority):
+    from tinyassets.broker.waker import Waker
+
+    a = authority
+    lifecycle = a.server.routing.volumes
+    lifecycle.volume("alice", "created")
+    lifecycle.volume("alice", "sleep")
+    entered, release = threading.Event(), threading.Event()
+
+    def host(operation, owner=None, **fields):
+        if operation == "snapshot":
+            entered.set()
+            assert release.wait(10)
+        return a.host(operation, owner, **fields)
+    lifecycle.execute = host
+    index = SimpleNamespace(identities=a.identities, due=lambda **kwargs: ["bob"],
+                            woken=lambda owner, **kwargs: None)
+    waker = Waker(index, None, wake=a.server.routing.wake, lifecycle_tick=a.server.routing.tick)
+
+    async def exercise():
+        await waker.tick()
+        assert await asyncio.to_thread(entered.wait, 5)
+        await asyncio.wait_for(waker.pending["bob"], 2)
+        assert "wake:bob" in a.events
+        assert not a.server.routing.tasks["alice"].done()
+        release.set()
+        await a.server.routing.close()
+    asyncio.run(exercise())
+
+
+def test_mutation_without_routing_fails_before_changing_admission(authority):
+    a = authority
+    with pytest.raises(RuntimeError, match="requires routing"):
+        admission.local_mutate(a.identities.path, "alice", "erase",
+            routing=None)
+    assert admission.read(a.identities, "alice").state == "admitted"
+
+
+def test_map_erase_is_the_only_volume_cleanup_writer_and_retains_release_on_retry(authority):
+    a = authority
+    snapshot_id = "a" * 32
+    with sqlite3.connect(a.identities.path) as db:
+        db.execute("UPDATE owner_volumes SET snapshot_id=?,snapshot_sha256=? WHERE principal=?",
+                   (snapshot_id, "b" * 64, "alice"))
+        admission.mutate(db, "alice", "erase")
+    request = {"op": "BOX_VOLUME", "principal": "alice", "action": "erase", "arguments": {}}
+    first = owner_volumes.dispatch(a.identities, request)
+    assert first["snapshot_id"] is None and first["work"]["released"] == [snapshot_id]
+    assert owner_volumes.dispatch(a.identities, request) == first
+    source = Path(__file__).resolve().parents[1] / "tinyassets/broker/deletion_jobs.py"
+    assert "UPDATE owner_volumes" not in source.read_text()
+    assert "DELETE FROM owner_snapshots" not in source.read_text()
+
+def test_routing_projection_contains_only_admitted_and_suspended_owners(authority):
+    from tinyassets.routing_snapshot import RoutingSnapshot
+
+    a = authority
+    snapshot = RoutingSnapshot()
+    def receiver(request):
+        if request["operation"] == "routing_instance":
+            return {"instance": snapshot.instance}
+        revision = snapshot.install(request["instance"], request["revision"], request["records"])
+        return {"revision": revision}
+    a.server.routing._router = receiver
+    a.server.routing.publish = RoutingAuthority.publish.__get__(a.server.routing)
+    with sqlite3.connect(a.identities.path) as db:
+        admission.mutate(db, "alice", "erase")
+        admission.mutate(db, "bob", "suspend", reason="billing", suspended=True)
+    a.server.routing.publish()
+    assert snapshot.record("alice") is None
+    assert snapshot.record("bob").state == "suspended"
+    with pytest.raises(LookupError):
+        snapshot.route("alice")

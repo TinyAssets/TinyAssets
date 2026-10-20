@@ -12,6 +12,7 @@ import httpx
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from tests.support.admission import projection
 from tests.test_onboarding_session_refresh import _drive, _ok
 from tests.test_workos_provider import _provider, _sign
 from tinyassets.auth import middleware
@@ -24,7 +25,8 @@ from tinyassets.onboarding import owner_sessions, session_store
 def deleted(tmp_path, monkeypatch, in_process_broker):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     live = in_process_broker.supervisor_for(tmp_path)
-    local_mutate(live.identities.path, "alice", "erase")
+    local_mutate(live.identities.path, "alice", "erase",
+        routing=projection(live.identities.path))
     return tmp_path
 
 
@@ -130,7 +132,8 @@ def test_existing_refresh_handle_and_rotation_refuse_after_tombstone(tmp_path, m
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     handle = session_store.mint("refresh", owner="alice")
     assert session_store.read(handle)[0] == "refresh"
-    local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase")
+    local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase",
+        routing=projection(tmp_path / ".broker/state/owner-identities.db"))
     assert session_store.rotate(handle, "new-refresh") == ""
     assert session_store.read(handle) == ("", "")
 
@@ -138,7 +141,8 @@ def test_existing_refresh_handle_and_rotation_refuse_after_tombstone(tmp_path, m
 def test_deleted_refresh_handle_is_explained_without_contacting_workos(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     handle = session_store.mint("refresh", owner="alice")
-    local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase")
+    local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase",
+        routing=projection(tmp_path / ".broker/state/owner-identities.db"))
     status, body, cookies, calls = _drive(
         {"grant_type": "refresh_token", "session_ref": handle},
         data_dir=str(tmp_path), monkeypatch=monkeypatch,
@@ -164,13 +168,15 @@ def test_local_oauth_authorize_exchange_and_bearer_are_fenced(
     challenge = base64.urlsafe_b64encode(digest).decode().rstrip("=")
     code = provider.create_authorization(client, redirect, "read", "", challenge, "S256")
     if deleted_before_exchange:
-        local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase")
+        local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase",
+            routing=projection(tmp_path / ".broker/state/owner-identities.db"))
     tokens = provider.exchange_code(code, client, redirect, verifier)
     if deleted_before_exchange:
         assert tokens is None
     else:
         assert provider.resolve_token(tokens["access_token"]) is not None
-        local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase")
+        local_mutate(tmp_path / ".broker/state/owner-identities.db", "alice", "erase",
+            routing=projection(tmp_path / ".broker/state/owner-identities.db"))
         assert provider.resolve_token(tokens["access_token"]) is None
     with pytest.raises(ValueError, match="Account deleted"):
         provider.create_authorization(client, redirect, "read", "", challenge, "S256")

@@ -41,12 +41,12 @@ DEPOSIT_SECRETS = {
 def _broker_process(root, socket_path, relay_socket, pipe, kind):
     import secrets
 
+    from tests.support.admission import Plans
     from tests.support.broker_double import seed_owner_admission
     from tinyassets.broker import acquisition
     from tinyassets.broker.fence import Fence
     from tinyassets.broker.ops import OpStore
     from tinyassets.broker.owner_identities import OwnerIdentities
-    from tinyassets.broker.owner_reads import Plans
     from tinyassets.broker.process import _Dispatchers
     from tinyassets.broker.server import BOX_HOST, OWNER, BrokerServer
     from tinyassets.broker.tokens import ConnectionTokens

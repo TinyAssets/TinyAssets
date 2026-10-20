@@ -6,6 +6,7 @@ import threading
 
 import httpx
 
+from tests.support.admission import drive
 from tests.test_broker_server import broker  # noqa: F401
 from tests.test_owner_box_roll import image
 from tests.test_owner_router import admitted, boxes, cloud_runtime, router  # noqa: F401
@@ -26,7 +27,7 @@ def test_roll_drains_real_request_and_restarts_only_its_owner(
     other_uid = admitted.owner_machine("bob")
     original, other = boxes.runtime.processes[uid], boxes.runtime.processes[other_uid]
     manager.roll_wait = 10
-    broker.server.routing.roll(new.name)
+    drive(broker.server.routing.roll(new.name))
     results = []
 
     async def exercise():
@@ -52,7 +53,7 @@ def test_roll_drains_real_request_and_restarts_only_its_owner(
                 await incoming.put({"type": "http.disconnect"})
 
         thread = threading.Thread(
-            target=lambda: results.append(broker.server.routing.roll(new.name, uid)))
+            target=lambda: results.append(drive(broker.server.routing.roll(new.name, uid))))
         scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
                  "method": "GET", "scheme": "http", "path": "/app/api/test-stream",
                  "raw_path": b"/app/api/test-stream", "query_string": b"", "root_path": "",

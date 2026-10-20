@@ -101,17 +101,28 @@ class OwnerVolumes:
         with self._lock(uid):
             return self._image(uid).stat().st_size
 
-    def delete_snapshot(self, uid: int, snapshot_id: str) -> bool:
-        """The broker supplies an unreferenced object from this owner's catalog."""
+    def delete_snapshots(self, uid: int, snapshot_ids, released) -> bool:
+        """One deletion path; only map-released references may retire a pin."""
         from tinyassets.platform_backup import pinned_snapshots, retention_lock
 
         with self._lock(uid), retention_lock():
-            if not re.fullmatch(r"[a-f0-9]{32}", snapshot_id or ""):
-                raise VolumeError("snapshot reference is required")
-            if (uid, snapshot_id) in pinned_snapshots(self.remote):
-                return False
-            self._run("rclone", "deletefile", f"{self.remote}/{uid}/{snapshot_id}.img.gz")
-            return True
+            if snapshot_ids is None:
+                names = self._run("rclone", "lsf", "--recursive", "--files-only", self.remote,
+                                  "--include", f"/{uid}/**").stdout.splitlines()
+                snapshot_ids = [name.removeprefix(f"{uid}/").removesuffix(".img.gz")
+                                for name in names]
+            if (not isinstance(snapshot_ids, list) or not isinstance(released, list)
+                    or any(not isinstance(item, str) or not re.fullmatch(r"[a-f0-9]{32}", item)
+                           for item in [*snapshot_ids, *released])):
+                raise VolumeError("snapshot references are required")
+            pins = pinned_snapshots(self.remote)
+            deleted = True
+            for snapshot_id in snapshot_ids:
+                if (uid, snapshot_id) in pins and snapshot_id not in released:
+                    deleted = False
+                    continue
+                self._run("rclone", "deletefile", f"{self.remote}/{uid}/{snapshot_id}.img.gz")
+            return deleted
 
     @staticmethod
     def _sync(path: Path) -> None:

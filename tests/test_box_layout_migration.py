@@ -181,7 +181,7 @@ def test_preflight_reads_wal_without_writing_data(tmp_path, monkeypatch, live_wr
                 subprocess.run([sys.executable, "-c", child, str(path), sql], check=True)
                 path.with_name(path.name + "-shm").unlink()
                 assert path.with_name(path.name + "-wal").is_file()
-        from tinyassets.broker.owner_reads import Plans
+        from tests.support.admission import Plans
 
         Plans(data).set_plan("alice", "paid", event_created=0,
                              customer_id="cus_wal", subscription_id="sub_wal")

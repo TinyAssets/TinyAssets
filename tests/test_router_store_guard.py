@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
+from tests.support.admission import Plans
 from tinyassets import owner_runtime
 from tinyassets.api_keys import ApiKeyStore
 from tinyassets.auth.provider import OAuthProvider
-from tinyassets.broker.owner_reads import Plans
 from tinyassets.connection_oauth.pkce import flows_db
 from tinyassets.onboarding import (
     approval_handoff,

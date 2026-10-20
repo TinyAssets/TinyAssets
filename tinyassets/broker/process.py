@@ -184,6 +184,7 @@ async def serve(args: argparse.Namespace) -> None:
             stop.set()
             if waker_task is not None:
                 await waker_task
+                await routing.close()
             if registration:
                 registration[0].close()
 

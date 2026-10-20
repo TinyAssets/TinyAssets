@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 import httpx
 import pytest
 
+from tests.support.admission import complete_deletion, drive, projection, suspend
 from tests.test_owner_router import (  # noqa: F401
     admitted,
     boxes,
@@ -123,7 +124,7 @@ def test_202_status_survives_revoked_credentials_and_restart(router, boxes, admi
             monkeypatch.setattr(jobs.service, "_volume", destroy)
             restarted = DeletionJobs(jobs.server, records=Remote(tmp_path / "off-host"))
             loaded, = load_unfinished_jobs(restarted.records)
-            await asyncio.to_thread(restarted.resume_loaded_job, loaded)
+            await asyncio.to_thread(drive, restarted.resume_loaded_job(loaded))
             result = await client.get(url + "?format=json")
             assert result.status_code == 200, result.text
             assert result.json()["status"] == "deleted"
@@ -157,11 +158,11 @@ def test_each_effect_replays_after_crash_before_offhost_completion(jobs, admitte
 
     monkeypatch.setattr(jobs.remote, "save", save)
     with pytest.raises(Crash):
-        service.enqueue("alice")
-        service.resume_loaded_job(jobs.remote.load(digest("alice")))
+        complete_deletion(service, "alice")
+        drive(service.resume_loaded_job(jobs.remote.load(digest("alice"))))
     assert crashed
     restarted = DeletionJobs(jobs.server, records=Remote(tmp_path / "off-host"))
-    result = restarted.resume_loaded_job(restarted.records.load(digest("alice")))
+    result = drive(restarted.resume_loaded_job(restarted.records.load(digest("alice"))))
     assert result["status"] == "deleted"
     assert result["pending_steps"] == []
     assert read(admitted, "bob").state == "admitted"
@@ -173,7 +174,7 @@ def test_offhost_failure_never_withdraws_admission(jobs, admitted, monkeypatch):
 
     monkeypatch.setattr(jobs.remote, "save", unavailable)
     with pytest.raises(OSError):
-        jobs.service.enqueue("alice")
+        complete_deletion(jobs.service, "alice")
     assert read(admitted, "alice").state == "admitted"
 
 
@@ -185,14 +186,14 @@ def test_failure_records_retry_and_never_runs_a_later_step(jobs, tmp_path, monke
 
     monkeypatch.setattr(jobs.service, "_" + step, fail)
     with pytest.raises((OSError, RuntimeError)):
-        jobs.service.enqueue("alice")
-        jobs.service.resume_loaded_job(jobs.remote.load(digest("alice")))
+        complete_deletion(jobs.service, "alice")
+        drive(jobs.service.resume_loaded_job(jobs.remote.load(digest("alice"))))
     job = jobs.remote.load(digest("alice"))
     assert job["completed_steps"] == list(STEPS[:STEPS.index(step)])
     assert job["failed_step"] == step
     assert job["retry_at"] > 0
     monkeypatch.setattr(jobs.service, "_" + step, original)
-    assert jobs.service.resume_loaded_job(job)["status"] == "deleted"
+    assert drive(jobs.service.resume_loaded_job(job))["status"] == "deleted"
 
 
 def test_broker_request_cannot_override_job_box(jobs, admitted, tmp_path):
@@ -248,7 +249,8 @@ def test_door_deletion_removes_only_bound_owners_data_and_router_state(
         return stop(uid)
 
     monkeypatch.setattr(boxes.runtime, "stop", checked_stop)
-    admitted.admission("admit", "alice", "cc-alice-extra")
+    admitted.admission("admit", "alice", "cc-alice-extra",
+        routing=projection(admitted.path))
     monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "1")
     monkeypatch.setenv(canary_sign_in.USER_ENV, "alice")
     with canary_sign_in._limits() as db:
@@ -367,11 +369,11 @@ def test_paid_deletion_confirms_every_phase_and_retries_after_tombstone(
     import re
     from contextlib import nullcontext
 
+    from tests.support.admission import Plans
     from tinyassets import router_account_deletion, router_credentials
     from tinyassets.billing import stripe_adapter
     from tinyassets.boxes import destroy
     from tinyassets.broker import account_erasure
-    from tinyassets.broker.owner_reads import Plans
     from tinyassets.onboarding import app_config
 
     plans = Plans(tmp_path)
@@ -478,14 +480,14 @@ def test_suspended_owner_deletion_sweeps_real_box_and_expires_checkout(
 ):
     import sqlite3
 
+    from tests.support.admission import Plans
     from tests.test_cutover_billing_deletion import attempt
     from tinyassets import router_account_deletion
     from tinyassets.billing import stripe_adapter
-    from tinyassets.broker.owner_reads import Plans
     from tinyassets.onboarding import app_config
 
     plans = Plans(tmp_path)
-    plans.set_suspension("alice", reason="billing", suspended=True)
+    suspend(plans, "alice", reason="billing", suspended=True)
     with sqlite3.connect(plans.path) as db:
         db.execute("UPDATE plans SET attempt=? WHERE owner='alice'", (json.dumps(attempt()),))
     uid = admitted.owner_machine("alice")
@@ -589,7 +591,7 @@ def test_deletion_drains_real_turn_before_sweep_and_destroys_late_writes(
 def test_worker_restart_retries_from_local_rows_on_existing_waker_tick(jobs, monkeypatch):
     original = jobs.service._volume
     monkeypatch.setattr(jobs.service, "_volume", lambda job: (_ for _ in ()).throw(OSError()))
-    jobs.service.enqueue("alice")
+    complete_deletion(jobs.service, "alice")
     token = jobs.service.records.load(digest("alice"))["status_token"]
     monkeypatch.setattr(jobs.service, "_volume", original)
     restarted = DeletionJobs(jobs.server, records=jobs.remote, clock=lambda: time.time() + 3601)
@@ -606,8 +608,8 @@ def test_corrupt_private_metadata_cannot_block_opaque_deletion(jobs, boxes):
 
     with sqlite3.connect(boxes.roots["alice"] / DB_FILENAME) as db:
         db.execute("UPDATE founder_home SET universe_id='../escape' WHERE founder_sub='alice'")
-    jobs.service.enqueue("alice")
-    jobs.service.resume_loaded_job(jobs.remote.load(digest("alice")))
+    complete_deletion(jobs.service, "alice")
+    drive(jobs.service.resume_loaded_job(jobs.remote.load(digest("alice"))))
     assert not boxes.roots["alice"].exists()
     assert boxes.roots["bob"].exists()
 
@@ -619,10 +621,10 @@ def test_session_revocation_failure_retries(jobs, monkeypatch):
     real = session_store.revoke_owner
     with monkeypatch.context() as patch:
         patch.setattr(session_store, "revoke_owner", lambda _: (_ for _ in ()).throw(OSError()))
-        jobs.service.enqueue("alice")
+        complete_deletion(jobs.service, "alice")
     assert jobs.remote.load(digest("alice"))["failed_step"] == "credentials"
     assert session_store.revoke_owner is real
-    jobs.service.resume_loaded_job(jobs.remote.load(digest("alice")))
+    drive(jobs.service.resume_loaded_job(jobs.remote.load(digest("alice"))))
     assert not session_store.read(handle)[0]
 
 
@@ -638,7 +640,7 @@ def test_historical_platform_backup_resumes_current_offhost_job(jobs, admitted, 
         source.backup(backup)
     with monkeypatch.context() as patch:
         patch.setattr(jobs.service, "_volume", lambda job: (_ for _ in ()).throw(OSError()))
-        jobs.service.enqueue("alice")
+        complete_deletion(jobs.service, "alice")
     # Restore the actual historical shared DB. The newer job exists only remotely.
     with closing(sqlite3.connect(historical)) as backup, closing(
             sqlite3.connect(admitted.path)) as live:
@@ -646,9 +648,9 @@ def test_historical_platform_backup_resumes_current_offhost_job(jobs, admitted, 
     assert read(admitted, "alice").state == "admitted"
     restarted = DeletionJobs(jobs.server, records=jobs.remote)
     loaded, = load_unfinished_jobs(jobs.remote)
-    assert restarted.resume_loaded_job(loaded)["status"] == "deleted"
+    assert drive(restarted.resume_loaded_job(loaded))["status"] == "deleted"
     if entry == "enqueue":
-        assert restarted.enqueue("alice")["status"] == "deleted"
+        assert complete_deletion(restarted, "alice")["status"] == "deleted"
     assert read(admitted, "alice").state == "erased"
     assert read(admitted, "bob").state == "admitted"
 
@@ -658,7 +660,7 @@ def test_snapshot_cannot_publish_after_erasure(jobs, admitted):
 
     request = {"op": "BOX_VOLUME", "principal": "alice", "action": "sleep", "arguments": {}}
     record = dispatch(admitted, request)
-    jobs.service.enqueue("alice")
+    complete_deletion(jobs.service, "alice")
     with pytest.raises(PermissionError):
         dispatch(admitted, {**request, "action": "publish", "arguments": {
             "snapshot_id": record["work"]["snapshot_id"], "sha256": "a" * 64}})
@@ -667,6 +669,7 @@ def test_snapshot_cannot_publish_after_erasure(jobs, admitted):
 def test_actual_rclone_local_remote_survives_restart_and_preserves_other_uid(tmp_path):
     remote = tmp_path / "remote"
     remote.mkdir()
+    (remote / "platform").mkdir()
     records = RemoteRecords(":local:" + str(remote))
     job = {"id": "b" * 64, "completed_steps": [], "billing_cleanup": {"sub_x": "cancelled"}}
     assert records.records() == []
@@ -675,7 +678,7 @@ def test_actual_rclone_local_remote_survives_restart_and_preserves_other_uid(tmp
     assert load_unfinished_jobs(RemoteRecords(":local:" + str(remote))) == [job]
     for uid in (300001, 300002):
         (remote / str(uid)).mkdir()
-        (remote / str(uid) / "snapshot.img.gz").write_bytes(b"opaque bytes")
+        (remote / str(uid) / ("a" * 32 + ".img.gz")).write_bytes(b"opaque bytes")
     import threading
 
     from tinyassets.boxes.gvisor_runtime import GvisorRuntime
@@ -689,10 +692,11 @@ def test_actual_rclone_local_remote_survives_restart_and_preserves_other_uid(tmp
     host = HostService(None, volumes, None, SimpleNamespace(
         runtime=GvisorRuntime, condition=threading.RLock()))
     for _ in range(2):
-        assert host.lifecycle({"lifecycle": "delete_snapshots", "uid": 300001}, 1002) == {
+        assert host.lifecycle({"lifecycle": "delete_snapshots", "uid": 300001,
+                               "snapshot_ids": None, "released": []}, 1002) == {
             "deleted": True}
     assert not list((remote / "300001").iterdir())
-    assert (remote / "300002/snapshot.img.gz").read_bytes() == b"opaque bytes"
+    assert (remote / "300002" / ("a" * 32 + ".img.gz")).read_bytes() == b"opaque bytes"
     assert records.load(job["id"]) == job
 
 
@@ -724,7 +728,7 @@ def test_withdrawal_closes_inflight_open_before_ack(jobs, boxes, monkeypatch, op
             assert entered.wait(5)
             results = []
             deleting = threading.Thread(
-                target=lambda: results.append(jobs.service.enqueue("alice")))
+                target=lambda: results.append(complete_deletion(jobs.service, "alice")))
             deleting.start()
             assert read(jobs.server._owner_identities, "alice").state == "admitted"
             assert not results
@@ -755,7 +759,7 @@ def test_withdrawal_closes_existing_channels_and_public_streams_before_ack(jobs,
             **({"center": "cc-alice"} if operation == "BOX_CHANNEL" else {})}))
             assert rf.read_frame_blocking(channel).control()["op"] == "BOX_ADMITTED"
             channels.append(channel)
-        jobs.service.enqueue("alice")
+        complete_deletion(jobs.service, "alice")
         assert all(channel.recv(1) == b"" for channel in channels)
 
 
@@ -771,7 +775,7 @@ def test_queued_wake_serializes_before_withdrawal(jobs, boxes, admitted, monkeyp
     errors, results = [], []
     def wake():
         try:
-            results.append(jobs.server.routing.wake("alice"))
+            results.append(drive(jobs.server.routing.wake("alice")))
         except Exception as error:
             errors.append(error)
     thread = threading.Thread(target=wake)
@@ -780,13 +784,13 @@ def test_queued_wake_serializes_before_withdrawal(jobs, boxes, admitted, monkeyp
     while not manager.waiting and time.monotonic() < deadline:
         time.sleep(.01)
     assert manager.waiting
-    jobs.service.enqueue("alice")
+    complete_deletion(jobs.service, "alice")
     thread.join(5)
     assert not thread.is_alive() and errors and not results
     assert read(admitted, "alice").state == "erased"
     assert not boxes.runtime.alive(alice)
     with pytest.raises(PermissionError):
-        jobs.server.routing.wake("alice")
+        drive(jobs.server.routing.wake("alice"))
 
 
 def test_custody_step_erases_shared_secrets_without_owner_content_access(jobs, boxes, tmp_path,
@@ -806,7 +810,7 @@ def test_custody_step_erases_shared_secrets_without_owner_content_access(jobs, b
             vault.parent.parent.chmod(0o700)
             vault.write_text("synthetic secret " + owner)
             vaults[owner] = vault
-    jobs.service.enqueue("alice")
+    complete_deletion(jobs.service, "alice")
     for method in ("open", "stat", "lstat", "iterdir"):
         original = getattr(Path, method)
         def checked(path, *args, original=original, **kwargs):
@@ -833,7 +837,7 @@ def test_full_job_including_custody_mutates_admission_exactly_once(jobs, monkeyp
         mutations.append((owner, action))
         return original(db, owner, action, **fields)
     monkeypatch.setattr(admission, "mutate", mutate)
-    assert jobs.service.enqueue("alice")["status"] == "deleted"
+    assert complete_deletion(jobs.service, "alice")["status"] == "deleted"
     assert mutations == [("alice", "erase")]
-    assert jobs.service.enqueue("alice")["status"] == "deleted"
+    assert complete_deletion(jobs.service, "alice")["status"] == "deleted"
     assert mutations == [("alice", "erase")]
