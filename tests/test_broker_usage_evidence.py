@@ -25,8 +25,8 @@ def seed(discovery, count=1, *, owner="alice", universe="cc-alice", source=SOURC
         for index in range(count):
             attempt = dict(dispatched_at=NOW.isoformat(), free=True,
                            state="succeeded" if index == 0 else "failed")
-            conn.execute("INSERT INTO agent_request_attempts VALUES (?,?,?,?,?,?,?,?)",
-                          (owner, universe, f"{index:032x}", 1, json.dumps(attempt),
+            conn.execute("INSERT INTO agent_request_attempts VALUES (?,?,?,?,?,?,?)",
+                          (owner, f"{source}-{index:032x}", 1, json.dumps(attempt),
                            NOW.isoformat(), source, attempt["state"]))
     return store
 
@@ -44,11 +44,11 @@ def test_private_daily_pages_cover_more_than_one_page_and_exclude_foreign_rows(d
     assert not (discovery.root / "outbound.db").exists()
 
 
-def test_legacy_rounds_are_excluded_only_for_exact_owner_center_turn_links(discovery):
+def test_legacy_rounds_are_excluded_only_for_exact_owner_turn_links(discovery):
     store = seed(discovery)
     with store._connection() as conn:
-        conn.execute("INSERT INTO agent_request_usage_links VALUES (?,?,?,?,?)",
-                      ("alice", "cc-alice", "0" * 32, "turn", "shared-id"))
+        conn.execute("INSERT INTO agent_request_usage_links VALUES (?,?,?,?)",
+                      ("alice", "0" * 32, "turn", "shared-id"))
     with sqlite3.connect(discovery.root / ".tinyassets.db") as conn:
         conn.execute("CREATE TABLE agent_turns (owner_user_id,universe_id,turn_id,created_at)")
         conn.execute("CREATE TABLE agent_turn_rounds "
@@ -60,7 +60,7 @@ def test_legacy_rounds_are_excluded_only_for_exact_owner_center_turn_links(disco
                           (owner, universe, "shared-id", 1,
                            json.dumps({"source_ref": SOURCE, "model": "test:free"}),
                            "completed", "reply"))
-    assert counts(discovery) == (2, 2)
+    assert counts(discovery) == (1, 1)
 
 
 @pytest.mark.parametrize("failure", ["fence", "outage", "first_page", "second_page", "links",

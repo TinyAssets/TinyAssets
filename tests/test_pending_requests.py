@@ -268,7 +268,7 @@ def test_a_tab_the_deposit_could_not_honour_never_reaches_the_user(base, over):
 
 
 def test_dismissing_writes_nothing(base):
-    from tinyassets.credential_vault import load_credential_vault
+    from tests.test_http_connection_provisioning import _http_records
 
     udir = _make_universe(base, "u-1", admin="alice")
     _login("alice")
@@ -276,7 +276,7 @@ def test_dismissing_writes_nothing(base):
 
     assert _owner_answer("u-1", request_id=asked["request_id"],
                    dismiss=True)["status"] == "dismissed"
-    assert load_credential_vault(udir) == []
+    assert _http_records(udir) == []
     assert _rail("u-1")["count"] == 0
 
 
@@ -903,12 +903,12 @@ def test_extending_a_grant_needs_no_secret_and_no_new_field(base):
 
 def test_extending_never_writes_a_second_vault_record(base):
     """The whole point: one key, one vault record, however many endpoints."""
-    from tinyassets.credential_vault import load_credential_vault
+    from tests.test_http_connection_provisioning import _http_records
 
     udir = _make_universe(base, "u-1", admin="alice")
     _login("alice")
     _seed_connection("u-1")
-    before = [r for r in load_credential_vault(udir) if r["credential_type"] == "http"]
+    before = [r for r in _http_records(udir) if r["credential_type"] == "http"]
 
     ask = _ask("u-1", kind="API", title="one more endpoint",
                fields=[], action={"type": "extend_http", "destination": "github",
@@ -917,7 +917,7 @@ def test_extending_never_writes_a_second_vault_record(base):
                                       "methods": ["PUT"]}]})
     _owner_answer("u-1", request_id=ask["request_id"], values={})
 
-    after = [r for r in load_credential_vault(udir) if r["credential_type"] == "http"]
+    after = [r for r in _http_records(udir) if r["credential_type"] == "http"]
     assert len(after) == len(before) == 1
     assert after[0]["token"] == before[0]["token"], "the stored key is untouched"
 

@@ -64,9 +64,14 @@ def test_cloud_cannot_infer_scope_from_definition_or_fallback(cloud, change, mon
     else:
         from tinyassets.broker import supervisor
         monkeypatch.setattr(supervisor, "get_supervisor", lambda root: None)
-    with pytest.raises(AutomationAdmissionError, match="destination_grant_unavailable"):
-        resolve_inactive_cloud_authority(
+    if change == "center":
+        result = resolve_inactive_cloud_authority(
             cloud.definition, provider_store=cloud.provider, connection_ledger=authority)
+        assert result.destination_grant_id == cloud.definition.destination_grant_id
+    else:
+        with pytest.raises(AutomationAdmissionError, match="destination_grant_unavailable"):
+            resolve_inactive_cloud_authority(
+                cloud.definition, provider_store=cloud.provider, connection_ledger=authority)
     assert not (cloud.root / "outbound.db").exists()
 
 

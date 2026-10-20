@@ -56,8 +56,11 @@ def test_unavailable_source_never_becomes_unmetered(source, monkeypatch, change)
         source.broker.state["token"] = "stale"
     else:
         monkeypatch.setattr(supervisor, "get_supervisor", lambda root: None)
-    with pytest.raises(ProviderAuthorityHeldError):
-        metered_free_source(source.context, None, owner=owner)
+    if change == "center":
+        assert metered_free_source(source.context, None, owner=owner)
+    else:
+        with pytest.raises(ProviderAuthorityHeldError):
+            metered_free_source(source.context, None, owner=owner)
     assert not (source.root / "outbound.db").exists()
     assert not source.broker.sent
 

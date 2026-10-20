@@ -184,6 +184,7 @@ def _seed_universe(
     from tinyassets.commons_catalog import create_binding, publish_definition
     from tinyassets.daemon_server import (
         grant_universe_access,
+        grant_universe_ownership,
         initialize_author_server,
         set_founder_home,
     )
@@ -199,6 +200,7 @@ def _seed_universe(
     initialize_author_server(tmp_path)
     universe_dir = tmp_path / universe
     universe_dir.mkdir(exist_ok=True)
+    grant_universe_ownership(tmp_path, universe_id=universe, owner_id=owner)
     grant_universe_access(tmp_path, universe_id=universe, actor_id=owner,
                           permission="admin", granted_by=owner)
     set_founder_home(tmp_path, founder_sub=owner, universe_id=universe,

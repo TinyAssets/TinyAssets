@@ -41,7 +41,7 @@ def admitted_stream_endpoint(tmp_path, monkeypatch):
 
 async def _admit(reader, writer):
     frame = await rf.read_frame(reader)
-    assert frame.control() == {"op": "BOX_CONNECT", "center": "cc"}
+    assert frame.control() == {"op": "BOX_CONNECT"}
     writer.write(rf.control(rf.CONNECTION, {"op": "BOX_CONNECTED"}))
     await writer.drain()
 

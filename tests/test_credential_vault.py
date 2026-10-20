@@ -1,4 +1,4 @@
-"""Per-universe credential vault tests."""
+"""Owner custody record round-trip tests."""
 
 from __future__ import annotations
 
@@ -8,20 +8,21 @@ from pathlib import Path
 
 import pytest
 
-from tinyassets.broker.vault import write_credential_vault
+from tinyassets.broker.vault import write_credential_vault as _write_credential_vault
 from tinyassets.credential_vault import VAULT_FILENAME, load_credential_vault
 
 
-@pytest.fixture(autouse=True)
-def _admitted_owner_identity(monkeypatch):
-    """The broker resolves the owner's uid/gid; a test process has no broker."""
-    from tinyassets.broker import owner_identities
+@pytest.fixture
+def vault_dir(tmp_path):
+    from tests.support.broker_double import seed_owner_admission
+    from tinyassets.credential_vault import custody_namespace
 
-    monkeypatch.setattr(
-        owner_identities, "owner_identity",
-        lambda root, *, principal, allocate=False: owner_identities.OwnerIdentity(
-            300001, 300001),
-    )
+    seed_owner_admission(tmp_path, principal="owner", center="unused")
+    return custody_namespace(tmp_path, "owner")
+
+
+def write_credential_vault(path, records):
+    return _write_credential_vault(path, records, owner_user_id="owner")
 
 
 def _vcs_slot(universe_dir, destination: str, purpose: str) -> str:
@@ -59,9 +60,9 @@ def _make_directory_link(link: Path, target: Path) -> None:
         pytest.skip(f"directory junctions unavailable: {result.stderr.strip()}")
 
 
-def test_vault_round_trips_typed_credentials_without_secret_summary(tmp_path):
+def test_vault_round_trips_typed_credentials_without_secret_summary(vault_dir):
     summary = write_credential_vault(
-        tmp_path,
+        vault_dir,
         [
             {
                 "credential_type": "vcs",
@@ -88,19 +89,19 @@ def test_vault_round_trips_typed_credentials_without_secret_summary(tmp_path):
     assert summary["credential_count"] == 3
     assert summary["credential_types"] == ["http", "social", "vcs"]
     assert "ghs_secret" not in str(summary)
-    loaded = load_credential_vault(tmp_path)
+    loaded = load_credential_vault(vault_dir)
     assert loaded[0]["token"] == "ghs_secret"
 
 
-def test_vault_rejects_unknown_credential_type(tmp_path):
+def test_vault_rejects_unknown_credential_type(vault_dir):
     with pytest.raises(ValueError, match="unknown credential_type"):
         write_credential_vault(
-            tmp_path,
+            vault_dir,
             [{"credential_type": "database", "service": "postgres"}],
         )
 
 
-def test_single_record_write_updates_only_matching_credential(tmp_path):
+def test_single_record_write_updates_only_matching_credential(vault_dir):
     github_credential = {
         "credential_type": "vcs",
         "service": "github",
@@ -109,7 +110,7 @@ def test_single_record_write_updates_only_matching_credential(tmp_path):
         "token": "ghs-existing",
     }
     write_credential_vault(
-        tmp_path,
+        vault_dir,
         [
             github_credential,
             {
@@ -121,7 +122,7 @@ def test_single_record_write_updates_only_matching_credential(tmp_path):
     )
 
     summary = write_credential_vault(
-        tmp_path,
+        vault_dir,
         [{
             "credential_type": "http",
             "service": "anthropic",
@@ -129,7 +130,7 @@ def test_single_record_write_updates_only_matching_credential(tmp_path):
         }],
     )
 
-    assert load_credential_vault(tmp_path) == [
+    assert load_credential_vault(vault_dir) == [
         github_credential,
         {
             "credential_type": "http",
@@ -140,22 +141,22 @@ def test_single_record_write_updates_only_matching_credential(tmp_path):
     assert summary["credential_count"] == 2
 
 
-def test_single_social_write_uses_service_slot_not_unread_identity_fields(tmp_path):
-    write_credential_vault(tmp_path, [{
+def test_single_social_write_uses_service_slot_not_unread_identity_fields(vault_dir):
+    write_credential_vault(vault_dir, [{
         "credential_type": "social",
         "service": "twitter",
         "handle": "@one",
         "token": "first-token",
     }])
 
-    write_credential_vault(tmp_path, [{
+    write_credential_vault(vault_dir, [{
         "credential_type": "social",
         "service": "twitter",
         "handle": "@two",
         "token": "second-token",
     }])
 
-    assert load_credential_vault(tmp_path) == [{
+    assert load_credential_vault(vault_dir) == [{
         "credential_type": "social",
         "service": "twitter",
         "handle": "@two",
@@ -163,8 +164,8 @@ def test_single_social_write_uses_service_slot_not_unread_identity_fields(tmp_pa
     }]
 
 
-def test_single_record_write_normalizes_vcs_purpose_selector(tmp_path):
-    write_credential_vault(tmp_path, [{
+def test_single_record_write_normalizes_vcs_purpose_selector(vault_dir):
+    write_credential_vault(vault_dir, [{
         "credential_type": "vcs",
         "service": "github",
         "destination": "TinyAssets/TinyAssets",
@@ -172,7 +173,7 @@ def test_single_record_write_normalizes_vcs_purpose_selector(tmp_path):
         "token": "old-token",
     }])
 
-    write_credential_vault(tmp_path, [{
+    write_credential_vault(vault_dir, [{
         "credential_type": "vcs",
         "service": "github",
         "destination": "TinyAssets/TinyAssets",
@@ -180,7 +181,7 @@ def test_single_record_write_normalizes_vcs_purpose_selector(tmp_path):
         "token": "new-token",
     }])
 
-    assert load_credential_vault(tmp_path) == [{
+    assert load_credential_vault(vault_dir) == [{
         "credential_type": "vcs",
         "service": "github",
         "destination": "TinyAssets/TinyAssets",
@@ -189,8 +190,8 @@ def test_single_record_write_normalizes_vcs_purpose_selector(tmp_path):
     }]
 
 
-def test_single_record_write_rotates_matching_multi_purpose_vcs_token(tmp_path):
-    write_credential_vault(tmp_path, [{
+def test_single_record_write_rotates_matching_multi_purpose_vcs_token(vault_dir):
+    write_credential_vault(vault_dir, [{
         "credential_type": "vcs",
         "service": "github",
         "destination": "TinyAssets/TinyAssets",
@@ -198,7 +199,7 @@ def test_single_record_write_rotates_matching_multi_purpose_vcs_token(tmp_path):
         "token": "ghs-OLD",
     }])
 
-    summary = write_credential_vault(tmp_path, [{
+    summary = write_credential_vault(vault_dir, [{
         "credential_type": "vcs",
         "service": "github",
         "destination": "TinyAssets/TinyAssets",
@@ -207,14 +208,14 @@ def test_single_record_write_rotates_matching_multi_purpose_vcs_token(tmp_path):
     }])
 
     assert _vcs_slot(
-        tmp_path, "TinyAssets/TinyAssets", purpose="write"
+        vault_dir, "TinyAssets/TinyAssets", purpose="write"
     ) == "ghs-NEW-ROTATED"
     assert summary["credential_count"] == 1
-    assert "ghs-OLD" not in str(load_credential_vault(tmp_path))
+    assert "ghs-OLD" not in str(load_credential_vault(vault_dir))
 
 
-def test_single_vcs_write_reports_dropped_purpose_slots(tmp_path):
-    write_credential_vault(tmp_path, [{
+def test_single_vcs_write_reports_dropped_purpose_slots(vault_dir):
+    write_credential_vault(vault_dir, [{
         "credential_type": "vcs",
         "service": "github",
         "destination": "TinyAssets/TinyAssets",
@@ -222,7 +223,7 @@ def test_single_vcs_write_reports_dropped_purpose_slots(tmp_path):
         "token": "ghs-BOTH",
     }])
 
-    summary = write_credential_vault(tmp_path, [{
+    summary = write_credential_vault(vault_dir, [{
         "credential_type": "vcs",
         "service": "github",
         "destination": "TinyAssets/TinyAssets",
@@ -240,14 +241,14 @@ def test_single_vcs_write_reports_dropped_purpose_slots(tmp_path):
     assert "ghs-BOTH" not in str(summary)
     assert "ghs-READONLY" not in str(summary)
     assert _vcs_slot(
-        tmp_path, "TinyAssets/TinyAssets", purpose="read"
+        vault_dir, "TinyAssets/TinyAssets", purpose="read"
     ) == "ghs-READONLY"
     assert _vcs_slot(
-        tmp_path, "TinyAssets/TinyAssets", purpose="write"
+        vault_dir, "TinyAssets/TinyAssets", purpose="write"
     ) == ""
 
 
-def test_single_record_write_collapses_all_matching_duplicates(tmp_path):
+def test_single_record_write_collapses_all_matching_duplicates(vault_dir):
     github_credential = {
         "credential_type": "vcs",
         "service": "github",
@@ -256,7 +257,7 @@ def test_single_record_write_collapses_all_matching_duplicates(tmp_path):
         "token": "ghs-existing",
     }
     write_credential_vault(
-        tmp_path,
+        vault_dir,
         [
             {
                 "credential_type": "http",
@@ -272,13 +273,13 @@ def test_single_record_write_collapses_all_matching_duplicates(tmp_path):
         ],
     )
 
-    summary = write_credential_vault(tmp_path, [{
+    summary = write_credential_vault(vault_dir, [{
         "credential_type": "http",
         "service": "anthropic",
         "api_key": "sk-new",
     }])
 
-    assert load_credential_vault(tmp_path) == [
+    assert load_credential_vault(vault_dir) == [
         {
             "credential_type": "http",
             "service": "anthropic",
@@ -291,8 +292,8 @@ def test_single_record_write_collapses_all_matching_duplicates(tmp_path):
     assert summary["dropped_credential_slots"] == []
 
 
-def test_two_record_write_replaces_existing_vault_exactly(tmp_path):
-    write_credential_vault(tmp_path, [{
+def test_two_record_write_replaces_existing_vault_exactly(vault_dir):
+    write_credential_vault(vault_dir, [{
         "credential_type": "social",
         "service": "twitter",
         "token": "old-social-token",
@@ -312,24 +313,24 @@ def test_two_record_write_replaces_existing_vault_exactly(tmp_path):
         },
     ]
 
-    summary = write_credential_vault(tmp_path, replacement)
+    summary = write_credential_vault(vault_dir, replacement)
 
-    assert load_credential_vault(tmp_path) == replacement
+    assert load_credential_vault(vault_dir) == replacement
     assert summary["credential_count"] == 2
 
 
-def test_empty_write_clears_existing_vault(tmp_path):
-    write_credential_vault(tmp_path, [{
+def test_empty_write_clears_existing_vault(vault_dir):
+    write_credential_vault(vault_dir, [{
         "credential_type": "http",
         "service": "anthropic",
         "api_key": "sk-to-clear",
     }])
 
-    summary = write_credential_vault(tmp_path, [])
+    summary = write_credential_vault(vault_dir, [])
 
-    assert load_credential_vault(tmp_path) == []
+    assert load_credential_vault(vault_dir) == []
     assert summary["credential_count"] == 0
 
 
-def test_missing_vault_loads_as_empty(tmp_path: Path):
-    assert load_credential_vault(tmp_path) == []
+def test_missing_vault_loads_as_empty(vault_dir: Path):
+    assert load_credential_vault(vault_dir) == []

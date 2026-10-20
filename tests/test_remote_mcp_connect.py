@@ -170,11 +170,16 @@ class _McpFixture(ThreadingHTTPServer):
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    from tinyassets.daemon_server import grant_universe_access, set_founder_home
+    from tinyassets.daemon_server import (
+        grant_universe_access,
+        grant_universe_ownership,
+        set_founder_home,
+    )
 
     base = tmp_path / "data"
     (base / UID).mkdir(parents=True)
     seed_owner_admission(base, principal=OWNER, center=UID)
+    grant_universe_ownership(base, universe_id=UID, owner_id=OWNER)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED", "1")
     grant_universe_access(base, universe_id=UID, actor_id=OWNER, permission="admin",

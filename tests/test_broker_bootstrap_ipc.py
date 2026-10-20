@@ -81,7 +81,11 @@ def test_revoked_bootstrap_can_be_displayed_but_cannot_prepare(setup, revoke):
 def test_bootstrap_recovery_query_never_returns_foreign_metadata(setup, scope):
     args = dict(query=BOOTSTRAP_RECOVERY, principal="alice", command_center="cc-alice",
                 grant_id="grant-a") | scope
-    assert query_ledger(setup.root, **args) == {"recovery": None}
+    if "command_center" in scope:
+        assert query_ledger(setup.root, **args) == query_ledger(
+            setup.root, **{**args, "command_center": "cc-alice"})
+    else:
+        assert query_ledger(setup.root, **args) == {"recovery": None}
 
 
 def test_bootstrap_recovery_projection_contains_no_credential_or_authority(setup):

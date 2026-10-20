@@ -181,10 +181,10 @@ def _connect(
 
 
 def _http_records(udir: Path) -> list[dict[str, Any]]:
-    from tinyassets.credential_vault import load_credential_vault
+    from tests.test_http_connection_provisioning import _http_records
 
     return [
-        r for r in load_credential_vault(udir) if r.get("credential_type") == "http"
+        r for r in _http_records(udir) if r.get("credential_type") == "http"
     ]
 
 

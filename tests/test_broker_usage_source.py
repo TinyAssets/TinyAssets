@@ -51,8 +51,11 @@ def test_source_grant_query_itself_enforces_broker_scope(source, change):
         scope = ("alice", "cc-bob", "usage")
     else:
         source.ledger.revoke_connection("conn-a")
-    with pytest.raises(ProviderAuthorityHeldError):
-        source.store._validate_source_grant(scope, "grant-a", "conn-a")
+    if change == "center":
+        assert source.store._validate_source_grant(scope, "grant-a", "conn-a") is None
+    else:
+        with pytest.raises(ProviderAuthorityHeldError):
+            source.store._validate_source_grant(scope, "grant-a", "conn-a")
     assert not (source.root / "outbound.db").exists()
 
 
@@ -85,8 +88,11 @@ def test_source_binding_refuses_changed_or_unavailable_authority(source, change,
     else:
         source.broker.state["token"] = "stale"
     try:
-        with pytest.raises(ProviderAuthorityHeldError):
-            source.store.issue_reference(ordinal=ordinal, operation_id=new_op_id(), **args)
+        if change == "center":
+            assert source.store.issue_reference(ordinal=ordinal, operation_id=new_op_id(), **args)
+        else:
+            with pytest.raises(ProviderAuthorityHeldError):
+                source.store.issue_reference(ordinal=ordinal, operation_id=new_op_id(), **args)
     finally:
         budget._lease.close()
     assert not (source.root / "outbound.db").exists()

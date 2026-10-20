@@ -72,7 +72,7 @@ def _deposit_through_the_rail(udir_uid: str):
 
 def test_four_boxes_reach_the_signer_intact(base):
     """Ask -> answer -> vault -> bundle -> Authorization header, one chain."""
-    from tinyassets.credential_vault import load_credential_vault
+    from tests.test_http_connection_provisioning import _http_records
     from tinyassets.storage.outbound_connections import (
         _build_http_secret_bundle,
         _ssrf_auth_headers,
@@ -83,7 +83,7 @@ def test_four_boxes_reach_the_signer_intact(base):
     _, out = _deposit_through_the_rail("u-1")
     assert not out.get("error"), out
 
-    [record] = [r for r in load_credential_vault(udir)
+    [record] = [r for r in _http_records(udir)
                 if r["credential_type"] == "http"]
 
     # What the rail assembled is what the signer's builder accepts, under the
@@ -136,7 +136,7 @@ def test_the_stored_bundle_cannot_be_re_read_under_another_scheme(base):
     as `Authorization: Bearer {json}` (Codex, PR #2525). Asserted on a bundle
     this rail actually produced, not a hand-written one.
     """
-    from tinyassets.credential_vault import load_credential_vault
+    from tests.test_http_connection_provisioning import _http_records
     from tinyassets.storage.outbound_connections import (
         SsrfValidationError,
         _build_http_secret_bundle,
@@ -146,7 +146,7 @@ def test_the_stored_bundle_cannot_be_re_read_under_another_scheme(base):
     _login("alice")
     _deposit_through_the_rail("u-1")
 
-    [record] = [r for r in load_credential_vault(udir)
+    [record] = [r for r in _http_records(udir)
                 if r["credential_type"] == "http"]
     for mutated in ("bearer", "header", "basic"):
         with pytest.raises(SsrfValidationError, match="encoding does not match"):

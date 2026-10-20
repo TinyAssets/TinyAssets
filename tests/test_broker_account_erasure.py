@@ -23,20 +23,20 @@ def seed(ledger):
                        "destination,credential_ref) VALUES (?,?,'http','[]','http','x','ref')",
                        (owner, owner))
             db.execute("INSERT INTO outbound_connection_grants "
-                       "(grant_id,connection_id,owner_user_id,universe_id,granted_at) "
-                       "VALUES (?,?,?,'shared-home',1)", (owner, owner, owner))
+                       "(grant_id,connection_id,owner_user_id,granted_at) "
+                       "VALUES (?,?,?,1)", (owner, owner, owner))
             db.execute("INSERT INTO connection_capabilities VALUES (?,'model_use','{}',1)",
                        (owner,))
             db.execute("INSERT INTO outbound_connector_artifacts VALUES (?,?, '{}','{}',1)",
                        (owner, owner))
             db.execute("INSERT INTO agent_request_usage VALUES "
-                       "(?,'shared-home','usage','{}','{}','lease','parent',0,'now')", (owner,))
+                       "(?,'usage','{}','{}','lease','parent',0,'now')", (owner,))
             db.execute("INSERT INTO agent_request_attempts VALUES "
-                       "(?,'shared-home','usage',1,'{}','now','source','unknown')", (owner,))
+                       "(?,'usage',1,'{}','now','source','unknown')", (owner,))
             db.execute("INSERT INTO agent_request_usage_links VALUES "
-                       "(?,'shared-home','usage','run','same-run')", (owner,))
+                       "(?,'usage','run','same-run')", (owner,))
             db.execute("INSERT INTO agent_request_dispatches VALUES "
-                       "(?,?,'shared-home','usage',1,1,?,?,'digest','operation',0,1)",
+                       "(?,?,'usage',1,1,?,?,'digest','operation',0,1)",
                        (owner, owner, owner, owner))
         db.execute("INSERT INTO outbound_connector_artifact_edges VALUES "
                    "('erase-a','erase-b','erase-b',1)")
