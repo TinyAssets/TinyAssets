@@ -47,6 +47,9 @@ def flow(tmp_path, monkeypatch):
         ),
     )
     home = _make_universe(tmp_path, "u-1", admin="alice")
+    from tests.support.broker_double import seed_owner_admission
+
+    seed_owner_admission(tmp_path, principal="alice", center="u-1")
     card = create_request(home, **_CRED, dedupe_key="connect")
     app = Starlette(routes=onboarding.onboarding_routes())
     exchanges = []
